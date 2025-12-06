@@ -1,11 +1,28 @@
 /**
  * Type-safe API client using openapi-fetch
  * Automatically handles X-Organization-Id and X-User-Id headers from session storage
+ * Includes CSRF protection for cookie-based authentication
  */
 
 import createClient from "openapi-fetch";
 import type { paths } from "./v1";
-import { parseApiError, ApiError } from "./api-error";
+import { parseApiError, ApiError, RateLimitError } from "./api-error";
+
+/**
+ * Get CSRF token from cookie (set by backend on login/OAuth)
+ * The csrf_token cookie is non-HttpOnly so JavaScript can read it
+ */
+function getCsrfToken(): string | null {
+	const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+	return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * Check if request method requires CSRF protection
+ */
+function requiresCsrf(method: string): boolean {
+	return ["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase());
+}
 
 // Create base client (internal - don't export directly)
 // baseUrl is empty because OpenAPI paths already include /api prefix
@@ -13,8 +30,8 @@ const baseClient = createClient<paths>({
 	baseUrl: "",
 });
 
-// Middleware to automatically inject organization and user context headers
-// and handle authentication errors
+// Middleware to automatically inject organization and user context headers,
+// CSRF tokens, and handle authentication errors
 baseClient.use({
 	async onRequest({ request }) {
 		// Get organization ID from session storage (set by org switcher)
@@ -29,6 +46,14 @@ baseClient.use({
 			request.headers.set("X-User-Id", userId);
 		}
 
+		// Add CSRF token for mutating requests (cookie-based auth protection)
+		if (requiresCsrf(request.method)) {
+			const csrfToken = getCsrfToken();
+			if (csrfToken) {
+				request.headers.set("X-CSRF-Token", csrfToken);
+			}
+		}
+
 		// Authentication via HttpOnly cookie (set by backend on login)
 		// No need to manually add Authorization header - cookies are sent automatically
 		// For service-to-service auth, clients can still use Authorization: Bearer header
@@ -36,6 +61,12 @@ baseClient.use({
 		return request;
 	},
 	async onResponse({ response }) {
+		// Handle 429 Too Many Requests - rate limited
+		if (response.status === 429) {
+			const retryAfter = parseInt(response.headers.get("Retry-After") || "60", 10);
+			throw new RateLimitError(retryAfter);
+		}
+
 		// Handle 401 Unauthorized - token expired or invalid
 		// Only redirect if it's a true authentication failure, not a permission issue
 		if (response.status === 401) {
@@ -64,9 +95,17 @@ baseClient.use({
 export const apiClient = baseClient;
 
 /**
- * Shared 401 handler for all clients
+ * Shared response handler for all clients
+ * Handles 429 rate limiting and 401 authentication errors
  */
-function handle401Response(response: Response): Response {
+function handleAuthResponse(response: Response): Response {
+	// Handle 429 Too Many Requests - rate limited
+	if (response.status === 429) {
+		const retryAfter = parseInt(response.headers.get("Retry-After") || "60", 10);
+		throw new RateLimitError(retryAfter);
+	}
+
+	// Handle 401 Unauthorized - token expired or invalid
 	if (response.status === 401) {
 		// Clear session storage (cookies are HttpOnly and handled by backend)
 		sessionStorage.removeItem("userId");
@@ -98,12 +137,18 @@ export function withOrgContext(orgId: string) {
 				request.headers.set("X-User-Id", userId);
 			}
 
-			// Auth via cookie (sent automatically)
+			// Add CSRF token for mutating requests
+			if (requiresCsrf(request.method)) {
+				const csrfToken = getCsrfToken();
+				if (csrfToken) {
+					request.headers.set("X-CSRF-Token", csrfToken);
+				}
+			}
 
 			return request;
 		},
 		async onResponse({ response }) {
-			return handle401Response(response);
+			return handleAuthResponse(response);
 		},
 	});
 
@@ -127,12 +172,18 @@ export function withUserContext(userId: string) {
 
 			request.headers.set("X-User-Id", userId);
 
-			// Auth via cookie (sent automatically)
+			// Add CSRF token for mutating requests
+			if (requiresCsrf(request.method)) {
+				const csrfToken = getCsrfToken();
+				if (csrfToken) {
+					request.headers.set("X-CSRF-Token", csrfToken);
+				}
+			}
 
 			return request;
 		},
 		async onResponse({ response }) {
-			return handle401Response(response);
+			return handleAuthResponse(response);
 		},
 	});
 
@@ -152,12 +203,18 @@ export function withContext(orgId: string, userId: string) {
 			request.headers.set("X-Organization-Id", orgId);
 			request.headers.set("X-User-Id", userId);
 
-			// Auth via cookie (sent automatically)
+			// Add CSRF token for mutating requests
+			if (requiresCsrf(request.method)) {
+				const csrfToken = getCsrfToken();
+				if (csrfToken) {
+					request.headers.set("X-CSRF-Token", csrfToken);
+				}
+			}
 
 			return request;
 		},
 		async onResponse({ response }) {
-			return handle401Response(response);
+			return handleAuthResponse(response);
 		},
 	});
 
@@ -172,12 +229,12 @@ export function handleApiError(error: unknown): never {
 	throw parseApiError(error);
 }
 
-// Re-export ApiError for convenience
-export { ApiError };
+// Re-export error classes for convenience
+export { ApiError, RateLimitError };
 
 /**
  * Authenticated fetch wrapper for endpoints not in OpenAPI spec
- * Automatically injects context headers and handles 401 responses
+ * Automatically injects context headers, CSRF tokens, and handles 401 responses
  * Auth is handled via HttpOnly cookies (sent automatically by browser)
  */
 export async function authFetch(
@@ -185,6 +242,7 @@ export async function authFetch(
 	options: RequestInit = {},
 ): Promise<Response> {
 	const headers = new Headers(options.headers);
+	const method = options.method?.toUpperCase() || "GET";
 
 	// Auth via cookie (sent automatically by browser)
 	// No need to manually add Authorization header
@@ -201,12 +259,18 @@ export async function authFetch(
 		headers.set("X-User-Id", userId);
 	}
 
+	// Add CSRF token for mutating requests
+	if (requiresCsrf(method)) {
+		const csrfToken = getCsrfToken();
+		if (csrfToken) {
+			headers.set("X-CSRF-Token", csrfToken);
+		}
+	}
+
 	// Default to JSON content type for POST/PUT/PATCH
 	// BUT: Don't set Content-Type if body is FormData (browser will set it with boundary)
 	if (
-		["POST", "PUT", "PATCH"].includes(
-			options.method?.toUpperCase() || "",
-		) &&
+		["POST", "PUT", "PATCH"].includes(method) &&
 		!headers.has("Content-Type") &&
 		!(options.body instanceof FormData)
 	) {
@@ -220,6 +284,6 @@ export async function authFetch(
 		credentials: "same-origin", // Send cookies for same-origin requests
 	});
 
-	// Handle 401 the same way as apiClient
-	return handle401Response(response);
+	// Handle 429 and 401 the same way as apiClient
+	return handleAuthResponse(response);
 }

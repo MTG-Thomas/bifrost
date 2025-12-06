@@ -8,13 +8,14 @@ Uses pwdlib (modern replacement for unmaintained passlib) for password hashing.
 """
 
 import base64
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
 
@@ -78,7 +79,12 @@ def create_access_token(
             minutes=settings.access_token_expire_minutes
         )
 
-    to_encode.update({"exp": expire})
+    to_encode.update({
+        "exp": expire,
+        "type": "access",
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+    })
 
     encoded_jwt = jwt.encode(
         to_encode,
@@ -92,21 +98,25 @@ def create_access_token(
 def create_refresh_token(
     data: dict[str, Any],
     expires_delta: timedelta | None = None
-) -> str:
+) -> tuple[str, str]:
     """
-    Create a JWT refresh token.
+    Create a JWT refresh token with JTI for revocation support.
 
     Refresh tokens have longer expiration and are used to obtain new access tokens.
+    Each token has a unique JTI (JWT ID) that must be stored in Redis for validation.
 
     Args:
         data: Dictionary of claims to encode in the token
         expires_delta: Optional custom expiration time
 
     Returns:
-        Encoded JWT token string
+        Tuple of (encoded JWT token string, JTI for Redis storage)
     """
+    import uuid
+
     settings = get_settings()
 
+    jti = str(uuid.uuid4())
     to_encode = data.copy()
 
     if expires_delta:
@@ -118,7 +128,10 @@ def create_refresh_token(
 
     to_encode.update({
         "exp": expire,
-        "type": "refresh"  # Mark as refresh token
+        "type": "refresh",
+        "jti": jti,
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
     })
 
     encoded_jwt = jwt.encode(
@@ -127,18 +140,19 @@ def create_refresh_token(
         algorithm=settings.algorithm
     )
 
-    return encoded_jwt
+    return encoded_jwt, jti
 
 
-def decode_token(token: str) -> dict[str, Any] | None:
+def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any] | None:
     """
     Decode and validate a JWT token.
 
     Args:
         token: JWT token string to decode
+        expected_type: If provided, validates that token type matches (e.g., "access", "refresh")
 
     Returns:
-        Decoded token payload or None if invalid/expired
+        Decoded token payload or None if invalid/expired/wrong type
     """
     settings = get_settings()
 
@@ -146,8 +160,15 @@ def decode_token(token: str) -> dict[str, Any] | None:
         payload = jwt.decode(
             token,
             settings.secret_key,
-            algorithms=[settings.algorithm]
+            algorithms=[settings.algorithm],
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
         )
+
+        # Validate token type if specified
+        if expected_type is not None and payload.get("type") != expected_type:
+            return None
+
         return payload
     except jwt.ExpiredSignatureError:
         return None
@@ -177,6 +198,8 @@ def create_mfa_token(user_id: str, purpose: str = "mfa_verify") -> str:
         "sub": user_id,
         "type": purpose,
         "exp": expire,
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
     }
 
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
@@ -199,7 +222,9 @@ def decode_mfa_token(token: str, expected_purpose: str = "mfa_verify") -> dict[s
         payload = jwt.decode(
             token,
             settings.secret_key,
-            algorithms=[settings.algorithm]
+            algorithms=[settings.algorithm],
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
         )
         if payload.get("type") != expected_purpose:
             return None
@@ -217,19 +242,28 @@ def decode_mfa_token(token: str, expected_purpose: str = "mfa_verify") -> dict[s
 
 def _get_fernet_key() -> bytes:
     """
-    Derive a Fernet-compatible key from the application secret.
+    Derive a Fernet-compatible key from the application secret using HKDF.
+
+    HKDF (HMAC-based Key Derivation Function) is more appropriate than PBKDF2
+    when deriving keys from a high-entropy master key (as opposed to passwords).
+    It's faster and provides better key separation with the info parameter.
+
+    The salt is configurable via BIFROST_FERNET_SALT environment variable.
+    For best security, use a random salt unique to each deployment.
 
     Returns:
         32-byte key suitable for Fernet encryption
     """
     settings = get_settings()
 
-    # Use PBKDF2 to derive a key from the secret
-    kdf = PBKDF2HMAC(
+    # Use HKDF to derive a key from the secret
+    # - salt: Unique per deployment (configurable via env var)
+    # - info: Context string for key separation
+    kdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=b"bifrost_secrets_v1",  # Fixed salt for consistency
-        iterations=100000,
+        salt=settings.fernet_salt.encode(),
+        info=b"bifrost-secrets-encryption",
     )
 
     key = base64.urlsafe_b64encode(kdf.derive(settings.secret_key.encode()))
@@ -267,3 +301,34 @@ def decrypt_secret(encrypted: str) -> str:
     encrypted_bytes = base64.urlsafe_b64decode(encrypted.encode())
     decrypted = f.decrypt(encrypted_bytes)
     return decrypted.decode()
+
+
+# =============================================================================
+# CSRF Protection
+# =============================================================================
+
+
+def generate_csrf_token() -> str:
+    """
+    Generate a cryptographically secure CSRF token.
+
+    Returns:
+        URL-safe base64 encoded random string (43 characters)
+    """
+    return secrets.token_urlsafe(32)
+
+
+def validate_csrf_token(cookie_token: str, header_token: str) -> bool:
+    """
+    Validate CSRF token using constant-time comparison.
+
+    Args:
+        cookie_token: CSRF token from cookie
+        header_token: CSRF token from X-CSRF-Token header
+
+    Returns:
+        True if tokens match, False otherwise
+    """
+    if not cookie_token or not header_token:
+        return False
+    return secrets.compare_digest(cookie_token, header_token)

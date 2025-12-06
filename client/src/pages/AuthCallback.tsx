@@ -39,15 +39,14 @@ export function AuthCallback() {
 			return;
 		}
 
-		// Get stored state and verifier
+		// Get stored state
+		// Note: code_verifier is now handled server-side (stored in Redis when init is called)
 		const storedState = sessionStorage.getItem("oauth_state");
-		const codeVerifier = sessionStorage.getItem("oauth_code_verifier");
 		const redirectFrom =
 			sessionStorage.getItem("oauth_redirect_from") || "/";
 
 		// Clear stored OAuth data
 		sessionStorage.removeItem("oauth_state");
-		sessionStorage.removeItem("oauth_code_verifier");
 		sessionStorage.removeItem("oauth_redirect_from");
 		sessionStorage.removeItem("oauth_provider");
 
@@ -57,15 +56,9 @@ export function AuthCallback() {
 			return;
 		}
 
-		// Verify we have the code verifier
-		if (!codeVerifier) {
-			setError("Missing PKCE code verifier");
-			return;
-		}
-
 		try {
-			// Exchange code for tokens
-			await loginWithOAuth(provider, code, state, codeVerifier);
+			// Exchange code for tokens (server handles PKCE verification)
+			await loginWithOAuth(provider, code, state);
 
 			// Redirect to original destination
 			navigate(redirectFrom, { replace: true });

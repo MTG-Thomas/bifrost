@@ -31,8 +31,7 @@ class UserPrincipal:
     Authenticated user principal.
 
     Represents an authenticated user with their identity and permissions.
-    User info is primarily extracted from JWT claims for efficiency,
-    with database lookup as fallback for legacy tokens.
+    All user info is extracted from JWT claims (no database lookup required).
     """
     user_id: UUID
     email: str
@@ -102,8 +101,10 @@ async def get_current_user_optional(
     1. Authorization: Bearer header (for API clients/service-to-service)
     2. access_token cookie (for browser clients)
 
-    User info is extracted from JWT claims when available (preferred),
-    with database lookup as fallback for tokens without embedded claims.
+    User info is extracted from JWT claims. Tokens must:
+    - Have type="access" (refresh tokens are rejected)
+    - Have valid issuer and audience claims
+    - Include embedded user claims (email, user_type)
 
     Returns None if no token is provided or token is invalid.
     Does not raise an exception for unauthenticated requests.
@@ -111,7 +112,7 @@ async def get_current_user_optional(
     Args:
         request: FastAPI request object
         credentials: HTTP Bearer credentials from request
-        db: Database session
+        db: Database session (unused, kept for signature compatibility)
 
     Returns:
         UserPrincipal if authenticated, None otherwise
@@ -128,7 +129,8 @@ async def get_current_user_optional(
     if not token:
         return None
 
-    payload = decode_token(token)
+    # Decode and validate token - must be an access token
+    payload = decode_token(token, expected_type="access")
 
     if payload is None:
         return None
@@ -143,47 +145,32 @@ async def get_current_user_optional(
     except ValueError:
         return None
 
-    # Check if token has embedded user claims (new tokens)
-    if "email" in payload and "user_type" in payload:
-        # Extract claims directly from JWT (efficient - no DB lookup)
-        org_id = None
-        if payload.get("org_id"):
-            try:
-                org_id = UUID(payload["org_id"])
-            except ValueError:
-                pass
-
-        return UserPrincipal(
-            user_id=user_id,
-            email=payload.get("email", ""),
-            name=payload.get("name", ""),
-            user_type=payload.get("user_type", "ORG"),
-            is_active=True,  # Token is valid, user was active at issue time
-            is_superuser=payload.get("is_superuser", False),
-            is_verified=True,
-            organization_id=org_id,
-            roles=payload.get("roles", []),
+    # Tokens MUST have embedded claims - no legacy fallback
+    if "email" not in payload or "user_type" not in payload:
+        logger.warning(
+            f"Token for user {user_id} missing required claims (email/user_type). "
+            "Legacy tokens are no longer supported."
         )
-
-    # Fallback: Look up user in database (legacy tokens without claims)
-    from src.repositories.users import UserRepository
-
-    user_repo = UserRepository(db)
-    user = await user_repo.get_by_id(user_id)
-
-    if user is None or not user.is_active:
         return None
 
+    # Extract claims directly from JWT (efficient - no DB lookup)
+    org_id = None
+    if payload.get("org_id"):
+        try:
+            org_id = UUID(payload["org_id"])
+        except ValueError:
+            pass
+
     return UserPrincipal(
-        user_id=user.id,
-        email=user.email,
-        name=user.name or user.email.split("@")[0],
-        user_type=user.user_type.value if user.user_type else "ORG",
-        is_active=user.is_active,
-        is_superuser=user.is_superuser,
-        is_verified=user.is_verified,
-        organization_id=user.organization_id,
-        roles=[],  # Legacy tokens don't have roles, would need DB lookup
+        user_id=user_id,
+        email=payload.get("email", ""),
+        name=payload.get("name", ""),
+        user_type=payload.get("user_type", "ORG"),
+        is_active=True,  # Token is valid, user was active at issue time
+        is_superuser=payload.get("is_superuser", False),
+        is_verified=True,
+        organization_id=org_id,
+        roles=payload.get("roles", []),
     )
 
 
@@ -312,6 +299,16 @@ async def get_execution_context(
                 detail="Invalid X-Organization-Id header"
             )
 
+        # Verify organization exists in database
+        from src.repositories.organizations import OrganizationRepository
+        org_repo = OrganizationRepository(db)
+        org = await org_repo.get_by_id(org_id)
+        if not org:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Organization {org_id} not found"
+            )
+
         # Verify access to organization
         if not user.is_superuser:
             # Non-superusers can only access their own org
@@ -383,8 +380,10 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
 
     Checks for token in this order:
     1. Cookie: access_token (for browser clients - most common)
-    2. Query parameter: ?token=xxx (backwards compatibility for service clients)
-    3. Authorization header (if supported by client)
+    2. Authorization header (for service clients)
+
+    Note: Query parameter tokens are NOT supported for security reasons
+    (URLs may be logged by proxies/servers).
 
     Args:
         websocket: FastAPI WebSocket connection
@@ -398,10 +397,6 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
     if "access_token" in websocket.cookies:
         token = websocket.cookies["access_token"]
 
-    # Try query param (backwards compatibility for service-to-service)
-    if not token:
-        token = websocket.query_params.get("token")
-
     # Try Authorization header (some WebSocket clients support this)
     if not token:
         auth_header = websocket.headers.get("authorization", "")
@@ -411,8 +406,8 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
     if not token:
         return None
 
-    # Decode and validate token
-    payload = decode_token(token)
+    # Decode and validate token - must be an access token
+    payload = decode_token(token, expected_type="access")
     if payload is None:
         return None
 
@@ -425,48 +420,30 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
     except ValueError:
         return None
 
-    # Check if token has embedded user claims (new tokens)
-    if "email" in payload and "user_type" in payload:
-        # Extract claims directly from JWT (efficient - no DB lookup)
-        org_id = None
-        if payload.get("org_id"):
-            try:
-                org_id = UUID(payload["org_id"])
-            except ValueError:
-                pass
-
-        return UserPrincipal(
-            user_id=user_id,
-            email=payload.get("email", ""),
-            name=payload.get("name", ""),
-            user_type=payload.get("user_type", "ORG"),
-            is_active=True,
-            is_superuser=payload.get("is_superuser", False),
-            is_verified=True,
-            organization_id=org_id,
-            roles=payload.get("roles", []),
+    # Tokens MUST have embedded claims - no legacy fallback
+    if "email" not in payload or "user_type" not in payload:
+        logger.warning(
+            f"WebSocket token for user {user_id} missing required claims. "
+            "Legacy tokens are no longer supported."
         )
+        return None
 
-    # Fallback: Get user from database (legacy tokens)
-    from src.core.database import get_session_factory
-    from src.repositories.users import UserRepository
+    # Extract claims directly from JWT (efficient - no DB lookup)
+    org_id = None
+    if payload.get("org_id"):
+        try:
+            org_id = UUID(payload["org_id"])
+        except ValueError:
+            pass
 
-    session_factory = get_session_factory()
-    async with session_factory() as db:
-        user_repo = UserRepository(db)
-        user = await user_repo.get_by_id(user_id)
-
-        if user is None or not user.is_active:
-            return None
-
-        return UserPrincipal(
-            user_id=user.id,
-            email=user.email,
-            name=user.name or user.email.split("@")[0],
-            user_type=user.user_type.value if user.user_type else "ORG",
-            is_active=user.is_active,
-            is_superuser=user.is_superuser,
-            is_verified=user.is_verified,
-            organization_id=user.organization_id,
-            roles=[],
-        )
+    return UserPrincipal(
+        user_id=user_id,
+        email=payload.get("email", ""),
+        name=payload.get("name", ""),
+        user_type=payload.get("user_type", "ORG"),
+        is_active=True,
+        is_superuser=payload.get("is_superuser", False),
+        is_verified=True,
+        organization_id=org_id,
+        roles=payload.get("roles", []),
+    )

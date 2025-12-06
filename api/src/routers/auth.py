@@ -3,13 +3,15 @@ Authentication Router
 
 Provides endpoints for user authentication:
 - Login (JWT token generation with user provisioning)
-- Token refresh
+- Token refresh with rotation
+- Token revocation (logout, revoke-all)
 - Current user info
 
 Key Features:
 - First user login auto-promotes to PlatformAdmin
 - Subsequent users auto-join organizations by email domain
 - JWT tokens include user_type, org_id, and roles
+- Refresh tokens use JTI for revocation support
 """
 
 import logging
@@ -20,19 +22,27 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 
+from shared.cache import get_shared_redis
+from shared.cache.keys import (
+    refresh_token_jti_key,
+    user_refresh_tokens_pattern,
+    TTL_REFRESH_TOKEN,
+)
+from shared.models import OAuthProviderInfo, AuthStatusResponse
 from src.config import get_settings
 from src.core.auth import CurrentActiveUser
 from src.core.database import DbSession
+from src.core.rate_limit import auth_limiter, mfa_limiter, get_client_ip
 from src.core.security import (
     create_access_token,
     create_mfa_token,
     create_refresh_token,
     decode_mfa_token,
     decode_token,
+    generate_csrf_token,
     get_password_hash,
     verify_password,
 )
-from shared.models import OAuthProviderInfo, AuthStatusResponse
 from src.repositories.users import UserRepository
 from src.services.user_provisioning import ensure_user_provisioned, get_user_roles
 
@@ -47,11 +57,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str):
     """
-    Set HttpOnly authentication cookies.
+    Set HttpOnly authentication cookies and CSRF token.
 
     Cookies are secure, SameSite=Lax, and HttpOnly for XSS protection.
     This provides automatic auth for browser clients while still allowing
     service-to-service auth via Authorization header.
+
+    Also sets a CSRF token cookie that JavaScript can read and send as a header.
     """
     settings = get_settings()
 
@@ -80,11 +92,84 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str):
         path="/",
     )
 
+    # CSRF token cookie (readable by JavaScript for X-CSRF-Token header)
+    csrf_token = generate_csrf_token()
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,  # JS needs to read this
+        secure=secure,
+        samesite="strict",  # Stricter for CSRF protection
+        max_age=30 * 60,  # Match access token expiry
+        path="/",
+    )
+
 
 def clear_auth_cookies(response: Response):
     """Clear authentication cookies on logout."""
     response.delete_cookie(key="access_token", path="/")
     response.delete_cookie(key="refresh_token", path="/")
+    response.delete_cookie(key="csrf_token", path="/")
+
+
+# =============================================================================
+# Refresh Token JTI Management
+# =============================================================================
+
+
+async def store_refresh_token_jti(user_id: str, jti: str) -> None:
+    """
+    Store a refresh token JTI in Redis for validation/revocation.
+
+    Args:
+        user_id: User ID the token belongs to
+        jti: JWT ID to store
+    """
+    r = await get_shared_redis()
+    key = refresh_token_jti_key(user_id, jti)
+    await r.setex(key, TTL_REFRESH_TOKEN, "1")
+
+
+async def validate_and_revoke_refresh_token_jti(user_id: str, jti: str) -> bool:
+    """
+    Validate a refresh token JTI exists and revoke it (single use).
+
+    Args:
+        user_id: User ID the token belongs to
+        jti: JWT ID to validate
+
+    Returns:
+        True if JTI was valid and has been revoked, False if invalid
+    """
+    r = await get_shared_redis()
+    key = refresh_token_jti_key(user_id, jti)
+
+    # Atomically check and delete
+    result = await r.delete(key)
+    return result > 0
+
+
+async def revoke_all_user_refresh_tokens(user_id: str) -> int:
+    """
+    Revoke all refresh tokens for a user.
+
+    Args:
+        user_id: User ID to revoke tokens for
+
+    Returns:
+        Number of tokens revoked
+    """
+    r = await get_shared_redis()
+    pattern = user_refresh_tokens_pattern(user_id)
+
+    # Find all keys matching pattern
+    keys = []
+    async for key in r.scan_iter(match=pattern):
+        keys.append(key)
+
+    if keys:
+        return await r.delete(*keys)
+    return 0
 
 
 # =============================================================================
@@ -183,6 +268,8 @@ async def login(
     - Subsequent users are matched to organizations by email domain
     - JWT tokens include user_type, org_id, and roles for authorization
 
+    Rate limited: 10 requests per minute per IP address.
+
     Args:
         form_data: OAuth2 password form with username (email) and password
         request: FastAPI request object
@@ -195,6 +282,10 @@ async def login(
         HTTPException: If credentials are invalid or provisioning fails
     """
     from src.services.mfa_service import MFAService
+
+    # Rate limiting
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("login", client_ip)
 
     user_repo = UserRepository(db)
     user = await user_repo.get_by_email(form_data.username)
@@ -475,7 +566,10 @@ async def mfa_initial_verify(
     }
 
     access_token = create_access_token(data=token_data)
-    refresh_token_str = create_refresh_token(data={"sub": str(user.id)})
+    refresh_token_str, jti = create_refresh_token(data={"sub": str(user.id)})
+
+    # Store JTI in Redis for revocation support
+    await store_refresh_token_jti(str(user.id), jti)
 
     # Set cookies for browser clients
     set_auth_cookies(response, access_token, refresh_token_str)
@@ -501,6 +595,8 @@ async def verify_mfa_login(
     This is used when an existing user with MFA logs in and needs to verify their code.
     For initial MFA enrollment verification, use POST /auth/mfa/verify.
 
+    Rate limited: 5 requests per minute per IP address.
+
     Args:
         mfa_request: MFA verification request with token, code, and trust options
         request: FastAPI request object
@@ -513,6 +609,10 @@ async def verify_mfa_login(
         HTTPException: If MFA token is invalid or code verification fails
     """
     from src.services.mfa_service import MFAService
+
+    # Rate limiting (stricter for MFA to prevent brute force)
+    client_ip = get_client_ip(request)
+    await mfa_limiter.check("mfa_verify", client_ip)
 
     # Validate MFA token
     payload = decode_mfa_token(mfa_request.mfa_token, "mfa_verify")
@@ -622,7 +722,10 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
 
     # Generate tokens
     access_token = create_access_token(data=token_data)
-    refresh_token_str = create_refresh_token(data={"sub": str(user.id)})
+    refresh_token_str, jti = create_refresh_token(data={"sub": str(user.id)})
+
+    # Store JTI in Redis for revocation support
+    await store_refresh_token_jti(str(user.id), jti)
 
     # Set cookies for browser clients
     if response:
@@ -646,29 +749,59 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
 
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
+    request: Request,
     response: Response,
-    token_data: TokenRefresh,
+    token_data: TokenRefresh | None = None,
     db: DbSession = None,
 ) -> Token:
     """
-    Refresh access token using refresh token.
+    Refresh access token using refresh token with rotation.
+
+    Implements refresh token rotation: the old token is invalidated
+    and a new one is issued. This limits the window for token theft.
 
     Fetches fresh user data and roles from database to ensure
     the new token has up-to-date claims.
 
+    The refresh token can be provided in two ways:
+    1. Request body (API clients): {"refresh_token": "..."}
+    2. HttpOnly cookie (browser clients): Automatically sent
+
+    Rate limited: 10 requests per minute per IP address.
+
     Args:
-        token_data: Refresh token
+        request: FastAPI request object
+        token_data: Optional refresh token in body (API clients)
         db: Database session
 
     Returns:
         New access and refresh tokens with updated claims
 
     Raises:
-        HTTPException: If refresh token is invalid
+        HTTPException: If refresh token is invalid or revoked
     """
-    payload = decode_token(token_data.refresh_token)
+    # Rate limiting
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("refresh", client_ip)
 
-    if not payload or payload.get("type") != "refresh":
+    # Get refresh token from body (API clients) or cookie (browser clients)
+    refresh_token_value = None
+    if token_data and token_data.refresh_token:
+        refresh_token_value = token_data.refresh_token
+    else:
+        refresh_token_value = request.cookies.get("refresh_token")
+
+    if not refresh_token_value:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Decode with type validation
+    payload = decode_token(refresh_token_value, expected_type="refresh")
+
+    if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -676,10 +809,31 @@ async def refresh_token(
         )
 
     user_id = payload.get("sub")
+    jti = payload.get("jti")
+
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Validate JTI exists and revoke it (single use - rotation)
+    if not jti:
+        # Legacy token without JTI - reject
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token format",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    jti_valid = await validate_and_revoke_refresh_token_jti(user_id, jti)
+    if not jti_valid:
+        # JTI not found - token was already used or revoked
+        logger.warning(f"Refresh token reuse attempt for user {user_id}, JTI {jti}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token has been revoked or already used",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -716,9 +870,12 @@ async def refresh_token(
         "roles": roles,
     }
 
-    # Generate new tokens
+    # Generate new tokens with rotation
     access_token = create_access_token(data=new_token_data)
-    new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    new_refresh_token, new_jti = create_refresh_token(data={"sub": str(user.id)})
+
+    # Store new JTI in Redis
+    await store_refresh_token_jti(str(user.id), new_jti)
 
     # Set cookies for browser clients
     set_auth_cookies(response, access_token, new_refresh_token)
@@ -757,8 +914,178 @@ async def get_current_user_info(
     )
 
 
+class LogoutResponse(BaseModel):
+    """Logout response model."""
+    message: str = "Logged out successfully"
+
+
+class RevokeAllResponse(BaseModel):
+    """Revoke all sessions response model."""
+    message: str
+    sessions_revoked: int
+
+
+class LogoutRequest(BaseModel):
+    """Logout request with optional refresh token."""
+    refresh_token: str | None = None
+
+
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(
+    request: Request,
+    response: Response,
+    current_user: CurrentActiveUser,
+    body: LogoutRequest | None = None,
+) -> LogoutResponse:
+    """
+    Logout current user and revoke refresh token.
+
+    Clears authentication cookies and revokes the current refresh token.
+    The access token will remain valid until expiry (30 minutes max).
+
+    For API clients using Bearer auth, the refresh_token should be passed
+    in the request body. For browser clients using cookies, the token is
+    read from the refresh_token cookie automatically.
+
+    Args:
+        request: FastAPI request (to get refresh token cookie)
+        response: FastAPI response (to clear cookies)
+        current_user: Current authenticated user
+        body: Optional request body containing refresh_token for API clients
+
+    Returns:
+        Logout confirmation
+    """
+    # Get refresh token from body (API clients) or cookie (browser clients)
+    refresh_token = None
+    if body and body.refresh_token:
+        refresh_token = body.refresh_token
+    else:
+        refresh_token = request.cookies.get("refresh_token")
+
+    if refresh_token:
+        payload = decode_token(refresh_token, expected_type="refresh")
+        if payload and payload.get("jti"):
+            await validate_and_revoke_refresh_token_jti(
+                str(current_user.user_id),
+                payload["jti"]
+            )
+
+    # Clear cookies
+    clear_auth_cookies(response)
+
+    logger.info(f"User logged out: {current_user.email}")
+
+    return LogoutResponse()
+
+
+@router.post("/revoke-all", response_model=RevokeAllResponse)
+async def revoke_all_sessions(
+    response: Response,
+    current_user: CurrentActiveUser,
+) -> RevokeAllResponse:
+    """
+    Revoke all refresh tokens for the current user.
+
+    This logs out all sessions across all devices. Useful when:
+    - User suspects account compromise
+    - User wants to sign out everywhere
+    - Password has been changed
+
+    Note: Access tokens will remain valid until expiry (30 minutes max).
+    For immediate revocation, consider also changing the password.
+
+    Args:
+        response: FastAPI response (to clear current cookies)
+        current_user: Current authenticated user
+
+    Returns:
+        Number of sessions revoked
+    """
+    count = await revoke_all_user_refresh_tokens(str(current_user.user_id))
+
+    # Clear cookies for current session
+    clear_auth_cookies(response)
+
+    logger.info(
+        f"User revoked all sessions: {current_user.email}",
+        extra={"sessions_revoked": count}
+    )
+
+    return RevokeAllResponse(
+        message=f"All sessions have been revoked",
+        sessions_revoked=count,
+    )
+
+
+class AdminRevokeRequest(BaseModel):
+    """Admin revocation request."""
+    user_id: str
+
+
+@router.post("/admin/revoke-user", response_model=RevokeAllResponse)
+async def admin_revoke_user_sessions(
+    revoke_data: AdminRevokeRequest,
+    current_user: CurrentActiveUser,
+    db: DbSession,
+) -> RevokeAllResponse:
+    """
+    Revoke all refresh tokens for a specific user (admin only).
+
+    Allows platform administrators to forcibly log out a user from all
+    devices. Useful for security incidents or account compromises.
+
+    Requires platform admin (superuser) privileges.
+
+    Args:
+        revoke_data: Target user ID to revoke
+        current_user: Current authenticated user (must be admin)
+        db: Database session
+
+    Returns:
+        Number of sessions revoked
+
+    Raises:
+        HTTPException: If not admin or user not found
+    """
+    # Require platform admin
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform admin privileges required",
+        )
+
+    # Verify target user exists
+    user_repo = UserRepository(db)
+    target_user = await user_repo.get_by_id(revoke_data.user_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Revoke all sessions for target user
+    count = await revoke_all_user_refresh_tokens(revoke_data.user_id)
+
+    logger.warning(
+        f"Admin revoked all sessions for user: {target_user.email}",
+        extra={
+            "admin_user": current_user.email,
+            "target_user": target_user.email,
+            "target_user_id": revoke_data.user_id,
+            "sessions_revoked": count,
+        }
+    )
+
+    return RevokeAllResponse(
+        message=f"All sessions have been revoked for user {target_user.email}",
+        sessions_revoked=count,
+    )
+
+
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register_user(
+    request: Request,
     user_data: UserCreate,
     db: DbSession = None,
 ) -> UserResponse:
@@ -772,7 +1099,10 @@ async def register_user(
 
     Note: In production, this should be restricted or require admin approval.
 
+    Rate limited: 10 requests per minute per IP address.
+
     Args:
+        request: FastAPI request object
         user_data: User registration data
         db: Database session
 
@@ -782,6 +1112,10 @@ async def register_user(
     Raises:
         HTTPException: If email already registered or provisioning fails
     """
+    # Rate limiting
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("register", client_ip)
+
     settings = get_settings()
 
     # Only allow registration in development or testing mode
@@ -927,100 +1261,6 @@ async def get_auth_status(db: DbSession = None) -> AuthStatusResponse:
     )
 
 
-class OAuthLoginRequest(BaseModel):
-    """OAuth/SSO login request model."""
-    email: EmailStr
-    name: str | None = None
-    provider: str = "oauth"  # e.g., "azure", "google", "github"
-
-
-@router.post("/oauth/login", response_model=Token)
-async def oauth_login(
-    response: Response,
-    login_data: OAuthLoginRequest,
-    db: DbSession = None,
-) -> Token:
-    """
-    Login via OAuth/SSO provider.
-
-    This endpoint is called after the frontend completes OAuth authentication.
-    It provisions the user (if new) and returns JWT tokens.
-
-    Auto-Provisioning Rules:
-    - First user in system becomes PlatformAdmin
-    - Subsequent users are matched to organizations by email domain
-    - Users without matching org domain are rejected
-
-    Args:
-        login_data: OAuth login data with verified email from provider
-        db: Database session
-
-    Returns:
-        Access and refresh tokens with user claims
-
-    Raises:
-        HTTPException: If provisioning fails (no matching org)
-    """
-    try:
-        result = await ensure_user_provisioned(
-            db=db,
-            email=login_data.email,
-            name=login_data.name,
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        )
-
-    user = result.user
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is inactive",
-        )
-
-    # Update last login (use naive datetime for DB compatibility)
-    user.last_login = datetime.utcnow()
-    await db.commit()
-
-    # Get user roles from database
-    db_roles = await get_user_roles(db, user.id)
-
-    # Build role list
-    roles = result.roles.copy()
-    roles.extend(db_roles)
-
-    # Build JWT claims with user info
-    token_data = {
-        "sub": str(user.id),
-        "email": user.email,
-        "name": user.name or user.email.split("@")[0],
-        "user_type": result.user_type.value,
-        "is_superuser": result.is_platform_admin,
-        "org_id": str(result.organization_id) if result.organization_id else None,
-        "roles": roles,
-    }
-
-    # Generate tokens
-    access_token = create_access_token(data=token_data)
-    refresh_token_str = create_refresh_token(data={"sub": str(user.id)})
-
-    # Set cookies for browser clients
-    set_auth_cookies(response, access_token, refresh_token_str)
-
-    logger.info(
-        f"OAuth login: {user.email}",
-        extra={
-            "user_id": str(user.id),
-            "user_type": result.user_type.value,
-            "provider": login_data.provider,
-            "was_created": result.was_created,
-        }
-    )
-
-    return Token(
-        access_token=access_token,
-        refresh_token=refresh_token_str,
-    )
+# NOTE: /auth/oauth/login endpoint was removed for security reasons.
+# It accepted unverified email claims which allowed account takeover.
+# Use /auth/oauth/callback flow instead which properly validates OAuth tokens.

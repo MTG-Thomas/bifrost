@@ -2885,6 +2885,327 @@ async def e2e_cancellation_test(context, sleep_seconds: int = 30):
         assert response.status_code == 404
 
     # =========================================================================
+    # PHASE 29: Security Tests (Token, CSRF, Rate Limiting)
+    # =========================================================================
+
+    def test_400_refresh_token_rejected_as_access_token(self):
+        """
+        Security: Refresh tokens should be rejected when used as access tokens.
+        This tests Finding 2.1 - token type enforcement.
+        """
+        # Get a fresh refresh token
+        response = State.client.post(
+            "/auth/login",
+            data={
+                "username": State.platform_admin.email,
+                "password": State.platform_admin.password,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # If MFA required, complete MFA
+        if data.get("mfa_required"):
+            totp_code = generate_totp_code(State.platform_admin.totp_secret)
+            mfa_response = State.client.post(
+                "/auth/mfa/login",
+                json={
+                    "mfa_token": data["mfa_token"],
+                    "code": totp_code,
+                },
+            )
+            assert mfa_response.status_code == 200
+            data = mfa_response.json()
+
+        refresh_token = data.get("refresh_token")
+        assert refresh_token, "Should receive refresh token"
+
+        # Try to use refresh token as access token
+        response = State.client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {refresh_token}"},
+        )
+        assert response.status_code == 401, "Refresh token should be rejected as access token"
+
+    def test_401_access_token_has_required_claims(self):
+        """
+        Security: Access tokens must include type, iss, and aud claims.
+        This tests Finding 2.6 - JWT issuer/audience validation.
+        """
+        import jwt
+
+        # Decode token without verification to check claims
+        access_token = State.platform_admin.access_token
+        payload = jwt.decode(access_token, options={"verify_signature": False})
+
+        assert payload.get("type") == "access", "Token should have type=access"
+        assert payload.get("iss") == "bifrost-api", "Token should have issuer claim"
+        assert payload.get("aud") == "bifrost-client", "Token should have audience claim"
+
+    def test_402_refresh_token_rotation(self):
+        """
+        Security: Refresh token should be rotated on use (old token invalidated).
+        This tests Finding 2.4 - refresh token rotation.
+        """
+        # Login to get fresh tokens
+        response = State.client.post(
+            "/auth/login",
+            data={
+                "username": State.platform_admin.email,
+                "password": State.platform_admin.password,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Complete MFA if required
+        if data.get("mfa_required"):
+            totp_code = generate_totp_code(State.platform_admin.totp_secret)
+            mfa_response = State.client.post(
+                "/auth/mfa/login",
+                json={
+                    "mfa_token": data["mfa_token"],
+                    "code": totp_code,
+                },
+            )
+            assert mfa_response.status_code == 200
+            data = mfa_response.json()
+
+        old_refresh_token = data.get("refresh_token")
+        assert old_refresh_token, "Should receive refresh token"
+
+        # Use refresh token to get new tokens
+        response = State.client.post(
+            "/auth/refresh",
+            json={"refresh_token": old_refresh_token},
+        )
+        assert response.status_code == 200, f"Refresh should succeed: {response.text}"
+        new_data = response.json()
+        new_refresh_token = new_data.get("refresh_token")
+        assert new_refresh_token != old_refresh_token, "Should receive new refresh token"
+
+        # Try to use old refresh token again (should fail - single use)
+        response = State.client.post(
+            "/auth/refresh",
+            json={"refresh_token": old_refresh_token},
+        )
+        assert response.status_code == 401, "Old refresh token should be rejected after rotation"
+
+    def test_403_csrf_required_for_cookie_auth(self):
+        """
+        Security: CSRF token should be required for cookie-based auth.
+        This tests Finding 2.5 - CSRF protection.
+
+        Note: This test is limited because httpx doesn't send cookies
+        automatically like browsers do. We test the bearer auth exemption instead.
+        """
+        # Bearer auth should work without CSRF
+        response = State.client.post(
+            "/api/config",
+            json={
+                "key": "csrf_test_key",
+                "value": "test",
+                "is_secret": False,
+                "type": "string",
+            },
+            headers=State.platform_admin.headers,
+        )
+        # This should succeed (bearer auth, no CSRF needed)
+        assert response.status_code == 201, f"Bearer auth should not require CSRF: {response.text}"
+
+        # Cleanup
+        State.client.delete(
+            "/api/config/csrf_test_key",
+            headers=State.platform_admin.headers,
+        )
+
+    def test_404_invalid_org_id_rejected(self):
+        """
+        Security: Invalid organization ID in header should be rejected.
+        This tests Finding 3.1 - org existence validation.
+        """
+        import uuid
+
+        fake_org_id = str(uuid.uuid4())
+
+        response = State.client.get(
+            "/api/config",
+            headers={
+                **State.platform_admin.headers,
+                "X-Organization-Id": fake_org_id,
+            },
+        )
+        assert response.status_code == 400, f"Non-existent org should be rejected: {response.text}"
+        assert "not found" in response.json().get("detail", "").lower()
+
+    def test_405_logout_revokes_refresh_token(self):
+        """
+        Security: Logout should revoke the refresh token.
+        This tests refresh token revocation.
+        """
+        # Login to get fresh tokens
+        response = State.client.post(
+            "/auth/login",
+            data={
+                "username": State.platform_admin.email,
+                "password": State.platform_admin.password,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Complete MFA if required
+        if data.get("mfa_required"):
+            totp_code = generate_totp_code(State.platform_admin.totp_secret)
+            mfa_response = State.client.post(
+                "/auth/mfa/login",
+                json={
+                    "mfa_token": data["mfa_token"],
+                    "code": totp_code,
+                },
+            )
+            assert mfa_response.status_code == 200
+            data = mfa_response.json()
+
+        access_token = data.get("access_token")
+        refresh_token = data.get("refresh_token")
+        assert access_token and refresh_token
+
+        # Logout - pass refresh_token in body for API clients
+        response = State.client.post(
+            "/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"refresh_token": refresh_token},
+        )
+        assert response.status_code == 200
+
+        # Try to use refresh token (should fail)
+        response = State.client.post(
+            "/auth/refresh",
+            json={"refresh_token": refresh_token},
+        )
+        assert response.status_code == 401, "Refresh token should be revoked after logout"
+
+    def test_406_revoke_all_sessions(self):
+        """
+        Security: Revoke-all should invalidate all refresh tokens.
+        This tests bulk token revocation.
+        """
+        # Login to get fresh tokens
+        response = State.client.post(
+            "/auth/login",
+            data={
+                "username": State.platform_admin.email,
+                "password": State.platform_admin.password,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Complete MFA if required
+        if data.get("mfa_required"):
+            totp_code = generate_totp_code(State.platform_admin.totp_secret)
+            mfa_response = State.client.post(
+                "/auth/mfa/login",
+                json={
+                    "mfa_token": data["mfa_token"],
+                    "code": totp_code,
+                },
+            )
+            assert mfa_response.status_code == 200
+            data = mfa_response.json()
+
+        access_token = data.get("access_token")
+        refresh_token = data.get("refresh_token")
+        assert access_token and refresh_token
+
+        # Revoke all sessions
+        response = State.client.post(
+            "/auth/revoke-all",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        revoke_data = response.json()
+        assert "sessions_revoked" in revoke_data
+
+        # Try to use refresh token (should fail)
+        response = State.client.post(
+            "/auth/refresh",
+            json={"refresh_token": refresh_token},
+        )
+        assert response.status_code == 401, "Refresh token should be revoked after revoke-all"
+
+    def test_407_restore_platform_admin_session(self):
+        """
+        Restore platform admin session after security tests.
+        Required for cleanup tests to work.
+        """
+        # Login fresh
+        response = State.client.post(
+            "/auth/login",
+            data={
+                "username": State.platform_admin.email,
+                "password": State.platform_admin.password,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Complete MFA if required
+        if data.get("mfa_required"):
+            totp_code = generate_totp_code(State.platform_admin.totp_secret)
+            mfa_response = State.client.post(
+                "/auth/mfa/login",
+                json={
+                    "mfa_token": data["mfa_token"],
+                    "code": totp_code,
+                },
+            )
+            assert mfa_response.status_code == 200
+            data = mfa_response.json()
+
+        # Update stored tokens
+        State.platform_admin.access_token = data.get("access_token")
+        State.platform_admin.refresh_token = data.get("refresh_token")
+        assert State.platform_admin.access_token, "Should restore access token"
+
+    def test_408_rate_limit_login(self):
+        """
+        Security: Login endpoint should be rate limited.
+        This tests Finding 3.4 - rate limiting.
+
+        Note: This test runs LAST in security tests because it triggers
+        rate limiting that would affect other login-dependent tests.
+        """
+        # Make requests until we hit rate limit or confirm it works
+        # Rate limit is 10 requests per minute
+        hit_rate_limit = False
+
+        for i in range(12):  # Try 12 requests
+            response = State.client.post(
+                "/auth/login",
+                data={
+                    "username": "nonexistent@example.com",
+                    "password": "wrongpassword",
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            if response.status_code == 429:
+                hit_rate_limit = True
+                # Check for Retry-After header
+                retry_after = response.headers.get("retry-after") or response.headers.get("Retry-After")
+                assert retry_after is not None, "Should have Retry-After header"
+                break
+
+        # We should hit rate limit within 12 requests (limit is 10)
+        assert hit_rate_limit, "Rate limit should be enforced on login endpoint"
+
+    # =========================================================================
     # PHASE 28: Cleanup (Cleanup last)
     # =========================================================================
 

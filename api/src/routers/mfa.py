@@ -13,6 +13,8 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from shared.cache import get_shared_redis
+from shared.cache.keys import refresh_token_jti_key, TTL_REFRESH_TOKEN
 from src.core.auth import CurrentActiveUser, get_current_user_from_db
 from src.core.database import DbSession
 from src.core.security import (
@@ -236,7 +238,11 @@ async def verify_mfa(
     }
 
     access_token = create_access_token(data=token_data)
-    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    refresh_token, jti = create_refresh_token(data={"sub": str(user.id)})
+
+    # Store JTI in Redis for revocation support
+    r = await get_shared_redis()
+    await r.setex(refresh_token_jti_key(str(user.id), jti), TTL_REFRESH_TOKEN, "1")
 
     return MFAVerifyResponse(
         success=True,

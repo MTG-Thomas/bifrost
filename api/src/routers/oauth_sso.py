@@ -11,19 +11,81 @@ Provides endpoints for OAuth/SSO authentication:
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
+from shared.cache import get_shared_redis
+from shared.cache.keys import (
+    oauth_state_key,
+    refresh_token_jti_key,
+    TTL_OAUTH_STATE,
+    TTL_REFRESH_TOKEN,
+)
 from src.config import get_settings
 from src.core.auth import CurrentActiveUser, get_current_user_from_db
 from src.core.database import DbSession
-from src.core.security import create_access_token, create_refresh_token
+from src.core.security import create_access_token, create_refresh_token, generate_csrf_token
 from src.services.oauth_sso import OAuthError, OAuthService
 from src.services.user_provisioning import ensure_user_provisioned, get_user_roles
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth/oauth", tags=["oauth"])
+
+
+# =============================================================================
+# Cookie Helpers
+# =============================================================================
+
+
+def _set_oauth_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    """
+    Set HttpOnly authentication cookies for OAuth login.
+
+    This mirrors the cookie-setting logic from auth.py but is kept here to avoid
+    circular imports. Browser clients get XSS protection from HttpOnly cookies.
+
+    Args:
+        response: FastAPI response object
+        access_token: JWT access token
+        refresh_token: JWT refresh token
+    """
+    settings = get_settings()
+    secure = not settings.is_development
+
+    # Access token cookie (short-lived)
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=30 * 60,  # 30 minutes
+        path="/",
+    )
+
+    # Refresh token cookie (long-lived)
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=7 * 24 * 60 * 60,  # 7 days
+        path="/",
+    )
+
+    # CSRF token cookie (JS readable for X-CSRF-Token header)
+    csrf_token = generate_csrf_token()
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,  # JS needs to read this
+        secure=secure,
+        samesite="strict",
+        max_age=30 * 60,  # Match access token
+        path="/",
+    )
 
 
 # =============================================================================
@@ -53,7 +115,7 @@ class OAuthCallbackRequest(BaseModel):
     provider: str
     code: str
     state: str
-    code_verifier: str
+    # Note: code_verifier is no longer sent by frontend - it's stored server-side in Redis
 
 
 class OAuthTokenResponse(BaseModel):
@@ -123,7 +185,7 @@ async def init_oauth(
     Initialize OAuth login flow.
 
     Generates authorization URL with PKCE challenge for secure OAuth flow.
-    The frontend should store the state and code_verifier in session storage.
+    The PKCE code_verifier is stored server-side in Redis, bound to the state.
 
     Args:
         provider: OAuth provider name (microsoft, google, oidc)
@@ -132,9 +194,10 @@ async def init_oauth(
     Returns:
         Authorization URL and state for CSRF protection
 
-    Note:
-        The code_verifier is returned in a secure httpOnly cookie for the callback.
-        The frontend must include this cookie when calling the callback endpoint.
+    Security:
+        - State is used for CSRF protection
+        - PKCE verifier is stored server-side (never sent to client)
+        - State can only be used once and expires after 10 minutes
     """
     oauth_service = OAuthService(db)
 
@@ -150,16 +213,24 @@ async def init_oauth(
             code_verifier=code_verifier,
         )
 
-        # Store code_verifier in response for frontend to use
-        # In production, consider using encrypted server-side session
-        response = OAuthInitResponse(
+        # Store state -> code_verifier binding in Redis (server-side PKCE)
+        # This prevents the client from ever seeing the verifier
+        r = await get_shared_redis()
+        await r.setex(
+            oauth_state_key(state),
+            TTL_OAUTH_STATE,
+            code_verifier,
+        )
+
+        logger.info(
+            f"OAuth flow initiated for provider: {provider}",
+            extra={"provider": provider, "state": state[:8] + "..."}
+        )
+
+        return OAuthInitResponse(
             authorization_url=authorization_url,
             state=state,
         )
-
-        # Note: We return code_verifier to frontend for PKCE flow
-        # Frontend stores it in sessionStorage and sends back with callback
-        return response
 
     except OAuthError as e:
         raise HTTPException(
@@ -168,55 +239,65 @@ async def init_oauth(
         )
 
 
-@router.get("/init/{provider}/verifier")
-async def get_code_verifier(
-    provider: str,
-    db: DbSession,
-) -> dict[str, str]:
-    """
-    Generate a PKCE code verifier.
-
-    This is a helper endpoint that returns a code verifier for the OAuth flow.
-    The frontend should call this before redirecting to the OAuth provider,
-    store the verifier in sessionStorage, and send it back with the callback.
-
-    Returns:
-        code_verifier and code_challenge for PKCE
-    """
-    code_verifier = OAuthService.generate_code_verifier()
-    code_challenge = OAuthService.generate_code_challenge(code_verifier)
-
-    return {
-        "code_verifier": code_verifier,
-        "code_challenge": code_challenge,
-    }
-
-
 @router.post("/callback", response_model=OAuthTokenResponse)
 async def oauth_callback(
     callback_data: OAuthCallbackRequest,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> OAuthTokenResponse:
     """
     Complete OAuth login flow.
 
     Called by frontend after receiving callback from OAuth provider.
-    Exchanges authorization code for tokens, gets user info, and returns JWT.
+    Validates state, retrieves PKCE verifier from Redis, exchanges code for tokens.
 
     OAuth users bypass MFA - the OAuth provider is trusted for authentication.
+    (This can be changed via oauth_require_mfa config option.)
+
+    Sets HttpOnly cookies for browser clients in addition to returning tokens in
+    the response body. This provides defense-in-depth: browser clients get XSS
+    protection from HttpOnly cookies, while API clients can use the response body.
 
     Args:
-        callback_data: OAuth callback data with code and PKCE verifier
+        callback_data: OAuth callback data with code and state
+        response: FastAPI response for setting cookies
 
     Returns:
-        JWT access and refresh tokens
+        JWT access and refresh tokens (also sets cookies)
 
     Raises:
         HTTPException: If OAuth flow fails or user cannot be provisioned
+
+    Security:
+        - State is validated against Redis (CSRF protection)
+        - PKCE verifier is retrieved from Redis (never sent by client)
+        - State is single-use (deleted after retrieval)
     """
     settings = get_settings()
     oauth_service = OAuthService(db)
+
+    # Validate state and retrieve PKCE verifier from Redis
+    r = await get_shared_redis()
+    state_key = oauth_state_key(callback_data.state)
+    code_verifier = await r.get(state_key)
+
+    if not code_verifier:
+        logger.warning(
+            "OAuth callback with invalid or expired state",
+            extra={"state": callback_data.state[:8] + "..." if callback_data.state else "none"}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OAuth state",
+        )
+
+    # Delete state immediately (single-use)
+    await r.delete(state_key)
+
+    # Decode verifier if bytes
+    if isinstance(code_verifier, bytes):
+        code_verifier = code_verifier.decode("utf-8")
 
     try:
         # Build redirect URI from frontend URL
@@ -224,12 +305,12 @@ async def oauth_callback(
         frontend_url = settings.frontend_url or "http://localhost:3000"
         redirect_uri = f"{frontend_url}/auth/callback/{callback_data.provider}"
 
-        # Exchange code for tokens
+        # Exchange code for tokens using server-side verifier
         tokens = await oauth_service.exchange_code_for_tokens(
             provider=callback_data.provider,
             code=callback_data.code,
             redirect_uri=redirect_uri,
-            code_verifier=callback_data.code_verifier,
+            code_verifier=code_verifier,
         )
 
         # Get user info from provider
@@ -319,7 +400,11 @@ async def oauth_callback(
 
     # Generate tokens
     access_token = create_access_token(data=token_data)
-    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    refresh_token, jti = create_refresh_token(data={"sub": str(user.id)})
+
+    # Store JTI in Redis for revocation support
+    r = await get_shared_redis()
+    await r.setex(refresh_token_jti_key(str(user.id), jti), TTL_REFRESH_TOKEN, "1")
 
     logger.info(
         f"OAuth login successful: {user.email}",
@@ -329,6 +414,10 @@ async def oauth_callback(
             "oauth_user_id": user_info.provider_user_id,
         }
     )
+
+    # Set HttpOnly cookies for browser clients (XSS protection)
+    # Also sets CSRF token cookie for subsequent requests
+    _set_oauth_auth_cookies(response, access_token, refresh_token)
 
     return OAuthTokenResponse(
         access_token=access_token,

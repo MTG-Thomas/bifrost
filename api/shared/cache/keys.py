@@ -209,6 +209,50 @@ def execution_logs_stream_key(execution_id: str) -> str:
 
 
 # =============================================================================
+# Authentication Keys (Refresh Token JTI, OAuth State, Rate Limiting)
+# =============================================================================
+
+
+def refresh_token_jti_key(user_id: str, jti: str) -> str:
+    """
+    Key for an active refresh token JTI.
+
+    Structure: STRING with value "1" (existence check only)
+    TTL: 7 days (matches refresh token expiry)
+    """
+    return f"bifrost:auth:refresh:{user_id}:{jti}"
+
+
+def user_refresh_tokens_pattern(user_id: str) -> str:
+    """
+    Pattern to find all refresh tokens for a user (for revoke-all).
+
+    Use with KEYS or SCAN command.
+    """
+    return f"bifrost:auth:refresh:{user_id}:*"
+
+
+def oauth_state_key(state: str) -> str:
+    """
+    Key for OAuth state with bound PKCE verifier.
+
+    Structure: STRING containing the code_verifier
+    TTL: 10 minutes
+    """
+    return f"bifrost:auth:oauth_state:{state}"
+
+
+def rate_limit_key(endpoint: str, identifier: str) -> str:
+    """
+    Key for rate limiting by endpoint and IP/user.
+
+    Structure: STRING with request count
+    TTL: 60 seconds (sliding window)
+    """
+    return f"bifrost:ratelimit:{endpoint}:{identifier}"
+
+
+# =============================================================================
 # TTL Constants
 # =============================================================================
 
@@ -220,3 +264,8 @@ TTL_FORMS = 600  # 10 minutes
 TTL_ROLES = 600  # 10 minutes
 TTL_ORGS = 3600  # 1 hour
 TTL_PENDING = 3600  # 1 hour (safety for orphaned changes)
+
+# Auth TTLs
+TTL_REFRESH_TOKEN = 604800  # 7 days (matches refresh token expiry)
+TTL_OAUTH_STATE = 600  # 10 minutes
+TTL_RATE_LIMIT = 60  # 1 minute window

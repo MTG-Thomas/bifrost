@@ -59,7 +59,6 @@ interface AuthContextValue {
 		provider: string,
 		code: string,
 		state: string,
-		codeVerifier: string,
 	) => Promise<void>;
 	logout: () => void;
 	refreshToken: () => Promise<boolean>;
@@ -335,13 +334,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
 	);
 
 	// Complete OAuth login
+	// Note: code_verifier is now handled server-side (stored in Redis keyed by state)
 	const loginWithOAuth = useCallback(
-		async (
-			provider: string,
-			code: string,
-			state: string,
-			codeVerifier: string,
-		): Promise<void> => {
+		async (provider: string, code: string, state: string): Promise<void> => {
 			const res = await fetch("/auth/oauth/callback", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -349,7 +344,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 					provider,
 					code,
 					state,
-					code_verifier: codeVerifier,
+					// code_verifier not needed - server retrieves it from Redis using state
 				}),
 			});
 

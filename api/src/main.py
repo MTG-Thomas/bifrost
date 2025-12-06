@@ -11,6 +11,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 
 from src.config import get_settings
+from src.core.csrf import CSRFMiddleware
 from src.core.database import close_db, init_db
 from src.core.pubsub import manager as pubsub_manager
 from src.routers import (
@@ -153,6 +154,11 @@ def create_app() -> FastAPI:
 
     # Note: CORS middleware not needed - frontend proxies all /api requests
     # through Vite dev server (dev) or nginx (prod), making them same-origin.
+
+    # Add CSRF protection middleware
+    # Only enforces for cookie-based auth with unsafe methods (POST, PUT, DELETE, PATCH)
+    # Bearer token auth is exempt since browsers don't automatically include it
+    app.add_middleware(CSRFMiddleware)
 
     # Register routers
     app.include_router(health_router)

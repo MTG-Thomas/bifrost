@@ -56,14 +56,8 @@ export async function initOAuth(
 	return res.json();
 }
 
-export async function getOAuthVerifier(): Promise<{
-	code_verifier: string;
-	code_challenge: string;
-}> {
-	const res = await fetch("/auth/oauth/init/microsoft/verifier");
-	if (!res.ok) throw new Error("Failed to get code verifier");
-	return res.json();
-}
+// Note: getOAuthVerifier() has been removed - PKCE is now handled server-side
+// The backend stores the code_verifier when init is called and uses it during callback
 
 // =============================================================================
 // MFA Operations

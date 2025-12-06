@@ -58,6 +58,31 @@ function formatValidationErrors(error: FastAPIValidationError): string {
 	return `Validation failed: ${messages.join("; ")}`;
 }
 
+/**
+ * Rate limit error with retry information
+ */
+export class RateLimitError extends Error {
+	public readonly retryAfter: number;
+	public readonly statusCode = 429;
+
+	constructor(retryAfter: number, message?: string) {
+		super(message || `Too many requests. Please wait ${retryAfter} seconds.`);
+		this.retryAfter = retryAfter;
+		this.name = "RateLimitError";
+	}
+
+	/**
+	 * Get user-friendly message with wait time
+	 */
+	getUserMessage(): string {
+		if (this.retryAfter <= 60) {
+			return `Too many requests. Please wait ${this.retryAfter} seconds.`;
+		}
+		const minutes = Math.ceil(this.retryAfter / 60);
+		return `Too many requests. Please wait ${minutes} minute${minutes > 1 ? "s" : ""}.`;
+	}
+}
+
 export class ApiError extends Error {
 	public readonly errorCode: string;
 	public readonly details?: Record<string, unknown>;
@@ -82,6 +107,13 @@ export class ApiError extends Error {
 			this.statusCode = statusCode;
 		}
 		this.name = "ApiError";
+	}
+
+	/**
+	 * Check if this is a rate limit error
+	 */
+	isRateLimitError(): boolean {
+		return this.statusCode === 429;
 	}
 
 	/**

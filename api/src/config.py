@@ -133,6 +133,26 @@ class Settings(BaseSettings):
         description="Refresh token expiration time in days"
     )
 
+    jwt_issuer: str = Field(
+        default="bifrost-api",
+        description="JWT issuer claim for token validation"
+    )
+
+    jwt_audience: str = Field(
+        default="bifrost-client",
+        description="JWT audience claim for token validation"
+    )
+
+    fernet_salt: str = Field(
+        default="bifrost_secrets_v1",
+        description="Salt for Fernet key derivation (override for different encryption keys)"
+    )
+
+    oauth_require_mfa: bool = Field(
+        default=False,
+        description="If True, require MFA even for OAuth users"
+    )
+
     # ==========================================================================
     # CORS
     # ==========================================================================

@@ -7,11 +7,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import {
-	getOAuthProviders,
-	initOAuth,
-	getOAuthVerifier,
-} from "@/services/auth";
+import { getOAuthProviders, initOAuth } from "@/services/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -139,18 +135,15 @@ export function Login() {
 		setIsLoading(true);
 
 		try {
-			// Get code verifier for PKCE
-			const { code_verifier } = await getOAuthVerifier();
-
-			// Store verifier and redirect info for callback
-			sessionStorage.setItem("oauth_code_verifier", code_verifier);
+			// Store redirect info for callback
+			// Note: PKCE (code_verifier) is now handled server-side
 			sessionStorage.setItem("oauth_redirect_from", from);
 			sessionStorage.setItem("oauth_provider", provider);
 
 			// Build callback URL
 			const callbackUrl = `${window.location.origin}/auth/callback/${provider}`;
 
-			// Get authorization URL
+			// Get authorization URL (server generates and stores PKCE verifier)
 			const { authorization_url, state } = await initOAuth(
 				provider,
 				callbackUrl,
