@@ -56,9 +56,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
     async def process_message(self, message_data: dict[str, Any]) -> None:
         """Process a workflow execution message."""
+        from shared.execution.queue_tracker import remove_from_queue
+
         execution_id = message_data.get("execution_id", "")
         is_sync = message_data.get("sync", False)
         start_time = datetime.utcnow()
+
+        # Remove from queue tracking (execution is now being processed)
+        # This publishes updated positions to remaining queued executions
+        await remove_from_queue(execution_id)
 
         # Read execution context from Redis
         pending = await self._redis_client.get_pending_execution(execution_id)

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { WaitReason } from "@/services/websocket";
 
 export interface StreamingLog {
 	level: string;
@@ -27,6 +28,19 @@ export interface ExecutionStreamState {
 	isConnected: boolean;
 	variables?: Record<string, unknown>;
 	error?: string;
+	// Queue visibility fields
+	queuePosition?: number;
+	waitReason?: WaitReason;
+	availableMemoryMb?: number;
+	requiredMemoryMb?: number;
+}
+
+// Queue update data passed to updateStatus
+export interface QueueUpdateData {
+	queuePosition?: number;
+	waitReason?: WaitReason;
+	availableMemoryMb?: number;
+	requiredMemoryMb?: number;
 }
 
 interface ExecutionStreamStore {
@@ -40,7 +54,11 @@ interface ExecutionStreamStore {
 	) => void;
 	appendLog: (executionId: string, log: StreamingLog) => void;
 	appendLogs: (executionId: string, logs: StreamingLog[]) => void;
-	updateStatus: (executionId: string, status: ExecutionStatus) => void;
+	updateStatus: (
+		executionId: string,
+		status: ExecutionStatus,
+		queueData?: QueueUpdateData,
+	) => void;
 	setConnectionStatus: (executionId: string, isConnected: boolean) => void;
 	completeExecution: (
 		executionId: string,
@@ -163,7 +181,7 @@ export const useExecutionStreamStore = create<ExecutionStreamStore>((set) => ({
 		});
 	},
 
-	updateStatus: (executionId, status) => {
+	updateStatus: (executionId, status, queueData) => {
 		set((state) => {
 			const stream = state.streams[executionId];
 			if (!stream) {
@@ -173,12 +191,30 @@ export const useExecutionStreamStore = create<ExecutionStreamStore>((set) => ({
 				return state;
 			}
 
+			// Clear queue fields when transitioning away from Pending
+			const clearQueueFields = status !== "Pending";
+
 			return {
 				streams: {
 					...state.streams,
 					[executionId]: {
 						...stream,
 						status,
+						// Update queue fields if provided, clear if not Pending
+						queuePosition: clearQueueFields
+							? undefined
+							: queueData?.queuePosition ?? stream.queuePosition,
+						waitReason: clearQueueFields
+							? undefined
+							: queueData?.waitReason ?? stream.waitReason,
+						availableMemoryMb: clearQueueFields
+							? undefined
+							: queueData?.availableMemoryMb ??
+								stream.availableMemoryMb,
+						requiredMemoryMb: clearQueueFields
+							? undefined
+							: queueData?.requiredMemoryMb ??
+								stream.requiredMemoryMb,
 					},
 				},
 			};

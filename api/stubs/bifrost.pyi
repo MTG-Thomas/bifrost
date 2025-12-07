@@ -58,9 +58,9 @@ class ExecutionContext:
 
     The context parameter is OPTIONAL in workflow signatures:
     - Include it when you need direct access to org_id, user_id, email, etc.
-    - Omit it when only using SDK functions (config, secrets, files, etc.)
+    - Omit it when only using SDK functions (config, oauth, files, etc.)
 
-    SDK functions (config.get(), secrets.get(), files.read()) can access
+    SDK functions (config.get(), oauth.get(), files.read()) can access
     the context implicitly via ContextVar, so they work without the parameter.
 
     Provides access to:
@@ -183,8 +183,8 @@ def workflow(
         @param("task_name", "string", required=True)
         async def simple_task(task_name: str):
             # SDK functions work without explicit context parameter
-            api_key = await secrets.get("api_key")
             endpoint = await config.get("api_endpoint")
+            creds = await oauth.get("microsoft")
             pass
     """
     ...
@@ -452,95 +452,6 @@ class config:
             bool: True if deleted, False if not found
 
         Raises:
-            RuntimeError: If no execution context
-        """
-        ...
-
-class secrets:
-    """
-    Secret management SDK.
-
-    Provides access to encrypted secrets stored in PostgreSQL.
-
-    Example:
-        from bifrost import secrets
-
-        # Get secret
-        api_key = await secrets.get("stripe_api_key")
-
-        # Set secret
-        await secrets.set("stripe_api_key", "sk_live_xxxxx")
-
-        # List secret keys (not values)
-        keys = await secrets.list()
-
-        # Delete secret
-        await secrets.delete("old_api_key")
-    """
-    @staticmethod
-    async def get(key: str) -> str | None:
-        """
-        Get decrypted secret value.
-
-        Args:
-            key: Secret key name
-
-        Returns:
-            str | None: Decrypted secret value, or None if not found
-
-        Raises:
-            RuntimeError: If no execution context available
-        """
-        ...
-
-    @staticmethod
-    async def set(key: str, value: str) -> None:
-        """
-        Set encrypted secret value.
-
-        Requires: Permission to manage secrets (typically admin)
-
-        Args:
-            key: Secret key name
-            value: Secret value (will be encrypted)
-
-        Raises:
-            PermissionError: If user lacks permission
-            RuntimeError: If no execution context
-        """
-        ...
-
-    @staticmethod
-    async def list(org_id: str | None = None) -> list[str]:
-        """
-        List all secret keys (NOT values - keys only for security).
-
-        Args:
-            org_id: Organization ID to filter by (optional)
-
-        Returns:
-            list[str]: List of secret keys
-
-        Raises:
-            RuntimeError: If no execution context
-        """
-        ...
-
-    @staticmethod
-    async def delete(key: str) -> bool:
-        """
-        Delete secret.
-
-        Requires: Permission to manage secrets (typically admin)
-
-        Args:
-            key: Secret key name
-
-        Returns:
-            bool: True if deleted, False if not found
-
-        Raises:
-            PermissionError: If user lacks permission
             RuntimeError: If no execution context
         """
         ...

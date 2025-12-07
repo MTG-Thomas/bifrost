@@ -12,6 +12,9 @@
 
 import type { components } from "@/lib/v1";
 
+// Wait reasons for pending executions
+export type WaitReason = "queued" | "memory_pressure";
+
 // Frontend-specific WebSocket event types (wrappers around backend messages)
 export interface ExecutionUpdate {
 	executionId: string;
@@ -21,6 +24,11 @@ export interface ExecutionUpdate {
 	result?: unknown;
 	error?: string;
 	duration_ms?: number;
+	// Queue visibility fields
+	queuePosition?: number;
+	waitReason?: WaitReason;
+	availableMemoryMb?: number;
+	requiredMemoryMb?: number;
 }
 
 // ExecutionLog from backend (auto-generated from OpenAPI)
@@ -332,6 +340,16 @@ class WebSocketService {
 		const error = message["error"] as string | undefined;
 		const durationMs = message["duration_ms"] as number | undefined;
 
+		// Queue visibility fields
+		const queuePosition = message["queuePosition"] as number | undefined;
+		const waitReason = message["waitReason"] as WaitReason | undefined;
+		const availableMemoryMb = message["availableMemoryMb"] as
+			| number
+			| undefined;
+		const requiredMemoryMb = message["requiredMemoryMb"] as
+			| number
+			| undefined;
+
 		const update: ExecutionUpdate = {
 			executionId: message.executionId,
 			status,
@@ -344,6 +362,10 @@ class WebSocketService {
 			result,
 			...(error !== undefined ? { error } : {}),
 			...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
+			...(queuePosition !== undefined ? { queuePosition } : {}),
+			...(waitReason !== undefined ? { waitReason } : {}),
+			...(availableMemoryMb !== undefined ? { availableMemoryMb } : {}),
+			...(requiredMemoryMb !== undefined ? { requiredMemoryMb } : {}),
 		};
 
 		// Dispatch to execution-specific callbacks

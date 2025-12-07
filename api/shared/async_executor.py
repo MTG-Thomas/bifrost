@@ -54,6 +54,7 @@ async def enqueue_workflow_execution(
     """
     from src.core.redis_client import get_redis_client
     from src.jobs.rabbitmq import publish_message
+    from shared.execution.queue_tracker import add_to_queue
 
     redis_client = get_redis_client()
 
@@ -75,6 +76,9 @@ async def enqueue_workflow_execution(
             user_email=context.email,
             form_id=form_id,
         )
+
+    # Add to queue tracking (publishes position updates to all queued executions)
+    await add_to_queue(execution_id)
 
     # Prepare queue message (minimal - worker reads full context from Redis)
     message = {

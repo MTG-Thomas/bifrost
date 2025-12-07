@@ -126,6 +126,59 @@ class ExecutionPool:
                     logger.info(f"Sending SIGTERM to execution {handle.execution_id}")
                     handle.process.terminate()
 
+    async def _wait_for_memory(self, execution_id: str) -> None:
+        """
+        Wait until sufficient memory is available to start subprocess.
+
+        Publishes status updates while waiting. Checks for cancellation
+        between memory checks.
+
+        Args:
+            execution_id: Execution ID for status updates and cancellation checks
+
+        Raises:
+            asyncio.CancelledError: If cancelled while waiting for memory
+        """
+        from src.config import get_settings
+        from src.core.pubsub import publish_execution_update
+        from .memory_monitor import get_available_memory_mb, has_sufficient_memory
+
+        settings = get_settings()
+        threshold_mb = settings.memory_throttle_threshold_mb
+
+        # Check if we need to wait
+        if has_sufficient_memory(threshold_mb):
+            return  # Proceed immediately
+
+        logger.info(
+            f"Execution {execution_id} waiting for memory "
+            f"(available: {get_available_memory_mb()}MB, required: {threshold_mb}MB)"
+        )
+
+        # Wait loop with status updates
+        while not has_sufficient_memory(threshold_mb):
+            # Check for cancellation
+            if await self._check_cancel_flag(execution_id):
+                logger.info(f"Execution {execution_id} cancelled while waiting for memory")
+                raise asyncio.CancelledError("Cancelled while waiting for memory")
+
+            # Publish memory pressure status
+            available_mb = get_available_memory_mb()
+            await publish_execution_update(
+                execution_id,
+                "Pending",
+                {
+                    "waitReason": "memory_pressure",
+                    "availableMemoryMb": available_mb,
+                    "requiredMemoryMb": threshold_mb,
+                }
+            )
+
+            # Wait before next check (use cancel_check_interval for consistency)
+            await asyncio.sleep(self.cancel_check_interval)
+
+        logger.info(f"Execution {execution_id} proceeding - memory now available")
+
     async def execute(
         self,
         execution_id: str,
@@ -153,6 +206,9 @@ class ExecutionPool:
 
         # Write context to Redis for worker
         await self._write_context(execution_id, context_data)
+
+        # Wait for sufficient memory before spawning subprocess
+        await self._wait_for_memory(execution_id)
 
         start_time = datetime.utcnow()
 
@@ -313,7 +369,7 @@ def get_execution_pool() -> ExecutionPool:
         from src.config import get_settings
         settings = get_settings()
         _pool = ExecutionPool(
-            pool_size=settings.worker_pool_size,
+            pool_size=settings.max_concurrency,
             graceful_shutdown_seconds=settings.graceful_shutdown_seconds,
             cancel_check_interval_ms=settings.cancel_check_interval_ms,
         )

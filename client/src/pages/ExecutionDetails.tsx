@@ -231,13 +231,35 @@ export function ExecutionDetails() {
 						Running
 					</Badge>
 				);
-			case "Pending":
+			case "Pending": {
+				// Show queue position or memory pressure info from stream state
+				const queuePosition = streamState?.queuePosition;
+				const waitReason = streamState?.waitReason;
+				const availableMemory = streamState?.availableMemoryMb;
+				const requiredMemory = streamState?.requiredMemoryMb;
+
+				if (waitReason === "queued" && queuePosition) {
+					return (
+						<Badge variant="outline">
+							<Clock className="mr-1 h-3 w-3" />
+							Queued - Position {queuePosition}
+						</Badge>
+					);
+				} else if (waitReason === "memory_pressure") {
+					return (
+						<Badge variant="outline" className="border-orange-500">
+							<Loader2 className="mr-1 h-3 w-3 animate-spin" />
+							Heavy Load ({availableMemory ?? "?"}MB / {requiredMemory ?? "?"}MB)
+						</Badge>
+					);
+				}
 				return (
 					<Badge variant="outline">
 						<Clock className="mr-1 h-3 w-3" />
 						Pending
 					</Badge>
 				);
+			}
 			case "Cancelling":
 				return (
 					<Badge

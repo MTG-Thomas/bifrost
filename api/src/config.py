@@ -74,19 +74,11 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # Jobs Worker
+    # Workflow Execution
     # ==========================================================================
     max_concurrency: int = Field(
         default=10,
-        description="Max concurrent workflow executions per jobs worker"
-    )
-
-    # ==========================================================================
-    # Process Isolation (Execution Workers)
-    # ==========================================================================
-    worker_pool_size: int = Field(
-        default=4,
-        description="Number of worker processes in the execution pool"
+        description="Max concurrent workflow executions (controls both RabbitMQ prefetch and subprocess pool)"
     )
     execution_timeout_seconds: int = Field(
         default=300,
@@ -99,6 +91,10 @@ class Settings(BaseSettings):
     cancel_check_interval_ms: int = Field(
         default=250,
         description="How often to check for cancellation (milliseconds)"
+    )
+    memory_throttle_threshold_mb: int = Field(
+        default=300,
+        description="Minimum available memory (MB) required to start new subprocess"
     )
 
     # ==========================================================================

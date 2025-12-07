@@ -27,7 +27,7 @@ def __getattr__(name):
     """Dynamically load SDK classes when accessed."""
     sdk_modules = [
         'config', 'executions', 'files', 'forms', 'oauth',
-        'organizations', 'roles', 'secrets', 'workflows'
+        'organizations', 'roles', 'workflows'
     ]
     # Internal/private modules are loaded as-is (not classes)
     internal_modules = ['_context', '_internal']
@@ -69,6 +69,5 @@ __all__ = [
     "oauth",  # noqa: F822
     "organizations",  # noqa: F822
     "roles",  # noqa: F822
-    "secrets",  # noqa: F822
     "workflows",  # noqa: F822
 ]
