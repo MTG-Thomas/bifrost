@@ -2,10 +2,7 @@
 Package Management for User Workspaces
 
 Provides package installation and management for user workspace Python environments.
-Packages are installed to workspace-specific .packages directories.
-
-Uses /tmp for pip installation then manual_copy_tree() to Azure Files for
-compatibility with Azure Files SMB limitations.
+Packages are installed to the system Python site-packages.
 """
 
 import asyncio
@@ -16,8 +13,6 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 import aiohttp
-
-from shared.utils.file_operations import manual_copy_tree, get_system_tmp
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +33,10 @@ class PackageInfo:
 
 class WorkspacePackageManager:
     """
-    Manages per-workspace package installations.
+    Manages package installations for the workspace.
 
-    Each workspace has its own .packages directory where user packages are installed.
-    Packages can be installed from requirements.txt or individually.
+    Packages are installed to the system Python site-packages and are
+    immediately available to all code running in the container.
     """
 
     def __init__(self, workspace_path: Path):
@@ -52,7 +47,6 @@ class WorkspacePackageManager:
             workspace_path: Path to the workspace directory
         """
         self.workspace_path = workspace_path
-        self.packages_dir = workspace_path / ".packages"
         self.requirements_file = workspace_path / "requirements.txt"
 
     async def get_package_info(self, package_name: str) -> PackageInfo:
@@ -85,17 +79,13 @@ class WorkspacePackageManager:
 
     async def list_installed_packages(self) -> list[dict]:
         """
-        List all installed packages in workspace .packages directory.
+        List all installed packages.
 
         Returns:
             List of dicts with 'name' and 'version' keys
         """
-        if not self.packages_dir.exists():
-            return []
-
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "pip", "list",
-            "--path", str(self.packages_dir),
             "--format", "json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
@@ -187,61 +177,35 @@ class WorkspacePackageManager:
         else:
             await log(f"Installing {package_spec}...")
 
-        # Create packages directory
-        self.packages_dir.mkdir(parents=True, exist_ok=True)
+        # Install package directly to system site-packages
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "pip", "install",
+            package_spec,
+            "--upgrade",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
 
-        # Install to /tmp first, then copy to Azure Files
-        tmp_packages_dir = get_system_tmp() / f"bifrost_packages_{id(self)}"
-        tmp_packages_dir.mkdir(parents=True, exist_ok=True)
-
+        # Stream output
         try:
-            await log("Installing to /tmp...")
+            async with asyncio.timeout(timeout):
+                if process.stdout:
+                    async for line in process.stdout:
+                        decoded = line.decode().strip()
+                        if decoded:
+                            await log(decoded)
 
-            # Install package to /tmp
-            process = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install",
-                package_spec,
-                "--target", str(tmp_packages_dir),
-                "--upgrade",
-                "--no-warn-script-location",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT
-            )
+                await process.wait()
+        except asyncio.TimeoutError:
+            process.kill()
+            await log(f"✗ Installation timed out after {timeout} seconds")
+            raise Exception(f"Package installation timed out after {timeout} seconds")
 
-            # Stream output
-            try:
-                async with asyncio.timeout(timeout):
-                    if process.stdout:
-                        async for line in process.stdout:
-                            decoded = line.decode().strip()
-                            if decoded:
-                                await log(decoded)
+        if process.returncode != 0:
+            await log("✗ Installation failed")
+            raise Exception("Package installation failed")
 
-                    await process.wait()
-            except asyncio.TimeoutError:
-                process.kill()
-                await log(f"✗ Installation timed out after {timeout} seconds")
-                raise Exception(f"Package installation timed out after {timeout} seconds")
-
-            if process.returncode != 0:
-                await log("✗ Installation failed")
-                raise Exception("Package installation failed")
-
-            # Copy from /tmp to Azure Files
-            await log("Copying packages to workspace...")
-            manual_copy_tree(
-                tmp_packages_dir,
-                self.packages_dir,
-                exclude_patterns=['.DS_Store', '._*']
-            )
-
-            await log(f"✓ {package_spec} installed successfully")
-
-        finally:
-            # Clean up /tmp
-            import shutil
-            if tmp_packages_dir.exists():
-                shutil.rmtree(tmp_packages_dir, ignore_errors=True)
+        await log(f"✓ {package_spec} installed successfully")
 
         # Append to requirements.txt if requested and package is new or version changed
         if append_to_requirements and (not existing or version):
@@ -280,60 +244,35 @@ class WorkspacePackageManager:
             await log(f"✗ {requirements_file.name} not found")
             raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
 
-        # Create packages directory
-        self.packages_dir.mkdir(parents=True, exist_ok=True)
+        # Install packages directly to system site-packages
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "pip", "install",
+            "-r", str(requirements_file),
+            "--upgrade",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
 
-        # Install to /tmp first, then copy to Azure Files
-        tmp_packages_dir = get_system_tmp() / f"bifrost_packages_{id(self)}"
-        tmp_packages_dir.mkdir(parents=True, exist_ok=True)
-
+        # Stream output line by line
         try:
-            await log("Installing to /tmp...")
+            async with asyncio.timeout(timeout):
+                if process.stdout:
+                    async for line in process.stdout:
+                        decoded = line.decode().strip()
+                        if decoded:
+                            await log(decoded)
 
-            # Run pip with streaming output (to /tmp)
-            process = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install",
-                "-r", str(requirements_file),
-                "--target", str(tmp_packages_dir),
-                "--upgrade",
-                "--no-warn-script-location",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT
-            )
+                await process.wait()
+        except asyncio.TimeoutError:
+            process.kill()
+            await log(f"✗ Installation timed out after {timeout} seconds")
+            raise Exception(f"Package installation timed out after {timeout} seconds")
 
-            # Stream output line by line
-            try:
-                async with asyncio.timeout(timeout):
-                    if process.stdout:
-                        async for line in process.stdout:
-                            decoded = line.decode().strip()
-                            if decoded:
-                                await log(decoded)
+        if process.returncode != 0:
+            await log("✗ Installation failed")
+            raise Exception("Package installation failed")
 
-                    await process.wait()
-            except asyncio.TimeoutError:
-                process.kill()
-                await log(f"✗ Installation timed out after {timeout} seconds")
-                raise Exception(f"Package installation timed out after {timeout} seconds")
-
-            if process.returncode != 0:
-                await log("✗ Installation failed")
-                raise Exception("Package installation failed")
-
-            # Copy from /tmp to Azure Files
-            await log("Copying packages to workspace...")
-            manual_copy_tree(
-                tmp_packages_dir,
-                self.packages_dir,
-                exclude_patterns=['.DS_Store', '._*']
-            )
-            await log(f"✓ Packages installed successfully to {self.packages_dir}")
-
-        finally:
-            # Clean up /tmp
-            import shutil
-            if tmp_packages_dir.exists():
-                shutil.rmtree(tmp_packages_dir, ignore_errors=True)
+        await log("✓ Packages installed successfully")
 
     async def _append_to_requirements(self, package_name: str, version: Optional[str] = None):
         """
@@ -383,15 +322,3 @@ class WorkspacePackageManager:
 
         # Write back
         self.requirements_file.write_text("\n".join(updated_lines) + "\n")
-
-    def activate_packages(self):
-        """
-        Add workspace packages to sys.path for execution.
-
-        Call this before executing user code to make installed packages available.
-        """
-        if self.packages_dir.exists():
-            path_str = str(self.packages_dir)
-            if path_str not in sys.path:
-                sys.path.insert(0, path_str)
-                logger.info(f"Added {path_str} to sys.path")

@@ -1,7 +1,10 @@
 """
 Package Installation Consumer
 
-Processes package installation requests from RabbitMQ queue.
+Processes package installation requests from RabbitMQ fanout exchange.
+Uses broadcast delivery so all worker instances install the package.
+
+NOTE: This is a legacy module. The primary consumer is in src/jobs/consumers/package_install.py
 """
 
 import logging
@@ -10,17 +13,20 @@ from pathlib import Path
 from typing import Any
 
 from src.core.pubsub import manager as pubsub_manager
-from shared.rabbitmq import BaseConsumer
+from shared.rabbitmq import BroadcastConsumer
 
 logger = logging.getLogger(__name__)
 
-# Queue name
-QUEUE_NAME = "package-installations"
+# Exchange name for broadcast
+EXCHANGE_NAME = "package-installations"
 
 
-class PackageInstallConsumer(BaseConsumer):
+class PackageInstallConsumer(BroadcastConsumer):
     """
-    Consumer for package installation queue.
+    Broadcast consumer for package installation.
+
+    Uses fanout exchange so ALL worker instances receive the message
+    and install the package.
 
     Message format:
     {
@@ -35,10 +41,7 @@ class PackageInstallConsumer(BaseConsumer):
     """
 
     def __init__(self):
-        super().__init__(
-            queue_name=QUEUE_NAME,
-            prefetch_count=1,
-        )
+        super().__init__(exchange_name=EXCHANGE_NAME)
 
     async def process_message(self, message_data: dict[str, Any]) -> None:
         """Process a package installation message."""
@@ -110,4 +113,4 @@ class PackageInstallConsumer(BaseConsumer):
                 extra={"job_id": job_id, "error": str(e), "error_type": type(e).__name__},
                 exc_info=True,
             )
-            raise  # Re-raise to trigger DLQ
+            raise

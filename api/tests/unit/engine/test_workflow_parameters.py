@@ -2,15 +2,15 @@
 Unit tests for workflow parameter parsing and passing.
 
 Tests that workflow parameters are correctly:
-1. Parsed from @param decorators
+1. Extracted from function signatures (no @param decorator)
 2. Passed to workflow functions during execution
-3. Handled with/without ExecutionContext
+3. Handled with/without ExecutionContext parameter
 """
 
 import pytest
 
-from shared.context import ExecutionContext, Organization, Caller
-from shared.decorators import workflow, param
+from shared.context import ExecutionContext, Organization
+from shared.decorators import workflow
 from shared.engine import _execute_workflow_with_trace
 
 
@@ -34,21 +34,19 @@ def mock_context():
 
 
 class TestWorkflowParameterParsing:
-    """Test parameter parsing from decorators"""
+    """Test parameter parsing from function signatures"""
 
     def test_parameters_attached_to_metadata(self):
-        """Test that @param decorators attach parameters to workflow metadata"""
+        """Test that function signature creates parameters in workflow metadata"""
         @workflow(name="test_workflow", description="Test")
-        @param("name", type="string", label="Name", required=True)
-        @param("age", type="int", label="Age", required=False, default_value=25)
-        async def test_func(context: ExecutionContext, name: str, age: int = 25):
+        async def test_func(name: str, age: int = 25):
             return {"name": name, "age": age}
 
         # Verify metadata attached
         assert hasattr(test_func, '_workflow_metadata')
         metadata = test_func._workflow_metadata
 
-        # Verify parameters
+        # Verify parameters were extracted from signature
         assert len(metadata.parameters) == 2
 
         name_param = metadata.parameters[0]
@@ -62,25 +60,29 @@ class TestWorkflowParameterParsing:
         assert age_param.required is False
         assert age_param.default_value == 25
 
-    def test_parameters_with_help_text(self):
-        """Test parameters with help text and validation"""
+    def test_parameters_with_various_types(self):
+        """Test parameters with different type annotations"""
         @workflow(name="test_workflow", description="Test")
-        @param(
-            "email",
-            type="email",
-            label="Email Address",
-            required=True,
-            help_text="User's email address",
-            validation={"pattern": r"^[a-zA-Z0-9._%+-]+@"}
-        )
-        async def test_func(context: ExecutionContext, email: str):
-            return {"email": email}
+        async def test_func(
+            text: str,
+            number: int,
+            fraction: float,
+            flag: bool = True,
+            items: list | None = None,
+            config: dict | None = None
+        ):
+            return {}
 
         metadata = test_func._workflow_metadata
-        param_meta = metadata.parameters[0]
 
-        assert param_meta.help_text == "User's email address"
-        assert param_meta.validation == {"pattern": r"^[a-zA-Z0-9._%+-]+@"}
+        # Verify parameter types were correctly inferred
+        types = {p.name: p.type for p in metadata.parameters}
+        assert types["text"] == "string"
+        assert types["number"] == "int"
+        assert types["fraction"] == "float"
+        assert types["flag"] == "bool"
+        assert types["items"] == "list"
+        assert types["config"] == "json"
 
 
 class TestWorkflowParameterExecution:
@@ -90,8 +92,6 @@ class TestWorkflowParameterExecution:
     async def test_workflow_receives_parameters_with_context(self, mock_context):
         """Test that workflow receives both context and parameters"""
         @workflow(name="simple_greeting", description="Simple greeting")
-        @param("name", type="string", required=True)
-        @param("greeting_type", type="string", required=False, default_value="Hello")
         async def simple_greeting(
             context: ExecutionContext,
             name: str,
@@ -117,9 +117,6 @@ class TestWorkflowParameterExecution:
     async def test_workflow_with_default_parameters(self, mock_context):
         """Test that default parameters work correctly"""
         @workflow(name="greeting_with_defaults", description="Greeting with defaults")
-        @param("name", type="string", required=True)
-        @param("greeting_type", type="string", required=False, default_value="Hello")
-        @param("include_time", type="bool", required=False, default_value=False)
         async def greeting_workflow(
             context: ExecutionContext,
             name: str,
@@ -153,7 +150,6 @@ class TestWorkflowParameterExecution:
     async def test_workflow_without_context_parameter(self, mock_context):
         """Test workflow that doesn't take context parameter"""
         @workflow(name="no_context_workflow", description="No context")
-        @param("value", type="int", required=True)
         async def no_context_workflow(value: int):
             return {"doubled": value * 2}
 
@@ -170,9 +166,6 @@ class TestWorkflowParameterExecution:
     async def test_workflow_with_multiple_types(self, mock_context):
         """Test workflow with various parameter types"""
         @workflow(name="multi_type_workflow", description="Multiple types")
-        @param("text", type="string", required=True)
-        @param("number", type="int", required=True)
-        @param("enabled", type="bool", required=False, default_value=True)
         async def multi_type_workflow(
             context: ExecutionContext,
             text: str,
@@ -201,7 +194,6 @@ class TestWorkflowParameterExecution:
     async def test_missing_required_parameter_raises_error(self, mock_context):
         """Test that missing required parameter raises TypeError"""
         @workflow(name="required_param_workflow", description="Required param")
-        @param("required_field", type="string", required=True)
         async def required_param_workflow(
             context: ExecutionContext,
             required_field: str
@@ -220,7 +212,6 @@ class TestWorkflowParameterExecution:
     async def test_extra_parameters_stored_in_context(self, mock_context):
         """Test that extra parameters (not in function signature) are stored in context.parameters"""
         @workflow(name="extra_params_workflow", description="Extra params")
-        @param("expected_param", type="string", required=True)
         async def extra_params_workflow(
             context: ExecutionContext,
             expected_param: str
@@ -254,8 +245,6 @@ class TestWorkflowParameterExecution:
     async def test_workflow_with_var_keyword_accepts_all_params(self, mock_context):
         """Test that workflow with **kwargs accepts all parameters"""
         @workflow(name="kwargs_workflow", description="Kwargs workflow")
-        @param("name", type="string", required=True)
-        @param("optional", type="string", required=False)
         async def kwargs_workflow(context: ExecutionContext, **kwargs):
             return {
                 "name": kwargs.get("name"),

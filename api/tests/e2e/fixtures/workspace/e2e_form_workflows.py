@@ -5,7 +5,7 @@ Copy of platform/examples/example_form_execution.py with renamed workflows for E
 These workflows are used by E2E tests to validate form context features.
 """
 
-from shared.decorators import workflow
+from bifrost import workflow
 
 
 @workflow(

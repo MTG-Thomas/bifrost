@@ -21,7 +21,7 @@ from shared.models import (
     PackageUpdatesResponse,
 )
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
-from src.jobs.rabbitmq import publish_message
+from src.jobs.rabbitmq import publish_broadcast
 
 logger = logging.getLogger(__name__)
 
@@ -210,12 +210,12 @@ async def install_package(
         if request.version:
             package_spec = f"{request.package}=={request.version}"
 
-        logger.info(f"Queueing package installation: {package_spec}", extra={"job_id": job_id})
+        logger.info(f"Broadcasting package installation: {package_spec}", extra={"job_id": job_id})
 
-        # Queue the installation job to RabbitMQ
+        # Broadcast installation to all workers via fanout exchange
         # The connection_id is the user_id so they can subscribe to package:{user_id}
-        await publish_message(
-            queue_name="package-installations",
+        await publish_broadcast(
+            exchange_name="package-installations",
             message={
                 "type": "package_install",
                 "job_id": job_id,
@@ -227,7 +227,7 @@ async def install_package(
             },
         )
 
-        logger.info(f"Package installation queued: {package_spec}", extra={"job_id": job_id})
+        logger.info(f"Package installation broadcast: {package_spec}", extra={"job_id": job_id})
 
         return PackageInstallResponse(
             job_id=job_id,

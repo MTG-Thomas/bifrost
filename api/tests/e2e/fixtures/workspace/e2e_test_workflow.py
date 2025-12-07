@@ -7,7 +7,7 @@ This workflow is used by E2E tests to verify workspace discovery and execution.
 
 import logging
 
-from bifrost import workflow, param, ExecutionContext
+from bifrost import workflow
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,7 @@ logger = logging.getLogger(__name__)
     category="e2e_testing",
     tags=["e2e", "test", "example"]
 )
-@param("name", "string", label="Name", required=True, help_text="Name to greet")
-@param("count", "int", label="Count", required=False, default_value=1, help_text="Number of times to greet")
-async def e2e_test_workflow(context: ExecutionContext, name: str, count: int = 1):
+async def e2e_test_workflow(name: str, count: int = 1):
     """E2E test workflow for validation"""
     logger.info(f"E2E test workflow executed with name={name}, count={count}")
 

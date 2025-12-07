@@ -32,7 +32,6 @@ class TestWorkspacePackageManager:
         pkg_manager = WorkspacePackageManager(workspace_path)
 
         assert pkg_manager.workspace_path == workspace_path
-        assert pkg_manager.packages_dir == workspace_path / ".packages"
         assert pkg_manager.requirements_file == workspace_path / "requirements.txt"
 
     @pytest.mark.asyncio
@@ -83,17 +82,8 @@ class TestWorkspacePackageManager:
                 await pkg_manager.get_package_info("nonexistent")
 
     @pytest.mark.asyncio
-    async def test_list_installed_packages_empty(self, pkg_manager):
-        """Test listing packages when none are installed"""
-        packages = await pkg_manager.list_installed_packages()
-        assert packages == []
-
-    @pytest.mark.asyncio
     async def test_list_installed_packages(self, pkg_manager):
         """Test listing installed packages"""
-        # Create .packages directory
-        pkg_manager.packages_dir.mkdir(parents=True, exist_ok=True)
-
         mock_process = AsyncMock()
         mock_process.returncode = 0
         mock_process.communicate = AsyncMock(return_value=(
@@ -153,29 +143,3 @@ class TestWorkspacePackageManager:
         assert "pandas==2.0.3" in lines
         # Old version should not be present
         assert "requests==2.30.0" not in lines
-
-    def test_activate_packages(self, pkg_manager):
-        """Test activating packages by adding to sys.path"""
-        import sys
-
-        # Create .packages directory
-        pkg_manager.packages_dir.mkdir(parents=True, exist_ok=True)
-
-        # Remove from sys.path if already there
-        path_str = str(pkg_manager.packages_dir)
-        if path_str in sys.path:
-            sys.path.remove(path_str)
-
-        pkg_manager.activate_packages()
-
-        # Should be added to sys.path
-        assert path_str in sys.path
-
-        # Calling again should not duplicate
-        initial_count = sys.path.count(path_str)
-        pkg_manager.activate_packages()
-        assert sys.path.count(path_str) == initial_count
-
-        # Clean up
-        if path_str in sys.path:
-            sys.path.remove(path_str)

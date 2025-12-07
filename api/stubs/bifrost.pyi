@@ -8,26 +8,30 @@ Usage:
     2. Import and use with simplified imports
     3. At runtime, the actual engine implementation is provided by the container
 
-Example (with explicit context parameter):
-    from bifrost import workflow, param, ExecutionContext
+Example (zero-argument decorator - name/description derived automatically):
+    from bifrost import workflow, context
 
-    @workflow(name="my_workflow", description="...")
-    @param("user_email", "string", required=True)
-    async def my_workflow(context: ExecutionContext, user_email: str):
-        # Direct access to context properties
-        org_id = context.org_id
-        user = context.email
-        return {"success": True}
+    @workflow
+    async def send_greeting(name: str, count: int = 1) -> dict:
+        '''Send a greeting message to the user.'''
+        user = context.user_id  # Access context via proxy
+        org = context.org_id
+        return {"greeting": f"Hello {name}!", "sent_by": user}
 
-Example (without context parameter - SDK only):
-    from bifrost import workflow, param, config
+Example (with options):
+    from bifrost import workflow, context
 
-    @workflow(name="simple_workflow", description="...")
-    @param("api_key", "string", required=True)
-    async def simple_workflow(api_key: str):
-        # Only using SDK functions - no direct context access needed
-        endpoint = await config.get("api_endpoint")
-        return {"endpoint": endpoint}
+    @workflow(category="Marketing", endpoint_enabled=True)
+    async def send_campaign(campaign_id: str, recipients: list) -> dict:
+        '''Send a marketing campaign.'''
+        return {"sent": len(recipients)}
+
+Parameters are automatically extracted from function signatures:
+- Type hints determine the UI type (str->string, int->int, etc.)
+- Parameters with defaults are optional; without defaults are required
+- Labels are auto-generated from parameter names (snake_case -> Title Case)
+
+Access context via the `context` proxy - no need to pass as parameter.
 """
 
 from collections.abc import Callable
@@ -56,20 +60,22 @@ class ExecutionContext:
     """
     Context object for workflow execution.
 
-    The context parameter is OPTIONAL in workflow signatures:
-    - Include it when you need direct access to org_id, user_id, email, etc.
-    - Omit it when only using SDK functions (config, oauth, files, etc.)
+    Access the context via the `context` proxy (no parameter needed):
 
-    SDK functions (config.get(), oauth.get(), files.read()) can access
-    the context implicitly via ContextVar, so they work without the parameter.
+        from bifrost import workflow, context
+
+        @workflow
+        async def my_workflow(name: str) -> dict:
+            user = context.user_id  # Direct attribute access
+            org = context.org_id
+            return {"greeting": f"Hello {name} from {user}"}
 
     Provides access to:
-    - Organization information (id, name)
+    - Organization information (org_id, org_name)
     - User information (user_id, email, name)
     - Execution metadata (execution_id, scope)
-    - Configuration (key-value pairs with secret resolution)
-    - OAuth connections (pre-authenticated credentials)
-    - State tracking (checkpoints, logs, variables)
+    - Configuration (via context.get_config())
+    - OAuth connections (via SDK oauth module)
     """
 
     # Core properties
@@ -130,91 +136,73 @@ class ExecutionContext:
         """Get final execution state for persistence."""
         ...
 
+# Context proxy for accessing ExecutionContext in workflows without parameter
+# Usage: from bifrost import context; user = context.user_id
+context: ExecutionContext
+
 # ==================== DECORATORS ====================
 
 def workflow(
-    name: str,
-    description: str,
+    _func: Callable | None = None,
+    *,
+    id: str | None = None,
+    name: str | None = None,
+    description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
-    execution_mode: str | None = None,  # Auto: "sync" if endpoint_enabled else "async"
-    timeout_seconds: int = 300,
-    max_duration_seconds: int = 300,
+    execution_mode: Literal["sync", "async"] | None = None,
+    timeout_seconds: int = 1800,
     retry_policy: dict[str, Any] | None = None,
     schedule: str | None = None,
-    expose_in_forms: bool = True,
-    requires_approval: bool = False,
-    required_permission: str = "canExecuteWorkflows"
+    endpoint_enabled: bool = False,
+    allowed_methods: list[str] | None = None,
+    disable_global_key: bool = False,
+    public_endpoint: bool = False
 ) -> Callable:
     """
     Decorator to register a workflow function.
 
-    Args:
-        name: Workflow name (URL-friendly, lowercase-with-dashes)
-        description: User-friendly description
-        category: Category for grouping (default: "General")
-        tags: Optional tags for filtering
-        execution_mode: "sync", "async", or None (auto-select based on endpoint_enabled)
-        timeout_seconds: Max execution time
-        expose_in_forms: Whether workflow can be triggered from forms
-        required_permission: Permission required to execute
+    Can be used with or without parentheses:
 
-    Example (with context parameter):
-        @workflow(
-            name="create_user",
-            description="Create a new user in Microsoft 365",
-            category="User Management"
-        )
-        @param("email", "string", required=True)
-        @param("first_name", "string", required=True)
-        @param("last_name", "string", required=True)
-        async def create_user(context: ExecutionContext, email: str, first_name: str, last_name: str):
-            # Direct access to context properties
-            org_id = context.org_id
-            user = context.email
-            pass
+        # Zero-argument form - all metadata auto-derived
+        @workflow
+        async def send_greeting(name: str, count: int = 1) -> dict:
+            '''Send a greeting message.'''
+            return {"greeting": f"Hello {name}!"}
 
-    Example (without context parameter):
-        @workflow(
-            name="simple_task",
-            description="Simple task using only SDK functions",
-            category="Utilities"
-        )
-        @param("task_name", "string", required=True)
-        async def simple_task(task_name: str):
-            # SDK functions work without explicit context parameter
-            endpoint = await config.get("api_endpoint")
-            creds = await oauth.get("microsoft")
-            pass
-    """
-    ...
+        # With options
+        @workflow(category="Marketing", endpoint_enabled=True)
+        async def send_greeting(name: str) -> dict:
+            '''Send a greeting message.'''
+            return {"greeting": f"Hello {name}!"}
 
-def param(
-    name: str,
-    type: str,
-    label: str | None = None,
-    required: bool = False,
-    validation: dict[str, Any] | None = None,
-    data_provider: str | None = None,
-    default_value: Any = None,
-    help_text: str | None = None
-) -> Callable:
-    """
-    Decorator to define a workflow parameter.
+    Parameters are automatically extracted from the function signature:
+    - Type hints determine the UI type (str->string, int->int, etc.)
+    - Parameters with defaults are optional; without defaults are required
+    - Labels are auto-generated from parameter names (snake_case -> Title Case)
+
+    Access the execution context via:
+        from bifrost import context
+        user = context.user_id
+        org = context.org_id
 
     Args:
-        name: Parameter name (must match function argument)
-        type: Parameter type ("string", "number", "boolean", "select", etc.)
-        label: Display label (defaults to name)
-        required: Whether parameter is required
-        validation: Validation rules (pattern, min, max)
-        data_provider: Name of data provider for dynamic options
-        default_value: Default value if not provided
-        help_text: Help text for UI
-
-    Example:
-        @param("department", "select", data_provider="departments", required=True)
-        @param("notify_manager", "boolean", default_value=True)
+        id: Persistent UUID for this workflow (auto-generated and written by discovery)
+        name: Workflow identifier (default: function name)
+        description: Human-readable description (default: first line of docstring)
+        category: Category for organization (default: "General")
+        tags: Optional list of tags for filtering
+        execution_mode: "sync" | "async" | None
+            - None: Auto-select (sync if endpoint_enabled, else async)
+            - "sync": Execute synchronously, return result immediately
+            - "async": Enqueue for async execution, return 202 + execution_id
+        timeout_seconds: Max execution time in seconds (default: 1800, max: 7200)
+        retry_policy: Dict with retry config (e.g., {"max_attempts": 3, "backoff": 2})
+        schedule: Cron expression for scheduled workflows (e.g., "0 9 * * *")
+        endpoint_enabled: Expose as HTTP endpoint at /api/endpoints/{name} (default: False)
+        allowed_methods: HTTP methods allowed for endpoint (default: ["POST"])
+        disable_global_key: If True, only workflow-specific API keys work (default: False)
+        public_endpoint: If True, skip authentication for webhooks (default: False)
     """
     ...
 
@@ -227,6 +215,9 @@ def data_provider(
     """
     Decorator to register a data provider for dynamic form options.
 
+    Parameters are automatically extracted from the function signature.
+    Access context via the `context` proxy (no parameter needed).
+
     Args:
         name: Data provider name
         description: Description of what data it provides
@@ -234,11 +225,15 @@ def data_provider(
         cache_ttl_seconds: How long to cache results
 
     Example:
+        from bifrost import data_provider, context
+
         @data_provider(
             name="departments",
             description="List of departments from HaloPSA"
         )
-        async def get_departments(context: OrganizationContext) -> List[Dict[str, str]]:
+        async def get_departments(filter_text: str | None = None) -> list[dict[str, str]]:
+            # Access context via proxy
+            org_id = context.org_id
             return [
                 {"value": "it", "label": "IT"},
                 {"value": "hr", "label": "HR"}

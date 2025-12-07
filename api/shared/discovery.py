@@ -25,23 +25,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class WorkflowParameter:
-    """Workflow parameter metadata"""
+    """Workflow parameter metadata - derived from function signature."""
     name: str
     type: str  # string, int, bool, float, json, list
     label: str | None = None
     required: bool = False
-    validation: dict[str, Any] | None = None
-    data_provider: str | None = None
     default_value: Any | None = None
-    help_text: str | None = None
 
 
 @dataclass
 class WorkflowMetadata:
     """Workflow metadata from @workflow decorator"""
     # Identity
-    name: str
-    description: str
+    id: str | None = None  # Persistent UUID (written by discovery watcher to Python file)
+    name: str = ""
+    description: str = ""
     category: str = "General"
     tags: list[str] = field(default_factory=list)
 
@@ -510,23 +508,21 @@ def scan_all_forms() -> list[FormMetadata]:
                 # Generate ID from file path if not provided
                 form_id = data.get('id') or f"workspace-{form_file.stem}"
 
-                # org_id defaults (support both formats)
-                is_global = data.get('is_global', data.get('isGlobal', False))
-                org_id = data.get('org_id') or data.get('orgId', 'GLOBAL' if is_global else '')
+                is_global = data.get('is_global', False)
+                org_id = data.get('org_id', 'GLOBAL' if is_global else '')
 
                 forms.append(FormMetadata(
                     id=form_id,
                     name=data['name'],
-                    # Support both snake_case (new) and camelCase (legacy) field names
-                    linked_workflow=data.get('linked_workflow') or data.get('linkedWorkflow', ''),
+                    linked_workflow=data.get('linked_workflow', ''),
                     org_id=org_id,
-                    is_active=data.get('is_active', data.get('isActive', True)),
+                    is_active=data.get('is_active', True),
                     is_global=is_global,
                     access_level=access_level,
                     file_path=str(form_file),
                     created_at=created_at,
                     updated_at=updated_at,
-                    launch_workflow_id=data.get('launch_workflow_id') or data.get('launchWorkflowId')
+                    launch_workflow_id=data.get('launch_workflow_id')
                 ))
 
             except Exception as e:
@@ -633,6 +629,7 @@ def _convert_workflow_metadata(old_metadata: Any) -> WorkflowMetadata:
             is_platform = True
 
     return WorkflowMetadata(
+        id=getattr(old_metadata, 'id', None),
         name=old_metadata.name,
         description=old_metadata.description,
         category=getattr(old_metadata, 'category', 'General'),
@@ -678,10 +675,7 @@ def _convert_parameters(params: list) -> list[WorkflowParameter]:
                 type=p.type,
                 label=getattr(p, 'label', None),
                 required=getattr(p, 'required', False),
-                validation=getattr(p, 'validation', None),
-                data_provider=getattr(p, 'data_provider', None),
                 default_value=getattr(p, 'default_value', None),
-                help_text=getattr(p, 'help_text', None)
             ))
     return result
 

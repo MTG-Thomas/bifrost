@@ -77,31 +77,23 @@ class TestWorkflowParameter:
         assert param.type == "string"
         assert param.label is None
         assert param.required is False
-        assert param.validation is None
-        assert param.data_provider is None
         assert param.default_value is None
-        assert param.help_text is None
 
     def test_create_parameter_full(self):
         """Test creating parameter with all fields"""
         param = WorkflowParameter(
             name="email",
-            type="email",
+            type="string",
             label="Email Address",
             required=True,
-            validation={"pattern": r"^[a-zA-Z0-9._%+-]+@"},
-            data_provider=None,
-            default_value="test@example.com",
-            help_text="Enter your email address"
+            default_value="test@example.com"
         )
 
         assert param.name == "email"
-        assert param.type == "email"
+        assert param.type == "string"
         assert param.label == "Email Address"
         assert param.required is True
-        assert "pattern" in param.validation
         assert param.default_value == "test@example.com"
-        assert param.help_text == "Enter your email address"
 
 
 class TestDataProviderMetadata:
@@ -211,14 +203,14 @@ class TestFormDiscovery:
         form_data = {
             "id": "test-form-123",
             "name": "Test Form",
-            "linkedWorkflow": "test_workflow",
-            "orgId": "GLOBAL",
-            "isActive": True,
-            "isGlobal": True,
-            "accessLevel": "public",
-            "formSchema": {"title": "Test"},
-            "createdAt": "2024-01-01T00:00:00Z",
-            "updatedAt": "2024-01-01T00:00:00Z"
+            "linked_workflow": "test_workflow",
+            "org_id": "GLOBAL",
+            "is_active": True,
+            "is_global": True,
+            "access_level": "public",
+            "form_schema": {"title": "Test"},
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z"
         }
 
         form_file = tmp_path / "test.form.json"
@@ -242,8 +234,8 @@ class TestFormDiscovery:
         form_data = {
             "id": "load-test-form",
             "name": "Load Test Form",
-            "linkedWorkflow": "test_workflow",
-            "formSchema": {"title": "Test"}
+            "linked_workflow": "test_workflow",
+            "form_schema": {"title": "Test"}
         }
 
         form_file = tmp_path / "load-test.form.json"

@@ -9,7 +9,7 @@ Tests that workflows can:
 
 import pytest
 
-from bifrost import ExecutionContext, param, workflow
+from bifrost import ExecutionContext, workflow
 from bifrost._context import clear_execution_context, set_execution_context
 from shared.context import Caller, Organization
 
@@ -51,7 +51,6 @@ class TestOptionalContext:
             description="Test workflow with explicit context",
             category="testing",
         )
-        @param("name", type="string", label="Name", required=True)
         async def workflow_with_context(context: ExecutionContext, name: str) -> dict:
             """Workflow that accesses context directly."""
             return {
@@ -84,7 +83,6 @@ class TestOptionalContext:
             description="Test workflow without context parameter",
             category="testing",
         )
-        @param("name", type="string", label="Name", required=True)
         async def workflow_without_context(name: str) -> dict:
             """Workflow that only uses SDK functions (context via ContextVar)."""
             # SDK functions can access context implicitly
@@ -113,7 +111,6 @@ class TestOptionalContext:
             description="Test workflow with both context and SDK usage",
             category="testing",
         )
-        @param("name", type="string", label="Name", required=True)
         async def hybrid_workflow(context: ExecutionContext, name: str) -> dict:
             """Workflow that uses both direct context access and SDK functions."""
             # Direct context access
@@ -145,8 +142,6 @@ class TestOptionalContext:
             description="Test backward compatibility",
             category="testing",
         )
-        @param("value", type="string", label="Value", required=True)
-        @param("multiplier", type="int", label="Multiplier", required=False, default_value=2)
         async def legacy_workflow(
             context: ExecutionContext, value: str, multiplier: int = 2
         ) -> dict:
@@ -183,7 +178,6 @@ class TestContextParameterNaming:
             description="Test workflow with _context parameter",
             category="testing",
         )
-        @param("name", type="string", label="Name", required=True)
         async def workflow_underscore(_context: ExecutionContext, name: str) -> dict:
             """Workflow using _context to avoid unused warnings."""
             return {
@@ -214,7 +208,6 @@ class TestContextParameterNaming:
             description="Test workflow with ctx parameter",
             category="testing",
         )
-        @param("value", type="string", label="Value", required=True)
         async def workflow_ctx(ctx: ExecutionContext, value: str) -> dict:
             """Workflow using ctx as context name."""
             return {
@@ -243,7 +236,6 @@ class TestContextParameterNaming:
             description="Test workflow with execution_context parameter",
             category="testing",
         )
-        @param("data", type="string", label="Data", required=True)
         async def workflow_long_name(execution_context: ExecutionContext, data: str) -> dict:
             """Workflow using execution_context as name."""
             return {

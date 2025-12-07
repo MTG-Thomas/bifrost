@@ -357,7 +357,7 @@ async def validate_workflow_file(path: str, content: str | None = None):
     from shared.models import WorkflowValidationResponse, ValidationIssue
     from shared.handlers.discovery_handlers import convert_workflow_metadata_to_model
     from shared.discovery import import_module_fresh, WorkflowMetadata
-    from shared.decorators import VALID_PARAM_TYPES
+    from shared.type_inference import VALID_PARAM_TYPES
 
     issues = []
     valid = True

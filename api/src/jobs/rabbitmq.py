@@ -226,6 +226,168 @@ class BaseConsumer(ABC):
         pass
 
 
+class BroadcastConsumer(ABC):
+    """
+    Base class for broadcast (fanout) consumers.
+
+    Unlike BaseConsumer where one worker gets each message,
+    BroadcastConsumer delivers each message to ALL workers.
+    Each worker creates an exclusive, auto-delete queue bound to a fanout exchange.
+
+    Use this for operations that need to run on every worker instance,
+    such as package installation or cache invalidation.
+    """
+
+    def __init__(self, exchange_name: str):
+        """
+        Initialize broadcast consumer.
+
+        Args:
+            exchange_name: Name of the fanout exchange to consume from
+        """
+        self.exchange_name = exchange_name
+        self._channel: RobustChannel | None = None
+        self._queue: aio_pika.Queue | None = None
+        self._running = False
+        self._connection_ctx = None
+
+    @property
+    def queue_name(self) -> str:
+        """Return the exchange name for logging compatibility."""
+        return f"{self.exchange_name} (broadcast)"
+
+    async def start(self) -> None:
+        """Start consuming messages from the fanout exchange."""
+        self._running = True
+
+        # Initialize pools and get a dedicated connection for this consumer
+        await rabbitmq.init_pools()
+        self._connection_ctx = rabbitmq.get_connection()
+        connection = await self._connection_ctx.__aenter__()
+        self._channel = await connection.channel()
+        await self._channel.set_qos(prefetch_count=1)
+
+        # Declare fanout exchange
+        exchange = await self._channel.declare_exchange(
+            self.exchange_name,
+            aio_pika.ExchangeType.FANOUT,
+            durable=True,
+        )
+
+        # Create exclusive, auto-delete queue (unique per worker)
+        # Empty name = RabbitMQ generates unique name
+        # exclusive = only this consumer can use it
+        # auto_delete = delete when consumer disconnects
+        self._queue = await self._channel.declare_queue(
+            "",
+            exclusive=True,
+            auto_delete=True,
+        )
+
+        # Bind queue to fanout exchange
+        await self._queue.bind(exchange)
+
+        logger.info(f"Broadcast consumer started for exchange: {self.exchange_name}")
+
+        # Start consuming
+        await self._queue.consume(self._on_message)
+
+    async def stop(self) -> None:
+        """Stop consuming messages."""
+        self._running = False
+        if self._channel:
+            await self._channel.close()
+        if self._connection_ctx:
+            await self._connection_ctx.__aexit__(None, None, None)
+        logger.info(f"Broadcast consumer stopped for exchange: {self.exchange_name}")
+
+    async def _on_message(self, message: IncomingMessage) -> None:
+        """Handle incoming message."""
+        asyncio.create_task(self._process_message_with_ack(message))
+
+    async def _process_message_with_ack(self, message: IncomingMessage) -> None:
+        """Process a message with proper acknowledgment handling."""
+        async with message.process(requeue=False):
+            try:
+                body = json.loads(message.body.decode())
+
+                logger.info(
+                    f"Processing broadcast message from {self.exchange_name}",
+                    extra={"message_id": message.message_id},
+                )
+
+                await self.process_message(body)
+
+                logger.info(
+                    "Broadcast message processed successfully",
+                    extra={"message_id": message.message_id},
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Error processing broadcast message from {self.exchange_name}: {e}",
+                    extra={
+                        "message_id": message.message_id,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True,
+                )
+                # For broadcast, we don't have DLQ since each worker has its own queue
+                # Just log the error and continue
+                raise
+
+    @abstractmethod
+    async def process_message(self, body: dict[str, Any]) -> None:
+        """
+        Process a broadcast message.
+
+        Must be implemented by subclasses.
+
+        Args:
+            body: Parsed message body
+        """
+        pass
+
+
+async def publish_broadcast(
+    exchange_name: str,
+    message: dict[str, Any],
+) -> None:
+    """
+    Publish a message to a fanout exchange (broadcast to all consumers).
+
+    Args:
+        exchange_name: Target fanout exchange name
+        message: Message body (will be JSON encoded)
+    """
+    await rabbitmq.init_pools()
+    async with rabbitmq.get_connection() as connection:
+        channel = await connection.channel()
+
+        try:
+            # Declare fanout exchange
+            exchange = await channel.declare_exchange(
+                exchange_name,
+                aio_pika.ExchangeType.FANOUT,
+                durable=True,
+            )
+
+            # Publish to exchange (fanout ignores routing key)
+            await exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                ),
+                routing_key="",
+            )
+
+            logger.debug(f"Published broadcast message to {exchange_name}")
+
+        finally:
+            await channel.close()
+
+
 async def publish_message(
     queue_name: str,
     message: dict[str, Any],

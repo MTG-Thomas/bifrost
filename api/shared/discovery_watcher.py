@@ -83,8 +83,9 @@ def _get_workspace_relative_path(absolute_path: str) -> str:
 @dataclass
 class WorkflowMetadata:
     """Extracted workflow metadata from file."""
-    name: str
-    file_path: str
+    id: str | None = None  # Persistent UUID (written back to Python file)
+    name: str = ""
+    file_path: str = ""
     description: str | None = None
     category: str = "General"
     schedule: str | None = None
@@ -156,6 +157,25 @@ WORKFLOW_PATTERN = re.compile(
 )
 PROVIDER_PATTERN = re.compile(
     r'@data_provider\s*\([^)]*name\s*=\s*["\']([^"\']+)["\']', re.MULTILINE
+)
+
+# Pattern to extract workflow ID from decorator
+WORKFLOW_ID_PATTERN = re.compile(
+    r'@workflow\s*\([^)]*id\s*=\s*["\']([^"\']+)["\']', re.MULTILINE
+)
+
+# Pattern to match zero-argument @workflow decorator followed by function def
+# Captures: @workflow or @workflow() on one line, then async def func_name on a following line
+WORKFLOW_ZERO_ARG_PATTERN = re.compile(
+    r'^(@workflow\s*(?:\(\s*\))?)\s*$\s*^(async\s+)?def\s+(\w+)\s*\(',
+    re.MULTILINE
+)
+
+# Pattern to match @workflow with arguments but no id=
+# This is a simplified pattern - we'll use more precise logic in the indexer
+WORKFLOW_WITH_ARGS_NO_ID = re.compile(
+    r'@workflow\s*\(\s*(?!.*\bid\s*=)',
+    re.MULTILINE | re.DOTALL
 )
 
 # Extended patterns for additional metadata
@@ -265,6 +285,11 @@ class WorkspaceEventHandler(FileSystemEventHandler):
     def _index_python_file(self, path: Path, event_type: str) -> None:
         """Parse Python file and update workflow/provider indexes with full metadata.
 
+        For workflows:
+        - Extracts workflow name (from name= argument or function name)
+        - Checks for existing id= in decorator
+        - Generates and writes back UUID if no id= present
+
         Note: We use regex for quick indexing but rely on periodic full sync for parameters.
         When a file changes, we just mark that a sync is needed.
         """
@@ -285,17 +310,58 @@ class WorkspaceEventHandler(FileSystemEventHandler):
                         if name in _provider_metadata:
                             del _provider_metadata[name]
 
-                # Extract workflows with basic regex (name only for quick indexing)
-                for match in WORKFLOW_PATTERN.finditer(content):
-                    name = match.group(1)
-                    _workflow_index[name] = file_str
-                    logger.debug(f"Detected workflow '{name}' from {path.name} ({event_type})")
+            # Track workflows that need IDs written
+            workflows_needing_ids: list[tuple[str, str]] = []  # (func_name, generated_id)
 
-                # Extract providers with basic regex
-                for match in PROVIDER_PATTERN.finditer(content):
-                    name = match.group(1)
+            # Pattern to find ALL @workflow decorators (with or without arguments)
+            # followed by a function definition
+            all_workflow_pattern = re.compile(
+                r'@workflow\s*(\([^)]*\))?\s*\n\s*(async\s+)?def\s+(\w+)\s*\(',
+                re.MULTILINE
+            )
+
+            # Re-read content in case it changed (unlikely but safe)
+            content = path.read_text(encoding="utf-8")
+
+            for match in all_workflow_pattern.finditer(content):
+                decorator_args = match.group(1)  # "(args)" or None
+                func_name = match.group(3)       # function name
+
+                # Determine workflow name: from name= argument, or fall back to function name
+                name = func_name
+                if decorator_args:
+                    name_match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', decorator_args)
+                    if name_match:
+                        name = name_match.group(1)
+
+                # Check if id= exists in decorator
+                workflow_id = None
+                if decorator_args:
+                    id_match = re.search(r'id\s*=\s*["\']([^"\']+)["\']', decorator_args)
+                    if id_match:
+                        workflow_id = id_match.group(1)
+
+                # If no id, generate one and queue for write-back
+                if not workflow_id:
+                    workflow_id = str(uuid4())
+                    workflows_needing_ids.append((func_name, workflow_id))
+                    logger.debug(f"Generated ID {workflow_id} for workflow '{name}' ({func_name})")
+
+                with _lock:
+                    _workflow_index[name] = file_str
+                    logger.debug(f"Detected workflow '{name}' (id={workflow_id}) from {path.name} ({event_type})")
+
+            # Extract providers with basic regex
+            for match in PROVIDER_PATTERN.finditer(content):
+                name = match.group(1)
+                with _lock:
                     _provider_index[name] = file_str
-                    logger.debug(f"Detected provider '{name}' from {path.name} ({event_type})")
+                logger.debug(f"Detected provider '{name}' from {path.name} ({event_type})")
+
+            # Write IDs back to file for workflows that need them
+            # Do this outside the lock to avoid blocking
+            for func_name, generated_id in workflows_needing_ids:
+                _write_workflow_id_to_file(path, func_name, generated_id)
 
             # Trigger a full DB sync to get complete metadata with parameters
             # The sync_to_database() function will do a full import-based scan
@@ -342,7 +408,7 @@ class WorkspaceEventHandler(FileSystemEventHandler):
                     file_path=relative_path,  # Store workspace-relative path
                     name=data.get("name"),
                     description=data.get("description"),
-                    linked_workflow=data.get("linkedWorkflow") or data.get("linked_workflow"),
+                    linked_workflow=data.get("linked_workflow"),
                     form_schema=data.get("form_schema"),
                     is_active=data.get("is_active", True),
                     organization_id=org_id,
@@ -387,6 +453,107 @@ class WorkspaceEventHandler(FileSystemEventHandler):
 
         except Exception as e:
             logger.warning(f"Failed to index form {path}: {e}")
+
+
+def _write_workflow_id_to_file(file_path: Path, func_name: str, workflow_id: str) -> bool:
+    """
+    Write a workflow ID back to a Python file.
+
+    This function modifies the Python source file to add or update the id parameter
+    in the @workflow decorator for a specific function.
+
+    Args:
+        file_path: Path to the Python file
+        func_name: Name of the function to update
+        workflow_id: UUID string to write
+
+    Returns:
+        True if successful, False otherwise
+    """
+    file_str = str(file_path)
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        original_content = content
+
+        # Pattern to find @workflow decorator for this specific function
+        # We need to handle:
+        # 1. @workflow alone (no parens)
+        # 2. @workflow() with empty parens
+        # 3. @workflow(...) with args but no id=
+        # 4. @workflow(id="old-id", ...) with existing id
+
+        # Build a pattern that matches @workflow[(...)] followed by def func_name
+        # This is complex because the decorator args can span multiple lines
+        decorator_pattern = re.compile(
+            rf'(@workflow\s*)(\([^)]*\))?\s*\n(\s*(?:async\s+)?def\s+{re.escape(func_name)}\s*\()',
+            re.MULTILINE
+        )
+
+        match = decorator_pattern.search(content)
+        if not match:
+            logger.debug(f"Could not find @workflow decorator for {func_name} in {file_path.name}")
+            return False
+
+        decorator_start = match.group(1)  # "@workflow" or "@workflow "
+        decorator_args = match.group(2)   # "(args)" or None
+        func_def = match.group(3)         # "def func_name(" or "async def func_name("
+
+        # Check if id= already exists in the decorator args
+        if decorator_args and 'id=' in decorator_args:
+            # Update existing id
+            updated_args = re.sub(
+                r'id\s*=\s*["\'][^"\']*["\']',
+                f'id="{workflow_id}"',
+                decorator_args
+            )
+            new_decorator = f'{decorator_start}{updated_args}\n{func_def}'
+        elif decorator_args:
+            # Add id= as first argument to existing args
+            # Remove leading ( and add id= first
+            inner_args = decorator_args[1:-1].strip()
+            if inner_args:
+                updated_args = f'(id="{workflow_id}", {inner_args})'
+            else:
+                updated_args = f'(id="{workflow_id}")'
+            new_decorator = f'{decorator_start}{updated_args}\n{func_def}'
+        else:
+            # No parens, add them with id=
+            new_decorator = f'{decorator_start}(id="{workflow_id}")\n{func_def}'
+
+        # Replace in content
+        content = content[:match.start()] + new_decorator + content[match.end():]
+
+        if content == original_content:
+            logger.debug(f"No changes needed for {func_name} in {file_path.name}")
+            return True
+
+        # Mark file as being written to prevent re-triggering
+        with _write_lock:
+            _files_being_written.add(file_str)
+
+        try:
+            # Write atomically
+            temp_file = file_path.with_suffix('.tmp')
+            temp_file.write_text(content, encoding='utf-8')
+            temp_file.replace(file_path)
+            logger.info(f"Wrote workflow ID {workflow_id} to {file_path.name}:{func_name}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to write workflow ID to {file_path}: {e}")
+            if temp_file.exists():
+                temp_file.unlink()
+            return False
+        finally:
+            # Allow a small delay before removing from write set
+            import time
+            time.sleep(0.1)
+            with _write_lock:
+                _files_being_written.discard(file_str)
+
+    except Exception as e:
+        logger.warning(f"Error processing {file_path} for workflow ID write: {e}")
+        return False
 
 
 def build_initial_index(workspace_paths: list[Path]) -> None:
@@ -578,19 +745,50 @@ async def sync_to_database() -> dict[str, int]:
             provider_names = set(provider_data.keys())
 
         # --- Sync Workflows ---
-        # Get existing workflows from DB
+        # Get existing workflows from DB - index by both ID and name for lookup
+        from uuid import UUID as UUIDType
         result = await db.execute(select(Workflow))
-        existing_workflows = {w.name: w for w in result.scalars().all()}
+        all_workflows = result.scalars().all()
+        existing_by_id: dict[str, Any] = {}
+        existing_by_name: dict[str, Any] = {}
+        for w in all_workflows:
+            existing_by_id[str(w.id)] = w
+            existing_by_name[w.name] = w
 
-        # Upsert workflows from index
+        # Track which workflows we've processed (by DB id)
+        processed_workflow_ids: set[str] = set()
+
+        # Upsert workflows from index - use UUID for lookup (primary), name as fallback
         for name, meta in workflow_data.items():
             # Serialize parameters to dicts for JSONB storage
             from dataclasses import asdict
             parameters_json = [asdict(p) for p in meta.parameters] if meta.parameters else []
 
-            if name in existing_workflows:
-                # Update existing
-                wf = existing_workflows[name]
+            # Try to find existing workflow by ID first (if we have one), then by name
+            wf = None
+            workflow_uuid = None
+
+            if meta.id:
+                # Workflow has a persistent ID from the Python file
+                try:
+                    workflow_uuid = UUIDType(meta.id)
+                    wf = existing_by_id.get(meta.id)
+                except (ValueError, TypeError):
+                    # Invalid UUID in decorator, generate new one
+                    workflow_uuid = uuid4()
+                    logger.warning(f"Invalid UUID '{meta.id}' for workflow '{name}', using new ID")
+
+            if not wf:
+                # Fall back to name lookup (for backwards compatibility)
+                wf = existing_by_name.get(name)
+
+            if wf:
+                # Update existing workflow
+                if workflow_uuid and str(wf.id) != str(workflow_uuid):
+                    # ID changed - update to new ID (this handles migration)
+                    logger.info(f"Updating workflow '{name}' ID from {wf.id} to {workflow_uuid}")
+                    wf.id = workflow_uuid
+                wf.name = name  # Update name in case it changed
                 wf.file_path = meta.source_file_path or ""
                 wf.description = meta.description
                 wf.category = meta.category
@@ -603,10 +801,12 @@ async def sync_to_database() -> dict[str, int]:
                 wf.is_platform = meta.is_platform
                 wf.is_active = True
                 wf.last_seen_at = now
+                processed_workflow_ids.add(str(wf.id))
             else:
-                # Insert new
+                # Insert new workflow
+                new_id = workflow_uuid or uuid4()
                 wf = Workflow(
-                    id=uuid4(),
+                    id=new_id,
                     name=name,
                     file_path=meta.source_file_path or "",
                     description=meta.description,
@@ -622,13 +822,14 @@ async def sync_to_database() -> dict[str, int]:
                     last_seen_at=now,
                 )
                 db.add(wf)
+                processed_workflow_ids.add(str(new_id))
             counts["workflows"] += 1
 
         # Deactivate workflows no longer in filesystem
-        for name, wf in existing_workflows.items():
-            if name not in workflow_names and wf.is_active:
+        for wf in all_workflows:
+            if str(wf.id) not in processed_workflow_ids and wf.is_active:
                 wf.is_active = False
-                logger.info(f"Deactivated workflow '{name}' (not found in filesystem)")
+                logger.info(f"Deactivated workflow '{wf.name}' (not found in filesystem)")
 
         # --- Sync Data Providers ---
         result = await db.execute(select(DataProvider))

@@ -1,19 +1,43 @@
 """
 Unit tests for workflow and data provider decorators
-Tests decorator metadata attachment and parameter handling
+Tests decorator metadata attachment and signature-based parameter extraction.
 
 Note: With dynamic discovery, decorators no longer register with a global registry.
 Instead, they attach metadata directly to decorated functions which is then
-read during dynamic discovery.
+read during dynamic discovery. Parameters are now automatically extracted from
+function signatures - no @param decorator needed.
 """
 
 import pytest
 
-from shared.decorators import VALID_PARAM_TYPES, data_provider, param, workflow
+from shared.decorators import data_provider, workflow
+from shared.type_inference import extract_parameters_from_signature
 
 
 class TestWorkflowDecorator:
     """Test @workflow decorator"""
+
+    def test_workflow_decorator_zero_arg(self):
+        """Test zero-argument workflow decorator"""
+        @workflow
+        def test_func():
+            """Test workflow function."""
+            return "test result"
+
+        # Verify function has metadata attached
+        assert hasattr(test_func, '_workflow_metadata')
+        metadata = test_func._workflow_metadata
+
+        # Verify function still works normally
+        result = test_func()
+        assert result == "test result"
+
+        # Verify metadata auto-derived
+        assert metadata.name == "test_func"
+        assert metadata.description == "Test workflow function."
+        assert metadata.category == "General"
+        assert metadata.tags == []
+        assert metadata.execution_mode == "async"  # Default
 
     def test_workflow_decorator_basic(self):
         """Test basic workflow decorator"""
@@ -47,7 +71,7 @@ class TestWorkflowDecorator:
             category="user_management",
             tags=["m365", "user"]
         )
-        def onboard_user(context, first_name, last_name):
+        def onboard_user(first_name: str, last_name: str):
             return f"Onboarded {first_name} {last_name}"
 
         metadata = onboard_user._workflow_metadata
@@ -56,7 +80,7 @@ class TestWorkflowDecorator:
         assert metadata.execution_mode == "async"  # Default
 
         # Verify function still callable
-        result = onboard_user(None, "John", "Doe")
+        result = onboard_user("John", "Doe")
         assert result == "Onboarded John Doe"
 
     def test_workflow_decorator_execution_mode_async(self):
@@ -115,137 +139,125 @@ class TestWorkflowDecorator:
         assert test_func.__name__ == "test_func"
         assert test_func.__doc__ == "Original docstring"
 
+    def test_workflow_id_parameter(self):
+        """Test that id parameter is stored in metadata"""
+        @workflow(
+            id="test-uuid-1234",
+            name="test_workflow",
+            description="Test"
+        )
+        def test_func():
+            pass
 
-class TestParamDecorator:
-    """Test @param decorator"""
+        metadata = test_func._workflow_metadata
+        assert metadata.id == "test-uuid-1234"
 
-    def test_param_decorator_basic(self):
-        """Test basic param decorator"""
-        @workflow(name="test_workflow", description="Test")
-        @param("email", type="email", label="Email Address", required=True)
-        def test_func(context, email):
-            return email
+    def test_workflow_name_auto_derived_from_function(self):
+        """Test that name is derived from function name when not provided"""
+        @workflow(description="A workflow")
+        def my_cool_workflow():
+            pass
+
+        metadata = my_cool_workflow._workflow_metadata
+        assert metadata.name == "my_cool_workflow"
+
+    def test_workflow_description_auto_derived_from_docstring(self):
+        """Test that description is derived from docstring when not provided"""
+        @workflow
+        def my_workflow():
+            """This is the auto-derived description."""
+            pass
+
+        metadata = my_workflow._workflow_metadata
+        assert metadata.description == "This is the auto-derived description."
+
+
+class TestSignatureBasedParameters:
+    """Test automatic parameter extraction from function signatures"""
+
+    def test_parameters_extracted_from_signature(self):
+        """Test that parameters are extracted from function signature"""
+        @workflow
+        def test_func(name: str, count: int = 5, active: bool = True):
+            """Test workflow."""
+            pass
+
+        metadata = test_func._workflow_metadata
+        assert len(metadata.parameters) == 3
+
+        # First param: name (required, no default)
+        name_param = metadata.parameters[0]
+        assert name_param.name == "name"
+        assert name_param.type == "string"
+        assert name_param.required is True
+        assert name_param.default_value is None
+
+        # Second param: count (optional, has default)
+        count_param = metadata.parameters[1]
+        assert count_param.name == "count"
+        assert count_param.type == "int"
+        assert count_param.required is False
+        assert count_param.default_value == 5
+
+        # Third param: active (optional, has default)
+        active_param = metadata.parameters[2]
+        assert active_param.name == "active"
+        assert active_param.type == "bool"
+        assert active_param.required is False
+        assert active_param.default_value is True
+
+    def test_parameters_labels_auto_generated(self):
+        """Test that labels are auto-generated from parameter names"""
+        @workflow
+        def test_func(first_name: str, email_address: str):
+            """Test."""
+            pass
+
+        metadata = test_func._workflow_metadata
+        assert metadata.parameters[0].label == "First Name"
+        assert metadata.parameters[1].label == "Email Address"
+
+    def test_optional_type_makes_not_required(self):
+        """Test that Optional types are not required"""
+        @workflow
+        def test_func(name: str | None):
+            """Test."""
+            pass
 
         metadata = test_func._workflow_metadata
         assert len(metadata.parameters) == 1
+        assert metadata.parameters[0].required is False
 
-        param_meta = metadata.parameters[0]
-        assert param_meta.name == "email"
-        assert param_meta.type == "email"
-        assert param_meta.label == "Email Address"
-        assert param_meta.required is True
-
-    def test_param_decorator_multiple_params(self):
-        """Test multiple @param decorators"""
-        @workflow(name="user_onboarding", description="Onboard user")
-        @param("first_name", type="string", label="First Name", required=True)
-        @param("last_name", type="string", label="Last Name", required=True)
-        @param("email", type="email", label="Email", required=True)
-        @param("license", type="string", label="License Type", data_provider="get_licenses")
-        def onboard_user(context, first_name, last_name, email, license):
-            pass
-
-        metadata = onboard_user._workflow_metadata
-        assert len(metadata.parameters) == 4
-
-        # Parameters should be in order (decorators applied bottom-up, but we reverse)
-        param_names = [p.name for p in metadata.parameters]
-        assert param_names == ["first_name", "last_name", "email", "license"]
-
-    def test_param_decorator_with_validation(self):
-        """Test param with validation rules"""
-        @workflow(name="test_workflow", description="Test")
-        @param(
-            "age",
-            type="int",
-            label="Age",
-            required=True,
-            validation={"min": 0, "max": 120}
-        )
-        def test_func(context, age):
+    def test_list_type_mapping(self):
+        """Test list type maps correctly"""
+        @workflow
+        def test_func(items: list):
+            """Test."""
             pass
 
         metadata = test_func._workflow_metadata
-        param_meta = metadata.parameters[0]
-        assert param_meta.validation == {"min": 0, "max": 120}
+        assert metadata.parameters[0].type == "list"
 
-    def test_param_decorator_with_data_provider(self):
-        """Test param with data provider"""
-        @workflow(name="test_workflow", description="Test")
-        @param(
-            "license",
-            type="string",
-            label="License Type",
-            data_provider="get_available_licenses"
-        )
-        def test_func(context, license):
+    def test_dict_type_mapping(self):
+        """Test dict type maps to json"""
+        @workflow
+        def test_func(config: dict):
+            """Test."""
             pass
 
         metadata = test_func._workflow_metadata
-        param_meta = metadata.parameters[0]
-        assert param_meta.data_provider == "get_available_licenses"
+        assert metadata.parameters[0].type == "json"
 
-    def test_param_decorator_with_default_value(self):
-        """Test param with default value"""
-        @workflow(name="test_workflow", description="Test")
-        @param(
-            "location",
-            type="string",
-            label="Location",
-            default_value="NYC",
-            help_text="Office location"
-        )
-        def test_func(context, location="NYC"):
+    def test_float_type_mapping(self):
+        """Test float type maps correctly"""
+        @workflow
+        def test_func(rate: float = 0.5):
+            """Test."""
             pass
 
         metadata = test_func._workflow_metadata
-        param_meta = metadata.parameters[0]
-        assert param_meta.default_value == "NYC"
-        assert param_meta.help_text == "Office location"
-
-    def test_param_decorator_label_auto_generated(self):
-        """Test that label is auto-generated from parameter name"""
-        @workflow(name="test_workflow", description="Test")
-        @param("first_name", type="string", required=True)
-        def test_func(context, first_name):
-            pass
-
-        metadata = test_func._workflow_metadata
-        param_meta = metadata.parameters[0]
-        assert param_meta.label == "First Name"  # Auto-generated from "first_name"
-
-    def test_param_decorator_without_workflow_stores_pending(self):
-        """Test that @param without @workflow stores pending parameters"""
-        @param("email", type="email")
-        def test_func(context, email):
-            return email
-
-        # Function should still work
-        result = test_func(None, "test@example.com")
-        assert result == "test@example.com"
-
-        # Pending parameters should be stored on function
-        assert hasattr(test_func, '_pending_parameters')
-        assert len(test_func._pending_parameters) == 1
-
-    def test_param_decorator_invalid_type_raises_error(self):
-        """Test that invalid parameter type raises error"""
-        with pytest.raises(ValueError, match="Invalid parameter type"):
-            @workflow(name="test_workflow", description="Test")
-            @param("test", type="invalid_type")
-            def test_func(context, test):
-                pass
-
-    def test_param_decorator_all_valid_types(self):
-        """Test all valid parameter types"""
-        for param_type in VALID_PARAM_TYPES:
-            @workflow(name=f"test_{param_type}", description="Test")
-            @param("test_param", type=param_type)
-            def test_func(context, test_param):
-                pass
-
-            metadata = test_func._workflow_metadata
-            assert metadata.parameters[0].type == param_type
+        assert metadata.parameters[0].type == "float"
+        assert metadata.parameters[0].default_value == 0.5
 
 
 class TestDataProviderDecorator:
@@ -257,14 +269,14 @@ class TestDataProviderDecorator:
             name="get_licenses",
             description="Returns available licenses"
         )
-        def get_licenses(context):
+        def get_licenses():
             return [{"label": "E5", "value": "SPE_E5"}]
 
         # Verify provider has metadata attached
         assert hasattr(get_licenses, '_data_provider_metadata')
 
         # Verify function still works
-        result = get_licenses(None)
+        result = get_licenses()
         assert result == [{"label": "E5", "value": "SPE_E5"}]
 
         # Verify metadata
@@ -282,7 +294,7 @@ class TestDataProviderDecorator:
             category="m365",
             cache_ttl_seconds=600
         )
-        def get_available_licenses(context):
+        def get_available_licenses():
             return []
 
         metadata = get_available_licenses._data_provider_metadata
@@ -295,7 +307,7 @@ class TestDataProviderDecorator:
             name="test_provider",
             description="Test"
         )
-        def test_func(context):
+        def test_func():
             """Original docstring"""
             return []
 
@@ -303,38 +315,57 @@ class TestDataProviderDecorator:
         assert test_func.__name__ == "test_func"
         assert test_func.__doc__ == "Original docstring"
 
+    def test_data_provider_parameters_from_signature(self):
+        """Test that data provider params are extracted from signature"""
+        @data_provider(
+            name="filtered_licenses",
+            description="Returns filtered licenses"
+        )
+        def get_filtered_licenses(filter_text: str | None = None, limit: int = 10):
+            return []
+
+        metadata = get_filtered_licenses._data_provider_metadata
+        assert len(metadata.parameters) == 2
+
+        # First param: filter_text (optional - has None in union)
+        filter_param = metadata.parameters[0]
+        assert filter_param.name == "filter_text"
+        assert filter_param.type == "string"
+        assert filter_param.required is False
+
+        # Second param: limit (optional - has default)
+        limit_param = metadata.parameters[1]
+        assert limit_param.name == "limit"
+        assert limit_param.type == "int"
+        assert limit_param.required is False
+        assert limit_param.default_value == 10
+
 
 class TestDecoratorIntegration:
     """Test decorators working together"""
 
     def test_workflow_with_params_and_data_provider(self):
-        """Test complete workflow with params using data provider"""
+        """Test complete workflow with signature-derived params"""
         # First register data provider
         @data_provider(
             name="get_available_licenses",
             description="Get licenses",
             category="m365"
         )
-        def get_licenses(context):
+        def get_licenses():
             return [
                 {"label": "E5", "value": "SPE_E5"},
                 {"label": "E3", "value": "SPE_E3"}
             ]
 
-        # Then register workflow that uses it
+        # Then register workflow - params derived from signature
         @workflow(
             name="user_onboarding",
             description="Onboard user",
             category="user_management",
             tags=["m365"]
         )
-        @param("first_name", type="string", label="First Name", required=True)
-        @param("last_name", type="string", label="Last Name", required=True)
-        @param("email", type="email", label="Email", required=True,
-               validation={"pattern": r"^[a-zA-Z0-9._%+-]+@"})
-        @param("license", type="string", label="License",
-               data_provider="get_available_licenses")
-        def onboard_user(context, first_name, last_name, email, license):
+        def onboard_user(first_name: str, last_name: str, email: str, license: str = "SPE_E3"):
             return f"Created {email} with {license}"
 
         # Verify workflow has metadata
@@ -345,27 +376,23 @@ class TestDecoratorIntegration:
         provider_meta = get_licenses._data_provider_metadata
         assert provider_meta is not None
 
-        # Verify parameter links to provider
-        license_param = next(p for p in workflow_meta.parameters if p.name == "license")
-        assert license_param.data_provider == "get_available_licenses"
-
         # Verify both functions still work
-        licenses = get_licenses(None)
+        licenses = get_licenses()
         assert len(licenses) == 2
 
-        result = onboard_user(None, "John", "Doe", "john@example.com", "SPE_E5")
+        result = onboard_user("John", "Doe", "john@example.com", "SPE_E5")
         assert "john@example.com" in result
 
     def test_multiple_workflows_with_metadata(self):
         """Test multiple workflows have independent metadata"""
-        @workflow(name="workflow1", description="First")
-        @param("param1", type="string")
-        def func1(context, param1):
+        @workflow
+        def func1(param1: str):
+            """First workflow."""
             pass
 
-        @workflow(name="workflow2", description="Second")
-        @param("param2", type="int")
-        def func2(context, param2):
+        @workflow
+        def func2(param2: int):
+            """Second workflow."""
             pass
 
         # Both functions have metadata

@@ -1,7 +1,10 @@
 """
 Workflow and Data Provider Decorators
+
 Decorators for attaching metadata to workflows and data providers.
 No registration - metadata is stored on the function and discovered dynamically.
+
+Parameter information is derived from function signatures - no @param decorator needed.
 """
 
 import functools
@@ -10,17 +13,18 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from .discovery import DataProviderMetadata, WorkflowMetadata, WorkflowParameter
+from .type_inference import extract_parameters_from_signature
 
 logger = logging.getLogger(__name__)
 
-# Valid parameter types
-VALID_PARAM_TYPES = {"string", "int", "bool", "float", "json", "list", "email"}
-
 
 def workflow(
+    _func: Callable | None = None,
+    *,
     # Identity
-    name: str,
-    description: str,
+    id: str | None = None,
+    name: str | None = None,
+    description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
 
@@ -41,101 +45,102 @@ def workflow(
     public_endpoint: bool = False
 ):
     """
-    Decorator for registering workflow functions
+    Decorator for registering workflow functions.
+
+    Parameters are automatically derived from function signatures - no @param needed.
 
     Usage:
-        @workflow(
-            name="user_onboarding",
-            description="Onboard new M365 user with license assignment",
-            category="user_management",
-            tags=["m365", "user"],
-            execution_mode="sync",
-            timeout_seconds=300,
-            endpoint_enabled=True,
-            allowed_methods=["GET", "POST"],
-            disable_global_key=False
-        )
-        @param("first_name", type="string", label="First Name", required=True)
-        @param("last_name", type="string", label="Last Name", required=True)
-        async def onboard_user(context, first_name, last_name):
-            # Implementation
-            pass
+        @workflow
+        async def greet_user(name: str, count: int = 1) -> dict:
+            '''Greet a user multiple times.'''
+            return {"greetings": [f"Hello {name}!" for _ in range(count)]}
+
+        @workflow(category="Admin", tags=["user", "m365"])
+        async def onboard_user(email: str, license_type: str = "E3") -> dict:
+            '''Onboard a new M365 user.'''
+            ...
 
     Args:
-        name: Unique workflow identifier (snake_case)
-        description: Human-readable description
+        id: Persistent UUID (written by discovery watcher)
+        name: Workflow name (defaults to function name)
+        description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        execution_mode: "sync" | "async" | None (default: None)
-            - None (default): Auto-select based on endpoint_enabled
-              * "sync" if endpoint_enabled=True (webhooks need immediate response)
-              * "async" if endpoint_enabled=False (better scalability)
-            - "sync": Execute synchronously, return result immediately
-            - "async": Enqueue for async execution, return 202 + execution_id
+        execution_mode: "sync" | "async" | None (auto-select based on endpoint_enabled)
         timeout_seconds: Max execution time in seconds (default: 1800, max: 7200)
-        retry_policy: Dict with retry config (e.g., {"max_attempts": 3, "backoff": 2})
-        schedule: Cron expression for scheduled workflows (e.g., "0 9 * * *")
-        endpoint_enabled: Whether to expose as HTTP endpoint at /api/endpoints/{name} (default: False)
+        retry_policy: Dict with retry config
+        schedule: Cron expression for scheduled workflows
+        endpoint_enabled: Whether to expose as HTTP endpoint
         allowed_methods: HTTP methods allowed for endpoint (default: ["POST"])
-        disable_global_key: If True, only workflow-specific API keys work (default: False)
-        public_endpoint: If True, skip authentication for webhooks (default: False)
+        disable_global_key: If True, only workflow-specific API keys work
+        public_endpoint: If True, skip authentication for webhooks
 
     Returns:
-        Decorated function (unchanged for normal Python execution)
+        Decorated function
     """
-    if tags is None:
-        tags = []
-    if allowed_methods is None:
-        allowed_methods = ["POST"]
-
-    # Apply execution mode defaults
-    if execution_mode is not None:
-        # Explicit value provided, use it
-        pass
-    elif endpoint_enabled:
-        # Endpoints default to sync (webhooks need immediate response)
-        execution_mode = "sync"
-    else:
-        # Regular workflows default to async (better scalability)
-        execution_mode = "async"
-
     def decorator(func: Callable) -> Callable:
-        # Extract function signature
+        # Derive name from function name if not provided
+        workflow_name = name or func.__name__
 
-        # Collect parameters from @param decorators (if any)
-        # Decorators are applied bottom-up, so parameters are in reverse order
-        pending_params = []
-        if hasattr(func, '_pending_parameters'):
-            pending_params = list(reversed(func._pending_parameters))
-            delattr(func, '_pending_parameters')  # Clean up
+        # Derive description from docstring if not provided
+        workflow_description = description
+        if workflow_description is None and func.__doc__:
+            # Use first line of docstring
+            workflow_description = func.__doc__.strip().split('\n')[0].strip()
+        workflow_description = workflow_description or ""
+
+        # Get tags with default
+        workflow_tags = tags if tags is not None else []
+
+        # Get allowed methods with default
+        workflow_allowed_methods = allowed_methods if allowed_methods is not None else ["POST"]
+
+        # Apply execution mode defaults
+        workflow_execution_mode = execution_mode
+        if workflow_execution_mode is None:
+            # Endpoints default to sync, regular workflows to async
+            workflow_execution_mode = "sync" if endpoint_enabled else "async"
+
+        # Extract parameters from function signature
+        param_dicts = extract_parameters_from_signature(func)
+        parameters = [
+            WorkflowParameter(
+                name=p["name"],
+                type=p["type"],
+                label=p.get("label"),
+                required=p["required"],
+                default_value=p.get("default_value"),
+            )
+            for p in param_dicts
+        ]
 
         # Detect if workflow is from platform directory
         is_platform = False
         source_file_path = None
         if hasattr(func, '__code__'):
             file_path = func.__code__.co_filename
-            source_file_path = file_path  # Store full file path
-            # Check if file is in platform/ directory
+            source_file_path = file_path
             if '/platform/' in file_path or '\\platform\\' in file_path:
                 is_platform = True
 
         # Initialize metadata
         metadata = WorkflowMetadata(
-            name=name,
-            description=description,
+            id=id,
+            name=workflow_name,
+            description=workflow_description,
             category=category,
-            tags=tags,
-            execution_mode=execution_mode,
+            tags=workflow_tags,
+            execution_mode=workflow_execution_mode,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
             schedule=schedule,
             endpoint_enabled=endpoint_enabled,
-            allowed_methods=allowed_methods,
+            allowed_methods=workflow_allowed_methods,
             disable_global_key=disable_global_key,
             public_endpoint=public_endpoint,
             is_platform=is_platform,
             source_file_path=source_file_path,
-            parameters=pending_params,
+            parameters=parameters,
             function=func
         )
 
@@ -143,88 +148,20 @@ def workflow(
         func._workflow_metadata = metadata
 
         logger.debug(
-            f"Workflow decorator applied: {name} "
-            f"({len(pending_params)} params, execution_mode={execution_mode})"
+            f"Workflow decorator applied: {workflow_name} "
+            f"({len(parameters)} params, execution_mode={workflow_execution_mode})"
         )
 
         # Return function unchanged (for normal Python execution)
         return func
 
-    return decorator
-
-
-def param(
-    name: str,
-    type: str,
-    label: str | None = None,
-    required: bool = False,
-    validation: dict[str, Any] | None = None,
-    data_provider: str | None = None,
-    default_value: Any | None = None,
-    help_text: str | None = None
-):
-    """
-    Decorator for defining workflow parameters with metadata
-
-    Must be used WITH @workflow decorator (decorators are applied bottom-up).
-    Can be chained multiple times for multiple parameters.
-
-    Usage:
-        @workflow(name="my_workflow", description="...")
-        @param("user_email", type="email", label="User Email", required=True,
-               validation={"pattern": r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"})
-        @param("license", type="string", label="License Type",
-               data_provider="get_available_licenses")
-        async def my_workflow(context, user_email, license):
-            pass
-
-    Args:
-        name: Parameter name (must match function parameter)
-        type: Parameter type (string, int, bool, float, json, list, email)
-        label: Display label for UI (defaults to title case of name)
-        required: Whether parameter is required
-        validation: Validation rules dict (e.g., {"min": 0, "max": 100, "pattern": "..."})
-        data_provider: Name of data provider for dynamic options
-        default_value: Default value if not provided
-        help_text: Help text for UI
-
-    Returns:
-        Decorated function
-    """
-    # Validate parameter type
-    if type not in VALID_PARAM_TYPES:
-        raise ValueError(
-            f"Invalid parameter type '{type}'. Must be one of: {', '.join(VALID_PARAM_TYPES)}"
-        )
-
-    def decorator(func: Callable) -> Callable:
-        # Create parameter metadata
-        param_meta = WorkflowParameter(
-            name=name,
-            type=type,
-            label=label or name.replace('_', ' ').title(),
-            required=required,
-            validation=validation,
-            data_provider=data_provider,
-            default_value=default_value,
-            help_text=help_text
-        )
-
-        # Store parameters on function temporarily (will be collected by @workflow)
-        # Since decorators are applied bottom-up, we append in reverse order
-        if not hasattr(func, '_pending_parameters'):
-            func._pending_parameters = []
-
-        func._pending_parameters.append(param_meta)
-
-        logger.debug(
-            f"Parameter '{name}' pending for function '{func.__name__}' "
-            f"(type={type}, required={required})"
-        )
-
-        return func
-
-    return decorator
+    # Support both @workflow and @workflow(...) syntax
+    if _func is not None:
+        # Called as @workflow without parentheses
+        return decorator(_func)
+    else:
+        # Called as @workflow(...) with arguments
+        return decorator
 
 
 def data_provider(
@@ -234,30 +171,20 @@ def data_provider(
     cache_ttl_seconds: int = 300
 ):
     """
-    Decorator for registering data provider functions
+    Decorator for registering data provider functions.
 
     Data providers return dynamic options for form fields.
+    Parameters are automatically derived from function signatures.
 
     Usage:
         @data_provider(
             name="get_available_licenses",
-            description="Returns available M365 licenses for the organization",
+            description="Returns available M365 licenses",
             category="m365",
             cache_ttl_seconds=300
         )
-        async def get_available_licenses(context):
-            graph = context.get_integration('msgraph')
-            skus = await graph.subscribed_skus.get()
-
-            return [
-                {
-                    "label": sku.sku_part_number,
-                    "value": sku.sku_id,
-                    "metadata": {"available": sku.prepaid_units.enabled - sku.consumed_units}
-                }
-                for sku in skus.value
-                if sku.prepaid_units.enabled > sku.consumed_units
-            ]
+        async def get_available_licenses() -> list[dict]:
+            ...
 
     Args:
         name: Unique data provider identifier (snake_case)
@@ -266,22 +193,28 @@ def data_provider(
         cache_ttl_seconds: Cache TTL in seconds (default: 300 = 5 minutes)
 
     Returns:
-        Decorated function (unchanged for normal Python execution)
+        Decorated function
     """
     def decorator(func: Callable) -> Callable:
-        # Collect parameters from @param decorators (if any) - T010
-        # Decorators are applied bottom-up, so parameters are in reverse order
-        pending_params = []
-        if hasattr(func, '_pending_parameters'):
-            pending_params = list(reversed(func._pending_parameters))
-            delattr(func, '_pending_parameters')  # Clean up
+        # Extract parameters from function signature
+        param_dicts = extract_parameters_from_signature(func)
+        parameters = [
+            WorkflowParameter(
+                name=p["name"],
+                type=p["type"],
+                label=p.get("label"),
+                required=p["required"],
+                default_value=p.get("default_value"),
+            )
+            for p in param_dicts
+        ]
 
         # Detect source based on file path
         source = None
         source_file_path = None
         if hasattr(func, '__code__'):
             file_path = func.__code__.co_filename
-            source_file_path = file_path  # Store full file path
+            source_file_path = file_path
             if '/platform/' in file_path or '\\platform\\' in file_path:
                 source = 'platform'
             elif '/home/' in file_path or '\\home\\' in file_path:
@@ -295,7 +228,7 @@ def data_provider(
             description=description,
             category=category,
             cache_ttl_seconds=cache_ttl_seconds,
-            parameters=pending_params,  # T010: Add parameters
+            parameters=parameters,
             function=func,
             source=source,
             source_file_path=source_file_path

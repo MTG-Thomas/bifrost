@@ -75,9 +75,6 @@ class Worker:
         await init_db()
         logger.info("Database connection established")
 
-        # Activate packages (add .packages to sys.path)
-        await self._activate_packages()
-
         # Initialize and start RabbitMQ consumers
         logger.info("Starting RabbitMQ consumers...")
         await self._start_consumers()
@@ -87,19 +84,6 @@ class Worker:
 
         # Keep running until shutdown
         await self._shutdown_event.wait()
-
-    async def _activate_packages(self) -> None:
-        """Activate installed packages by adding .packages to sys.path."""
-        try:
-            import os
-            from shared.package_manager import WorkspacePackageManager
-
-            workspace_path = os.environ.get("BIFROST_WORKSPACE_LOCATION", "/workspace")
-            pkg_manager = WorkspacePackageManager(workspace_path)
-            pkg_manager.activate_packages()
-            logger.info("Activated .packages directory")
-        except Exception as e:
-            logger.warning(f"Failed to activate packages: {e}")
 
     async def _start_consumers(self) -> None:
         """Start all RabbitMQ consumers."""

@@ -58,9 +58,9 @@ class TestWorkspaceIsolation:
         """Integration: Workspace code can access whitelisted shared modules"""
         # Workspace workflows should be able to import decorators
         try:
-            from shared.decorators import param, workflow
+            from shared.decorators import workflow, data_provider
             assert workflow is not None
-            assert param is not None
+            assert data_provider is not None
         except ImportError as e:
             pytest.fail(f"Workspace cannot access public API: {e}")
 
@@ -139,11 +139,10 @@ class TestWorkspacePublicAPI:
     """Tests for workspace-accessible public API"""
 
     def test_decorators_module_accessible(self):
-        """Integration: @workflow and @param decorators are accessible"""
+        """Integration: @workflow and @data_provider decorators are accessible"""
         try:
-            from shared.decorators import data_provider, param, workflow
+            from shared.decorators import data_provider, workflow
             assert callable(workflow)
-            assert callable(param)
             assert callable(data_provider)
         except ImportError as e:
             pytest.fail(f"Public API decorators not accessible: {e}")

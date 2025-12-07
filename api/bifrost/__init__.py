@@ -46,8 +46,11 @@ from .roles import roles
 from .workflows import workflows
 
 # Import decorators and context from shared module
-from shared.decorators import workflow, param, data_provider
+from shared.decorators import workflow, data_provider
 from shared.context import ExecutionContext, Organization
+
+# Import context proxy for accessing ExecutionContext without parameter
+from ._context import context
 from shared.errors import UserError, WorkflowError, ValidationError, IntegrationError, ConfigurationError
 from shared.models import (
     ExecutionStatus,
@@ -77,8 +80,8 @@ __all__ = [
     'config',
     'oauth',
     'workflow',
-    'param',
     'data_provider',
+    'context',
     'ExecutionContext',
     'Organization',
     'Caller',

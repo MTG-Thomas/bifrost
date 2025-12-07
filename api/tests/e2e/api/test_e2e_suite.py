@@ -960,7 +960,7 @@ class TestFullApplicationFlow:
         workflow_content = '''"""E2E Test Workflow"""
 import logging
 import time
-from shared.decorators import workflow, param
+from bifrost import workflow, context
 
 logger = logging.getLogger(__name__)
 
@@ -969,9 +969,7 @@ logger = logging.getLogger(__name__)
     description="E2E test workflow - sync execution",
     execution_mode="sync"
 )
-@param("message", "string", required=True)
-@param("count", "int", default_value=1)
-async def e2e_test_sync_workflow(context, message: str, count: int = 1):
+async def e2e_test_sync_workflow(message: str, count: int = 1):
     return {
         "status": "success",
         "message": message,
@@ -984,8 +982,7 @@ async def e2e_test_sync_workflow(context, message: str, count: int = 1):
     description="E2E test workflow - async execution with logging",
     execution_mode="async"
 )
-@param("delay_seconds", "int", default_value=2)
-async def e2e_test_async_workflow(context, delay_seconds: int = 2):
+async def e2e_test_async_workflow(delay_seconds: int = 2):
     """
     Test workflow that:
     1. Logs at DEBUG level (to test log visibility)
@@ -1280,7 +1277,7 @@ async def e2e_test_async_workflow(context, delay_seconds: int = 2):
         workflow_content = '''"""E2E Cancellation Test Workflow"""
 import logging
 import time
-from shared.decorators import workflow, param
+from bifrost import workflow
 
 logger = logging.getLogger(__name__)
 
@@ -1289,8 +1286,7 @@ logger = logging.getLogger(__name__)
     description="Workflow with sleep for cancellation testing",
     execution_mode="async"
 )
-@param("sleep_seconds", "int", default_value=30)
-async def e2e_cancellation_test(context, sleep_seconds: int = 30):
+async def e2e_cancellation_test(sleep_seconds: int = 30):
     logger.info(f"Starting sleep for {sleep_seconds} seconds...")
     time.sleep(sleep_seconds)
     logger.info("Sleep completed - this should not appear if cancelled")
