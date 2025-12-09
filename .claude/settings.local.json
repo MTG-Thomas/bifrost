@@ -52,7 +52,9 @@
       "Bash(do echo '=== Checking $module ===' grep -r $module /Users/jack/GitHub/bifrost-api/api --include=*.py)",
       "Bash(./venv/bin/pip install:*)",
       "Bash(../venv/bin/pyright shared/services/file_storage_service.py)",
-      "Bash(../venv/bin/pyright:*)"
+      "Bash(../venv/bin/pyright:*)",
+      "WebFetch(domain:docs.pytest.org)",
+      "WebFetch(domain:pytest-with-eric.com)"
     ],
     "deny": [],
     "ask": [],

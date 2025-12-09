@@ -7,6 +7,11 @@ PostgreSQL, RabbitMQ, and Redis services.
 These tests require:
 - docker-compose.test.yml services running (via ./test.sh --e2e)
 - API service accessible at TEST_API_URL
+
+Session-scoped fixtures provide shared state:
+- platform_admin: First registered user (superuser)
+- org1, org2: Test organizations
+- org1_user, org2_user: Org users with tokens
 """
 
 import os
@@ -14,6 +19,11 @@ import os
 import pytest
 import httpx
 
+
+# Import session fixtures - automatically available to all e2e tests
+pytest_plugins = [
+    "tests.e2e.fixtures.setup",
+]
 
 # E2E test API URL (from docker-compose.test.yml)
 E2E_API_URL = os.getenv("TEST_API_URL", "http://localhost:18000")
