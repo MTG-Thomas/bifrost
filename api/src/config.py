@@ -193,15 +193,15 @@ class Settings(BaseSettings):
 
     @computed_field
     @property
-    def s3_workspace_bucket(self) -> str:
-        """Bucket name for workspace files (indexed, git-tracked)."""
-        return f"bifrost-{self.instance_id}-workspace"
+    def s3_bucket(self) -> str:
+        """Single bucket name for all S3 storage.
 
-    @computed_field
-    @property
-    def s3_files_bucket(self) -> str:
-        """Bucket name for runtime files (blob storage, not indexed)."""
-        return f"bifrost-{self.instance_id}-files"
+        All files are organized by prefix within this bucket:
+        - workspace files (indexed, git-tracked)
+        - uploads/ (form file uploads via presigned URLs)
+        - temp/ (temporary workflow files)
+        """
+        return f"bifrost-{self.instance_id}"
 
     @computed_field
     @property

@@ -159,9 +159,14 @@ def workflow(
 
 
 def data_provider(
-    name: str,
-    description: str,
+    _func: Callable | None = None,
+    *,
+    # Identity
+    name: str | None = None,
+    description: str | None = None,
     category: str = "General",
+
+    # Caching
     cache_ttl_seconds: int = 300
 ):
     """
@@ -171,18 +176,19 @@ def data_provider(
     Parameters are automatically derived from function signatures.
 
     Usage:
-        @data_provider(
-            name="get_available_licenses",
-            description="Returns available M365 licenses",
-            category="m365",
-            cache_ttl_seconds=300
-        )
+        @data_provider
         async def get_available_licenses() -> list[dict]:
+            '''Returns available M365 licenses.'''
+            ...
+
+        @data_provider(category="m365", cache_ttl_seconds=600)
+        async def get_m365_users() -> list[dict]:
+            '''Returns M365 users for the organization.'''
             ...
 
     Args:
-        name: Unique data provider identifier (snake_case)
-        description: Human-readable description
+        name: Data provider name (defaults to function name)
+        description: Human-readable description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         cache_ttl_seconds: Cache TTL in seconds (default: 300 = 5 minutes)
 
@@ -190,6 +196,16 @@ def data_provider(
         Decorated function
     """
     def decorator(func: Callable) -> Callable:
+        # Derive name from function name if not provided
+        provider_name = name or func.__name__
+
+        # Derive description from docstring if not provided
+        provider_description = description
+        if provider_description is None and func.__doc__:
+            # Use first line of docstring
+            provider_description = func.__doc__.strip().split('\n')[0].strip()
+        provider_description = provider_description or ""
+
         # Extract parameters from function signature
         param_dicts = extract_parameters_from_signature(func)
         parameters = [
@@ -218,8 +234,8 @@ def data_provider(
 
         # Create metadata
         metadata = DataProviderMetadata(
-            name=name,
-            description=description,
+            name=provider_name,
+            description=provider_description,
             category=category,
             cache_ttl_seconds=cache_ttl_seconds,
             parameters=parameters,
@@ -232,11 +248,17 @@ def data_provider(
         func._data_provider_metadata = metadata
 
         logger.debug(
-            f"Data provider decorator applied: {name} "
+            f"Data provider decorator applied: {provider_name} "
             f"(cache_ttl={cache_ttl_seconds}s)"
         )
 
         # Return function unchanged
         return func
 
-    return decorator
+    # Support both @data_provider and @data_provider(...) syntax
+    if _func is not None:
+        # Called as @data_provider without parentheses
+        return decorator(_func)
+    else:
+        # Called as @data_provider(...) with arguments
+        return decorator

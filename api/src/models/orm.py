@@ -276,6 +276,7 @@ class Form(Base):
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, default=None)
     workflow_id: Mapped[str | None] = mapped_column(String(255), default=None)
+    launch_workflow_id: Mapped[str | None] = mapped_column(String(255), default=None)
     default_launch_params: Mapped[dict | None] = mapped_column(JSONB, default=None)
     allowed_query_params: Mapped[list | None] = mapped_column(JSONB, default=None)
     access_level: Mapped[FormAccessLevel] = mapped_column(
@@ -1066,7 +1067,7 @@ class WorkspaceFile(Base):
     - Git status tracking for each file
     - Content hash for change detection
 
-    The actual file content is stored in S3 bucket: bifrost-{instance_id}-workspace
+    The actual file content is stored in S3 bucket: bifrost-{instance_id}
     """
 
     __tablename__ = "workspace_files"

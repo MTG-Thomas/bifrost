@@ -91,6 +91,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         user_name = pending["user_name"]
         user_email = pending["user_email"]
         form_id = pending.get("form_id")
+        startup = pending.get("startup")  # Launch workflow results
 
         # Determine if this is a code or workflow execution
         is_script = bool(code_base64)
@@ -270,6 +271,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "timeout_seconds": timeout_seconds,
                 "transient": False,
                 "is_platform_admin": False,
+                "startup": startup,  # Launch workflow results (available via context.startup)
             }
 
             # Execute in isolated process

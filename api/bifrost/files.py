@@ -1,24 +1,29 @@
 """
 File management SDK for Bifrost.
 
-Provides Python API for file operations in workspace/files/ and temp directories.
+Provides async Python API for file operations in workspace/files/, temp directories,
+and S3-stored uploads.
 
 Works in two modes:
-1. Platform context (inside workflows): Direct filesystem access
+1. Platform context (inside workflows): Direct filesystem/S3 access
 2. External context (via dev API key): API calls to SDK endpoints
 
 Location Options:
 - "temp": Temporary files (cleared periodically, for execution-scoped data)
 - "workspace": Persistent workspace files (survives across executions)
+- "uploads": Files uploaded via form file fields (stored in S3)
 
 Usage:
     from bifrost import files
 
     # Write to temp (execution-scoped)
-    files.write("temp-data.txt", "content", location="temp")
+    await files.write("temp-data.txt", "content", location="temp")
 
     # Write to workspace (persistent)
-    files.write("exports/report.csv", data, location="workspace")
+    await files.write("exports/report.csv", data, location="workspace")
+
+    # Read uploaded file (from form file field)
+    content = await files.read("uploads/form_id/uuid/filename.txt", location="uploads")
 """
 
 import os
@@ -40,11 +45,45 @@ def _get_client():
     return get_client()
 
 
+async def _read_from_s3(path: str) -> bytes:
+    """Read file from S3 bucket.
+
+    Reads directly from S3 without requiring a database session.
+    This is used for uploaded files (form file fields).
+    """
+    from aiobotocore.session import get_session
+    from src.config import get_settings
+
+    settings = get_settings()
+    if not settings.s3_configured:
+        raise RuntimeError("S3 storage not configured - cannot read uploaded files")
+
+    session = get_session()
+    async with session.create_client(
+        "s3",
+        endpoint_url=settings.s3_endpoint_url,
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name=settings.s3_region,
+    ) as s3:
+        try:
+            response = await s3.get_object(
+                Bucket=settings.s3_bucket,
+                Key=path,
+            )
+            return await response["Body"].read()
+        except Exception as e:
+            # Handle NoSuchKey or any S3 error
+            if "NoSuchKey" in str(type(e).__name__) or "NoSuchKey" in str(e):
+                raise FileNotFoundError(f"File not found in S3: {path}")
+            raise
+
+
 class files:
     """
-    File management operations.
+    File management operations (async).
 
-    Provides safe file access within workspace/files/ and temp directories.
+    Provides safe file access within workspace/files/, temp directories, and S3 uploads.
     All paths are sandboxed to prevent access outside allowed directories.
 
     Works in both platform context (direct access) and external context (API calls).
@@ -104,13 +143,16 @@ class files:
         return p
 
     @staticmethod
-    def read(path: str, location: Literal["temp", "workspace"] = "workspace") -> str:
+    async def read(path: str, location: Literal["temp", "workspace", "uploads"] = "workspace") -> str:
         """
         Read a text file.
 
         Args:
-            path: File path (relative or absolute)
-            location: Storage location ("temp" or "workspace", default: "workspace")
+            path: File path (relative or absolute, or S3 key for uploads)
+            location: Storage location:
+                - "workspace": Persistent workspace files (default)
+                - "temp": Temporary execution-scoped files
+                - "uploads": Files uploaded via form file fields (from S3)
 
         Returns:
             str: File contents
@@ -122,17 +164,23 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> content = files.read("data/customers.csv", location="workspace")
+            >>> content = await files.read("data/customers.csv", location="workspace")
+            >>> uploaded = await files.read("uploads/form_id/uuid/file.txt", location="uploads")
         """
         if _is_platform_context():
-            # Direct filesystem access (platform mode)
-            file_path = files._resolve_path(path, location)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
+            if location == "uploads":
+                # Read from S3 for uploaded files
+                content_bytes = await _read_from_s3(path)
+                return content_bytes.decode('utf-8')
+            else:
+                # Direct filesystem access (platform mode)
+                file_path = files._resolve_path(path, location)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return f.read()
         else:
             # API call (external mode)
             client = _get_client()
-            response = client.post_sync(
+            response = await client.post(
                 "/api/sdk/files/read",
                 json={"path": path, "location": location}
             )
@@ -140,13 +188,16 @@ class files:
             return response.text
 
     @staticmethod
-    def read_bytes(path: str, location: Literal["temp", "workspace"] = "workspace") -> bytes:
+    async def read_bytes(path: str, location: Literal["temp", "workspace", "uploads"] = "workspace") -> bytes:
         """
         Read a binary file.
 
         Args:
-            path: File path (relative or absolute)
-            location: Storage location ("temp" or "workspace", default: "workspace")
+            path: File path (relative or absolute, or S3 key for uploads)
+            location: Storage location:
+                - "workspace": Persistent workspace files (default)
+                - "temp": Temporary execution-scoped files
+                - "uploads": Files uploaded via form file fields (from S3)
 
         Returns:
             bytes: File contents
@@ -158,18 +209,21 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> data = files.read_bytes("reports/report.pdf", location="workspace")
+            >>> data = await files.read_bytes("reports/report.pdf", location="workspace")
         """
         if _is_platform_context():
-            # Direct filesystem access (platform mode)
-            file_path = files._resolve_path(path, location)
-            with open(file_path, 'rb') as f:
-                return f.read()
+            if location == "uploads":
+                # Read from S3 for uploaded files
+                return await _read_from_s3(path)
+            else:
+                # Direct filesystem access (platform mode)
+                file_path = files._resolve_path(path, location)
+                with open(file_path, 'rb') as f:
+                    return f.read()
         else:
-            # API call (external mode) - binary not supported via text API
-            # Fall back to reading text and encoding
+            # API call (external mode)
             client = _get_client()
-            response = client.post_sync(
+            response = await client.post(
                 "/api/sdk/files/read",
                 json={"path": path, "location": location}
             )
@@ -177,7 +231,7 @@ class files:
             return response.content
 
     @staticmethod
-    def write(path: str, content: str, location: Literal["temp", "workspace"] = "workspace") -> None:
+    async def write(path: str, content: str, location: Literal["temp", "workspace"] = "workspace") -> None:
         """
         Write text to a file.
 
@@ -192,7 +246,7 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> files.write("output/report.txt", "Report data", location="workspace")
+            >>> await files.write("output/report.txt", "Report data", location="workspace")
         """
         if _is_platform_context():
             # Direct filesystem access (platform mode)
@@ -203,14 +257,14 @@ class files:
         else:
             # API call (external mode)
             client = _get_client()
-            response = client.post_sync(
+            response = await client.post(
                 "/api/sdk/files/write",
                 json={"path": path, "content": content, "location": location}
             )
             response.raise_for_status()
 
     @staticmethod
-    def write_bytes(path: str, content: bytes, location: Literal["temp", "workspace"] = "workspace") -> None:
+    async def write_bytes(path: str, content: bytes, location: Literal["temp", "workspace"] = "workspace") -> None:
         """
         Write binary data to a file.
 
@@ -225,7 +279,7 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> files.write_bytes("uploads/image.png", image_data, location="workspace")
+            >>> await files.write_bytes("uploads/image.png", image_data, location="workspace")
         """
         if _is_platform_context():
             # Direct filesystem access (platform mode)
@@ -237,16 +291,14 @@ class files:
             # API call (external mode) - convert bytes to base64 for transport
             import base64
             client = _get_client()
-            # For binary, we encode as base64 and send as text
-            # The API endpoint would need to handle this - for now we just write text
-            response = client.post_sync(
+            response = await client.post(
                 "/api/sdk/files/write",
                 json={"path": path, "content": base64.b64encode(content).decode(), "location": location}
             )
             response.raise_for_status()
 
     @staticmethod
-    def list(directory: str = "", location: Literal["temp", "workspace"] = "workspace") -> list[str]:
+    async def list(directory: str = "", location: Literal["temp", "workspace"] = "workspace") -> list[str]:
         """
         List files in a directory.
 
@@ -264,7 +316,7 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> items = files.list("uploads", location="workspace")
+            >>> items = await files.list("uploads", location="workspace")
             >>> for item in items:
             ...     print(item)
         """
@@ -279,7 +331,7 @@ class files:
         else:
             # API call (external mode)
             client = _get_client()
-            response = client.post_sync(
+            response = await client.post(
                 "/api/sdk/files/list",
                 json={"directory": directory, "location": location}
             )
@@ -287,7 +339,7 @@ class files:
             return response.json()
 
     @staticmethod
-    def delete(path: str, location: Literal["temp", "workspace"] = "workspace") -> None:
+    async def delete(path: str, location: Literal["temp", "workspace"] = "workspace") -> None:
         """
         Delete a file or directory.
 
@@ -302,7 +354,7 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> files.delete("temp/old_file.txt", location="temp")
+            >>> await files.delete("temp/old_file.txt", location="temp")
         """
         if _is_platform_context():
             # Direct filesystem access (platform mode)
@@ -316,14 +368,14 @@ class files:
         else:
             # API call (external mode)
             client = _get_client()
-            response = client.post_sync(
+            response = await client.post(
                 "/api/sdk/files/delete",
                 json={"path": path, "location": location}
             )
             response.raise_for_status()
 
     @staticmethod
-    def exists(path: str, location: Literal["temp", "workspace"] = "workspace") -> bool:
+    async def exists(path: str, location: Literal["temp", "workspace"] = "workspace") -> bool:
         """
         Check if a file or directory exists.
 
@@ -340,8 +392,8 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> if files.exists("data/customers.csv", location="workspace"):
-            ...     data = files.read("data/customers.csv", location="workspace")
+            >>> if await files.exists("data/customers.csv", location="workspace"):
+            ...     data = await files.read("data/customers.csv", location="workspace")
         """
         if _is_platform_context():
             # Direct filesystem access (platform mode)
@@ -354,7 +406,7 @@ class files:
             # API call (external mode) - try to list and catch 404
             try:
                 client = _get_client()
-                response = client.post_sync(
+                response = await client.post(
                     "/api/sdk/files/read",
                     json={"path": path, "location": location}
                 )

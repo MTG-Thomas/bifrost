@@ -70,6 +70,61 @@ class FileStorageService:
         content_type, _ = mimetypes.guess_type(path)
         return content_type or "application/octet-stream"
 
+    async def generate_presigned_upload_url(
+        self,
+        path: str,
+        content_type: str,
+        expires_in: int = 600,
+    ) -> str:
+        """
+        Generate a presigned PUT URL for direct S3 upload.
+
+        Uses the files bucket (not workspace bucket) for form uploads.
+        The files bucket is for runtime uploads that are not git-tracked.
+
+        Args:
+            path: Target path in S3 (e.g., "uploads/{form_id}/{uuid}/{filename}")
+            content_type: MIME type of the file being uploaded
+            expires_in: URL expiration time in seconds (default 10 minutes)
+
+        Returns:
+            Presigned PUT URL for direct browser upload
+        """
+        async with self._get_s3_client() as s3:
+            url = await s3.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.settings.s3_bucket,
+                    "Key": path,
+                    "ContentType": content_type,
+                },
+                ExpiresIn=expires_in,
+            )
+        return url
+
+    async def read_uploaded_file(self, path: str) -> bytes:
+        """
+        Read a file from the bucket (for uploaded files).
+
+        Args:
+            path: File path in the bucket (e.g., uploads/{form_id}/{uuid}/filename)
+
+        Returns:
+            File content as bytes
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+        """
+        async with self._get_s3_client() as s3:
+            try:
+                response = await s3.get_object(
+                    Bucket=self.settings.s3_bucket,
+                    Key=path,
+                )
+                return await response["Body"].read()
+            except s3.exceptions.NoSuchKey:
+                raise FileNotFoundError(f"File not found: {path}")
+
     async def read_file(self, path: str) -> tuple[bytes, WorkspaceFile | None]:
         """
         Read file content and metadata.
@@ -94,7 +149,7 @@ class FileStorageService:
         async with self._get_s3_client() as s3:
             try:
                 response = await s3.get_object(
-                    Bucket=self.settings.s3_workspace_bucket,
+                    Bucket=self.settings.s3_bucket,
                     Key=path,
                 )
                 content = await response["Body"].read()
@@ -128,7 +183,7 @@ class FileStorageService:
         # Write to S3
         async with self._get_s3_client() as s3:
             await s3.put_object(
-                Bucket=self.settings.s3_workspace_bucket,
+                Bucket=self.settings.s3_bucket,
                 Key=path,
                 Body=content,
                 ContentType=content_type,
@@ -184,7 +239,7 @@ class FileStorageService:
         """
         async with self._get_s3_client() as s3:
             await s3.delete_object(
-                Bucket=self.settings.s3_workspace_bucket,
+                Bucket=self.settings.s3_bucket,
                 Key=path,
             )
 
@@ -281,9 +336,9 @@ class FileStorageService:
         local_path.mkdir(parents=True, exist_ok=True)
 
         async with self._get_s3_client() as s3:
-            # List all objects in workspace bucket
+            # List all objects in bucket
             paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=self.settings.s3_workspace_bucket):
+            async for page in paginator.paginate(Bucket=self.settings.s3_bucket):
                 for obj in page.get("Contents", []):
                     key = obj.get("Key")
                     if not key:
@@ -295,7 +350,7 @@ class FileStorageService:
 
                     # Download file
                     response = await s3.get_object(
-                        Bucket=self.settings.s3_workspace_bucket,
+                        Bucket=self.settings.s3_bucket,
                         Key=key,
                     )
                     content = await response["Body"].read()
@@ -353,7 +408,7 @@ class FileStorageService:
         count = 0
         async with self._get_s3_client() as s3:
             paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=self.settings.s3_workspace_bucket):
+            async for page in paginator.paginate(Bucket=self.settings.s3_bucket):
                 for obj in page.get("Contents", []):
                     key = obj.get("Key")
                     size = obj.get("Size", 0)
@@ -362,7 +417,7 @@ class FileStorageService:
 
                     # Get content for hash
                     response = await s3.get_object(
-                        Bucket=self.settings.s3_workspace_bucket,
+                        Bucket=self.settings.s3_bucket,
                         Key=key,
                     )
                     content = await response["Body"].read()

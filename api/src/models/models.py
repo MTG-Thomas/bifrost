@@ -1035,7 +1035,8 @@ class UpdateFormRequest(BaseModel):
 
 class FormExecuteRequest(BaseModel):
     """Request model for executing a form"""
-    form_data: dict[str, Any] = Field(..., description="Form field values")
+    form_data: dict[str, Any] = Field(default_factory=dict, description="Form field values")
+    startup_data: dict[str, Any] | None = Field(None, description="Results from /startup call (launch workflow)")
 
 
 class FormStartupResponse(BaseModel):
@@ -1049,6 +1050,7 @@ class FormCreate(BaseModel):
     name: str
     description: str | None = None
     workflow_id: str | None = None
+    launch_workflow_id: str | None = None
     default_launch_params: dict | None = None
     allowed_query_params: list[str] | None = None
     form_schema: dict | FormSchema
@@ -1071,6 +1073,7 @@ class FormUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     workflow_id: str | None = None
+    launch_workflow_id: str | None = None
     default_launch_params: dict | None = None
     allowed_query_params: list[str] | None = None
     form_schema: dict | FormSchema | None = None
@@ -1097,6 +1100,7 @@ class FormPublic(BaseModel):
     name: str
     description: str | None = None
     workflow_id: str | None = None
+    launch_workflow_id: str | None = None
     default_launch_params: dict | None = None
     allowed_query_params: list[str] | None = None
     form_schema: dict | FormSchema | None = None
@@ -1160,6 +1164,7 @@ class FormPublic(BaseModel):
                 "name": data.name,
                 "description": data.description,
                 "workflow_id": data.workflow_id,
+                "launch_workflow_id": data.launch_workflow_id,
                 "default_launch_params": data.default_launch_params,
                 "allowed_query_params": data.allowed_query_params,
                 "form_schema": {"fields": fields_data},

@@ -51,6 +51,7 @@ class PendingExecution(TypedDict):
     user_name: str
     user_email: str
     form_id: str | None
+    startup: dict[str, Any] | None  # Launch workflow results (available via context.startup)
     created_at: str  # ISO format
     cancelled: bool
 
@@ -93,6 +94,7 @@ class RedisClient:
         user_email: str,
         form_id: str | None = None,
         script_name: str | None = None,
+        startup: dict[str, Any] | None = None,
     ) -> None:
         """
         Store pending execution in Redis.
@@ -110,6 +112,7 @@ class RedisClient:
             user_email: Email of user
             form_id: Optional form ID if triggered by form
             script_name: Optional script name for inline code execution
+            startup: Optional startup data from launch workflow (available via context.startup)
         """
         redis_client = await self._get_redis()
         key = f"{PENDING_KEY_PREFIX}{execution_id}{PENDING_KEY_SUFFIX}"
@@ -124,6 +127,7 @@ class RedisClient:
             "user_name": user_name,
             "user_email": user_email,
             "form_id": form_id,
+            "startup": startup,
             "created_at": datetime.utcnow().isoformat(),
             "cancelled": False,
         }

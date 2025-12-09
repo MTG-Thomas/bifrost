@@ -70,6 +70,7 @@ async def enqueue_workflow_execution(
         user_name=context.name,
         user_email=context.email,
         form_id=form_id,
+        startup=context.startup,  # Pass launch workflow results to worker
     )
 
     # Add to queue tracking (publishes position updates to all queued executions)

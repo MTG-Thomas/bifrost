@@ -95,6 +95,9 @@ class ExecutionRequest:
     # Parameters
     parameters: dict[str, Any] = field(default_factory=dict)
 
+    # Launch workflow results (available via context.startup)
+    startup: dict[str, Any] | None = None
+
     # Flags
     transient: bool = False              # Don't write to DB
     no_cache: bool = False               # For data providers
@@ -175,7 +178,8 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         is_platform_admin=request.is_platform_admin,
         is_function_key=False,  # Engine executions are not function key based
         execution_id=request.execution_id,
-        _config=request.config
+        _config=request.config,
+        startup=request.startup,  # Launch workflow results (from form execution)
     )
 
     # Set bifrost SDK context if available

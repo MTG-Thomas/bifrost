@@ -13,7 +13,7 @@ Forms are persisted to BOTH database AND file system (S3):
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, HTTPException, status
@@ -26,6 +26,8 @@ from src.core.database import DbSession
 from src.models.orm import Form as FormORM, FormField as FormFieldORM, FormRole as FormRoleORM, UserRole as UserRoleORM
 from src.models.models import FormCreate, FormUpdate, FormPublic
 from src.models.models import WorkflowExecutionResponse
+from src.models.models import FileUploadRequest, FileUploadResponse, UploadedFileMetadata
+from src.models.models import FormExecuteRequest, FormStartupResponse
 
 # Import cache invalidation
 try:
@@ -189,6 +191,7 @@ async def _write_form_to_file(form: FormORM, db: AsyncSession) -> str:
         "name": form.name,
         "description": form.description,
         "workflow_id": form.workflow_id,
+        "launch_workflow_id": form.launch_workflow_id,
         "form_schema": form_schema,
         "is_active": form.is_active,
         "is_global": form.organization_id is None,
@@ -273,6 +276,7 @@ async def _deactivate_form_file(form: FormORM, db: AsyncSession) -> None:
         "name": form.name,
         "description": form.description,
         "workflow_id": form.workflow_id,
+        "launch_workflow_id": form.launch_workflow_id,
         "form_schema": form_schema,
         "is_active": False,  # Deactivated
         "is_global": form.organization_id is None,
@@ -398,6 +402,7 @@ async def create_form(
         name=request.name,
         description=request.description,
         workflow_id=request.workflow_id,
+        launch_workflow_id=request.launch_workflow_id,
         default_launch_params=request.default_launch_params,
         allowed_query_params=request.allowed_query_params,
         access_level=request.access_level,
@@ -558,6 +563,8 @@ async def update_form(
         form.description = request.description
     if request.workflow_id is not None:
         form.workflow_id = request.workflow_id
+    if request.launch_workflow_id is not None:
+        form.launch_workflow_id = request.launch_workflow_id
     if request.default_launch_params is not None:
         form.default_launch_params = request.default_launch_params
     if request.allowed_query_params is not None:
@@ -753,7 +760,7 @@ async def execute_form(
     ctx: Context,
     user: CurrentActiveUser,
     db: DbSession,
-    input_data: dict = Body(default={}),
+    request: FormExecuteRequest = Body(default=None),
 ) -> WorkflowExecutionResponse:
     """
     Execute the workflow linked to a form.
@@ -762,9 +769,17 @@ async def execute_form(
     Access control is based on the form's access_level:
     - 'authenticated': Any logged-in user can execute
     - 'role_based': User must be assigned to a role that has this form
+
+    The request body can include:
+    - form_data: Form field values to pass to the workflow
+    - startup_data: Results from /startup call (launch workflow) available via context.startup
     """
     from src.sdk.context import ExecutionContext as SharedContext, Organization
     from src.services.execution.service import run_workflow, WorkflowNotFoundError, WorkflowLoadError
+
+    # Default request if None (backward compatibility with empty body)
+    if request is None:
+        request = FormExecuteRequest()
 
     # Get the form
     result = await db.execute(select(FormORM).where(FormORM.id == form_id))
@@ -792,7 +807,7 @@ async def execute_form(
         )
 
     # Merge default launch params with provided input
-    merged_params = {**(form.default_launch_params or {}), **input_data}
+    merged_params = {**(form.default_launch_params or {}), **request.form_data}
 
     # Create organization object if org_id is set
     org = None
@@ -800,6 +815,7 @@ async def execute_form(
         org = Organization(id=str(ctx.org_id), name="", is_active=True)
 
     # Create shared context for execution
+    # startup_data from the request is passed to context.startup
     shared_ctx = SharedContext(
         user_id=str(ctx.user.user_id),
         name=ctx.user.name,
@@ -809,6 +825,7 @@ async def execute_form(
         is_platform_admin=ctx.user.is_superuser,
         is_function_key=False,
         execution_id=str(uuid4()),
+        startup=request.startup_data,
     )
 
     try:
@@ -844,3 +861,220 @@ async def execute_form(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to execute form",
         )
+
+
+# =============================================================================
+# Launch Workflow (Startup)
+# =============================================================================
+
+
+@router.post(
+    "/{form_id}/startup",
+    response_model=FormStartupResponse,
+    summary="Execute launch workflow",
+    description="Execute the launch workflow to populate form context before main execution.",
+)
+async def execute_startup_workflow(
+    form_id: UUID,
+    ctx: Context,
+    user: CurrentActiveUser,
+    db: DbSession,
+    input_data: dict = Body(default={}),
+) -> FormStartupResponse:
+    """
+    Execute the launch workflow to populate form context.
+
+    The launch workflow runs BEFORE the form is displayed to the user.
+    Its results are returned to the client, which stores them and passes
+    them back during /execute. The main workflow can then access these
+    results via context.startup.
+
+    Use cases:
+    - Pre-fetch dynamic options based on user's org
+    - Load user-specific defaults
+    - Validate form access based on external systems
+
+    Returns:
+        FormStartupResponse with the launch workflow's result
+    """
+    from src.sdk.context import ExecutionContext as SharedContext, Organization
+    from src.services.execution.service import run_workflow, WorkflowNotFoundError, WorkflowLoadError
+
+    # Get the form
+    result = await db.execute(select(FormORM).where(FormORM.id == form_id))
+    form = result.scalar_one_or_none()
+
+    if not form or not form.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Form not found",
+        )
+
+    # Check access
+    has_access = await _check_form_access(db, form, ctx.user.user_id, ctx.user.is_superuser)
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this form",
+        )
+
+    # If no launch workflow, return empty result
+    if not form.launch_workflow_id:
+        return FormStartupResponse(result=None)
+
+    # Merge default launch params with provided input
+    merged_params = {**(form.default_launch_params or {}), **input_data}
+
+    # Create organization object if org_id is set
+    org = None
+    if ctx.org_id:
+        org = Organization(id=str(ctx.org_id), name="", is_active=True)
+
+    # Create shared context for execution
+    shared_ctx = SharedContext(
+        user_id=str(ctx.user.user_id),
+        name=ctx.user.name,
+        email=ctx.user.email,
+        scope=str(ctx.org_id) if ctx.org_id else "GLOBAL",
+        organization=org,
+        is_platform_admin=ctx.user.is_superuser,
+        is_function_key=False,
+        execution_id=str(uuid4()),
+    )
+
+    try:
+        # Execute launch workflow by ID
+        response = await run_workflow(
+            context=shared_ctx,
+            workflow_id=form.launch_workflow_id,
+            input_data=merged_params,
+            form_id=str(form.id),
+        )
+
+        logger.info(f"Launch workflow executed for form {form_id} by user {ctx.user.email}")
+
+        return FormStartupResponse(result=response.result)
+
+    except WorkflowNotFoundError as e:
+        logger.error(f"Launch workflow not found for form {form_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Launch workflow not found: {form.launch_workflow_id}",
+        )
+    except WorkflowLoadError as e:
+        logger.error(f"Launch workflow load error for form {form_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load launch workflow: {str(e)}",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing launch workflow for form {form_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to execute launch workflow",
+        )
+
+
+# =============================================================================
+# File Upload
+# =============================================================================
+
+
+def _sanitize_filename(filename: str) -> str:
+    """
+    Sanitize filename for safe storage.
+
+    Removes path separators, null bytes, and other potentially dangerous characters.
+    Preserves the file extension.
+    """
+    # Remove path separators and null bytes
+    sanitized = re.sub(r'[/\\:\x00]', '', filename)
+    # Remove leading/trailing whitespace and dots (to prevent hidden files)
+    sanitized = sanitized.strip('. ')
+    # If nothing left, use a default name
+    if not sanitized:
+        sanitized = "unnamed_file"
+    return sanitized
+
+
+@router.post(
+    "/{form_id}/upload",
+    response_model=FileUploadResponse,
+    summary="Generate presigned URL for file upload",
+    description="Generate a presigned S3 URL for direct file upload. The file will be stored in the uploads folder.",
+)
+async def generate_upload_url(
+    form_id: UUID,
+    request: FileUploadRequest,
+    ctx: Context,
+    user: CurrentActiveUser,
+    db: DbSession,
+) -> FileUploadResponse:
+    """
+    Generate a presigned S3 URL for direct file upload.
+
+    Path: uploads/{form_id}/{uuid}/{sanitized_filename}
+    - Organized by form for easy association
+    - UUID prevents collisions within form
+    - File exists before execution, workflow receives path in file_field metadata
+
+    Returns:
+        FileUploadResponse with presigned URL and file metadata
+    """
+    from src.services.file_storage_service import FileStorageService
+
+    # Verify form exists and user has access
+    result = await db.execute(select(FormORM).where(FormORM.id == form_id))
+    form = result.scalar_one_or_none()
+
+    if not form or not form.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Form not found",
+        )
+
+    # Check access
+    has_access = await _check_form_access(db, form, ctx.user.user_id, ctx.user.is_superuser)
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this form",
+        )
+
+    # Generate unique path for upload
+    file_uuid = str(uuid4())
+    sanitized_name = _sanitize_filename(request.file_name)
+    path = f"uploads/{form_id}/{file_uuid}/{sanitized_name}"
+
+    # Generate presigned URL
+    storage = FileStorageService(db)
+    try:
+        upload_url = await storage.generate_presigned_upload_url(
+            path=path,
+            content_type=request.content_type,
+            expires_in=600,  # 10 minutes
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for form {form_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate upload URL",
+        )
+
+    # Calculate expiration time
+    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat() + "Z"
+
+    return FileUploadResponse(
+        upload_url=upload_url,
+        blob_uri=path,
+        expires_at=expires_at,
+        file_metadata=UploadedFileMetadata(
+            name=request.file_name,
+            container="uploads",  # Root folder prefix
+            path=path,
+            content_type=request.content_type,
+            size=request.file_size,
+        ),
+    )

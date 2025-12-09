@@ -178,6 +178,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             timeout_seconds=context_data.get("timeout_seconds", 1800),
             cache_ttl_seconds=context_data.get("cache_ttl_seconds", 300),
             parameters=context_data.get("parameters", {}),
+            startup=context_data.get("startup"),  # Launch workflow results
             transient=context_data.get("transient", False),
             no_cache=context_data.get("no_cache", False),
             is_platform_admin=context_data.get("is_platform_admin", False),
@@ -266,9 +267,9 @@ async def _download_workspace_from_s3(settings, local_path) -> bool:
             aws_secret_access_key=settings.s3_secret_key,
             region_name=settings.s3_region,
         ) as s3:
-            # List all objects in workspace bucket
+            # List all objects in bucket
             paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=settings.s3_workspace_bucket):
+            async for page in paginator.paginate(Bucket=settings.s3_bucket):
                 for obj in page.get("Contents", []):
                     key = obj["Key"]
                     local_file = local_path / key
@@ -278,7 +279,7 @@ async def _download_workspace_from_s3(settings, local_path) -> bool:
 
                     # Download file
                     response = await s3.get_object(
-                        Bucket=settings.s3_workspace_bucket,
+                        Bucket=settings.s3_bucket,
                         Key=key,
                     )
                     content = await response["Body"].read()

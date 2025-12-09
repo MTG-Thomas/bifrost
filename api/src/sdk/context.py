@@ -92,6 +92,11 @@ class ExecutionContext:
     # Access via context.parameters.get('param_name')
     parameters: dict[str, Any] = field(default_factory=dict)
 
+    # ==================== LAUNCH WORKFLOW DATA ====================
+    # Results from the launch workflow (pre-execution context population)
+    # Access via context.startup (None if no launch workflow)
+    startup: dict[str, Any] | None = field(default=None)
+
     # ==================== WORKFLOW STATE (private) ====================
     _config: dict[str, Any] = field(default_factory=dict)
     _config_resolver: ConfigResolver = field(default_factory=ConfigResolver)
