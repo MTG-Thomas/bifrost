@@ -108,12 +108,12 @@ class UpdateOAuthConnectionRequest(BaseModel):
     Request model for updating an OAuth connection
     PUT /api/oauth/connections/{connection_name}
     """
-    name: str | None = Field(None, max_length=255, description="Display name")
-    client_id: str | None = Field(None, min_length=1)
-    client_secret: str | None = Field(None, min_length=1)
-    authorization_url: str | None = Field(None, pattern=r"^https://")
-    token_url: str | None = Field(None, pattern=r"^https://")
-    scopes: list[str] | None = Field(None, description="List of OAuth scopes")
+    name: str | None = Field(default=None, max_length=255, description="Display name")
+    client_id: str | None = Field(default=None, min_length=1)
+    client_secret: str | None = Field(default=None, min_length=1)
+    authorization_url: str | None = Field(default=None, pattern=r"^https://")
+    token_url: str | None = Field(default=None, pattern=r"^https://")
+    scopes: list[str] | None = Field(default=None, description="List of OAuth scopes")
 
     @field_validator('scopes', mode='before')
     @classmethod
@@ -138,18 +138,18 @@ class OAuthConnectionSummary(BaseModel):
     Does not include sensitive fields or detailed configuration
     """
     connection_name: str
-    name: str | None = Field(None, description="Display name for the connection")
-    provider: str | None = Field(None, description="Provider identifier (same as connection_name)")
+    name: str | None = Field(default=None, description="Display name for the connection")
+    provider: str | None = Field(default=None, description="Provider identifier (same as connection_name)")
     description: str | None = None
     oauth_flow_type: OAuthFlowType
     status: OAuthStatus
     status_message: str | None = None
     expires_at: datetime | None = Field(
-        None,
+        default=None,
         description="When the current access token expires"
     )
     last_refresh_at: datetime | None = Field(
-        None,
+        default=None,
         description="Last successful token refresh"
     )
     created_at: datetime
@@ -166,8 +166,8 @@ class OAuthConnectionDetail(BaseModel):
     Includes configuration details but masks sensitive fields
     """
     connection_name: str
-    name: str | None = Field(None, description="Display name for the connection")
-    provider: str | None = Field(None, description="Provider identifier")
+    name: str | None = Field(default=None, description="Display name for the connection")
+    provider: str | None = Field(default=None, description="Provider identifier")
     description: str | None = None
     oauth_flow_type: OAuthFlowType
     client_id: str = Field(
@@ -175,7 +175,7 @@ class OAuthConnectionDetail(BaseModel):
         description="OAuth client ID (safe to expose)"
     )
     authorization_url: str | None = Field(
-        None,
+        default=None,
         description="OAuth authorization endpoint (required for authorization_code, not used for client_credentials)"
     )
     token_url: str
@@ -220,7 +220,7 @@ class OAuthConnection(BaseModel):
     )
 
     # OAuth Configuration
-    description: str | None = Field(None, max_length=500)
+    description: str | None = Field(default=None, max_length=500)
     oauth_flow_type: OAuthFlowType
     client_id: str
     client_secret_config_key: str = Field(
@@ -232,7 +232,7 @@ class OAuthConnection(BaseModel):
         description="Config key containing the encrypted OAuth response (oauth_{name}_oauth_response)"
     )
     authorization_url: str | None = Field(
-        None,
+        default=None,
         pattern=r"^https://",
         description="OAuth authorization endpoint (required for authorization_code, not used for client_credentials)"
     )
@@ -246,7 +246,7 @@ class OAuthConnection(BaseModel):
     # Token metadata (not the actual tokens - those are in Config/KeyVault)
     token_type: str = "Bearer"
     expires_at: datetime | None = Field(
-        None,
+        default=None,
         description="When the current access token expires (copied from secret for quick checks)"
     )
 
@@ -361,7 +361,7 @@ class OAuthCredentialsModel(BaseModel):
         description="ISO 8601 timestamp when token expires"
     )
     refresh_token: str | None = Field(
-        None,
+        default=None,
         description="Refresh token if available"
     )
     scopes: str = Field(
@@ -379,7 +379,7 @@ class OAuthCredentialsResponse(BaseModel):
     """
     connection_name: str
     credentials: OAuthCredentialsModel | None = Field(
-        None,
+        default=None,
         description="Credentials if connection is active, None if not connected"
     )
     status: OAuthStatus = Field(
@@ -387,7 +387,7 @@ class OAuthCredentialsResponse(BaseModel):
         description="Current connection status"
     )
     expires_at: str | None = Field(
-        None,
+        default=None,
         description="ISO 8601 timestamp when token expires"
     )
 
@@ -397,7 +397,7 @@ class OAuthCredentialsResponse(BaseModel):
 class OAuthCallbackRequest(BaseModel):
     """Request model for OAuth callback endpoint"""
     code: str = Field(..., description="Authorization code from OAuth provider")
-    state: str | None = Field(None, description="State parameter for CSRF protection")
+    state: str | None = Field(default=None, description="State parameter for CSRF protection")
 
 
 class OAuthCallbackResponse(BaseModel):
@@ -406,8 +406,8 @@ class OAuthCallbackResponse(BaseModel):
     message: str = Field(..., description="Status message")
     status: str = Field(..., description="Connection status")
     connection_name: str = Field(..., description="Name of the OAuth connection")
-    warning_message: str | None = Field(None, description="Warning message displayed to user (e.g., missing refresh token)")
-    error_message: str | None = Field(None, description="Error message displayed to user")
+    warning_message: str | None = Field(default=None, description="Warning message displayed to user (e.g., missing refresh token)")
+    error_message: str | None = Field(default=None, description="Error message displayed to user")
 
 
 class OAuthProviderBase(BaseModel):

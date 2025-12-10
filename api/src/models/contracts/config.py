@@ -26,7 +26,7 @@ class Config(BaseModel):
     scope: Literal["GLOBAL", "org"] = Field(
         default="org", description="GLOBAL for MSP-wide or 'org' for org-specific")
     org_id: str | None = Field(
-        None, description="Organization ID (only for org-specific config)")
+        default=None, description="Organization ID (only for org-specific config)")
     description: str | None = None
     updated_at: datetime | None = None
     updated_by: str | None = None
@@ -37,7 +37,7 @@ class SetConfigRequest(BaseModel):
     key: str = Field(..., pattern=r"^[a-zA-Z0-9_]+$")
     value: str = Field(..., description="Config value. For SECRET type, this will be encrypted before storage.")
     type: ConfigType
-    description: str | None = Field(None, description="Optional description of this config entry")
+    description: str | None = Field(default=None, description="Optional description of this config entry")
 
 
 # CRUD Pattern Models for Config
@@ -124,7 +124,7 @@ class SecretListResponse(BaseModel):
     secrets: list[str] = Field(...,
                                description="List of secret names available in Key Vault")
     org_id: str | None = Field(
-        None, description="Organization ID filter (if applied)")
+        default=None, description="Organization ID filter (if applied)")
     count: int = Field(..., description="Total number of secrets returned")
 
 
@@ -157,7 +157,7 @@ class SecretResponse(BaseModel):
     org_id: str = Field(..., description="Organization ID or 'GLOBAL'")
     secret_key: str = Field(..., description="Secret key portion")
     value: str | None = Field(
-        None, description="Secret value (only shown immediately after create/update)")
+        default=None, description="Secret value (only shown immediately after create/update)")
     message: str = Field(..., description="Operation result message")
 
 

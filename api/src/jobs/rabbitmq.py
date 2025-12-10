@@ -12,7 +12,8 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import aio_pika
-from aio_pika import IncomingMessage, RobustConnection, RobustChannel
+from aio_pika import IncomingMessage
+from aio_pika.abc import AbstractRobustConnection, AbstractRobustChannel
 from aio_pika.pool import Pool
 
 from src.config import get_settings
@@ -58,10 +59,11 @@ class RabbitMQConnection:
         """Initialize connection and channel pools."""
         settings = get_settings()
 
-        async def get_connection() -> RobustConnection:
+        async def get_connection() -> AbstractRobustConnection:
             return await aio_pika.connect_robust(settings.rabbitmq_url)
 
-        async def get_channel() -> RobustChannel:
+        async def get_channel() -> AbstractRobustChannel:
+            assert self._connection_pool is not None
             async with self._connection_pool.acquire() as connection:
                 return await connection.channel()
 
@@ -112,7 +114,7 @@ class BaseConsumer(ABC):
         self.prefetch_count = prefetch_count
         self.dead_letter_exchange = dead_letter_exchange or f"{queue_name}-dlx"
 
-        self._channel: RobustChannel | None = None
+        self._channel: AbstractRobustChannel | None = None
         self._queue: aio_pika.Queue | None = None
         self._running = False
 
@@ -125,25 +127,26 @@ class BaseConsumer(ABC):
         # Store the context manager so it stays open
         self._connection_ctx = rabbitmq.get_connection()
         connection = await self._connection_ctx.__aenter__()
-        self._channel = await connection.channel()
-        await self._channel.set_qos(prefetch_count=self.prefetch_count)
+        channel = await connection.channel()
+        self._channel = channel
+        await channel.set_qos(prefetch_count=self.prefetch_count)
 
         # Declare dead letter exchange
-        dlx = await self._channel.declare_exchange(
+        dlx = await channel.declare_exchange(
             self.dead_letter_exchange,
             aio_pika.ExchangeType.DIRECT,
             durable=True,
         )
 
         # Declare dead letter queue
-        dlq = await self._channel.declare_queue(
+        dlq = await channel.declare_queue(
             f"{self.queue_name}-poison",
             durable=True,
         )
         await dlq.bind(dlx, routing_key=self.queue_name)
 
         # Declare main queue with dead letter routing
-        self._queue = await self._channel.declare_queue(
+        queue = await channel.declare_queue(
             self.queue_name,
             durable=True,
             arguments={
@@ -151,11 +154,12 @@ class BaseConsumer(ABC):
                 "x-dead-letter-routing-key": self.queue_name,
             },
         )
+        self._queue = queue
 
         logger.info(f"Consumer started for queue: {self.queue_name}")
 
         # Start consuming
-        await self._queue.consume(self._on_message)
+        await queue.consume(self._on_message)
 
     async def stop(self) -> None:
         """Stop consuming messages."""
@@ -246,7 +250,7 @@ class BroadcastConsumer(ABC):
             exchange_name: Name of the fanout exchange to consume from
         """
         self.exchange_name = exchange_name
-        self._channel: RobustChannel | None = None
+        self._channel: AbstractRobustChannel | None = None
         self._queue: aio_pika.Queue | None = None
         self._running = False
         self._connection_ctx = None
@@ -264,11 +268,12 @@ class BroadcastConsumer(ABC):
         await rabbitmq.init_pools()
         self._connection_ctx = rabbitmq.get_connection()
         connection = await self._connection_ctx.__aenter__()
-        self._channel = await connection.channel()
-        await self._channel.set_qos(prefetch_count=1)
+        channel = await connection.channel()
+        self._channel = channel
+        await channel.set_qos(prefetch_count=1)
 
         # Declare fanout exchange
-        exchange = await self._channel.declare_exchange(
+        exchange = await channel.declare_exchange(
             self.exchange_name,
             aio_pika.ExchangeType.FANOUT,
             durable=True,
@@ -278,19 +283,20 @@ class BroadcastConsumer(ABC):
         # Empty name = RabbitMQ generates unique name
         # exclusive = only this consumer can use it
         # auto_delete = delete when consumer disconnects
-        self._queue = await self._channel.declare_queue(
+        queue = await channel.declare_queue(
             "",
             exclusive=True,
             auto_delete=True,
         )
+        self._queue = queue
 
         # Bind queue to fanout exchange
-        await self._queue.bind(exchange)
+        await queue.bind(exchange)
 
         logger.info(f"Broadcast consumer started for exchange: {self.exchange_name}")
 
         # Start consuming
-        await self._queue.consume(self._on_message)
+        await queue.consume(self._on_message)
 
     async def stop(self) -> None:
         """Stop consuming messages."""

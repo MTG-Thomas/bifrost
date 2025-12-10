@@ -28,8 +28,8 @@ class FileChange(BaseModel):
     """Represents a changed file in Git"""
     path: str = Field(..., description="Relative path from workspace root")
     status: GitFileStatus = Field(..., description="Git status of the file")
-    additions: int | None = Field(None, description="Number of lines added")
-    deletions: int | None = Field(None, description="Number of lines deleted")
+    additions: int | None = Field(default=None, description="Number of lines added")
+    deletions: int | None = Field(default=None, description="Number of lines deleted")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -39,7 +39,7 @@ class ConflictInfo(BaseModel):
     file_path: str = Field(..., description="Relative path to conflicted file")
     current_content: str = Field(..., description="Local version of the file")
     incoming_content: str = Field(..., description="Remote version of the file")
-    base_content: str | None = Field(None, description="Common ancestor version (if available)")
+    base_content: str | None = Field(default=None, description="Common ancestor version (if available)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -64,9 +64,9 @@ class GitHubConfigResponse(BaseModel):
     """Response after configuring GitHub"""
     configured: bool = Field(..., description="Whether GitHub is fully configured")
     token_saved: bool = Field(default=False, description="Whether a GitHub token has been validated and saved")
-    repo_url: str | None = Field(None, description="Configured repository URL")
-    branch: str | None = Field(None, description="Configured branch")
-    backup_path: str | None = Field(None, description="Path to backup directory if workspace was backed up")
+    repo_url: str | None = Field(default=None, description="Configured repository URL")
+    branch: str | None = Field(default=None, description="Configured branch")
+    backup_path: str | None = Field(default=None, description="Path to backup directory if workspace was backed up")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -75,7 +75,7 @@ class GitHubRepoInfo(BaseModel):
     """GitHub repository information"""
     name: str = Field(..., description="Repository name (owner/repo)")
     full_name: str = Field(..., description="Full repository name")
-    description: str | None = Field(None, description="Repository description")
+    description: str | None = Field(default=None, description="Repository description")
     url: str = Field(..., description="Repository URL")
     private: bool = Field(..., description="Whether repository is private")
 
@@ -93,7 +93,7 @@ class DetectedRepoInfo(BaseModel):
 class GitHubReposResponse(BaseModel):
     """Response with list of GitHub repositories"""
     repositories: list[GitHubRepoInfo] = Field(..., description="List of accessible repositories")
-    detected_repo: DetectedRepoInfo | None = Field(None, description="Auto-detected existing repository")
+    detected_repo: DetectedRepoInfo | None = Field(default=None, description="Auto-detected existing repository")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -121,7 +121,7 @@ class WorkspaceAnalysisResponse(BaseModel):
         description="Current state of the workspace directory"
     )
     file_count: int = Field(..., description="Number of files in workspace (excluding .git)")
-    existing_remote: str | None = Field(None, description="URL of existing Git remote (if any)")
+    existing_remote: str | None = Field(default=None, description="URL of existing Git remote (if any)")
     requires_confirmation: bool = Field(..., description="Whether user needs to confirm replacing workspace")
     backup_will_be_created: bool = Field(default=True, description="Indicates a backup will be created before replacing")
 
@@ -131,9 +131,9 @@ class WorkspaceAnalysisResponse(BaseModel):
 class CreateRepoRequest(BaseModel):
     """Request to create a new GitHub repository"""
     name: str = Field(..., min_length=1, description="Repository name")
-    description: str | None = Field(None, description="Repository description")
+    description: str | None = Field(default=None, description="Repository description")
     private: bool = Field(default=True, description="Whether repository should be private")
-    organization: str | None = Field(None, description="Organization name (if creating in an org)")
+    organization: str | None = Field(default=None, description="Organization name (if creating in an org)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -144,11 +144,11 @@ class GitHubConfigEntity(BaseModel):
         ...,
         description="Integration status: disconnected (inactive), token_saved (validated), configured (ready)"
     )
-    token_config_key: str | None = Field(None, description="Config key containing the encrypted GitHub token")
-    repo_url: str | None = Field(None, description="Configured repository URL")
-    production_branch: str | None = Field(None, description="Production branch to sync with")
-    updated_at: datetime | None = Field(None, description="Last update timestamp")
-    updated_by: str | None = Field(None, description="User who last updated configuration")
+    token_config_key: str | None = Field(default=None, description="Config key containing the encrypted GitHub token")
+    repo_url: str | None = Field(default=None, description="Configured repository URL")
+    production_branch: str | None = Field(default=None, description="Production branch to sync with")
+    updated_at: datetime | None = Field(default=None, description="Last update timestamp")
+    updated_by: str | None = Field(default=None, description="User who last updated configuration")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -167,7 +167,7 @@ class FetchFromGitHubResponse(BaseModel):
     success: bool = Field(..., description="Whether fetch was successful")
     commits_ahead: int = Field(default=0, description="Number of local commits ahead of remote")
     commits_behind: int = Field(default=0, description="Number of commits behind remote")
-    error: str | None = Field(None, description="Error message if fetch failed")
+    error: str | None = Field(default=None, description="Error message if fetch failed")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -182,17 +182,17 @@ class CommitAndPushRequest(BaseModel):
 class CommitAndPushResponse(BaseModel):
     """Response after commit and push"""
     success: bool = Field(..., description="Whether operation succeeded")
-    commit_sha: str | None = Field(None, description="SHA of created commit")
+    commit_sha: str | None = Field(default=None, description="SHA of created commit")
     files_committed: int = Field(..., description="Number of files committed")
-    error: str | None = Field(None, description="Error message if operation failed")
+    error: str | None = Field(default=None, description="Error message if operation failed")
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class PushToGitHubRequest(BaseModel):
     """Request to push to GitHub"""
-    message: str | None = Field(None, description="Commit message")
-    connection_id: str | None = Field(None, description="WebPubSub connection ID for streaming logs")
+    message: str | None = Field(default=None, description="Commit message")
+    connection_id: str | None = Field(default=None, description="WebPubSub connection ID for streaming logs")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -200,14 +200,14 @@ class PushToGitHubRequest(BaseModel):
 class PushToGitHubResponse(BaseModel):
     """Response after pushing to GitHub"""
     success: bool = Field(..., description="Whether push succeeded")
-    error: str | None = Field(None, description="Error message if push failed")
+    error: str | None = Field(default=None, description="Error message if push failed")
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class PullFromGitHubRequest(BaseModel):
     """Request to pull from GitHub"""
-    connection_id: str | None = Field(None, description="WebPubSub connection ID for streaming logs")
+    connection_id: str | None = Field(default=None, description="WebPubSub connection ID for streaming logs")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -217,14 +217,14 @@ class PullFromGitHubResponse(BaseModel):
     success: bool = Field(..., description="Whether pull succeeded")
     updated_files: list[str] = Field(default_factory=list, description="List of updated file paths")
     conflicts: list[ConflictInfo] = Field(default_factory=list, description="List of conflicts (if any)")
-    error: str | None = Field(None, description="Error message if pull failed")
+    error: str | None = Field(default=None, description="Error message if pull failed")
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class GitHubSyncRequest(BaseModel):
     """Request to sync with GitHub (pull + push)"""
-    connection_id: str | None = Field(None, description="WebPubSub connection ID for streaming logs")
+    connection_id: str | None = Field(default=None, description="WebPubSub connection ID for streaming logs")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -256,7 +256,7 @@ class GitRefreshStatusResponse(BaseModel):
     success: bool = Field(..., description="Whether refresh was successful")
     initialized: bool = Field(..., description="Whether Git repository is initialized")
     configured: bool = Field(..., description="Whether GitHub integration is configured")
-    current_branch: str | None = Field(None, description="Current branch name")
+    current_branch: str | None = Field(default=None, description="Current branch name")
 
     # Local changes
     changed_files: list[FileChange] = Field(default_factory=list, description="List of locally changed files")
@@ -272,7 +272,7 @@ class GitRefreshStatusResponse(BaseModel):
 
     # Metadata
     last_synced: str = Field(..., description="ISO timestamp of when sync was performed")
-    error: str | None = Field(None, description="Error message if sync failed")
+    error: str | None = Field(default=None, description="Error message if sync failed")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -281,8 +281,8 @@ class DiscardUnpushedCommitsResponse(BaseModel):
     """Response after discarding unpushed commits"""
     success: bool = Field(..., description="Whether discard was successful")
     discarded_commits: list[CommitInfo] = Field(default_factory=list, description="List of commits that were discarded")
-    new_head: str | None = Field(None, description="New HEAD commit SHA after discard")
-    error: str | None = Field(None, description="Error message if operation failed")
+    new_head: str | None = Field(default=None, description="New HEAD commit SHA after discard")
+    error: str | None = Field(default=None, description="Error message if operation failed")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -304,7 +304,7 @@ class FileDiffRequest(BaseModel):
 class FileDiffResponse(BaseModel):
     """Response with file diff information"""
     file_path: str = Field(..., description="Relative path to file")
-    old_content: str | None = Field(None, description="Previous file content (None if new file)")
+    old_content: str | None = Field(default=None, description="Previous file content (None if new file)")
     new_content: str = Field(..., description="Current file content")
     additions: int = Field(..., description="Number of lines added")
     deletions: int = Field(..., description="Number of lines deleted")
@@ -316,7 +316,7 @@ class ResolveConflictRequest(BaseModel):
     """Request to resolve a conflict"""
     file_path: str = Field(..., min_length=1, description="Relative path to conflicted file")
     resolution: Literal["current", "incoming", "both", "manual"] = Field(..., description="How to resolve conflict")
-    manual_content: str | None = Field(None, description="Manual resolution content (required if resolution='manual')")
+    manual_content: str | None = Field(default=None, description="Manual resolution content (required if resolution='manual')")
 
     @model_validator(mode='after')
     def validate_manual_content(self):

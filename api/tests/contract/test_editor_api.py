@@ -99,7 +99,7 @@ class TestEditorModelContracts:
         request = SearchRequest(
             query="def run",
             case_sensitive=False,
-            regex=False,
+            is_regex=False,
             include_pattern="**/*.py",
             max_results=100,
         )

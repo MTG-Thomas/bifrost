@@ -107,9 +107,17 @@ async def _apply_config_change(db: "AsyncSession", change: dict[str, Any]) -> No
     org_uuid = UUID(org_id) if org_id and org_id != "GLOBAL" else None
 
     if operation == "delete":
-        await db.execute(delete(Config).where(Config.key == key, Config.organization_id == org_uuid))
+        await db.execute(
+            delete(Config).where(
+                Config.key == key,
+                Config.organization_id == org_uuid if org_uuid else Config.organization_id.is_(None)
+            )
+        )
     else:
-        result = await db.execute(select(Config).where(Config.key == key, Config.organization_id == org_uuid))
+        if org_uuid:
+            result = await db.execute(select(Config).where(Config.key == key, Config.organization_id == org_uuid))
+        else:
+            result = await db.execute(select(Config).where(Config.key == key, Config.organization_id.is_(None)))
         existing = result.scalars().first()
 
         config_type = ConfigType(data.get("config_type", "string"))
@@ -119,7 +127,13 @@ async def _apply_config_change(db: "AsyncSession", change: dict[str, Any]) -> No
             existing.config_type = config_type
             existing.updated_by = user_id or "system"
         else:
-            db.add(Config(organization_id=org_uuid, key=key, value={"value": data.get("value")}, config_type=config_type, updated_by=user_id))
+            db.add(Config(
+                organization_id=org_uuid,
+                key=key,
+                value={"value": data.get("value")},
+                config_type=config_type,
+                updated_by=user_id or "system"
+            ))
 
 
 async def _apply_role_change(db: "AsyncSession", change: dict[str, Any]) -> None:
@@ -131,7 +145,7 @@ async def _apply_role_change(db: "AsyncSession", change: dict[str, Any]) -> None
     entity_key = change.get("entity_key")
     org_id = change.get("org_id")
     data = change.get("data", {})
-    user_id = change.get("user_id")
+    user_id = change.get("user_id") or "system"
 
     org_uuid = UUID(org_id) if org_id and org_id != "GLOBAL" else None
     role_uuid = UUID(role_id) if role_id else UUID(entity_key)
@@ -149,7 +163,14 @@ async def _apply_role_change(db: "AsyncSession", change: dict[str, Any]) -> None
                 if field in data:
                     setattr(role, field, data[field])
     elif operation == "create":
-        db.add(Role(id=role_uuid, organization_id=org_uuid, name=data.get("name", ""), description=data.get("description", ""), is_active=True, created_by=user_id))
+        db.add(Role(
+            id=role_uuid,
+            organization_id=org_uuid,
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            is_active=True,
+            created_by=user_id
+        ))
 
 
 async def _apply_org_change(db: "AsyncSession", change: dict[str, Any]) -> None:
@@ -160,7 +181,7 @@ async def _apply_org_change(db: "AsyncSession", change: dict[str, Any]) -> None:
     org_id = change.get("entity_id")
     entity_key = change.get("entity_key")
     data = change.get("data", {})
-    user_id = change.get("user_id")
+    user_id = change.get("user_id") or "system"
 
     org_uuid = UUID(org_id) if org_id else UUID(entity_key)
 
@@ -177,36 +198,48 @@ async def _apply_org_change(db: "AsyncSession", change: dict[str, Any]) -> None:
                 if field in data:
                     setattr(org, field, data[field])
     elif operation == "create":
-        db.add(Organization(id=org_uuid, name=data.get("name", ""), domain=data.get("domain"), is_active=data.get("is_active", True), created_by=user_id))
+        db.add(Organization(
+            id=org_uuid,
+            name=data.get("name", ""),
+            domain=data.get("domain"),
+            is_active=data.get("is_active", True),
+            created_by=user_id
+        ))
 
 
 async def _apply_user_role_change(db: "AsyncSession", change: dict[str, Any]) -> None:
     """Apply user-role assignment."""
+    from sqlalchemy import and_
     from src.models import UserRole
 
     role_id = change.get("entity_id")
     data = change.get("data", {})
-    assigned_by = change.get("user_id")
+    assigned_by = change.get("user_id") or "system"
     role_uuid = UUID(role_id)
 
     for user_id in data.get("user_ids", []):
         user_uuid = UUID(user_id)
-        result = await db.execute(select(UserRole).where(UserRole.role_id == role_uuid, UserRole.user_id == user_uuid))
+        result = await db.execute(
+            select(UserRole).where(and_(UserRole.role_id == role_uuid, UserRole.user_id == user_uuid))
+        )
         if not result.scalars().first():
             db.add(UserRole(role_id=role_uuid, user_id=user_uuid, assigned_by=assigned_by))
 
 
 async def _apply_form_role_change(db: "AsyncSession", change: dict[str, Any]) -> None:
     """Apply form-role assignment."""
+    from sqlalchemy import and_
     from src.models import FormRole
 
     role_id = change.get("entity_id")
     data = change.get("data", {})
-    assigned_by = change.get("user_id")
+    assigned_by = change.get("user_id") or "system"
     role_uuid = UUID(role_id)
 
     for form_id in data.get("form_ids", []):
         form_uuid = UUID(form_id)
-        result = await db.execute(select(FormRole).where(FormRole.role_id == role_uuid, FormRole.form_id == form_uuid))
+        result = await db.execute(
+            select(FormRole).where(and_(FormRole.role_id == role_uuid, FormRole.form_id == form_uuid))
+        )
         if not result.scalars().first():
             db.add(FormRole(role_id=role_uuid, form_id=form_uuid, assigned_by=assigned_by))

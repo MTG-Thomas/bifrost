@@ -139,7 +139,7 @@ class WorkspaceScanRequest(BaseModel):
 class FileScanRequest(BaseModel):
     """Request to scan a single file for SDK usage issues"""
     file_path: str = Field(..., min_length=1, description="Relative path to file in workspace")
-    content: str | None = Field(None, description="Optional file content (if not provided, reads from disk)")
+    content: str | None = Field(default=None, description="Optional file content (if not provided, reads from disk)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -156,10 +156,10 @@ class FormValidationIssue(BaseModel):
     """
     file_path: str = Field(..., description="Relative path to the form file in workspace")
     file_name: str = Field(..., description="Name of the form file")
-    form_name: str | None = Field(None, description="Name of the form if parseable")
+    form_name: str | None = Field(default=None, description="Name of the form if parseable")
     error_message: str = Field(..., description="Validation error message")
-    field_name: str | None = Field(None, description="Name of the field with the error, if applicable")
-    field_index: int | None = Field(None, description="Index of the field with the error, if applicable")
+    field_name: str | None = Field(default=None, description="Name of the field with the error, if applicable")
+    field_index: int | None = Field(default=None, description="Index of the field with the error, if applicable")
 
     model_config = ConfigDict(from_attributes=True)
 

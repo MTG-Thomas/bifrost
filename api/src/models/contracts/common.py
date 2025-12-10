@@ -25,9 +25,9 @@ class ErrorResponse(BaseModel):
 
 class BrandingSettings(BaseModel):
     """Global platform branding configuration"""
-    square_logo_url: str | None = Field(None, description="Square logo URL (for icons, 1:1 ratio)")
-    rectangle_logo_url: str | None = Field(None, description="Rectangle logo URL (for headers, 16:9 ratio)")
-    primary_color: str | None = Field(None, description="Primary brand color (hex format, e.g., #FF5733)")
+    square_logo_url: str | None = Field(default=None, description="Square logo URL (for icons, 1:1 ratio)")
+    rectangle_logo_url: str | None = Field(default=None, description="Rectangle logo URL (for headers, 16:9 ratio)")
+    primary_color: str | None = Field(default=None, description="Primary brand color (hex format, e.g., #FF5733)")
 
     @field_validator('primary_color')
     @classmethod
@@ -46,7 +46,7 @@ class BrandingSettings(BaseModel):
 
 class BrandingUpdateRequest(BaseModel):
     """Request model for updating primary color only - logos use POST /logo/{type}"""
-    primary_color: str | None = Field(None, description="Primary color (hex code, e.g., #0066CC)")
+    primary_color: str | None = Field(default=None, description="Primary color (hex code, e.g., #0066CC)")
 
 
 # ==================== FILE UPLOAD MODELS ====================
@@ -82,7 +82,7 @@ class FileUploadResponse(BaseModel):
 class InstallPackageRequest(BaseModel):
     """Request model for installing a package"""
     package_name: str = Field(..., min_length=1, description="Package name (e.g., 'requests')")
-    version: str | None = Field(None, description="Version specifier (e.g., '>=2.28.0')")
+    version: str | None = Field(default=None, description="Version specifier (e.g., '>=2.28.0')")
 
 
 class PackageInstallResponse(BaseModel):

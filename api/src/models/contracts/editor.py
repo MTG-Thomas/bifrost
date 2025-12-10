@@ -29,8 +29,8 @@ class FileMetadata(BaseModel):
     path: str = Field(..., description="Relative path from /home/repo")
     name: str = Field(..., description="File or folder name")
     type: FileType = Field(..., description="File or folder")
-    size: int | None = Field(None, description="Size in bytes (null for folders)")
-    extension: str | None = Field(None, description="File extension (null for folders)")
+    size: int | None = Field(default=None, description="Size in bytes (null for folders)")
+    extension: str | None = Field(default=None, description="File extension (null for folders)")
     modified: str = Field(..., description="Last modified timestamp (ISO 8601)")
     isReadOnly: bool = Field(default=False, description="Whether file is read-only")
 
@@ -84,8 +84,8 @@ class SearchResult(BaseModel):
     line: int = Field(..., ge=1, description="Line number (1-indexed)")
     column: int = Field(..., ge=0, description="Column number (0-indexed)")
     match_text: str = Field(..., description="The matched text")
-    context_before: str | None = Field(None, description="Line before match")
-    context_after: str | None = Field(None, description="Line after match")
+    context_before: str | None = Field(default=None, description="Line before match")
+    context_after: str | None = Field(default=None, description="Line after match")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -105,7 +105,7 @@ class SearchResponse(BaseModel):
 class ScriptExecutionRequest(BaseModel):
     """Request model for executing a Python script"""
     code: str = Field(..., description="Python code to execute")
-    timeout_seconds: int | None = Field(None, description="Optional timeout in seconds")
+    timeout_seconds: int | None = Field(default=None, description="Optional timeout in seconds")
 
 
 class ScriptExecutionResponse(BaseModel):
@@ -113,8 +113,8 @@ class ScriptExecutionResponse(BaseModel):
     execution_id: str = Field(..., description="Unique execution identifier")
     status: Literal["Success", "Failed"] = Field(..., description="Execution status")
     output: str = Field(..., description="Combined stdout/stderr output")
-    result: dict[str, str] | None = Field(None, description="Execution result data")
-    error: str | None = Field(None, description="Error message if execution failed")
+    result: dict[str, str] | None = Field(default=None, description="Execution result data")
+    error: str | None = Field(default=None, description="Error message if execution failed")
     duration_ms: int = Field(..., description="Execution duration in milliseconds")
     started_at: datetime = Field(..., description="Execution start timestamp")
     completed_at: datetime = Field(..., description="Execution completion timestamp")

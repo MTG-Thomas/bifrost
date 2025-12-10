@@ -37,7 +37,7 @@ def pytest_configure(config):
     )
 
 
-def _check_api_available() -> tuple[bool, str]:
+def _check_api_available() -> tuple[bool, str | None]:
     """
     Check if the API is properly running and accessible.
 

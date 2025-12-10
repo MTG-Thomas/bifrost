@@ -35,7 +35,7 @@ class WorkflowExecution(BaseModel):
     executed_by_name: str  # Display name of user who executed
     status: ExecutionStatus
     input_data: dict[str, Any]
-    result: dict[str, Any] | list[Any] | str | None = None  # Can be dict/list (JSON) or str (HTML/text)
+    result: dict[str, Any] | list[Any] | str | None = Field(default=None)  # Can be dict/list (JSON) or str (HTML/text)
     result_type: str | None = None  # How to render result (json, html, text)
     error_message: str | None = None
     duration_ms: int | None = None
@@ -50,12 +50,12 @@ class WorkflowExecution(BaseModel):
 
 class WorkflowExecutionRequest(BaseModel):
     """Request model for executing a workflow"""
-    workflow_id: str | None = Field(None, description="UUID of the workflow to execute (required if code not provided)")
+    workflow_id: str | None = Field(default=None, description="UUID of the workflow to execute (required if code not provided)")
     input_data: dict[str, Any] = Field(default_factory=dict, description="Workflow input parameters")
-    form_id: str | None = Field(None, description="Optional form ID that triggered this execution")
+    form_id: str | None = Field(default=None, description="Optional form ID that triggered this execution")
     transient: bool = Field(default=False, description="If true, skip database persistence (for code editor debugging)")
-    code: str | None = Field(None, description="Optional: Python code to execute as script (base64 encoded). If provided, executes code instead of looking up workflow by ID.")
-    script_name: str | None = Field(None, description="Optional: Name/identifier for the script (used for logging when code is provided)")
+    code: str | None = Field(default=None, description="Optional: Python code to execute as script (base64 encoded). If provided, executes code instead of looking up workflow by ID.")
+    script_name: str | None = Field(default=None, description="Optional: Name/identifier for the script (used for logging when code is provided)")
 
     @model_validator(mode='after')
     def validate_workflow_or_code(self) -> 'WorkflowExecutionRequest':
@@ -71,7 +71,7 @@ class WorkflowExecutionResponse(BaseModel):
     workflow_id: str | None = None
     workflow_name: str | None = None  # Display name from @workflow decorator
     status: ExecutionStatus
-    result: dict[str, Any] | list[Any] | str | None = None  # Can be dict/list (JSON) or str (HTML/text)
+    result: dict[str, Any] | list[Any] | str | None = Field(default=None)  # Can be dict/list (JSON) or str (HTML/text)
     error: str | None = None
     error_type: str | None = None
     details: dict[str, Any] | None = None
@@ -87,7 +87,7 @@ class WorkflowExecutionResponse(BaseModel):
 class ExecutionsListResponse(BaseModel):
     """Response model for listing workflow executions with pagination"""
     executions: list[WorkflowExecution] = Field(..., description="List of workflow executions")
-    continuation_token: str | None = Field(None, description="Continuation token for next page (opaque, base64-encoded). Presence of token indicates more results available.")
+    continuation_token: str | None = Field(default=None, description="Continuation token for next page (opaque, base64-encoded). Presence of token indicates more results available.")
 
 
 class StuckExecutionsResponse(BaseModel):
@@ -168,10 +168,10 @@ class SystemLog(BaseModel):
     message: str = Field(..., description="Human-readable event description")
     executed_by: str = Field(..., description="User ID or 'System'")
     executed_by_name: str = Field(..., description="Display name or 'System'")
-    details: dict[str, Any] | None = Field(None, description="Additional event-specific data")
+    details: dict[str, Any] | None = Field(default=None, description="Additional event-specific data")
 
 
 class SystemLogsListResponse(BaseModel):
     """Response model for listing system logs with pagination"""
     logs: list[SystemLog] = Field(..., description="List of system log entries")
-    continuation_token: str | None = Field(None, description="Continuation token for next page (opaque, base64-encoded)")
+    continuation_token: str | None = Field(default=None, description="Continuation token for next page (opaque, base64-encoded)")

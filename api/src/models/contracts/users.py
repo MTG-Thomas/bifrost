@@ -51,7 +51,7 @@ class CreateUserRequest(BaseModel):
     email: str = Field(..., description="User email address")
     display_name: str = Field(..., min_length=1, max_length=200, description="User display name")
     is_platform_admin: bool = Field(..., description="Whether user is a platform administrator")
-    org_id: str | None = Field(None, description="Organization ID (required if is_platform_admin=false)")
+    org_id: str | None = Field(default=None, description="Organization ID (required if is_platform_admin=false)")
 
     @model_validator(mode='after')
     def validate_org_requirement(self):
@@ -65,10 +65,10 @@ class CreateUserRequest(BaseModel):
 
 class UpdateUserRequest(BaseModel):
     """Request model for updating a user"""
-    display_name: str | None = Field(None, min_length=1, max_length=200, description="User display name")
-    is_active: bool | None = Field(None, description="Whether user is active")
-    is_platform_admin: bool | None = Field(None, description="Whether user is a platform administrator")
-    org_id: str | None = Field(None, description="Organization ID (required when changing to is_platform_admin=false)")
+    display_name: str | None = Field(default=None, min_length=1, max_length=200, description="User display name")
+    is_active: bool | None = Field(default=None, description="Whether user is active")
+    is_platform_admin: bool | None = Field(default=None, description="Whether user is a platform administrator")
+    org_id: str | None = Field(default=None, description="Organization ID (required when changing to is_platform_admin=false)")
 
     @model_validator(mode='after')
     def validate_org_requirement(self):
@@ -161,7 +161,7 @@ class CreateRoleRequest(BaseModel):
 
 class UpdateRoleRequest(BaseModel):
     """Request model for updating a role"""
-    name: str | None = Field(None, min_length=1, max_length=100)
+    name: str | None = Field(default=None, min_length=1, max_length=100)
     description: str | None = None
 
 

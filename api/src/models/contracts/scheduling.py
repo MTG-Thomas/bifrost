@@ -31,14 +31,14 @@ class AsyncExecution(BaseModel):
     status: AsyncExecutionStatus = Field(default=AsyncExecutionStatus.QUEUED)
     parameters: dict[str, Any] = Field(default_factory=dict, description="Workflow input parameters")
     context: dict[str, Any] = Field(default_factory=dict, description="Execution context (org scope, user)")
-    result: Any | None = Field(None, description="Workflow result (for small results)")
-    result_blob_uri: str | None = Field(None, description="Blob URI for large results (>32KB)")
-    error: str | None = Field(None, description="Error message if failed")
-    error_details: dict[str, Any] | None = Field(None, description="Detailed error information")
+    result: Any | None = Field(default=None, description="Workflow result (for small results)")
+    result_blob_uri: str | None = Field(default=None, description="Blob URI for large results (>32KB)")
+    error: str | None = Field(default=None, description="Error message if failed")
+    error_details: dict[str, Any] | None = Field(default=None, description="Detailed error information")
     queued_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: datetime | None = None
     completed_at: datetime | None = None
-    duration_ms: int | None = Field(None, description="Execution duration in milliseconds")
+    duration_ms: int | None = Field(default=None, description="Execution duration in milliseconds")
 
 
 # ==================== CRON SCHEDULING ====================
@@ -49,12 +49,12 @@ class CronSchedule(BaseModel):
     id: str = Field(default_factory=lambda: str(__import__('uuid').uuid4()))
     workflow_id: str = Field(..., description="Workflow name to execute on schedule")
     cron_expression: str = Field(..., description="Standard CRON expression (e.g., '0 2 * * *')")
-    human_readable: str | None = Field(None, description="Human-readable schedule description")
+    human_readable: str | None = Field(default=None, description="Human-readable schedule description")
     enabled: bool = Field(default=True)
     parameters: dict[str, Any] = Field(default_factory=dict, description="Default parameters for execution")
     next_run_at: datetime = Field(..., description="Next scheduled execution time")
     last_run_at: datetime | None = None
-    last_execution_id: str | None = Field(None, description="ID of last execution")
+    last_execution_id: str | None = Field(default=None, description="ID of last execution")
     created_by: str = Field(..., description="User email who created the schedule")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -90,14 +90,14 @@ class ScheduleInfo(BaseModel):
     workflow_description: str = Field(..., description="Display name of the workflow")
     cron_expression: str = Field(..., description="CRON expression")
     human_readable: str = Field(..., description="Human-readable schedule (e.g., 'Every day at 2:00 AM')")
-    next_run_at: datetime | None = Field(None, description="Next scheduled execution time")
-    last_run_at: datetime | None = Field(None, description="Last execution time")
-    last_execution_id: str | None = Field(None, description="ID of last execution")
-    execution_count: int = Field(0, description="Total number of times this schedule has been triggered")
-    enabled: bool = Field(True, description="Whether this schedule is currently active")
-    validation_status: Literal["valid", "warning", "error"] | None = Field(None, description="Validation status of the CRON expression")
-    validation_message: str | None = Field(None, description="Validation message for warning/error statuses")
-    is_overdue: bool = Field(False, description="Whether the schedule is overdue by more than 6 minutes")
+    next_run_at: datetime | None = Field(default=None, description="Next scheduled execution time")
+    last_run_at: datetime | None = Field(default=None, description="Last execution time")
+    last_execution_id: str | None = Field(default=None, description="ID of last execution")
+    execution_count: int = Field(default=0, description="Total number of times this schedule has been triggered")
+    enabled: bool = Field(default=True, description="Whether this schedule is currently active")
+    validation_status: Literal["valid", "warning", "error"] | None = Field(default=None, description="Validation status of the CRON expression")
+    validation_message: str | None = Field(default=None, description="Validation message for warning/error statuses")
+    is_overdue: bool = Field(default=False, description="Whether the schedule is overdue by more than 6 minutes")
 
 
 class SchedulesListResponse(BaseModel):
@@ -115,10 +115,10 @@ class CronValidationResponse(BaseModel):
     """Response model for CRON validation"""
     valid: bool = Field(..., description="Whether the CRON expression is valid")
     human_readable: str = Field(..., description="Human-readable description")
-    next_runs: list[str] | None = Field(None, description="Next 5 execution times (ISO format)")
-    interval_seconds: int | None = Field(None, description="Seconds between executions")
-    warning: str | None = Field(None, description="Warning message for too-frequent schedules")
-    error: str | None = Field(None, description="Error message for invalid expressions")
+    next_runs: list[str] | None = Field(default=None, description="Next 5 execution times (ISO format)")
+    interval_seconds: int | None = Field(default=None, description="Seconds between executions")
+    warning: str | None = Field(default=None, description="Warning message for too-frequent schedules")
+    error: str | None = Field(default=None, description="Error message for invalid expressions")
 
 
 class ProcessSchedulesResponse(BaseModel):

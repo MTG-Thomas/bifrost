@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest_asyncio.fixture
-async def integration_db_session(db_session: AsyncSession) -> AsyncSession:
+async def integration_db_session(db_session: AsyncSession):  # type: ignore[misc]
     """
     Provide a database session for integration tests.
 

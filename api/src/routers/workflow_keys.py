@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api/workflow-keys", tags=["Workflow Keys"])
 # WorkflowKeyResponse with raw_key for creation
 class WorkflowKeyCreatedResponse(WorkflowKeyResponse):
     """Response when creating a key - includes the raw key (shown only once)."""
-    raw_key: str
+    raw_key: str = ""  # Override parent's optional field with required but empty default
 
 
 # =============================================================================

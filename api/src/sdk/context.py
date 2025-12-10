@@ -213,3 +213,7 @@ class ExecutionContext:
         return {
             "integration_calls": self._integration_calls,
         }
+
+
+# Backward compatibility alias
+OrganizationContext = ExecutionContext

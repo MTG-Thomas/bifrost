@@ -34,9 +34,9 @@ class IntegrationType(str, Enum):
 
 class RetryPolicy(BaseModel):
     """Retry policy configuration for workflow execution"""
-    max_attempts: int = Field(3, ge=1, le=10, description="Total attempts including initial execution")
-    backoff_seconds: int = Field(2, ge=1, description="Initial backoff duration in seconds")
-    max_backoff_seconds: int = Field(60, ge=1, description="Maximum backoff cap in seconds")
+    max_attempts: int = Field(default=3, ge=1, le=10, description="Total attempts including initial execution")
+    backoff_seconds: int = Field(default=2, ge=1, description="Initial backoff duration in seconds")
+    max_backoff_seconds: int = Field(default=60, ge=1, description="Maximum backoff cap in seconds")
 
 
 # ==================== HELPER FUNCTIONS ====================

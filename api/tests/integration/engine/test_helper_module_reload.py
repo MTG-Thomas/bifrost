@@ -44,7 +44,7 @@ def get_value():
                 return_value=[str(tmp_path)] + original_paths,
             ):
                 # Import workflow, check initial value
-                import my_workflow
+                import my_workflow  # type: ignore[import-not-found]
 
                 assert my_workflow.get_value() == "original"
 
@@ -55,7 +55,7 @@ def get_value():
                 reload_single_module(workflow_file)
 
                 # 6. Re-import and verify new value
-                import my_workflow as reloaded
+                import my_workflow as reloaded  # type: ignore[import-not-found]
 
                 assert reloaded.get_value() == "modified"
         finally:
@@ -106,7 +106,7 @@ def get_result():
                 "src.services.execution.module_loader.get_workspace_paths",
                 return_value=[str(tmp_path)] + original_paths,
             ):
-                import nested_workflow
+                import nested_workflow  # type: ignore[import-not-found]
 
                 assert nested_workflow.get_result() == 200  # 100 * 2
 
@@ -117,7 +117,7 @@ def get_result():
                 reload_single_module(workflow_file)
 
                 # Re-import and verify chain reloaded
-                import nested_workflow as reloaded
+                import nested_workflow as reloaded  # type: ignore[import-not-found]
 
                 assert reloaded.get_result() == 1000  # 500 * 2
         finally:
@@ -159,7 +159,7 @@ def get_value():
                 return_value=[str(tmp_path)] + original_paths,
             ):
                 # Import fake package
-                import fake_package
+                import fake_package  # type: ignore[import-not-found]
 
                 original_module = sys.modules.get("fake_package")
                 assert original_module is not None

@@ -15,9 +15,9 @@ if TYPE_CHECKING:
 
 class DataProviderRequest(BaseModel):
     """Request model for data provider endpoint (T009)"""
-    org_id: str | None = Field(None, description="Organization ID for org-scoped providers")
-    inputs: dict[str, Any] | None = Field(None, description="Input parameter values for data provider")
-    no_cache: bool = Field(False, description="Bypass cache and fetch fresh data")
+    org_id: str | None = Field(default=None, description="Organization ID for org-scoped providers")
+    inputs: dict[str, Any] | None = Field(default=None, description="Input parameter values for data provider")
+    no_cache: bool = Field(default=False, description="Bypass cache and fetch fresh data")
 
 
 class DataProviderOption(BaseModel):

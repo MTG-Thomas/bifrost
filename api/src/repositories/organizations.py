@@ -12,7 +12,7 @@ from src.models import Organization
 from src.repositories.base import BaseRepository
 
 
-class OrganizationRepository(BaseRepository[Organization]):
+class OrganizationRepository(BaseRepository[Organization]):  # type: ignore[type-var]
     """
     Repository for Organization entities.
     """

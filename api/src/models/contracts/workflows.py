@@ -37,30 +37,30 @@ class WorkflowMetadata(BaseModel):
 
     # Required fields
     name: str = Field(..., min_length=1, pattern=r"^[a-z0-9_]+$", description="Workflow name (snake_case)")
-    description: str | None = Field(None, description="Human-readable description")
+    description: str | None = Field(default=None, description="Human-readable description")
 
     # Optional fields with defaults
-    category: str = Field("General", description="Category for organization")
+    category: str = Field(default="General", description="Category for organization")
     tags: list[str] = Field(default_factory=list, description="Tags for categorization and search")
     parameters: list[WorkflowParameter] = Field(default_factory=list, description="Workflow parameters")
 
     # Execution configuration
-    execution_mode: Literal["sync", "async"] = Field("sync", description="Execution mode")
-    timeout_seconds: int = Field(1800, ge=1, le=7200, description="Max execution time in seconds (default 30 min, max 2 hours)")
+    execution_mode: Literal["sync", "async"] = Field(default="sync", description="Execution mode")
+    timeout_seconds: int = Field(default=1800, ge=1, le=7200, description="Max execution time in seconds (default 30 min, max 2 hours)")
 
     # Retry and scheduling (for future use)
-    retry_policy: RetryPolicy | None = Field(None, description="Retry configuration")
-    schedule: str | None = Field(None, description="Cron expression for scheduled execution")
+    retry_policy: RetryPolicy | None = Field(default=None, description="Retry configuration")
+    schedule: str | None = Field(default=None, description="Cron expression for scheduled execution")
 
     # HTTP Endpoint configuration
-    endpoint_enabled: bool = Field(False, description="Whether workflow is exposed as HTTP endpoint")
+    endpoint_enabled: bool = Field(default=False, description="Whether workflow is exposed as HTTP endpoint")
     allowed_methods: list[str] = Field(default_factory=lambda: ["POST"], description="Allowed HTTP methods")
-    disable_global_key: bool = Field(False, description="If true, only workflow-specific API keys work")
-    public_endpoint: bool = Field(False, description="If true, skip authentication for webhooks")
+    disable_global_key: bool = Field(default=False, description="If true, only workflow-specific API keys work")
+    public_endpoint: bool = Field(default=False, description="If true, skip authentication for webhooks")
 
     # Source tracking
-    source_file_path: str | None = Field(None, description="Full file path to the workflow source code")
-    relative_file_path: str | None = Field(None, description="Workspace-relative file path with /workspace/ prefix (e.g., '/workspace/workflows/my_workflow.py')")
+    source_file_path: str | None = Field(default=None, description="Full file path to the workflow source code")
+    relative_file_path: str | None = Field(default=None, description="Workspace-relative file path with /workspace/ prefix (e.g., '/workspace/workflows/my_workflow.py')")
 
 
 class DataProviderMetadata(BaseModel):
@@ -70,8 +70,8 @@ class DataProviderMetadata(BaseModel):
     category: str = "General"
     cache_ttl_seconds: int = 300
     parameters: list[WorkflowParameter] = Field(default_factory=list, description="Input parameters from @param decorators")
-    source_file_path: str | None = Field(None, description="Full file path to the data provider source code")
-    relative_file_path: str | None = Field(None, description="Workspace-relative file path with /workspace/ prefix (e.g., '/workspace/data_providers/my_provider.py')")
+    source_file_path: str | None = Field(default=None, description="Full file path to the data provider source code")
+    relative_file_path: str | None = Field(default=None, description="Workspace-relative file path with /workspace/ prefix (e.g., '/workspace/data_providers/my_provider.py')")
 
 
 class FormDiscoveryMetadata(BaseModel):
@@ -101,7 +101,7 @@ class MetadataResponse(BaseModel):
 
 class ValidationIssue(BaseModel):
     """A single validation error or warning"""
-    line: int | None = Field(None, description="Line number where issue occurs (if applicable)")
+    line: int | None = Field(default=None, description="Line number where issue occurs (if applicable)")
     message: str = Field(..., description="Human-readable error or warning message")
     severity: Literal["error", "warning"] = Field(..., description="Severity level")
 
@@ -109,14 +109,14 @@ class ValidationIssue(BaseModel):
 class WorkflowValidationRequest(BaseModel):
     """Request model for workflow validation endpoint"""
     path: str = Field(..., description="Relative workspace path to the workflow file")
-    content: str | None = Field(None, description="File content to validate (if not provided, reads from disk)")
+    content: str | None = Field(default=None, description="File content to validate (if not provided, reads from disk)")
 
 
 class WorkflowValidationResponse(BaseModel):
     """Response model for workflow validation endpoint"""
     valid: bool = Field(..., description="True if workflow is valid and will be discovered")
     issues: list[ValidationIssue] = Field(default_factory=list, description="List of errors and warnings")
-    metadata: WorkflowMetadata | None = Field(None, description="Workflow metadata if valid")
+    metadata: WorkflowMetadata | None = Field(default=None, description="Workflow metadata if valid")
 
 
 # ==================== WORKFLOW API KEYS ====================
@@ -126,31 +126,31 @@ class WorkflowKey(BaseModel):
     """Workflow API Key for HTTP access without user authentication"""
     id: str = Field(default_factory=lambda: str(__import__('uuid').uuid4()), description="Unique key ID")
     hashed_key: str = Field(..., description="SHA-256 hash of the API key")
-    workflow_id: str | None = Field(None, description="Workflow-specific key, or None for global access")
+    workflow_id: str | None = Field(default=None, description="Workflow-specific key, or None for global access")
     created_by: str = Field(..., description="User email who created the key")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_used_at: datetime | None = None
     revoked: bool = Field(default=False)
     revoked_at: datetime | None = None
     revoked_by: str | None = None
-    expires_at: datetime | None = Field(None, description="Optional expiration timestamp")
-    description: str | None = Field(None, description="Optional key description")
+    expires_at: datetime | None = Field(default=None, description="Optional expiration timestamp")
+    description: str | None = Field(default=None, description="Optional key description")
     disable_global_key: bool = Field(default=False, description="If true, workflow opts out of global API keys")
 
 
 class WorkflowKeyCreateRequest(BaseModel):
     """Request model for creating a workflow API key"""
-    workflow_name: str | None = Field(None, description="Workflow-specific key, or None for global")
-    expires_in_days: int | None = Field(None, description="Days until key expires (default: no expiration)")
-    description: str | None = Field(None, description="Optional key description")
+    workflow_name: str | None = Field(default=None, description="Workflow-specific key, or None for global")
+    expires_in_days: int | None = Field(default=None, description="Days until key expires (default: no expiration)")
+    description: str | None = Field(default=None, description="Optional key description")
     disable_global_key: bool = Field(default=False, description="If true, workflow opts out of global API keys")
 
 
 class WorkflowKeyResponse(BaseModel):
     """Response model for workflow key (includes raw key on creation only)"""
     id: str
-    raw_key: str | None = Field(None, description="Raw API key (only returned on creation)")
-    masked_key: str | None = Field(None, description="Last 4 characters for display")
+    raw_key: str | None = Field(default=None, description="Raw API key (only returned on creation)")
+    masked_key: str | None = Field(default=None, description="Last 4 characters for display")
     workflow_name: str | None = None
     created_by: str
     created_at: datetime

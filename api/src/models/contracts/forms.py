@@ -58,33 +58,33 @@ class FormField(BaseModel):
     """Form field definition"""
     name: str = Field(..., description="Parameter name for workflow")
     label: str | None = Field(
-        None, description="Display label (optional for markdown/html types)")
+        default=None, description="Display label (optional for markdown/html types)")
     type: FormFieldType
     required: bool = Field(default=False)
     validation: dict[str, Any] | None = None
     data_provider: str | None = Field(
-        None, description="Data provider name for dynamic options")
+        default=None, description="Data provider name for dynamic options")
     data_provider_inputs: dict[str, DataProviderInputConfig] | None = Field(
-        None, description="Input configurations for data provider parameters (T007)")
+        default=None, description="Input configurations for data provider parameters (T007)")
     default_value: Any | None = None
     placeholder: str | None = None
     help_text: str | None = None
 
     # NEW MVP fields (T012)
     visibility_expression: str | None = Field(
-        None, description="JavaScript expression for conditional visibility (e.g., context.field.show === true)")
+        default=None, description="JavaScript expression for conditional visibility (e.g., context.field.show === true)")
     options: list[dict[str, str]] | None = Field(
-        None, description="Options for radio/select fields")
+        default=None, description="Options for radio/select fields")
     allowed_types: list[str] | None = Field(
-        None, description="Allowed MIME types for file uploads")
+        default=None, description="Allowed MIME types for file uploads")
     multiple: bool | None = Field(
-        None, description="Allow multiple file uploads")
+        default=None, description="Allow multiple file uploads")
     max_size_mb: int | None = Field(
-        None, description="Maximum file size in MB")
+        default=None, description="Maximum file size in MB")
     content: str | None = Field(
-        None, description="Static content for markdown/HTML components")
+        default=None, description="Static content for markdown/HTML components")
     allow_as_query_param: bool | None = Field(
-        None, description="Whether this field's value can be populated from URL query parameters")
+        default=None, description="Whether this field's value can be populated from URL query parameters")
 
     @model_validator(mode='after')
     def validate_field_requirements(self):
@@ -126,7 +126,7 @@ class Form(BaseModel):
     org_id: str = Field(..., description="Organization ID or 'GLOBAL'")
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = None
-    workflow_id: str | None = Field(None, description="Workflow ID (UUID) to execute when form is submitted")
+    workflow_id: str | None = Field(default=None, description="Workflow ID (UUID) to execute when form is submitted")
     form_schema: FormSchema
     is_active: bool = Field(default=True)
     is_global: bool = Field(default=False)
@@ -138,9 +138,9 @@ class Form(BaseModel):
 
     # Optional launch params
     allowed_query_params: list[str] | None = Field(
-        None, description="List of allowed query parameter names to inject into form context")
+        default=None, description="List of allowed query parameter names to inject into form context")
     default_launch_params: dict[str, Any] | None = Field(
-        None, description="Default parameter values for workflow execution")
+        default=None, description="Default parameter values for workflow execution")
 
 
 class CreateFormRequest(BaseModel):
@@ -155,36 +155,36 @@ class CreateFormRequest(BaseModel):
 
     # Optional launch params
     allowed_query_params: list[str] | None = Field(
-        None, description="List of allowed query parameter names to inject into form context")
+        default=None, description="List of allowed query parameter names to inject into form context")
     default_launch_params: dict[str, Any] | None = Field(
-        None, description="Default parameter values for workflow execution")
+        default=None, description="Default parameter values for workflow execution")
 
 
 class UpdateFormRequest(BaseModel):
     """Request model for updating a form"""
-    name: str | None = Field(None, min_length=1, max_length=200)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
-    workflow_id: str | None = Field(None, description="Workflow ID (UUID) to execute when form is submitted")
+    workflow_id: str | None = Field(default=None, description="Workflow ID (UUID) to execute when form is submitted")
     form_schema: FormSchema | None = None
     is_active: bool | None = None
     access_level: FormAccessLevel | None = None
 
     # Optional launch params
     allowed_query_params: list[str] | None = Field(
-        None, description="List of allowed query parameter names to inject into form context")
+        default=None, description="List of allowed query parameter names to inject into form context")
     default_launch_params: dict[str, Any] | None = Field(
-        None, description="Default parameter values for workflow execution")
+        default=None, description="Default parameter values for workflow execution")
 
 
 class FormExecuteRequest(BaseModel):
     """Request model for executing a form"""
     form_data: dict[str, Any] = Field(default_factory=dict, description="Form field values")
-    startup_data: dict[str, Any] | None = Field(None, description="Results from /startup call (launch workflow)")
+    startup_data: dict[str, Any] | None = Field(default=None, description="Results from /startup call (launch workflow)")
 
 
 class FormStartupResponse(BaseModel):
     """Response model for form startup/launch workflow execution"""
-    result: dict[str, Any] | list[Any] | str | None = Field(None, description="Workflow execution result")
+    result: dict[str, Any] | list[Any] | str | None = Field(default=None, description="Workflow execution result")
 
 
 # CRUD Pattern Models for Form
@@ -250,7 +250,7 @@ class FormPublic(BaseModel):
     access_level: FormAccessLevel | None = None
     organization_id: UUID | None = None
     is_active: bool
-    file_path: str | None = Field(None, description="Workspace-relative file path (e.g., 'forms/my-form-abc123.form.json')")
+    file_path: str | None = Field(default=None, description="Workspace-relative file path (e.g., 'forms/my-form-abc123.form.json')")
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

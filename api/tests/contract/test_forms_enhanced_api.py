@@ -412,11 +412,15 @@ class TestDataProviderInputsValidation:
 
         # Second field has data provider with 1 input
         assert request.form_schema.fields[1].data_provider == "get_github_repos"
-        assert len(request.form_schema.fields[1].data_provider_inputs) == 1
-        assert "token" in request.form_schema.fields[1].data_provider_inputs
+        inputs1 = request.form_schema.fields[1].data_provider_inputs
+        assert inputs1 is not None
+        assert len(inputs1) == 1
+        assert "token" in inputs1
 
         # Third field has data provider with 2 inputs
         assert request.form_schema.fields[2].data_provider == "get_github_branches"
-        assert len(request.form_schema.fields[2].data_provider_inputs) == 2
-        assert "token" in request.form_schema.fields[2].data_provider_inputs
-        assert "repo" in request.form_schema.fields[2].data_provider_inputs
+        inputs2 = request.form_schema.fields[2].data_provider_inputs
+        assert inputs2 is not None
+        assert len(inputs2) == 2
+        assert "token" in inputs2
+        assert "repo" in inputs2

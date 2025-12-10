@@ -118,10 +118,11 @@ class ConnectionManager:
         settings = get_settings()
         try:
             self._redis = redis.from_url(settings.redis_url)
-            self._pubsub = self._redis.pubsub()
+            pubsub = self._redis.pubsub()
+            self._pubsub = pubsub
 
             # Subscribe to all bifrost channels
-            await self._pubsub.psubscribe("bifrost:*")
+            await pubsub.psubscribe("bifrost:*")
 
             # Start listener task
             self._listener_task = asyncio.create_task(self._redis_listener())

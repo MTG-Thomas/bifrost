@@ -50,8 +50,8 @@ class CreateOrganizationRequest(BaseModel):
 
 class UpdateOrganizationRequest(BaseModel):
     """Request model for updating an organization"""
-    name: str | None = Field(None, min_length=1, max_length=200)
-    domain: str | None = Field(None, description="Email domain for auto-provisioning users")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    domain: str | None = Field(default=None, description="Email domain for auto-provisioning users")
     is_active: bool | None = None
 
     @field_validator('domain')

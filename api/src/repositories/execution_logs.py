@@ -215,7 +215,7 @@ class ExecutionLogRepository:
         return result.rowcount
 
 
-def get_execution_logs_repository() -> "ExecutionLogRepository":
+def get_execution_logs_repository() -> Any:
     """
     Factory function for backward compatibility.
 
@@ -235,10 +235,11 @@ def get_execution_logs_repository() -> "ExecutionLogRepository":
             self._session = None
             self._repo = None
 
-        async def _ensure_session(self):
+        async def _ensure_session(self) -> ExecutionLogRepository:
             if self._session is None:
                 self._session = self._session_factory()
                 self._repo = ExecutionLogRepository(self._session)
+            assert self._repo is not None  # Always set when session is created
             return self._repo
 
         async def append_log(self, execution_id, level, message, metadata=None, timestamp=None, source=None):

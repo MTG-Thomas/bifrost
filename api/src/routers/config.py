@@ -42,7 +42,7 @@ router = APIRouter(tags=["Configuration"])
 # =============================================================================
 
 
-class ConfigRepository(OrgScopedRepository[ConfigModel]):
+class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-var]
     """
     Config repository using OrgScopedRepository.
 

@@ -270,7 +270,7 @@ async def _download_workspace_from_s3(settings, local_path) -> bool:
             paginator = s3.get_paginator("list_objects_v2")
             async for page in paginator.paginate(Bucket=settings.s3_bucket):
                 for obj in page.get("Contents", []):
-                    key = obj["Key"]
+                    key: str = obj["Key"]  # type: ignore[typeddict-item]
                     local_file = local_path / key
 
                     # Create parent directories
