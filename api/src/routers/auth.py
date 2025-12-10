@@ -1117,15 +1117,20 @@ async def register_user(
     await auth_limiter.check("register", client_ip)
 
     settings = get_settings()
+    user_repo = UserRepository(db)
 
-    # Only allow registration in development or testing mode
-    if not (settings.is_development or settings.is_testing):
+    # Check if this is first-time setup (no users exist)
+    has_users = await user_repo.has_any_users()
+
+    # Allow registration if:
+    # 1. First user (system bootstrap) - always allowed
+    # 2. Development or testing mode - always allowed
+    # 3. Production with existing users - disabled (use admin invite flow)
+    if has_users and not (settings.is_development or settings.is_testing):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User registration is disabled",
+            detail="User registration is disabled. Contact an administrator for access.",
         )
-
-    user_repo = UserRepository(db)
 
     # Check if email already exists
     existing_user = await user_repo.get_by_email(user_data.email)

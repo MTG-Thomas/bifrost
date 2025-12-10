@@ -1,6 +1,6 @@
 import { useEditorStore } from "@/stores/editorStore";
 import { useWorkflowsStore } from "@/stores/workflowsStore";
-import { useUploadProgress } from "@/hooks/useUploadProgress";
+import { useUploadProgress } from "@/stores/uploadStore";
 import {
 	Circle,
 	Workflow,
@@ -19,7 +19,11 @@ export function StatusBar() {
 	const tabs = useEditorStore((state) => state.tabs);
 	const activeTabIndex = useEditorStore((state) => state.activeTabIndex);
 	const isWorkflowFile = useWorkflowsStore((state) => state.isWorkflowFile);
-	const { state: uploadState, resetState: resetUpload } = useUploadProgress();
+	const {
+		state: uploadState,
+		resetState: resetUpload,
+		cancelUpload,
+	} = useUploadProgress();
 
 	// Compute active tab from state
 	const activeTab =
@@ -78,7 +82,9 @@ export function StatusBar() {
 							<>
 								<Loader2 className="h-3 w-3 animate-spin shrink-0" />
 								<span className="truncate max-w-32">
-									{uploadState.currentFile || "Preparing..."}
+									{uploadState.isCancelling
+										? "Cancelling..."
+										: uploadState.currentFile || "Preparing..."}
 								</span>
 								<span className="shrink-0 text-muted-foreground">
 									{uploadState.completedCount}/
@@ -88,6 +94,15 @@ export function StatusBar() {
 									value={uploadProgressPercent}
 									className="h-1.5 w-24"
 								/>
+								{/* Cancel button */}
+								<button
+									onClick={cancelUpload}
+									disabled={uploadState.isCancelling}
+									className="p-0.5 hover:bg-muted rounded shrink-0 disabled:opacity-50"
+									title="Cancel upload"
+								>
+									<X className="h-3 w-3" />
+								</button>
 							</>
 						) : (
 							<>

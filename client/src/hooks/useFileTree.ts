@@ -38,8 +38,55 @@ export function useFileTree() {
 		setState((prev) => ({ ...prev, isLoading: true }));
 
 		try {
-			const files = await fileService.listFiles(path);
-			const sortedFiles = sortFiles(files);
+			const allFiles = await fileService.listFiles(path);
+
+			// Synthesize folder structure from flat file list
+			// The API returns a flat list of files with full paths, but no folder entries
+			const directChildren: FileMetadata[] = [];
+			const seenFolders = new Set<string>();
+
+			for (const file of allFiles) {
+				// Get the relative path from current directory
+				const relativePath = path
+					? file.path.slice(path.length + 1)
+					: file.path;
+
+				// Skip if the file path doesn't start with the current path
+				// (shouldn't happen, but safety check)
+				if (path && !file.path.startsWith(path + "/")) {
+					continue;
+				}
+
+				// Check if this is a direct child or nested deeper
+				const slashIndex = relativePath.indexOf("/");
+
+				if (slashIndex === -1) {
+					// Direct child file - add as-is
+					directChildren.push(file);
+				} else {
+					// Nested file - extract the immediate folder name
+					const folderName = relativePath.slice(0, slashIndex);
+					const folderPath = path
+						? `${path}/${folderName}`
+						: folderName;
+
+					if (!seenFolders.has(folderPath)) {
+						seenFolders.add(folderPath);
+						// Create synthetic folder entry
+						directChildren.push({
+							path: folderPath,
+							name: folderName,
+							type: "folder",
+							size: null,
+							extension: null,
+							modified: new Date().toISOString(),
+							isReadOnly: false,
+						});
+					}
+				}
+			}
+
+			const sortedFiles = sortFiles(directChildren);
 			setState((prev) => {
 				const newFileMap = new Map(prev.fileMap);
 				newFileMap.set(path, sortedFiles);
@@ -91,15 +138,28 @@ export function useFileTree() {
 	);
 
 	const refreshAll = useCallback(async () => {
+		// Get current expanded folders using functional setState to avoid stale closure
+		let foldersToReload: string[] = [];
+		setState((prev) => {
+			foldersToReload = Array.from(prev.expandedFolders);
+			// Clear fileMap to force fresh data, but keep expandedFolders
+			return {
+				...prev,
+				fileMap: new Map([["", []]]),
+				isLoading: true,
+			};
+		});
+
 		// Reload root
 		await loadFiles("");
 
 		// Reload all expanded folders
-		const expandedFoldersList = Array.from(state.expandedFolders);
-		for (const folderPath of expandedFoldersList) {
+		for (const folderPath of foldersToReload) {
 			await loadFiles(folderPath);
 		}
-	}, [state.expandedFolders, loadFiles]);
+
+		setState((prev) => ({ ...prev, isLoading: false }));
+	}, [loadFiles]);
 
 	/**
 	 * Optimistically add files to the tree without refetching from the server.
@@ -213,6 +273,57 @@ export function useFileTree() {
 		[],
 	);
 
+	/**
+	 * Optimistically remove a file or folder from the tree.
+	 * Cleans up all related state including cached children and expanded folder state.
+	 *
+	 * @param path - Path of the file or folder to remove
+	 * @param isFolder - Whether the item is a folder
+	 */
+	const removeFromTree = useCallback((path: string, isFolder: boolean) => {
+		setState((prev) => {
+			const newFileMap = new Map(prev.fileMap);
+			const newExpandedFolders = new Set(prev.expandedFolders);
+
+			// Get parent path
+			const parentPath = path.includes("/")
+				? path.substring(0, path.lastIndexOf("/"))
+				: "";
+
+			// Remove from parent's children list
+			const parentFiles = newFileMap.get(parentPath) || [];
+			newFileMap.set(
+				parentPath,
+				parentFiles.filter((f) => f.path !== path),
+			);
+
+			if (isFolder) {
+				// Remove from expanded folders
+				newExpandedFolders.delete(path);
+
+				// Remove all cached children (any path starting with this folder)
+				for (const key of newFileMap.keys()) {
+					if (key === path || key.startsWith(path + "/")) {
+						newFileMap.delete(key);
+					}
+				}
+
+				// Remove any expanded subfolders
+				for (const folderPath of newExpandedFolders) {
+					if (folderPath.startsWith(path + "/")) {
+						newExpandedFolders.delete(folderPath);
+					}
+				}
+			}
+
+			return {
+				...prev,
+				fileMap: newFileMap,
+				expandedFolders: newExpandedFolders,
+			};
+		});
+	}, []);
+
 	// Build flat list of visible files with proper hierarchy
 	const buildVisibleFiles = useCallback((): FileTreeNode[] => {
 		const result: FileTreeNode[] = [];
@@ -246,5 +357,6 @@ export function useFileTree() {
 		isFolderExpanded,
 		refreshAll,
 		addFilesOptimistically,
+		removeFromTree,
 	};
 }

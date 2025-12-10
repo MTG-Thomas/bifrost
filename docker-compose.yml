@@ -1,3 +1,5 @@
+name: bifrost
+
 # Bifrost Docker Stack - Full Development Environment
 #
 # Usage:
@@ -152,7 +154,6 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
-    container_name: bifrost-api
     environment:
       # Core
       BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-development}
@@ -281,7 +282,6 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
-    container_name: bifrost-worker
     environment:
       # Core (must match API)
       BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-development}

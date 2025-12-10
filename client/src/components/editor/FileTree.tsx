@@ -14,7 +14,7 @@ import {
 import { useFileTree, type FileTreeNode } from "@/hooks/useFileTree";
 import { useEditorStore } from "@/stores/editorStore";
 import { fileService, type FileMetadata } from "@/services/fileService";
-import { useUploadProgress } from "@/hooks/useUploadProgress";
+import { useUploadProgress } from "@/stores/uploadStore";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -145,9 +145,15 @@ export function FileTree() {
 		isFolderExpanded,
 		refreshAll,
 		addFilesOptimistically,
+		removeFromTree,
 	} = useFileTree();
-	const { startUpload, updateProgress, recordFailure, finishUpload } =
-		useUploadProgress();
+	const {
+		startUpload,
+		updateProgress,
+		recordFailure,
+		finishUpload,
+		shouldContinueUpload,
+	} = useUploadProgress();
 	const tabs = useEditorStore((state) => state.tabs);
 	const activeTabIndex = useEditorStore((state) => state.activeTabIndex);
 	const setOpenFile = useEditorStore((state) => state.setOpenFile);
@@ -171,6 +177,11 @@ export function FileTree() {
 	const [fileToDelete, setFileToDelete] = useState<FileMetadata | null>(null);
 	const [dragOverFolder, setDragOverFolder] = useState<string | null>(null); // Folder being dragged over
 	const [isProcessing, setIsProcessing] = useState(false); // Loading overlay for operations
+	const [uploadConflict, setUploadConflict] = useState<{
+		count: number;
+		onCancel: () => void;
+		onReplaceAll: () => void;
+	} | null>(null); // Upload conflict dialog state
 	const inputRef = useRef<HTMLInputElement>(null);
 	const renameInputRef = useRef<HTMLInputElement>(null);
 
@@ -342,43 +353,46 @@ export function FileTree() {
 	const handleConfirmDelete = useCallback(async () => {
 		if (!fileToDelete) return;
 
+		const isFolder = fileToDelete.type === "folder";
+		const deletePath = fileToDelete.path;
+		const deleteName = fileToDelete.name;
+
 		try {
 			setIsProcessing(true);
 
-			// Get parent folder path
-			const parentFolder = fileToDelete.path.includes("/")
-				? fileToDelete.path.substring(
-						0,
-						fileToDelete.path.lastIndexOf("/"),
-					)
-				: "";
-
 			// Close any open tabs for this file/folder
-			const isFolder = fileToDelete.type === "folder";
-			const closedCount = closeTabsByPath(fileToDelete.path, isFolder);
+			const closedCount = closeTabsByPath(deletePath, isFolder);
 
-			await fileService.deletePath(fileToDelete.path);
-			await loadFiles(parentFolder); // Refresh parent folder
+			// Optimistically remove from tree (immediate UI update)
+			removeFromTree(deletePath, isFolder);
 			setFileToDelete(null);
+
+			// Delete from server
+			await fileService.deletePath(deletePath);
 
 			// Show appropriate message
 			if (closedCount > 0) {
 				toast.success(
 					isFolder
-						? `Deleted folder ${fileToDelete.name} and closed ${closedCount} open ${closedCount === 1 ? "file" : "files"}`
-						: `Deleted ${fileToDelete.name} and closed the tab`,
+						? `Deleted folder ${deleteName} and closed ${closedCount} open ${closedCount === 1 ? "file" : "files"}`
+						: `Deleted ${deleteName} and closed the tab`,
 				);
 			} else {
-				toast.success(`Deleted ${fileToDelete.name}`);
+				toast.success(`Deleted ${deleteName}`);
 			}
 		} catch (err) {
+			// On error, reload parent folder to restore correct state
+			const parentFolder = deletePath.includes("/")
+				? deletePath.substring(0, deletePath.lastIndexOf("/"))
+				: "";
+			await loadFiles(parentFolder);
 			toast.error("Failed to delete", {
 				description: err instanceof Error ? err.message : String(err),
 			});
 		} finally {
 			setIsProcessing(false);
 		}
-	}, [fileToDelete, loadFiles, closeTabsByPath]);
+	}, [fileToDelete, loadFiles, closeTabsByPath, removeFromTree]);
 
 	const handleRename = useCallback((file: FileMetadata) => {
 		setRenamingFile(file);
@@ -552,43 +566,133 @@ export function FileTree() {
 				// External file upload - collect all files including from folders
 				const allFiles: FileWithPath[] = [];
 
+				// IMPORTANT: Extract all entries SYNCHRONOUSLY first!
+				// The DataTransferItemList is cleared by the browser after any await,
+				// so we must call webkitGetAsEntry() on all items before any async work.
+				// See: https://developer.mozilla.org/en-US/docs/Web/API/DataTransferItem/webkitGetAsEntry
+				const entries: Array<{
+					entry: FileSystemEntry | null;
+					fallbackFile: File | null;
+				}> = [];
+
 				for (let i = 0; i < items.length; i++) {
 					const item = items[i];
 					if (item.kind !== "file") continue;
 
-					// Try to get FileSystemEntry for folder support
-					const entry = item.webkitGetAsEntry?.();
+					// Get entry synchronously - must happen before any await
+					const entry = item.webkitGetAsEntry?.() ?? null;
+					// Also get fallback file synchronously in case entry processing fails
+					const fallbackFile = item.getAsFile();
+					entries.push({ entry, fallbackFile });
+				}
+
+				// Now process entries asynchronously - the DataTransferItemList may be
+				// cleared after this point, but we've already extracted what we need
+				for (const { entry, fallbackFile } of entries) {
 					if (entry) {
-						try {
-							const filesFromEntry =
-								await traverseFileSystemEntry(entry);
-							allFiles.push(...filesFromEntry);
-						} catch {
-							// Fallback: get as regular file
-							const file = item.getAsFile();
-							if (file) {
+						if (entry.isDirectory) {
+							// Traverse directory recursively
+							try {
+								const filesFromEntry =
+									await traverseFileSystemEntry(entry);
+								allFiles.push(...filesFromEntry);
+							} catch {
+								console.warn(
+									`Failed to traverse directory: ${entry.name}`,
+								);
+							}
+						} else if (entry.isFile) {
+							// Handle file entry - need to use file() method
+							try {
+								const fileEntry = entry as FileSystemFileEntry;
+								const file = await new Promise<File>(
+									(resolve, reject) => {
+										fileEntry.file(resolve, reject);
+									},
+								);
 								allFiles.push({
 									file,
 									relativePath: file.name,
 								});
+							} catch {
+								// Fallback to getAsFile (already extracted synchronously)
+								if (fallbackFile) {
+									allFiles.push({
+										file: fallbackFile,
+										relativePath: fallbackFile.name,
+									});
+								}
 							}
 						}
-					} else {
-						// Browser doesn't support webkitGetAsEntry, fallback to regular file
-						const file = item.getAsFile();
-						if (file) {
-							allFiles.push({ file, relativePath: file.name });
-						}
+					} else if (fallbackFile) {
+						// Browser doesn't support webkitGetAsEntry, use fallback
+						allFiles.push({
+							file: fallbackFile,
+							relativePath: fallbackFile.name,
+						});
 					}
 				}
 
 				if (allFiles.length === 0) return;
+
+				// Check for existing files that would be overwritten
+				try {
+					// Get all existing files recursively from the target path
+					const existingFiles = await fileService.listFiles(targetPath);
+					const existingPaths = new Set(
+						existingFiles
+							.filter((f) => f.type === "file")
+							.map((f) => f.path),
+					);
+
+					// Find files that already exist
+					const conflictCount = allFiles.filter(({ relativePath }) => {
+						const fullPath = targetPath
+							? `${targetPath}/${relativePath}`
+							: relativePath;
+						return existingPaths.has(fullPath);
+					}).length;
+
+					// Show conflict dialog if any files would be overwritten
+					if (conflictCount > 0) {
+						const shouldReplace = await new Promise<boolean>(
+							(resolve) => {
+								setUploadConflict({
+									count: conflictCount,
+									onCancel: () => {
+										setUploadConflict(null);
+										resolve(false);
+									},
+									onReplaceAll: () => {
+										setUploadConflict(null);
+										resolve(true);
+									},
+								});
+							},
+						);
+
+						if (!shouldReplace) {
+							return; // User cancelled
+						}
+					}
+				} catch {
+					// If we can't check for existing files, proceed with upload
+					// (the upload will fail individually if there are issues)
+				}
 
 				// Start upload progress tracking
 				startUpload(allFiles.length);
 				const uploadedFiles: FileMetadata[] = [];
 
 				for (let i = 0; i < allFiles.length; i++) {
+					// Check for cancellation before each file
+					if (!shouldContinueUpload()) {
+						toast.info(
+							`Upload cancelled (${i} of ${allFiles.length} files uploaded)`,
+						);
+						break;
+					}
+
 					const { file, relativePath } = allFiles[i];
 					const filePath = targetPath
 						? `${targetPath}/${relativePath}`
@@ -712,6 +816,7 @@ export function FileTree() {
 			recordFailure,
 			finishUpload,
 			addFilesOptimistically,
+			shouldContinueUpload,
 		],
 	);
 
@@ -914,6 +1019,35 @@ export function FileTree() {
 							className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
 						>
 							Delete
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+
+			{/* Upload Conflict Dialog */}
+			<AlertDialog
+				open={!!uploadConflict}
+				onOpenChange={(open) => {
+					if (!open && uploadConflict) {
+						uploadConflict.onCancel();
+					}
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Replace existing files?</AlertDialogTitle>
+						<AlertDialogDescription>
+							{uploadConflict?.count === 1
+								? "1 file already exists and will be replaced."
+								: `${uploadConflict?.count} files already exist and will be replaced.`}
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={uploadConflict?.onCancel}>
+							Cancel
+						</AlertDialogCancel>
+						<AlertDialogAction onClick={uploadConflict?.onReplaceAll}>
+							Replace All
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

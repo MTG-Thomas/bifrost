@@ -214,7 +214,6 @@ class FileStorageService:
                 "is_deleted": False,
                 "updated_at": now,
             },
-            where=WorkspaceFile.is_deleted == False,  # noqa: E712
         ).returning(WorkspaceFile)
 
         result = await self.db.execute(stmt)

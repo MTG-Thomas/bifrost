@@ -100,3 +100,4 @@ types-aiobotocore[s3]  # Type stubs for S3
 # =============================================================================
 debugpy  # Remote debugging (VS Code attach)
 ruff
+watchdog  # File watching for hot reload (watchmedo command)

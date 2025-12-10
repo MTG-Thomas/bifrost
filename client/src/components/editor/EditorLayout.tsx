@@ -11,7 +11,8 @@ import { SourceControlPanel } from "./SourceControlPanel";
 import { FileTabs } from "./FileTabs";
 import { useEditorSession } from "@/hooks/useEditorSession";
 import { useCmdCtrlShortcut } from "@/contexts/KeyboardContext";
-import { UploadProgressProvider } from "@/hooks/useUploadProgress";
+import { useUploadStore } from "@/stores/uploadStore";
+import { useExecutionStreamStore } from "@/stores/executionStreamStore";
 import {
 	X,
 	Save,
@@ -19,9 +20,20 @@ import {
 	Maximize2,
 	PanelLeftClose,
 	PanelLeft,
+	Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAutoSave } from "@/hooks/useAutoSave";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 /**
  * Main editor layout container
@@ -45,6 +57,27 @@ export function EditorLayout() {
 
 	// Auto-save and manual save
 	const { manualSave } = useAutoSave();
+
+	// Activity state for minimized indicator
+	const isUploading = useUploadStore((state) => state.isUploading);
+	const cancelUpload = useUploadStore((state) => state.cancelUpload);
+	const streams = useExecutionStreamStore((state) => state.streams);
+	const hasActiveExecution = Object.values(streams).some(
+		(s) => s.status === "Running" || s.status === "Pending",
+	);
+	const isActivityInProgress = isUploading || hasActiveExecution;
+
+	// Close confirmation dialog state
+	const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+
+	// Wrap closeEditor to check for uploads
+	const handleCloseEditor = useCallback(() => {
+		if (isUploading) {
+			setShowCloseConfirm(true);
+		} else {
+			closeEditor();
+		}
+	}, [isUploading, closeEditor]);
 
 	const [sidebarWidth, setSidebarWidth] = useState(256); // 256px = w-64
 	const [sidebarVisible, setSidebarVisible] = useState(true);
@@ -173,7 +206,11 @@ export function EditorLayout() {
 					onClick={restoreEditor}
 					className="flex items-center gap-2 rounded-lg border bg-background px-4 py-2 shadow-lg hover:bg-muted transition-colors"
 				>
-					<Maximize2 className="h-4 w-4" />
+					{isActivityInProgress ? (
+						<Loader2 className="h-4 w-4 animate-spin" />
+					) : (
+						<Maximize2 className="h-4 w-4" />
+					)}
 					<span className="text-sm font-medium">
 						{getMinimizedLabel()}
 					</span>
@@ -183,7 +220,7 @@ export function EditorLayout() {
 	}
 
 	return (
-		<UploadProgressProvider>
+		<>
 			<div className="flex h-screen w-screen flex-col overflow-hidden bg-background">
 				{/* Top bar with close button */}
 				<div className="flex h-10 items-center justify-between border-b bg-muted/30 px-3">
@@ -231,7 +268,7 @@ export function EditorLayout() {
 							variant="ghost"
 							size="icon"
 							className="h-6 w-6"
-							onClick={() => closeEditor()}
+							onClick={handleCloseEditor}
 							title="Close"
 						>
 							<X className="h-3 w-3" />
@@ -304,6 +341,30 @@ export function EditorLayout() {
 				{/* Status bar (includes upload progress) */}
 				<StatusBar />
 			</div>
-		</UploadProgressProvider>
+
+			{/* Close confirmation dialog when upload is in progress */}
+			<AlertDialog open={showCloseConfirm} onOpenChange={setShowCloseConfirm}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Upload in progress</AlertDialogTitle>
+						<AlertDialogDescription>
+							Files are currently being uploaded. Closing will cancel
+							the remaining uploads.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Continue Upload</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => {
+								cancelUpload();
+								closeEditor();
+							}}
+						>
+							Cancel Upload & Close
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
 	);
 }
