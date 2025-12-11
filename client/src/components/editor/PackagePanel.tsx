@@ -209,9 +209,11 @@ export function PackagePanel() {
 		setIsCheckingUpdates(true);
 		try {
 			const data = await checkUpdates();
-			setUpdates(data?.updates || []);
-			if ((data?.updates?.length ?? 0) > 0) {
-				toast.info(`${data?.updates?.length} update(s) available`);
+			setUpdates(data?.updates_available || []);
+			if ((data?.updates_available?.length ?? 0) > 0) {
+				toast.info(
+					`${data?.updates_available?.length} update(s) available`,
+				);
 			} else {
 				toast.success("All packages are up to date");
 			}
@@ -245,10 +247,7 @@ export function PackagePanel() {
 			// Set execution ID to show in terminal
 			setCurrentStreamingExecutionId(installationId);
 
-			await installPackage(
-				pkgName,
-				pkgVersion || undefined,
-			);
+			await installPackage(pkgName, pkgVersion || undefined);
 
 			// Clear form
 			setPackageName("");

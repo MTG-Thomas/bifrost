@@ -192,7 +192,6 @@ def list_directory(relative_path: str = "") -> List[FileMetadata]:
                 size=size,
                 extension=extension,
                 modified=modified,
-                isReadOnly=False  # TODO: Check actual permissions if needed
             ))
         except (PermissionError, OSError):
             # Skip files we can't read
@@ -386,7 +385,6 @@ def create_folder(relative_path: str) -> FileMetadata:
         size=None,
         extension=None,
         modified=modified,
-        isReadOnly=False
     )
 
 
@@ -471,5 +469,4 @@ async def rename_path(old_path: str, new_path: str) -> FileMetadata:
         size=size,
         extension=extension,
         modified=modified,
-        isReadOnly=False
     )

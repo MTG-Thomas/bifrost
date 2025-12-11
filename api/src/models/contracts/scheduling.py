@@ -84,26 +84,56 @@ class CronScheduleUpdateRequest(BaseModel):
     enabled: bool | None = None
 
 
-class ScheduleInfo(BaseModel):
-    """Information about a scheduled workflow for display"""
-    workflow_name: str = Field(..., description="Internal workflow name/identifier")
-    workflow_description: str = Field(..., description="Display name of the workflow")
-    cron_expression: str = Field(..., description="CRON expression")
-    human_readable: str = Field(..., description="Human-readable schedule (e.g., 'Every day at 2:00 AM')")
-    next_run_at: datetime | None = Field(default=None, description="Next scheduled execution time")
-    last_run_at: datetime | None = Field(default=None, description="Last execution time")
-    last_execution_id: str | None = Field(default=None, description="ID of last execution")
-    execution_count: int = Field(default=0, description="Total number of times this schedule has been triggered")
-    enabled: bool = Field(default=True, description="Whether this schedule is currently active")
-    validation_status: Literal["valid", "warning", "error"] | None = Field(default=None, description="Validation status of the CRON expression")
-    validation_message: str | None = Field(default=None, description="Validation message for warning/error statuses")
-    is_overdue: bool = Field(default=False, description="Whether the schedule is overdue by more than 6 minutes")
+# ==================== SCHEDULE METADATA ====================
 
 
-class SchedulesListResponse(BaseModel):
-    """Response model for listing scheduled workflows"""
-    schedules: list[ScheduleInfo] = Field(..., description="List of scheduled workflows")
-    total_count: int = Field(..., description="Total number of scheduled workflows")
+class ScheduleMetadata(BaseModel):
+    """Workflow metadata enriched with computed schedule-specific fields.
+
+    Extends WorkflowMetadata with validation, timing, and execution history.
+    Used by the /api/schedules endpoint to return workflows with schedules.
+    """
+    # Core workflow fields (from WorkflowMetadata)
+    id: str = Field(..., description="Workflow UUID")
+    name: str = Field(..., description="Workflow name (snake_case)")
+    description: str | None = Field(default=None, description="Human-readable description")
+    category: str = Field(default="General", description="Category for organization")
+    tags: list[str] = Field(default_factory=list, description="Tags for categorization")
+    schedule: str | None = Field(default=None, description="CRON expression")
+
+    # Source tracking
+    source_file_path: str | None = Field(default=None, description="Full file path")
+    relative_file_path: str | None = Field(default=None, description="Workspace-relative path")
+
+    # Schedule validation
+    validation_status: Literal["valid", "warning", "error"] | None = Field(
+        default=None, description="CRON validation status"
+    )
+    validation_message: str | None = Field(
+        default=None, description="Validation error/warning message"
+    )
+
+    # Computed schedule fields
+    human_readable: str | None = Field(
+        default=None, description="Human-readable schedule (e.g., 'Every day at 9:00 AM')"
+    )
+    next_run_at: datetime | None = Field(
+        default=None, description="Next scheduled execution time"
+    )
+    is_overdue: bool = Field(
+        default=False, description="Whether schedule is overdue (next_run_at <= now)"
+    )
+
+    # Execution history (from executions table)
+    last_run_at: datetime | None = Field(
+        default=None, description="Last execution completion time"
+    )
+    last_execution_id: str | None = Field(
+        default=None, description="ID of most recent execution"
+    )
+    execution_count: int = Field(
+        default=0, description="Total number of executions"
+    )
 
 
 class CronValidationRequest(BaseModel):

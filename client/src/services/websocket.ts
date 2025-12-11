@@ -32,7 +32,7 @@ export interface ExecutionUpdate {
 }
 
 // ExecutionLog from backend (auto-generated from OpenAPI)
-export type ExecutionLogMessage = components["schemas"]["ExecutionLog"];
+export type ExecutionLogMessage = components["schemas"]["ExecutionLogPublic"];
 
 // Frontend wrapper with execution context
 export interface ExecutionLog extends ExecutionLogMessage {
@@ -356,6 +356,7 @@ class WebSocketService {
 			isComplete:
 				status === "Success" ||
 				status === "Failed" ||
+				status === "CompletedWithErrors" ||
 				status === "Timeout" ||
 				status === "Cancelled",
 			timestamp,

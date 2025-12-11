@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEditorStore } from "@/stores/editorStore";
-import { useWorkflowsStore } from "@/stores/workflowsStore";
 import { useWorkflowsMetadata, useExecuteWorkflow } from "@/hooks/useWorkflows";
 import { useExecutionStream } from "@/hooks/useExecutionStream";
 import { useExecutionStreamStore } from "@/stores/executionStreamStore";
@@ -78,9 +77,6 @@ export function RunPanel() {
 			};
 			isLoading: boolean;
 		};
-	const getWorkflowByPath = useWorkflowsStore(
-		(state) => state.getWorkflowByPath,
-	);
 	const executeWorkflow = useExecuteWorkflow();
 	const [isExecuting, setIsExecuting] = useState(false);
 	const [isValidating, setIsValidating] = useState(false);
@@ -222,39 +218,64 @@ export function RunPanel() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [streamState?.isComplete, currentExecutionId]);
 
-	// Subscribe to workflows store to trigger re-detection when workflows change
-	const workflowsLastUpdated = useWorkflowsStore(
-		(state) => state.lastUpdated,
-	);
-
-	// Detect file type when file changes
+	// Detect file type when file or metadata changes
+	// First check is_workflow/is_data_provider flags from file metadata (fast path)
+	// Then fall back to matching against workflow/data_provider metadata for full details
 	useEffect(() => {
-		if (!openFile || !openFile.name.endsWith(".py") || !metadata) {
+		if (!openFile || !openFile.name.endsWith(".py")) {
 			setDetectedItem({ type: null });
 			return;
 		}
 
-		// Check if it's a workflow using the workflows store (more reliable)
-		const workflow = getWorkflowByPath(openFile.path);
-		if (workflow) {
+		// Fast path: Check is_workflow flag from file metadata
+		if (openFile.is_workflow) {
+			// Look up full workflow metadata for parameters
+			const workflow = metadata?.workflows?.find(
+				(w: WorkflowMetadata) =>
+					w.relative_file_path === openFile.path ||
+					w.source_file_path?.endsWith(openFile.path),
+			);
+			// Set as workflow with metadata if found, or without if still loading
 			setDetectedItem({ type: "workflow", metadata: workflow });
 			return;
 		}
 
-		// Check if it's a data provider by matching file path
-		const dataProvider = metadata.dataProviders?.find(
-			(dp: DataProviderMetadata) =>
-				dp.source_file_path &&
-				dp.source_file_path.endsWith(openFile.path),
-		);
-		if (dataProvider) {
+		// Fast path: Check is_data_provider flag from file metadata
+		if (openFile.is_data_provider) {
+			const dataProvider = metadata?.dataProviders?.find(
+				(dp: DataProviderMetadata) =>
+					dp.source_file_path?.endsWith(openFile.path),
+			);
+			// Set as data_provider with metadata if found, or without if still loading
 			setDetectedItem({ type: "data_provider", metadata: dataProvider });
 			return;
 		}
 
+		// Slow path: File doesn't have flags set, check metadata (for backwards compat)
+		if (metadata) {
+			const workflow = metadata.workflows?.find(
+				(w: WorkflowMetadata) =>
+					w.relative_file_path === openFile.path ||
+					w.source_file_path?.endsWith(openFile.path),
+			);
+			if (workflow) {
+				setDetectedItem({ type: "workflow", metadata: workflow });
+				return;
+			}
+
+			const dataProvider = metadata.dataProviders?.find(
+				(dp: DataProviderMetadata) =>
+					dp.source_file_path?.endsWith(openFile.path),
+			);
+			if (dataProvider) {
+				setDetectedItem({ type: "data_provider", metadata: dataProvider });
+				return;
+			}
+		}
+
 		// Otherwise it's a regular script
 		setDetectedItem({ type: "script" });
-	}, [openFile, metadata, getWorkflowByPath, workflowsLastUpdated]);
+	}, [openFile, metadata]);
 
 	const handleExecuteWorkflow = async (params: Record<string, unknown>) => {
 		if (detectedItem.type !== "workflow" || !detectedItem.metadata) return;
@@ -266,7 +287,7 @@ export function RunPanel() {
 		try {
 			const result = (await executeWorkflow.mutateAsync({
 				body: {
-					workflow_name: detectedItem.metadata.name ?? "",
+					workflow_id: (detectedItem.metadata as WorkflowMetadata).id,
 					input_data: params,
 					form_id: null,
 					transient: true, // Editor executions are transient (no DB writes)
@@ -361,7 +382,7 @@ export function RunPanel() {
 			// Execute script via workflow API with transient flag and code
 			const result = (await executeWorkflow.mutateAsync({
 				body: {
-					workflow_name: null,
+					workflow_id: null,
 					input_data: {},
 					form_id: null,
 					transient: true, // Editor executions are transient (no DB writes)
@@ -643,7 +664,7 @@ export function RunPanel() {
 		<div className="flex h-full flex-col">
 			{/* Content */}
 			<div className="flex-1 overflow-auto">
-				{detectedItem.type === "workflow" && detectedItem.metadata && (
+				{detectedItem.type === "workflow" && (
 					<>
 						<div className="border-b px-3 py-2">
 							<div className="flex items-center gap-2">
@@ -657,7 +678,7 @@ export function RunPanel() {
 									</p>
 								</div>
 							</div>
-							{detectedItem.metadata.description && (
+							{detectedItem.metadata?.description && (
 								<p className="text-xs text-muted-foreground mt-2">
 									{detectedItem.metadata.description}
 								</p>
@@ -667,7 +688,7 @@ export function RunPanel() {
 							<WorkflowParametersForm
 								parameters={
 									(detectedItem.metadata as WorkflowMetadata)
-										.parameters || []
+										?.parameters || []
 								}
 								onExecute={handleExecuteWorkflow}
 								isExecuting={isLoading}
@@ -705,8 +726,7 @@ export function RunPanel() {
 					</>
 				)}
 
-				{detectedItem.type === "data_provider" &&
-					detectedItem.metadata && (
+				{detectedItem.type === "data_provider" && (
 						<>
 							<div className="border-b px-3 py-2">
 								<div className="flex items-center gap-2">
@@ -716,11 +736,11 @@ export function RunPanel() {
 											Data Provider
 										</h3>
 										<p className="text-xs text-muted-foreground">
-											{detectedItem.metadata.name}
+											{detectedItem.metadata?.name || openFile.name}
 										</p>
 									</div>
 								</div>
-								{detectedItem.metadata.description && (
+								{detectedItem.metadata?.description && (
 									<p className="text-xs text-muted-foreground mt-2">
 										{detectedItem.metadata.description}
 									</p>
@@ -745,7 +765,7 @@ export function RunPanel() {
 								</div>
 
 								{/* Show parameters if any */}
-								{detectedItem.metadata.parameters &&
+								{detectedItem.metadata?.parameters &&
 									detectedItem.metadata.parameters.length >
 										0 && (
 										<div className="space-y-2">

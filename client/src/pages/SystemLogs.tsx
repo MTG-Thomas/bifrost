@@ -296,7 +296,10 @@ export default function SystemLogs() {
 									<AlertCircle className="h-4 w-4" />
 									<AlertDescription>
 										Failed to load system logs:{" "}
-										{getErrorMessage(error, "Unknown error")}
+										{getErrorMessage(
+											error,
+											"Unknown error",
+										)}
 									</AlertDescription>
 								</Alert>
 							)}

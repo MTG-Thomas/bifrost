@@ -43,8 +43,8 @@ function UserRolesDialogContent({
 	const removeMutation = useRemoveUserFromRole();
 
 	const [selectedRoles, setSelectedRoles] = useState<Set<string>>(
-		userRoles && (userRoles as UserRolesResponse).roleIds
-			? new Set((userRoles as UserRolesResponse).roleIds)
+		userRoles && (userRoles as UserRolesResponse).role_ids
+			? new Set((userRoles as UserRolesResponse).role_ids)
 			: new Set(),
 	);
 
@@ -56,7 +56,7 @@ function UserRolesDialogContent({
 				// Assign role to user
 				await assignMutation.mutateAsync({
 					params: { path: { role_id: roleId } },
-					body: { userIds: [user.id] },
+					body: { user_ids: [user.id] },
 				});
 				setSelectedRoles((prev) => new Set([...prev, roleId]));
 			} else {

@@ -35,10 +35,7 @@ import type {
 	DataProviderInputConfig,
 } from "@/lib/client-types";
 
-import {
-	useDataProviders,
-	type DataProvider,
-} from "@/services/dataProviders";
+import { useDataProviders, type DataProvider } from "@/services/dataProviders";
 import { OptionsEditor } from "./OptionsEditor";
 import { DataProviderInputsConfig } from "./DataProviderInputsConfig";
 

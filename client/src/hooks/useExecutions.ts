@@ -5,7 +5,6 @@
 
 import { $api, apiClient } from "@/lib/api-client";
 import type { ExecutionFilters } from "@/lib/client-types";
-import { useScopeStore } from "@/stores/scopeStore";
 import { useQueryClient } from "@tanstack/react-query";
 
 // Re-export types for convenience
@@ -15,29 +14,20 @@ export function useExecutions(
 	filters?: ExecutionFilters,
 	continuationToken?: string,
 ) {
-	const orgId = useScopeStore((state) => state.scope.orgId);
-
 	// Build query params
 	const queryParams: Record<string, string> = {};
-	if (filters?.workflow_name) queryParams["workflow_name"] = filters.workflow_name;
+	if (filters?.workflow_name)
+		queryParams["workflow_name"] = filters.workflow_name;
 	if (filters?.status) queryParams["status"] = filters.status;
 	if (filters?.start_date) queryParams["start_date"] = filters.start_date;
 	if (filters?.end_date) queryParams["end_date"] = filters.end_date;
 	if (filters?.limit) queryParams["limit"] = filters.limit.toString();
-	if (continuationToken) queryParams["continuation_token"] = continuationToken;
+	if (continuationToken)
+		queryParams["continuation_token"] = continuationToken;
 
-	return $api.useQuery(
-		"get",
-		"/api/executions",
-		{ params: { query: queryParams } },
-		{
-			// Include orgId in query key so it refetches when scope changes
-			queryKey: ["executions", orgId, filters, continuationToken],
-			staleTime: 0, // No caching - always fetch fresh data
-			refetchOnMount: true,
-			refetchOnWindowFocus: false,
-		},
-	);
+	return $api.useQuery("get", "/api/executions", {
+		params: { query: queryParams },
+	});
 }
 
 export function useExecution(
@@ -49,9 +39,7 @@ export function useExecution(
 		"/api/executions/{execution_id}",
 		{ params: { path: { execution_id: executionId! } } },
 		{
-			queryKey: ["executions", executionId],
 			enabled: !!executionId,
-			staleTime: 0, // No caching - always fetch fresh data
 			// Retry on 404 for a short period (Redis-first architecture)
 			// The execution may be in Redis pending but not yet in PostgreSQL
 			retry: (failureCount, error) => {
@@ -75,7 +63,9 @@ export function useExecution(
 				if (!query.state.data) {
 					return 2000; // Poll while waiting for execution to appear
 				}
-				return status === "Pending" || status === "Running" ? 2000 : false;
+				return status === "Pending" || status === "Running"
+					? 2000
+					: false;
 			},
 		},
 	);
@@ -92,11 +82,7 @@ export function useExecutionResult(
 		"get",
 		"/api/executions/{execution_id}/result",
 		{ params: { path: { execution_id: executionId! } } },
-		{
-			queryKey: ["executions", executionId, "result"],
-			enabled: !!executionId && enabled,
-			staleTime: 0, // No caching - always fetch fresh data
-		},
+		{ enabled: !!executionId && enabled },
 	);
 }
 
@@ -111,12 +97,7 @@ export function useExecutionLogs(
 		"get",
 		"/api/executions/{execution_id}/logs",
 		{ params: { path: { execution_id: executionId! } } },
-		{
-			queryKey: ["executions", executionId, "logs"],
-			enabled: !!executionId && enabled,
-			staleTime: 0, // No caching - always fetch fresh data
-			refetchOnMount: true,
-		},
+		{ enabled: !!executionId && enabled },
 	);
 }
 
@@ -131,11 +112,7 @@ export function useExecutionVariables(
 		"get",
 		"/api/executions/{execution_id}/variables",
 		{ params: { path: { execution_id: executionId! } } },
-		{
-			queryKey: ["executions", executionId, "variables"],
-			enabled: !!executionId && enabled,
-			staleTime: 0, // No caching - always fetch fresh data
-		},
+		{ enabled: !!executionId && enabled },
 	);
 }
 
@@ -147,12 +124,17 @@ export function useCancelExecution() {
 
 	return $api.useMutation("post", "/api/executions/{execution_id}/cancel", {
 		onSuccess: (_, variables) => {
+			const executionId = variables.params.path.execution_id;
 			// Invalidate the specific execution query
 			queryClient.invalidateQueries({
-				queryKey: ["executions", variables.params.path.execution_id],
+				queryKey: [
+					"get",
+					"/api/executions/{execution_id}",
+					{ params: { path: { execution_id: executionId } } },
+				],
 			});
 			// Also invalidate the executions list
-			queryClient.invalidateQueries({ queryKey: ["executions"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/executions"] });
 		},
 	});
 }

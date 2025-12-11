@@ -9,7 +9,6 @@ import type { components } from "@/lib/v1";
 import type { FormSubmission, FormExecutionResponse } from "@/lib/client-types";
 
 import { toast } from "sonner";
-import { useAuth } from "@/contexts/AuthContext";
 
 type FormCreate = components["schemas"]["FormCreate"];
 type FormUpdate = components["schemas"]["FormUpdate"];
@@ -46,9 +45,7 @@ export async function getForm(formId: string): Promise<FormPublic> {
 /**
  * Create a new form
  */
-export async function createForm(
-	request: FormCreate,
-): Promise<FormPublic> {
+export async function createForm(request: FormCreate): Promise<FormPublic> {
 	const { data, error } = await apiClient.POST("/api/forms", {
 		body: request,
 	});
@@ -78,8 +75,7 @@ export async function deleteForm(formId: string): Promise<void> {
 	const { error } = await apiClient.DELETE("/api/forms/{form_id}", {
 		params: { path: { form_id: formId } },
 	});
-	if (error)
-		throw new Error(getErrorMessage(error, "Failed to delete form"));
+	if (error) throw new Error(getErrorMessage(error, "Failed to delete form"));
 }
 
 /**
@@ -105,48 +101,18 @@ export async function submitForm(
  * Query hook to fetch all forms
  */
 export function useForms() {
-	const { user } = useAuth();
-
-	return $api.useQuery(
-		"get",
-		"/api/forms",
-		{},
-		{
-			queryKey: ["forms"],
-			// Only fetch when authenticated
-			enabled: !!user,
-			// Don't use cached data from previous scope
-			staleTime: 0,
-			// Always refetch when component mounts (navigating to page)
-			refetchOnMount: "always",
-		},
-	);
+	return $api.useQuery("get", "/api/forms", {});
 }
 
 /**
  * Query hook to fetch a single form by ID
  */
 export function useForm(formId: string | undefined) {
-	if (!formId) {
-		return $api.useQuery(
-			"get",
-			"/api/forms/{form_id}",
-			{ params: { path: { form_id: "" } } },
-			{
-				queryKey: ["forms", formId],
-				enabled: false,
-			},
-		);
-	}
-
 	return $api.useQuery(
 		"get",
 		"/api/forms/{form_id}",
-		{ params: { path: { form_id: formId } } },
-		{
-			queryKey: ["forms", formId],
-			enabled: !!formId,
-		},
+		{ params: { path: { form_id: formId ?? "" } } },
+		{ enabled: !!formId },
 	);
 }
 
@@ -156,24 +122,20 @@ export function useForm(formId: string | undefined) {
 export function useCreateForm() {
 	const queryClient = useQueryClient();
 
-	return $api.useMutation(
-		"post",
-		"/api/forms",
-		{
-			onSuccess: (_responseData, variables) => {
-				queryClient.invalidateQueries({ queryKey: ["forms"] });
-				const name = (variables.body as FormCreate)?.name;
-				toast.success("Form created", {
-					description: `Form "${name}" has been created`,
-				});
-			},
-			onError: (error) => {
-				toast.error("Failed to create form", {
-					description: getErrorMessage(error, "Unknown error"),
-				});
-			},
+	return $api.useMutation("post", "/api/forms", {
+		onSuccess: (_responseData, variables) => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/forms"] });
+			const name = (variables.body as FormCreate)?.name;
+			toast.success("Form created", {
+				description: `Form "${name}" has been created`,
+			});
 		},
-	);
+		onError: (error) => {
+			toast.error("Failed to create form", {
+				description: getErrorMessage(error, "Unknown error"),
+			});
+		},
+	});
 }
 
 /**
@@ -182,29 +144,24 @@ export function useCreateForm() {
 export function useUpdateForm() {
 	const queryClient = useQueryClient();
 
-	return $api.useMutation(
-		"patch",
-		"/api/forms/{form_id}",
-		{
-			onSuccess: (_responseData, variables) => {
-				const formId = (
-					variables.params as { path: { form_id: string } }
-				).path.form_id;
-				queryClient.invalidateQueries({ queryKey: ["forms"] });
-				queryClient.invalidateQueries({
-					queryKey: ["forms", formId],
-				});
-				toast.success("Form updated", {
-					description: "The form has been updated successfully",
-				});
-			},
-			onError: (error) => {
-				toast.error("Failed to update form", {
-					description: getErrorMessage(error, "Unknown error"),
-				});
-			},
+	return $api.useMutation("patch", "/api/forms/{form_id}", {
+		onSuccess: (_responseData, variables) => {
+			const formId = (variables.params as { path: { form_id: string } })
+				.path.form_id;
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/forms"] });
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/forms/{form_id}", { params: { path: { form_id: formId } } }],
+			});
+			toast.success("Form updated", {
+				description: "The form has been updated successfully",
+			});
 		},
-	);
+		onError: (error) => {
+			toast.error("Failed to update form", {
+				description: getErrorMessage(error, "Unknown error"),
+			});
+		},
+	});
 }
 
 /**
@@ -213,43 +170,35 @@ export function useUpdateForm() {
 export function useDeleteForm() {
 	const queryClient = useQueryClient();
 
-	return $api.useMutation(
-		"delete",
-		"/api/forms/{form_id}",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["forms"] });
-				toast.success("Form deleted", {
-					description: "The form has been deactivated",
-				});
-			},
-			onError: (error) => {
-				toast.error("Failed to delete form", {
-					description: getErrorMessage(error, "Unknown error"),
-				});
-			},
+	return $api.useMutation("delete", "/api/forms/{form_id}", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/forms"] });
+			toast.success("Form deleted", {
+				description: "The form has been deactivated",
+			});
 		},
-	);
+		onError: (error) => {
+			toast.error("Failed to delete form", {
+				description: getErrorMessage(error, "Unknown error"),
+			});
+		},
+	});
 }
 
 /**
  * Mutation hook to submit a form and execute workflow
  */
 export function useSubmitForm() {
-	return $api.useMutation(
-		"post",
-		"/api/forms/{form_id}/execute",
-		{
-			onSuccess: (responseData) => {
-				toast.success("Workflow execution started", {
-					description: `Execution ID: ${(responseData as FormExecutionResponse).execution_id}`,
-				});
-			},
-			onError: (error) => {
-				toast.error("Failed to submit form", {
-					description: getErrorMessage(error, "Unknown error"),
-				});
-			},
+	return $api.useMutation("post", "/api/forms/{form_id}/execute", {
+		onSuccess: (responseData) => {
+			toast.success("Workflow execution started", {
+				description: `Execution ID: ${(responseData as FormExecutionResponse).execution_id}`,
+			});
 		},
-	);
+		onError: (error) => {
+			toast.error("Failed to submit form", {
+				description: getErrorMessage(error, "Unknown error"),
+			});
+		},
+	});
 }

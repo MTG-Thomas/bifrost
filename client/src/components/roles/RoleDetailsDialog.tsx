@@ -146,13 +146,13 @@ export function RoleDetailsDialog({
 										))}
 									</div>
 								) : users &&
-								  (users as RoleUsersResponse).userIds &&
-								  (users as RoleUsersResponse).userIds.length >
+								  (users as RoleUsersResponse).user_ids &&
+								  (users as RoleUsersResponse).user_ids.length >
 										0 ? (
 									<div className="space-y-2">
 										{(
 											users as RoleUsersResponse
-										).userIds.map((userId: string) => (
+										).user_ids.map((userId: string) => (
 											<div
 												key={userId}
 												className="flex items-center justify-between rounded-lg border p-3"
@@ -223,13 +223,13 @@ export function RoleDetailsDialog({
 										))}
 									</div>
 								) : forms &&
-								  (forms as RoleFormsResponse).formIds &&
-								  (forms as RoleFormsResponse).formIds.length >
+								  (forms as RoleFormsResponse).form_ids &&
+								  (forms as RoleFormsResponse).form_ids.length >
 										0 ? (
 									<div className="space-y-2">
 										{(
 											forms as RoleFormsResponse
-										).formIds.map((formId: string) => (
+										).form_ids.map((formId: string) => (
 											<div
 												key={formId}
 												className="flex items-center justify-between rounded-lg border p-3"

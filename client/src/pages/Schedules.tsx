@@ -51,24 +51,24 @@ export function Schedules() {
 
 	// Query hook for fetching schedules
 	const {
-		data: schedulesData,
+		data: schedules,
 		isLoading,
 		error: queryError,
 		refetch,
 	} = useSchedules();
-	const schedules = schedulesData?.schedules || [];
+	const scheduleList = schedules || [];
 	const error = queryError ? "Failed to load scheduled workflows" : null;
 
 	// Mutation hook for triggering schedules
 	const triggerMutation = useTriggerSchedule();
 
-	const filteredSchedules = schedules.filter((schedule) => {
+	const filteredSchedules = scheduleList.filter((schedule) => {
 		const query = searchQuery.toLowerCase();
 		return (
-			schedule.workflow_name.toLowerCase().includes(query) ||
-			schedule.workflow_description.toLowerCase().includes(query) ||
-			schedule.cron_expression.toLowerCase().includes(query) ||
-			schedule.human_readable.toLowerCase().includes(query)
+			schedule.name.toLowerCase().includes(query) ||
+			(schedule.description?.toLowerCase().includes(query) ?? false) ||
+			(schedule.schedule?.toLowerCase().includes(query) ?? false) ||
+			(schedule.human_readable?.toLowerCase().includes(query) ?? false)
 		);
 	});
 
@@ -78,14 +78,17 @@ export function Schedules() {
 		}
 	};
 
-	const handleTriggerSchedule = async (workflowName: string) => {
+	const handleTriggerSchedule = async (
+		workflowId: string,
+		workflowName: string,
+	) => {
 		try {
 			setTriggeringWorkflows((prev) => new Set(prev).add(workflowName));
 
 			triggerMutation.mutate(
 				{
 					body: {
-						workflow_name: workflowName,
+						workflow_id: workflowId,
 						input_data: {},
 						form_id: null,
 						transient: false,
@@ -151,7 +154,7 @@ export function Schedules() {
 		);
 	}
 
-	if (schedules.length === 0) {
+	if (scheduleList.length === 0) {
 		return (
 			<div className="space-y-4">
 				<div>
@@ -279,9 +282,7 @@ async def my_scheduled_workflow(context):
 					title="Refresh schedules"
 				>
 					<RefreshCw
-						className={`h-4 w-4 ${
-							isLoading ? "animate-spin" : ""
-						}`}
+						className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
 					/>
 				</Button>
 			</div>
@@ -312,7 +313,7 @@ async def my_scheduled_workflow(context):
 				</AlertDescription>
 			</Alert>
 
-			{schedules.length > 0 && (
+			{scheduleList.length > 0 && (
 				<div className="relative max-w-sm">
 					<Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
 					<Input
@@ -328,8 +329,8 @@ async def my_scheduled_workflow(context):
 				<CardHeader>
 					<CardTitle>Active Schedules</CardTitle>
 					<CardDescription>
-						{filteredSchedules.length} of {schedules.length}{" "}
-						workflow{schedules.length !== 1 ? "s" : ""} scheduled
+						{filteredSchedules.length} of {scheduleList.length}{" "}
+						workflow{scheduleList.length !== 1 ? "s" : ""} scheduled
 					</CardDescription>
 				</CardHeader>
 				<CardContent>
@@ -351,23 +352,22 @@ async def my_scheduled_workflow(context):
 							</TableHeader>
 							<TableBody>
 								{filteredSchedules.map((schedule) => (
-									<TableRow key={schedule.workflow_name}>
+									<TableRow key={schedule.name}>
 										<TableCell className="font-medium">
 											<div>
 												<p className="font-semibold">
-													{
-														schedule.workflow_description
-													}
+													{schedule.description ||
+														schedule.name}
 												</p>
 												<p className="text-xs text-muted-foreground">
-													{schedule.workflow_name}
+													{schedule.name}
 												</p>
 											</div>
 										</TableCell>
 										<TableCell>
 											<div className="space-y-1">
 												<p className="font-mono text-sm">
-													{schedule.cron_expression}
+													{schedule.schedule}
 												</p>
 												{schedule.validation_status !==
 													"error" && (
@@ -457,16 +457,17 @@ async def my_scheduled_workflow(context):
 													size="icon"
 													onClick={() =>
 														handleTriggerSchedule(
-															schedule.workflow_name,
+															schedule.id,
+															schedule.name,
 														)
 													}
 													disabled={triggeringWorkflows.has(
-														schedule.workflow_name,
+														schedule.name,
 													)}
 													className="h-8 w-8 rounded-r-none"
 													title={
 														triggeringWorkflows.has(
-															schedule.workflow_name,
+															schedule.name,
 														)
 															? "Running..."
 															: "Run Now"
@@ -497,11 +498,12 @@ async def my_scheduled_workflow(context):
 							</TableBody>
 						</Table>
 					</div>
-					{filteredSchedules.length === 0 && schedules.length > 0 && (
-						<div className="text-center py-8 text-muted-foreground">
-							No schedules match your search.
-						</div>
-					)}
+					{filteredSchedules.length === 0 &&
+						scheduleList.length > 0 && (
+							<div className="text-center py-8 text-muted-foreground">
+								No schedules match your search.
+							</div>
+						)}
 				</CardContent>
 			</Card>
 		</div>

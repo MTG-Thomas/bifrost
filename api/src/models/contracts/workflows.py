@@ -18,15 +18,17 @@ if TYPE_CHECKING:
 
 
 class WorkflowParameter(BaseModel):
-    """Workflow parameter metadata"""
+    """Workflow parameter metadata - derived from function signature.
+
+    Note: Form-specific fields like data_provider, help_text, validation
+    belong on FormField, not here. Workflow parameters come from Python
+    function signatures and don't have form-specific metadata.
+    """
     name: str
     type: str  # string, int, bool, etc.
     required: bool
     label: str | None = None
-    data_provider: str | None = None
     default_value: Any | None = None
-    help_text: str | None = None
-    validation: dict[str, Any] | None = None
     description: str | None = None
 
 

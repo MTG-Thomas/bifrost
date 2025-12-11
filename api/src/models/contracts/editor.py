@@ -32,7 +32,8 @@ class FileMetadata(BaseModel):
     size: int | None = Field(default=None, description="Size in bytes (null for folders)")
     extension: str | None = Field(default=None, description="File extension (null for folders)")
     modified: str = Field(..., description="Last modified timestamp (ISO 8601)")
-    isReadOnly: bool = Field(default=False, description="Whether file is read-only")
+    is_workflow: bool = Field(default=False, description="True if file contains a @workflow decorator")
+    is_data_provider: bool = Field(default=False, description="True if file contains a @data_provider decorator")
 
     model_config = ConfigDict(from_attributes=True)
 

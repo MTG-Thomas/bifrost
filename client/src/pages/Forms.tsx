@@ -149,7 +149,7 @@ export function Forms() {
 			body: {
 				name: null,
 				description: null,
-				linked_workflow: null,
+				workflow_id: null,
 				form_schema: null,
 				is_active: !selectedForm.isActive,
 				access_level: null,
@@ -199,7 +199,7 @@ export function Forms() {
 	const filteredForms = useSearch(scopeFilteredForms, searchTerm, [
 		"name",
 		"description",
-		"linked_workflow",
+		"workflow_id",
 		(form) => form.id,
 	]);
 
@@ -482,7 +482,7 @@ export function Forms() {
 												)}
 											</TableCell>
 											<TableCell className="font-mono text-xs">
-												{form.linked_workflow}
+												{form.workflow_id || "-"}
 											</TableCell>
 											<TableCell className="text-right">
 												{isFormSchema(form.form_schema)

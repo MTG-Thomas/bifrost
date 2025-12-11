@@ -177,13 +177,13 @@ export function UserDetailsDialog({
 											</div>
 										) : roles &&
 										  (roles as UserRolesResponse)
-												.roleIds &&
-										  (roles as UserRolesResponse).roleIds
+												.role_ids &&
+										  (roles as UserRolesResponse).role_ids
 												.length > 0 ? (
 											<div className="space-y-2">
 												{(
 													roles as UserRolesResponse
-												).roleIds.map(
+												).role_ids.map(
 													(roleId: string) => (
 														<div
 															key={roleId}
@@ -238,13 +238,13 @@ export function UserDetailsDialog({
 											</div>
 										) : formsAccess &&
 										  (formsAccess as UserFormsResponse)
-												.formIds ? (
+												.form_ids ? (
 											(formsAccess as UserFormsResponse)
-												.formIds.length > 0 ? (
+												.form_ids.length > 0 ? (
 												<div className="space-y-2">
 													{(
 														formsAccess as UserFormsResponse
-													).formIds.map(
+													).form_ids.map(
 														(formId: string) => (
 															<div
 																key={formId}

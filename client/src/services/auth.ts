@@ -12,7 +12,7 @@ import type { components } from "@/lib/v1";
 // =============================================================================
 
 export type OAuthProvider =
-	components["schemas"]["shared__models__OAuthProviderInfo"];
+	components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"];
 export type AuthStatus = components["schemas"]["AuthStatusResponse"];
 export type OAuthInitResponse = components["schemas"]["OAuthInitResponse"];
 export type MFAStatus = components["schemas"]["MFAStatusResponse"];

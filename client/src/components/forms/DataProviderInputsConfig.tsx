@@ -167,7 +167,7 @@ export function DataProviderInputsConfig({
 										)
 									}
 									placeholder={
-										param.help_text ||
+										param.description ||
 										`Enter ${param.label || param.name}...`
 									}
 									className="text-sm font-mono"
@@ -220,9 +220,9 @@ export function DataProviderInputsConfig({
 								/>
 							)}
 
-							{param.help_text && (
+							{param.description && (
 								<p className="text-xs text-muted-foreground">
-									{param.help_text}
+									{param.description}
 								</p>
 							)}
 						</div>

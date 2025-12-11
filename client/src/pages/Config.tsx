@@ -46,7 +46,7 @@ import { useConfigs, useDeleteConfig } from "@/hooks/useConfig";
 import { ConfigDialog } from "@/components/config/ConfigDialog";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
 import type { components } from "@/lib/v1";
-type ConfigType = components["schemas"]["Config"];
+type ConfigType = components["schemas"]["ConfigResponse"];
 
 export function Config() {
 	const [selectedConfig, setSelectedConfig] = useState<

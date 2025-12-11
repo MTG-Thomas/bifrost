@@ -166,9 +166,9 @@ class Settings(BaseSettings):
     # ==========================================================================
     # S3 Storage (for horizontal scaling)
     # ==========================================================================
-    instance_id: str = Field(
-        default="local",
-        description="Instance ID for unique bucket names (e.g., 'local', 'prod', or a UUID)"
+    s3_bucket: str | None = Field(
+        default=None,
+        description="S3 bucket name for workspace storage (required when S3 is configured)"
     )
 
     s3_endpoint_url: str | None = Field(
@@ -193,21 +193,9 @@ class Settings(BaseSettings):
 
     @computed_field
     @property
-    def s3_bucket(self) -> str:
-        """Single bucket name for all S3 storage.
-
-        All files are organized by prefix within this bucket:
-        - workspace files (indexed, git-tracked)
-        - uploads/ (form file uploads via presigned URLs)
-        - temp/ (temporary workflow files)
-        """
-        return f"bifrost-{self.instance_id}"
-
-    @computed_field
-    @property
     def s3_configured(self) -> bool:
         """Check if S3 storage is configured."""
-        return bool(self.s3_access_key and self.s3_secret_key)
+        return bool(self.s3_bucket and self.s3_access_key and self.s3_secret_key)
 
     # ==========================================================================
     # File Storage (Legacy - used when S3 not configured)
@@ -297,12 +285,6 @@ class Settings(BaseSettings):
     oidc_client_secret: str | None = Field(
         default=None,
         description="OIDC client secret"
-    )
-
-    # Frontend URL (for OAuth redirects)
-    frontend_url: str = Field(
-        default="http://localhost:3000",
-        description="Frontend URL for OAuth callback redirects"
     )
 
     # ==========================================================================

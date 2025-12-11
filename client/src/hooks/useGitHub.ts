@@ -42,60 +42,35 @@ export type DiscardCommitsResponse =
  * Get current Git status
  */
 export function useGitStatus() {
-	return $api.useQuery(
-		"get",
-		"/api/github/status",
-		{},
-		{},
-	);
+	return $api.useQuery("get", "/api/github/status", {}, {});
 }
 
 /**
  * Get current GitHub configuration
  */
 export function useGitHubConfig() {
-	return $api.useQuery(
-		"get",
-		"/api/github/config",
-		{},
-		{},
-	);
+	return $api.useQuery("get", "/api/github/config", {}, {});
 }
 
 /**
  * List repositories accessible with saved token
  */
 export function useGitHubRepositories() {
-	return $api.useQuery(
-		"get",
-		"/api/github/repositories",
-		{},
-		{},
-	);
+	return $api.useQuery("get", "/api/github/repositories", {}, {});
 }
 
 /**
  * Get list of local changes
  */
 export function useGitChanges() {
-	return $api.useQuery(
-		"get",
-		"/api/github/changes",
-		{},
-		{},
-	);
+	return $api.useQuery("get", "/api/github/changes", {}, {});
 }
 
 /**
  * Get merge conflicts
  */
 export function useGitConflicts() {
-	return $api.useQuery(
-		"get",
-		"/api/github/conflicts",
-		{},
-		{},
-	);
+	return $api.useQuery("get", "/api/github/conflicts", {}, {});
 }
 
 /**
@@ -142,16 +117,12 @@ export function useGitHubBranches(repoFullName?: string) {
  */
 export function useRefreshGitStatus() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/refresh",
-		{
-			onSuccess: (data) => {
-				// Invalidate status cache after refresh
-				queryClient.setQueryData(["git-status"], data);
-			},
+	return $api.useMutation("post", "/api/github/refresh", {
+		onSuccess: () => {
+			// Invalidate status cache after refresh
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
 		},
-	);
+	});
 }
 
 /**
@@ -159,21 +130,14 @@ export function useRefreshGitStatus() {
  */
 export function useValidateGitHubToken() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/validate",
-		{
-			onSuccess: (data) => {
-				// Cache the repositories from validation response
-				if (data.repositories) {
-					queryClient.setQueryData(
-						["github-repositories"],
-						data.repositories,
-					);
-				}
-			},
+	return $api.useMutation("post", "/api/github/validate", {
+		onSuccess: () => {
+			// Invalidate repositories cache after validation
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/repositories"],
+			});
 		},
-	);
+	});
 }
 
 /**
@@ -181,17 +145,13 @@ export function useValidateGitHubToken() {
  */
 export function useConfigureGitHub() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/configure",
-		{
-			onSuccess: () => {
-				// Invalidate related queries after configuration
-				queryClient.invalidateQueries({ queryKey: ["github-config"] });
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-			},
+	return $api.useMutation("post", "/api/github/configure", {
+		onSuccess: () => {
+			// Invalidate related queries after configuration
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/config"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
 		},
-	);
+	});
 }
 
 /**
@@ -206,18 +166,14 @@ export function useAnalyzeWorkspace() {
  */
 export function useCreateGitHubRepository() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/create-repository",
-		{
-			onSuccess: () => {
-				// Invalidate repositories list after creation
-				queryClient.invalidateQueries({
-					queryKey: ["github-repositories"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/create-repository", {
+		onSuccess: () => {
+			// Invalidate repositories list after creation
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/repositories"],
+			});
 		},
-	);
+	});
 }
 
 /**
@@ -225,27 +181,23 @@ export function useCreateGitHubRepository() {
  */
 export function useDisconnectGitHub() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/disconnect",
-		{
-			onSuccess: () => {
-				// Clear all GitHub-related caches
-				queryClient.invalidateQueries({
-					queryKey: ["github-config"],
-				});
-				queryClient.invalidateQueries({
-					queryKey: ["git-status"],
-				});
-				queryClient.invalidateQueries({
-					queryKey: ["github-repositories"],
-				});
-				queryClient.invalidateQueries({
-					queryKey: ["git-changes"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/disconnect", {
+		onSuccess: () => {
+			// Clear all GitHub-related caches
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/config"],
+			});
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/status"],
+			});
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/repositories"],
+			});
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/changes"],
+			});
 		},
-	);
+	});
 }
 
 /**
@@ -253,15 +205,11 @@ export function useDisconnectGitHub() {
  */
 export function useInitRepo() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/init",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-			},
+	return $api.useMutation("post", "/api/github/init", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
 		},
-	);
+	});
 }
 
 /**
@@ -269,19 +217,13 @@ export function useInitRepo() {
  */
 export function usePullFromGitHub() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/pull",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-				queryClient.invalidateQueries({ queryKey: ["git-changes"] });
-				queryClient.invalidateQueries({
-					queryKey: ["git-commits"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/pull", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/changes"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/commits"] });
 		},
-	);
+	});
 }
 
 /**
@@ -289,19 +231,13 @@ export function usePullFromGitHub() {
  */
 export function useCommitChanges() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/commit",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-				queryClient.invalidateQueries({ queryKey: ["git-changes"] });
-				queryClient.invalidateQueries({
-					queryKey: ["git-commits"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/commit", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/changes"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/commits"] });
 		},
-	);
+	});
 }
 
 /**
@@ -309,18 +245,12 @@ export function useCommitChanges() {
  */
 export function usePushToGitHub() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/push",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-				queryClient.invalidateQueries({
-					queryKey: ["git-commits"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/push", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/commits"] });
 		},
-	);
+	});
 }
 
 /**
@@ -328,18 +258,12 @@ export function usePushToGitHub() {
  */
 export function useDiscardUnpushedCommits() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/discard-unpushed",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-				queryClient.invalidateQueries({
-					queryKey: ["git-commits"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/discard-unpushed", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/commits"] });
 		},
-	);
+	});
 }
 
 /**
@@ -347,18 +271,12 @@ export function useDiscardUnpushedCommits() {
  */
 export function useDiscardCommit() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/discard-commit",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-				queryClient.invalidateQueries({
-					queryKey: ["git-commits"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/discard-commit", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/commits"] });
 		},
-	);
+	});
 }
 
 /**
@@ -366,18 +284,12 @@ export function useDiscardCommit() {
  */
 export function useAbortMerge() {
 	const queryClient = useQueryClient();
-	return $api.useMutation(
-		"post",
-		"/api/github/abort-merge",
-		{
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: ["git-status"] });
-				queryClient.invalidateQueries({
-					queryKey: ["git-conflicts"],
-				});
-			},
+	return $api.useMutation("post", "/api/github/abort-merge", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/github/conflicts"] });
 		},
-	);
+	});
 }
 
 // =============================================================================

@@ -23,8 +23,10 @@ export async function silentValidateWorkflow(
 	}
 
 	try {
-		const result: WorkflowValidationResponse =
-			await validateWorkflow(filePath, fileContent);
+		const result: WorkflowValidationResponse = await validateWorkflow(
+			filePath,
+			fileContent,
+		);
 
 		// Always log to terminal (errors and success)
 		const errors = (result.issues || []).filter(

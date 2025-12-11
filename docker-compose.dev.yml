@@ -8,11 +8,56 @@ name: bifrost-dev
 # This file adds development-specific configuration:
 # - Hot reload with volume mounts for live code changes
 # - Development-specific Dockerfiles (dependencies only)
-# - Watch mode for services
+# - Debug port for VS Code attachment
+# - Management UI ports for RabbitMQ and MinIO
+# - Development environment defaults
 
 services:
+  # PostgreSQL - development password default
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifrost_dev}
+
+  # RabbitMQ - development password + management UI port
+  rabbitmq:
+    environment:
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-bifrost_dev}
+    ports:
+      - "5672:5672"
+      - "15672:15672"  # Management UI for debugging
+
+  # MinIO - development password + console port
+  minio:
+    environment:
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-bifrost123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"  # Web Console for debugging
+
+  # MinIO Init - development password default
+  minio-init:
+    environment:
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-bifrost123}
+
+  # PgBouncer - development password default
+  pgbouncer:
+    environment:
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-bifrost_dev}
+
   # API with hot reload for development
   api:
+    environment:
+      BIFROST_ENVIRONMENT: development
+      BIFROST_DEBUG: ${BIFROST_DEBUG:-true}
+      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:-dev-secret-key-change-in-production-must-be-32-chars}
+      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
+      BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
+      # Debugging (optional - enables debugpy)
+      ENABLE_DEBUG: ${ENABLE_DEBUG:-false}
+    ports:
+      - "5678:5678"  # debugpy port for VS Code attachment
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro
@@ -29,12 +74,15 @@ services:
                uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src --reload-dir /app/shared;
              fi"
 
-  # NOTE: Discovery service has been removed!
-  # Workflow/form metadata extraction now happens at write time in FileStorageService.
-  # This eliminates the need for file watching and enables horizontal scaling.
-
   # Scheduler with hot reload for development
   scheduler:
+    environment:
+      BIFROST_ENVIRONMENT: development
+      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:-dev-secret-key-change-in-production-must-be-32-chars}
+      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
+      BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro
@@ -45,6 +93,13 @@ services:
 
   # Worker with hot reload for development
   worker:
+    environment:
+      BIFROST_ENVIRONMENT: development
+      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:-dev-secret-key-change-in-production-must-be-32-chars}
+      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
+      BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro
@@ -59,6 +114,8 @@ services:
       context: ./client
       dockerfile: Dockerfile.dev
       target: "" # Clear the production target from base compose file
+    ports:
+      - "3000:3000"
     volumes:
       - ./client/src:/app/src
       - ./client/public:/app/public

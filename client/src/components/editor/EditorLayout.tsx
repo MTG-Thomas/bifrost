@@ -343,13 +343,16 @@ export function EditorLayout() {
 			</div>
 
 			{/* Close confirmation dialog when upload is in progress */}
-			<AlertDialog open={showCloseConfirm} onOpenChange={setShowCloseConfirm}>
+			<AlertDialog
+				open={showCloseConfirm}
+				onOpenChange={setShowCloseConfirm}
+			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
 						<AlertDialogTitle>Upload in progress</AlertDialogTitle>
 						<AlertDialogDescription>
-							Files are currently being uploaded. Closing will cancel
-							the remaining uploads.
+							Files are currently being uploaded. Closing will
+							cancel the remaining uploads.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>

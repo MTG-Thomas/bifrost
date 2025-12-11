@@ -40,7 +40,7 @@ export function useInstallPackage() {
 	return $api.useMutation("post", "/api/packages/install", {
 		onSuccess: () => {
 			// Invalidate packages query to refresh list after installation
-			queryClient.invalidateQueries({ queryKey: ["packages"] });
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/packages"] });
 		},
 	});
 }
@@ -75,12 +75,9 @@ export async function checkUpdates(): Promise<PackageUpdatesResponse> {
  * @param packageName - Name of package to install (optional - if not provided, installs from requirements.txt)
  * @param version - Optional version to install (e.g., "2.31.0")
  */
-export async function installPackage(
-	packageName?: string,
-	version?: string,
-) {
+export async function installPackage(packageName?: string, version?: string) {
 	const body: InstallPackageRequest = packageName
-		? { package: packageName, version: version ?? null }
+		? { package_name: packageName, version: version ?? null }
 		: ({} as InstallPackageRequest);
 
 	const { data, error } = await apiClient.POST("/api/packages/install", {

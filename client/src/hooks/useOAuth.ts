@@ -7,17 +7,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { $api, apiClient } from "@/lib/api-client";
-import { useScopeStore } from "@/stores/scopeStore";
-
-// Query keys
-export const oauthKeys = {
-	all: ["oauth"] as const,
-	lists: (orgId?: string | null) =>
-		[...oauthKeys.all, "list", orgId] as const,
-	list: (orgId?: string | null) => [...oauthKeys.lists(orgId)] as const,
-	details: () => [...oauthKeys.all, "detail"] as const,
-	detail: (name: string) => [...oauthKeys.details(), name] as const,
-};
 
 /**
  * List OAuth connections
@@ -25,22 +14,7 @@ export const oauthKeys = {
  * Always includes GLOBAL connections as fallback
  */
 export function useOAuthConnections() {
-	const orgId = useScopeStore((state) => state.scope.orgId);
-
-	const query = $api.useQuery(
-		"get",
-		"/api/oauth/connections",
-		{},
-		{
-			queryKey: oauthKeys.list(orgId),
-			// Don't use cached data from previous scope
-			staleTime: 0,
-			// Remove from cache immediately when component unmounts
-			gcTime: 0,
-			// Always refetch when component mounts (navigating to page)
-			refetchOnMount: "always",
-		},
-	);
+	const query = $api.useQuery("get", "/api/oauth/connections", {});
 
 	// Extract connections array from response
 	return {
@@ -57,13 +31,8 @@ export function useOAuthConnection(connectionName: string) {
 	return $api.useQuery(
 		"get",
 		"/api/oauth/connections/{connection_name}",
-		{
-			params: { path: { connection_name: connectionName } },
-		},
-		{
-			queryKey: oauthKeys.detail(connectionName),
-			enabled: !!connectionName,
-		},
+		{ params: { path: { connection_name: connectionName } } },
+		{ enabled: !!connectionName },
 	);
 }
 
@@ -76,8 +45,9 @@ export function useCreateOAuthConnection() {
 
 	return $api.useMutation("post", "/api/oauth/connections", {
 		onSuccess: (_, variables) => {
-			// Invalidate all OAuth list queries (for all scopes)
-			queryClient.invalidateQueries({ queryKey: ["oauth", "list"] });
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/oauth/connections"],
+			});
 			toast.success(
 				`Connection "${variables.body?.connection_name}" created successfully`,
 			);
@@ -99,30 +69,31 @@ export function useCreateOAuthConnection() {
 export function useUpdateOAuthConnection() {
 	const queryClient = useQueryClient();
 
-	return $api.useMutation(
-		"put",
-		"/api/oauth/connections/{connection_name}",
-		{
-			onSuccess: (_, variables) => {
-				const connectionName = variables.params?.path?.connection_name;
-				// Invalidate all OAuth list queries (for all scopes)
-				queryClient.invalidateQueries({ queryKey: ["oauth", "list"] });
-				queryClient.invalidateQueries({
-					queryKey: oauthKeys.detail(connectionName || ""),
-				});
-				toast.success(
-					`Connection "${connectionName}" updated successfully`,
-				);
-			},
-			onError: (error) => {
-				const message =
-					typeof error === "object" && error !== null && "detail" in error
-						? String(error.detail)
-						: "Failed to update OAuth connection";
-				toast.error(message);
-			},
+	return $api.useMutation("put", "/api/oauth/connections/{connection_name}", {
+		onSuccess: (_, variables) => {
+			const connectionName = variables.params?.path?.connection_name;
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/oauth/connections"],
+			});
+			queryClient.invalidateQueries({
+				queryKey: [
+					"get",
+					"/api/oauth/connections/{connection_name}",
+					{ params: { path: { connection_name: connectionName } } },
+				],
+			});
+			toast.success(
+				`Connection "${connectionName}" updated successfully`,
+			);
 		},
-	);
+		onError: (error) => {
+			const message =
+				typeof error === "object" && error !== null && "detail" in error
+					? String(error.detail)
+					: "Failed to update OAuth connection";
+			toast.error(message);
+		},
+	});
 }
 
 /**
@@ -138,15 +109,18 @@ export function useDeleteOAuthConnection() {
 		{
 			onSuccess: (_, variables) => {
 				const connectionName = variables.params?.path?.connection_name;
-				// Invalidate all OAuth list queries (for all scopes)
-				queryClient.invalidateQueries({ queryKey: ["oauth", "list"] });
+				queryClient.invalidateQueries({
+					queryKey: ["get", "/api/oauth/connections"],
+				});
 				toast.success(
 					`Connection "${connectionName}" deleted successfully`,
 				);
 			},
 			onError: (error) => {
 				const message =
-					typeof error === "object" && error !== null && "detail" in error
+					typeof error === "object" &&
+					error !== null &&
+					"detail" in error
 						? String(error.detail)
 						: "Failed to delete OAuth connection";
 				toast.error(message);
@@ -168,11 +142,15 @@ export function useAuthorizeOAuthConnection() {
 		{
 			onSuccess: (response, variables) => {
 				const connectionName = variables.params?.path?.connection_name;
-				// Invalidate to show updated status
-				// Invalidate all OAuth list queries (for all scopes)
-				queryClient.invalidateQueries({ queryKey: ["oauth", "list"] });
 				queryClient.invalidateQueries({
-					queryKey: oauthKeys.detail(connectionName || ""),
+					queryKey: ["get", "/api/oauth/connections"],
+				});
+				queryClient.invalidateQueries({
+					queryKey: [
+						"get",
+						"/api/oauth/connections/{connection_name}",
+						{ params: { path: { connection_name: connectionName } } },
+					],
 				});
 
 				// Open authorization URL in new window
@@ -190,7 +168,9 @@ export function useAuthorizeOAuthConnection() {
 			},
 			onError: (error) => {
 				const message =
-					typeof error === "object" && error !== null && "detail" in error
+					typeof error === "object" &&
+					error !== null &&
+					"detail" in error
 						? String(error.detail)
 						: "Failed to start authorization";
 				toast.error(message);
@@ -212,16 +192,23 @@ export function useCancelOAuthAuthorization() {
 		{
 			onSuccess: (_, variables) => {
 				const connectionName = variables.params?.path?.connection_name;
-				// Invalidate all OAuth list queries (for all scopes)
-				queryClient.invalidateQueries({ queryKey: ["oauth", "list"] });
 				queryClient.invalidateQueries({
-					queryKey: oauthKeys.detail(connectionName || ""),
+					queryKey: ["get", "/api/oauth/connections"],
+				});
+				queryClient.invalidateQueries({
+					queryKey: [
+						"get",
+						"/api/oauth/connections/{connection_name}",
+						{ params: { path: { connection_name: connectionName } } },
+					],
 				});
 				toast.success("Authorization canceled");
 			},
 			onError: (error) => {
 				const message =
-					typeof error === "object" && error !== null && "detail" in error
+					typeof error === "object" &&
+					error !== null &&
+					"detail" in error
 						? String(error.detail)
 						: "Failed to cancel authorization";
 				toast.error(message);
@@ -243,16 +230,23 @@ export function useRefreshOAuthToken() {
 		{
 			onSuccess: (_, variables) => {
 				const connectionName = variables.params?.path?.connection_name;
-				// Invalidate all OAuth list queries (for all scopes)
-				queryClient.invalidateQueries({ queryKey: ["oauth", "list"] });
 				queryClient.invalidateQueries({
-					queryKey: oauthKeys.detail(connectionName || ""),
+					queryKey: ["get", "/api/oauth/connections"],
+				});
+				queryClient.invalidateQueries({
+					queryKey: [
+						"get",
+						"/api/oauth/connections/{connection_name}",
+						{ params: { path: { connection_name: connectionName } } },
+					],
 				});
 				toast.success("OAuth token refreshed successfully");
 			},
 			onError: (error) => {
 				const message =
-					typeof error === "object" && error !== null && "detail" in error
+					typeof error === "object" &&
+					error !== null &&
+					"detail" in error
 						? String(error.detail)
 						: "Failed to refresh OAuth token";
 				toast.error(message);
@@ -269,11 +263,8 @@ export function useOAuthCredentials(connectionName: string) {
 	return $api.useQuery(
 		"get",
 		"/api/oauth/credentials/{connection_name}",
+		{ params: { path: { connection_name: connectionName } } },
 		{
-			params: { path: { connection_name: connectionName } },
-		},
-		{
-			queryKey: [...oauthKeys.detail(connectionName), "credentials"],
 			enabled: !!connectionName,
 			// Don't retry on error - credentials might not be available
 			retry: false,
@@ -289,10 +280,7 @@ export function useOAuthRefreshJobStatus() {
 		"get",
 		"/api/oauth/refresh_job_status",
 		{},
-		{
-			queryKey: [...oauthKeys.all, "refresh-job-status"],
-			refetchInterval: 30000, // Refresh every 30 seconds
-		},
+		{ refetchInterval: 30000 }, // Refresh every 30 seconds
 	);
 
 	// Transform response to extract and enrich last_run data
@@ -319,7 +307,12 @@ export function useTriggerOAuthRefreshJob() {
 	return $api.useMutation("post", "/api/oauth/refresh_all", {
 		onSuccess: (data) => {
 			// Invalidate all OAuth queries to refresh the UI
-			queryClient.invalidateQueries({ queryKey: ["oauth"] });
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/oauth/connections"],
+			});
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/oauth/refresh_job_status"],
+			});
 			toast.success(
 				`Refresh job completed: ${data.refreshed_successfully} refreshed, ${data.refresh_failed} failed`,
 			);

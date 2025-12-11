@@ -1,17 +1,16 @@
 name: bifrost
 
-# Bifrost Docker Stack - Full Development Environment
+# Bifrost Docker Stack - Production Configuration
 #
 # Usage:
-#   docker compose up              # Start all services with hot reload
+#   docker compose up              # Start all services
 #   docker compose up -d           # Start in background
 #   docker compose logs -f api     # Follow API logs
 #
-# Debugging with VS Code:
-#   ENABLE_DEBUG=true docker compose up
-#   Then attach VS Code debugger to port 5678 (API waits for debugger)
+# For development with hot reload:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 #
-# Required environment variables for production:
+# Required environment variables:
 #   BIFROST_SECRET_KEY  - 32+ char secret for JWT signing and secret encryption
 #   POSTGRES_PASSWORD   - PostgreSQL password
 #   RABBITMQ_PASSWORD   - RabbitMQ password
@@ -23,7 +22,7 @@ name: bifrost
 #   - Changing it will invalidate all existing tokens and secrets
 #
 # S3/MinIO Configuration:
-#   - Local dev uses MinIO for S3-compatible storage
+#   - Local/self-hosted can use MinIO for S3-compatible storage
 #   - Production can use AWS S3, Azure Blob, or any S3-compatible storage
 #   - Workers download workspace from S3 before execution (enables horizontal scaling)
 
@@ -35,7 +34,7 @@ services:
     environment:
       POSTGRES_DB: bifrost
       POSTGRES_USER: bifrost
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifrost_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
       - "5432:5432"
     volumes:
@@ -52,10 +51,10 @@ services:
     container_name: bifrost-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: bifrost
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-bifrost_dev}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
     ports:
-      - "5672:5672" # AMQP
-      - "15672:15672" # Management UI (for debugging only)
+      - "5672:5672"
+      # Management UI port (15672) only exposed in docker-compose.dev.yml
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       - ./config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
@@ -88,10 +87,10 @@ services:
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-bifrost}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-bifrost123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
     ports:
-      - "9000:9000"  # S3 API
-      - "9001:9001"  # Web Console
+      - "9000:9000"
+      # Console port (9001) only exposed in docker-compose.dev.yml
     volumes:
       - minio_data:/data
     healthcheck:
@@ -109,13 +108,13 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER:-bifrost} $${MINIO_ROOT_PASSWORD:-bifrost123};
+      mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER:-bifrost} $${MINIO_ROOT_PASSWORD};
       mc mb myminio/bifrost-local --ignore-existing;
       echo 'Bucket created successfully';
       "
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-bifrost}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-bifrost123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
 
   # PgBouncer - Connection Pooler for PostgreSQL
   # All services connect through PgBouncer for centralized connection management
@@ -129,7 +128,7 @@ services:
       DB_PORT: 5432
       DB_NAME: bifrost
       DB_USER: bifrost
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-bifrost_dev}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       # PgBouncer settings
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 1000
@@ -156,24 +155,23 @@ services:
       dockerfile: api/Dockerfile
     environment:
       # Core
-      BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-development}
+      BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-production}
       BIFROST_DEBUG: ${BIFROST_DEBUG:-false}
-      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:-dev-secret-key-change-in-production-must-be-32-chars}
+      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:?BIFROST_SECRET_KEY is required (32+ chars)}
       # Database (via PgBouncer for connection pooling)
-      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
-      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD}@pgbouncer:5432/bifrost
       # Message Queue & Cache
-      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
+      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       BIFROST_REDIS_URL: redis://redis:6379/0
-      # S3 Storage (MinIO in dev, AWS S3 in production)
-      BIFROST_INSTANCE_ID: ${BIFROST_INSTANCE_ID:-local}
-      BIFROST_S3_ENDPOINT_URL: http://minio:9000
-      BIFROST_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-bifrost}
-      BIFROST_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-bifrost123}
-      BIFROST_S3_REGION: us-east-1
-      # CORS & Frontend
+      # S3 Storage (MinIO locally, AWS S3 in production)
+      BIFROST_S3_BUCKET: ${BIFROST_S3_BUCKET:-bifrost-local}
+      BIFROST_S3_ENDPOINT_URL: ${BIFROST_S3_ENDPOINT_URL:-http://minio:9000}
+      BIFROST_S3_ACCESS_KEY: ${BIFROST_S3_ACCESS_KEY:-${MINIO_ROOT_USER:-bifrost}}
+      BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      BIFROST_S3_REGION: ${BIFROST_S3_REGION:-us-east-1}
+      # CORS (only needed if API is accessed directly, not through proxy)
       BIFROST_CORS_ORIGINS: ${BIFROST_CORS_ORIGINS:-http://localhost:3000}
-      BIFROST_FRONTEND_URL: ${BIFROST_FRONTEND_URL:-http://localhost:3000}
       # JWT (optional, has defaults)
       BIFROST_ACCESS_TOKEN_EXPIRE_MINUTES: ${BIFROST_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       BIFROST_REFRESH_TOKEN_EXPIRE_DAYS: ${BIFROST_REFRESH_TOKEN_EXPIRE_DAYS:-7}
@@ -192,12 +190,8 @@ services:
       BIFROST_OIDC_DISCOVERY_URL: ${BIFROST_OIDC_DISCOVERY_URL:-}
       BIFROST_OIDC_CLIENT_ID: ${BIFROST_OIDC_CLIENT_ID:-}
       BIFROST_OIDC_CLIENT_SECRET: ${BIFROST_OIDC_CLIENT_SECRET:-}
-      # Debugging (optional - enables debugpy)
-      ENABLE_DEBUG: ${ENABLE_DEBUG:-false}
-    ports:
-      - "5678:5678" # debugpy port for VS Code attachment
     # Note: API port 8000 not exposed - access via client proxy at http://localhost:3000
-    # No workspace volume mount needed - files stored in S3
+    # Debug port (5678) only exposed in docker-compose.dev.yml
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -229,14 +223,10 @@ services:
       API_URL: http://api:8000
       WS_URL: ws://api:8000
     ports:
-      - "3000:3000"
+      - "3000:80"
     depends_on:
       api:
         condition: service_healthy
-
-  # NOTE: Discovery service has been removed!
-  # Workflow/form metadata extraction now happens at write time in FileStorageService.
-  # This eliminates the need for file watching and enables horizontal scaling.
 
   # Scheduler Service (APScheduler only)
   # MUST run as single instance - handles CRON jobs, cleanup tasks, OAuth refresh
@@ -247,20 +237,20 @@ services:
     container_name: bifrost-scheduler
     environment:
       # Core (must match API)
-      BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-development}
-      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:-dev-secret-key-change-in-production-must-be-32-chars}
+      BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-production}
+      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:?BIFROST_SECRET_KEY is required (32+ chars)}
       # Database (via PgBouncer for connection pooling)
-      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
-      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD}@pgbouncer:5432/bifrost
       # Message Queue & Cache
-      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
+      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       BIFROST_REDIS_URL: redis://redis:6379/0
       # S3 Storage (for scheduled jobs that need file access)
-      BIFROST_INSTANCE_ID: ${BIFROST_INSTANCE_ID:-local}
-      BIFROST_S3_ENDPOINT_URL: http://minio:9000
-      BIFROST_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-bifrost}
-      BIFROST_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-bifrost123}
-      BIFROST_S3_REGION: us-east-1
+      BIFROST_S3_BUCKET: ${BIFROST_S3_BUCKET:-bifrost-local}
+      BIFROST_S3_ENDPOINT_URL: ${BIFROST_S3_ENDPOINT_URL:-http://minio:9000}
+      BIFROST_S3_ACCESS_KEY: ${BIFROST_S3_ACCESS_KEY:-${MINIO_ROOT_USER:-bifrost}}
+      BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      BIFROST_S3_REGION: ${BIFROST_S3_REGION:-us-east-1}
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -284,20 +274,20 @@ services:
       dockerfile: api/Dockerfile
     environment:
       # Core (must match API)
-      BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-development}
-      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:-dev-secret-key-change-in-production-must-be-32-chars}
+      BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-production}
+      BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:?BIFROST_SECRET_KEY is required (32+ chars)}
       # Database (via PgBouncer for connection pooling)
-      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
-      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD}@pgbouncer:5432/bifrost
+      BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD}@pgbouncer:5432/bifrost
       # Message Queue & Cache
-      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
+      BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       BIFROST_REDIS_URL: redis://redis:6379/0
       # S3 Storage (workers download workspace from S3)
-      BIFROST_INSTANCE_ID: ${BIFROST_INSTANCE_ID:-local}
-      BIFROST_S3_ENDPOINT_URL: http://minio:9000
-      BIFROST_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-bifrost}
-      BIFROST_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-bifrost123}
-      BIFROST_S3_REGION: us-east-1
+      BIFROST_S3_BUCKET: ${BIFROST_S3_BUCKET:-bifrost-local}
+      BIFROST_S3_ENDPOINT_URL: ${BIFROST_S3_ENDPOINT_URL:-http://minio:9000}
+      BIFROST_S3_ACCESS_KEY: ${BIFROST_S3_ACCESS_KEY:-${MINIO_ROOT_USER:-bifrost}}
+      BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      BIFROST_S3_REGION: ${BIFROST_S3_REGION:-us-east-1}
       # Concurrency
       BIFROST_MAX_CONCURRENCY: ${BIFROST_MAX_CONCURRENCY:-10}
     # No workspace volume mount needed - files downloaded from S3

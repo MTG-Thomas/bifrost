@@ -40,9 +40,9 @@ interface BrandingProps {
 
 export function Branding({ onActionsChange }: BrandingProps) {
 	const { refreshBranding } = useOrgScope();
-	const [branding, setBranding] = useState<components["schemas"]["BrandingSettings"] | null>(
-		null,
-	);
+	const [branding, setBranding] = useState<
+		components["schemas"]["BrandingSettings"] | null
+	>(null);
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [uploading, setUploading] = useState<"square" | "rectangle" | null>(

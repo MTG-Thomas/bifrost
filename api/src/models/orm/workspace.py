@@ -60,6 +60,10 @@ class WorkspaceFile(Base):
     # Soft delete
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # File type flags (set at write time by _index_python_file)
+    is_workflow: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_data_provider: Mapped[bool] = mapped_column(Boolean, default=False)
+
     __table_args__ = (
         # Unique constraint for ON CONFLICT upsert
         UniqueConstraint("path", name="uq_workspace_files_path"),

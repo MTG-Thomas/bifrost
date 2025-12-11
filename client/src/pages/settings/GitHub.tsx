@@ -201,7 +201,10 @@ export function GitHub() {
 
 			// Update repositories list - refetch will happen automatically from mutation
 			// For now, we manually update the state for immediate feedback
-			setRepositories([...repositories, newRepo as unknown as GitHubRepoInfo]);
+			setRepositories([
+				...repositories,
+				newRepo as unknown as GitHubRepoInfo,
+			]);
 			setSelectedRepo(newRepo.full_name);
 
 			// Load branches for new repo

@@ -74,7 +74,8 @@ async def list_files(
                 size=wf.size_bytes if not is_folder else None,
                 extension=wf.path.split(".")[-1] if "." in wf.path and not is_folder else None,
                 modified=wf.updated_at.isoformat() if wf.updated_at else datetime.now(timezone.utc).isoformat(),
-                isReadOnly=False,
+                is_workflow=wf.is_workflow if not is_folder else False,
+                is_data_provider=wf.is_data_provider if not is_folder else False,
             ))
         logger.info(f"Listed directory: {path} ({len(files)} items)")
         return files
@@ -312,7 +313,6 @@ async def create_new_folder(
             size=None,
             extension=None,
             modified=datetime.now(timezone.utc).isoformat(),
-            isReadOnly=False,
         )
         logger.info(f"Created folder: {path}")
         return folder_meta
@@ -437,7 +437,6 @@ async def rename_or_move(
             size=file_record.size_bytes if not is_folder else None,
             extension=new_path.split(".")[-1] if "." in new_path and not is_folder else None,
             modified=file_record.updated_at.isoformat(),
-            isReadOnly=False,
         )
         logger.info(f"Renamed: {old_path} -> {new_path}")
         return file_meta

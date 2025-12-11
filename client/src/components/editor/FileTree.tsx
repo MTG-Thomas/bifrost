@@ -95,7 +95,8 @@ function responseToMetadata(
 		size,
 		extension: lastDot > 0 ? name.substring(lastDot + 1) : null,
 		modified,
-		isReadOnly: false,
+		is_workflow: false,
+		is_data_provider: false,
 	};
 }
 
@@ -638,7 +639,8 @@ export function FileTree() {
 				// Check for existing files that would be overwritten
 				try {
 					// Get all existing files recursively from the target path
-					const existingFiles = await fileService.listFiles(targetPath);
+					const existingFiles =
+						await fileService.listFiles(targetPath);
 					const existingPaths = new Set(
 						existingFiles
 							.filter((f) => f.type === "file")
@@ -646,12 +648,14 @@ export function FileTree() {
 					);
 
 					// Find files that already exist
-					const conflictCount = allFiles.filter(({ relativePath }) => {
-						const fullPath = targetPath
-							? `${targetPath}/${relativePath}`
-							: relativePath;
-						return existingPaths.has(fullPath);
-					}).length;
+					const conflictCount = allFiles.filter(
+						({ relativePath }) => {
+							const fullPath = targetPath
+								? `${targetPath}/${relativePath}`
+								: relativePath;
+							return existingPaths.has(fullPath);
+						},
+					).length;
 
 					// Show conflict dialog if any files would be overwritten
 					if (conflictCount > 0) {
@@ -1035,7 +1039,9 @@ export function FileTree() {
 			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Replace existing files?</AlertDialogTitle>
+						<AlertDialogTitle>
+							Replace existing files?
+						</AlertDialogTitle>
 						<AlertDialogDescription>
 							{uploadConflict?.count === 1
 								? "1 file already exists and will be replaced."
@@ -1046,7 +1052,9 @@ export function FileTree() {
 						<AlertDialogCancel onClick={uploadConflict?.onCancel}>
 							Cancel
 						</AlertDialogCancel>
-						<AlertDialogAction onClick={uploadConflict?.onReplaceAll}>
+						<AlertDialogAction
+							onClick={uploadConflict?.onReplaceAll}
+						>
 							Replace All
 						</AlertDialogAction>
 					</AlertDialogFooter>

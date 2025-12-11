@@ -17,7 +17,8 @@ import type { components } from "@/lib/v1";
 
 // Re-export types for convenience
 export type BrandingSettings_API = components["schemas"]["BrandingSettings"];
-export type BrandingUpdateRequest = components["schemas"]["BrandingUpdateRequest"];
+export type BrandingUpdateRequest =
+	components["schemas"]["BrandingUpdateRequest"];
 
 export interface BrandingState {
 	/** Whether branding data has been loaded */
@@ -90,18 +91,17 @@ export async function uploadLogo(
 	const formData = new FormData();
 	formData.append("file", file);
 
-	const { error } = await apiClient.POST(
-		"/api/branding/logo/{logo_type}",
-		{
-			params: { path: { logo_type: type } },
-			body: formData as unknown as { file: string },
-		},
-	);
+	const { error } = await apiClient.POST("/api/branding/logo/{logo_type}", {
+		params: { path: { logo_type: type } },
+		body: formData as unknown as { file: string },
+	});
 
 	if (error) {
 		throw new Error(
 			`Failed to upload ${type} logo: ${
-				typeof error === "object" && error !== null && "message" in error
+				typeof error === "object" &&
+				error !== null &&
+				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"
 			}`,
@@ -125,7 +125,9 @@ export async function resetLogo(
 	if (error) {
 		throw new Error(
 			`Failed to reset ${type} logo: ${
-				typeof error === "object" && error !== null && "message" in error
+				typeof error === "object" &&
+				error !== null &&
+				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"
 			}`,
@@ -144,7 +146,9 @@ export async function resetColor(): Promise<BrandingSettings_API> {
 	if (error) {
 		throw new Error(
 			`Failed to reset primary color: ${
-				typeof error === "object" && error !== null && "message" in error
+				typeof error === "object" &&
+				error !== null &&
+				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"
 			}`,
@@ -163,7 +167,9 @@ export async function resetAllBranding(): Promise<BrandingSettings_API> {
 	if (error) {
 		throw new Error(
 			`Failed to reset branding: ${
-				typeof error === "object" && error !== null && "message" in error
+				typeof error === "object" &&
+				error !== null &&
+				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"
 			}`,
@@ -202,8 +208,7 @@ export function useBranding(): BrandingState {
 		"/api/branding",
 		{},
 		{
-			queryKey: ["branding"],
-			staleTime: 5 * 60 * 1000, // 5 minutes
+			staleTime: 5 * 60 * 1000, // 5 minutes - cache branding longer
 			retry: 1,
 		},
 	);
@@ -252,7 +257,7 @@ export function useBranding(): BrandingState {
 
 	const refreshBranding = useCallback(() => {
 		setBrandingApplied(false);
-		queryClient.invalidateQueries({ queryKey: ["branding"] });
+		queryClient.invalidateQueries({ queryKey: ["get", "/api/branding"] });
 	}, [queryClient]);
 
 	return {

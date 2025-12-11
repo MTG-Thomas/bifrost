@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost-client
+  namespace: bifrost
+  labels:
+    app.kubernetes.io/name: bifrost-client
+    app.kubernetes.io/component: client
+    app.kubernetes.io/part-of: bifrost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bifrost-client
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bifrost-client
+        app.kubernetes.io/component: client
+        app.kubernetes.io/part-of: bifrost
+    spec:
+      containers:
+        - name: client
+          image: ghcr.io/jackmusick/bifrost-client:latest
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5

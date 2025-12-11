@@ -236,13 +236,14 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         }
 
 
-async def _download_workspace_from_s3(settings, local_path) -> bool:
+async def _download_workspace_from_s3(settings, local_path, bucket_name: str) -> bool:
     """
     Download workspace files from S3 to local path.
 
     Args:
         settings: Application settings
         local_path: Path to download to
+        bucket_name: S3 bucket name
 
     Returns:
         True if download successful, False otherwise
@@ -268,7 +269,7 @@ async def _download_workspace_from_s3(settings, local_path) -> bool:
         ) as s3:
             # List all objects in bucket
             paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=settings.s3_bucket):
+            async for page in paginator.paginate(Bucket=bucket_name):
                 for obj in page.get("Contents", []):
                     key: str = obj["Key"]  # type: ignore[typeddict-item]
                     local_file = local_path / key
@@ -278,7 +279,7 @@ async def _download_workspace_from_s3(settings, local_path) -> bool:
 
                     # Download file
                     response = await s3.get_object(
-                        Bucket=settings.s3_bucket,
+                        Bucket=bucket_name,
                         Key=key,
                     )
                     content = await response["Body"].read()

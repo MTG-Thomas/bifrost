@@ -84,7 +84,8 @@ export function StatusBar() {
 								<span className="truncate max-w-32">
 									{uploadState.isCancelling
 										? "Cancelling..."
-										: uploadState.currentFile || "Preparing..."}
+										: uploadState.currentFile ||
+											"Preparing..."}
 								</span>
 								<span className="shrink-0 text-muted-foreground">
 									{uploadState.completedCount}/

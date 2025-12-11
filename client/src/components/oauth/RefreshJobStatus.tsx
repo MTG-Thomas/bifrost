@@ -77,9 +77,12 @@ export function RefreshJobStatus({ className }: RefreshJobStatusProps) {
 					</div>
 					<CardDescription>
 						{jobStatus.updated_at
-							? formatDistanceToNow(new Date(jobStatus.updated_at), {
-									addSuffix: true,
-								})
+							? formatDistanceToNow(
+									new Date(jobStatus.updated_at),
+									{
+										addSuffix: true,
+									},
+								)
 							: "Unknown time"}
 					</CardDescription>
 				</CardHeader>

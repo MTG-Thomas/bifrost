@@ -29,7 +29,6 @@ class TestEditorModelContracts:
             size=1024,
             extension=".py",
             modified="2025-10-23T14:30:00Z",
-            isReadOnly=False,
         )
 
         assert file.path == "workflows/test.py"
@@ -38,7 +37,6 @@ class TestEditorModelContracts:
         assert file.size == 1024
         assert file.extension == ".py"
         assert file.modified == "2025-10-23T14:30:00Z"
-        assert file.isReadOnly is False
 
     def test_file_metadata_folder_type(self):
         """Test FileMetadata for folder type"""
@@ -49,7 +47,6 @@ class TestEditorModelContracts:
             size=None,
             extension=None,
             modified="2025-10-23T14:30:00Z",
-            isReadOnly=False,
         )
 
         assert folder.type == FileType.FOLDER

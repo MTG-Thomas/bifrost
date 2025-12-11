@@ -65,7 +65,8 @@
       "Bash(../venv/bin/pip show sqlalchemy)",
       "Bash(../venv/bin/pip:*)",
       "WebFetch(domain:openapi-ts.dev)",
-      "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/pyright:*)"
+      "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/pyright:*)",
+      "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/python:*)"
     ],
     "deny": [],
     "ask": [],

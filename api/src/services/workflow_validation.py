@@ -79,25 +79,23 @@ def _convert_workflow_metadata_to_model(
                 "required": p.required,
             }
             # Add optional fields only if they're not None
+            # Note: data_provider, help_text, validation, options are form concerns,
+            # not workflow concerns. Workflow parameters come from function signatures.
             if p.label is not None:
                 param_dict["label"] = p.label
-            if p.data_provider is not None:
-                param_dict["dataProvider"] = p.data_provider
             if p.default_value is not None:
-                param_dict["defaultValue"] = p.default_value
-            if p.help_text is not None:
-                param_dict["helpText"] = p.help_text
-            if p.validation is not None:
-                param_dict["validation"] = p.validation
-            if p.options is not None:
-                param_dict["options"] = p.options
+                param_dict["default_value"] = p.default_value
             parameters.append(param_dict)
 
     # Extract the relative path for display
-    relative_path = _extract_relative_path(workflow_metadata.source_file)
+    relative_path = _extract_relative_path(workflow_metadata.source_file_path)
+
+    # Generate a placeholder ID for validation if not present
+    # (workflows get real IDs when saved to the database)
+    workflow_id = workflow_metadata.id or f"pending-{workflow_metadata.name}"
 
     return WorkflowMetadataModel(
-        id=workflow_metadata.id,
+        id=workflow_id,
         name=workflow_metadata.name,
         description=workflow_metadata.description,
         category=workflow_metadata.category,
@@ -110,7 +108,7 @@ def _convert_workflow_metadata_to_model(
         endpoint_enabled=False,
         disable_global_key=False,
         public_endpoint=False,
-        source_file_path=workflow_metadata.source_file,
+        source_file_path=workflow_metadata.source_file_path,
         relative_file_path=relative_path,
     )
 

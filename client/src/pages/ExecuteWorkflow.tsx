@@ -30,10 +30,10 @@ export function ExecuteWorkflow() {
 
 		setIsNavigating(true);
 		try {
-			// Execute workflow with workflowName and inputData
+			// Execute workflow with workflow_id and inputData
 			const result = await executeWorkflow.mutateAsync({
 				body: {
-					workflow_name: workflow.name ?? "",
+					workflow_id: workflow.id,
 					input_data: parameters,
 					form_id: null,
 					transient: false,

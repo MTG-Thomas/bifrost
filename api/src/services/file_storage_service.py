@@ -477,6 +477,7 @@ class FileStorageService:
 
         Uses AST-based parsing to extract metadata from @workflow and
         @data_provider decorators without importing the module.
+        Also updates workspace_files.is_workflow/is_data_provider flags.
         """
         from src.models import Workflow, DataProvider
 
@@ -490,6 +491,10 @@ class FileStorageService:
 
         now = datetime.utcnow()
 
+        # Track what decorators we find to update workspace_files
+        found_workflow = False
+        found_data_provider = False
+
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -502,6 +507,7 @@ class FileStorageService:
                 decorator_name, kwargs = decorator_info
 
                 if decorator_name == "workflow":
+                    found_workflow = True
                     # Get workflow name from decorator or function name
                     workflow_name = kwargs.get("name") or node.name
                     description = kwargs.get("description")
@@ -566,6 +572,7 @@ class FileStorageService:
                         await self._refresh_workflow_endpoint(workflow)
 
                 elif decorator_name == "data_provider":
+                    found_data_provider = True
                     # Get provider name from decorator (required)
                     provider_name = kwargs.get("name") or node.name
                     description = kwargs.get("description")
@@ -593,6 +600,13 @@ class FileStorageService:
                     )
                     await self.db.execute(stmt)
                     logger.debug(f"Indexed data provider: {provider_name} ({function_name}) from {path}")
+
+        # Update workspace_files with detection results
+        stmt = update(WorkspaceFile).where(WorkspaceFile.path == path).values(
+            is_workflow=found_workflow,
+            is_data_provider=found_data_provider,
+        )
+        await self.db.execute(stmt)
 
     def _parse_decorator(self, decorator: ast.AST) -> tuple[str, dict[str, Any]] | None:
         """

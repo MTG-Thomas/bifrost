@@ -23,7 +23,8 @@ import httpx
 
 
 # E2E test API URL (from docker-compose.test.yml)
-E2E_API_URL = os.getenv("TEST_API_URL", "http://localhost:18000")
+# Default to api:8000 since tests run inside Docker network
+E2E_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
 
 
 def pytest_configure(config):

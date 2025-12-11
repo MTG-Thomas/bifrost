@@ -248,7 +248,7 @@ async def get_role_users(
         select(UserRoleORM.user_id).where(UserRoleORM.role_id == role_id)
     )
     user_ids = [str(uid) for uid in result.scalars().all()]
-    return RoleUsersResponse(role_ids=user_ids)
+    return RoleUsersResponse(user_ids=user_ids)
 
 
 @router.post(

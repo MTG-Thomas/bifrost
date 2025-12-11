@@ -145,18 +145,28 @@ export function ExecutionDetails() {
 	const isLoadingLogs = isLoading;
 	const isLoadingVariables = isLoading;
 
-	// Enable Web PubSub once we know the execution status
+	// Enable Web PubSub for running executions
+	// Only disable when stream explicitly completes (not when status changes in cache)
+	// This prevents race condition where we disconnect before completion callback fires
 	useEffect(() => {
+		// Enable streaming if execution is in a running state
 		if (
 			executionStatus === "Pending" ||
 			executionStatus === "Running" ||
 			executionStatus === "Cancelling"
 		) {
 			setSignalrEnabled(true);
-		} else {
+		}
+		// Only disable on initial load if already complete (not from stream updates)
+		// The stream's onComplete callback will handle cleanup for live executions
+	}, [executionStatus]);
+
+	// Disable streaming when stream reports completion
+	useEffect(() => {
+		if (streamState?.isComplete) {
 			setSignalrEnabled(false);
 		}
-	}, [executionStatus]);
+	}, [streamState?.isComplete]);
 
 	// Wrap onComplete in useCallback to prevent infinite loop
 	const handleStreamComplete = useCallback(() => {
@@ -351,10 +361,21 @@ export function ExecutionDetails() {
 	const handleRerunExecution = async () => {
 		if (!execution) return;
 
+		// Look up the workflow ID from metadata
+		const workflow = metadata?.workflows?.find(
+			(w: WorkflowMetadata) => w.name === execution.workflow_name,
+		);
+
+		if (!workflow?.id) {
+			toast.error("Cannot rerun: workflow not found in metadata");
+			setShowRerunDialog(false);
+			return;
+		}
+
 		setIsRerunning(true);
 		try {
 			const result = (await executeWorkflowWithContext(
-				execution.workflow_name,
+				workflow.id,
 				execution.input_data as Record<string, unknown>,
 			)) as WorkflowExecutionResponse;
 
@@ -409,7 +430,8 @@ export function ExecutionDetails() {
 				size: 0,
 				extension,
 				modified: new Date().toISOString(),
-				isReadOnly: false,
+				is_workflow: false,
+				is_data_provider: false,
 			};
 
 			// Minimize the current details page

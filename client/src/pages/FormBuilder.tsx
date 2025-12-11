@@ -50,7 +50,7 @@ export function FormBuilder() {
 		() => existingForm?.description || "",
 	);
 	const [linkedWorkflow, setLinkedWorkflow] = useState(
-		() => existingForm?.linked_workflow || "",
+		() => existingForm?.workflow_id || "",
 	);
 	// Determine if form is global based on edit state and existing form data
 	const isGlobal =
@@ -106,7 +106,7 @@ export function FormBuilder() {
 				const updateRequest: FormUpdate = {
 					name: formName,
 					description: formDescription || null,
-					linked_workflow: linkedWorkflow,
+					workflow_id: linkedWorkflow || null,
 					form_schema: { fields },
 					is_active: true,
 					access_level: accessLevel,
@@ -125,10 +125,7 @@ export function FormBuilder() {
 
 				// Update role assignments if access level is role_based
 				if (accessLevel === "role_based") {
-					await assignRolesToForm(
-						formId,
-						selectedRoleIds,
-					);
+					await assignRolesToForm(formId, selectedRoleIds);
 				} else {
 					// If not role-based, clear all role assignments
 					await assignRolesToForm(formId, []);
@@ -137,7 +134,7 @@ export function FormBuilder() {
 				const createRequest: FormCreate = {
 					name: formName,
 					description: formDescription || null,
-					linked_workflow: linkedWorkflow,
+					workflow_id: linkedWorkflow || null,
 					form_schema: { fields },
 					access_level: accessLevel,
 					// NEW MVP fields
@@ -148,7 +145,9 @@ export function FormBuilder() {
 							: null,
 					default_launch_params: defaultLaunchParams,
 				};
-				const createdForm = await createForm.mutateAsync({ body: createRequest });
+				const createdForm = await createForm.mutateAsync({
+					body: createRequest,
+				});
 
 				// Assign roles if access level is role_based
 				if (
@@ -156,10 +155,7 @@ export function FormBuilder() {
 					createdForm?.id &&
 					selectedRoleIds.length > 0
 				) {
-					await assignRolesToForm(
-						createdForm.id,
-						selectedRoleIds,
-					);
+					await assignRolesToForm(createdForm.id, selectedRoleIds);
 				}
 			}
 

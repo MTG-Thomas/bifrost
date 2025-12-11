@@ -122,7 +122,8 @@ export function ExecuteForms() {
 											Workflow
 										</p>
 										<p className="font-mono text-sm mt-1">
-											{form.linked_workflow}
+											{form.workflow_id ||
+												"No workflow linked"}
 										</p>
 									</div>
 									<div>

@@ -229,8 +229,7 @@ from src.models.contracts.scheduling import (
     CronValidationRequest,
     CronValidationResponse,
     ProcessSchedulesResponse,
-    ScheduleInfo,
-    SchedulesListResponse,
+    ScheduleMetadata,
 )
 
 # GitHub Integration
@@ -272,9 +271,6 @@ from src.models.contracts.github import (
 
 # SDK Models
 from src.models.contracts.sdk import (
-    FileScanRequest,
-    FormScanResponse,
-    FormValidationIssue,
     SDKConfigDeleteRequest,
     SDKConfigGetRequest,
     SDKConfigListRequest,
@@ -284,10 +280,6 @@ from src.models.contracts.sdk import (
     SDKFileListRequest,
     SDKFileReadRequest,
     SDKFileWriteRequest,
-    SDKUsageIssue,
-    SDKUsageType,
-    WorkspaceScanRequest,
-    WorkspaceScanResponse,
 )
 
 __all__ = [
@@ -431,11 +423,10 @@ __all__ = [
     "CronSchedule",
     "CronScheduleCreateRequest",
     "CronScheduleUpdateRequest",
-    "ScheduleInfo",
-    "SchedulesListResponse",
     "CronValidationRequest",
     "CronValidationResponse",
     "ProcessSchedulesResponse",
+    "ScheduleMetadata",
     "BrandingSettings",
     "BrandingUpdateRequest",
     "FileType",
@@ -488,13 +479,6 @@ __all__ = [
     "CommitInfo",
     "DetectedRepoInfo",
     "GitHubConfigEntity",
-    "SDKUsageType",
-    "SDKUsageIssue",
-    "WorkspaceScanRequest",
-    "FileScanRequest",
-    "WorkspaceScanResponse",
-    "FormValidationIssue",
-    "FormScanResponse",
     "SDKFileReadRequest",
     "SDKFileWriteRequest",
     "SDKFileListRequest",

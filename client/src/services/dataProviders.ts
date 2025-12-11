@@ -19,10 +19,15 @@ export type DataProviderOption = {
  * Hook to fetch all available data providers
  */
 export function useDataProviders() {
-	return $api.useQuery("get", "/api/data-providers", {}, {
-		queryKey: ["data-providers"],
-		staleTime: 10 * 60 * 1000, // 10 minutes
-	});
+	return $api.useQuery(
+		"get",
+		"/api/data-providers",
+		{},
+		{
+			queryKey: ["data-providers"],
+			staleTime: 10 * 60 * 1000, // 10 minutes
+		},
+	);
 }
 
 /**

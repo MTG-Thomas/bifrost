@@ -1,15 +1,10 @@
 import { Outlet } from "react-router-dom";
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { NoAccess } from "@/components/NoAccess";
 import { Skeleton } from "@/components/ui/skeleton";
-import { sdkScannerService } from "@/services/sdkScannerService";
-
-// Minimum interval between workspace scans (5 minutes)
-const SCAN_INTERVAL_MS = 5 * 60 * 1000;
-const LAST_SCAN_KEY = "bifrost_last_workspace_scan";
 
 export function Layout() {
 	const { isLoading, isPlatformAdmin, isOrgUser } = useAuth();
@@ -18,28 +13,8 @@ export function Layout() {
 		// Load collapsed state from localStorage
 		return localStorage.getItem("sidebar-collapsed") === "true";
 	});
-	const hasScannedRef = useRef(false);
 
-	// Run SDK scanner on initial load, but rate-limit to once per 5 minutes
 	const hasAccess = isPlatformAdmin || isOrgUser;
-	useEffect(() => {
-		if (!isLoading && hasAccess && !hasScannedRef.current) {
-			hasScannedRef.current = true;
-
-			// Check if we've scanned recently
-			const lastScan = sessionStorage.getItem(LAST_SCAN_KEY);
-			const lastScanTime = lastScan ? parseInt(lastScan, 10) : 0;
-			const now = Date.now();
-
-			if (now - lastScanTime > SCAN_INTERVAL_MS) {
-				// Run scan in background after a short delay to not block initial render
-				setTimeout(() => {
-					sdkScannerService.scanWorkspaceAndNotify();
-					sessionStorage.setItem(LAST_SCAN_KEY, String(Date.now()));
-				}, 1000);
-			}
-		}
-	}, [isLoading, hasAccess]);
 
 	// Show loading state while checking authentication
 	if (isLoading) {

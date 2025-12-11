@@ -8,6 +8,7 @@ Provides endpoints for OAuth/SSO authentication:
 - Link/unlink OAuth accounts
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -213,13 +214,18 @@ async def init_oauth(
             code_verifier=code_verifier,
         )
 
-        # Store state -> code_verifier binding in Redis (server-side PKCE)
-        # This prevents the client from ever seeing the verifier
+        # Store state -> {code_verifier, redirect_uri} binding in Redis (server-side PKCE)
+        # This prevents the client from ever seeing the verifier and ensures we use
+        # the same redirect_uri in the callback that was used in the init
         r = await get_shared_redis()
+        state_data = json.dumps({
+            "code_verifier": code_verifier,
+            "redirect_uri": redirect_uri,
+        })
         await r.setex(
             oauth_state_key(state),
             TTL_OAUTH_STATE,
-            code_verifier,
+            state_data,
         )
 
         logger.info(
@@ -274,15 +280,14 @@ async def oauth_callback(
         - PKCE verifier is retrieved from Redis (never sent by client)
         - State is single-use (deleted after retrieval)
     """
-    settings = get_settings()
     oauth_service = OAuthService(db)
 
-    # Validate state and retrieve PKCE verifier from Redis
+    # Validate state and retrieve PKCE verifier + redirect_uri from Redis
     r = await get_shared_redis()
     state_key = oauth_state_key(callback_data.state)
-    code_verifier = await r.get(state_key)
+    state_data_raw = await r.get(state_key)
 
-    if not code_verifier:
+    if not state_data_raw:
         logger.warning(
             "OAuth callback with invalid or expired state",
             extra={"state": callback_data.state[:8] + "..." if callback_data.state else "none"}
@@ -295,15 +300,22 @@ async def oauth_callback(
     # Delete state immediately (single-use)
     await r.delete(state_key)
 
-    # Decode verifier if bytes
-    if isinstance(code_verifier, bytes):
-        code_verifier = code_verifier.decode("utf-8")
+    # Parse state data (contains code_verifier and redirect_uri)
+    if isinstance(state_data_raw, bytes):
+        state_data_raw = state_data_raw.decode("utf-8")
 
     try:
-        # Build redirect URI from frontend URL
-        # The frontend callback URL must match what was used in init
-        frontend_url = settings.frontend_url or "http://localhost:3000"
-        redirect_uri = f"{frontend_url}/auth/callback/{callback_data.provider}"
+        state_data = json.loads(state_data_raw)
+        code_verifier = state_data["code_verifier"]
+        redirect_uri = state_data["redirect_uri"]
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Invalid OAuth state data format: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state data",
+        )
+
+    try:
 
         # Exchange code for tokens using server-side verifier
         tokens = await oauth_service.exchange_code_for_tokens(

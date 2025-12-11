@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +27,6 @@ from src.models import (
     OAuthFlowType,
     OAuthStatus,
 )
-from src.config import get_settings
 from src.core.auth import Context, CurrentSuperuser
 from src.models import OAuthProvider, OAuthToken
 
@@ -358,10 +357,6 @@ class OAuthConnectionRepository:
         oauth_flow_type: OAuthFlowType = provider.oauth_flow_type  # type: ignore[assignment]
         status: OAuthStatus = provider.status or "not_connected"  # type: ignore[assignment]
 
-        # Build redirect_uri
-        settings = get_settings()
-        redirect_uri = f"{settings.frontend_url}/oauth/callback/{provider.provider_name}"
-
         # Convert scopes list to space-separated string
         scopes_str = " ".join(provider.scopes) if provider.scopes else ""
 
@@ -375,7 +370,6 @@ class OAuthConnectionRepository:
             authorization_url=provider.authorization_url,
             token_url=provider.token_url or "",
             scopes=scopes_str,
-            redirect_uri=redirect_uri,
             status=status,
             status_message=provider.status_message,
             expires_at=expires_at,
@@ -550,6 +544,7 @@ async def authorize_connection(
     connection_name: str,
     ctx: Context,
     user: CurrentSuperuser,
+    redirect_uri: str = Query(..., description="Frontend callback URL for OAuth redirect"),
 ) -> AuthorizeResponse:
     """Initiate OAuth authorization flow."""
     repo = OAuthConnectionRepository(ctx.db)
@@ -573,7 +568,6 @@ async def authorize_connection(
     state = secrets.token_urlsafe(32)
 
     # Build authorization URL
-    settings = get_settings()
     # Convert scopes list to space-separated string (OAuth standard format)
     scopes_str = " ".join(provider.scopes) if provider.scopes else ""
     params = {
@@ -581,7 +575,7 @@ async def authorize_connection(
         "response_type": "code",
         "state": state,
         "scope": scopes_str,
-        "redirect_uri": f"{settings.frontend_url}/oauth/callback/{connection_name}",
+        "redirect_uri": redirect_uri,
     }
 
     authorization_url = f"{provider.authorization_url}?{urlencode(params)}"
@@ -779,9 +773,13 @@ async def oauth_callback(
         except Exception as e:
             logger.error(f"Failed to decrypt client secret: {e}")
 
-    # Build redirect URI
-    settings = get_settings()
-    redirect_uri = f"{settings.frontend_url}/oauth/callback/{connection_name}"
+    # Get redirect URI from request (must match what was used in authorization)
+    if not request.redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri is required in callback request",
+        )
+    redirect_uri = request.redirect_uri
 
     # Exchange authorization code for tokens
     oauth_client = OAuthProviderClient()

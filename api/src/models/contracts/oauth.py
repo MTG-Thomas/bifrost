@@ -180,10 +180,6 @@ class OAuthConnectionDetail(BaseModel):
     )
     token_url: str
     scopes: str
-    redirect_uri: str = Field(
-        ...,
-        description="Callback URL for OAuth authorization"
-    )
 
     # Status information
     status: OAuthStatus
@@ -398,6 +394,7 @@ class OAuthCallbackRequest(BaseModel):
     """Request model for OAuth callback endpoint"""
     code: str = Field(..., description="Authorization code from OAuth provider")
     state: str | None = Field(default=None, description="State parameter for CSRF protection")
+    redirect_uri: str | None = Field(default=None, description="Redirect URI used in authorization request")
 
 
 class OAuthCallbackResponse(BaseModel):

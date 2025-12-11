@@ -140,14 +140,18 @@ export function FieldsPanel({ fields, setFields }: FieldsPanelProps) {
 										<Button
 											variant="ghost"
 											size="icon"
-											onClick={() => openEditDialog(index)}
+											onClick={() =>
+												openEditDialog(index)
+											}
 										>
 											<Pencil className="h-4 w-4" />
 										</Button>
 										<Button
 											variant="ghost"
 											size="icon"
-											onClick={() => openDeleteDialog(index)}
+											onClick={() =>
+												openDeleteDialog(index)
+											}
 										>
 											<Trash2 className="h-4 w-4" />
 										</Button>

@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost-worker
+  namespace: bifrost
+  labels:
+    app.kubernetes.io/name: bifrost-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: bifrost
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bifrost-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bifrost-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: bifrost
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/jackmusick/bifrost:latest
+          command: ["python", "-m", "src.worker.main"]
+          envFrom:
+            - configMapRef:
+                name: bifrost-config
+            - secretRef:
+                name: bifrost-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          # Workers don't have HTTP endpoints, use exec probe
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import sys; sys.exit(0)"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+      # Run as non-root user (matches Dockerfile)
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000

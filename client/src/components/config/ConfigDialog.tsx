@@ -33,7 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useSetConfig } from "@/hooks/useConfig";
 import type { components } from "@/lib/v1";
 
-type Config = components["schemas"]["Config"];
+type Config = components["schemas"]["ConfigResponse"];
 
 const formSchema = z.object({
 	key: z

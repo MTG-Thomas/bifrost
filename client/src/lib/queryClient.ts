@@ -11,8 +11,10 @@ export const queryClient = new QueryClient({
 			refetchOnWindowFocus: false,
 			// Disable retries for all queries
 			retry: false,
-			// Stale time of 5 minutes by default
-			staleTime: 5 * 60 * 1000,
+			// Always consider data stale - ensures fresh data on every mount
+			staleTime: 0,
+			// Always refetch when component mounts (navigating to page)
+			refetchOnMount: "always",
 		},
 		mutations: {
 			// IMPORTANT: Disable retries for ALL mutations globally

@@ -56,6 +56,85 @@ class TestWorkflowDiscovery:
 
 
 @pytest.mark.e2e
+class TestWorkflowValidation:
+    """Test workflow validation endpoint."""
+
+    def test_validate_valid_workflow(self, e2e_client, platform_admin):
+        """Validate a valid workflow file content."""
+        valid_workflow = '''
+"""Test workflow for validation"""
+
+from bifrost import workflow
+
+@workflow(
+    category="testing",
+    tags=["test", "validation"],
+)
+async def e2e_test_validation(name: str, count: int = 1) -> dict:
+    """A simple test workflow for E2E validation testing."""
+    return {"greeting": f"Hello, {name}!", "count": count}
+'''
+        response = e2e_client.post(
+            "/api/workflows/validate",
+            headers=platform_admin.headers,
+            json={
+                "path": "test_validation.py",
+                "content": valid_workflow,
+            },
+        )
+        assert response.status_code == 200, f"Validation failed: {response.text}"
+        data = response.json()
+        assert data["valid"] is True
+        assert data["metadata"] is not None
+        assert data["metadata"]["name"] == "e2e_test_validation"
+        # Should have parameters extracted from function signature
+        assert len(data["metadata"]["parameters"]) == 2
+
+    def test_validate_workflow_with_syntax_error(self, e2e_client, platform_admin):
+        """Validation catches syntax errors."""
+        invalid_workflow = '''
+"""Invalid workflow"""
+
+def broken_workflow(
+    # Missing closing paren
+'''
+        response = e2e_client.post(
+            "/api/workflows/validate",
+            headers=platform_admin.headers,
+            json={
+                "path": "invalid.py",
+                "content": invalid_workflow,
+            },
+        )
+        assert response.status_code == 200, f"Request failed: {response.text}"
+        data = response.json()
+        assert data["valid"] is False
+        assert any("syntax" in issue["message"].lower() for issue in data["issues"])
+
+    def test_validate_workflow_without_decorator(self, e2e_client, platform_admin):
+        """Validation catches missing @workflow decorator."""
+        no_decorator = '''
+"""Workflow without decorator"""
+
+async def not_a_workflow(name: str) -> dict:
+    """No decorator means not discoverable."""
+    return {"name": name}
+'''
+        response = e2e_client.post(
+            "/api/workflows/validate",
+            headers=platform_admin.headers,
+            json={
+                "path": "no_decorator.py",
+                "content": no_decorator,
+            },
+        )
+        assert response.status_code == 200, f"Request failed: {response.text}"
+        data = response.json()
+        assert data["valid"] is False
+        assert any("@workflow decorator" in issue["message"] for issue in data["issues"])
+
+
+@pytest.mark.e2e
 class TestPlatformWorkflows:
     """Test platform workflow categorization."""
 

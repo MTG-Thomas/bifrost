@@ -3,10 +3,13 @@
 # This compose file creates a completely isolated test environment with:
 # - Separate container names (bifrost-test-*)
 # - Separate volumes (bifrost_test_*)
-# - Separate ports (offset by 1000)
+# - NO exposed ports (all communication via Docker network)
 # - Fresh database for each test run
 # - PgBouncer for connection pooling (matches production)
 # - MinIO for S3-compatible storage (workspace and files)
+#
+# NOTE: Ports are NOT exposed to the host, allowing tests to run while
+# the development stack is running on the default ports.
 #
 # Usage:
 #   ./test.sh                          # Run unit/integration tests
@@ -25,8 +28,7 @@ services:
       POSTGRES_DB: bifrost_test
       POSTGRES_USER: bifrost
       POSTGRES_PASSWORD: bifrost_test
-    ports:
-      - "15432:5432"  # Offset port to avoid conflicts
+    # No ports exposed - all access via Docker network
     tmpfs:
       - /var/lib/postgresql/data  # Ephemeral storage - fresh each run
     healthcheck:
@@ -52,8 +54,7 @@ services:
       MIN_POOL_SIZE: 2
       RESERVE_POOL_SIZE: 2
       AUTH_TYPE: plain
-    ports:
-      - "16432:5432"  # Offset port - pgbouncer listens on 5432 internally
+    # No ports exposed - all access via Docker network
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,9 +71,7 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: bifrost
       RABBITMQ_DEFAULT_PASS: bifrost_test
-    ports:
-      - "15672:5672"    # AMQP - offset port
-      - "25672:15672"   # Management UI - offset port
+    # No ports exposed - all access via Docker network
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 5s
@@ -84,8 +83,7 @@ services:
     image: redis:7-alpine
     container_name: bifrost-test-redis
     command: redis-server
-    ports:
-      - "16379:6379"  # Offset port
+    # No ports exposed - all access via Docker network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -101,9 +99,7 @@ services:
     environment:
       MINIO_ROOT_USER: bifrost
       MINIO_ROOT_PASSWORD: bifrost_test_key
-    ports:
-      - "19000:9000"  # S3 API - offset port
-      - "19001:9001"  # Console - offset port
+    # No ports exposed - all access via Docker network
     tmpfs:
       - /data  # Ephemeral storage - fresh each run
     healthcheck:
@@ -141,15 +137,14 @@ services:
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
       # S3 configuration for MinIO
-      BIFROST_INSTANCE_ID: test
+      BIFROST_S3_BUCKET: bifrost-test
       BIFROST_S3_ENDPOINT_URL: http://minio:9000
       BIFROST_S3_ACCESS_KEY: bifrost
       BIFROST_S3_SECRET_KEY: bifrost_test_key
       BIFROST_S3_REGION: us-east-1
       # Enable registration for E2E tests
       BIFROST_ALLOW_REGISTRATION: "true"
-    ports:
-      - "18000:8000"  # Offset port
+    # No ports exposed - all access via Docker network (test-runner connects to api:8000)
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro
@@ -194,7 +189,7 @@ services:
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
       # S3 configuration for MinIO
-      BIFROST_INSTANCE_ID: test
+      BIFROST_S3_BUCKET: bifrost-test
       BIFROST_S3_ENDPOINT_URL: http://minio:9000
       BIFROST_S3_ACCESS_KEY: bifrost
       BIFROST_S3_SECRET_KEY: bifrost_test_key
@@ -238,7 +233,7 @@ services:
       BIFROST_ENVIRONMENT: testing
       BIFROST_ALLOW_REGISTRATION: "true"
       # S3 configuration for MinIO
-      BIFROST_INSTANCE_ID: test
+      BIFROST_S3_BUCKET: bifrost-test
       BIFROST_S3_ENDPOINT_URL: http://minio:9000
       BIFROST_S3_ACCESS_KEY: bifrost
       BIFROST_S3_SECRET_KEY: bifrost_test_key

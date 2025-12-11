@@ -128,7 +128,8 @@ export function useEditorTerminal() {
 			currentStreamingExecutionId: state.currentStreamingExecutionId,
 			appendTerminalOutput: state.appendTerminalOutput,
 			clearTerminalOutput: state.clearTerminalOutput,
-			setCurrentStreamingExecutionId: state.setCurrentStreamingExecutionId,
+			setCurrentStreamingExecutionId:
+				state.setCurrentStreamingExecutionId,
 		})),
 	);
 }

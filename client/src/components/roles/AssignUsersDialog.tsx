@@ -39,7 +39,7 @@ export function AssignUsersDialog({
 
 		await assignUsers.mutateAsync({
 			params: { path: { role_id: role.id } },
-			body: { userIds: selectedIds },
+			body: { user_ids: selectedIds },
 		});
 
 		clear();

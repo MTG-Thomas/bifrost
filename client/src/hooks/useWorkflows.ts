@@ -3,16 +3,18 @@
  * Uses openapi-react-query for type-safe API calls
  */
 
+import { useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { $api, apiClient, withContext } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/api-error";
 import { toast } from "sonner";
 import { useWorkflowsStore } from "@/stores/workflowsStore";
-import { useAuth } from "@/contexts/AuthContext";
 import type { components } from "@/lib/v1";
 
-type WorkflowExecutionRequest = components["schemas"]["WorkflowExecutionRequest"];
-type WorkflowValidationRequest = components["schemas"]["WorkflowValidationRequest"];
+type WorkflowExecutionRequest =
+	components["schemas"]["WorkflowExecutionRequest"];
+type WorkflowValidationRequest =
+	components["schemas"]["WorkflowValidationRequest"];
 
 /**
  * Fetch workflow and data provider metadata.
@@ -24,33 +26,35 @@ type WorkflowValidationRequest = components["schemas"]["WorkflowValidationReques
  */
 export function useWorkflowsMetadata() {
 	const setWorkflows = useWorkflowsStore((state) => state.setWorkflows);
-	const { user } = useAuth();
 
 	// Fetch workflows
-	const workflowsQuery = $api.useQuery("get", "/api/workflows", {}, {
-		queryKey: ["workflows"],
-		enabled: !!user,
-		staleTime: 60000,
-	});
+	const workflowsQuery = $api.useQuery("get", "/api/workflows", {});
 
 	// Fetch data providers
-	const dataProvidersQuery = $api.useQuery("get", "/api/data-providers", {}, {
-		queryKey: ["data-providers"],
-		enabled: !!user,
-		staleTime: 60000,
-	});
+	const dataProvidersQuery = $api.useQuery("get", "/api/data-providers", {});
 
 	// Update Zustand store when workflows change
-	if (workflowsQuery.data) {
-		setWorkflows(workflowsQuery.data);
-	}
+	// MUST be in useEffect to avoid infinite re-render loop
+	// (setWorkflows updates lastUpdated, which triggers subscribers to re-render)
+	useEffect(() => {
+		if (workflowsQuery.data) {
+			setWorkflows(workflowsQuery.data);
+		}
+	}, [workflowsQuery.data, setWorkflows]);
+
+	// Memoize combined data to prevent infinite re-render loops
+	// (consumers depend on this object reference in useEffect deps)
+	const data = useMemo(
+		() => ({
+			workflows: workflowsQuery.data || [],
+			dataProviders: dataProvidersQuery.data || [],
+		}),
+		[workflowsQuery.data, dataProvidersQuery.data],
+	);
 
 	// Return combined metadata with combined loading/error states
 	return {
-		data: {
-			workflows: workflowsQuery.data || [],
-			dataProviders: dataProvidersQuery.data || [],
-		},
+		data,
 		isLoading: workflowsQuery.isLoading || dataProvidersQuery.isLoading,
 		isError: workflowsQuery.isError || dataProvidersQuery.isError,
 		error: workflowsQuery.error || dataProvidersQuery.error,
@@ -86,7 +90,10 @@ export function useReloadWorkflowFile() {
 	return {
 		mutate: async () => {
 			try {
-				const { data, error } = await apiClient.GET("/api/workflows", {});
+				const { data, error } = await apiClient.GET(
+					"/api/workflows",
+					{},
+				);
 				if (error) {
 					console.error("Failed to reload workflow file:", error);
 					return;
@@ -96,7 +103,7 @@ export function useReloadWorkflowFile() {
 					setWorkflows(data);
 				}
 				// Also invalidate the query cache
-				queryClient.invalidateQueries({ queryKey: ["workflows"] });
+				queryClient.invalidateQueries({ queryKey: ["get", "/api/workflows"] });
 			} catch (error) {
 				console.error("Failed to reload workflow file:", error);
 				// Silent failure - don't show toast for background operations
@@ -108,9 +115,16 @@ export function useReloadWorkflowFile() {
 /**
  * Execute a workflow with context override (admin only)
  * Used when re-running executions from ExecutionDetails page
+ *
+ * @param workflowId - UUID of the workflow to execute (required if code not provided)
+ * @param parameters - Input parameters for the workflow
+ * @param transient - If true, skip database persistence (for debugging)
+ * @param code - Optional Python code to execute instead of a workflow
+ * @param scriptName - Name for the script (used for logging when code is provided)
+ * @param options - Optional org/user context override
  */
 export async function executeWorkflowWithContext(
-	workflowName: string | undefined,
+	workflowId: string | undefined,
 	parameters: Record<string, unknown>,
 	transient?: boolean,
 	code?: string,
@@ -124,7 +138,7 @@ export async function executeWorkflowWithContext(
 
 	const { data, error } = await client.POST("/api/workflows/execute", {
 		body: {
-			workflow_name: workflowName ?? null,
+			workflow_id: workflowId ?? null,
 			input_data: parameters,
 			form_id: null,
 			transient: transient ?? false,

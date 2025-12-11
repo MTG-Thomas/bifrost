@@ -12,7 +12,6 @@ import { toast } from "sonner";
 import type * as Monaco from "monaco-editor";
 import { initializeMonaco } from "@/lib/monaco-setup";
 import { ConflictDiffView } from "./ConflictDiffView";
-import { sdkScannerService } from "@/services/sdkScannerService";
 
 /**
  * Monaco editor component wrapper
@@ -103,11 +102,6 @@ export function CodeEditor() {
 			toast.success("File saved", {
 				description: openFile.name,
 			});
-
-			// Scan for SDK usage issues after successful save (missing configs, secrets, OAuth)
-			if (openFile.name.endsWith(".py")) {
-				sdkScannerService.scanFileAndNotify(openFile.path, fileContent);
-			}
 		} catch (error) {
 			toast.error("Failed to save file", {
 				description:

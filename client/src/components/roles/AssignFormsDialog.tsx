@@ -38,7 +38,7 @@ export function AssignFormsDialog({
 
 		await assignForms.mutateAsync({
 			params: { path: { role_id: role.id } },
-			body: { formIds: selectedIds },
+			body: { form_ids: selectedIds },
 		});
 
 		clear();
@@ -91,7 +91,9 @@ export function AssignFormsDialog({
 												</p>
 												<p className="text-sm text-muted-foreground">
 													{form.description ||
-														`Workflow: ${form.linked_workflow}`}
+														(form.workflow_id
+															? `Workflow ID: ${form.workflow_id}`
+															: "No workflow linked")}
 												</p>
 												<div className="mt-1 flex gap-2">
 													{form.organization_id ===

@@ -3,7 +3,6 @@ import { useEditorStore } from "@/stores/editorStore";
 import { useSaveQueue } from "./useSaveQueue";
 import { fileService, FileConflictError } from "@/services/fileService";
 import type { ConflictReason } from "@/stores/editorStore";
-import { sdkScannerService } from "@/services/sdkScannerService";
 import { useReloadWorkflowFile } from "./useWorkflows";
 
 /**
@@ -78,11 +77,6 @@ export function useAutoSave() {
 
 				// Run post-save tasks for Python workflow files
 				if (openFile && openFile.name.endsWith(".py")) {
-					// Scan for SDK usage issues (missing configs, secrets, OAuth)
-					sdkScannerService.scanFileAndNotify(
-						openFile.path,
-						fileContent,
-					);
 					// Incrementally reload workflows for this file
 					// This updates the workflows store to reflect workflow changes
 					reloadWorkflowFile();
@@ -142,12 +136,6 @@ export function useAutoSave() {
 			setTimeout(() => {
 				setSaveState(activeTabIndex, "clean");
 			}, 2500);
-
-			// Run post-save tasks for Python workflow files
-			if (openFile.name.endsWith(".py")) {
-				// Scan for SDK usage issues (missing configs, secrets, OAuth)
-				sdkScannerService.scanFileAndNotify(openFile.path, fileContent);
-			}
 		} catch (error) {
 			if (error instanceof FileConflictError) {
 				// Show conflict state

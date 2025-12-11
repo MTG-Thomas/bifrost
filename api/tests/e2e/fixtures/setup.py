@@ -23,7 +23,8 @@ from tests.helpers.totp import generate_totp_code
 logger = logging.getLogger(__name__)
 
 # API URLs from environment or defaults
-API_BASE_URL = os.environ.get("TEST_API_URL", "http://localhost:18000")
+# Default to api:8000 since tests run inside Docker network
+API_BASE_URL = os.environ.get("TEST_API_URL", "http://api:8000")
 WS_BASE_URL = API_BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
 
 

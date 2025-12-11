@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost-scheduler
+  namespace: bifrost
+  labels:
+    app.kubernetes.io/name: bifrost-scheduler
+    app.kubernetes.io/component: scheduler
+    app.kubernetes.io/part-of: bifrost
+spec:
+  # IMPORTANT: Scheduler MUST be a singleton (exactly 1 replica)
+  # Running multiple schedulers will cause duplicate job executions
+  replicas: 1
+  strategy:
+    type: Recreate  # Ensure only one instance runs at a time
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bifrost-scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bifrost-scheduler
+        app.kubernetes.io/component: scheduler
+        app.kubernetes.io/part-of: bifrost
+    spec:
+      containers:
+        - name: scheduler
+          image: ghcr.io/jackmusick/bifrost:latest
+          command: ["python", "-m", "src.scheduler.main"]
+          envFrom:
+            - configMapRef:
+                name: bifrost-config
+            - secretRef:
+                name: bifrost-secrets
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          # Scheduler doesn't have HTTP endpoints, use exec probe
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import sys; sys.exit(0)"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+      # Run as non-root user (matches Dockerfile)
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000

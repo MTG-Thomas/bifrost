@@ -377,7 +377,8 @@ export function SourceControlPanel() {
 					? fileName.split(".").pop() || null
 					: null,
 				modified: fileData.modified,
-				isReadOnly: false,
+				is_workflow: false,
+				is_data_provider: false,
 			};
 
 			// Open in editor tab
@@ -472,12 +473,17 @@ export function SourceControlPanel() {
 					<div className="border-b">
 						<button
 							onClick={handleSync}
-							disabled={pullMutation.isPending || pushMutation.isPending || isLoading}
+							disabled={
+								pullMutation.isPending ||
+								pushMutation.isPending ||
+								isLoading
+							}
 							className="w-full px-4 py-3 flex flex-col items-start gap-1 hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-left"
 						>
 							<div className="flex items-center justify-between w-full">
 								<div className="flex items-center gap-2">
-									{pullMutation.isPending || pushMutation.isPending ? (
+									{pullMutation.isPending ||
+									pushMutation.isPending ? (
 										<Loader2 className="h-4 w-4 animate-spin" />
 									) : (
 										<RefreshCw className="h-4 w-4" />
@@ -535,7 +541,9 @@ export function SourceControlPanel() {
 						className="w-full"
 						onClick={handleCommit}
 						disabled={
-							!commitMessage.trim() || commitMutation.isPending || isLoading
+							!commitMessage.trim() ||
+							commitMutation.isPending ||
+							isLoading
 						}
 					>
 						{commitMutation.isPending ? (
@@ -566,7 +574,11 @@ export function SourceControlPanel() {
 						commits={commits}
 						totalCommits={totalCommits}
 						hasMore={hasMoreCommits}
-						isLoading={isLoadingCommits || discardAllMutation.isPending || discardCommitMutation.isPending}
+						isLoading={
+							isLoadingCommits ||
+							discardAllMutation.isPending ||
+							discardCommitMutation.isPending
+						}
 						onDiscardAll={handleDiscardAll}
 						onDiscardCommit={handleDiscardCommit}
 					/>

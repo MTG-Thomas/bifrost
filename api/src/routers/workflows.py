@@ -16,16 +16,15 @@ from sqlalchemy import select
 
 # Import existing Pydantic models for API compatibility
 from src.models import (
-    FileScanRequest,
     WorkflowExecutionRequest,
     WorkflowExecutionResponse,
     WorkflowMetadata,
     WorkflowParameter,
     WorkflowValidationRequest,
     WorkflowValidationResponse,
-    WorkspaceScanResponse,
 )
 from src.models import Workflow as WorkflowORM
+from src.services.workflow_validation import _extract_relative_path
 
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
 from src.core.database import DbSession
@@ -71,7 +70,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
         disable_global_key=False,
         public_endpoint=False,
         source_file_path=workflow.file_path,
-        relative_file_path=None,
+        relative_file_path=_extract_relative_path(workflow.file_path),
     )
 
 
@@ -256,143 +255,6 @@ async def validate_workflow(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to validate workflow",
-        )
-
-
-@router.post(
-    "/scan",
-    response_model=WorkspaceScanResponse,
-    summary="Scan workspace for SDK usage issues",
-    description="Scans all Python files for SDK usage issues",
-)
-async def scan_workspace(
-    ctx: Context,
-    user: CurrentSuperuser,
-    db: DbSession,
-) -> WorkspaceScanResponse:
-    """Scan entire workspace for SDK dependencies and issues."""
-    from uuid import uuid4
-    from sqlalchemy import func
-    from src.models import Form as FormORM
-    from src.services.sdk_usage_scanner import SDKUsageScanner
-    from src.sdk.context import ExecutionContext as SharedContext, Organization
-
-    try:
-        workspace_path = os.environ.get("BIFROST_WORKSPACE_LOCATION", "/mounts/workspace")
-
-        # Create organization object if org_id is set
-        org = None
-        if ctx.org_id:
-            org = Organization(id=str(ctx.org_id), name="", is_active=True)
-
-        # Create shared context
-        shared_ctx = SharedContext(
-            user_id=str(ctx.user.user_id),
-            name=ctx.user.name,
-            email=ctx.user.email,
-            scope=str(ctx.org_id) if ctx.org_id else "GLOBAL",
-            organization=org,
-            is_platform_admin=ctx.user.is_superuser,
-            is_function_key=False,
-            execution_id=str(uuid4()),
-        )
-
-        # Scan for SDK usage issues
-        scanner = SDKUsageScanner(workspace_path)
-        file_usages = scanner.scan_workspace()
-        scanned_count = len(file_usages)
-        sdk_issues = await scanner.validate_workspace(shared_ctx)
-
-        # Count forms from database (not file scanning)
-        result = await db.execute(
-            select(func.count(FormORM.id)).where(FormORM.is_active.is_(True))
-        )
-        form_count = result.scalar() or 0
-
-        response = WorkspaceScanResponse(
-            issues=sdk_issues,
-            scanned_files=scanned_count,
-            form_issues=[],
-            scanned_forms=form_count,
-            valid_forms=form_count,
-        )
-
-        logger.info(
-            f"Workspace scan complete: {scanned_count} files/{len(sdk_issues)} SDK issues, "
-            f"{form_count} forms scanned"
-        )
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Error scanning workspace: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to scan workspace",
-        )
-
-
-@router.post(
-    "/scan/file",
-    response_model=WorkspaceScanResponse,
-    summary="Scan a single file for SDK usage issues",
-    description="Scans a single Python file for config/secrets/oauth calls",
-)
-async def scan_file(
-    request: FileScanRequest,
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> WorkspaceScanResponse:
-    """Scan a single file for SDK dependencies."""
-    from uuid import uuid4
-    from src.services.sdk_usage_scanner import SDKUsageScanner
-    from src.sdk.context import ExecutionContext as SharedContext, Organization
-
-    try:
-        workspace_path = os.environ.get("BIFROST_WORKSPACE_LOCATION", "/mounts/workspace")
-
-        # Create organization object if org_id is set
-        org = None
-        if ctx.org_id:
-            org = Organization(id=str(ctx.org_id), name="", is_active=True)
-
-        # Create shared context
-        shared_ctx = SharedContext(
-            user_id=str(ctx.user.user_id),
-            name=ctx.user.name,
-            email=ctx.user.email,
-            scope=str(ctx.org_id) if ctx.org_id else "GLOBAL",
-            organization=org,
-            is_platform_admin=ctx.user.is_superuser,
-            is_function_key=False,
-            execution_id=str(uuid4()),
-        )
-
-        scanner = SDKUsageScanner(workspace_path)
-        issues = await scanner.validate_file(
-            file_path=request.file_path,
-            context=shared_ctx,
-            content=request.content,
-        )
-
-        response = WorkspaceScanResponse(
-            issues=issues,
-            scanned_files=1,
-        )
-
-        logger.info(f"File scan complete: {request.file_path}, {len(issues)} issues")
-        return response
-
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid request: {str(e)}",
-        )
-    except Exception as e:
-        logger.error(f"Error scanning file: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to scan file",
         )
 
 
