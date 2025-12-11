@@ -7,8 +7,10 @@ Provides endpoints for connecting to repos, pulling, pushing, and syncing.
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.database import get_db
 from src.models import (
     ValidateTokenRequest,
     DetectedRepoInfo,
@@ -29,6 +31,7 @@ from src.models import (
     CreateRepoResponse,
 )
 from src.services.git_integration import GitIntegrationService
+from src.services.file_storage_service import FileStorageService
 from src.core.auth import Context, CurrentSuperuser
 
 logger = logging.getLogger(__name__)
@@ -649,6 +652,7 @@ async def configure_github(
     request: GitHubConfigRequest,
     ctx: Context,
     user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
 ) -> GitHubConfigResponse:
     """Configure GitHub integration."""
     try:
@@ -687,7 +691,16 @@ async def configure_github(
             updated_by=user.email
         )
 
-        logger.info("GitHub integration configured successfully")
+        # Upload workspace files to S3 and index in database
+        # This extracts workflows, data providers, and forms
+        storage = FileStorageService(db)
+        uploaded_files = await storage.upload_from_directory(
+            local_path=git_service.workspace_path,
+            updated_by=user.email,
+        )
+        await db.commit()
+
+        logger.info(f"GitHub integration configured successfully, indexed {len(uploaded_files)} files")
 
         return GitHubConfigResponse(
             configured=True,

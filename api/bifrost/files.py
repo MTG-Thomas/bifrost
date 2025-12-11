@@ -26,7 +26,6 @@ Usage:
     content = await files.read("uploads/form_id/uuid/filename.txt", location="uploads")
 """
 
-import os
 import shutil
 from pathlib import Path
 from typing import Literal
@@ -89,10 +88,9 @@ class files:
     Works in both platform context (direct access) and external context (API calls).
     """
 
-    # Allowed base paths for file operations (loaded from environment)
-    WORKSPACE_FILES_DIR = Path(
-        os.getenv("BIFROST_WORKSPACE_LOCATION", "/mounts/workspace"))
-    TEMP_FILES_DIR = Path(os.getenv("BIFROST_TEMP_LOCATION", "/mounts/tmp"))
+    # Hardcoded file storage paths - workspace kept in sync with S3 by WorkspaceSyncService
+    WORKSPACE_FILES_DIR = Path("/tmp/bifrost/workspace")
+    TEMP_FILES_DIR = Path("/tmp/bifrost/tmp")
 
     @staticmethod
     def _resolve_path(path: str, location: Literal["temp", "workspace"]) -> Path:

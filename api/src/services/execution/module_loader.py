@@ -114,18 +114,10 @@ def get_workspace_paths() -> list[Path]:
     paths: list[Path] = []
     base_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent
 
-    # User workspace from environment variable or default to /tmp/bifrost/workspace
-    # The workspace sync service downloads from S3 to /tmp/bifrost/workspace
-    workspace_loc = os.getenv("BIFROST_WORKSPACE_LOCATION")
-    if workspace_loc:
-        workspace_path = Path(workspace_loc)
-        if workspace_path.exists():
-            paths.append(workspace_path)
-    else:
-        # Default workspace location for S3-synced files
-        default_workspace = Path("/tmp/bifrost/workspace")
-        if default_workspace.exists():
-            paths.append(default_workspace)
+    # Hardcoded workspace path - kept in sync with S3 by WorkspaceSyncService
+    workspace_path = Path("/tmp/bifrost/workspace")
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    paths.append(workspace_path)
 
     # Platform code directory (always relative to project root)
     platform_path = base_dir / 'platform'

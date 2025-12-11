@@ -198,13 +198,8 @@ class Settings(BaseSettings):
         return bool(self.s3_bucket and self.s3_access_key and self.s3_secret_key)
 
     # ==========================================================================
-    # File Storage (Legacy - used when S3 not configured)
+    # File Storage
     # ==========================================================================
-    workspace_location: str | None = Field(
-        default=None,
-        description="Path to workspace directory (legacy, used when S3 not configured)"
-    )
-
     temp_location: str = Field(
         default="/tmp/bifrost",
         description="Path to temporary storage directory"
@@ -343,25 +338,12 @@ class Settings(BaseSettings):
         """
         Validate that required filesystem paths exist.
 
-        With S3 storage, workspace_location is optional.
-        Without S3, workspace_location must be set and exist.
-
-        Raises:
-            ValueError: If workspace location required but doesn't exist
+        Creates workspace and temp directories if they don't exist.
+        Workspace is always /tmp/bifrost/workspace (hardcoded, kept in sync with S3).
         """
-        # If S3 is configured, workspace_location is not required
-        if not self.s3_configured:
-            if not self.workspace_location:
-                raise ValueError(
-                    "Either S3 storage (BIFROST_S3_ACCESS_KEY, BIFROST_S3_SECRET_KEY) "
-                    "or BIFROST_WORKSPACE_LOCATION must be configured."
-                )
-            workspace = Path(self.workspace_location)
-            if not workspace.exists():
-                raise ValueError(
-                    f"Workspace location does not exist: {self.workspace_location}. "
-                    "Please create it or configure S3 storage instead."
-                )
+        # Create workspace directory (hardcoded path)
+        workspace = Path("/tmp/bifrost/workspace")
+        workspace.mkdir(parents=True, exist_ok=True)
 
         # Create temp location if it doesn't exist
         temp = Path(self.temp_location)

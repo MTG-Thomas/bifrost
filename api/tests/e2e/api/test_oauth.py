@@ -146,6 +146,7 @@ class TestOAuthConnectionCRUD:
         try:
             response = e2e_client.post(
                 f"/api/oauth/connections/{connection['connection_name']}/authorize",
+                params={"redirect_uri": "http://localhost:3000/oauth/callback"},
                 headers=platform_admin.headers,
             )
             assert response.status_code == 200, f"Initiate authorization failed: {response.text}"
@@ -255,6 +256,7 @@ class TestOAuthAuthorizationFlow:
             # Initiate authorization to get a state token
             auth_resp = e2e_client.post(
                 f"/api/oauth/connections/{connection['connection_name']}/authorize",
+                params={"redirect_uri": "http://localhost:3000/oauth/callback"},
                 headers=platform_admin.headers,
             )
             assert auth_resp.status_code == 200, f"Initiate auth failed: {auth_resp.text}"

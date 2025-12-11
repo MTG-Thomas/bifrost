@@ -66,7 +66,12 @@
       "Bash(../venv/bin/pip:*)",
       "WebFetch(domain:openapi-ts.dev)",
       "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/pyright:*)",
-      "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/python:*)"
+      "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/python:*)",
+      "Bash(../venv/bin/ruff check:*)",
+      "Bash(if [ -f /tmp/bifrost/docker-logs.txt ])",
+      "Bash(then tail -100 /tmp/bifrost/docker-logs.txt)",
+      "Bash(else echo \"Log file not found\")",
+      "Bash(fi)"
     ],
     "deny": [],
     "ask": [],

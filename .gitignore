@@ -4,6 +4,8 @@
 .env
 *.env
 !.env.example
+!.env.test.example
+.env.test
 
 # Logs
 logs/

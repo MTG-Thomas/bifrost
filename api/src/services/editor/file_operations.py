@@ -7,7 +7,6 @@ Platform admin resource - no org scoping.
 from pathlib import Path
 from typing import List
 import hashlib
-import os
 from datetime import datetime, UTC
 import aiofiles
 import aiofiles.os
@@ -92,20 +91,19 @@ def _is_real_file(path: Path) -> bool:
     return True
 
 
+# Hardcoded workspace path - kept in sync with S3 by WorkspaceSyncService
+WORKSPACE_PATH = Path("/tmp/bifrost/workspace")
+
+
 def get_base_path() -> Path:
     """
-    Get the workspace directory path from BIFROST_WORKSPACE_LOCATION env var.
+    Get the workspace directory path.
 
     Returns:
-        Path to workspace directory
+        Path to workspace directory (/tmp/bifrost/workspace)
     """
-    workspace_loc = os.getenv("BIFROST_WORKSPACE_LOCATION")
-    if not workspace_loc:
-        raise RuntimeError(
-            "BIFROST_WORKSPACE_LOCATION environment variable not set. "
-            "This should have been validated at startup."
-        )
-    return Path(workspace_loc)
+    WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
+    return WORKSPACE_PATH
 
 
 def validate_and_resolve_path(relative_path: str) -> Path:

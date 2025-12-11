@@ -6,7 +6,6 @@ Uses broadcast delivery so all worker instances install the package.
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -71,11 +70,9 @@ class PackageInstallConsumer(BroadcastConsumer):
                 )
 
         try:
-            # Get workspace path
-            workspace_location = os.environ.get(
-                "BIFROST_WORKSPACE_LOCATION", "/mounts/workspace"
-            )
-            workspace_path = Path(workspace_location)
+            # Hardcoded workspace path - kept in sync with S3 by WorkspaceSyncService
+            workspace_path = Path("/tmp/bifrost/workspace")
+            workspace_path.mkdir(parents=True, exist_ok=True)
 
             from src.services.package_manager import WorkspacePackageManager
 

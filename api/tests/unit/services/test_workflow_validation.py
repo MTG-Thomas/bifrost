@@ -143,11 +143,11 @@ class TestValidateWorkflowFile:
     """Test validate_workflow_file function"""
 
     @pytest.fixture
-    def temp_workspace(self, tmp_path, monkeypatch):
-        """Create a temporary workspace directory"""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        monkeypatch.setenv("BIFROST_WORKSPACE_LOCATION", str(workspace))
+    def temp_workspace(self, tmp_path):
+        """Create a workspace directory at the hardcoded path"""
+        from pathlib import Path
+        workspace = Path("/tmp/bifrost/workspace")
+        workspace.mkdir(parents=True, exist_ok=True)
         return workspace
 
     @pytest.mark.asyncio

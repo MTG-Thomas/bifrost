@@ -29,20 +29,18 @@ def _extract_relative_path(source_file_path: str | None) -> str | None:
     if not source_file_path:
         return None
 
-    # Get workspace location from environment
-    workspace_location = os.getenv("BIFROST_WORKSPACE_LOCATION")
-    if workspace_location:
-        workspace_path = Path(workspace_location)
-        source_path = Path(source_file_path)
+    # Hardcoded workspace path - kept in sync with S3 by WorkspaceSyncService
+    workspace_path = Path("/tmp/bifrost/workspace")
+    source_path = Path(source_file_path)
 
-        # Check if source_path is relative to workspace
-        try:
-            relative = source_path.relative_to(workspace_path)
-            # Return with /workspace/ prefix for consistency
-            return f"/workspace/{relative}"
-        except ValueError:
-            # Not relative to workspace, fall through to marker check
-            pass
+    # Check if source_path is relative to workspace
+    try:
+        relative = source_path.relative_to(workspace_path)
+        # Return with /workspace/ prefix for consistency
+        return f"/workspace/{relative}"
+    except ValueError:
+        # Not relative to workspace, fall through to marker check
+        pass
 
     # Fallback: Extract everything after markers and prepend /workspace/
     for marker in ['/home/', '/platform/']:
@@ -136,10 +134,8 @@ async def validate_workflow_file(path: str, content: str | None = None):
     metadata = None
 
     # Determine the absolute file path
-    workspace_roots = ["/home", "/platform", "/workspace"]
-    workspace_location = os.environ.get("BIFROST_WORKSPACE_LOCATION")
-    if workspace_location:
-        workspace_roots.insert(0, workspace_location)
+    # Primary location is /tmp/bifrost/workspace (hardcoded, kept in sync with S3)
+    workspace_roots = ["/tmp/bifrost/workspace", "/home", "/platform", "/workspace"]
 
     abs_path = None
     for root in workspace_roots:

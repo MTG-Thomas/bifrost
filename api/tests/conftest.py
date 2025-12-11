@@ -11,6 +11,7 @@ This module provides:
 
 import os
 import sys
+from pathlib import Path
 from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock
 
@@ -27,6 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 pytest_plugins = [
     "tests.fixtures.auth",
     "tests.e2e.fixtures.setup",  # E2E session fixtures
+    "tests.e2e.fixtures.github_setup",  # GitHub E2E fixtures
 ]
 
 
@@ -73,9 +75,11 @@ def setup_test_environment(tmp_path_factory):
     os.environ["BIFROST_SECRET_KEY"] = "test-secret-key-for-testing-must-be-32-chars"
 
     # Set up workspace and temp locations for tests
-    test_workspace = tmp_path_factory.mktemp("workspace")
-    test_temp = tmp_path_factory.mktemp("temp")
-    os.environ["BIFROST_WORKSPACE_LOCATION"] = str(test_workspace)
+    # These are now hardcoded paths - create them for test isolation
+    test_workspace = Path("/tmp/bifrost/workspace")
+    test_temp = Path("/tmp/bifrost/tmp")
+    test_workspace.mkdir(parents=True, exist_ok=True)
+    test_temp.mkdir(parents=True, exist_ok=True)
     os.environ["BIFROST_TEMP_LOCATION"] = str(test_temp)
 
     # Reset global database state to ensure it uses test settings
@@ -261,12 +265,10 @@ def cleanup_workspace_files():
     Fixture to track and clean up test files created in workspace.
     Yields paths to clean up, then removes them after test completes.
     """
-    from pathlib import Path
     import shutil
 
-    workspace_path = Path(
-        os.environ.get("BIFROST_WORKSPACE_LOCATION", "/tmp/workspace")
-    )
+    # Hardcoded workspace path
+    workspace_path = Path("/tmp/bifrost/workspace")
     cleanup_paths = []
 
     def register_cleanup(path: str):

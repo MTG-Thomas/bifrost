@@ -13,7 +13,6 @@ import hashlib
 import io
 import json
 import logging
-import os
 import secrets
 import shutil
 import tarfile
@@ -504,9 +503,11 @@ async def revoke_api_key(
 # SDK File Operations
 # =============================================================================
 
-# File storage paths (same as bifrost/files.py)
-WORKSPACE_FILES_DIR = Path(os.getenv("BIFROST_WORKSPACE_LOCATION", "/mounts/workspace"))
-TEMP_FILES_DIR = Path(os.getenv("BIFROST_TEMP_LOCATION", "/mounts/tmp"))
+# Hardcoded file storage paths - workspace kept in sync with S3 by WorkspaceSyncService
+WORKSPACE_FILES_DIR = Path("/tmp/bifrost/workspace")
+TEMP_FILES_DIR = Path("/tmp/bifrost/tmp")
+WORKSPACE_FILES_DIR.mkdir(parents=True, exist_ok=True)
+TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _resolve_sdk_file_path(path: str, location: str) -> Path:

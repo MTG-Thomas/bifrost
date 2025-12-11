@@ -27,6 +27,14 @@ COVERAGE=false
 WAIT_MODE=false
 PYTEST_ARGS=()
 
+# Load .env.test if it exists (for GitHub PAT and other test secrets)
+if [ -f ".env.test" ]; then
+    echo "Loading test configuration from .env.test..."
+    set -a  # automatically export all variables
+    source .env.test
+    set +a
+fi
+
 # Parse command line arguments
 for arg in "$@"; do
     if [ "$arg" = "--coverage" ]; then

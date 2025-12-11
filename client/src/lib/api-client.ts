@@ -14,6 +14,114 @@ import createQueryClient from "openapi-react-query";
 import type { paths } from "./v1";
 import { parseApiError, ApiError, RateLimitError } from "./api-error";
 
+// Token storage keys (shared with AuthContext)
+const ACCESS_TOKEN_KEY = "bifrost_access_token";
+const REFRESH_TOKEN_KEY = "bifrost_refresh_token";
+
+// Buffer time before expiration to trigger refresh (60 seconds)
+const TOKEN_REFRESH_BUFFER_SECONDS = 60;
+
+// Endpoints that should skip token refresh check
+const AUTH_ENDPOINTS = [
+	"/auth/login",
+	"/auth/status",
+	"/auth/refresh",
+	"/api/auth/refresh",
+	"/auth/oauth/callback",
+	"/auth/mfa/login",
+	"/auth/mfa/setup",
+];
+
+/**
+ * Parse JWT payload without verification (server validates)
+ */
+function parseJwt(token: string): { exp?: number } | null {
+	try {
+		const base64Url = token.split(".")[1];
+		if (!base64Url) return null;
+		const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+		const jsonPayload = decodeURIComponent(
+			atob(base64)
+				.split("")
+				.map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+				.join(""),
+		);
+		return JSON.parse(jsonPayload);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Check if token is expiring soon (within buffer period)
+ */
+function isTokenExpiringSoon(token: string): boolean {
+	const payload = parseJwt(token);
+	if (!payload || payload.exp === undefined) return true;
+	return Date.now() >= (payload.exp - TOKEN_REFRESH_BUFFER_SECONDS) * 1000;
+}
+
+// Lock to prevent concurrent refresh attempts
+let refreshPromise: Promise<boolean> | null = null;
+
+/**
+ * Refresh the access token using the refresh token
+ * Returns true if successful, false if refresh failed
+ */
+async function refreshAccessToken(): Promise<boolean> {
+	const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+	if (!refreshToken) return false;
+
+	try {
+		const res = await fetch("/api/auth/refresh", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ refresh_token: refreshToken }),
+			credentials: "same-origin",
+		});
+
+		if (!res.ok) return false;
+
+		const data = await res.json();
+		if (data.access_token) {
+			localStorage.setItem(ACCESS_TOKEN_KEY, data.access_token);
+			if (data.refresh_token) {
+				localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+			}
+			return true;
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Ensure we have a valid (non-expiring) access token before making a request
+ * Uses a lock to prevent concurrent refresh attempts
+ */
+async function ensureValidToken(): Promise<boolean> {
+	const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+
+	// No token at all - user needs to log in
+	if (!token) return false;
+
+	// Token is still valid - proceed
+	if (!isTokenExpiringSoon(token)) return true;
+
+	// Token is expiring soon - need to refresh
+	// Use lock to prevent concurrent refresh attempts
+	if (refreshPromise) {
+		return refreshPromise;
+	}
+
+	refreshPromise = refreshAccessToken().finally(() => {
+		refreshPromise = null;
+	});
+
+	return refreshPromise;
+}
+
 /**
  * Get CSRF token from cookie (set by backend on login/OAuth)
  * The csrf_token cookie is non-HttpOnly so JavaScript can read it
@@ -37,9 +145,28 @@ const baseClient = createClient<paths>({
 });
 
 // Middleware to automatically inject organization and user context headers,
-// CSRF tokens, and handle authentication errors
+// CSRF tokens, handle token refresh, and handle authentication errors
 baseClient.use({
 	async onRequest({ request }) {
+		const url = new URL(request.url, window.location.origin);
+		const isAuthEndpoint = AUTH_ENDPOINTS.some((ep) =>
+			url.pathname.startsWith(ep),
+		);
+
+		// Skip token refresh for auth endpoints to avoid infinite loops
+		if (!isAuthEndpoint) {
+			const hasValidToken = await ensureValidToken();
+			if (!hasValidToken) {
+				// No valid token and refresh failed - redirect to login
+				const currentPath = window.location.pathname;
+				if (currentPath !== "/login" && currentPath !== "/setup") {
+					window.location.href = `/login?returnTo=${encodeURIComponent(currentPath)}`;
+				}
+				// Throw to prevent the request from proceeding
+				throw new Error("Authentication required");
+			}
+		}
+
 		// Get organization ID from session storage (set by org switcher)
 		const orgId = sessionStorage.getItem("current_org_id");
 		if (orgId) {
@@ -161,6 +288,16 @@ export function withOrgContext(orgId: string) {
 
 	client.use({
 		async onRequest({ request }) {
+			// Ensure valid token before request
+			const hasValidToken = await ensureValidToken();
+			if (!hasValidToken) {
+				const currentPath = window.location.pathname;
+				if (currentPath !== "/login" && currentPath !== "/setup") {
+					window.location.href = `/login?returnTo=${encodeURIComponent(currentPath)}`;
+				}
+				throw new Error("Authentication required");
+			}
+
 			request.headers.set("X-Organization-Id", orgId);
 
 			const userId = sessionStorage.getItem("userId");
@@ -196,6 +333,16 @@ export function withUserContext(userId: string) {
 
 	client.use({
 		async onRequest({ request }) {
+			// Ensure valid token before request
+			const hasValidToken = await ensureValidToken();
+			if (!hasValidToken) {
+				const currentPath = window.location.pathname;
+				if (currentPath !== "/login" && currentPath !== "/setup") {
+					window.location.href = `/login?returnTo=${encodeURIComponent(currentPath)}`;
+				}
+				throw new Error("Authentication required");
+			}
+
 			const orgId = sessionStorage.getItem("current_org_id");
 			if (orgId) {
 				request.headers.set("X-Organization-Id", orgId);
@@ -231,6 +378,16 @@ export function withContext(orgId: string, userId: string) {
 
 	client.use({
 		async onRequest({ request }) {
+			// Ensure valid token before request
+			const hasValidToken = await ensureValidToken();
+			if (!hasValidToken) {
+				const currentPath = window.location.pathname;
+				if (currentPath !== "/login" && currentPath !== "/setup") {
+					window.location.href = `/login?returnTo=${encodeURIComponent(currentPath)}`;
+				}
+				throw new Error("Authentication required");
+			}
+
 			request.headers.set("X-Organization-Id", orgId);
 			request.headers.set("X-User-Id", userId);
 
@@ -272,6 +429,21 @@ export async function authFetch(
 	url: string,
 	options: RequestInit = {},
 ): Promise<Response> {
+	// Check if this is an auth endpoint that should skip token refresh
+	const isAuthEndpoint = AUTH_ENDPOINTS.some((ep) => url.startsWith(ep));
+
+	// Ensure valid token before request (skip for auth endpoints)
+	if (!isAuthEndpoint) {
+		const hasValidToken = await ensureValidToken();
+		if (!hasValidToken) {
+			const currentPath = window.location.pathname;
+			if (currentPath !== "/login" && currentPath !== "/setup") {
+				window.location.href = `/login?returnTo=${encodeURIComponent(currentPath)}`;
+			}
+			throw new Error("Authentication required");
+		}
+	}
+
 	const headers = new Headers(options.headers);
 	const method = options.method?.toUpperCase() || "GET";
 

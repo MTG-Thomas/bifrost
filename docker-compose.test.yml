@@ -241,6 +241,11 @@ services:
       # For E2E tests, point to the API container
       TEST_API_URL: http://api:8000
       PYTHONPATH: /app
+      # GitHub E2E test configuration (optional - tests skip if not set)
+      # Pass from host: GITHUB_TEST_PAT=ghp_xxx ./test.sh --e2e
+      # Or set in .env.test file
+      GITHUB_TEST_PAT: ${GITHUB_TEST_PAT:-}
+      GITHUB_TEST_REPO: ${GITHUB_TEST_REPO:-jackmusick/e2e-test-workspace}
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro

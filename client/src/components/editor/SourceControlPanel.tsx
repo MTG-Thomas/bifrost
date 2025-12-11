@@ -63,6 +63,10 @@ export function SourceControlPanel() {
 
 	// Mutation hooks
 	const refreshStatus = useRefreshGitStatus();
+
+	// Use ref to hold the mutation to avoid callback dependency on mutation object
+	const refreshStatusRef = useRef(refreshStatus);
+	refreshStatusRef.current = refreshStatus;
 	const commitMutation = useCommitChanges();
 	const pullMutation = usePullFromGitHub();
 	const pushMutation = usePushToGitHub();
@@ -87,14 +91,15 @@ export function SourceControlPanel() {
 
 		isLoadingRef.current = true;
 		try {
-			await refreshStatus.mutateAsync({});
+			// Use ref to avoid dependency on mutation object (which changes on every render)
+			await refreshStatusRef.current.mutateAsync({});
 		} catch (error) {
 			console.error("Failed to refresh Git status:", error);
 			toast.error("Failed to refresh Git status");
 		} finally {
 			isLoadingRef.current = false;
 		}
-	}, [refreshStatus]);
+	}, []); // Empty deps - uses ref instead
 
 	// Load status when this tab becomes active, on visibility change, or when git status changes
 	useEffect(() => {

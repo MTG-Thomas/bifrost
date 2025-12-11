@@ -5,9 +5,8 @@ Handles GitHub repository synchronization with workspace.
 Provides Git operations: clone, pull, push, conflict resolution.
 Uses Dulwich (pure Python Git implementation) - works without git binary.
 
-Supports two storage modes:
-1. S3 mode: Downloads workspace to temp dir, performs git ops, uploads back to S3
-2. Filesystem mode: Works directly on local filesystem (legacy)
+All operations work on /tmp/bifrost/workspace which is kept in sync with S3
+by the WorkspaceSyncService.
 """
 
 import asyncio
@@ -15,7 +14,6 @@ import logging
 import os
 import shutil
 import tempfile
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
@@ -37,7 +35,6 @@ from src.models import (
 
 if TYPE_CHECKING:
     from src.config import Settings
-    from src.services.file_storage_service import FileStorageService
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +49,8 @@ def _get_settings() -> "Settings":
     return get_settings()
 
 
-def get_system_tmp() -> Path:
-    """Get path to system temporary directory."""
-    return Path(tempfile.gettempdir())
+# Hardcoded workspace path - kept in sync with S3 by WorkspaceSyncService
+WORKSPACE_PATH = Path("/tmp/bifrost/workspace")
 
 
 def manual_copy_tree(
@@ -105,93 +101,16 @@ class GitIntegrationService:
     Handles cloning, pulling, pushing, and conflict resolution.
     Uses Dulwich (pure Python) instead of GitPython.
 
-    Supports two storage modes:
-    - S3 mode: Uses FileStorageService to download/upload workspace from S3
-    - Filesystem mode: Works directly on local filesystem
+    All operations work on /tmp/bifrost/workspace which is kept in sync
+    with S3 by the WorkspaceSyncService.
     """
 
-    def __init__(
-        self,
-        workspace_path: str | None = None,
-        file_storage: "FileStorageService | None" = None,
-    ):
-        """
-        Initialize Git integration service.
-
-        Args:
-            workspace_path: Path to workspace directory (for filesystem mode)
-            file_storage: FileStorageService instance (for S3 mode)
-        """
+    def __init__(self):
+        """Initialize Git integration service."""
         self.settings = _get_settings()
-        self.file_storage = file_storage
-        self._temp_workspace: Path | None = None
-        self._owns_temp_workspace = False
-
-        # Determine storage mode
-        self._use_s3 = self.settings.s3_configured and file_storage is not None
-
-        if self._use_s3:
-            # S3 mode - workspace_path will be set when temp workspace is created
-            self.workspace_path = Path("/tmp/bifrost/git-workspace")
-            logger.info("Initialized Git integration service in S3 mode")
-        else:
-            # Filesystem mode
-            self.workspace_path = Path(
-                workspace_path or os.environ.get('BIFROST_WORKSPACE_LOCATION', '/mounts/workspace')
-            )
-
-            if not self.workspace_path.exists():
-                raise RuntimeError(
-                    f"Workspace directory does not exist: {self.workspace_path}"
-                )
-
-            logger.info(f"Initialized Git integration service at: {self.workspace_path}")
-
-    @asynccontextmanager
-    async def _with_temp_workspace(self):
-        """
-        Context manager for S3 operations that need a local workspace.
-
-        Downloads workspace from S3 to temp dir, yields, then uploads changes back.
-        For filesystem mode, just yields the current workspace path.
-        """
-        if not self._use_s3 or not self.file_storage:
-            # Filesystem mode - use existing workspace
-            yield self.workspace_path
-            return
-
-        # S3 mode - download to temp directory
-        temp_dir = Path(tempfile.mkdtemp(prefix="bifrost_git_"))
-        old_workspace = self.workspace_path
-        self.workspace_path = temp_dir
-        self._temp_workspace = temp_dir
-        self._owns_temp_workspace = True
-
-        try:
-            logger.info(f"Downloading workspace from S3 to {temp_dir}")
-            await self.file_storage.download_workspace(temp_dir)
-            yield temp_dir
-        finally:
-            self.workspace_path = old_workspace
-            self._temp_workspace = None
-            self._owns_temp_workspace = False
-
-            # Clean up temp directory
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                logger.debug(f"Cleaned up temp workspace: {temp_dir}")
-
-    async def _upload_changes_to_s3(self, local_path: Path, updated_by: str = "git") -> None:
-        """
-        Upload changed files from local directory to S3.
-
-        Compares local files with S3 and uploads only changed ones.
-        """
-        if not self._use_s3 or not self.file_storage:
-            return
-
-        logger.info(f"Uploading changes from {local_path} to S3")
-        await self.file_storage.upload_from_directory(local_path, updated_by)
+        self.workspace_path = WORKSPACE_PATH
+        self.workspace_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Initialized Git integration service at: {self.workspace_path}")
 
     @staticmethod
     def _is_real_file(path: Path) -> bool:
@@ -274,37 +193,33 @@ class GitIntegrationService:
         # Convert HTTPS URL to use token authentication
         auth_url = self._insert_token_in_url(repo_url, token)
 
-        async with self._with_temp_workspace() as workspace:
-            # Check workspace state (filter out SMB metadata files)
-            workspace_empty = not any(
-                self._is_real_file(item) for item in workspace.iterdir()
-            ) if workspace.exists() else True
-            is_git_repo = self.is_git_repo()
+        # Check workspace state (filter out SMB metadata files)
+        workspace = self.workspace_path
+        workspace_empty = not any(
+            self._is_real_file(item) for item in workspace.iterdir()
+        ) if workspace.exists() else True
+        is_git_repo = self.is_git_repo()
 
-            result = None
+        result = None
 
-            # Scenario 1: Already a Git repo - just update remote
-            if is_git_repo:
-                logger.info("Workspace is already a Git repository, updating configuration...")
-                self._update_existing_repo(auth_url, branch)
+        # Scenario 1: Already a Git repo - just update remote
+        if is_git_repo:
+            logger.info("Workspace is already a Git repository, updating configuration...")
+            self._update_existing_repo(auth_url, branch)
 
-            # Scenario 2: Empty workspace - just clone
-            elif workspace_empty:
-                logger.info("Workspace is empty, cloning repository...")
-                self._clone_repo(auth_url, branch)
+        # Scenario 2: Empty workspace - just clone
+        elif workspace_empty:
+            logger.info("Workspace is empty, cloning repository...")
+            self._clone_repo(auth_url, branch)
 
-            # Scenario 3: Has files but no Git - backup and replace
-            else:
-                logger.info("Workspace has files, backing up and replacing with repository...")
-                backup_path = await self._clear_and_clone(auth_url, branch)
-                result = {"backup_path": backup_path}
+        # Scenario 3: Has files but no Git - backup and replace
+        else:
+            logger.info("Workspace has files, backing up and replacing with repository...")
+            backup_path = await self._clear_and_clone(auth_url, branch)
+            result = {"backup_path": backup_path}
 
-            # Upload changes to S3 if in S3 mode
-            if self._use_s3:
-                await self._upload_changes_to_s3(workspace, updated_by="git:init")
-
-            logger.info("Repository initialized successfully")
-            return result
+        logger.info("Repository initialized successfully")
+        return result
 
     def _insert_token_in_url(self, repo_url: str, token: str) -> str:
         """Insert GitHub token into HTTPS URL for authentication"""
@@ -565,7 +480,7 @@ class GitIntegrationService:
         logger.info(f"Cloning repository (branch: {branch})")
 
         # Clone to system /tmp (local disk, not Azure Files)
-        tmp_clone_dir = get_system_tmp() / f"bifrost_clone_{os.getpid()}_{id(self)}"
+        tmp_clone_dir = Path(tempfile.gettempdir()) / f"bifrost_clone_{os.getpid()}_{id(self)}"
 
         try:
             logger.info(f"Step 1: Cloning to temporary directory: {tmp_clone_dir}")
@@ -963,13 +878,13 @@ class GitIntegrationService:
 
             return {
                 "commits": commits,
-                "total": total_count,
+                "total_commits": total_count,
                 "has_more": has_more
             }
 
         except Exception as e:
             logger.error(f"Failed to get commit history: {e}", exc_info=True)
-            return {"commits": [], "total": 0, "has_more": False}
+            return {"commits": [], "total_commits": 0, "has_more": False}
 
     async def get_changes(self) -> list[FileChange]:
         """
@@ -1117,14 +1032,7 @@ class GitIntegrationService:
         Returns:
             dict with commit_sha, files_committed, success status
         """
-        async with self._with_temp_workspace() as workspace:
-            result = await self._commit_impl(message)
-
-            # Upload changes to S3 if in S3 mode
-            if self._use_s3 and result.get("success"):
-                await self._upload_changes_to_s3(workspace, updated_by="git:commit")
-
-            return result
+        return await self._commit_impl(message)
 
     async def _commit_impl(self, message: str) -> dict:
         """Internal commit implementation."""
@@ -1198,37 +1106,27 @@ class GitIntegrationService:
         Returns:
             dict with success status
         """
-        async with self._with_temp_workspace() as workspace:
-            # Check for changes
-            changes = await self.get_changes()
+        # Check for changes
+        changes = await self.get_changes()
 
-            if not changes:
-                return {
-                    "success": True,
-                    "commits_pushed": 0,
-                    "error": None
-                }
+        if not changes:
+            return {
+                "success": True,
+                "commits_pushed": 0,
+                "error": None
+            }
 
-            # Commit changes
-            commit_result = await self._commit_impl(message=message)
-            if not commit_result.get("success"):
-                return commit_result
+        # Commit changes
+        commit_result = await self._commit_impl(message=message)
+        if not commit_result.get("success"):
+            return commit_result
 
-            # Push to remote - use internal impl to avoid double workspace download
-            push_result = await self._push_impl(context, connection_id, workspace)
-
-            # Upload changes to S3 if in S3 mode
-            if self._use_s3 and push_result.get("success"):
-                await self._upload_changes_to_s3(workspace, updated_by="git:commit_and_push")
-
-            return push_result
+        # Push to remote
+        return await self._push_impl(context, connection_id, self.workspace_path)
 
     async def push(self, context: Any, connection_id: str | None = None) -> dict:
         """
         Push local commits to remote using GitHub API.
-
-        In S3 mode: downloads workspace to temp dir, performs push, uploads back to S3
-        (to sync git metadata like refs).
 
         Args:
             context: Organization context for retrieving GitHub configuration
@@ -1237,8 +1135,7 @@ class GitIntegrationService:
         Returns:
             dict with success status
         """
-        async with self._with_temp_workspace() as workspace:
-            return await self._push_impl(context, connection_id, workspace)
+        return await self._push_impl(context, connection_id, self.workspace_path)
 
     async def _push_impl(self, context: Any, connection_id: str | None, workspace: Path) -> dict:
         """Internal push implementation."""
@@ -1366,10 +1263,6 @@ class GitIntegrationService:
                 repo.refs[remote_ref] = local_commit_sha
                 await send_log(f"Updated local tracking ref to {local_commit_sha_str[:8]}")
 
-                # Upload changes to S3 if in S3 mode (to sync git refs)
-                if self._use_s3:
-                    await self._upload_changes_to_s3(workspace, updated_by="git:push")
-
                 return {
                     "success": True,
                     "commits_pushed": commits_count,
@@ -1395,8 +1288,6 @@ class GitIntegrationService:
 
         Uses porcelain.merge_tree() to detect conflicts before attempting merge.
 
-        In S3 mode: downloads workspace to temp dir, performs pull, uploads back to S3.
-
         Args:
             context: Organization context for retrieving GitHub configuration
             connection_id: Optional WebPubSub connection ID for streaming logs
@@ -1404,8 +1295,7 @@ class GitIntegrationService:
         Returns:
             dict with updated_files, conflicts, success status
         """
-        async with self._with_temp_workspace() as workspace:
-            return await self._pull_impl(context, connection_id, workspace)
+        return await self._pull_impl(context, connection_id, self.workspace_path)
 
     async def _pull_impl(self, context: Any, connection_id: str | None, workspace: Path) -> dict:
         """Internal pull implementation."""
@@ -1902,10 +1792,6 @@ class GitIntegrationService:
 
                         logger.info(f"Merge staged successfully, {len(updated_files)} file(s) ready to commit")
                         await send_log(f"✓ Merge prepared! {len(updated_files)} file(s) staged. Review and commit to complete the merge.", "success")
-
-                    # Upload changes to S3 if in S3 mode
-                    if self._use_s3:
-                        await self._upload_changes_to_s3(workspace, updated_by="git:pull")
 
                     return {
                         "success": True,
