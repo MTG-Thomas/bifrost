@@ -25,6 +25,7 @@ from src.core.workspace_sync import workspace_sync
 from src.jobs.rabbitmq import rabbitmq
 from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
 from src.jobs.consumers.git_sync import GitSyncConsumer
+from src.jobs.consumers.github_setup import GitHubSetupConsumer
 from src.jobs.consumers.package_install import PackageInstallConsumer
 
 # Configure logging
@@ -95,6 +96,7 @@ class Worker:
         self._consumers = [
             WorkflowExecutionConsumer(),
             GitSyncConsumer(),
+            GitHubSetupConsumer(),
             PackageInstallConsumer(),
         ]
 

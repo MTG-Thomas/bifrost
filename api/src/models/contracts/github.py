@@ -237,6 +237,15 @@ class GitHubSyncResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GitHubSetupResponse(BaseModel):
+    """Response after queueing GitHub setup job"""
+    job_id: str = Field(..., description="Job ID for tracking the setup operation")
+    notification_id: str = Field(..., description="Notification ID for watching progress via WebSocket")
+    status: str = Field(default="queued", description="Job status (queued)")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CommitInfo(BaseModel):
     """Information about a single commit"""
     sha: str = Field(..., description="Commit SHA")

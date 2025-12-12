@@ -40,6 +40,7 @@ from src.routers import (
     oauth_connections_router,
     endpoints_router,
     sdk_router,
+    notifications_router,
 )
 
 # Configure logging
@@ -211,6 +212,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_connections_router)
     app.include_router(endpoints_router)
     app.include_router(sdk_router)
+    app.include_router(notifications_router)
 
     # Root endpoint
     @app.get("/")

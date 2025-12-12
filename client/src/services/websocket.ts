@@ -11,6 +11,8 @@
  */
 
 import type { components } from "@/lib/v1";
+import { useNotificationStore } from "@/stores/notificationStore";
+import type { Notification } from "@/stores/notificationStore";
 
 // Wait reasons for pending executions
 export type WaitReason = "queued" | "memory_pressure";
@@ -81,9 +83,27 @@ type WebSocketMessage =
 	| { type: "pong" }
 	| { type: "execution_update"; executionId: string; [key: string]: unknown }
 	| { type: "execution_log"; executionId: string; [key: string]: unknown }
-	| { type: "notification"; [key: string]: unknown }
+	| { type: "notification_created"; notification: NotificationPayload }
+	| { type: "notification_updated"; notification: NotificationPayload }
+	| { type: "notification_dismissed"; notification_id: string }
 	| { type: "log"; level: string; message: string }
 	| { type: "complete"; status: "success" | "error"; message: string };
+
+// Notification payload from backend (snake_case)
+interface NotificationPayload {
+	id: string;
+	category: string;
+	title: string;
+	description: string | null;
+	status: string;
+	percent: number | null;
+	error: string | null;
+	result: Record<string, unknown> | null;
+	metadata: Record<string, unknown> | null;
+	created_at: string;
+	updated_at: string;
+	user_id: string;
+}
 
 type ExecutionUpdateCallback = (update: ExecutionUpdate) => void;
 type ExecutionLogCallback = (log: ExecutionLog) => void;
@@ -307,8 +327,15 @@ class WebSocketService {
 				this.dispatchExecutionLog(message);
 				break;
 
-			case "notification":
-				// Handle notifications (future use)
+			case "notification_created":
+			case "notification_updated":
+				this.handleNotification(message.notification);
+				break;
+
+			case "notification_dismissed":
+				useNotificationStore
+					.getState()
+					.removeNotification(message.notification_id);
 				break;
 
 			case "log":
@@ -412,6 +439,29 @@ class WebSocketService {
 
 		const callbacks = this.executionLogCallbacks.get(message.executionId);
 		callbacks?.forEach((cb) => cb(log));
+	}
+
+	/**
+	 * Handle notification message from backend
+	 */
+	private handleNotification(payload: NotificationPayload) {
+		// Convert snake_case to camelCase for frontend
+		const notification: Notification = {
+			id: payload.id,
+			category: payload.category as Notification["category"],
+			title: payload.title,
+			description: payload.description,
+			status: payload.status as Notification["status"],
+			percent: payload.percent,
+			error: payload.error,
+			result: payload.result,
+			metadata: payload.metadata,
+			createdAt: payload.created_at,
+			updatedAt: payload.updated_at,
+			userId: payload.user_id,
+		};
+
+		useNotificationStore.getState().setNotification(notification);
 	}
 
 	/**

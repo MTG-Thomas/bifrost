@@ -49,3 +49,9 @@ selenium-debug.log
 
 __azurite_db*
 AzuriteConfig
+
+# Playwright
+playwright-results/
+test-results/
+e2e/.auth/*.json
+!e2e/.auth/.gitkeep

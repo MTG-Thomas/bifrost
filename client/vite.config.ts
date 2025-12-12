@@ -107,6 +107,8 @@ export default defineConfig({
 		host: "0.0.0.0",
 		port: 3000,
 		strictPort: true, // Fail if port is already in use
+		// Allow Docker container hostnames for E2E testing
+		allowedHosts: ["localhost", "client", "bifrost-test-client"],
 		hmr: {
 			// When running in Docker, HMR connects directly to Vite
 			// When running behind SWA proxy, set clientPort: 4280

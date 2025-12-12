@@ -273,6 +273,67 @@ services:
     profiles:
       - test  # Only start when running tests
 
+  # =============================================================================
+  # Client E2E Testing Services (started with --profile client)
+  # =============================================================================
+
+  # Client frontend (Vite dev server)
+  # Serves the React app for Playwright browser tests
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev
+    container_name: bifrost-test-client
+    environment:
+      # API_URL and WS_URL are used by Vite's proxy config (server-side)
+      API_URL: http://api:8000
+      WS_URL: ws://api:8000
+    volumes:
+      - ./client/src:/app/src:ro
+      - ./client/public:/app/public:ro
+      - ./client/index.html:/app/index.html:ro
+      - ./client/vite.config.ts:/app/vite.config.ts:ro
+      - ./client/tailwind.config.ts:/app/tailwind.config.ts:ro
+      - ./client/tsconfig.json:/app/tsconfig.json:ro
+      - ./client/tsconfig.app.json:/app/tsconfig.app.json:ro
+      - ./client/tsconfig.node.json:/app/tsconfig.node.json:ro
+      - ./client/components.json:/app/components.json:ro
+      - ./client/postcss.config.js:/app/postcss.config.js:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    profiles:
+      - client  # Only start when --profile client is used
+
+  # Playwright E2E test runner
+  # Runs browser tests against the client service
+  playwright-runner:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.playwright
+    container_name: bifrost-test-playwright
+    environment:
+      TEST_BASE_URL: http://client:3000
+      TEST_API_URL: http://api:8000
+      CI: "true"
+    volumes:
+      - ./client/e2e:/app/e2e
+      - ./client/playwright.config.ts:/app/playwright.config.ts:ro
+      - ./client/package.json:/app/package.json:ro
+      - ./client/tsconfig.json:/app/tsconfig.json:ro
+      - playwright-results:/app/playwright-results
+    depends_on:
+      client:
+        condition: service_healthy
+    profiles:
+      - client  # Only start when --profile client is used
+
 # Named volumes for test data - ephemeral within test session
 volumes:
   test-mounts:  # File storage for uploads, branding, etc.
+  playwright-results:  # Playwright test results (HTML reports, screenshots, videos)

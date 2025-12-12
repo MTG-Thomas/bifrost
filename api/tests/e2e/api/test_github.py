@@ -99,7 +99,9 @@ class TestGitHubConfiguration:
         github_token_only,
         github_test_branch,
     ):
-        """Test configuring a GitHub repository."""
+        """Test configuring a GitHub repository (async job dispatch)."""
+        from tests.e2e.fixtures.github_setup import _wait_for_notification_completion
+
         config = github_test_branch
         repo_url = f"https://github.com/{config['repo']}.git"
 
@@ -115,10 +117,35 @@ class TestGitHubConfiguration:
         assert response.status_code == 200, f"Configure failed: {response.text}"
 
         data = response.json()
-        assert data["configured"] is True
-        assert data["token_saved"] is True
-        assert data["repo_url"] == repo_url
-        assert data["branch"] == config["branch"]
+
+        # New async flow returns job_id and notification_id
+        if "notification_id" in data:
+            assert "job_id" in data
+            assert data["status"] == "queued"
+
+            # Wait for completion
+            _wait_for_notification_completion(
+                e2e_client,
+                platform_admin.headers,
+                data["notification_id"],
+                timeout_seconds=120,
+            )
+
+            # Verify config after completion
+            response = e2e_client.get(
+                "/api/github/config",
+                headers=platform_admin.headers,
+            )
+            assert response.status_code == 200
+            config_data = response.json()
+            assert config_data["configured"] is True
+            assert config_data["repo_url"] == repo_url
+        else:
+            # Old sync flow (backwards compatibility)
+            assert data["configured"] is True
+            assert data["token_saved"] is True
+            assert data["repo_url"] == repo_url
+            assert data["branch"] == config["branch"]
 
         # Cleanup
         e2e_client.post(

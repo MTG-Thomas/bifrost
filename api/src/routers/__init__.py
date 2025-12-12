@@ -23,6 +23,7 @@ from src.routers.github import router as github_router
 from src.routers.oauth_connections import router as oauth_connections_router
 from src.routers.endpoints import router as endpoints_router
 from src.routers.sdk import router as sdk_router
+from src.routers.notifications import router as notifications_router
 
 __all__ = [
     "auth_router",
@@ -49,4 +50,5 @@ __all__ = [
     "oauth_connections_router",
     "endpoints_router",
     "sdk_router",
+    "notifications_router",
 ]

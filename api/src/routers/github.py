@@ -7,32 +7,38 @@ Provides endpoints for connecting to repos, pulling, pushing, and syncing.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import uuid4
 
-from src.core.database import get_db
+from fastapi import APIRouter, HTTPException, Query, status
+
+from src.core.auth import Context, CurrentSuperuser
+from src.jobs.rabbitmq import publish_message
 from src.models import (
-    ValidateTokenRequest,
+    CommitHistoryResponse,
+    CreateRepoRequest,
+    CreateRepoResponse,
     DetectedRepoInfo,
+    DiscardCommitRequest,
+    DiscardUnpushedCommitsResponse,
+    GitHubBranchesResponse,
     GitHubConfigRequest,
     GitHubConfigResponse,
     GitHubReposResponse,
-    GitHubBranchesResponse,
+    GitHubSetupResponse,
+    GitRefreshStatusResponse,
     PullFromGitHubRequest,
     PullFromGitHubResponse,
     PushToGitHubRequest,
     PushToGitHubResponse,
-    GitRefreshStatusResponse,
-    CommitHistoryResponse,
-    DiscardUnpushedCommitsResponse,
-    DiscardCommitRequest,
+    ValidateTokenRequest,
     WorkspaceAnalysisResponse,
-    CreateRepoRequest,
-    CreateRepoResponse,
+)
+from src.models.contracts.notifications import (
+    NotificationCategory,
+    NotificationCreate,
 )
 from src.services.git_integration import GitIntegrationService
-from src.services.file_storage_service import FileStorageService
-from src.core.auth import Context, CurrentSuperuser
+from src.services.notification_service import get_notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -609,19 +615,19 @@ async def validate_github_token(
                 )
             else:
                 logger.warning(f"Detected repo {repo_full_name} but token doesn't have access")
-                # Save token without repo info
+                # Save token without repo info (repo_url=None indicates not configured)
                 await git_service._save_github_config(
                     context=ctx,
-                    repo_url="",
+                    repo_url=None,
                     token=request.token,
                     branch="main",
                     updated_by=user.email
                 )
         else:
-            # No existing repo detected, save token only
+            # No existing repo detected, save token only (repo_url=None indicates not configured)
             await git_service._save_github_config(
                 context=ctx,
-                repo_url="",
+                repo_url=None,
                 token=request.token,
                 branch="main",
                 updated_by=user.email
@@ -644,19 +650,28 @@ async def validate_github_token(
 
 @router.post(
     "/configure",
-    response_model=GitHubConfigResponse,
+    response_model=GitHubSetupResponse,
     summary="Configure GitHub integration",
-    description="Save GitHub repository configuration and initialize sync",
+    description="Queue GitHub repository setup job. Watch notification channel for progress.",
 )
 async def configure_github(
     request: GitHubConfigRequest,
     ctx: Context,
     user: CurrentSuperuser,
-    db: AsyncSession = Depends(get_db),
-) -> GitHubConfigResponse:
-    """Configure GitHub integration."""
+) -> GitHubSetupResponse:
+    """
+    Configure GitHub integration (async).
+
+    This queues a background job to:
+    1. Clone the repository from GitHub
+    2. Upload workspace files to S3
+    3. Index files in the database
+
+    Returns a job_id and notification_id for tracking progress via WebSocket.
+    Subscribe to notification:{user_id} channel to receive updates.
+    """
     try:
-        logger.info(f"Configuring GitHub integration for repo: {request.repo_url}")
+        logger.info(f"Queueing GitHub setup for repo: {request.repo_url}")
 
         # Get existing config to retrieve token
         git_service = get_git_service()
@@ -670,53 +685,57 @@ async def configure_github(
 
         token = existing_config["token"]
 
-        # First, try to initialize the Git repository
-        backup_info = None
-        try:
-            backup_info = await git_service.initialize_repo(
-                token=token,
-                repo_url=request.repo_url,
-                branch=request.branch or "main"
-            )
-        except Exception as git_error:
-            logger.error(f"Git initialization failed: {git_error}")
-            raise
-
-        # Only save configuration if Git initialization succeeded
-        await git_service._save_github_config(
-            context=ctx,
-            repo_url=request.repo_url,
-            token=token,
-            branch=request.branch or "main",
-            updated_by=user.email
+        # Create progress notification
+        notification_service = get_notification_service()
+        notification = await notification_service.create_notification(
+            user_id=str(user.user_id),
+            request=NotificationCreate(
+                category=NotificationCategory.GITHUB_SETUP,
+                title="Setting up GitHub",
+                description="Preparing to clone repository...",
+                percent=0,
+                metadata={
+                    "repo_url": request.repo_url,
+                    "branch": request.branch or "main",
+                },
+            ),
+            for_admins=True,  # Also notify platform admins
         )
 
-        # Upload workspace files to S3 and index in database
-        # This extracts workflows, data providers, and forms
-        storage = FileStorageService(db)
-        uploaded_files = await storage.upload_from_directory(
-            local_path=git_service.workspace_path,
-            updated_by=user.email,
+        # Generate job ID
+        job_id = str(uuid4())
+
+        # Publish job to queue (use scope which is "GLOBAL" for platform-level)
+        await publish_message(
+            queue_name="github-setup-jobs",
+            message={
+                "type": "github_setup",
+                "job_id": job_id,
+                "notification_id": notification.id,
+                "org_id": ctx.scope,  # "GLOBAL" for platform admins, org_id for org users
+                "user_id": str(user.user_id),
+                "user_email": user.email,
+                "repo_url": request.repo_url,
+                "branch": request.branch or "main",
+                "token": token,
+            },
         )
-        await db.commit()
 
-        logger.info(f"GitHub integration configured successfully, indexed {len(uploaded_files)} files")
+        logger.info(f"GitHub setup job queued: {job_id}")
 
-        return GitHubConfigResponse(
-            configured=True,
-            backup_path=backup_info.get("backup_path") if backup_info else None,
-            token_saved=True,
-            repo_url=request.repo_url,
-            branch=request.branch or "main"
+        return GitHubSetupResponse(
+            job_id=job_id,
+            notification_id=notification.id,
+            status="queued",
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to configure GitHub: {e}", exc_info=True)
+        logger.error(f"Failed to queue GitHub setup: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to configure GitHub: {str(e)}",
+            detail=f"Failed to queue GitHub setup: {str(e)}",
         )
 
 

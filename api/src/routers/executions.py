@@ -289,6 +289,10 @@ class ExecutionRepository:
         if not user.is_superuser and execution.executed_by != user.user_id:
             return None, "Forbidden"
 
+        # Already cancelled or cancelling - idempotent success
+        if execution.status in [ExecutionStatus.CANCELLING.value, ExecutionStatus.CANCELLED.value]:
+            return self._to_pydantic(execution), None
+
         # Can only cancel pending or running executions
         if execution.status not in [ExecutionStatus.PENDING.value, ExecutionStatus.RUNNING.value]:
             return None, "BadRequest"

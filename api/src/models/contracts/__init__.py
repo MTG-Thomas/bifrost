@@ -256,6 +256,7 @@ from src.models.contracts.github import (
     GitHubConfigResponse,
     GitHubRepoInfo,
     GitHubReposResponse,
+    GitHubSetupResponse,
     GitHubSyncRequest,
     GitHubSyncResponse,
     GitRefreshStatusResponse,
@@ -280,6 +281,18 @@ from src.models.contracts.sdk import (
     SDKFileListRequest,
     SDKFileReadRequest,
     SDKFileWriteRequest,
+)
+
+# Notifications
+from src.models.contracts.notifications import (
+    JobDispatchResponse,
+    NotificationCategory,
+    NotificationCreate,
+    NotificationListResponse,
+    NotificationPublic,
+    NotificationStatus,
+    NotificationUpdate,
+    UploadLockInfo,
 )
 
 __all__ = [
@@ -470,6 +483,7 @@ __all__ = [
     "PushToGitHubResponse",
     "PullFromGitHubRequest",
     "PullFromGitHubResponse",
+    "GitHubSetupResponse",
     "GitHubSyncRequest",
     "GitHubSyncResponse",
     "GitRefreshStatusResponse",
@@ -500,4 +514,13 @@ __all__ = [
     "DataProviderRequest",
     "DataProviderOption",
     "DataProviderResponse",
+    # Notifications
+    "NotificationCategory",
+    "NotificationStatus",
+    "NotificationCreate",
+    "NotificationUpdate",
+    "NotificationPublic",
+    "NotificationListResponse",
+    "JobDispatchResponse",
+    "UploadLockInfo",
 ]

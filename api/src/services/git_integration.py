@@ -810,18 +810,18 @@ class GitIntegrationService:
                 - has_more: Whether there are more commits to load
         """
         if not self.is_git_repo():
-            return {"commits": [], "total": 0, "has_more": False}
+            return {"commits": [], "total_commits": 0, "has_more": False}
 
         try:
             repo = self.get_repo()
             current_branch = self.get_current_branch()
             if not current_branch:
-                return {"commits": [], "total": 0, "has_more": False}
+                return {"commits": [], "total_commits": 0, "has_more": False}
 
             # Get current HEAD commit
             head_ref = f'refs/heads/{current_branch}'.encode('utf-8')
             if head_ref not in repo.refs:
-                return {"commits": [], "total": 0, "has_more": False}
+                return {"commits": [], "total_commits": 0, "has_more": False}
 
             head_commit_sha = repo.refs[head_ref]
 
@@ -893,6 +893,8 @@ class GitIntegrationService:
         Returns:
             List of FileChange objects with status and diff info
         """
+        if not self.is_git_repo():
+            return []
         repo = self.get_repo()
         changes = []
 
@@ -974,6 +976,8 @@ class GitIntegrationService:
         Returns:
             List of ConflictInfo objects with ours/theirs/base content
         """
+        if not self.is_git_repo():
+            return []
         repo = self.get_repo()
         conflicts = []
 
@@ -1036,6 +1040,13 @@ class GitIntegrationService:
 
     async def _commit_impl(self, message: str) -> dict:
         """Internal commit implementation."""
+        if not self.is_git_repo():
+            return {
+                "success": False,
+                "commit_sha": None,
+                "files_committed": 0,
+                "error": "Workspace is not a Git repository. Call initialize_repo() first.",
+            }
         repo = self.get_repo()
 
         try:
@@ -1139,6 +1150,11 @@ class GitIntegrationService:
 
     async def _push_impl(self, context: Any, connection_id: str | None, workspace: Path) -> dict:
         """Internal push implementation."""
+        if not self.is_git_repo():
+            return {
+                "success": False,
+                "error": "Workspace is not a Git repository. Call initialize_repo() first.",
+            }
         repo = self.get_repo()
 
         # Import pubsub manager for streaming logs via WebSocket
@@ -1299,6 +1315,13 @@ class GitIntegrationService:
 
     async def _pull_impl(self, context: Any, connection_id: str | None, workspace: Path) -> dict:
         """Internal pull implementation."""
+        if not self.is_git_repo():
+            return {
+                "success": False,
+                "updated_files": [],
+                "conflicts": [],
+                "error": "Workspace is not a Git repository. Call initialize_repo() first.",
+            }
         repo = self.get_repo()
 
         # Import pubsub manager for streaming logs via WebSocket
@@ -1970,6 +1993,13 @@ class GitIntegrationService:
         Returns:
             dict with success status and list of discarded commits
         """
+        if not self.is_git_repo():
+            return {
+                "success": False,
+                "discarded_commits": [],
+                "new_head": None,
+                "error": "Workspace is not a Git repository. Call initialize_repo() first.",
+            }
         repo = self.get_repo()
 
         try:
@@ -2215,6 +2245,11 @@ class GitIntegrationService:
         Returns:
             dict with success status
         """
+        if not self.is_git_repo():
+            return {
+                "success": False,
+                "error": "Workspace is not a Git repository. Call initialize_repo() first.",
+            }
         repo = self.get_repo()
 
         from pathlib import Path

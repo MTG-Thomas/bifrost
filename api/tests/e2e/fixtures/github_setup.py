@@ -131,6 +131,70 @@ def github_test_branch(
         # Don't fail - branch may already be deleted or cleanup isn't critical
 
 
+def _wait_for_notification_completion(
+    e2e_client,
+    headers: dict,
+    notification_id: str,
+    timeout_seconds: int = 120,
+    poll_interval: float = 2.0,
+) -> dict[str, Any]:
+    """
+    Poll notification status until completion or timeout.
+
+    Args:
+        e2e_client: HTTP client
+        headers: Auth headers
+        notification_id: Notification ID to poll
+        timeout_seconds: Max time to wait
+        poll_interval: Time between polls
+
+    Returns:
+        Final notification data
+
+    Raises:
+        TimeoutError: If notification doesn't complete in time
+        AssertionError: If notification fails
+    """
+    import time as time_module
+
+    start = time_module.time()
+    while (time_module.time() - start) < timeout_seconds:
+        response = e2e_client.get(
+            f"/api/notifications/{notification_id}",
+            headers=headers,
+        )
+
+        if response.status_code == 404:
+            # Notification may have been cleaned up, treat as completed
+            logger.info(f"Notification {notification_id} not found (may have expired)")
+            return {"status": "completed"}
+
+        if response.status_code != 200:
+            logger.warning(f"Notification poll failed: {response.status_code}")
+            time_module.sleep(poll_interval)
+            continue
+
+        data = response.json()
+        status = data.get("status")
+
+        if status == "completed":
+            logger.info(f"Notification {notification_id} completed successfully")
+            return data
+        elif status == "failed":
+            error = data.get("error", "Unknown error")
+            raise AssertionError(f"GitHub setup failed: {error}")
+        elif status == "cancelled":
+            raise AssertionError("GitHub setup was cancelled")
+
+        # Still pending or running
+        logger.debug(f"Notification {notification_id} status: {status}")
+        time_module.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Notification {notification_id} did not complete within {timeout_seconds}s"
+    )
+
+
 @pytest.fixture(scope="function")
 def github_configured(e2e_client, platform_admin, github_test_branch):
     """
@@ -138,9 +202,10 @@ def github_configured(e2e_client, platform_admin, github_test_branch):
 
     This fixture:
     1. Validates and saves the GitHub token
-    2. Configures the repository connection
-    3. Yields the config for test use
-    4. Disconnects GitHub after the test
+    2. Dispatches async repository configuration job
+    3. Waits for the job to complete via notification polling
+    4. Yields the config for test use
+    5. Disconnects GitHub after the test
 
     Args:
         e2e_client: HTTP client fixture
@@ -160,7 +225,7 @@ def github_configured(e2e_client, platform_admin, github_test_branch):
     )
     assert response.status_code == 200, f"Token validation failed: {response.text}"
 
-    # Step 2: Configure repository
+    # Step 2: Configure repository (now async - dispatches job)
     repo_url = f"https://github.com/{config['repo']}.git"
     response = e2e_client.post(
         "/api/github/configure",
@@ -173,7 +238,24 @@ def github_configured(e2e_client, platform_admin, github_test_branch):
     )
     assert response.status_code == 200, f"Repository configuration failed: {response.text}"
 
-    logger.info(f"Configured GitHub: {repo_url} @ {config['branch']}")
+    data = response.json()
+
+    # Check if response is async (new flow) or sync (old flow for backwards compat)
+    if "notification_id" in data:
+        # New async flow - wait for job completion
+        notification_id = data["notification_id"]
+        logger.info(f"GitHub setup job dispatched: {data.get('job_id')}, notification: {notification_id}")
+
+        _wait_for_notification_completion(
+            e2e_client,
+            platform_admin.headers,
+            notification_id,
+            timeout_seconds=120,
+        )
+        logger.info(f"GitHub setup completed: {repo_url} @ {config['branch']}")
+    else:
+        # Old sync flow (backwards compatibility)
+        logger.info(f"Configured GitHub (sync): {repo_url} @ {config['branch']}")
 
     yield config
 

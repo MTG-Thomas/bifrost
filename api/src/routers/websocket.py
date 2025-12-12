@@ -71,6 +71,13 @@ async def websocket_connect(
             # Git operation channels - users can subscribe to their own
             if channel == f"git:{user.user_id}":
                 allowed_channels.append(channel)
+        elif channel.startswith("notification:"):
+            # Notification channels - users can subscribe to their own
+            if channel == f"notification:{user.user_id}":
+                allowed_channels.append(channel)
+            # Platform admins can subscribe to admin notifications
+            elif channel == "notification:admins" and user.is_superuser:
+                allowed_channels.append(channel)
         elif channel.startswith("history:"):
             # History channels for real-time updates
             allowed_channels.append(channel)

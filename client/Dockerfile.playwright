@@ -1,0 +1,23 @@
+# Bifrost Client - Playwright E2E Test Runner
+# Runs Playwright tests inside a container against the client service
+#
+# Usage (via test.sh):
+#   ./test.sh --client        # Run backend + frontend E2E tests
+#   ./test.sh --client-only   # Run frontend E2E tests only
+
+FROM mcr.microsoft.com/playwright:v1.56.0-jammy
+
+WORKDIR /app
+
+# Copy package files and install dependencies
+COPY package*.json ./
+RUN npm ci
+
+# Install only Chromium browser (faster than installing all browsers)
+RUN npx playwright install chromium
+
+# Test files, config, and fixtures come from volume mounts
+# This allows live editing without rebuilding the image
+
+# Default command runs all tests with list and HTML reporters
+CMD ["npx", "playwright", "test", "--reporter=list,html"]

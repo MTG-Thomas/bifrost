@@ -68,7 +68,8 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str):
     settings = get_settings()
 
     # Determine if we're in production (HTTPS)
-    secure = not settings.is_development
+    # Only use secure cookies in production - dev and testing use HTTP
+    secure = settings.is_production
 
     # Access token cookie (short-lived)
     response.set_cookie(

@@ -10,6 +10,7 @@ from typing import Callable
 
 from fastapi import HTTPException, Request, status
 
+from src.config import get_settings
 from src.core.cache import get_shared_redis
 from src.core.cache.keys import rate_limit_key, TTL_RATE_LIMIT
 
@@ -43,6 +44,9 @@ class RateLimiter:
         """
         Check if request should be rate limited.
 
+        Rate limiting is disabled in testing environment to allow E2E tests
+        to run without being blocked.
+
         Args:
             endpoint: Endpoint name for rate limit key
             identifier: IP address or user ID
@@ -50,6 +54,11 @@ class RateLimiter:
         Raises:
             HTTPException: If rate limit exceeded (429)
         """
+        # Skip rate limiting in testing environment
+        settings = get_settings()
+        if settings.is_testing:
+            return
+
         r = await get_shared_redis()
         key = rate_limit_key(endpoint, identifier)
 

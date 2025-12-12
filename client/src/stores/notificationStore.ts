@@ -1,110 +1,179 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 
 /**
- * Notification Center store using Zustand with localStorage persistence
+ * Notification Center store using Zustand
  *
- * Stores generic notifications that can be added by various sources (SDK scanner, etc.)
- * Notifications persist across sessions and can be dismissed individually or cleared.
+ * Handles two types of notifications:
+ * 1. Progress notifications - Long-running operations from WebSocket (GitHub setup, file uploads)
+ * 2. One-off notifications - Dismissable alerts (success, error, warning, info)
+ *
+ * Progress notifications come from WebSocket via notification:{user_id} channel.
+ * They have status (pending/running/completed/failed) and optional percent (0-100).
  */
 
-export type NotificationStatus = "success" | "error" | "warning" | "info";
+// Categories matching backend NotificationCategory enum
+export type NotificationCategory =
+	| "github_setup"
+	| "github_sync"
+	| "file_upload"
+	| "package_install"
+	| "system";
 
+// Status matching backend NotificationStatus enum
+export type NotificationStatus =
+	| "pending"
+	| "running"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+// Main notification type (matches backend NotificationPublic)
 export interface Notification {
 	id: string;
-	title: string; // Linkable title
+	category: NotificationCategory;
+	title: string;
+	description: string | null;
 	status: NotificationStatus;
+	percent: number | null; // null = indeterminate spinner, 0-100 = progress bar
+	error: string | null;
+	result: Record<string, unknown> | null;
+	metadata: Record<string, unknown> | null;
+	createdAt: string;
+	updatedAt: string;
+	userId: string;
+}
+
+// One-off notification type for local alerts
+export type AlertStatus = "success" | "error" | "warning" | "info";
+
+export interface OneOffNotification {
+	id: string;
+	title: string;
 	body: string;
-	link?: string; // Optional navigation target (e.g., file path in editor)
-	sourceFile?: string; // Source file for grouping/replacing on re-scan
-	createdAt: string; // ISO timestamp
+	status: AlertStatus;
+	link?: string; // Optional navigation target
+	createdAt: string;
 }
 
 interface NotificationState {
+	// WebSocket-driven notifications (progress)
 	notifications: Notification[];
 
-	// Actions
-	addNotification: (
-		notification: Omit<Notification, "id" | "createdAt">,
+	// Local one-off alerts
+	alerts: OneOffNotification[];
+
+	// Actions for WebSocket notifications
+	setNotification: (notification: Notification) => void;
+	updateNotification: (
+		id: string,
+		updates: Partial<Notification>,
 	) => void;
 	removeNotification: (id: string) => void;
-	clearAll: () => void;
-	clearBySourceFile: (sourceFile: string) => void;
-	replaceForSourceFile: (
-		sourceFile: string,
-		notifications: Omit<Notification, "id" | "createdAt">[],
-	) => void;
+	clearNotifications: () => void;
+
+	// Actions for one-off alerts
+	addAlert: (alert: Omit<OneOffNotification, "id" | "createdAt">) => void;
+	removeAlert: (id: string) => void;
+	clearAlerts: () => void;
 }
 
-export const useNotificationStore = create<NotificationState>()(
-	persist(
-		(set, get) => ({
-			notifications: [],
+export const useNotificationStore = create<NotificationState>()((set) => ({
+	notifications: [],
+	alerts: [],
 
-			addNotification: (notification) => {
-				const id = crypto.randomUUID();
-				const newNotification: Notification = {
-					...notification,
-					id,
-					createdAt: new Date().toISOString(),
-				};
-				set((state) => ({
-					notifications: [newNotification, ...state.notifications],
-				}));
-			},
+	// WebSocket notification handlers
+	setNotification: (notification) => {
+		set((state) => {
+			const existing = state.notifications.findIndex(
+				(n) => n.id === notification.id,
+			);
+			if (existing >= 0) {
+				// Update existing
+				const updated = [...state.notifications];
+				updated[existing] = notification;
+				return { notifications: updated };
+			}
+			// Add new (newest first)
+			return { notifications: [notification, ...state.notifications] };
+		});
+	},
 
-			removeNotification: (id) => {
-				set((state) => ({
-					notifications: state.notifications.filter(
-						(n) => n.id !== id,
-					),
-				}));
-			},
+	updateNotification: (id, updates) => {
+		set((state) => ({
+			notifications: state.notifications.map((n) =>
+				n.id === id ? { ...n, ...updates } : n,
+			),
+		}));
+	},
 
-			clearAll: () => {
-				set({ notifications: [] });
-			},
+	removeNotification: (id) => {
+		set((state) => ({
+			notifications: state.notifications.filter((n) => n.id !== id),
+		}));
+	},
 
-			clearBySourceFile: (sourceFile) => {
-				set((state) => ({
-					notifications: state.notifications.filter(
-						(n) => n.sourceFile !== sourceFile,
-					),
-				}));
-			},
+	clearNotifications: () => {
+		set({ notifications: [] });
+	},
 
-			replaceForSourceFile: (sourceFile, notifications) => {
-				// Remove existing notifications for this source file and add new ones
-				const existingOther = get().notifications.filter(
-					(n) => n.sourceFile !== sourceFile,
-				);
-				const newNotifications: Notification[] = notifications.map(
-					(n) => ({
-						...n,
-						id: crypto.randomUUID(),
-						createdAt: new Date().toISOString(),
-						sourceFile,
-					}),
-				);
-				set({
-					notifications: [...newNotifications, ...existingOther],
-				});
-			},
-		}),
-		{
-			name: "bifrost-notifications",
-			version: 1,
-		},
-	),
-);
+	// One-off alert handlers
+	addAlert: (alert) => {
+		const id = crypto.randomUUID();
+		const newAlert: OneOffNotification = {
+			...alert,
+			id,
+			createdAt: new Date().toISOString(),
+		};
+		set((state) => ({
+			alerts: [newAlert, ...state.alerts],
+		}));
+	},
 
-// Helper to get notification count by status
+	removeAlert: (id) => {
+		set((state) => ({
+			alerts: state.alerts.filter((a) => a.id !== id),
+		}));
+	},
+
+	clearAlerts: () => {
+		set({ alerts: [] });
+	},
+}));
+
+// Helper to check if a notification is active (still in progress)
+export const isActiveNotification = (notification: Notification): boolean => {
+	return (
+		notification.status === "pending" || notification.status === "running"
+	);
+};
+
+// Helper to check if notification is complete
+export const isCompleteNotification = (notification: Notification): boolean => {
+	return (
+		notification.status === "completed" ||
+		notification.status === "failed" ||
+		notification.status === "cancelled"
+	);
+};
+
+// Helper to get counts for badges
 export const getNotificationCounts = (notifications: Notification[]) => {
 	return {
-		error: notifications.filter((n) => n.status === "error").length,
-		warning: notifications.filter((n) => n.status === "warning").length,
-		info: notifications.filter((n) => n.status === "info").length,
-		success: notifications.filter((n) => n.status === "success").length,
+		active: notifications.filter(isActiveNotification).length,
+		completed: notifications.filter(
+			(n) => n.status === "completed",
+		).length,
+		failed: notifications.filter((n) => n.status === "failed").length,
 		total: notifications.length,
+	};
+};
+
+export const getAlertCounts = (alerts: OneOffNotification[]) => {
+	return {
+		error: alerts.filter((a) => a.status === "error").length,
+		warning: alerts.filter((a) => a.status === "warning").length,
+		info: alerts.filter((a) => a.status === "info").length,
+		success: alerts.filter((a) => a.status === "success").length,
+		total: alerts.length,
 	};
 };

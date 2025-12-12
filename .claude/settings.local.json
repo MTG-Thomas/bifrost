@@ -71,7 +71,9 @@
       "Bash(if [ -f /tmp/bifrost/docker-logs.txt ])",
       "Bash(then tail -100 /tmp/bifrost/docker-logs.txt)",
       "Bash(else echo \"Log file not found\")",
-      "Bash(fi)"
+      "Bash(fi)",
+      "Bash(TEST_API_URL=http://localhost:8000 npx playwright test:*)",
+      "Bash(TEST_API_URL=http://localhost:8000 TEST_BASE_URL=http://localhost:3000 npx playwright test:*)"
     ],
     "deny": [],
     "ask": [],
