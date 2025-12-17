@@ -253,13 +253,10 @@ async def worker_main(execution_id: str):
 
     logger.info(f"Worker starting for execution: {execution_id}")
 
-    # Hardcoded workspace path - kept in sync with S3 by WorkspaceSyncService
+    # Ensure workspace directory exists
+    # Note: sys.path setup is handled by module_loader when imported
     workspace_dir = Path("/tmp/bifrost/workspace")
     workspace_dir.mkdir(parents=True, exist_ok=True)
-
-    # Ensure workspace is in Python path for imports
-    if str(workspace_dir) not in sys.path:
-        sys.path.insert(0, str(workspace_dir))
 
     # Connect to Redis
     redis_client = redis.from_url(

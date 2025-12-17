@@ -22,6 +22,18 @@ from typing import Any, Callable, Literal, Sequence
 logger = logging.getLogger(__name__)
 
 
+# ==================== WORKSPACE INITIALIZATION ====================
+# Add workspace to sys.path at module load time
+# This ensures all processes (API, worker, consumer) can import workspace modules
+
+WORKSPACE_PATH = Path("/tmp/bifrost/workspace")
+WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
+
+if str(WORKSPACE_PATH) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_PATH))
+    logger.debug(f"Added workspace to sys.path: {WORKSPACE_PATH}")
+
+
 # ==================== METADATA DATACLASSES ====================
 # These are the same as in registry.py but defined here to avoid circular imports
 
@@ -194,15 +206,18 @@ def _clear_workspace_modules(workspace_paths: Sequence[Path | str]) -> int:
     return cleared_count
 
 
-def import_module_fresh(file_path: Path) -> ModuleType:
+def reload_module(file_path: Path) -> ModuleType:
     """
-    Import a module guaranteeing fresh code.
+    Reload a module fresh from disk, clearing all caches.
 
     This function:
     1. Clears ALL workspace modules from sys.modules
     2. Deletes ALL .pyc files in workspace directories
     3. Invalidates import caches
     4. Imports the module fresh
+
+    Use this function whenever you need to execute user code from the workspace.
+    It guarantees the latest version of the file is loaded - no stale code.
 
     Args:
         file_path: Path to the Python file to import
@@ -268,8 +283,9 @@ def import_module_fresh(file_path: Path) -> ModuleType:
     return module
 
 
-# Alias for backward compatibility
-reload_single_module = import_module_fresh
+# Aliases for backward compatibility
+import_module_fresh = reload_module
+reload_single_module = reload_module
 
 
 # ==================== WORKFLOW DISCOVERY ====================
@@ -307,13 +323,15 @@ def scan_all_workflows() -> list[WorkflowMetadata]:
                 continue
 
             try:
-                module = import_module_fresh(py_file)
+                module = reload_module(py_file)
 
                 # Scan module for decorated functions
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if callable(attr) and hasattr(attr, '_workflow_metadata'):
-                        metadata = attr._workflow_metadata
+                        metadata = getattr(attr, '_workflow_metadata', None)
+                        if metadata is None:
+                            continue
                         if isinstance(metadata, WorkflowMetadata):
                             workflows.append(metadata)
                         else:
@@ -358,13 +376,13 @@ def load_workflow(name: str) -> tuple[Callable, WorkflowMetadata] | None:
                 continue
 
             try:
-                module = import_module_fresh(py_file)
+                module = reload_module(py_file)
 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if callable(attr) and hasattr(attr, '_workflow_metadata'):
-                        metadata = attr._workflow_metadata
-                        if hasattr(metadata, 'name') and metadata.name == name:
+                        metadata = getattr(attr, '_workflow_metadata', None)
+                        if metadata and hasattr(metadata, 'name') and metadata.name == name:
                             if isinstance(metadata, WorkflowMetadata):
                                 return (attr, metadata)
                             else:
@@ -405,12 +423,14 @@ def scan_all_data_providers() -> list[DataProviderMetadata]:
                 continue
 
             try:
-                module = import_module_fresh(py_file)
+                module = reload_module(py_file)
 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if callable(attr) and hasattr(attr, '_data_provider_metadata'):
-                        metadata = attr._data_provider_metadata
+                        metadata = getattr(attr, '_data_provider_metadata', None)
+                        if metadata is None:
+                            continue
                         if isinstance(metadata, DataProviderMetadata):
                             providers.append(metadata)
                         else:
@@ -451,13 +471,13 @@ def load_data_provider(name: str) -> tuple[Callable, DataProviderMetadata] | Non
                 continue
 
             try:
-                module = import_module_fresh(py_file)
+                module = reload_module(py_file)
 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if callable(attr) and hasattr(attr, '_data_provider_metadata'):
-                        metadata = attr._data_provider_metadata
-                        if hasattr(metadata, 'name') and metadata.name == name:
+                        metadata = getattr(attr, '_data_provider_metadata', None)
+                        if metadata and hasattr(metadata, 'name') and metadata.name == name:
                             if isinstance(metadata, DataProviderMetadata):
                                 return (attr, metadata)
                             else:
@@ -673,73 +693,6 @@ def _convert_parameters(params: list) -> list[WorkflowParameter]:
 
 # ==================== EFFICIENT SINGLE-FILE LOADING ====================
 # These use the watchdog index for O(1) lookup, then import just one file
-
-
-def _import_file_fresh(file_path: Path) -> ModuleType:
-    """
-    Import a single file fresh with proper cache clearing.
-
-    This function ensures the latest code is always executed by:
-    1. Clearing ALL workspace modules from sys.modules (not just the target file)
-    2. Deleting .pyc files for the target module
-    3. Adding workspace paths to sys.path for relative imports
-    4. Invalidating import caches
-
-    Args:
-        file_path: Path to the Python file to import
-
-    Returns:
-        The imported module
-    """
-    workspace_paths = get_workspace_paths()
-
-    # Clear ALL workspace modules to ensure dependent modules are also reloaded
-    # This is critical for workflows that import from helper modules
-    _clear_workspace_modules(workspace_paths)
-
-    module_name = file_path.stem
-
-    # Delete this file's .pyc files
-    pycache = file_path.parent / '__pycache__'
-    if pycache.exists():
-        for pyc in pycache.glob(f'{module_name}.*.pyc'):
-            try:
-                pyc.unlink()
-            except OSError:
-                pass
-
-    importlib.invalidate_caches()
-
-    # Add workspace paths to sys.path for relative imports (e.g., from modules.rewst import ...)
-    paths_added: list[str] = []
-    for wp in workspace_paths:
-        wp_str = str(wp)
-        if wp_str not in sys.path:
-            sys.path.insert(0, wp_str)
-            paths_added.append(wp_str)
-
-    try:
-        # Fresh import
-        spec = importlib.util.spec_from_file_location(module_name, file_path)
-        if not spec or not spec.loader:
-            raise ImportError(f"Could not create module spec for {file_path}")
-
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-
-        try:
-            spec.loader.exec_module(module)
-        except Exception as e:
-            if module_name in sys.modules:
-                del sys.modules[module_name]
-            raise ImportError(f"Failed to import {file_path}: {e}") from e
-
-        return module
-    finally:
-        # Clean up: remove workspace paths we added to sys.path
-        for p in paths_added:
-            if p in sys.path:
-                sys.path.remove(p)
 
 
 def get_workflow(name: str) -> tuple[Callable, WorkflowMetadata] | None:

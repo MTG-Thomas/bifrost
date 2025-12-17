@@ -13,14 +13,12 @@ Workflows are loaded by ID:
 from __future__ import annotations
 
 import base64
-import importlib.util
 import logging
-import sys
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from src.services.execution.module_loader import get_data_provider, WorkflowMetadata
+from src.services.execution.module_loader import get_data_provider, WorkflowMetadata, reload_module
 from src.models import WorkflowExecutionResponse
 from src.models.enums import ExecutionStatus
 
@@ -98,17 +96,10 @@ async def get_workflow_by_id(
             "Workspace may be out of sync."
         )
 
-    # Import the module
+    # Import the module using reload_module for fresh imports and proper sys.path setup
     try:
-        module_name = f"workflow_{workflow_id.replace('-', '_')}"
-        spec = importlib.util.spec_from_file_location(module_name, file_path)
-        if not spec or not spec.loader:
-            raise WorkflowLoadError(f"Cannot create module spec for {file_path}")
-
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-    except Exception as e:
+        module = reload_module(file_path)
+    except ImportError as e:
         raise WorkflowLoadError(f"Failed to load workflow module: {e}")
 
     # Find the decorated function by workflow name
@@ -120,8 +111,8 @@ async def get_workflow_by_id(
         # Only check callable objects (functions) for workflow metadata
         # This avoids triggering __getattr__ on proxy objects like `context`
         if callable(obj) and hasattr(obj, "_workflow_metadata"):
-            meta = obj._workflow_metadata
-            if meta.name == workflow_record.name:
+            meta = getattr(obj, "_workflow_metadata", None)
+            if meta and meta.name == workflow_record.name:
                 workflow_func = obj
                 workflow_metadata = meta
                 break
