@@ -35,6 +35,7 @@ from watchdog.events import (  # type: ignore[import-untyped]
 from watchdog.observers import Observer  # type: ignore[import-untyped]
 
 from src.config import get_settings
+from src.core.workspace_cache import get_workspace_cache
 from src.services.editor.file_filter import is_excluded_path
 
 if TYPE_CHECKING:
@@ -190,14 +191,12 @@ class WorkspaceWatcher:
 
     async def _handle_write(self, db, path: str) -> None:
         """
-        Handle file write - check DB to determine if we should publish.
+        Handle file write - check Redis cache to determine if we should publish.
 
         Logic:
-        - If DB hash matches local hash → change came from pub/sub, skip
-        - If DB hash differs → we originated this change, sync AND publish
+        - If cached hash matches local hash → change came from pub/sub, skip
+        - If cached hash differs → we originated this change, sync AND publish
         """
-        from sqlalchemy import select
-        from src.models import WorkspaceFile
         from src.services.file_storage_service import FileStorageService
         from src.core.pubsub import publish_workspace_file_write
 
@@ -214,23 +213,19 @@ class WorkspaceWatcher:
 
         local_hash = hashlib.sha256(content).hexdigest()
 
-        # Check DB for existing hash
-        stmt = select(WorkspaceFile.content_hash).where(
-            WorkspaceFile.path == path,
-            WorkspaceFile.is_deleted == False,  # noqa: E712
-        )
-        result = await db.execute(stmt)
-        db_hash = result.scalar_one_or_none()
+        # Check Redis cache for existing hash (fast lookup)
+        cache = get_workspace_cache()
+        cached_state = await cache.get_file_state(path)
 
-        if db_hash == local_hash:
+        if cached_state and not cached_state.get("is_deleted") and cached_state.get("hash") == local_hash:
             # Hash matches - this change came from pub/sub, we're not the originator
-            logger.debug(f"Watcher: skipping {path} (DB hash matches, not originator)")
+            logger.debug(f"Watcher: skipping {path} (cached hash matches, not originator)")
             return
 
         # Hash differs or file is new - we originated this change
         logger.info(f"Watcher: originating file write {path} ({len(content)} bytes)")
 
-        # Sync to S3/DB
+        # Sync to S3/DB (this also updates Redis cache via dual-write)
         storage = FileStorageService(db)
         await storage.write_file(path, content, updated_by="watcher")
 
@@ -242,34 +237,33 @@ class WorkspaceWatcher:
 
     async def _handle_delete(self, db, path: str) -> None:
         """
-        Handle file delete - check DB to determine if we should publish.
+        Handle file delete - check Redis cache to determine if we should publish.
 
         Logic:
-        - If DB shows file already deleted → change came from pub/sub, skip
-        - If DB shows file exists → we originated this change, sync AND publish
+        - If cache shows file already deleted → change came from pub/sub, skip
+        - If cache shows file exists → we originated this change, sync AND publish
         """
-        from sqlalchemy import select
-        from src.models import WorkspaceFile
         from src.services.file_storage_service import FileStorageService
         from src.core.pubsub import publish_workspace_file_delete
 
-        # Check if file exists in DB and is not already deleted
-        stmt = select(WorkspaceFile).where(
-            WorkspaceFile.path == path,
-            WorkspaceFile.is_deleted == False,  # noqa: E712
-        )
-        result = await db.execute(stmt)
-        file_record = result.scalar_one_or_none()
+        # Check Redis cache for file state (fast lookup)
+        cache = get_workspace_cache()
+        cached_state = await cache.get_file_state(path)
 
-        if not file_record:
-            # Not in DB or already deleted - we're not the originator
-            logger.debug(f"Watcher: skipping delete {path} (already deleted in DB)")
+        if cached_state and cached_state.get("is_deleted"):
+            # Already marked as deleted in cache - we're not the originator
+            logger.debug(f"Watcher: skipping delete {path} (already deleted in cache)")
             return
 
-        # File exists in DB - we originated this delete
+        if not cached_state:
+            # Not in cache - could be a file that was never synced, skip
+            logger.debug(f"Watcher: skipping delete {path} (not in cache)")
+            return
+
+        # File exists in cache and not deleted - we originated this delete
         logger.info(f"Watcher: originating file delete {path}")
 
-        # Sync to S3/DB
+        # Sync to S3/DB (this also updates Redis cache via dual-write)
         storage = FileStorageService(db)
         if path.endswith("/"):
             await storage.delete_folder(path)
@@ -284,36 +278,30 @@ class WorkspaceWatcher:
 
     async def _handle_folder_create(self, db, path: str) -> None:
         """
-        Handle folder creation - check DB to determine if we should publish.
+        Handle folder creation - check Redis cache to determine if we should publish.
 
         Logic:
-        - If DB shows folder exists → change came from pub/sub, skip
-        - If DB shows no folder → we originated this change, sync AND publish
+        - If cache shows folder exists → change came from pub/sub, skip
+        - If cache shows no folder → we originated this change, sync AND publish
         """
-        from sqlalchemy import select
-        from src.models import WorkspaceFile
         from src.services.file_storage_service import FileStorageService
         from src.core.pubsub import publish_workspace_folder_create
 
         folder_path = path.rstrip("/") + "/"
 
-        # Check if folder already exists in DB
-        stmt = select(WorkspaceFile).where(
-            WorkspaceFile.path == folder_path,
-            WorkspaceFile.is_deleted == False,  # noqa: E712
-        )
-        result = await db.execute(stmt)
-        folder_record = result.scalar_one_or_none()
+        # Check Redis cache for folder state (fast lookup)
+        cache = get_workspace_cache()
+        cached_state = await cache.get_file_state(folder_path)
 
-        if folder_record:
-            # Folder already in DB - we're not the originator
-            logger.debug(f"Watcher: skipping folder create {path} (already in DB)")
+        if cached_state and not cached_state.get("is_deleted"):
+            # Folder already in cache and not deleted - we're not the originator
+            logger.debug(f"Watcher: skipping folder create {path} (already in cache)")
             return
 
-        # Folder not in DB - we originated this create
+        # Folder not in cache or was deleted - we originated this create
         logger.info(f"Watcher: originating folder create {path}")
 
-        # Sync to DB
+        # Sync to DB (this also updates Redis cache via dual-write)
         storage = FileStorageService(db)
         await storage.create_folder(path, updated_by="watcher")
 
@@ -325,36 +313,35 @@ class WorkspaceWatcher:
 
     async def _handle_folder_delete(self, db, path: str) -> None:
         """
-        Handle folder deletion - check DB to determine if we should publish.
+        Handle folder deletion - check Redis cache to determine if we should publish.
 
         Logic:
-        - If DB shows folder already deleted → change came from pub/sub, skip
-        - If DB shows folder exists → we originated this change, sync AND publish
+        - If cache shows folder already deleted → change came from pub/sub, skip
+        - If cache shows folder exists → we originated this change, sync AND publish
         """
-        from sqlalchemy import select
-        from src.models import WorkspaceFile
         from src.services.file_storage_service import FileStorageService
         from src.core.pubsub import publish_workspace_folder_delete
 
         folder_path = path.rstrip("/") + "/"
 
-        # Check if folder exists in DB and is not already deleted
-        stmt = select(WorkspaceFile).where(
-            WorkspaceFile.path == folder_path,
-            WorkspaceFile.is_deleted == False,  # noqa: E712
-        )
-        result = await db.execute(stmt)
-        folder_record = result.scalar_one_or_none()
+        # Check Redis cache for folder state (fast lookup)
+        cache = get_workspace_cache()
+        cached_state = await cache.get_file_state(folder_path)
 
-        if not folder_record:
-            # Folder not in DB or already deleted - we're not the originator
-            logger.debug(f"Watcher: skipping folder delete {path} (already deleted in DB)")
+        if cached_state and cached_state.get("is_deleted"):
+            # Folder already marked as deleted in cache - we're not the originator
+            logger.debug(f"Watcher: skipping folder delete {path} (already deleted in cache)")
             return
 
-        # Folder exists in DB - we originated this delete
+        if not cached_state:
+            # Not in cache - could be a folder that was never synced, skip
+            logger.debug(f"Watcher: skipping folder delete {path} (not in cache)")
+            return
+
+        # Folder exists in cache and not deleted - we originated this delete
         logger.info(f"Watcher: originating folder delete {path}")
 
-        # Sync to S3/DB
+        # Sync to S3/DB (this also updates Redis cache via dual-write)
         storage = FileStorageService(db)
         await storage.delete_folder(path)
 

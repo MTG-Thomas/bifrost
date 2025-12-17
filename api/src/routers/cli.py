@@ -2027,6 +2027,28 @@ from pathlib import Path
 from typing import Any
 
 
+def is_html_result(result: Any) -> bool:
+    """Check if result looks like HTML content.
+
+    Mirrors backend detection in executions.py:150:
+    result.strip().startswith("<")
+    """
+    if not isinstance(result, str):
+        return False
+    return result.strip().startswith("<")
+
+
+def format_result_for_terminal(result: Any, session_url: str | None = None) -> str:
+    """Format result for terminal output, masking HTML like the web terminal does."""
+    if is_html_result(result):
+        # Mirror web terminal's "Click to view HTML result" messaging
+        if session_url:
+            return f"[HTML Result] Click to view in session: {session_url}"
+        else:
+            return "[HTML Result] Run with web UI to view HTML results"
+    return json.dumps(result, indent=2, default=str)
+
+
 class BifrostLoggingHandler(logging.Handler):
     """Captures Python logging and forwards to Bifrost API.
 
@@ -2159,12 +2181,21 @@ def discover_workflows(module) -> list[dict]:
     return workflows
 
 
-async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_params: dict | None):
+async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_params: dict | None, open_browser: bool = False):
     from .client import get_client
 
     spec = importlib.util.spec_from_file_location("workflow_module", file_path)
     module = importlib.util.module_from_spec(spec)
+
+    # Add CWD (workspace root) to sys.path for imports like "from modules.x import y"
+    # This matches the platform behavior where /tmp/bifrost/workspace is in sys.path
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+
+    # Also add workflow file's parent directory for relative imports within that directory
     sys.path.insert(0, str(Path(file_path).parent))
+
     spec.loader.exec_module(module)
 
     workflows = discover_workflows(module)
@@ -2182,7 +2213,7 @@ async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_para
         print(f"Running {workflow_name}...")
         try:
             result = await func(**inline_params) if asyncio.iscoroutinefunction(func) else func(**inline_params)
-            print(f"Result: {json.dumps(result, indent=2, default=str)}")
+            print(f"Result: {format_result_for_terminal(result)}")
         except Exception as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -2190,6 +2221,7 @@ async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_para
 
     client = get_client()
     abs_path = str(Path(file_path).resolve())
+
     session_id = str(uuid.uuid4())
 
     workflows_for_api = [{k: v for k, v in w.items() if k != "_func"} for w in workflows]
@@ -2209,9 +2241,16 @@ async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_para
     base_url = client.api_url.rstrip("/")
     if base_url.endswith("/api"):
         base_url = base_url[:-4]
-    webbrowser.open(f"{base_url}/cli/{session_id}")
-    print(f"Opened browser for parameter input (session: {session_id[:8]}...)...")
-    print("Waiting for 'Continue' in web UI (Ctrl+C to cancel)\\n")
+    url = f"{base_url}/cli/{session_id}"
+
+    # Open browser or just print URL
+    if open_browser:
+        webbrowser.open(url)
+        print(f"Opened browser (session: {session_id[:8]}...)")
+    else:
+        print(f"\\033[96m\\U0001F517 Web UI: {url}\\033[0m")
+
+    print("\\nWaiting for 'Continue' in web UI (Ctrl+C to cancel)\\n")
 
     # Start heartbeat task
     async def heartbeat():
@@ -2252,7 +2291,8 @@ async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_para
                 try:
                     result = await func(**params) if asyncio.iscoroutinefunction(func) else func(**params)
                     await logger.complete("Success", result=result)
-                    print(f"\\n\\033[92mResult:\\033[0m {json.dumps(result, indent=2, default=str)}\\n")
+                    session_url = f"{base_url}/cli/{session_id}"
+                    print(f"\\n\\033[92mResult:\\033[0m {format_result_for_terminal(result, session_url)}\\n")
                 except Exception as e:
                     error_msg = str(e)
                     await logger.error(f"Workflow failed: {error_msg}")
@@ -2266,8 +2306,14 @@ async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_para
             except KeyboardInterrupt:
                 print("\\nStopped.")
                 break
+    except KeyboardInterrupt:
+        print("\\nStopped.")
     finally:
         heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def run_with_terminal_input(workflows: list[dict], workflow_map: dict, workflow_name: str | None):
@@ -2310,7 +2356,7 @@ async def run_with_terminal_input(workflows: list[dict], workflow_map: dict, wor
     print(f"\\nRunning {selected['name']}...")
     try:
         result = await func(**params) if asyncio.iscoroutinefunction(func) else func(**params)
-        print(f"Result: {json.dumps(result, indent=2, default=str)}")
+        print(f"Result: {format_result_for_terminal(result)}")
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
@@ -2336,12 +2382,16 @@ def main():
     run_parser.add_argument("file", help="Python file containing workflows")
     run_parser.add_argument("--workflow", "-w", help="Workflow name to run")
     run_parser.add_argument("--params", "-p", help="JSON params (skips web UI)")
+    run_parser.add_argument("--open", action="store_true", help="Open browser automatically")
     args = parser.parse_args()
 
     if args.command == "run":
         load_dotenv_from_file_path(args.file)
         inline_params = json.loads(args.params) if args.params else None
-        asyncio.run(run_with_web_ui(args.file, args.workflow, inline_params))
+        try:
+            asyncio.run(run_with_web_ui(args.file, args.workflow, inline_params, getattr(args, 'open', False)))
+        except KeyboardInterrupt:
+            pass  # Already handled gracefully in run_with_web_ui
     else:
         parser.print_help()
 

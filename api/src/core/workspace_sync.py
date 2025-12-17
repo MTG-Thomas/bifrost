@@ -23,6 +23,7 @@ from pathlib import Path
 import redis.asyncio as redis
 
 from src.config import get_settings
+from src.core.workspace_cache import get_workspace_cache
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,11 @@ class WorkspaceSyncService:
                 logger.warning(f"Hash mismatch for {path}: expected={expected_hash}, actual={actual_hash}")
                 return
 
+            # Update Redis cache BEFORE writing locally
+            # This ensures the watcher sees the correct hash and doesn't re-publish
+            cache = get_workspace_cache()
+            await cache.set_file_state(path, actual_hash, is_deleted=False)
+
             # Write to local workspace
             file_path = WORKSPACE_PATH / path
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,6 +195,11 @@ class WorkspaceSyncService:
             return
 
         try:
+            # Update Redis cache BEFORE deleting locally
+            # This ensures the watcher sees the file as deleted and doesn't re-publish
+            cache = get_workspace_cache()
+            await cache.set_file_state(path, content_hash=None, is_deleted=True)
+
             file_path = WORKSPACE_PATH / path
 
             if file_path.is_dir():
@@ -234,6 +245,14 @@ class WorkspaceSyncService:
             return
 
         try:
+            # Normalize to trailing slash for cache key
+            normalized_path = path.rstrip("/") + "/"
+
+            # Update Redis cache BEFORE creating locally
+            # This ensures the watcher sees the folder as existing and doesn't re-publish
+            cache = get_workspace_cache()
+            await cache.set_file_state(normalized_path, content_hash=None, is_deleted=False)
+
             # Remove trailing slash for filesystem
             folder_path = WORKSPACE_PATH / path.rstrip("/")
             folder_path.mkdir(parents=True, exist_ok=True)
@@ -250,6 +269,14 @@ class WorkspaceSyncService:
             return
 
         try:
+            # Normalize to trailing slash for cache key
+            normalized_path = path.rstrip("/") + "/"
+
+            # Update Redis cache BEFORE deleting locally
+            # This ensures the watcher sees the folder as deleted and doesn't re-publish
+            cache = get_workspace_cache()
+            await cache.set_file_state(normalized_path, content_hash=None, is_deleted=True)
+
             # Remove trailing slash for filesystem
             folder_path = WORKSPACE_PATH / path.rstrip("/")
 

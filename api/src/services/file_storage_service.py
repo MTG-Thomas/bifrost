@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings, get_settings
+from src.core.workspace_cache import get_workspace_cache
 from src.models.enums import GitStatus
 from src.models import WorkspaceFile
 
@@ -227,12 +228,20 @@ class FileStorageService:
         result = await self.db.execute(stmt)
         file_record = result.scalar_one()
 
+        # Dual-write: Update Redis cache with same state as DB
+        cache = get_workspace_cache()
+        await cache.set_file_state(path, content_hash, is_deleted=False)
+
         # Extract metadata for workflows/forms
         await self._extract_metadata(path, content)
 
-        # Note: Redis sync events are published by workspace_watcher, not here.
-        # The watcher detects local filesystem changes and decides whether to
-        # publish based on DB state (to avoid re-publishing received events).
+        # Publish to Redis pub/sub so other containers sync
+        # This notifies workers and other API instances about the file change
+        try:
+            from src.core.pubsub import publish_workspace_file_write
+            await publish_workspace_file_write(path, content, content_hash)
+        except Exception as e:
+            logger.warning(f"Failed to publish workspace file write event: {e}")
 
         logger.info(f"File written: {path} ({size_bytes} bytes) by {updated_by}")
         return file_record
@@ -260,10 +269,19 @@ class FileStorageService:
         )
         await self.db.execute(stmt)
 
+        # Dual-write: Update Redis cache to mark as deleted
+        cache = get_workspace_cache()
+        await cache.set_file_state(path, content_hash=None, is_deleted=True)
+
         # Clean up related metadata
         await self._remove_metadata(path)
 
-        # Note: Redis sync events are published by workspace_watcher, not here.
+        # Publish to Redis pub/sub so other containers sync
+        try:
+            from src.core.pubsub import publish_workspace_file_delete
+            await publish_workspace_file_delete(path)
+        except Exception as e:
+            logger.warning(f"Failed to publish workspace file delete event: {e}")
 
         logger.info(f"File deleted: {path}")
 
@@ -313,6 +331,10 @@ class FileStorageService:
         result = await self.db.execute(stmt)
         folder_record = result.scalar_one()
 
+        # Dual-write: Update Redis cache for folder (hash is None for folders)
+        cache = get_workspace_cache()
+        await cache.set_file_state(folder_path, content_hash=None, is_deleted=False)
+
         # Create on local filesystem too
         try:
             from src.core.workspace_sync import WORKSPACE_PATH
@@ -321,7 +343,12 @@ class FileStorageService:
         except Exception as e:
             logger.warning(f"Failed to create local folder: {e}")
 
-        # Note: Redis sync events are published by workspace_watcher, not here.
+        # Publish to Redis pub/sub so other containers sync
+        try:
+            from src.core.pubsub import publish_workspace_folder_create
+            await publish_workspace_folder_create(folder_path)
+        except Exception as e:
+            logger.warning(f"Failed to publish workspace folder create event: {e}")
 
         logger.info(f"Folder created: {folder_path} by {updated_by}")
         return folder_record
@@ -381,6 +408,14 @@ class FileStorageService:
         )
         await self.db.execute(stmt)
 
+        # Dual-write: Update Redis cache to mark folder and children as deleted
+        cache = get_workspace_cache()
+        # Mark folder itself as deleted
+        await cache.set_file_state(folder_path, content_hash=None, is_deleted=True)
+        # Mark all children as deleted
+        for child in children:
+            await cache.set_file_state(child.path, content_hash=None, is_deleted=True)
+
         # Delete from local filesystem
         try:
             from src.core.workspace_sync import WORKSPACE_PATH
@@ -391,7 +426,12 @@ class FileStorageService:
         except Exception as e:
             logger.warning(f"Failed to delete local folder: {e}")
 
-        # Note: Redis sync events are published by workspace_watcher, not here.
+        # Publish to Redis pub/sub so other containers sync
+        try:
+            from src.core.pubsub import publish_workspace_folder_delete
+            await publish_workspace_folder_delete(folder_path)
+        except Exception as e:
+            logger.warning(f"Failed to publish workspace folder delete event: {e}")
 
         logger.info(f"Folder deleted: {folder_path}")
 
