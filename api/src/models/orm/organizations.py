@@ -15,6 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
+    from src.models.orm.agents import Agent
     from src.models.orm.config import Config, SystemConfig
     from src.models.orm.executions import Execution
     from src.models.orm.forms import Form
@@ -45,6 +46,7 @@ class Organization(Base):
     # Relationships
     users: Mapped[list["User"]] = relationship(back_populates="organization")
     forms: Mapped[list["Form"]] = relationship(back_populates="organization")
+    agents: Mapped[list["Agent"]] = relationship(back_populates="organization")
     executions: Mapped[list["Execution"]] = relationship(back_populates="organization")
     configs: Mapped[list["Config"]] = relationship(back_populates="organization")
     system_configs: Mapped[list["SystemConfig"]] = relationship(

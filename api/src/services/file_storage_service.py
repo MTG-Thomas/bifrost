@@ -820,7 +820,7 @@ class FileStorageService:
 
     async def _extract_metadata(self, path: str, content: bytes) -> None:
         """
-        Extract workflow/form metadata from file content.
+        Extract workflow/form/agent metadata from file content.
 
         Called at write time to keep registry in sync.
         """
@@ -829,6 +829,8 @@ class FileStorageService:
                 await self._index_python_file(path, content)
             elif path.endswith(".form.json"):
                 await self._index_form(path, content)
+            elif path.endswith(".agent.json"):
+                await self._index_agent(path, content)
         except Exception as e:
             # Log but don't fail the write
             logger.warning(f"Failed to extract metadata from {path}: {e}")
@@ -886,6 +888,8 @@ class FileStorageService:
                     endpoint_enabled = kwargs.get("endpoint_enabled", False)
                     allowed_methods = kwargs.get("allowed_methods", ["POST"])
                     execution_mode = kwargs.get("execution_mode", "sync")
+                    is_tool = kwargs.get("is_tool", False)
+                    tool_description = kwargs.get("tool_description")
 
                     # Extract parameters from function signature
                     parameters_schema = self._extract_parameters_from_ast(node)
@@ -906,6 +910,8 @@ class FileStorageService:
                         endpoint_enabled=endpoint_enabled,
                         allowed_methods=allowed_methods,
                         execution_mode=execution_mode,
+                        is_tool=is_tool,
+                        tool_description=tool_description,
                         is_active=True,
                         last_seen_at=now,
                     ).on_conflict_do_update(
@@ -920,6 +926,8 @@ class FileStorageService:
                             "endpoint_enabled": endpoint_enabled,
                             "allowed_methods": allowed_methods,
                             "execution_mode": execution_mode,
+                            "is_tool": is_tool,
+                            "tool_description": tool_description,
                             "is_active": True,
                             "last_seen_at": now,
                             "updated_at": now,
@@ -1078,9 +1086,11 @@ class FileStorageService:
             # Determine type from annotation
             ui_type = "string"
             is_optional = has_default
+            options = None
             if arg.annotation:
                 ui_type = self._annotation_to_ui_type(arg.annotation)
                 is_optional = is_optional or self._is_optional_annotation(arg.annotation)
+                options = self._extract_literal_options(arg.annotation)
 
             # Generate label from parameter name
             label = re.sub(r"([a-z])([A-Z])", r"\1 \2", param_name.replace("_", " ")).title()
@@ -1094,6 +1104,9 @@ class FileStorageService:
 
             if default_value is not None:
                 param_meta["default_value"] = default_value
+
+            if options:
+                param_meta["options"] = options
 
             parameters.append(param_meta)
 
@@ -1131,7 +1144,7 @@ class FileStorageService:
             return type_mapping.get(annotation.id, "json")
 
         elif isinstance(annotation, ast.Subscript):
-            # Handle list[str], dict[str, Any], etc.
+            # Handle list[str], dict[str, Any], Literal[...], etc.
             if isinstance(annotation.value, ast.Name):
                 base_type = annotation.value.id
                 if base_type == "list":
@@ -1143,6 +1156,9 @@ class FileStorageService:
                     if isinstance(annotation.slice, ast.Name):
                         return type_mapping.get(annotation.slice.id, "string")
                     return "string"
+                elif base_type == "Literal":
+                    # Literal["a", "b"] -> infer type from values
+                    return self._infer_literal_type(annotation.slice)
 
         elif isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
             # str | None -> string
@@ -1150,6 +1166,58 @@ class FileStorageService:
             return left_type
 
         return "json"
+
+    def _infer_literal_type(self, slice_node: ast.AST) -> str:
+        """Infer UI type from Literal values."""
+        # Get the first value from the Literal
+        if isinstance(slice_node, ast.Tuple):
+            # Literal["a", "b"] - multiple values
+            if slice_node.elts:
+                first_val = self._ast_value_to_python(slice_node.elts[0])
+            else:
+                return "string"
+        else:
+            # Literal["a"] - single value
+            first_val = self._ast_value_to_python(slice_node)
+
+        if first_val is None:
+            return "string"
+        if isinstance(first_val, str):
+            return "string"
+        if isinstance(first_val, bool):
+            return "bool"
+        if isinstance(first_val, int):
+            return "int"
+        if isinstance(first_val, float):
+            return "float"
+        return "string"
+
+    def _extract_literal_options(self, annotation: ast.AST) -> list[dict[str, str]] | None:
+        """Extract options from Literal type annotation."""
+        if not isinstance(annotation, ast.Subscript):
+            return None
+        if not isinstance(annotation.value, ast.Name):
+            return None
+        if annotation.value.id != "Literal":
+            return None
+
+        # Get values from the Literal
+        slice_node = annotation.slice
+        values = []
+
+        if isinstance(slice_node, ast.Tuple):
+            # Literal["a", "b"] - multiple values
+            for elt in slice_node.elts:
+                val = self._ast_value_to_python(elt)
+                if val is not None:
+                    values.append({"label": str(val), "value": str(val)})
+        else:
+            # Literal["a"] - single value
+            val = self._ast_value_to_python(slice_node)
+            if val is not None:
+                values.append({"label": str(val), "value": str(val)})
+
+        return values if values else None
 
     def _is_optional_annotation(self, annotation: ast.AST) -> bool:
         """Check if annotation represents an optional type."""
@@ -1254,6 +1322,112 @@ class FileStorageService:
             )
         await self.db.execute(stmt)
 
+    async def _index_agent(self, path: str, content: bytes) -> None:
+        """
+        Parse and index agent from .agent.json file.
+
+        If the JSON contains an 'id' field, uses that ID (for dual-write from API).
+        Otherwise uses upsert on file_path (for files synced from git/editor).
+
+        Uses ON CONFLICT to update existing agents.
+        """
+        import json
+        from uuid import UUID
+        from src.models.orm import Agent
+        from src.models.enums import AgentAccessLevel
+
+        try:
+            agent_data = json.loads(content.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.warning(f"Invalid JSON in agent file: {path}")
+            return
+
+        name = agent_data.get("name")
+        if not name:
+            logger.warning(f"Agent file missing name: {path}")
+            return
+
+        system_prompt = agent_data.get("system_prompt")
+        if not system_prompt:
+            logger.warning(f"Agent file missing system_prompt: {path}")
+            return
+
+        # Use ID from JSON if present (for API-created agents), otherwise generate new
+        agent_id_str = agent_data.get("id")
+        if agent_id_str:
+            try:
+                agent_id = UUID(agent_id_str)
+            except ValueError:
+                logger.warning(f"Invalid agent ID in {path}: {agent_id_str}")
+                agent_id = None
+        else:
+            agent_id = None
+
+        # Parse access level
+        access_level_str = agent_data.get("access_level", "role_based")
+        try:
+            access_level = AgentAccessLevel(access_level_str)
+        except ValueError:
+            access_level = AgentAccessLevel.ROLE_BASED
+
+        # Parse channels
+        channels = agent_data.get("channels", ["chat"])
+        if not isinstance(channels, list):
+            channels = ["chat"]
+
+        now = datetime.utcnow()
+
+        if agent_id:
+            # Agent has an ID - use upsert on primary key
+            stmt = insert(Agent).values(
+                id=agent_id,
+                name=name,
+                description=agent_data.get("description"),
+                system_prompt=system_prompt,
+                channels=channels,
+                access_level=access_level,
+                is_active=True,
+                file_path=path,
+                created_by="file_sync",
+            ).on_conflict_do_update(
+                index_elements=[Agent.id],
+                set_={
+                    "name": name,
+                    "description": agent_data.get("description"),
+                    "system_prompt": system_prompt,
+                    "channels": channels,
+                    "access_level": access_level,
+                    "file_path": path,
+                    "is_active": True,
+                    "updated_at": now,
+                },
+            )
+        else:
+            # No ID - use upsert on file_path
+            stmt = insert(Agent).values(
+                name=name,
+                description=agent_data.get("description"),
+                system_prompt=system_prompt,
+                channels=channels,
+                access_level=access_level,
+                is_active=True,
+                file_path=path,
+                created_by="file_sync",
+            ).on_conflict_do_update(
+                index_elements=["file_path"],
+                set_={
+                    "name": name,
+                    "description": agent_data.get("description"),
+                    "system_prompt": system_prompt,
+                    "channels": channels,
+                    "access_level": access_level,
+                    "is_active": True,
+                    "updated_at": now,
+                },
+            )
+        await self.db.execute(stmt)
+        logger.debug(f"Indexed agent: {name} from {path}")
+
     async def _refresh_workflow_endpoint(self, workflow: "Workflow") -> None:
         """
         Refresh the dynamic endpoint registration for an endpoint-enabled workflow.
@@ -1278,8 +1452,9 @@ class FileStorageService:
             logger.warning(f"Failed to refresh endpoint for {workflow.name}: {e}")
 
     async def _remove_metadata(self, path: str) -> None:
-        """Remove workflow/form metadata when file is deleted."""
+        """Remove workflow/form/agent metadata when file is deleted."""
         from src.models import Workflow, DataProvider, Form
+        from src.models.orm import Agent
 
         # Get workflows being removed (to clean up endpoints)
         result = await self.db.execute(
@@ -1310,6 +1485,11 @@ class FileStorageService:
         # Mark forms from this file as inactive
         await self.db.execute(
             update(Form).where(Form.file_path == path).values(is_active=False)
+        )
+
+        # Mark agents from this file as inactive
+        await self.db.execute(
+            update(Agent).where(Agent.file_path == path).values(is_active=False)
         )
 
     async def update_git_status(

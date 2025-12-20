@@ -14,6 +14,8 @@ import {
 	Settings as SettingsIcon,
 	X,
 	FileText,
+	MessageSquare,
+	Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -25,6 +27,7 @@ interface NavItem {
 	href: string;
 	icon: React.ElementType;
 	requiresPlatformAdmin?: boolean;
+	dividerBefore?: boolean;
 }
 
 interface NavSection {
@@ -50,9 +53,21 @@ const navSections: NavSection[] = [
 		title: "Automation",
 		items: [
 			{
+				title: "Chat",
+				href: "/chat",
+				icon: MessageSquare,
+			},
+			{
 				title: "Forms",
 				href: "/forms",
 				icon: FileCode,
+			},
+			{
+				title: "Agents",
+				href: "/agents",
+				icon: Bot,
+				requiresPlatformAdmin: true,
+				dividerBefore: true,
 			},
 			{
 				title: "Workflows",
@@ -207,34 +222,41 @@ export function Sidebar({
 							{section.items.map((item) => {
 								const Icon = item.icon;
 								return (
-									<NavLink
-										key={item.href}
-										to={item.href}
-										title={
-											isCollapsed ? item.title : undefined
-										}
-										className={({ isActive }) =>
-											cn(
-												"flex items-center rounded-lg text-sm font-medium transition-colors",
-												"hover:bg-accent hover:text-accent-foreground",
-												isActive
-													? "bg-accent text-accent-foreground"
-													: "text-muted-foreground",
-												isCollapsed
-													? "justify-center w-10 h-10 mx-auto"
-													: "gap-3 px-3 py-2",
-											)
-										}
-									>
-										<Icon
-											className={cn(
-												isCollapsed
-													? "h-5 w-5"
-													: "h-4 w-4",
-											)}
-										/>
-										{!isCollapsed && item.title}
-									</NavLink>
+									<div key={item.href}>
+										{item.dividerBefore && !isCollapsed && (
+											<div className="my-2 mx-3 border-t border-border" />
+										)}
+										{item.dividerBefore && isCollapsed && (
+											<div className="my-2 mx-2 border-t border-border" />
+										)}
+										<NavLink
+											to={item.href}
+											title={
+												isCollapsed ? item.title : undefined
+											}
+											className={({ isActive }) =>
+												cn(
+													"flex items-center rounded-lg text-sm font-medium transition-colors",
+													"hover:bg-accent hover:text-accent-foreground",
+													isActive
+														? "bg-accent text-accent-foreground"
+														: "text-muted-foreground",
+													isCollapsed
+														? "justify-center w-10 h-10 mx-auto"
+														: "gap-3 px-3 py-2",
+												)
+											}
+										>
+											<Icon
+												className={cn(
+													isCollapsed
+														? "h-5 w-5"
+														: "h-4 w-4",
+												)}
+											/>
+											{!isCollapsed && item.title}
+										</NavLink>
+									</div>
 								);
 							})}
 						</div>
@@ -274,25 +296,29 @@ export function Sidebar({
 									{section.items.map((item) => {
 										const Icon = item.icon;
 										return (
-											<NavLink
-												key={item.href}
-												to={item.href}
-												onClick={() =>
-													setIsMobileMenuOpen(false)
-												}
-												className={({ isActive }) =>
-													cn(
-														"flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-														"hover:bg-accent hover:text-accent-foreground",
-														isActive
-															? "bg-accent text-accent-foreground"
-															: "text-muted-foreground",
-													)
-												}
-											>
-												<Icon className="h-4 w-4" />
-												{item.title}
-											</NavLink>
+											<div key={item.href}>
+												{item.dividerBefore && (
+													<div className="my-2 mx-3 border-t border-border" />
+												)}
+												<NavLink
+													to={item.href}
+													onClick={() =>
+														setIsMobileMenuOpen(false)
+													}
+													className={({ isActive }) =>
+														cn(
+															"flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+															"hover:bg-accent hover:text-accent-foreground",
+															isActive
+																? "bg-accent text-accent-foreground"
+																: "text-muted-foreground",
+														)
+													}
+												>
+													<Icon className="h-4 w-4" />
+													{item.title}
+												</NavLink>
+											</div>
 										);
 									})}
 								</div>

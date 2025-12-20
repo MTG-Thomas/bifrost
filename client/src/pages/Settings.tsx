@@ -5,6 +5,7 @@ import { TabActions } from "@/components/ui/tab-actions";
 import { WorkflowKeys } from "@/pages/WorkflowKeys";
 import { Branding } from "@/pages/settings/Branding";
 import { GitHub } from "@/pages/settings/GitHub";
+import { LLMConfig } from "@/pages/settings/LLMConfig";
 
 export function Settings() {
 	const navigate = useNavigate();
@@ -45,6 +46,7 @@ export function Settings() {
 						</TabsTrigger>
 						<TabsTrigger value="github">GitHub</TabsTrigger>
 						<TabsTrigger value="branding">Branding</TabsTrigger>
+						<TabsTrigger value="ai">AI</TabsTrigger>
 					</TabsList>
 
 					{tabActions && <TabActions>{tabActions}</TabActions>}
@@ -60,6 +62,10 @@ export function Settings() {
 
 				<TabsContent value="branding" className="mt-6">
 					<Branding onActionsChange={setTabActions} />
+				</TabsContent>
+
+				<TabsContent value="ai" className="mt-6">
+					<LLMConfig />
 				</TabsContent>
 			</Tabs>
 		</div>

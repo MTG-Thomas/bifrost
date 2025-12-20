@@ -246,6 +246,11 @@ services:
       # Or set in .env.test file
       GITHUB_TEST_PAT: ${GITHUB_TEST_PAT:-}
       GITHUB_TEST_REPO: ${GITHUB_TEST_REPO:-jackmusick/e2e-test-workspace}
+      # LLM E2E test configuration (optional - tests skip if not set)
+      ANTHROPIC_API_TEST_KEY: ${ANTHROPIC_API_TEST_KEY:-}
+      OPENAPI_API_TEST_KEY: ${OPENAPI_API_TEST_KEY:-}
+      GENERIC_AI_TEST_KEY: ${GENERIC_AI_TEST_KEY:-}
+      GENERIC_AI_BASE_URL: ${GENERIC_AI_BASE_URL:-}
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro

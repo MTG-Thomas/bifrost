@@ -1847,6 +1847,7 @@ class WorkflowParameter:
     label: str | None = None
     required: bool = False
     default_value: Any | None = None
+    options: list[dict[str, str]] | None = None  # For Literal types
 
 
 @dataclass
@@ -1887,6 +1888,20 @@ def _get_ui_type(python_type: Any) -> str:
     if python_type in TYPE_MAPPING:
         return TYPE_MAPPING[python_type]
     origin = get_origin(python_type)
+    # Handle Literal types - infer base type from values
+    if origin is Literal:
+        args = get_args(python_type)
+        if args:
+            first_val = args[0]
+            if isinstance(first_val, str):
+                return "string"
+            elif isinstance(first_val, bool):
+                return "bool"
+            elif isinstance(first_val, int):
+                return "int"
+            elif isinstance(first_val, float):
+                return "float"
+        return "string"
     if origin is list:
         return "list"
     if origin is dict:
@@ -1897,6 +1912,22 @@ def _get_ui_type(python_type: Any) -> str:
         if non_none:
             return _get_ui_type(non_none[0])
     return "json"
+
+
+def _get_literal_options(python_type: Any) -> list[dict[str, str]] | None:
+    """Extract options from Literal type."""
+    origin = get_origin(python_type)
+    if origin is Literal:
+        args = get_args(python_type)
+        return [{"label": str(v), "value": str(v)} for v in args]
+    if origin is Union:
+        args = get_args(python_type)
+        for arg in args:
+            if arg is not type(None):
+                options = _get_literal_options(arg)
+                if options:
+                    return options
+    return None
 
 
 def _is_optional(python_type: Any) -> bool:
@@ -1922,11 +1953,13 @@ def _extract_parameters(func: Callable) -> list[WorkflowParameter]:
             if param_type is inspect.Parameter.empty:
                 ui_type = "string"
                 is_optional = has_default
+                options = None
             else:
                 ui_type = _get_ui_type(param_type)
                 is_optional = _is_optional(param_type) or has_default
+                options = _get_literal_options(param_type)
             label = name.replace("_", " ").title()
-            wp = WorkflowParameter(name=name, type=ui_type, required=not is_optional, label=label)
+            wp = WorkflowParameter(name=name, type=ui_type, required=not is_optional, label=label, options=options)
             if has_default and default_val is not None:
                 if isinstance(default_val, (str, int, float, bool, list, dict)):
                     wp.default_value = default_val

@@ -96,7 +96,7 @@ export function Combobox({
 			>
 				<Command>
 					<CommandInput placeholder={searchPlaceholder} />
-					<CommandList>
+					<CommandList className="max-h-60 overflow-y-auto">
 						<CommandEmpty>{emptyText}</CommandEmpty>
 						<CommandGroup>
 							{options.map((option) => (

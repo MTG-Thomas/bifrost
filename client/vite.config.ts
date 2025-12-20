@@ -130,6 +130,12 @@ export default defineConfig({
 				changeOrigin: true,
 				rewrite: (path) => path.replace(/^\/api\/auth/, "/auth"),
 			},
+			// Chat WebSocket streaming endpoint
+			"/api/chat": {
+				target: process.env.API_URL || "http://localhost:8000",
+				changeOrigin: true,
+				ws: true,
+			},
 			"/api": {
 				target: process.env.API_URL || "http://localhost:8000",
 				changeOrigin: true,

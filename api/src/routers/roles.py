@@ -19,8 +19,10 @@ from src.models import (
     Role as RoleORM,
     UserRole as UserRoleORM,
     FormRole as FormRoleORM,
+    AgentRole as AgentRoleORM,
     Form as FormORM,
     User as UserORM,
+    Agent as AgentORM,
 )
 from src.models import (
     RoleCreate,
@@ -28,8 +30,10 @@ from src.models import (
     RoleUpdate,
     RoleUsersResponse,
     RoleFormsResponse,
+    RoleAgentsResponse,
     AssignUsersToRoleRequest,
     AssignFormsToRoleRequest,
+    AssignAgentsToRoleRequest,
 )
 
 # Import cache invalidation
@@ -46,6 +50,15 @@ except ImportError:
     invalidate_role = None  # type: ignore
     invalidate_role_users = None  # type: ignore
     invalidate_role_forms = None  # type: ignore
+
+# Agent cache invalidation (optional, may not exist yet)
+try:
+    from src.core.cache import invalidate_role_agents
+
+    AGENT_CACHE_INVALIDATION_AVAILABLE = True
+except ImportError:
+    AGENT_CACHE_INVALIDATION_AVAILABLE = False
+    invalidate_role_agents = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -478,3 +491,124 @@ async def remove_form_from_role(
         role_org_id = role_result.scalar_one_or_none()
         org_id_str = str(role_org_id) if role_org_id else None
         await invalidate_role_forms(org_id_str, str(role_id))
+
+
+# =============================================================================
+# Role-Agent Assignments
+# =============================================================================
+
+
+@router.get(
+    "/{role_id}/agents",
+    response_model=RoleAgentsResponse,
+    summary="Get role agents",
+    description="Get all agents assigned to a role",
+)
+async def get_role_agents(
+    role_id: UUID,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> RoleAgentsResponse:
+    """Get all agents assigned to a role."""
+    result = await db.execute(
+        select(AgentRoleORM.agent_id).where(AgentRoleORM.role_id == role_id)
+    )
+    agent_ids = [str(aid) for aid in result.scalars().all()]
+    return RoleAgentsResponse(agent_ids=agent_ids)
+
+
+@router.post(
+    "/{role_id}/agents",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Assign agents to role",
+    description="Assign agents to a role (batch operation)",
+)
+async def assign_agents_to_role(
+    role_id: UUID,
+    request: AssignAgentsToRoleRequest,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> None:
+    """Assign agents to a role."""
+    now = datetime.utcnow()
+
+    for agent_id_str in request.agent_ids:
+        agent_uuid = UUID(agent_id_str)
+
+        # Verify agent exists before creating assignment
+        agent_result = await db.execute(
+            select(AgentORM.id).where(AgentORM.id == agent_uuid)
+        )
+        if not agent_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent with ID '{agent_id_str}' not found",
+            )
+
+        # Check if already assigned
+        existing = await db.execute(
+            select(AgentRoleORM).where(
+                AgentRoleORM.agent_id == agent_uuid,
+                AgentRoleORM.role_id == role_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+
+        agent_role = AgentRoleORM(
+            agent_id=agent_uuid,
+            role_id=role_id,
+            assigned_by=user.email,
+            assigned_at=now,
+        )
+        db.add(agent_role)
+
+    await db.flush()
+    logger.info(f"Assigned agents to role {role_id}")
+
+    # Invalidate cache if available
+    if AGENT_CACHE_INVALIDATION_AVAILABLE and invalidate_role_agents:
+        role_result = await db.execute(
+            select(RoleORM.organization_id).where(RoleORM.id == role_id)
+        )
+        role_org_id = role_result.scalar_one_or_none()
+        org_id_str = str(role_org_id) if role_org_id else None
+        await invalidate_role_agents(org_id_str, str(role_id))
+
+
+@router.delete(
+    "/{role_id}/agents/{agent_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove agent from role",
+    description="Remove an agent from a role",
+)
+async def remove_agent_from_role(
+    role_id: UUID,
+    agent_id: UUID,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> None:
+    """Remove an agent from a role."""
+    result = await db.execute(
+        delete(AgentRoleORM).where(
+            AgentRoleORM.agent_id == agent_id,
+            AgentRoleORM.role_id == role_id,
+        )
+    )
+
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent-role assignment not found",
+        )
+
+    logger.info(f"Removed agent {agent_id} from role {role_id}")
+
+    # Invalidate cache if available
+    if AGENT_CACHE_INVALIDATION_AVAILABLE and invalidate_role_agents:
+        role_result = await db.execute(
+            select(RoleORM.organization_id).where(RoleORM.id == role_id)
+        )
+        role_org_id = role_result.scalar_one_or_none()
+        org_id_str = str(role_org_id) if role_org_id else None
+        await invalidate_role_agents(org_id_str, str(role_id))

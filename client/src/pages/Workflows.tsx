@@ -8,6 +8,7 @@ import {
 	AlertTriangle,
 	LayoutGrid,
 	Table as TableIcon,
+	Bot,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -172,6 +173,19 @@ export function Workflows() {
 										</div>
 									</div>
 									<div className="flex flex-wrap items-center gap-1 mt-2">
+										{workflow.is_tool && (
+											<Badge
+												variant="secondary"
+												className="bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
+												title={
+													workflow.tool_description ||
+													"Available as AI tool"
+												}
+											>
+												<Bot className="mr-1 h-3 w-3" />
+												Tool
+											</Badge>
+										)}
 										{workflow.endpoint_enabled && (
 											<Badge
 												variant={
@@ -284,6 +298,19 @@ export function Workflows() {
 										</TableCell>
 										<TableCell>
 											<div className="flex items-center gap-1">
+												{workflow.is_tool && (
+													<Badge
+														variant="secondary"
+														className="bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 text-xs"
+														title={
+															workflow.tool_description ||
+															"Available as AI tool"
+														}
+													>
+														<Bot className="mr-1 h-2 w-2" />
+														Tool
+													</Badge>
+												)}
 												{workflow.endpoint_enabled && (
 													<Badge
 														variant={

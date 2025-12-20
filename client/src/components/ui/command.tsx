@@ -86,13 +86,43 @@ function CommandList({
 	className,
 	...props
 }: React.ComponentProps<typeof CommandPrimitive.List>) {
+	const listRef = React.useRef<HTMLDivElement>(null);
+
+	const handleWheel = React.useCallback(
+		(e: React.WheelEvent<HTMLDivElement>) => {
+			const target = listRef.current;
+			if (!target) return;
+
+			const { scrollHeight, clientHeight } = target;
+			const isScrollable = scrollHeight > clientHeight;
+
+			if (isScrollable) {
+				// Manually scroll the content
+				target.scrollTop += e.deltaY;
+
+				// Prevent the event from scrolling parent elements
+				const isAtTop = target.scrollTop === 0 && e.deltaY < 0;
+				const isAtBottom =
+					target.scrollTop + clientHeight >= scrollHeight && e.deltaY > 0;
+
+				if (!isAtTop && !isAtBottom) {
+					e.preventDefault();
+					e.stopPropagation();
+				}
+			}
+		},
+		[],
+	);
+
 	return (
 		<CommandPrimitive.List
+			ref={listRef}
 			data-slot="command-list"
 			className={cn(
-				"max-h-[300px] scroll-py-1 overflow-x-hidden overflow-y-auto",
+				"max-h-[300px] scroll-py-1 overflow-x-hidden overflow-y-auto overscroll-contain",
 				className,
 			)}
+			onWheel={handleWheel}
 			{...props}
 		/>
 	);

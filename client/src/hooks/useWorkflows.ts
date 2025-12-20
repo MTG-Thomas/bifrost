@@ -15,6 +15,16 @@ type WorkflowValidationRequest =
 	components["schemas"]["WorkflowValidationRequest"];
 
 /**
+ * Fetch workflows that can be used as agent tools.
+ * Uses the is_tool=true query parameter for server-side filtering.
+ */
+export function useToolWorkflows() {
+	return $api.useQuery("get", "/api/workflows", {
+		params: { query: { is_tool: true } },
+	});
+}
+
+/**
  * Fetch workflow and data provider metadata.
  *
  * Note: Workflows and data providers are platform-wide resources (not org-scoped).

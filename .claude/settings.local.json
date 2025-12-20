@@ -83,7 +83,8 @@
       "Bash(break)",
       "Bash(done)",
       "mcp__context7__resolve-library-id",
-      "mcp__context7__get-library-docs"
+      "mcp__context7__get-library-docs",
+      "Bash(./venv/bin/pyright:*)"
     ],
     "deny": [],
     "ask": [],

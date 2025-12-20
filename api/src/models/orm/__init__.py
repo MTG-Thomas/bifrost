@@ -7,6 +7,7 @@ These models define the database schema and relationships.
 For API schemas (Create/Update/Public), see schemas.py
 """
 
+from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool, Conversation, Message
 from src.models.orm.audit import AuditLog
 from src.models.orm.base import Base
 from src.models.orm.branding import GlobalBranding
@@ -32,6 +33,13 @@ __all__ = [
     "User",
     "Role",
     "UserRole",
+    # Agents
+    "Agent",
+    "AgentTool",
+    "AgentDelegation",
+    "AgentRole",
+    "Conversation",
+    "Message",
     # Forms
     "Form",
     "FormField",

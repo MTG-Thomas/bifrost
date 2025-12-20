@@ -5,13 +5,17 @@ Represents workflows and data providers discovered from Python files.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
+
+if TYPE_CHECKING:
+    from src.models.orm.agents import Agent
 
 
 class Workflow(Base):
@@ -46,6 +50,10 @@ class Workflow(Base):
     allowed_methods: Mapped[list] = mapped_column(JSONB, default=["POST"])
     execution_mode: Mapped[str] = mapped_column(String(20), default="sync")
 
+    # Tool configuration (for AI agent tool calling)
+    is_tool: Mapped[bool] = mapped_column(Boolean, default=False)
+    tool_description: Mapped[str | None] = mapped_column(Text, default=None)
+
     # API key (one per workflow, replaces workflow_keys table)
     api_key_hash: Mapped[str | None] = mapped_column(
         String(64), default=None
@@ -70,6 +78,12 @@ class Workflow(Base):
         onupdate=datetime.utcnow,
     )
 
+    # Relationships
+    agents: Mapped[list["Agent"]] = relationship(
+        secondary="agent_tools",
+        back_populates="tools",
+    )
+
     __table_args__ = (
         Index(
             "ix_workflows_schedule",
@@ -80,6 +94,11 @@ class Workflow(Base):
             "ix_workflows_api_key_hash",
             "api_key_hash",
             postgresql_where=text("api_key_hash IS NOT NULL"),
+        ),
+        Index(
+            "ix_workflows_is_tool",
+            "is_tool",
+            postgresql_where=text("is_tool = true"),
         ),
         # Unique constraint on (file_path, function_name) for ON CONFLICT upserts
         UniqueConstraint("file_path", "function_name", name="workflows_file_function_key"),

@@ -68,6 +68,8 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
         allowed_methods=workflow.allowed_methods or ["POST"],
         disable_global_key=False,
         public_endpoint=False,
+        is_tool=workflow.is_tool or False,
+        tool_description=workflow.tool_description,
         source_file_path=workflow.file_path,
         relative_file_path=_extract_relative_path(workflow.file_path),
     )
@@ -87,15 +89,25 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
 async def list_workflows(
     user: CurrentActiveUser,
     db: DbSession,
+    is_tool: bool | None = None,
 ) -> list[WorkflowMetadata]:
     """List all registered workflows from the database.
 
     Workflows are discovered by the Discovery container and synced to the
     database. This endpoint queries the database for fast lookups.
+
+    Args:
+        is_tool: Filter by tool-enabled workflows. If True, only return workflows
+                 that can be used as agent tools. If None, return all workflows.
     """
     try:
         # Query active workflows from database
         query = select(WorkflowORM).where(WorkflowORM.is_active.is_(True))
+
+        # Optional filter for tool-enabled workflows
+        if is_tool is not None:
+            query = query.where(WorkflowORM.is_tool.is_(is_tool))
+
         result = await db.execute(query)
         workflows = result.scalars().all()
 

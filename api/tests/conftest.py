@@ -29,6 +29,7 @@ pytest_plugins = [
     "tests.fixtures.auth",
     "tests.e2e.fixtures.setup",  # E2E session fixtures
     "tests.e2e.fixtures.github_setup",  # GitHub E2E fixtures
+    "tests.e2e.fixtures.llm_setup",  # LLM E2E fixtures
 ]
 
 

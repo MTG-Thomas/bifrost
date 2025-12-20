@@ -46,6 +46,7 @@ class WorkflowParameter:
     label: str | None = None
     required: bool = False
     default_value: Any | None = None
+    options: list[dict[str, str]] | None = None  # For Literal types - [{label, value}, ...]
 
 
 @dataclass
@@ -73,6 +74,10 @@ class WorkflowMetadata:
     allowed_methods: list[str] = field(default_factory=lambda: ["POST"])
     disable_global_key: bool = False
     public_endpoint: bool = False
+
+    # Tool configuration (for AI agent tool calling)
+    tool: bool = False  # Whether this workflow is available as an agent tool
+    tool_description: str | None = None  # LLM-friendly description for tool calling
 
     # Source tracking
     source_file_path: str | None = None
@@ -654,6 +659,8 @@ def _convert_workflow_metadata(old_metadata: Any) -> WorkflowMetadata:
         allowed_methods=getattr(old_metadata, 'allowed_methods', ['POST']),
         disable_global_key=getattr(old_metadata, 'disable_global_key', False),
         public_endpoint=getattr(old_metadata, 'public_endpoint', False),
+        tool=getattr(old_metadata, 'tool', False),
+        tool_description=getattr(old_metadata, 'tool_description', None),
         source_file_path=getattr(old_metadata, 'source_file_path', None),
         parameters=_convert_parameters(getattr(old_metadata, 'parameters', [])),
         function=getattr(old_metadata, 'function', None)

@@ -15,6 +15,7 @@ from src.models.enums import UserType
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
+    from src.models.orm.agents import Agent
     from src.models.orm.developer import DeveloperApiKey, DeveloperContext
     from src.models.orm.executions import Execution
     from src.models.orm.mfa import MFARecoveryCode, TrustedDevice, UserMFAMethod, UserOAuthAccount
@@ -115,6 +116,11 @@ class Role(Base):
 
     # Relationships
     users: Mapped[list["UserRole"]] = relationship(back_populates="role")
+    # Agents via junction table
+    agents: Mapped[list["Agent"]] = relationship(
+        secondary="agent_roles",
+        back_populates="roles",
+    )
 
     __table_args__ = (Index("ix_roles_organization_id", "organization_id"),)
 

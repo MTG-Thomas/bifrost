@@ -30,6 +30,7 @@ class WorkflowParameter(BaseModel):
     label: str | None = None
     default_value: Any | None = None
     description: str | None = None
+    options: list[dict[str, str]] | None = None  # For Literal types - [{label, value}, ...]
 
 
 class WorkflowMetadata(BaseModel):
@@ -59,6 +60,10 @@ class WorkflowMetadata(BaseModel):
     allowed_methods: list[str] = Field(default_factory=lambda: ["POST"], description="Allowed HTTP methods")
     disable_global_key: bool = Field(default=False, description="If true, only workflow-specific API keys work")
     public_endpoint: bool = Field(default=False, description="If true, skip authentication for webhooks")
+
+    # Tool configuration (for AI agent tool calling)
+    is_tool: bool = Field(default=False, description="Whether workflow is available as an AI tool")
+    tool_description: str | None = Field(default=None, description="Description optimized for AI tool selection")
 
     # Source tracking
     source_file_path: str | None = Field(default=None, description="Full file path to the workflow source code")

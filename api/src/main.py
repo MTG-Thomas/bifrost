@@ -43,6 +43,9 @@ from src.routers import (
     cli_router,
     notifications_router,
     profile_router,
+    agents_router,
+    chat_router,
+    llm_config_router,
 )
 
 # Configure logging
@@ -222,6 +225,9 @@ def create_app() -> FastAPI:
     app.include_router(cli_router)
     app.include_router(notifications_router)
     app.include_router(profile_router)
+    app.include_router(agents_router)
+    app.include_router(chat_router)
+    app.include_router(llm_config_router)
 
     # Root endpoint
     @app.get("/")

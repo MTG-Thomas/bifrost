@@ -232,6 +232,43 @@ export function expiresSoon(
 	return expiresDate <= thresholdDate;
 }
 
+// ==================== CHAT TYPES ====================
+// Re-export generated types from v1.d.ts for convenience
+// Only client-only types (not from API) should be defined here
+
+// Re-export generated API types
+export type MessageRole = components["schemas"]["MessageRole"];
+export type ToolCall = components["schemas"]["ToolCall"];
+export type AgentSummary = components["schemas"]["AgentSummary"];
+export type AgentPublic = components["schemas"]["AgentPublic"];
+export type ConversationSummary = components["schemas"]["ConversationSummary"];
+export type ConversationPublic = components["schemas"]["ConversationPublic"];
+export type MessagePublic = components["schemas"]["MessagePublic"];
+export type ConversationCreate = components["schemas"]["ConversationCreate"];
+export type ChatRequest = components["schemas"]["ChatRequest"];
+export type ChatResponse = components["schemas"]["ChatResponse"];
+
+// Client-only types (not from API)
+export interface ToolResult {
+	tool_call_id: string;
+	tool_name: string;
+	result: unknown;
+	error?: string | null;
+	duration_ms?: number | null;
+}
+
+export interface ChatStreamChunk {
+	type: "delta" | "tool_call" | "tool_result" | "done" | "error";
+	content?: string | null;
+	tool_call?: ToolCall | null;
+	tool_result?: ToolResult | null;
+	message_id?: string | null;
+	token_count_input?: number | null;
+	token_count_output?: number | null;
+	duration_ms?: number | null;
+	error?: string | null;
+}
+
 // ==================== TYPE ALIASES ====================
 
 export type ConfigScope = "GLOBAL" | "org";

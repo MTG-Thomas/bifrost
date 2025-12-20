@@ -1,0 +1,429 @@
+/**
+ * Agents Page
+ *
+ * Platform admin page for managing AI agents.
+ * Displays agent list with CRUD operations.
+ */
+
+import { useState } from "react";
+import {
+	Plus,
+	RefreshCw,
+	Bot,
+	Pencil,
+	Trash2,
+	Globe,
+	Building2,
+	LayoutGrid,
+	Table as TableIcon,
+	MessageSquare,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
+import {
+	useAgents,
+	useDeleteAgent,
+	useUpdateAgent,
+} from "@/hooks/useAgents";
+import { useOrgScope } from "@/contexts/OrgScopeContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { SearchBox } from "@/components/search/SearchBox";
+import { useSearch } from "@/hooks/useSearch";
+import { AgentDialog } from "@/components/agents/AgentDialog";
+import type { components } from "@/lib/v1";
+
+type AgentSummary = components["schemas"]["AgentSummary"];
+
+
+export function Agents() {
+	const { scope, isGlobalScope } = useOrgScope();
+	const { data: agents, isLoading, refetch } = useAgents();
+	const deleteAgent = useDeleteAgent();
+	const updateAgent = useUpdateAgent();
+	const { isPlatformAdmin } = useAuth();
+	const [searchTerm, setSearchTerm] = useState("");
+	const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
+	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+	const [isAgentDialogOpen, setIsAgentDialogOpen] = useState(false);
+	const [selectedAgent, setSelectedAgent] = useState<AgentSummary | null>(null);
+	const [editAgentId, setEditAgentId] = useState<string | null>(null);
+
+	// Only platform admins can manage agents
+	const canManageAgents = isPlatformAdmin;
+
+	// Scope-based filtering for platform admins
+	// Note: Backend handles authorization. Frontend filtering may be added later for org scope.
+	const scopeFilteredAgents = agents ?? [];
+
+	// Search filtering
+	const filteredAgents = useSearch(scopeFilteredAgents, searchTerm, [
+		"name",
+		"description",
+		(agent) => agent.id,
+	]);
+
+	const handleCreate = () => {
+		setEditAgentId(null);
+		setIsAgentDialogOpen(true);
+	};
+
+	const handleEdit = (agentId: string) => {
+		setEditAgentId(agentId);
+		setIsAgentDialogOpen(true);
+	};
+
+	const handleDelete = (agent: AgentSummary) => {
+		setSelectedAgent(agent);
+		setIsDeleteDialogOpen(true);
+	};
+
+	const handleConfirmDelete = async () => {
+		if (!selectedAgent) return;
+		await deleteAgent.mutateAsync({
+			params: { path: { agent_id: selectedAgent.id } },
+		});
+		setIsDeleteDialogOpen(false);
+		setSelectedAgent(null);
+	};
+
+	const handleToggleActive = async (agent: AgentSummary) => {
+		await updateAgent.mutateAsync({
+			params: { path: { agent_id: agent.id } },
+			body: { is_active: !agent.is_active },
+		});
+	};
+
+	const handleDialogClose = () => {
+		setIsAgentDialogOpen(false);
+		setEditAgentId(null);
+	};
+
+	return (
+		<div className="space-y-6">
+			{/* Header */}
+			<div className="flex items-center justify-between">
+				<div>
+					<div className="flex items-center gap-3">
+						<h1 className="text-4xl font-extrabold tracking-tight">Agents</h1>
+						{isPlatformAdmin && (
+							<Badge
+								variant={isGlobalScope ? "default" : "outline"}
+								className="text-sm"
+							>
+								{isGlobalScope ? (
+									<>
+										<Globe className="mr-1 h-3 w-3" />
+										Global
+									</>
+								) : (
+									<>
+										<Building2 className="mr-1 h-3 w-3" />
+										{scope.orgName}
+									</>
+								)}
+							</Badge>
+						)}
+					</div>
+					<p className="mt-2 text-muted-foreground">
+						{canManageAgents
+							? "Create and manage AI agents with custom prompts and tools"
+							: "View available AI agents"}
+					</p>
+				</div>
+				<div className="flex gap-2">
+					{canManageAgents && (
+						<ToggleGroup
+							type="single"
+							value={viewMode}
+							onValueChange={(value: string) =>
+								value && setViewMode(value as "grid" | "table")
+							}
+						>
+							<ToggleGroupItem value="grid" aria-label="Grid view" size="sm">
+								<LayoutGrid className="h-4 w-4" />
+							</ToggleGroupItem>
+							<ToggleGroupItem value="table" aria-label="Table view" size="sm">
+								<TableIcon className="h-4 w-4" />
+							</ToggleGroupItem>
+						</ToggleGroup>
+					)}
+					<Button
+						variant="outline"
+						size="icon"
+						onClick={() => refetch()}
+						title="Refresh"
+					>
+						<RefreshCw className="h-4 w-4" />
+					</Button>
+					{canManageAgents && (
+						<Button
+							variant="outline"
+							size="icon"
+							onClick={handleCreate}
+							title="Create Agent"
+						>
+							<Plus className="h-4 w-4" />
+						</Button>
+					)}
+				</div>
+			</div>
+
+			{/* Search Box */}
+			<SearchBox
+				value={searchTerm}
+				onChange={setSearchTerm}
+				placeholder="Search agents by name or description..."
+				className="max-w-md"
+			/>
+
+			{/* Content */}
+			{isLoading ? (
+				viewMode === "grid" || !canManageAgents ? (
+					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+						{[...Array(6)].map((_, i) => (
+							<Skeleton key={i} className="h-48 w-full" />
+						))}
+					</div>
+				) : (
+					<div className="space-y-2">
+						{[...Array(3)].map((_, i) => (
+							<Skeleton key={i} className="h-12 w-full" />
+						))}
+					</div>
+				)
+			) : filteredAgents && filteredAgents.length > 0 ? (
+				viewMode === "grid" || !canManageAgents ? (
+					// Grid View
+					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+						{filteredAgents.map((agent) => (
+							<Card
+								key={agent.id}
+								className="hover:border-primary transition-colors flex flex-col"
+							>
+								<CardHeader className="pb-3">
+									<div className="flex items-start justify-between gap-3">
+										<div className="flex-1 min-w-0">
+											<div className="flex items-center gap-2">
+												<Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+												<CardTitle className="text-base break-all">
+													{agent.name}
+												</CardTitle>
+											</div>
+											<CardDescription className="mt-1.5 text-sm break-words line-clamp-2">
+												{agent.description || (
+													<span className="italic text-muted-foreground/60">
+														No description
+													</span>
+												)}
+											</CardDescription>
+										</div>
+										{canManageAgents && (
+											<div className="flex items-center gap-2 shrink-0">
+												<Switch
+													checked={agent.is_active}
+													onCheckedChange={() => handleToggleActive(agent)}
+													disabled={updateAgent.isPending}
+												/>
+											</div>
+										)}
+									</div>
+								</CardHeader>
+								<CardContent className="pt-0 mt-auto">
+									{/* Channel badges */}
+									<div className="flex flex-wrap gap-1 mb-3">
+										{agent.channels?.map((channel) => (
+											<Badge key={channel} variant="secondary" className="text-xs">
+												<MessageSquare className="h-3 w-3 mr-1" />
+												{channel}
+											</Badge>
+										))}
+									</div>
+
+									{/* Actions */}
+									{canManageAgents && (
+										<div className="flex gap-2">
+											<Button
+												variant="outline"
+												size="sm"
+												className="flex-1"
+												onClick={() => handleEdit(agent.id)}
+											>
+												<Pencil className="h-3 w-3 mr-1" />
+												Edit
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onClick={() => handleDelete(agent)}
+											>
+												<Trash2 className="h-3 w-3" />
+											</Button>
+										</div>
+									)}
+								</CardContent>
+							</Card>
+						))}
+					</div>
+				) : (
+					// Table View
+					<div className="border rounded-lg">
+						<Table>
+							<TableHeader>
+								<TableRow>
+									<TableHead>Name</TableHead>
+									<TableHead>Description</TableHead>
+									<TableHead>Channels</TableHead>
+									<TableHead>Status</TableHead>
+									<TableHead className="text-right">Actions</TableHead>
+								</TableRow>
+							</TableHeader>
+							<TableBody>
+								{filteredAgents.map((agent) => (
+									<TableRow key={agent.id}>
+										<TableCell className="font-medium">
+											<div className="flex items-center gap-2">
+												<Bot className="h-4 w-4 text-muted-foreground" />
+												{agent.name}
+											</div>
+										</TableCell>
+										<TableCell className="max-w-xs truncate text-muted-foreground">
+											{agent.description || "No description"}
+										</TableCell>
+										<TableCell>
+											<div className="flex flex-wrap gap-1">
+												{agent.channels?.map((channel) => (
+													<Badge
+														key={channel}
+														variant="secondary"
+														className="text-xs"
+													>
+														{channel}
+													</Badge>
+												))}
+											</div>
+										</TableCell>
+										<TableCell>
+											<Switch
+												checked={agent.is_active}
+												onCheckedChange={() => handleToggleActive(agent)}
+												disabled={updateAgent.isPending}
+											/>
+										</TableCell>
+										<TableCell className="text-right">
+											<div className="flex justify-end gap-2">
+												<Button
+													variant="ghost"
+													size="icon-sm"
+													onClick={() => handleEdit(agent.id)}
+												>
+													<Pencil className="h-4 w-4" />
+												</Button>
+												<Button
+													variant="ghost"
+													size="icon-sm"
+													onClick={() => handleDelete(agent)}
+												>
+													<Trash2 className="h-4 w-4" />
+												</Button>
+											</div>
+										</TableCell>
+									</TableRow>
+								))}
+							</TableBody>
+						</Table>
+					</div>
+				)
+			) : (
+				// Empty State
+				<Card>
+					<CardContent className="flex flex-col items-center justify-center py-12 text-center">
+						<Bot className="h-12 w-12 text-muted-foreground" />
+						<h3 className="mt-4 text-lg font-semibold">
+							{searchTerm ? "No agents match your search" : "No agents found"}
+						</h3>
+						<p className="mt-2 text-sm text-muted-foreground">
+							{searchTerm
+								? "Try adjusting your search term or clear the filter"
+								: canManageAgents
+									? "Get started by creating your first AI agent"
+									: "No agents are currently available"}
+						</p>
+						{canManageAgents && !searchTerm && (
+							<Button
+								variant="outline"
+								size="icon"
+								onClick={handleCreate}
+								className="mt-4"
+								title="Create Agent"
+							>
+								<Plus className="h-4 w-4" />
+							</Button>
+						)}
+					</CardContent>
+				</Card>
+			)}
+
+			{/* Delete Confirmation Dialog */}
+			<AlertDialog
+				open={isDeleteDialogOpen}
+				onOpenChange={setIsDeleteDialogOpen}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Delete Agent?</AlertDialogTitle>
+						<AlertDialogDescription>
+							This will delete the agent "{selectedAgent?.name}". This action
+							cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={handleConfirmDelete}
+							className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+						>
+							{deleteAgent.isPending ? "Deleting..." : "Delete Agent"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+
+			{/* Create/Edit Agent Dialog */}
+			<AgentDialog
+				open={isAgentDialogOpen}
+				onOpenChange={handleDialogClose}
+				agentId={editAgentId}
+			/>
+		</div>
+	);
+}
+
+export default Agents;

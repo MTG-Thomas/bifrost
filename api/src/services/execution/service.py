@@ -348,6 +348,7 @@ async def _enqueue_workflow_async(
         workflow_id=workflow_id,
         parameters=parameters,
         form_id=form_id,
+        execution_id=context.execution_id,  # Pass through for log streaming
         sync=sync,
     )
 
@@ -414,4 +415,71 @@ async def _enqueue_code_async(
         execution_id=execution_id,
         workflow_name=script_name,
         status=ExecutionStatus.PENDING,
+    )
+
+
+async def execute_tool(
+    workflow_id: str,
+    workflow_name: str,
+    parameters: dict[str, Any],
+    user_id: str,
+    user_email: str,
+    user_name: str,
+    org_id: str | None = None,
+    org_name: str | None = None,
+    is_platform_admin: bool = False,
+    execution_id: str | None = None,
+) -> WorkflowExecutionResponse:
+    """
+    Execute a workflow as a tool (for AI agent tool calls).
+
+    Uses sync execution via RabbitMQ with Redis BLPOP for result.
+
+    Args:
+        workflow_id: Workflow UUID
+        workflow_name: Workflow name for display
+        parameters: Tool call arguments
+        user_id: User ID executing the tool
+        user_email: User email
+        user_name: User display name
+        org_id: Organization ID (optional)
+        org_name: Organization name (optional)
+        is_platform_admin: Whether user is platform admin
+        execution_id: Optional pre-generated execution ID (for streaming)
+
+    Returns:
+        WorkflowExecutionResponse with execution results
+    """
+    from src.sdk.context import ExecutionContext, Organization
+
+    # Build organization if provided
+    org = None
+    if org_id:
+        org = Organization(
+            id=org_id,
+            name=org_name or "",
+            is_active=True,
+        )
+
+    # Use provided execution_id or generate a new one
+    if not execution_id:
+        execution_id = str(uuid.uuid4())
+    context = ExecutionContext(
+        user_id=user_id,
+        email=user_email,
+        name=user_name,
+        scope=org_id or "GLOBAL",
+        organization=org,
+        is_platform_admin=is_platform_admin,
+        is_function_key=False,
+        execution_id=execution_id,
+    )
+
+    # Execute synchronously via queue
+    return await _enqueue_workflow_async(
+        context=context,
+        workflow_id=workflow_id,
+        workflow_name=workflow_name,
+        parameters=parameters,
+        sync=True,  # Wait for result
     )

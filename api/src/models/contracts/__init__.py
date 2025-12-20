@@ -80,6 +80,27 @@ from src.models.contracts.forms import (
     UpdateFormRequest,
 )
 
+# Agents & Chat
+from src.models.contracts.agents import (
+    AgentCreate,
+    AgentPublic,
+    AgentSummary,
+    AgentUpdate,
+    AssignAgentsToRoleRequest,
+    AssignDelegationsToAgentRequest,
+    AssignToolsToAgentRequest,
+    ChatRequest,
+    ChatResponse,
+    ChatStreamChunk,
+    ConversationCreate,
+    ConversationPublic,
+    ConversationSummary,
+    MessagePublic,
+    RoleAgentsResponse,
+    ToolCall,
+    ToolResult,
+)
+
 # Executions & Logs
 from src.models.contracts.executions import (
     CleanupTriggeredResponse,
@@ -307,6 +328,15 @@ from src.models.contracts.notifications import (
     UploadLockInfo,
 )
 
+# LLM Configuration
+from src.models.contracts.llm import (
+    LLMConfigRequest,
+    LLMConfigResponse,
+    LLMModelsResponse,
+    LLMTestRequest,
+    LLMTestResponse,
+)
+
 __all__ = [
     # Re-export everything defined above
     # NOTE: Bare names like User, Organization, Role, Form, Config, ExecutionLog
@@ -375,6 +405,24 @@ __all__ = [
     "FormCreate",
     "FormUpdate",
     "FormPublic",
+    # Agents & Chat - use AgentPublic for responses
+    "AgentCreate",
+    "AgentUpdate",
+    "AgentPublic",
+    "AgentSummary",
+    "ConversationCreate",
+    "ConversationPublic",
+    "ConversationSummary",
+    "MessagePublic",
+    "ChatRequest",
+    "ChatResponse",
+    "ChatStreamChunk",
+    "ToolCall",
+    "ToolResult",
+    "AssignAgentsToRoleRequest",
+    "AssignToolsToAgentRequest",
+    "AssignDelegationsToAgentRequest",
+    "RoleAgentsResponse",
     # Executions
     "ExecutionBase",
     "ExecutionLogPublic",
@@ -553,4 +601,10 @@ __all__ = [
     "ProfileUpdate",
     "PasswordChange",
     "ProfileResponse",
+    # LLM Configuration
+    "LLMConfigRequest",
+    "LLMConfigResponse",
+    "LLMTestRequest",
+    "LLMTestResponse",
+    "LLMModelsResponse",
 ]

@@ -35,6 +35,9 @@ const Organizations = lazy(() =>
 const Forms = lazy(() =>
 	import("@/pages/Forms").then((m) => ({ default: m.Forms })),
 );
+const Agents = lazy(() =>
+	import("@/pages/Agents").then((m) => ({ default: m.Agents })),
+);
 const FormBuilder = lazy(() =>
 	import("@/pages/FormBuilder").then((m) => ({ default: m.FormBuilder })),
 );
@@ -98,6 +101,9 @@ const DevRun = lazy(() =>
 const CLI = lazy(() => import("@/pages/CLI").then((m) => ({ default: m.CLI })));
 const Workbench = lazy(() =>
 	import("@/pages/Workbench").then((m) => ({ default: m.Workbench })),
+);
+const Chat = lazy(() =>
+	import("@/pages/Chat").then((m) => ({ default: m.Chat })),
 );
 
 function AppRoutes() {
@@ -263,6 +269,16 @@ function AppRoutes() {
 							}
 						/>
 
+						{/* Agents - PlatformAdmin only */}
+						<Route
+							path="agents"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<Agents />
+								</ProtectedRoute>
+							}
+						/>
+
 						{/* OAuth Connections - PlatformAdmin only */}
 						<Route
 							path="oauth"
@@ -363,6 +379,23 @@ function AppRoutes() {
 
 					{/* ContentLayout - Pages without default padding */}
 					<Route path="/" element={<ContentLayout />}>
+						{/* Chat - All authenticated users */}
+						<Route
+							path="chat"
+							element={
+								<ProtectedRoute>
+									<Chat />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="chat/:conversationId"
+							element={
+								<ProtectedRoute>
+									<Chat />
+								</ProtectedRoute>
+							}
+						/>
 						{/* Workbench (CLI Session Detail) - PlatformAdmin only */}
 						<Route
 							path="cli/:sessionId"

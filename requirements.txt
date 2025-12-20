@@ -96,6 +96,12 @@ aiobotocore  # Async S3 client
 types-aiobotocore[s3]  # Type stubs for S3
 
 # =============================================================================
+# LLM Providers (AI Agent System)
+# =============================================================================
+openai  # OpenAI API client
+anthropic  # Anthropic Claude API client
+
+# =============================================================================
 # Development
 # =============================================================================
 debugpy  # Remote debugging (VS Code attach)

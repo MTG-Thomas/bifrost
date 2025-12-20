@@ -41,7 +41,11 @@ def workflow(
     endpoint_enabled: bool = False,
     allowed_methods: list[str] | None = None,
     disable_global_key: bool = False,
-    public_endpoint: bool = False
+    public_endpoint: bool = False,
+
+    # Tool Configuration (for AI agent tool calling)
+    is_tool: bool = False,
+    tool_description: str | None = None,
 ):
     """
     Decorator for registering workflow functions.
@@ -59,6 +63,11 @@ def workflow(
             '''Onboard a new M365 user.'''
             ...
 
+        @workflow(is_tool=True, tool_description="Onboard a new M365 user with license")
+        async def onboard_m365_user(email: str, license: str = "E3") -> dict:
+            '''Onboard tool for AI agents.'''
+            ...
+
     Args:
         id: Persistent UUID (written by discovery watcher)
         name: Workflow name (defaults to function name)
@@ -73,6 +82,8 @@ def workflow(
         allowed_methods: HTTP methods allowed for endpoint (default: ["POST"])
         disable_global_key: If True, only workflow-specific API keys work
         public_endpoint: If True, skip authentication for webhooks
+        is_tool: If True, makes this workflow available as an AI agent tool
+        tool_description: LLM-friendly description for tool calling (defaults to full docstring)
 
     Returns:
         Decorated function
@@ -84,9 +95,12 @@ def workflow(
         # Derive description from docstring if not provided
         workflow_description = description
         if workflow_description is None and func.__doc__:
-            # Use first line of docstring
+            # Use first line of docstring for general description
             workflow_description = func.__doc__.strip().split('\n')[0].strip()
         workflow_description = workflow_description or ""
+
+        # For tools, use the full docstring to give the LLM complete context
+        full_docstring = func.__doc__.strip() if func.__doc__ else ""
 
         # Get tags with default
         workflow_tags = tags if tags is not None else []
@@ -109,6 +123,7 @@ def workflow(
                 label=p.get("label"),
                 required=p["required"],
                 default_value=p.get("default_value"),
+                options=p.get("options"),
             )
             for p in param_dicts
         ]
@@ -117,6 +132,9 @@ def workflow(
         source_file_path = None
         if hasattr(func, '__code__'):
             source_file_path = func.__code__.co_filename
+
+        # Tool description: use explicit tool_description, or full docstring, or workflow description
+        workflow_tool_description = tool_description if tool_description else (full_docstring or workflow_description)
 
         # Initialize metadata
         metadata = WorkflowMetadata(
@@ -133,6 +151,8 @@ def workflow(
             allowed_methods=workflow_allowed_methods,
             disable_global_key=disable_global_key,
             public_endpoint=public_endpoint,
+            tool=is_tool,
+            tool_description=workflow_tool_description if is_tool else None,
             source_file_path=source_file_path,
             parameters=parameters,
             function=func
@@ -141,9 +161,10 @@ def workflow(
         # Store metadata on function for dynamic discovery
         func._workflow_metadata = metadata
 
+        tool_info = ", is_tool=True" if is_tool else ""
         logger.debug(
             f"Workflow decorator applied: {workflow_name} "
-            f"({len(parameters)} params, execution_mode={workflow_execution_mode})"
+            f"({len(parameters)} params, execution_mode={workflow_execution_mode}{tool_info})"
         )
 
         # Return function unchanged (for normal Python execution)
@@ -156,6 +177,71 @@ def workflow(
     else:
         # Called as @workflow(...) with arguments
         return decorator
+
+
+def tool(
+    _func: Callable | None = None,
+    *,
+    # Identity
+    id: str | None = None,
+    name: str | None = None,
+    description: str | None = None,
+    category: str = "General",
+    tags: list[str] | None = None,
+
+    # Execution
+    execution_mode: Literal["sync", "async"] | None = None,
+    timeout_seconds: int = 1800,
+
+    # Retry
+    retry_policy: dict[str, Any] | None = None,
+):
+    """
+    Decorator for registering AI agent tools.
+
+    This is an alias for @workflow(is_tool=True) that provides a cleaner API
+    for creating workflows specifically designed as AI agent tools.
+
+    Parameters are automatically derived from function signatures.
+
+    Usage:
+        @tool
+        async def get_user_info(email: str) -> dict:
+            '''Get user information by email address.'''
+            ...
+
+        @tool(description="Search for users by name or email")
+        async def search_users(query: str, limit: int = 10) -> list[dict]:
+            '''Search for users matching the query.'''
+            ...
+
+    Args:
+        id: Persistent UUID (written by discovery watcher)
+        name: Tool name (defaults to function name)
+        description: LLM-friendly description (defaults to first line of docstring)
+        category: Category for organization (default: "General")
+        tags: Optional list of tags for filtering
+        execution_mode: "sync" | "async" | None (defaults to "async")
+        timeout_seconds: Max execution time in seconds (default: 1800)
+        retry_policy: Dict with retry config
+
+    Returns:
+        Decorated function
+    """
+    # Delegate to workflow with is_tool=True
+    return workflow(
+        _func,
+        id=id,
+        name=name,
+        description=description,
+        category=category,
+        tags=tags,
+        execution_mode=execution_mode,
+        timeout_seconds=timeout_seconds,
+        retry_policy=retry_policy,
+        is_tool=True,
+        tool_description=description,
+    )
 
 
 def data_provider(
@@ -215,6 +301,7 @@ def data_provider(
                 label=p.get("label"),
                 required=p["required"],
                 default_value=p.get("default_value"),
+                options=p.get("options"),
             )
             for p in param_dicts
         ]

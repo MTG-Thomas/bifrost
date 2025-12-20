@@ -3,6 +3,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { Play, Loader2 } from "lucide-react";
 import type { components } from "@/lib/v1";
 type WorkflowParameter = components["schemas"]["WorkflowParameter"];
@@ -72,6 +79,52 @@ export function WorkflowParametersForm({
 	const renderParameterInput = (param: WorkflowParameter) => {
 		const value = paramValues[param.name ?? ""];
 		const displayName = param.label || param.name;
+
+		// If parameter has options (e.g., from Literal types), render as dropdown
+		if (param.options && param.options.length > 0) {
+			return (
+				<div className="space-y-2">
+					<Label htmlFor={param.name ?? "select"}>
+						{displayName}
+						{param.required && (
+							<span className="text-destructive ml-1">*</span>
+						)}
+					</Label>
+					<Select
+						value={(value as string) ?? ""}
+						onValueChange={(newValue) =>
+							handleParameterChange(param.name ?? "", newValue)
+						}
+						disabled={isExecuting}
+					>
+						<SelectTrigger id={param.name ?? "select"}>
+							<SelectValue
+								placeholder={
+									param.default_value != null
+										? `Default: ${param.default_value}`
+										: "Select an option..."
+								}
+							/>
+						</SelectTrigger>
+						<SelectContent>
+							{param.options.map((option) => (
+								<SelectItem
+									key={option.value}
+									value={option.value}
+								>
+									{option.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+					{param.description && (
+						<p className="text-xs text-muted-foreground">
+							{param.description}
+						</p>
+					)}
+				</div>
+			);
+		}
 
 		switch (param.type) {
 			case "bool":

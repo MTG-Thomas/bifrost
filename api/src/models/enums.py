@@ -78,3 +78,26 @@ class GitStatus(str, Enum):
     SYNCED = "synced"
     MODIFIED = "modified"
     DELETED = "deleted"
+
+
+class AgentAccessLevel(str, Enum):
+    """Agent access control levels"""
+    PUBLIC = "public"
+    AUTHENTICATED = "authenticated"
+    ROLE_BASED = "role_based"
+
+
+class MessageRole(str, Enum):
+    """Message roles in chat conversations"""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+    TOOL = "tool"
+
+
+class AgentChannel(str, Enum):
+    """Supported agent communication channels"""
+    CHAT = "chat"
+    VOICE = "voice"
+    TEAMS = "teams"
+    SLACK = "slack"

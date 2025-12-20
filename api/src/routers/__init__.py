@@ -25,6 +25,9 @@ from src.routers.endpoints import router as endpoints_router
 from src.routers.cli import router as cli_router
 from src.routers.notifications import router as notifications_router
 from src.routers.profile import router as profile_router
+from src.routers.agents import router as agents_router
+from src.routers.chat import router as chat_router
+from src.routers.llm_config import router as llm_config_router
 
 __all__ = [
     "auth_router",
@@ -53,4 +56,7 @@ __all__ = [
     "cli_router",
     "notifications_router",
     "profile_router",
+    "agents_router",
+    "chat_router",
+    "llm_config_router",
 ]

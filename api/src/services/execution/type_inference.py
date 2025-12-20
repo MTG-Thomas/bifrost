@@ -21,7 +21,7 @@ Usage:
 import inspect
 import logging
 import re
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from src.sdk.context import ExecutionContext
 
@@ -57,6 +57,7 @@ def get_ui_type(python_type: Any) -> str:
         get_ui_type(list[str]) -> "list"
         get_ui_type(dict[str, Any]) -> "json"
         get_ui_type(str | None) -> "string"
+        get_ui_type(Literal["a", "b"]) -> "string"
     """
     # Handle None type
     if python_type is type(None):
@@ -68,6 +69,22 @@ def get_ui_type(python_type: Any) -> str:
 
     # Handle generic types (list[str], dict[str, Any], etc.)
     origin = get_origin(python_type)
+
+    # Handle Literal types - infer base type from values
+    if origin is Literal:
+        args = get_args(python_type)
+        if args:
+            # Infer type from first value
+            first_val = args[0]
+            if isinstance(first_val, str):
+                return "string"
+            elif isinstance(first_val, bool):  # Must check bool before int (bool is subclass of int)
+                return "bool"
+            elif isinstance(first_val, int):
+                return "int"
+            elif isinstance(first_val, float):
+                return "float"
+        return "string"  # Default for empty Literal
     if origin is list:
         return "list"
     if origin is dict:
@@ -126,6 +143,50 @@ def is_optional_type(python_type: Any) -> bool:
     return False
 
 
+def get_literal_options(python_type: Any) -> list[dict[str, str]] | None:
+    """
+    Extract options from Literal type as {label, value} pairs.
+
+    Args:
+        python_type: Python type annotation
+
+    Returns:
+        List of {label, value} dicts if Literal type, None otherwise
+
+    Examples:
+        get_literal_options(Literal["Open", "Closed"]) -> [{"label": "Open", "value": "Open"}, {"label": "Closed", "value": "Closed"}]
+        get_literal_options(str) -> None
+        get_literal_options(str | None) -> None
+    """
+    origin = get_origin(python_type)
+
+    # Handle Literal types directly
+    if origin is Literal:
+        args = get_args(python_type)
+        return [{"label": str(v), "value": str(v)} for v in args]
+
+    # Handle Union types that contain Literal (e.g., Literal["a", "b"] | None)
+    if origin is Union:
+        args = get_args(python_type)
+        for arg in args:
+            if arg is not type(None):
+                options = get_literal_options(arg)
+                if options:
+                    return options
+
+    # Handle Python 3.10+ union syntax
+    type_name = type(python_type).__name__
+    if type_name == "UnionType":
+        args = get_args(python_type)
+        for arg in args:
+            if arg is not type(None):
+                options = get_literal_options(arg)
+                if options:
+                    return options
+
+    return None
+
+
 def generate_label(param_name: str) -> str:
     """
     Generate human-readable label from parameter name.
@@ -163,11 +224,13 @@ def extract_parameters_from_signature(func: Any) -> list[dict[str, Any]]:
         - required: bool
         - label: str
         - default_value: Any (optional, only if has default)
+        - options: list[dict[str, str]] (optional, for Literal types)
 
     Note:
         - ExecutionContext parameters are excluded
         - *args and **kwargs are excluded
         - Parameters without type hints default to "string"
+        - Literal types are converted to options list for dropdown UI
     """
     parameters: list[dict[str, Any]] = []
 
@@ -229,6 +292,12 @@ def extract_parameters_from_signature(func: Any) -> list[dict[str, Any]]:
                 # Only include primitive default values that can be serialized
                 if isinstance(default_value, (str, int, float, bool, list, dict)):
                     param_meta["default_value"] = default_value
+
+            # Add options for Literal types (enables dropdown UI)
+            if param_type is not inspect.Parameter.empty:
+                options = get_literal_options(param_type)
+                if options:
+                    param_meta["options"] = options
 
             parameters.append(param_meta)
 
