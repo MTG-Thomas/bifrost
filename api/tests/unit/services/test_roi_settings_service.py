@@ -25,6 +25,7 @@ class TestROISettingsService:
         session = AsyncMock()
         session.execute = AsyncMock()
         session.flush = AsyncMock()
+        session.add = MagicMock()  # session.add is synchronous, not async
         return session
 
     @pytest.fixture

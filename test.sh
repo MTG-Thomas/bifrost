@@ -451,46 +451,46 @@ docker compose -f "$COMPOSE_FILE" up -d postgres rabbitmq redis
 
 # Wait for PostgreSQL to be ready
 echo "Waiting for PostgreSQL to be ready..."
-for i in {1..60}; do
+for i in {1..30}; do
     if docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U bifrost -d bifrost_test > /dev/null 2>&1; then
         echo "PostgreSQL is ready!"
         break
     fi
-    if [ $i -eq 60 ]; then
-        echo "ERROR: PostgreSQL failed to start within 60 seconds"
+    if [ $i -eq 30 ]; then
+        echo "ERROR: PostgreSQL failed to start within 30 seconds"
         exit 1
     fi
-    echo "  Waiting for PostgreSQL... (attempt $i/60)"
+    echo "  Waiting for PostgreSQL... (attempt $i/30)"
     sleep 1
 done
 
 # Wait for RabbitMQ to be ready
 echo "Waiting for RabbitMQ to be ready..."
-for i in {1..60}; do
+for i in {1..30}; do
     if docker compose -f "$COMPOSE_FILE" exec -T rabbitmq rabbitmq-diagnostics check_running > /dev/null 2>&1; then
         echo "RabbitMQ is ready!"
         break
     fi
-    if [ $i -eq 60 ]; then
-        echo "ERROR: RabbitMQ failed to start within 60 seconds"
+    if [ $i -eq 30 ]; then
+        echo "ERROR: RabbitMQ failed to start within 30 seconds"
         exit 1
     fi
-    echo "  Waiting for RabbitMQ... (attempt $i/60)"
+    echo "  Waiting for RabbitMQ... (attempt $i/30)"
     sleep 1
 done
 
 # Wait for Redis to be ready
 echo "Waiting for Redis to be ready..."
-for i in {1..30}; do
+for i in {1..15}; do
     if docker compose -f "$COMPOSE_FILE" exec -T redis redis-cli ping > /dev/null 2>&1; then
         echo "Redis is ready!"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "ERROR: Redis failed to start within 30 seconds"
+    if [ $i -eq 15 ]; then
+        echo "ERROR: Redis failed to start within 15 seconds"
         exit 1
     fi
-    echo "  Waiting for Redis... (attempt $i/30)"
+    echo "  Waiting for Redis... (attempt $i/15)"
     sleep 1
 done
 
@@ -500,16 +500,16 @@ docker compose -f "$COMPOSE_FILE" up -d pgbouncer
 
 # Wait for PgBouncer to be ready
 echo "Waiting for PgBouncer to be ready..."
-for i in {1..30}; do
+for i in {1..15}; do
     if docker compose -f "$COMPOSE_FILE" exec -T pgbouncer pg_isready -h localhost -p 5432 -U bifrost > /dev/null 2>&1; then
         echo "PgBouncer is ready!"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "ERROR: PgBouncer failed to start within 30 seconds"
+    if [ $i -eq 15 ]; then
+        echo "ERROR: PgBouncer failed to start within 15 seconds"
         exit 1
     fi
-    echo "  Waiting for PgBouncer... (attempt $i/30)"
+    echo "  Waiting for PgBouncer... (attempt $i/15)"
     sleep 1
 done
 
@@ -522,16 +522,16 @@ docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build api worker
 
 # Wait for API to be healthy
 echo "Waiting for API to be ready..."
-for i in {1..120}; do
+for i in {1..60}; do
     if docker compose -f "$COMPOSE_FILE" exec -T api curl -sf http://localhost:8000/health > /dev/null 2>&1; then
         echo "API is ready!"
         break
     fi
-    if [ $i -eq 120 ]; then
-        echo "ERROR: API failed to start within 120 seconds"
+    if [ $i -eq 60 ]; then
+        echo "ERROR: API failed to start within 60 seconds"
         exit 1
     fi
-    echo "  Waiting for API... (attempt $i/120)"
+    echo "  Waiting for API... (attempt $i/60)"
     sleep 1
 done
 

@@ -222,20 +222,16 @@ async def e2e_ws_exec_workflow(message: str = "test"):
             },
         )
 
-        # Wait for discovery
-        workflow_id = None
-        for _ in range(30):
-            response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
-            if response.status_code == 200:
-                workflows = response.json()
-                workflow = next(
-                    (w for w in workflows if w["name"] == "e2e_ws_exec_workflow"),
-                    None
-                )
-                if workflow:
-                    workflow_id = workflow["id"]
-                    break
-            time.sleep(1)
+        # Discovery happens synchronously during file write - just fetch the workflow
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        assert response.status_code == 200, f"Failed to list workflows: {response.text}"
+        workflows = response.json()
+        workflow = next(
+            (w for w in workflows if w["name"] == "e2e_ws_exec_workflow"),
+            None
+        )
+        assert workflow is not None, "Workflow not discovered after file write"
+        workflow_id = workflow["id"]
 
         yield {"id": workflow_id, "name": "e2e_ws_exec_workflow"}
 

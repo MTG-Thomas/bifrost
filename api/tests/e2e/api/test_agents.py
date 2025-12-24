@@ -55,9 +55,6 @@ class TestAgentsCRUD:
         assert data["is_active"] is True
         assert "id" in data
 
-        # Store for later tests
-        return data
-
     def test_get_agent(
         self,
         e2e_client,

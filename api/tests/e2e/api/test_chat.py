@@ -46,8 +46,6 @@ class TestConversationsCRUD:
         assert data["message_count"] == 0
         assert "id" in data
 
-        return data
-
     def test_create_conversation_with_nonexistent_agent(
         self,
         e2e_client,

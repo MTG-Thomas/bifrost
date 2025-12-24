@@ -40,16 +40,12 @@ async def e2e_exec_sync_workflow(message: str, count: int = 1):
         },
     )
 
-    # Wait for discovery
-    workflow_id = None
-    for _ in range(30):
-        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
-        workflows = response.json()
-        workflow = next((w for w in workflows if w["name"] == "e2e_exec_sync_workflow"), None)
-        if workflow:
-            workflow_id = workflow["id"]
-            break
-        time.sleep(1)
+    # Discovery happens synchronously during file write - just fetch the workflow
+    response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+    workflows = response.json()
+    workflow = next((w for w in workflows if w["name"] == "e2e_exec_sync_workflow"), None)
+    assert workflow is not None, "Workflow not discovered after file write"
+    workflow_id = workflow["id"]
 
     yield {"id": workflow_id, "name": "e2e_exec_sync_workflow"}
 
@@ -86,16 +82,12 @@ async def e2e_exec_async_workflow(delay_seconds: int = 1):
         },
     )
 
-    # Wait for discovery
-    workflow_id = None
-    for _ in range(30):
-        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
-        workflows = response.json()
-        workflow = next((w for w in workflows if w["name"] == "e2e_exec_async_workflow"), None)
-        if workflow:
-            workflow_id = workflow["id"]
-            break
-        time.sleep(1)
+    # Discovery happens synchronously during file write - just fetch the workflow
+    response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+    workflows = response.json()
+    workflow = next((w for w in workflows if w["name"] == "e2e_exec_async_workflow"), None)
+    assert workflow is not None, "Workflow not discovered after file write"
+    workflow_id = workflow["id"]
 
     yield {"id": workflow_id, "name": "e2e_exec_async_workflow"}
 
@@ -283,19 +275,15 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
             },
         )
 
-        # Wait for discovery
-        workflow_id = None
-        for _ in range(30):
-            response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
-            workflows = response.json()
-            workflow = next(
-                (w for w in workflows if w["name"] == "e2e_cancellation_workflow"),
-                None,
-            )
-            if workflow:
-                workflow_id = workflow["id"]
-                break
-            time.sleep(1)
+        # Discovery happens synchronously during file write - just fetch the workflow
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next(
+            (w for w in workflows if w["name"] == "e2e_cancellation_workflow"),
+            None,
+        )
+        assert workflow is not None, "Workflow not discovered after file write"
+        workflow_id = workflow["id"]
 
         yield {"id": workflow_id, "name": "e2e_cancellation_workflow"}
 
@@ -688,9 +676,9 @@ class TestExecutionConcurrency:
         import time
         from datetime import datetime
 
-        # Submit 3 executions with 5-second delays each
-        # If concurrent: ~5-7 seconds total execution span
-        # If sequential: 15+ seconds (3 x 5s)
+        # Submit 3 executions with 2-second delays each
+        # If concurrent: they should overlap and complete quickly
+        # If sequential: 6+ seconds (3 x 2s)
         execution_ids = []
 
         for i in range(3):
@@ -699,7 +687,7 @@ class TestExecutionConcurrency:
                 headers=platform_admin.headers,
                 json={
                     "workflow_id": async_workflow["id"],
-                    "input_data": {"delay_seconds": 5},
+                    "input_data": {"delay_seconds": 2},
                 },
             )
             assert response.status_code in [200, 202], \
@@ -773,11 +761,24 @@ class TestExecutionConcurrency:
         last_complete = max(completed_times)  # type: ignore[type-var]
         execution_span = (last_complete - first_start).total_seconds()
 
-        # If running concurrently: ~5-10 seconds (5s delay + overhead)
-        # If running sequentially: 15+ seconds (3 x 5s)
-        # Use 12 seconds as threshold - clearly less than sequential
+        # Verify concurrent execution by checking overlap
+        # If concurrent: executions overlap in time (one starts before another finishes)
+        # If sequential: each starts after the previous finishes
+        #
+        # Check that the last execution started BEFORE the first one completed
+        # This proves they were running concurrently
+        last_start = max(started_times)  # type: ignore[type-var]
+        first_complete = min(completed_times)  # type: ignore[type-var]
+
+        assert last_start < first_complete, (
+            f"Executions did not overlap - ran sequentially. "
+            f"Last start: {last_start.isoformat()}, First complete: {first_complete.isoformat()}"
+        )
+
+        # Also check total span is reasonable (not 3x the sleep time)
+        # Sequential would be 6+ seconds, concurrent should be < 12 with overhead
         assert execution_span < 12, (
-            f"Execution span {execution_span:.1f}s suggests executions ran sequentially. "
+            f"Execution span {execution_span:.1f}s is too long. "
             f"Started: {[t.isoformat() for t in started_times]}, "  # type: ignore[union-attr]
             f"Completed: {[t.isoformat() for t in completed_times]}"  # type: ignore[union-attr]
         )

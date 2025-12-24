@@ -6,7 +6,6 @@ Follows the pattern of creating a data provider file via the editor API,
 waiting for discovery, then verifying the results.
 """
 
-import time
 import pytest
 
 
@@ -82,27 +81,17 @@ async def e2e_creation_test():
         )
 
     def test_data_provider_discovered(self, e2e_client, platform_admin, test_data_provider_file):
-        """Wait for data provider to be discovered after file creation."""
-        max_attempts = 30
-        provider_found = False
+        """Verify data provider is discovered after file creation (discovery is synchronous)."""
+        response = e2e_client.get(
+            "/api/data-providers",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200, f"List data providers failed: {response.text}"
+        providers = response.json()
+        provider_names = [p["name"] for p in providers]
 
-        for attempt in range(max_attempts):
-            response = e2e_client.get(
-                "/api/data-providers",
-                headers=platform_admin.headers,
-            )
-            assert response.status_code == 200, f"List data providers failed: {response.text}"
-            providers = response.json()
-            provider_names = [p["name"] for p in providers]
-
-            if test_data_provider_file["name"] in provider_names:
-                provider_found = True
-                break
-
-            time.sleep(1)
-
-        assert provider_found, \
-            f"Data provider {test_data_provider_file['name']} not discovered after {max_attempts}s"
+        assert test_data_provider_file["name"] in provider_names, \
+            f"Data provider {test_data_provider_file['name']} not discovered after file write"
 
     def test_data_provider_in_list(self, e2e_client, platform_admin, test_data_provider_file):
         """Verify data provider appears in /api/data-providers list."""
@@ -123,9 +112,7 @@ async def e2e_creation_test():
 
     def test_data_provider_metadata_correct(self, e2e_client, platform_admin, test_data_provider_file):
         """Verify data provider metadata is correctly extracted."""
-        # Give discovery time to complete
-        time.sleep(2)
-
+        # Discovery happens synchronously during file write - no sleep needed
         response = e2e_client.get(
             "/api/data-providers",
             headers=platform_admin.headers,
@@ -223,33 +210,21 @@ async def e2e_parametrized_provider(category: str = "default"):
         )
 
     def test_parametrized_provider_discovered(self, e2e_client, platform_admin, parametrized_provider_file):
-        """Parametrized data provider is discovered."""
-        max_attempts = 30
-        provider_found = False
+        """Parametrized data provider is discovered (discovery is synchronous)."""
+        response = e2e_client.get(
+            "/api/data-providers",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        providers = response.json()
+        provider_names = [p["name"] for p in providers]
 
-        for _ in range(max_attempts):
-            response = e2e_client.get(
-                "/api/data-providers",
-                headers=platform_admin.headers,
-            )
-            assert response.status_code == 200
-            providers = response.json()
-            provider_names = [p["name"] for p in providers]
-
-            if parametrized_provider_file["name"] in provider_names:
-                provider_found = True
-                break
-
-            time.sleep(1)
-
-        assert provider_found, \
-            f"Parametrized provider not discovered after {max_attempts}s"
+        assert parametrized_provider_file["name"] in provider_names, \
+            f"Parametrized provider not discovered after file write"
 
     def test_parametrized_provider_has_parameters(self, e2e_client, platform_admin, parametrized_provider_file):
         """Parametrized data provider includes parameter metadata."""
-        # Give discovery time to complete
-        time.sleep(2)
-
+        # Discovery happens synchronously during file write - no sleep needed
         response = e2e_client.get(
             "/api/data-providers",
             headers=platform_admin.headers,
