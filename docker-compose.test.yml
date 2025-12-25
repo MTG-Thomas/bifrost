@@ -19,10 +19,10 @@
 name: bifrost-test
 
 services:
-  # PostgreSQL Database (Test)
+  # PostgreSQL Database (Test) - with pgvector extension
   # Uses tmpfs so data is NOT persisted between test runs - fresh database each time
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: bifrost-test-postgres
     environment:
       POSTGRES_DB: bifrost_test
@@ -251,6 +251,9 @@ services:
       OPENAPI_API_TEST_KEY: ${OPENAPI_API_TEST_KEY:-}
       GENERIC_AI_TEST_KEY: ${GENERIC_AI_TEST_KEY:-}
       GENERIC_AI_BASE_URL: ${GENERIC_AI_BASE_URL:-}
+      # Embeddings E2E test configuration (optional - tests skip if not set)
+      # Uses OpenAI text-embedding-3-small for vector embeddings
+      EMBEDDINGS_AI_TEST_KEY: ${EMBEDDINGS_AI_TEST_KEY:-}
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro

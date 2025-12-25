@@ -345,25 +345,60 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
     async def _get_agent_tools(self, agent: Agent) -> list[ToolDefinition]:
         """Get tool definitions for an agent from its assigned tools."""
+        tools: list[ToolDefinition] = []
+
         # Get workflow IDs from agent_tools junction table
         tool_ids = [tool.id for tool in agent.tools]
         logger.debug(f"Agent '{agent.name}' has {len(agent.tools)} assigned tools: {tool_ids}")
 
-        if not tool_ids:
-            logger.info(f"Agent '{agent.name}' has no tools assigned")
-            return []
+        if tool_ids:
+            tool_definitions = await self.tool_registry.get_tool_definitions(tool_ids)
+            logger.debug(f"Tool registry returned {len(tool_definitions)} definitions for IDs {tool_ids}")
 
-        tool_definitions = await self.tool_registry.get_tool_definitions(tool_ids)
-        logger.debug(f"Tool registry returned {len(tool_definitions)} definitions for IDs {tool_ids}")
+            tools.extend([
+                ToolDefinition(
+                    name=td.name,
+                    description=td.description,
+                    parameters=td.parameters,
+                )
+                for td in tool_definitions
+            ])
+        else:
+            logger.info(f"Agent '{agent.name}' has no workflow tools assigned")
 
-        return [
-            ToolDefinition(
-                name=td.name,
-                description=td.description,
-                parameters=td.parameters,
-            )
-            for td in tool_definitions
-        ]
+        # Add knowledge search tool if agent has knowledge sources
+        if agent.knowledge_sources:
+            knowledge_tool = self._get_knowledge_tool(agent.knowledge_sources)
+            tools.append(knowledge_tool)
+            logger.info(f"Agent '{agent.name}' has knowledge sources: {agent.knowledge_sources}")
+
+        return tools
+
+    def _get_knowledge_tool(self, namespaces: list[str]) -> ToolDefinition:
+        """
+        Create the built-in knowledge search tool definition.
+
+        This tool allows agents to search their configured knowledge namespaces.
+        """
+        ns_list = ", ".join(namespaces)
+        return ToolDefinition(
+            name="search_knowledge",
+            description=f"Search the knowledge base for relevant information. Searches these namespaces: {ns_list}. Use this tool when you need to find information from stored documents, policies, FAQs, or other knowledge sources.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query to find relevant documents",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default: 5)",
+                    },
+                },
+                "required": ["query"],
+            },
+        )
 
     async def _build_message_history(
         self, agent: Agent | None, conversation: Conversation
@@ -490,12 +525,16 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         execution_id: str | None = None,
     ) -> ToolResult:
         """
-        Execute a tool (workflow or delegation) and return the result.
+        Execute a tool (workflow, delegation, or knowledge search) and return the result.
 
         This integrates with the existing workflow execution system
-        and handles agent delegation.
+        and handles agent delegation and built-in knowledge search.
         """
         start_time = time.time()
+
+        # Check if this is a knowledge search tool call
+        if tool_call.name == "search_knowledge" and agent:
+            return await self._execute_knowledge_search(tool_call, agent)
 
         # Check if this is a delegation tool call
         if tool_call.name.startswith("delegate_to_") and agent:
@@ -644,6 +683,92 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             )
 
         return tools
+
+    async def _execute_knowledge_search(
+        self,
+        tool_call: ToolCallRequest,
+        agent: Agent,
+    ) -> ToolResult:
+        """
+        Execute a knowledge search using the agent's configured namespaces.
+
+        This is a built-in tool that doesn't require a workflow.
+        """
+        start_time = time.time()
+
+        try:
+            from src.repositories.knowledge import KnowledgeRepository
+            from src.services.embeddings import get_embedding_client
+
+            # Get search parameters
+            query = tool_call.arguments.get("query", "")
+            limit = tool_call.arguments.get("limit", 5)
+
+            if not query:
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error="No query provided for knowledge search",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # Get the agent's configured namespaces
+            namespaces = agent.knowledge_sources
+            if not namespaces:
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error="No knowledge sources configured for this agent",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # Generate query embedding
+            embedding_client = await get_embedding_client(self.session)
+            query_embedding = await embedding_client.embed_single(query)
+
+            # Search knowledge store
+            repo = KnowledgeRepository(self.session)
+            results = await repo.search(
+                query_embedding=query_embedding,
+                namespace=namespaces,
+                organization_id=agent.organization_id,
+                limit=limit,
+                fallback=True,  # Search org + global
+            )
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Format results for the agent
+            search_results = [
+                {
+                    "content": doc.content,
+                    "namespace": doc.namespace,
+                    "score": round(doc.score, 4) if doc.score else None,
+                    "key": doc.key,
+                    "metadata": doc.metadata,
+                }
+                for doc in results
+            ]
+
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                result={"documents": search_results, "count": len(search_results)},
+                error=None,
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            logger.error(f"Knowledge search error: {e}", exc_info=True)
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                result=None,
+                error=str(e),
+                duration_ms=int((time.time() - start_time) * 1000),
+            )
 
     async def _execute_delegation(
         self,

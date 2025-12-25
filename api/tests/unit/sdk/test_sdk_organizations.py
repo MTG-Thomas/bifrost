@@ -616,23 +616,24 @@ class TestOrganizationsPlatformMode:
             await organizations.delete(str(uuid4()))
 
     @pytest.mark.asyncio
-    async def test_requires_execution_context(self):
-        """Test that organizations methods require execution context."""
+    async def test_requires_context_or_credentials(self):
+        """Test that organizations methods require execution context or CLI credentials."""
         from bifrost import organizations
 
         clear_execution_context()
 
-        with pytest.raises(RuntimeError, match="No execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await organizations.get(str(uuid4()))
 
-        with pytest.raises(RuntimeError, match="No execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await organizations.list()
 
-        with pytest.raises(RuntimeError, match="No execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await organizations.create(name="Should Fail")
 
-        with pytest.raises(RuntimeError, match="No execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await organizations.update(str(uuid4()), name="Should Fail")
 
-        with pytest.raises(RuntimeError, match="No execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await organizations.delete(str(uuid4()))

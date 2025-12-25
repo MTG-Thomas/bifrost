@@ -41,6 +41,7 @@ import {
 	AlertCircle,
 	Trash2,
 	Zap,
+	Database,
 } from "lucide-react";
 import { $api } from "@/lib/api-client";
 
@@ -617,6 +618,9 @@ export function LLMConfig() {
 				</CardContent>
 			</Card>
 
+			{/* Embedding Configuration Card */}
+			<EmbeddingConfigCard llmProvider={config?.provider} />
+
 			{/* Info Card */}
 			<Card>
 				<CardHeader>
@@ -683,5 +687,363 @@ export function LLMConfig() {
 				</DialogContent>
 			</Dialog>
 		</div>
+	);
+}
+
+/**
+ * Embedding Configuration Component
+ *
+ * Separate configuration for embeddings (used by Knowledge Store/RAG).
+ * If using Anthropic as LLM provider, a dedicated OpenAI API key is required
+ * since Anthropic doesn't provide embeddings.
+ */
+function EmbeddingConfigCard({ llmProvider }: { llmProvider?: string }) {
+	const [apiKey, setApiKey] = useState("");
+	const [model, setModel] = useState("text-embedding-3-small");
+	const [dimensions, setDimensions] = useState(1536);
+	const [saving, setSaving] = useState(false);
+	const [testing, setTesting] = useState(false);
+	const [testResult, setTestResult] = useState<{
+		success: boolean;
+		message: string;
+	} | null>(null);
+	const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+	// Load current embedding configuration
+	const {
+		data: config,
+		isLoading,
+		refetch,
+	} = $api.useQuery("get", "/api/admin/llm/embedding-config", undefined, {
+		staleTime: 5 * 60 * 1000,
+	});
+
+	// Mutations
+	const saveMutation = $api.useMutation("post", "/api/admin/llm/embedding-config");
+	const deleteMutation = $api.useMutation("delete", "/api/admin/llm/embedding-config");
+	const testMutation = $api.useMutation("post", "/api/admin/llm/embedding-test");
+
+	// Determine if dedicated config is needed
+	const needsDedicatedKey = llmProvider === "anthropic";
+
+	// Test connection
+	const handleTest = async () => {
+		if (!apiKey && !config?.api_key_set) {
+			toast.error("Please enter an API key");
+			return;
+		}
+
+		setTesting(true);
+		setTestResult(null);
+
+		try {
+			const result = await testMutation.mutateAsync({
+				body: {
+					api_key: apiKey || "use-saved",
+					model,
+					dimensions,
+				},
+			});
+
+			setTestResult({ success: result.success, message: result.message });
+
+			if (result.success) {
+				toast.success("Embedding connection successful", {
+					description: `Dimensions: ${result.dimensions}`,
+				});
+			} else {
+				toast.error("Embedding test failed", {
+					description: result.message,
+				});
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			setTestResult({ success: false, message });
+			toast.error("Embedding test failed", { description: message });
+		} finally {
+			setTesting(false);
+		}
+	};
+
+	// Save configuration
+	const handleSave = async () => {
+		if (!apiKey && !config?.api_key_set) {
+			toast.error("Please enter an API key");
+			return;
+		}
+
+		setSaving(true);
+		try {
+			await saveMutation.mutateAsync({
+				body: {
+					api_key: apiKey || "unchanged",
+					model,
+					dimensions,
+				},
+			});
+
+			toast.success("Embedding configuration saved");
+			setApiKey("");
+			setTestResult(null);
+			refetch();
+		} catch (error) {
+			toast.error("Failed to save embedding configuration", {
+				description: error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	// Delete configuration
+	const handleDelete = async () => {
+		setSaving(true);
+		setShowDeleteConfirm(false);
+
+		try {
+			await deleteMutation.mutateAsync({});
+			setApiKey("");
+			setModel("text-embedding-3-small");
+			setDimensions(1536);
+			setTestResult(null);
+			toast.success("Embedding configuration removed");
+			refetch();
+		} catch (error) {
+			toast.error("Failed to remove embedding configuration", {
+				description: error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	if (isLoading) {
+		return (
+			<Card>
+				<CardContent className="flex items-center justify-center py-8">
+					<Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+				</CardContent>
+			</Card>
+		);
+	}
+
+	const isVerified = testResult?.success === true;
+	const hasValidConfig = config?.api_key_set && !apiKey;
+	const canSave = !saving && (isVerified || hasValidConfig);
+
+	return (
+		<Card>
+			<CardHeader>
+				<div className="flex items-center gap-2">
+					<Database className="h-5 w-5" />
+					<CardTitle>Embedding Configuration</CardTitle>
+				</div>
+				<CardDescription>
+					Configure OpenAI embeddings for the Knowledge Store (RAG).
+					{needsDedicatedKey && (
+						<span className="block mt-1 text-amber-600 dark:text-amber-400">
+							Anthropic doesn't provide embeddings - a dedicated OpenAI key is required.
+						</span>
+					)}
+				</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				{/* Status Banner */}
+				{config?.is_configured ? (
+					<div className="rounded-lg border bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-900 p-4">
+						<div className="flex items-center justify-between">
+							<div className="flex items-center gap-2">
+								<CheckCircle2 className="h-4 w-4 text-green-600" />
+								<span className="text-sm font-medium text-green-800 dark:text-green-200">
+									Embeddings Configured
+								</span>
+							</div>
+							{!config.uses_llm_key && (
+								<Button
+									variant="ghost"
+									size="sm"
+									onClick={() => setShowDeleteConfirm(true)}
+									className="text-destructive hover:text-destructive"
+								>
+									<Trash2 className="h-4 w-4 mr-1" />
+									Remove
+								</Button>
+							)}
+						</div>
+						<p className="mt-1 text-sm text-green-700 dark:text-green-300">
+							{config.uses_llm_key
+								? "Using LLM provider's OpenAI API key"
+								: `Dedicated key configured (${config.model})`}
+						</p>
+					</div>
+				) : (
+					<div className="rounded-lg border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900 p-4">
+						<div className="flex items-center gap-2">
+							<AlertCircle className="h-4 w-4 text-amber-600" />
+							<span className="text-sm font-medium text-amber-800 dark:text-amber-200">
+								Embeddings Not Configured
+							</span>
+						</div>
+						<p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
+							Knowledge Store features require embedding configuration.
+						</p>
+					</div>
+				)}
+
+				{/* Only show form if dedicated config is needed or already set */}
+				{(needsDedicatedKey || (config && !config.uses_llm_key)) && (
+					<>
+						{/* API Key */}
+						<div className="space-y-2">
+							<Label htmlFor="embedding-api-key">OpenAI API Key</Label>
+							<div className="flex gap-2">
+								<Input
+									id="embedding-api-key"
+									type="password"
+									autoComplete="off"
+									placeholder={
+										config?.api_key_set
+											? "API key saved - enter new key to change"
+											: "sk-..."
+									}
+									value={apiKey}
+									onChange={(e) => {
+										setApiKey(e.target.value);
+										setTestResult(null);
+									}}
+								/>
+								<Button
+									variant="secondary"
+									onClick={handleTest}
+									disabled={testing || (!apiKey && !config?.api_key_set)}
+								>
+									{testing ? (
+										<>
+											<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+											Testing...
+										</>
+									) : testResult?.success ? (
+										<>
+											<CheckCircle2 className="h-4 w-4 mr-2 text-green-600" />
+											Verified
+										</>
+									) : testResult?.success === false ? (
+										<>
+											<AlertCircle className="h-4 w-4 mr-2 text-destructive" />
+											Failed
+										</>
+									) : (
+										<>
+											<Zap className="h-4 w-4 mr-2" />
+											Test
+										</>
+									)}
+								</Button>
+							</div>
+						</div>
+
+						{/* Model Selection */}
+						<div className="space-y-2">
+							<Label htmlFor="embedding-model">Model</Label>
+							<Select value={model} onValueChange={setModel}>
+								<SelectTrigger id="embedding-model">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="text-embedding-3-small">
+										text-embedding-3-small (recommended)
+									</SelectItem>
+									<SelectItem value="text-embedding-3-large">
+										text-embedding-3-large (higher quality)
+									</SelectItem>
+								</SelectContent>
+							</Select>
+						</div>
+
+						{/* Dimensions */}
+						<div className="space-y-2">
+							<Label htmlFor="embedding-dimensions">Dimensions</Label>
+							<Select
+								value={dimensions.toString()}
+								onValueChange={(v) => setDimensions(parseInt(v))}
+							>
+								<SelectTrigger id="embedding-dimensions">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="512">512</SelectItem>
+									<SelectItem value="1024">1024</SelectItem>
+									<SelectItem value="1536">1536 (default)</SelectItem>
+									{model === "text-embedding-3-large" && (
+										<SelectItem value="3072">3072</SelectItem>
+									)}
+								</SelectContent>
+							</Select>
+							<p className="text-xs text-muted-foreground">
+								Higher dimensions = better quality, more storage
+							</p>
+						</div>
+
+						{/* Save Button */}
+						<div className="flex justify-end pt-2">
+							<Button onClick={handleSave} disabled={!canSave}>
+								{saving ? (
+									<>
+										<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+										Saving...
+									</>
+								) : (
+									"Save Embedding Config"
+								)}
+							</Button>
+						</div>
+					</>
+				)}
+
+				{/* Info about fallback */}
+				{config?.uses_llm_key && (
+					<p className="text-sm text-muted-foreground">
+						To use a separate API key for embeddings, configure one above.
+						This is useful for usage tracking or if your main LLM key doesn't have embedding access.
+					</p>
+				)}
+
+				{/* Delete Confirmation */}
+				<Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+					<DialogContent>
+						<DialogHeader>
+							<DialogTitle>Remove Embedding Configuration</DialogTitle>
+							<DialogDescription>
+								Remove the dedicated embedding API key? If you have an OpenAI
+								LLM configuration, embeddings will fall back to using that key.
+							</DialogDescription>
+						</DialogHeader>
+						<DialogFooter>
+							<Button
+								variant="outline"
+								onClick={() => setShowDeleteConfirm(false)}
+								disabled={saving}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="destructive"
+								onClick={handleDelete}
+								disabled={saving}
+							>
+								{saving ? (
+									<>
+										<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+										Removing...
+									</>
+								) : (
+									"Remove"
+								)}
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+			</CardContent>
+		</Card>
 	);
 }

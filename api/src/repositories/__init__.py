@@ -8,6 +8,7 @@ from src.repositories.executions import (
     create_execution,
     update_execution,
 )
+from src.repositories.knowledge import KnowledgeDocument, KnowledgeRepository, NamespaceInfo
 from src.repositories.org_scoped import OrgScopedRepository
 from src.repositories.organizations import OrganizationRepository
 from src.repositories.users import UserRepository
@@ -19,6 +20,9 @@ __all__ = [
     "DataProviderRepository",
     "ExecutionLogRepository",
     "ExecutionRepository",
+    "KnowledgeDocument",
+    "KnowledgeRepository",
+    "NamespaceInfo",
     "OrgScopedRepository",
     "OrganizationRepository",
     "UserRepository",

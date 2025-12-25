@@ -2,13 +2,25 @@
 Bifrost SDK Client
 
 HTTP client for Bifrost API communication.
-Auto-initializes from environment variables or .env file.
+Auto-initializes from credentials file stored by 'bifrost login'.
+Supports interactive device authorization flow for CLI login.
 """
 
+import asyncio
 import os
+import sys
+import webbrowser
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
+
+from .credentials import (
+    clear_credentials,
+    get_credentials,
+    is_token_expired,
+    save_credentials,
+)
 
 # Auto-load .env file if present (for local development)
 try:
@@ -17,6 +29,190 @@ try:
     load_dotenv()
 except ImportError:
     pass  # dotenv not installed, rely on environment variables
+
+
+async def refresh_tokens() -> bool:
+    """
+    Refresh access token using refresh token.
+
+    Uses credentials from credentials file.
+    Updates credentials file with new tokens.
+
+    Returns:
+        True if refresh successful, False otherwise
+    """
+    creds = get_credentials()
+    if not creds:
+        return False
+
+    api_url = creds["api_url"]
+    refresh_token = creds["refresh_token"]
+
+    try:
+        async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
+            response = await client.post(
+                "/auth/refresh",
+                json={"refresh_token": refresh_token}
+            )
+
+            if response.status_code != 200:
+                return False
+
+            data = response.json()
+
+            # Calculate expiry time (30 minutes from now)
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 1800))
+
+            # Save new credentials
+            save_credentials(
+                api_url=api_url,
+                access_token=data["access_token"],
+                refresh_token=data["refresh_token"],
+                expires_at=expires_at.isoformat(),
+            )
+
+            return True
+    except Exception:
+        return False
+
+
+async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool:
+    """
+    Interactive device authorization flow.
+
+    1. Request device code from API
+    2. Display user code and verification URL
+    3. Open browser automatically (if auto_open=True)
+    4. Poll for authorization
+    5. Save credentials when authorized
+
+    Args:
+        api_url: Bifrost API URL (uses BIFROST_API_URL env var if not provided)
+        auto_open: Whether to automatically open browser (default: True)
+
+    Returns:
+        True if login successful, False otherwise
+    """
+    # Get API URL
+    if not api_url:
+        api_url = os.getenv("BIFROST_API_URL", "http://localhost:8000")
+
+    api_url = api_url.rstrip("/")
+
+    try:
+        async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
+            # Step 1: Request device code
+            response = await client.post("/auth/device/code")
+            if response.status_code != 200:
+                print(f"Error requesting device code: {response.status_code}", file=sys.stderr)
+                return False
+
+            data = response.json()
+            device_code = data["device_code"]
+            user_code = data["user_code"]
+            verification_url = data["verification_url"]
+            interval = data.get("interval", 5)
+
+            # Step 2: Display instructions
+            full_url = f"{api_url}{verification_url}"
+            print(f"\nOpening browser to {full_url}")
+            print(f"Enter this code: {user_code}\n")
+
+            # Step 3: Open browser
+            if auto_open:
+                try:
+                    webbrowser.open(full_url)
+                except Exception:
+                    pass  # Ignore browser open failures
+
+            # Step 4: Poll for authorization
+            print("Waiting for authorization", end="", flush=True)
+            max_attempts = 60  # 5 minutes max (60 * 5 seconds)
+            attempts = 0
+
+            while attempts < max_attempts:
+                await asyncio.sleep(interval)
+                print(".", end="", flush=True)
+                attempts += 1
+
+                poll_response = await client.post(
+                    "/auth/device/token",
+                    json={"device_code": device_code}
+                )
+
+                if poll_response.status_code != 200:
+                    print(f"\nError polling for token: {poll_response.status_code}", file=sys.stderr)
+                    return False
+
+                poll_data = poll_response.json()
+
+                # Check for error
+                if "error" in poll_data:
+                    error = poll_data["error"]
+                    if error == "authorization_pending":
+                        continue  # Keep polling
+                    elif error == "expired_token":
+                        print("\nDevice code expired. Please try again.", file=sys.stderr)
+                        return False
+                    elif error == "access_denied":
+                        print("\nAuthorization denied.", file=sys.stderr)
+                        return False
+                    else:
+                        print(f"\nUnknown error: {error}", file=sys.stderr)
+                        return False
+
+                # Success - we have tokens
+                if "access_token" in poll_data:
+                    print(" ✓")
+
+                    # Calculate expiry time
+                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=poll_data.get("expires_in", 1800))
+
+                    # Step 5: Save credentials
+                    save_credentials(
+                        api_url=api_url,
+                        access_token=poll_data["access_token"],
+                        refresh_token=poll_data["refresh_token"],
+                        expires_at=expires_at.isoformat(),
+                    )
+
+                    # Get user info
+                    try:
+                        user_response = await client.get(
+                            "/auth/me",
+                            headers={"Authorization": f"Bearer {poll_data['access_token']}"}
+                        )
+                        if user_response.status_code == 200:
+                            user_data = user_response.json()
+                            print(f"Logged in as {user_data.get('email', 'unknown')}\n")
+                    except Exception:
+                        print("Logged in successfully\n")
+
+                    return True
+
+            print("\nTimeout waiting for authorization.", file=sys.stderr)
+            return False
+
+    except Exception as e:
+        print(f"\nLogin failed: {e}", file=sys.stderr)
+        return False
+
+
+def logout() -> bool:
+    """
+    Logout by clearing stored credentials.
+
+    Returns:
+        True if credentials were cleared, False if no credentials existed
+    """
+    creds = get_credentials()
+    if creds:
+        clear_credentials()
+        print("Logged out successfully.")
+        return True
+    else:
+        print("No active session found.")
+        return False
 
 
 class BifrostClient:
@@ -28,56 +224,92 @@ class BifrostClient:
 
     _instance: "BifrostClient | None" = None
 
-    def __init__(self, api_url: str, api_key: str):
+    def __init__(self, api_url: str, access_token: str):
         """
         Initialize client.
 
         Args:
             api_url: Bifrost API URL
-            api_key: Developer API key (bfsk_...)
+            access_token: JWT access token from device auth login
         """
         self.api_url = api_url.rstrip("/")
-        self._api_key = api_key
+        self._access_token = access_token
         self._http = httpx.AsyncClient(
             base_url=self.api_url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={"Authorization": f"Bearer {access_token}"},
             timeout=30.0,
         )
         self._sync_http = httpx.Client(
             base_url=self.api_url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={"Authorization": f"Bearer {access_token}"},
             timeout=30.0,
         )
         self._context: dict[str, Any] | None = None
 
     @classmethod
-    def get_instance(cls) -> "BifrostClient":
+    def get_instance(cls, require_auth: bool = False) -> "BifrostClient":
         """
         Get singleton client instance.
 
-        Auto-initializes from environment variables:
-        - BIFROST_DEV_URL: API URL
-        - BIFROST_DEV_KEY: Developer API key
+        Auto-initializes from credentials file (~/.bifrost/credentials.json)
+        stored by 'bifrost login'.
+
+        Args:
+            require_auth: If True, trigger interactive login when no credentials found
+                         (default: False for backward compatibility)
 
         Returns:
             BifrostClient instance
 
         Raises:
-            RuntimeError: If environment variables not set
+            RuntimeError: If no credentials file exists
         """
         if cls._instance is None:
-            api_url = os.getenv("BIFROST_DEV_URL")
-            api_key = os.getenv("BIFROST_DEV_KEY")
+            # Try credentials file from CLI login
+            creds = get_credentials()
 
-            if not api_url or not api_key:
-                raise RuntimeError(
-                    "BIFROST_DEV_URL and BIFROST_DEV_KEY environment variables required.\n"
-                    "Set them in your .env file or export them:\n"
-                    "  export BIFROST_DEV_URL=https://your-bifrost-instance.com\n"
-                    "  export BIFROST_DEV_KEY=bfsk_xxxxxxxxxxxx"
-                )
+            # Check if token needs refresh
+            if creds and is_token_expired():
+                # Try to refresh
+                try:
+                    # Try to get existing event loop
+                    asyncio.get_running_loop()
+                    # We're in an async context, can't use asyncio.run()
+                    # For now, just skip auto-refresh in this case
+                    creds = None  # Will trigger re-login if require_auth=True
+                except RuntimeError:
+                    # No running loop, safe to use asyncio.run()
+                    if asyncio.run(refresh_tokens()):
+                        creds = get_credentials()  # Reload fresh credentials
+                    else:
+                        creds = None  # Refresh failed, need to re-login
 
-            cls._instance = cls(api_url, api_key)
+            if creds:
+                # Use credentials from file
+                cls._instance = cls(creds["api_url"], creds["access_token"])
+                return cls._instance
+
+            # No credentials - trigger login flow if required
+            if require_auth:
+                try:
+                    # Try to get existing event loop
+                    asyncio.get_running_loop()
+                    # We're in an async context, can't use asyncio.run()
+                    # This means we're probably in tests - don't trigger interactive login
+                    pass
+                except RuntimeError:
+                    # No running loop, safe to use asyncio.run()
+                    if asyncio.run(login_flow()):
+                        # Login successful, load credentials
+                        creds = get_credentials()
+                        if creds:
+                            cls._instance = cls(creds["api_url"], creds["access_token"])
+                            return cls._instance
+
+            # No auth available
+            raise RuntimeError(
+                "Not logged in. Run 'bifrost login' to authenticate."
+            )
 
         return cls._instance
 
@@ -133,6 +365,17 @@ class BifrostClient:
         """Make DELETE request."""
         return await self._http.delete(path, **kwargs)
 
+    def stream(self, method: str, path: str, **kwargs):
+        """
+        Create an async streaming request context manager.
+
+        Usage:
+            async with client.stream("POST", "/path", json={...}) as response:
+                async for line in response.aiter_lines():
+                    process(line)
+        """
+        return self._http.stream(method, path, **kwargs)
+
     def get_sync(self, path: str, **kwargs) -> httpx.Response:
         """Make synchronous GET request."""
         return self._sync_http.get(path, **kwargs)
@@ -150,3 +393,12 @@ class BifrostClient:
 def get_client() -> BifrostClient:
     """Get the singleton Bifrost client."""
     return BifrostClient.get_instance()
+
+
+def has_credentials() -> bool:
+    """Check if API credentials are available (without triggering login flow).
+
+    Returns True if a valid credentials file exists from previous 'bifrost login'.
+    """
+    creds = get_credentials()
+    return creds is not None

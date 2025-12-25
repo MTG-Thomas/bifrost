@@ -61,6 +61,7 @@ import {
 } from "@/hooks/useAgents";
 import { useToolWorkflows } from "@/hooks/useWorkflows";
 import { useRoles } from "@/hooks/useRoles";
+import { useKnowledgeNamespaces } from "@/hooks/useKnowledge";
 import type { components } from "@/lib/v1";
 
 type AgentChannel = components["schemas"]["AgentChannel"];
@@ -105,6 +106,7 @@ const formSchema = z.object({
 	tool_ids: z.array(z.string()),
 	delegated_agent_ids: z.array(z.string()),
 	role_ids: z.array(z.string()),
+	knowledge_sources: z.array(z.string()),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -123,6 +125,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 	const { data: allAgents } = useAgents();
 	const { data: toolWorkflows } = useToolWorkflows();
 	const { data: roles } = useRoles();
+	const { data: knowledgeNamespaces } = useKnowledgeNamespaces();
 	const createAgent = useCreateAgent();
 	const updateAgent = useUpdateAgent();
 
@@ -130,6 +133,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 	const [toolsOpen, setToolsOpen] = useState(false);
 	const [delegationsOpen, setDelegationsOpen] = useState(false);
 	const [rolesOpen, setRolesOpen] = useState(false);
+	const [knowledgeOpen, setKnowledgeOpen] = useState(false);
 
 	const form = useForm<FormValues>({
 		resolver: zodResolver(formSchema),
@@ -142,6 +146,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 			tool_ids: [],
 			delegated_agent_ids: [],
 			role_ids: [],
+			knowledge_sources: [],
 		},
 	});
 
@@ -159,6 +164,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				tool_ids: agent.tool_ids ?? [],
 				delegated_agent_ids: agent.delegated_agent_ids ?? [],
 				role_ids: agent.role_ids ?? [],
+				knowledge_sources: agent.knowledge_sources ?? [],
 			});
 		} else if (!isEditing && open) {
 			form.reset({
@@ -170,6 +176,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				tool_ids: [],
 				delegated_agent_ids: [],
 				role_ids: [],
+				knowledge_sources: [],
 			});
 		}
 	}, [agent, isEditing, form, open]);
@@ -196,6 +203,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 						tool_ids: values.tool_ids,
 						delegated_agent_ids: values.delegated_agent_ids,
 						role_ids: values.role_ids,
+						knowledge_sources: values.knowledge_sources,
 					},
 				});
 			} else {
@@ -209,6 +217,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 						tool_ids: values.tool_ids,
 						delegated_agent_ids: values.delegated_agent_ids,
 						role_ids: values.role_ids,
+						knowledge_sources: values.knowledge_sources,
 					},
 				});
 			}
@@ -1060,6 +1069,176 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 												<FormDescription>
 													Other agents this agent can
 													delegate tasks to
+												</FormDescription>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+
+									{/* Knowledge Sources */}
+									<FormField
+										control={form.control}
+										name="knowledge_sources"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>
+													Knowledge Sources
+												</FormLabel>
+												<Popover
+													open={knowledgeOpen}
+													onOpenChange={
+														setKnowledgeOpen
+													}
+												>
+													<PopoverTrigger asChild>
+														<FormControl>
+															<Button
+																variant="outline"
+																role="combobox"
+																aria-expanded={
+																	knowledgeOpen
+																}
+																className="w-full justify-between h-auto min-h-10"
+															>
+																{field.value
+																	?.length >
+																0 ? (
+																	<div className="flex flex-wrap gap-1">
+																		{field.value.map(
+																			(
+																				namespace,
+																			) => (
+																				<Badge
+																					key={
+																						namespace
+																					}
+																					variant="secondary"
+																					className="mr-1"
+																				>
+																					{
+																						namespace
+																					}
+																					<button
+																						type="button"
+																						className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																						onClick={(
+																							e,
+																						) => {
+																							e.stopPropagation();
+																							field.onChange(
+																								field.value.filter(
+																									(
+																										ns,
+																									) =>
+																										ns !==
+																										namespace,
+																								),
+																							);
+																						}}
+																					>
+																						<X className="h-3 w-3" />
+																					</button>
+																				</Badge>
+																			),
+																		)}
+																	</div>
+																) : (
+																	<span className="text-muted-foreground">
+																		Select
+																		namespaces...
+																	</span>
+																)}
+																<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+															</Button>
+														</FormControl>
+													</PopoverTrigger>
+													<PopoverContent
+														className="w-[400px] p-0"
+														align="start"
+													>
+														<Command>
+															<CommandInput placeholder="Search namespaces..." />
+															<CommandList>
+																<CommandEmpty>
+																	No namespaces
+																	found.
+																</CommandEmpty>
+																<CommandGroup>
+																	{knowledgeNamespaces?.map(
+																		(
+																			ns,
+																		) => (
+																			<CommandItem
+																				key={
+																					ns.namespace
+																				}
+																				value={
+																					ns.namespace
+																				}
+																				onSelect={() => {
+																					const current =
+																						field.value ||
+																						[];
+																					if (
+																						current.includes(
+																							ns.namespace,
+																						)
+																					) {
+																						field.onChange(
+																							current.filter(
+																								(
+																									n,
+																								) =>
+																									n !==
+																									ns.namespace,
+																							),
+																						);
+																					} else {
+																						field.onChange(
+																							[
+																								...current,
+																								ns.namespace,
+																							],
+																						);
+																					}
+																				}}
+																			>
+																				<Check
+																					className={cn(
+																						"mr-2 h-4 w-4",
+																						field.value?.includes(
+																							ns.namespace,
+																						)
+																							? "opacity-100"
+																							: "opacity-0",
+																					)}
+																				/>
+																				<div className="flex flex-col">
+																					<span>
+																						{
+																							ns.namespace
+																						}
+																					</span>
+																					<span className="text-xs text-muted-foreground">
+																						{
+																							ns
+																								.scopes
+																								.total
+																						}{" "}
+																						documents
+																					</span>
+																				</div>
+																			</CommandItem>
+																		),
+																	)}
+																</CommandGroup>
+															</CommandList>
+														</Command>
+													</PopoverContent>
+												</Popover>
+												<FormDescription>
+													Knowledge namespaces this
+													agent can search for context
 												</FormDescription>
 												<FormMessage />
 											</FormItem>

@@ -44,6 +44,7 @@ class AgentCreate(BaseModel):
     tool_ids: list[str] = Field(default_factory=list, description="List of workflow IDs to use as tools")
     delegated_agent_ids: list[str] = Field(default_factory=list, description="List of agent IDs this agent can delegate to")
     role_ids: list[str] = Field(default_factory=list, description="List of role IDs that can access this agent (for role_based access)")
+    knowledge_sources: list[str] = Field(default_factory=list, description="List of knowledge namespaces this agent can search")
 
 
 class AgentUpdate(BaseModel):
@@ -57,6 +58,7 @@ class AgentUpdate(BaseModel):
     tool_ids: list[str] | None = Field(default=None, description="List of workflow IDs to use as tools")
     delegated_agent_ids: list[str] | None = Field(default=None, description="List of agent IDs this agent can delegate to")
     role_ids: list[str] | None = Field(default=None, description="List of role IDs that can access this agent (for role_based access)")
+    knowledge_sources: list[str] | None = Field(default=None, description="List of knowledge namespaces this agent can search")
 
 
 class AgentPublic(BaseModel):
@@ -79,6 +81,7 @@ class AgentPublic(BaseModel):
     tool_ids: list[str] = Field(default_factory=list)
     delegated_agent_ids: list[str] = Field(default_factory=list)
     role_ids: list[str] = Field(default_factory=list)
+    knowledge_sources: list[str] = Field(default_factory=list)
 
     @field_serializer("id", "organization_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:

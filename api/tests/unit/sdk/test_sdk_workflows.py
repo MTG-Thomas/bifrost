@@ -317,14 +317,15 @@ class TestWorkflowsPlatformMode:
         assert result[0].endpoint_enabled is False
 
     @pytest.mark.asyncio
-    async def test_list_requires_platform_context(self):
-        """Test that workflows.list() requires platform execution context."""
+    async def test_list_requires_context_or_credentials(self):
+        """Test that workflows.list() requires platform execution context or CLI credentials."""
         from bifrost import workflows
 
-        # No context set
+        # No context set, no credentials
         clear_execution_context()
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await workflows.list()
 
     @pytest.mark.asyncio
@@ -389,16 +390,17 @@ class TestWorkflowsPlatformMode:
                 await workflows.get(execution_id)
 
     @pytest.mark.asyncio
-    async def test_get_requires_platform_context(self):
-        """Test that workflows.get() requires platform execution context."""
+    async def test_get_requires_context_or_credentials(self):
+        """Test that workflows.get() requires platform execution context or CLI credentials."""
         from bifrost import workflows
 
-        # No context set
+        # No context set, no credentials
         clear_execution_context()
 
         execution_id = str(uuid4())
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await workflows.get(execution_id)
 
     @pytest.mark.asyncio

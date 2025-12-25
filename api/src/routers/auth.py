@@ -24,11 +24,22 @@ from pydantic import BaseModel, EmailStr
 
 from src.core.cache import get_shared_redis
 from src.core.cache.keys import (
+    device_code_key,
+    device_user_code_index_key,
     refresh_token_jti_key,
     user_refresh_tokens_pattern,
+    TTL_DEVICE_CODE,
     TTL_REFRESH_TOKEN,
 )
-from src.models import OAuthProviderInfo, AuthStatusResponse
+from src.models import (
+    AuthStatusResponse,
+    DeviceAuthorizeRequest,
+    DeviceCodeResponse,
+    DeviceTokenErrorResponse,
+    DeviceTokenRequest,
+    DeviceTokenResponse,
+    OAuthProviderInfo,
+)
 from src.config import get_settings
 from src.core.auth import CurrentActiveUser
 from src.core.database import DbSession
@@ -1270,3 +1281,306 @@ async def get_auth_status(db: DbSession = None) -> AuthStatusResponse:
 # NOTE: /auth/oauth/login endpoint was removed for security reasons.
 # It accepted unverified email claims which allowed account takeover.
 # Use /auth/oauth/callback flow instead which properly validates OAuth tokens.
+
+
+# =============================================================================
+# Device Authorization Flow (RFC 8628)
+# =============================================================================
+
+
+def _generate_user_code() -> str:
+    """
+    Generate a human-readable user code for device authorization.
+
+    Format: XXXX-YYYY (8 uppercase letters/digits, no ambiguous chars)
+    Avoids: O/0, I/1, S/5, Z/2 for better readability
+    """
+    import random
+    import string
+
+    # Remove ambiguous characters
+    chars = string.ascii_uppercase.replace("O", "").replace("I", "").replace("S", "").replace("Z", "")
+    chars += string.digits.replace("0", "").replace("1", "").replace("5", "").replace("2", "")
+
+    # Generate 8 character code
+    code_chars = [random.choice(chars) for _ in range(8)]
+
+    # Format as XXXX-YYYY
+    return f"{''.join(code_chars[:4])}-{''.join(code_chars[4:])}"
+
+
+@router.post("/device/code", response_model=DeviceCodeResponse)
+async def request_device_code(
+    request: Request,
+) -> DeviceCodeResponse:
+    """
+    Request a device authorization code for CLI login.
+
+    This is the first step in the OAuth 2.0 Device Authorization Flow (RFC 8628).
+    The CLI calls this endpoint to get a device_code and user_code.
+
+    The user_code is displayed to the user who must enter it at the verification_url.
+    The device_code is used by the CLI to poll for authorization.
+
+    Rate limited: 10 requests per minute per IP address.
+
+    Returns:
+        DeviceCodeResponse with device_code, user_code, verification URL, and polling interval
+    """
+    import json
+    import uuid
+
+    # Rate limiting
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("device_code", client_ip)
+
+    settings = get_settings()
+    r = await get_shared_redis()
+
+    # Generate codes
+    device_code = str(uuid.uuid4())
+    user_code = _generate_user_code()
+
+    # Store device code in Redis with pending status
+    device_data = {
+        "user_code": user_code,
+        "status": "pending",
+        "user_id": None,
+    }
+
+    await r.setex(
+        device_code_key(device_code),
+        TTL_DEVICE_CODE,
+        json.dumps(device_data)
+    )
+
+    # Create reverse index from user_code to device_code for authorization lookup
+    await r.setex(
+        device_user_code_index_key(user_code),
+        TTL_DEVICE_CODE,
+        device_code
+    )
+
+    logger.info(
+        f"Device authorization code requested: {user_code}",
+        extra={"device_code": device_code, "user_code": user_code}
+    )
+
+    # Build verification URL
+    # For now, use a simple path - frontend will construct full URL
+    verification_url = "/device"
+
+    return DeviceCodeResponse(
+        device_code=device_code,
+        user_code=user_code,
+        verification_url=verification_url,
+        expires_in=TTL_DEVICE_CODE,
+        interval=5,
+    )
+
+
+@router.post("/device/token")
+async def exchange_device_token(
+    request: Request,
+    token_request: DeviceTokenRequest,
+    db: DbSession = None,
+) -> DeviceTokenResponse | DeviceTokenErrorResponse:
+    """
+    Exchange device code for access token (polling endpoint).
+
+    This is the second step in the Device Authorization Flow. The CLI polls this
+    endpoint with the device_code until the user authorizes the request.
+
+    Possible responses:
+    - 200 + DeviceTokenResponse: Authorization granted, tokens issued
+    - 200 + DeviceTokenErrorResponse: Still pending or denied/expired
+
+    Rate limited: 20 requests per minute per IP address (allows polling).
+
+    Args:
+        request: FastAPI request
+        token_request: Device token request with device_code
+        db: Database session
+
+    Returns:
+        DeviceTokenResponse with tokens or DeviceTokenErrorResponse with error
+    """
+    import json
+
+    # Rate limiting (more lenient for polling)
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("device_token", client_ip)
+
+    r = await get_shared_redis()
+
+    # Get device code data from Redis
+    device_data_json = await r.get(device_code_key(token_request.device_code))
+
+    if not device_data_json:
+        logger.warning(
+            "Device token request with expired/invalid device_code",
+            extra={"device_code": token_request.device_code[:8] + "..."}
+        )
+        return DeviceTokenErrorResponse(error="expired_token")
+
+    device_data = json.loads(device_data_json)
+    status = device_data.get("status")
+
+    if status == "pending":
+        return DeviceTokenErrorResponse(error="authorization_pending")
+
+    if status == "denied":
+        # Delete the device code
+        await r.delete(device_code_key(token_request.device_code))
+        await r.delete(device_user_code_index_key(device_data["user_code"]))
+
+        logger.info(
+            "Device authorization denied",
+            extra={"device_code": token_request.device_code[:8] + "...", "user_code": device_data["user_code"]}
+        )
+        return DeviceTokenErrorResponse(error="access_denied")
+
+    if status == "authorized":
+        user_id = device_data.get("user_id")
+
+        if not user_id:
+            logger.error(
+                "Device code authorized but missing user_id",
+                extra={"device_code": token_request.device_code[:8] + "..."}
+            )
+            return DeviceTokenErrorResponse(error="expired_token")
+
+        # Get user from database
+        user_repo = UserRepository(db)
+        user = await user_repo.get_by_id(UUID(user_id))
+
+        if not user or not user.is_active:
+            logger.warning(
+                "Device token request for inactive/deleted user",
+                extra={"user_id": user_id}
+            )
+            return DeviceTokenErrorResponse(error="access_denied")
+
+        # Generate tokens using existing helper
+        login_response = await _generate_login_tokens(user, db, response=None)
+
+        # Delete device code (one-time use)
+        await r.delete(device_code_key(token_request.device_code))
+        await r.delete(device_user_code_index_key(device_data["user_code"]))
+
+        logger.info(
+            f"Device authorization completed for user: {user.email}",
+            extra={
+                "user_id": str(user.id),
+                "device_code": token_request.device_code[:8] + "...",
+                "user_code": device_data["user_code"],
+            }
+        )
+
+        return DeviceTokenResponse(
+            access_token=login_response.access_token,
+            refresh_token=login_response.refresh_token,
+            token_type=login_response.token_type,
+            expires_in=1800,  # 30 minutes
+        )
+
+    # Unknown status
+    logger.error(
+        f"Unknown device code status: {status}",
+        extra={"device_code": token_request.device_code[:8] + "..."}
+    )
+    return DeviceTokenErrorResponse(error="expired_token")
+
+
+class DeviceAuthorizeResponse(BaseModel):
+    """Response for device authorization."""
+    success: bool
+
+
+@router.post("/device/authorize", response_model=DeviceAuthorizeResponse)
+async def authorize_device(
+    authorize_request: DeviceAuthorizeRequest,
+    current_user: CurrentActiveUser,
+) -> DeviceAuthorizeResponse:
+    """
+    Authorize a device code (user approves CLI access).
+
+    This endpoint is called by the web UI when a logged-in user enters the
+    user_code and approves CLI access. The CLI will then receive tokens on
+    its next poll to /device/token.
+
+    Requires authentication - user must be logged in to authorize a device.
+
+    Args:
+        authorize_request: Device authorization request with user_code
+        current_user: Current authenticated user (from JWT)
+
+    Returns:
+        Success response
+
+    Raises:
+        HTTPException: If user_code is invalid or expired
+    """
+    import json
+
+    r = await get_shared_redis()
+
+    # Look up device_code from user_code (reverse index)
+    device_code = await r.get(device_user_code_index_key(authorize_request.user_code))
+
+    if not device_code:
+        logger.warning(
+            f"Device authorization attempt with invalid user_code: {authorize_request.user_code}",
+            extra={"user_id": str(current_user.user_id)}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid or expired user code",
+        )
+
+    device_code_str = device_code.decode() if isinstance(device_code, bytes) else device_code
+
+    # Get device data
+    device_data_json = await r.get(device_code_key(device_code_str))
+
+    if not device_data_json:
+        logger.warning(
+            f"Device code missing for user_code: {authorize_request.user_code}",
+            extra={"user_id": str(current_user.user_id)}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid or expired user code",
+        )
+
+    # Update device code status to authorized
+    device_data = json.loads(device_data_json)
+    device_data["status"] = "authorized"
+    device_data["user_id"] = str(current_user.user_id)
+
+    # Get remaining TTL and preserve it
+    ttl = await r.ttl(device_code_key(device_code_str))
+    if ttl > 0:
+        await r.setex(
+            device_code_key(device_code_str),
+            ttl,
+            json.dumps(device_data)
+        )
+    else:
+        # Fallback if TTL query fails
+        await r.setex(
+            device_code_key(device_code_str),
+            TTL_DEVICE_CODE,
+            json.dumps(device_data)
+        )
+
+    logger.info(
+        f"Device authorized by user: {current_user.email}",
+        extra={
+            "user_id": str(current_user.user_id),
+            "user_code": authorize_request.user_code,
+            "device_code": device_code_str[:8] + "...",
+        }
+    )
+
+    return DeviceAuthorizeResponse(success=True)

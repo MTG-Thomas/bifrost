@@ -12,11 +12,19 @@ from fastapi import APIRouter, HTTPException, status
 from src.core.auth import CurrentActiveUser, RequirePlatformAdmin
 from src.core.database import DbSession
 from src.models.contracts.llm import (
+    EmbeddingConfigRequest,
+    EmbeddingConfigResponse,
+    EmbeddingTestResponse,
     LLMConfigRequest,
     LLMConfigResponse,
     LLMModelsResponse,
     LLMTestRequest,
     LLMTestResponse,
+)
+from src.services.embeddings.factory import (
+    EMBEDDING_CONFIG_CATEGORY,
+    EMBEDDING_CONFIG_KEY,
+    get_embedding_config,
 )
 from src.services.llm_config_service import LLMConfigService
 
@@ -220,3 +228,209 @@ async def list_llm_models(
         models=models,
         provider=config.provider,
     )
+
+
+# =============================================================================
+# Embedding Configuration Endpoints
+# =============================================================================
+
+
+@router.get("/embedding-config")
+async def get_embedding_config_endpoint(
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> EmbeddingConfigResponse:
+    """
+    Get current embedding configuration.
+
+    Returns the configuration and indicates whether it uses a dedicated key
+    or falls back to the LLM provider's OpenAI key.
+    Requires platform admin access.
+    """
+    from sqlalchemy import select
+    from src.models.orm import SystemConfig
+
+    # Check for dedicated embedding config
+    result = await db.execute(
+        select(SystemConfig).where(
+            SystemConfig.category == EMBEDDING_CONFIG_CATEGORY,
+            SystemConfig.key == EMBEDDING_CONFIG_KEY,
+            SystemConfig.organization_id.is_(None),
+        )
+    )
+    embedding_config = result.scalars().first()
+
+    if embedding_config and embedding_config.value_json:
+        config_data = embedding_config.value_json
+        return EmbeddingConfigResponse(
+            model=config_data.get("model", "text-embedding-3-small"),
+            dimensions=config_data.get("dimensions", 1536),
+            is_configured=True,
+            api_key_set=bool(config_data.get("encrypted_api_key")),
+            uses_llm_key=False,
+        )
+
+    # Check if we can fall back to LLM config
+    try:
+        await get_embedding_config(db)
+        # If we get here, we're using the LLM key
+        return EmbeddingConfigResponse(
+            model="text-embedding-3-small",
+            dimensions=1536,
+            is_configured=True,
+            api_key_set=True,
+            uses_llm_key=True,
+        )
+    except ValueError:
+        # No config available
+        return EmbeddingConfigResponse(
+            model="text-embedding-3-small",
+            dimensions=1536,
+            is_configured=False,
+            api_key_set=False,
+            uses_llm_key=False,
+        )
+
+
+@router.post("/embedding-config", status_code=status.HTTP_200_OK)
+async def set_embedding_config(
+    request: EmbeddingConfigRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> EmbeddingConfigResponse:
+    """
+    Set dedicated embedding configuration.
+
+    This allows using a separate OpenAI key for embeddings,
+    useful when the main LLM provider is Anthropic.
+    Requires platform admin access.
+    """
+    import base64
+    from cryptography.fernet import Fernet
+    from sqlalchemy import select
+    from src.config import get_settings
+    from src.models.orm import SystemConfig
+
+    settings = get_settings()
+
+    # Encrypt the API key
+    key_bytes = settings.secret_key.encode()[:32].ljust(32, b"0")
+    fernet = Fernet(base64.urlsafe_b64encode(key_bytes))
+    encrypted_key = fernet.encrypt(request.api_key.encode()).decode()
+
+    config_data = {
+        "model": request.model,
+        "dimensions": request.dimensions,
+        "encrypted_api_key": encrypted_key,
+    }
+
+    # Upsert the config
+    result = await db.execute(
+        select(SystemConfig).where(
+            SystemConfig.category == EMBEDDING_CONFIG_CATEGORY,
+            SystemConfig.key == EMBEDDING_CONFIG_KEY,
+            SystemConfig.organization_id.is_(None),
+        )
+    )
+    existing = result.scalars().first()
+
+    if existing:
+        existing.value_json = config_data
+        existing.updated_by = user.email
+    else:
+        new_config = SystemConfig(
+            category=EMBEDDING_CONFIG_CATEGORY,
+            key=EMBEDDING_CONFIG_KEY,
+            value_json=config_data,
+            created_by=user.email,
+            updated_by=user.email,
+        )
+        db.add(new_config)
+
+    await db.commit()
+
+    logger.info(f"Embedding config updated by {user.email}: model={request.model}")
+
+    return EmbeddingConfigResponse(
+        model=request.model,
+        dimensions=request.dimensions,
+        is_configured=True,
+        api_key_set=True,
+        uses_llm_key=False,
+    )
+
+
+@router.delete("/embedding-config", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_embedding_config(
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> None:
+    """
+    Delete dedicated embedding configuration.
+
+    After deletion, embeddings will fall back to using the LLM provider's
+    OpenAI key (if available).
+    Requires platform admin access.
+    """
+    from sqlalchemy import select
+    from src.models.orm import SystemConfig
+
+    result = await db.execute(
+        select(SystemConfig).where(
+            SystemConfig.category == EMBEDDING_CONFIG_CATEGORY,
+            SystemConfig.key == EMBEDDING_CONFIG_KEY,
+            SystemConfig.organization_id.is_(None),
+        )
+    )
+    existing = result.scalars().first()
+
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Embedding configuration not found",
+        )
+
+    await db.delete(existing)
+    await db.commit()
+
+    logger.info(f"Embedding config deleted by {user.email}")
+
+
+@router.post("/embedding-test")
+async def test_embedding_connection(
+    request: EmbeddingConfigRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> EmbeddingTestResponse:
+    """
+    Test embedding connection with provided credentials.
+
+    Tests the connection without saving the configuration.
+    Requires platform admin access.
+    """
+    from src.services.embeddings.base import EmbeddingConfig
+    from src.services.embeddings.openai_client import OpenAIEmbeddingClient
+
+    try:
+        config = EmbeddingConfig(
+            api_key=request.api_key,
+            model=request.model,
+            dimensions=request.dimensions,
+        )
+        client = OpenAIEmbeddingClient(config)
+
+        # Test with a simple embedding
+        embedding = await client.embed_single("test connection")
+
+        return EmbeddingTestResponse(
+            success=True,
+            message="Successfully connected and generated test embedding",
+            dimensions=len(embedding),
+        )
+    except Exception as e:
+        logger.warning(f"Embedding test failed: {e}")
+        return EmbeddingTestResponse(
+            success=False,
+            message=f"Connection failed: {str(e)}",
+            dimensions=None,
+        )

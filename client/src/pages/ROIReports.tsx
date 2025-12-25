@@ -59,7 +59,7 @@ import { useOrgScope } from "@/hooks/useOrgScope";
 import { useOrganizations } from "@/hooks/useOrganizations";
 
 // ============================================================================
-// Demo Data - Realistic sample data for UI development/demonstration
+// Demo Data Generation
 // ============================================================================
 
 // Extended type to include organization_id for demo filtering
@@ -71,158 +71,167 @@ const DEMO_WORKFLOW_TEMPLATES = [
 	{ name: "Ticket Triage", timeSaved: 15, value: 25, baseCount: 4500 },
 	{ name: "Invoice Processing", timeSaved: 30, value: 50, baseCount: 1900 },
 	{ name: "Compliance Check", timeSaved: 60, value: 120, baseCount: 750 },
-	{
-		name: "Data Backup Verification",
-		timeSaved: 20,
-		value: 35,
-		baseCount: 2100,
-	},
+	{ name: "Data Backup Verification", timeSaved: 20, value: 35, baseCount: 2100 },
 	{ name: "Report Generation", timeSaved: 25, value: 40, baseCount: 700 },
 ];
 
-// Fallback demo workflows if no real orgs exist
-const FALLBACK_DEMO_WORKFLOWS: DemoWorkflowROI[] = [
-	{
-		workflow_id: "demo-1",
-		workflow_name: "User Onboarding",
-		organization_id: "demo-org-1",
-		execution_count: 2847,
-		success_count: 2789,
-		time_saved_per_execution: 45,
-		value_per_execution: 75,
-		total_time_saved: 125505,
-		total_value: 209175,
-	},
-	{
-		workflow_id: "demo-2",
-		workflow_name: "Ticket Triage",
-		organization_id: "demo-org-1",
-		execution_count: 4521,
-		success_count: 4432,
-		time_saved_per_execution: 15,
-		value_per_execution: 25,
-		total_time_saved: 66480,
-		total_value: 110800,
-	},
-	{
-		workflow_id: "demo-3",
-		workflow_name: "Invoice Processing",
-		organization_id: "demo-org-2",
-		execution_count: 1893,
-		success_count: 1856,
-		time_saved_per_execution: 30,
-		value_per_execution: 50,
-		total_time_saved: 55680,
-		total_value: 92800,
-	},
+// Fallback demo orgs if no real orgs exist
+const FALLBACK_DEMO_ORGS = [
+	{ id: "demo-org-1", name: "Acme Corp" },
+	{ id: "demo-org-2", name: "TechStart Inc" },
+	{ id: "demo-org-3", name: "Global Services LLC" },
 ];
 
-/**
- * Generate demo workflow data using real organizations if available
- */
-function generateDemoWorkflows(
-	realOrgs: Array<{ id: string; name: string }> | undefined,
-): DemoWorkflowROI[] {
-	if (!realOrgs || realOrgs.length === 0) {
-		return FALLBACK_DEMO_WORKFLOWS;
-	}
-
-	const workflows: DemoWorkflowROI[] = [];
-
-	// Distribute workflows across organizations
-	DEMO_WORKFLOW_TEMPLATES.forEach((template, index) => {
-		// Assign each workflow to an org (cycling through available orgs)
-		const org = realOrgs[index % realOrgs.length];
-		const variance = 0.9 + Math.random() * 0.2; // ±10% variance
-		const executions = Math.floor(template.baseCount * variance);
-		const successRate = 0.96 + Math.random() * 0.03;
-		const successCount = Math.floor(executions * successRate);
-
-		workflows.push({
-			workflow_id: `demo-${index + 1}`,
-			workflow_name: template.name,
-			organization_id: org.id,
-			execution_count: executions,
-			success_count: successCount,
-			time_saved_per_execution: template.timeSaved,
-			value_per_execution: template.value,
-			total_time_saved: successCount * template.timeSaved,
-			total_value: successCount * template.value,
-		});
-	});
-
-	return workflows;
+interface DemoDataParams {
+	startDate: string;
+	endDate: string;
+	orgId: string | null; // null = global scope
+	realOrgs: Array<{ id: string; name: string }> | undefined;
 }
 
-// Fallback demo org data if no real orgs exist
-const FALLBACK_DEMO_ORGANIZATIONS: ROIByOrganization["organizations"] = [
-	{
-		organization_id: "demo-org-1",
-		organization_name: "Acme Corp",
-		execution_count: 4521,
-		success_count: 4389,
-		total_time_saved: 132300,
-		total_value: 220500,
-	},
-	{
-		organization_id: "demo-org-2",
-		organization_name: "TechStart Inc",
-		execution_count: 3847,
-		success_count: 3732,
-		total_time_saved: 98460,
-		total_value: 164100,
-	},
-	{
-		organization_id: "demo-org-3",
-		organization_name: "Global Services LLC",
-		execution_count: 2893,
-		success_count: 2835,
-		total_time_saved: 86790,
-		total_value: 144650,
-	},
-];
-
-/**
- * Generate demo organization data using real organizations if available
- */
-function generateDemoOrganizations(
-	realOrgs: Array<{ id: string; name: string }> | undefined,
-): ROIByOrganization["organizations"] {
-	if (!realOrgs || realOrgs.length === 0) {
-		return FALLBACK_DEMO_ORGANIZATIONS;
-	}
-
-	// Generate demo metrics for each real organization
-	return realOrgs.map((org, index) => {
-		// Use index to create varied but consistent demo values
-		const baseExecutions = 4500 - index * 800;
-		const successRate = 0.95 + Math.random() * 0.03;
-		const executions = Math.max(
-			300,
-			baseExecutions + Math.floor(Math.random() * 500),
-		);
-		const successCount = Math.floor(executions * successRate);
-		const avgTimeSaved = 25 + Math.floor(Math.random() * 15); // 25-40 mins per execution
-		const avgValue = 35 + Math.floor(Math.random() * 25); // $35-60 per execution
-
-		return {
-			organization_id: org.id,
-			organization_name: org.name,
-			execution_count: executions,
-			success_count: successCount,
-			total_time_saved: successCount * avgTimeSaved,
-			total_value: successCount * avgValue,
-		};
-	});
+interface DemoDataResult {
+	summary: ROISummary;
+	byWorkflow: ROIByWorkflow;
+	byOrg: ROIByOrganization;
+	trends: ROITrends;
 }
 
 /**
- * Generate demo trend data for the given date range
+ * Generate demo data that mirrors API response structure.
+ * Accepts orgId and returns pre-filtered data - exactly like the API would.
+ *
+ * This ensures demo data and real API data work identically:
+ * - Pass in org filter (orgId)
+ * - Get back filtered response
+ * - Same downstream code for both paths
  */
-function generateDemoTrends(startDate: string, endDate: string): ROITrends {
-	const entries: ROITrends["entries"] = [];
+function generateDemoData(params: DemoDataParams): DemoDataResult {
+	const { startDate, endDate, orgId, realOrgs } = params;
+	const orgs = realOrgs && realOrgs.length > 0 ? realOrgs : FALLBACK_DEMO_ORGS;
+
+	// Step 1: Generate all workflows with org assignments
+	const allWorkflows: DemoWorkflowROI[] = DEMO_WORKFLOW_TEMPLATES.map(
+		(template, index) => {
+			const org = orgs[index % orgs.length];
+			const variance = 0.9 + Math.random() * 0.2;
+			const executions = Math.floor(template.baseCount * variance);
+			const successRate = 0.96 + Math.random() * 0.03;
+			const successCount = Math.floor(executions * successRate);
+
+			return {
+				workflow_id: `demo-${index + 1}`,
+				workflow_name: template.name,
+				organization_id: org.id,
+				execution_count: executions,
+				success_count: successCount,
+				time_saved_per_execution: template.timeSaved,
+				value_per_execution: template.value,
+				total_time_saved: successCount * template.timeSaved,
+				total_value: successCount * template.value,
+			};
+		},
+	);
+
+	// Step 2: Filter to selected org (like the API would)
+	const filteredWorkflows = orgId
+		? allWorkflows.filter((w) => w.organization_id === orgId)
+		: allWorkflows;
+
+	// Step 3: Compute summary from filtered workflows
+	const summaryTotals = filteredWorkflows.reduce(
+		(acc, w) => ({
+			total_executions: acc.total_executions + w.execution_count,
+			successful_executions: acc.successful_executions + w.success_count,
+			total_time_saved: acc.total_time_saved + w.total_time_saved,
+			total_value: acc.total_value + w.total_value,
+		}),
+		{
+			total_executions: 0,
+			successful_executions: 0,
+			total_time_saved: 0,
+			total_value: 0,
+		},
+	);
+
+	const summary: ROISummary = {
+		start_date: startDate,
+		end_date: endDate,
+		...summaryTotals,
+		time_saved_unit: "minutes",
+		value_unit: "USD",
+	};
+
+	// Step 4: Build byWorkflow response (already filtered)
+	const byWorkflow: ROIByWorkflow = {
+		workflows: filteredWorkflows,
+		total_workflows: filteredWorkflows.length,
+		time_saved_unit: "minutes",
+		value_unit: "USD",
+	};
+
+	// Step 5: Build byOrg response (aggregated from workflows)
+	// Group workflows by organization and aggregate
+	const orgMetrics = new Map<
+		string,
+		{
+			name: string;
+			execution_count: number;
+			success_count: number;
+			total_time_saved: number;
+			total_value: number;
+		}
+	>();
+
+	// Use allWorkflows for org breakdown (API always returns all orgs)
+	for (const workflow of allWorkflows) {
+		const existing = orgMetrics.get(workflow.organization_id);
+		const orgName =
+			orgs.find((o) => o.id === workflow.organization_id)?.name ?? "Unknown";
+
+		if (existing) {
+			existing.execution_count += workflow.execution_count;
+			existing.success_count += workflow.success_count;
+			existing.total_time_saved += workflow.total_time_saved;
+			existing.total_value += workflow.total_value;
+		} else {
+			orgMetrics.set(workflow.organization_id, {
+				name: orgName,
+				execution_count: workflow.execution_count,
+				success_count: workflow.success_count,
+				total_time_saved: workflow.total_time_saved,
+				total_value: workflow.total_value,
+			});
+		}
+	}
+
+	const byOrg: ROIByOrganization = {
+		organizations: Array.from(orgMetrics.entries()).map(([id, metrics]) => ({
+			organization_id: id,
+			organization_name: metrics.name,
+			execution_count: metrics.execution_count,
+			success_count: metrics.success_count,
+			total_time_saved: metrics.total_time_saved,
+			total_value: metrics.total_value,
+		})),
+		time_saved_unit: "minutes",
+		value_unit: "USD",
+	};
+
+	// Step 6: Generate trends based on filtered workflows
+	// Distribute workflow metrics across days in the date range
+	const trendEntries: ROITrends["entries"] = [];
 	const start = new Date(startDate);
 	const end = new Date(endDate);
+	const dayCount = Math.max(
+		1,
+		Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1,
+	);
+
+	// Calculate daily average from filtered workflows
+	const dailyAvgExecutions = summaryTotals.total_executions / dayCount;
+	const dailyAvgSuccess = summaryTotals.successful_executions / dayCount;
+	const dailyAvgTimeSaved = summaryTotals.total_time_saved / dayCount;
+	const dailyAvgValue = summaryTotals.total_value / dayCount;
 
 	const currentDate = new Date(start);
 	let dayIndex = 0;
@@ -231,34 +240,30 @@ function generateDemoTrends(startDate: string, endDate: string): ROITrends {
 		const isWeekend =
 			currentDate.getDay() === 0 || currentDate.getDay() === 6;
 		const baseMultiplier = isWeekend ? 0.5 : 1;
-		// Add slight upward trend and natural variance
-		const trendMultiplier = 1 + dayIndex * 0.005;
-		const variance = 0.85 + Math.random() * 0.3; // ±15%
+		const trendMultiplier = 1 + dayIndex * 0.003;
+		const variance = 0.85 + Math.random() * 0.3;
+		const dayFactor = baseMultiplier * trendMultiplier * variance;
 
-		const dailyExecutions = Math.round(
-			420 * baseMultiplier * trendMultiplier * variance,
-		);
-		const successRate = 0.92 + Math.random() * 0.06; // 92-98%
-		const dailySuccess = Math.round(dailyExecutions * successRate);
-
-		entries.push({
+		trendEntries.push({
 			period: format(currentDate, "yyyy-MM-dd"),
-			execution_count: dailyExecutions,
-			success_count: dailySuccess,
-			time_saved: Math.round(dailySuccess * 28 * variance), // ~28 min avg
-			value: Math.round(dailySuccess * 46 * variance * 100) / 100, // ~$46 avg
+			execution_count: Math.round(dailyAvgExecutions * dayFactor),
+			success_count: Math.round(dailyAvgSuccess * dayFactor),
+			time_saved: Math.round(dailyAvgTimeSaved * dayFactor),
+			value: Math.round(dailyAvgValue * dayFactor * 100) / 100,
 		});
 
 		currentDate.setDate(currentDate.getDate() + 1);
 		dayIndex++;
 	}
 
-	return {
-		entries,
+	const trends: ROITrends = {
+		entries: trendEntries,
 		granularity: "day",
 		time_saved_unit: "minutes",
 		value_unit: "USD",
 	};
+
+	return { summary, byWorkflow, byOrg, trends };
 }
 
 // ============================================================================
@@ -307,85 +312,16 @@ export function ROIReports() {
 		return orgsData.map((o) => ({ id: o.id, name: o.name }));
 	}, [orgsData]);
 
-	// Generate demo data using real organizations if available
-	const demoWorkflows = useMemo(
-		() => generateDemoWorkflows(realOrgs),
-		[realOrgs],
-	);
-	const demoOrganizations = useMemo(
-		() => generateDemoOrganizations(realOrgs),
-		[realOrgs],
-	);
-
-	// Filter demo data by org scope
-	const scopedDemoWorkflows = useMemo(() => {
-		if (isGlobalScope || !scope.orgId) return demoWorkflows;
-		return demoWorkflows.filter((w) => w.organization_id === scope.orgId);
-	}, [demoWorkflows, isGlobalScope, scope.orgId]);
-
-	const scopedDemoOrganizations = useMemo(() => {
-		if (isGlobalScope || !scope.orgId) return demoOrganizations;
-		return demoOrganizations.filter(
-			(o) => o.organization_id === scope.orgId,
-		);
-	}, [demoOrganizations, isGlobalScope, scope.orgId]);
-
-	// Generate demo trends based on current date range
-	const demoTrends = useMemo(
-		() =>
-			startDate && endDate
-				? generateDemoTrends(startDate, endDate)
-				: null,
-		[startDate, endDate],
-	);
-
-	// Compute demo summary from scoped workflow data (so totals reflect org filter)
-	const demoSummary: ROISummary | null = useMemo(() => {
+	// Single source of demo data - already filtered by org like API would be
+	const demoData = useMemo(() => {
 		if (!startDate || !endDate) return null;
-
-		// Aggregate totals from scoped workflows
-		const totals = scopedDemoWorkflows.reduce(
-			(acc, w) => ({
-				total_executions: acc.total_executions + w.execution_count,
-				successful_executions:
-					acc.successful_executions + w.success_count,
-				total_time_saved: acc.total_time_saved + w.total_time_saved,
-				total_value: acc.total_value + w.total_value,
-			}),
-			{
-				total_executions: 0,
-				successful_executions: 0,
-				total_time_saved: 0,
-				total_value: 0,
-			},
-		);
-
-		return {
-			start_date: startDate,
-			end_date: endDate,
-			...totals,
-			time_saved_unit: "minutes",
-			value_unit: "USD",
-		};
-	}, [startDate, endDate, scopedDemoWorkflows]);
-
-	const demoByWorkflow: ROIByWorkflow = useMemo(
-		() => ({
-			workflows: scopedDemoWorkflows,
-			total_workflows: scopedDemoWorkflows.length,
-			time_saved_unit: "minutes",
-			value_unit: "USD",
-		}),
-		[scopedDemoWorkflows],
-	);
-	const demoByOrg: ROIByOrganization = useMemo(
-		() => ({
-			organizations: scopedDemoOrganizations,
-			time_saved_unit: "minutes",
-			value_unit: "USD",
-		}),
-		[scopedDemoOrganizations],
-	);
+		return generateDemoData({
+			startDate,
+			endDate,
+			orgId: scope.orgId, // Apply org filter here, like API does
+			realOrgs,
+		});
+	}, [startDate, endDate, scope.orgId, realOrgs]);
 
 	// Fetch real data (only used when not in demo mode)
 	const {
@@ -413,10 +349,11 @@ export function ROIReports() {
 	} = useROITrends(startDate, endDate);
 
 	// Use demo or real data based on toggle
-	const summary = showDemoData ? demoSummary : realSummary;
-	const byWorkflow = showDemoData ? demoByWorkflow : realByWorkflow;
-	const byOrg = showDemoData ? demoByOrg : realByOrg;
-	const trends = showDemoData ? demoTrends : realTrends;
+	// Both have the same shape and filtering already applied - no additional processing needed
+	const summary = showDemoData ? demoData?.summary : realSummary;
+	const byWorkflow = showDemoData ? demoData?.byWorkflow : realByWorkflow;
+	const byOrg = showDemoData ? demoData?.byOrg : realByOrg;
+	const trends = showDemoData ? demoData?.trends : realTrends;
 
 	// Sorted workflows
 	const sortedWorkflows = useMemo(() => {

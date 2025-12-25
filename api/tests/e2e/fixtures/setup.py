@@ -244,6 +244,15 @@ def org1_user(
     # User completes registration and MFA
     user = _register_and_authenticate_user(e2e_client, user, skip_registration=False)
     user.organization_id = UUID(org1["id"])
+
+    # Set developer context with default org (required for CLI knowledge isolation)
+    response = e2e_client.put(
+        "/api/cli/context",
+        headers=user.headers,
+        json={"default_org_id": org1["id"]},
+    )
+    assert response.status_code == 200, f"Set developer context failed: {response.text}"
+
     logger.info(f"Created org1 user: {user.email}")
     return user
 
@@ -283,6 +292,15 @@ def org2_user(
     # User completes registration and MFA
     user = _register_and_authenticate_user(e2e_client, user, skip_registration=False)
     user.organization_id = UUID(org2["id"])
+
+    # Set developer context with default org (required for CLI knowledge isolation)
+    response = e2e_client.put(
+        "/api/cli/context",
+        headers=user.headers,
+        json={"default_org_id": org2["id"]},
+    )
+    assert response.status_code == 200, f"Set developer context failed: {response.text}"
+
     logger.info(f"Created org2 user: {user.email}")
     return user
 

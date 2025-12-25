@@ -268,3 +268,106 @@ class SDKIntegrationsListMappingsResponse(BaseModel):
     items: list[SDKIntegrationsMappingItem] = Field(..., description="List of mappings")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ==================== SDK AI MODELS ====================
+
+
+class CLIAICompleteRequest(BaseModel):
+    """Request for AI completion via CLI."""
+    messages: list[dict[str, str]] = Field(..., description="List of messages with role and content")
+    max_tokens: int | None = Field(default=None, description="Override max tokens")
+    temperature: float | None = Field(default=None, description="Override temperature (0.0-2.0)")
+    org_id: str | None = Field(default=None, description="Organization ID for knowledge search")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CLIAICompleteResponse(BaseModel):
+    """Response from AI completion."""
+    content: str | None = Field(None, description="Generated text content")
+    input_tokens: int | None = Field(None, description="Number of input tokens")
+    output_tokens: int | None = Field(None, description="Number of output tokens")
+    model: str | None = Field(None, description="Model identifier used")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CLIAIInfoResponse(BaseModel):
+    """Response with AI model information."""
+    provider: str = Field(..., description="LLM provider (openai, anthropic)")
+    model: str = Field(..., description="Model identifier")
+    max_tokens: int = Field(..., description="Default max tokens")
+    temperature: float = Field(..., description="Default temperature")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ==================== SDK KNOWLEDGE MODELS ====================
+
+
+class CLIKnowledgeStoreRequest(BaseModel):
+    """Request to store a document in knowledge store."""
+    content: str = Field(..., description="Text content to store and embed")
+    namespace: str = Field(default="default", description="Namespace for organization")
+    key: str | None = Field(default=None, description="Optional key for upserts")
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional metadata dict")
+    org_id: str | None = Field(default=None, description="Organization scope")
+    scope: str | None = Field(default=None, description="'global' for global scope")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CLIKnowledgeStoreManyRequest(BaseModel):
+    """Request to store multiple documents."""
+    documents: list[dict[str, Any]] = Field(..., description="List of document dicts with content, key, metadata")
+    namespace: str = Field(default="default", description="Namespace for all documents")
+    org_id: str | None = Field(default=None, description="Organization scope")
+    scope: str | None = Field(default=None, description="'global' for global scope")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CLIKnowledgeSearchRequest(BaseModel):
+    """Request to search knowledge store."""
+    query: str = Field(..., description="Search query (will be embedded)")
+    namespace: list[str] = Field(default=["default"], description="Namespace(s) to search")
+    limit: int = Field(default=5, description="Maximum results")
+    min_score: float | None = Field(default=None, description="Minimum similarity score (0-1)")
+    metadata_filter: dict[str, Any] | None = Field(default=None, description="Filter by metadata fields")
+    org_id: str | None = Field(default=None, description="Organization scope")
+    fallback: bool = Field(default=True, description="If True, also search global scope")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CLIKnowledgeDocumentResponse(BaseModel):
+    """Knowledge document in response."""
+    id: str = Field(..., description="Document UUID")
+    namespace: str = Field(..., description="Namespace")
+    content: str = Field(..., description="Text content")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Metadata")
+    score: float | None = Field(default=None, description="Similarity score (0-1)")
+    organization_id: str | None = Field(default=None, description="Organization scope")
+    key: str | None = Field(default=None, description="User-provided key")
+    created_at: str | None = Field(default=None, description="Creation timestamp")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CLIKnowledgeDeleteRequest(BaseModel):
+    """Request to delete a document by key."""
+    key: str = Field(..., description="Document key")
+    namespace: str = Field(default="default", description="Namespace")
+    org_id: str | None = Field(default=None, description="Organization scope")
+    scope: str | None = Field(default=None, description="'global' for global scope")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CLIKnowledgeNamespaceInfo(BaseModel):
+    """Namespace information with document counts."""
+    namespace: str = Field(..., description="Namespace name")
+    scopes: dict[str, int] = Field(..., description="Document counts by scope (global, org, total)")
+
+    model_config = ConfigDict(from_attributes=True)

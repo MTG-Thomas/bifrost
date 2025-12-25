@@ -572,25 +572,27 @@ class TestExecutionsPlatformMode:
         assert result.execution_id == str(mock_execution.id)
 
     @pytest.mark.asyncio
-    async def test_list_requires_platform_context(self):
-        """Test that executions.list() requires platform context."""
+    async def test_list_requires_platform_context_or_credentials(self):
+        """Test that executions.list() requires platform context or CLI credentials."""
         from bifrost import executions
 
-        # No context set
+        # No context set, no credentials
         clear_execution_context()
 
-        with pytest.raises(RuntimeError, match="No execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await executions.list()
 
     @pytest.mark.asyncio
-    async def test_get_requires_platform_context(self):
-        """Test that executions.get() requires platform context."""
+    async def test_get_requires_platform_context_or_credentials(self):
+        """Test that executions.get() requires platform context or CLI credentials."""
         from bifrost import executions
 
-        # No context set
+        # No context set, no credentials
         clear_execution_context()
 
-        with pytest.raises(RuntimeError, match="No execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await executions.get(str(uuid4()))
 
     @pytest.mark.asyncio

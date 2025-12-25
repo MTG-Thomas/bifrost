@@ -112,3 +112,38 @@ class OAuthLoginRequest(BaseModel):
     email: EmailStr
     name: str
     provider: str
+
+
+# ==================== DEVICE AUTHORIZATION FLOW MODELS ====================
+
+
+class DeviceCodeResponse(BaseModel):
+    """Response for device authorization code request."""
+    device_code: str
+    user_code: str
+    verification_url: str
+    expires_in: int = 300  # 5 minutes
+    interval: int = 5  # Polling interval in seconds
+
+
+class DeviceTokenRequest(BaseModel):
+    """Request to exchange device code for access token."""
+    device_code: str
+
+
+class DeviceTokenResponse(BaseModel):
+    """Response for device token request (successful)."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = 1800  # 30 minutes
+
+
+class DeviceTokenErrorResponse(BaseModel):
+    """Error response for device token request."""
+    error: str  # "authorization_pending", "expired_token", "access_denied"
+
+
+class DeviceAuthorizeRequest(BaseModel):
+    """Request to authorize a device using user code."""
+    user_code: str

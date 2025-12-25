@@ -108,6 +108,11 @@ openai  # OpenAI API client
 anthropic  # Anthropic Claude API client
 
 # =============================================================================
+# Vector Store (Knowledge/RAG)
+# =============================================================================
+pgvector  # PostgreSQL vector extension for semantic search
+
+# =============================================================================
 # Development
 # =============================================================================
 debugpy  # Remote debugging (VS Code attach)

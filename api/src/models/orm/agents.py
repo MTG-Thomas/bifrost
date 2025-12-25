@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, Enum as SQLAlchemyEnum, ForeignKey, Index, Integer, String, Text, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.enums import AgentAccessLevel, MessageRole
@@ -45,6 +45,10 @@ class Agent(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     file_path: Mapped[str | None] = mapped_column(String(1000), default=None)
+    # Knowledge namespaces this agent can search (RAG)
+    knowledge_sources: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False, default=list, server_default='{}'
+    )
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, server_default=text("NOW()")

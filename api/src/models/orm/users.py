@@ -16,7 +16,7 @@ from src.models.orm.base import Base
 
 if TYPE_CHECKING:
     from src.models.orm.agents import Agent
-    from src.models.orm.developer import DeveloperApiKey, DeveloperContext
+    from src.models.orm.developer import DeveloperContext
     from src.models.orm.executions import Execution
     from src.models.orm.mfa import MFARecoveryCode, TrustedDevice, UserMFAMethod, UserOAuthAccount, UserPasskey
     from src.models.orm.organizations import Organization
@@ -84,9 +84,6 @@ class User(Base):
     passkeys: Mapped[list["UserPasskey"]] = relationship(back_populates="user")
     developer_context: Mapped["DeveloperContext | None"] = relationship(
         back_populates="user", uselist=False
-    )
-    developer_api_keys: Mapped[list["DeveloperApiKey"]] = relationship(
-        back_populates="user"
     )
 
     __table_args__ = (

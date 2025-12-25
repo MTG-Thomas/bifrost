@@ -118,6 +118,9 @@ const ROIReports = lazy(() =>
 		default: m.ROIReports,
 	})),
 );
+const DevicePage = lazy(() =>
+	import("@/pages/DevicePage").then((m) => ({ default: m.DevicePage })),
+);
 
 function AppRoutes() {
 	const { brandingLoaded } = useOrgScope();
@@ -167,6 +170,9 @@ function AppRoutes() {
 					<Route path="setup" element={<Setup />} />
 					<Route path="mfa-setup" element={<MFASetup />} />
 					<Route path="auth/callback" element={<AuthCallback />} />
+
+					{/* Device authorization - requires auth, handles redirect internally */}
+					<Route path="device" element={<DevicePage />} />
 
 					{/* OAuth Callback - Public (no auth, no layout) */}
 					<Route

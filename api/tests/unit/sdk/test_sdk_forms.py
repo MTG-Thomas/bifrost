@@ -420,21 +420,23 @@ class TestFormsPlatformMode:
                     mock_forms_hash_key.assert_called_once_with(test_org_id)
 
     @pytest.mark.asyncio
-    async def test_list_requires_execution_context(self):
-        """Test that forms.list() requires execution context."""
+    async def test_list_requires_context_or_credentials(self):
+        """Test that forms.list() requires execution context or CLI credentials."""
         from bifrost import forms
 
         clear_execution_context()
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await forms.list()
 
     @pytest.mark.asyncio
-    async def test_get_requires_execution_context(self):
-        """Test that forms.get() requires execution context."""
+    async def test_get_requires_context_or_credentials(self):
+        """Test that forms.get() requires execution context or CLI credentials."""
         from bifrost import forms
 
         clear_execution_context()
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await forms.get("form-123")

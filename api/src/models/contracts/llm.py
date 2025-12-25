@@ -97,3 +97,46 @@ class LLMModelsResponse(BaseModel):
 
     models: list[str]
     provider: str
+
+
+# =============================================================================
+# Embedding Configuration
+# =============================================================================
+
+
+class EmbeddingConfigResponse(BaseModel):
+    """Embedding configuration response (API key is never returned)."""
+
+    model: str = "text-embedding-3-small"
+    dimensions: int = 1536
+    is_configured: bool = True
+    api_key_set: bool = False
+    uses_llm_key: bool = False  # True if using LLM config's OpenAI key
+
+
+class EmbeddingConfigRequest(BaseModel):
+    """Request to set dedicated embedding configuration."""
+
+    api_key: str = Field(
+        ...,
+        min_length=1,
+        description="OpenAI API key for embeddings",
+    )
+    model: str = Field(
+        "text-embedding-3-small",
+        description="Embedding model (text-embedding-3-small or text-embedding-3-large)",
+    )
+    dimensions: int = Field(
+        1536,
+        ge=256,
+        le=3072,
+        description="Embedding dimensions (1536 for small, up to 3072 for large)",
+    )
+
+
+class EmbeddingTestResponse(BaseModel):
+    """Response from testing embedding configuration."""
+
+    success: bool
+    message: str
+    dimensions: int | None = None

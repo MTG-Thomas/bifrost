@@ -3,35 +3,35 @@ CLI Router
 
 Endpoints for the Bifrost CLI:
 - Developer context (default organization, parameters)
-- API key management
 - CLI package download
 - File operations (read, write, list, delete)
 - Config operations (get, set, list, delete)
 - CLI Sessions (register, state, continue, pending, log, result)
 """
 
-import hashlib
 import io
 import json
 import logging
-import secrets
 import shutil
 import tarfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.auth import CurrentUser, get_current_user_optional, UserPrincipal
+from src.core.auth import CurrentUser
 from src.core.database import get_db
-from src.models import DeveloperApiKey, DeveloperContext, Organization, User
+from src.models import DeveloperContext, Organization
 from src.models.contracts.cli import (
+    CLIAICompleteRequest,
+    CLIAICompleteResponse,
+    CLIAIInfoResponse,
     CLIConfigDeleteRequest,
     CLIConfigGetRequest,
     CLIConfigListRequest,
@@ -41,6 +41,12 @@ from src.models.contracts.cli import (
     CLIFileListRequest,
     CLIFileReadRequest,
     CLIFileWriteRequest,
+    CLIKnowledgeDeleteRequest,
+    CLIKnowledgeDocumentResponse,
+    CLIKnowledgeNamespaceInfo,
+    CLIKnowledgeSearchRequest,
+    CLIKnowledgeStoreManyRequest,
+    CLIKnowledgeStoreRequest,
     CLIRegisteredWorkflow,
     CLISessionContinueRequest,
     CLISessionContinueResponse,
@@ -67,7 +73,7 @@ router = APIRouter(prefix="/api/cli", tags=["CLI"])
 
 
 # =============================================================================
-# Pydantic Models (Developer Context & API Keys)
+# Pydantic Models (Developer Context)
 # =============================================================================
 
 
@@ -88,103 +94,9 @@ class DeveloperContextUpdate(BaseModel):
     track_executions: bool | None = Field(default=None, description="Track executions in history")
 
 
-class ApiKeyCreate(BaseModel):
-    """Create a new API key."""
-
-    name: str = Field(min_length=1, max_length=100, description="Key name/description")
-    expires_in_days: int | None = Field(default=None, ge=1, le=365, description="Days until expiration")
-
-
-class ApiKeyResponse(BaseModel):
-    """API key response (without the actual key)."""
-
-    id: UUID
-    name: str
-    key_prefix: str
-    is_active: bool
-    expires_at: datetime | None
-    last_used_at: datetime | None
-    use_count: int
-    created_at: datetime
-
-
-class ApiKeyCreated(ApiKeyResponse):
-    """Response when creating a new API key (includes the actual key)."""
-
-    key: str = Field(description="The API key (only shown once)")
-
-
-class ApiKeyList(BaseModel):
-    """List of API keys."""
-
-    keys: list[ApiKeyResponse]
-
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-
-def _generate_api_key() -> tuple[str, str, str]:
-    """
-    Generate a new API key.
-
-    Returns:
-        Tuple of (full_key, key_prefix, key_hash)
-    """
-    key_suffix = secrets.token_urlsafe(32)
-    full_key = f"bfsk_{key_suffix}"
-    key_prefix = full_key[:12]
-    key_hash = hashlib.sha256(full_key.encode()).hexdigest()
-    return full_key, key_prefix, key_hash
-
-
-async def _get_user_from_api_key(
-    authorization: str | None,
-    db: AsyncSession,
-) -> User | None:
-    """
-    Authenticate user from API key in Authorization header.
-    """
-    if not authorization:
-        return None
-
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-
-    token = parts[1]
-    if not token.startswith("bfsk_"):
-        return None
-
-    key_hash = hashlib.sha256(token.encode()).hexdigest()
-
-    stmt = select(DeveloperApiKey).where(
-        DeveloperApiKey.key_hash == key_hash,
-        DeveloperApiKey.is_active == True,  # noqa: E712
-    )
-    result = await db.execute(stmt)
-    api_key = result.scalar_one_or_none()
-
-    if not api_key:
-        return None
-
-    if api_key.expires_at and api_key.expires_at < datetime.utcnow():
-        return None
-
-    await db.execute(
-        update(DeveloperApiKey)
-        .where(DeveloperApiKey.id == api_key.id)
-        .values(
-            last_used_at=datetime.utcnow(),
-            use_count=DeveloperApiKey.use_count + 1,
-        )
-    )
-    await db.commit()
-
-    stmt = select(User).where(User.id == api_key.user_id)
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none()
 
 
 def _session_to_response(
@@ -233,49 +145,6 @@ def _session_to_response(
 
 
 # =============================================================================
-# Dependencies
-# =============================================================================
-
-
-async def get_current_user_from_api_key(
-    authorization: Annotated[str | None, Header()] = None,
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Dependency to get current user from CLI API key."""
-    user = await _get_user_from_api_key(authorization, db)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
-
-
-async def get_current_user_dual_auth(
-    authorization: Annotated[str | None, Header()] = None,
-    current_user_session: UserPrincipal | None = Depends(get_current_user_optional),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Dependency that accepts EITHER session auth OR API key."""
-    if current_user_session:
-        stmt = select(User).where(User.id == current_user_session.user_id)
-        result = await db.execute(stmt)
-        user = result.scalar_one_or_none()
-        if user:
-            return user
-
-    user = await _get_user_from_api_key(authorization, db)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required (session or API key)",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
-
-
-# =============================================================================
 # Context Endpoints
 # =============================================================================
 
@@ -286,11 +155,11 @@ async def get_current_user_dual_auth(
     summary="Get developer context",
 )
 async def get_dev_context(
-    current_user: User = Depends(get_current_user_dual_auth),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> DeveloperContextResponse:
     """Get development context for CLI initialization."""
-    stmt = select(DeveloperContext).where(DeveloperContext.user_id == current_user.id)
+    stmt = select(DeveloperContext).where(DeveloperContext.user_id == current_user.user_id)
     result = await db.execute(stmt)
     dev_ctx = result.scalar_one_or_none()
 
@@ -308,7 +177,7 @@ async def get_dev_context(
 
     return DeveloperContextResponse(
         user={
-            "id": str(current_user.id),
+            "id": str(current_user.user_id),
             "email": current_user.email,
             "name": current_user.name,
         },
@@ -377,162 +246,6 @@ async def update_dev_context(
 
 
 # =============================================================================
-# API Key Management
-# =============================================================================
-
-
-@router.get(
-    "/keys",
-    response_model=ApiKeyList,
-    summary="List API keys",
-)
-async def list_api_keys(
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-) -> ApiKeyList:
-    """List all API keys for the current user."""
-    stmt = (
-        select(DeveloperApiKey)
-        .where(DeveloperApiKey.user_id == current_user.user_id)
-        .order_by(DeveloperApiKey.created_at.desc())
-    )
-    result = await db.execute(stmt)
-    keys = result.scalars().all()
-
-    return ApiKeyList(
-        keys=[
-            ApiKeyResponse(
-                id=k.id,
-                name=k.name,
-                key_prefix=k.key_prefix,
-                is_active=k.is_active,
-                expires_at=k.expires_at,
-                last_used_at=k.last_used_at,
-                use_count=k.use_count,
-                created_at=k.created_at,
-            )
-            for k in keys
-        ]
-    )
-
-
-@router.post(
-    "/keys",
-    response_model=ApiKeyCreated,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create API key",
-)
-async def create_api_key(
-    request: ApiKeyCreate,
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-) -> ApiKeyCreated:
-    """Create a new API key."""
-    full_key, key_prefix, key_hash = _generate_api_key()
-
-    expires_at = None
-    if request.expires_in_days:
-        expires_at = datetime.utcnow() + timedelta(days=request.expires_in_days)
-
-    api_key = DeveloperApiKey(
-        user_id=current_user.user_id,
-        name=request.name,
-        key_prefix=key_prefix,
-        key_hash=key_hash,
-        expires_at=expires_at,
-    )
-    db.add(api_key)
-    await db.commit()
-    await db.refresh(api_key)
-
-    logger.info(f"Created API key {key_prefix}... for user {current_user.email}")
-
-    return ApiKeyCreated(
-        id=api_key.id,
-        name=api_key.name,
-        key_prefix=api_key.key_prefix,
-        is_active=api_key.is_active,
-        expires_at=api_key.expires_at,
-        last_used_at=api_key.last_used_at,
-        use_count=api_key.use_count,
-        created_at=api_key.created_at,
-        key=full_key,
-    )
-
-
-@router.delete(
-    "/keys/{key_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete API key",
-)
-async def delete_api_key(
-    key_id: UUID,
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-) -> None:
-    """Delete an API key."""
-    stmt = select(DeveloperApiKey).where(
-        DeveloperApiKey.id == key_id,
-        DeveloperApiKey.user_id == current_user.user_id,
-    )
-    result = await db.execute(stmt)
-    api_key = result.scalar_one_or_none()
-
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found",
-        )
-
-    await db.execute(delete(DeveloperApiKey).where(DeveloperApiKey.id == key_id))
-    await db.commit()
-
-    logger.info(f"Deleted API key {api_key.key_prefix}... for user {current_user.email}")
-
-
-@router.patch(
-    "/keys/{key_id}/revoke",
-    response_model=ApiKeyResponse,
-    summary="Revoke API key",
-)
-async def revoke_api_key(
-    key_id: UUID,
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-) -> ApiKeyResponse:
-    """Revoke an API key (set is_active to False)."""
-    stmt = select(DeveloperApiKey).where(
-        DeveloperApiKey.id == key_id,
-        DeveloperApiKey.user_id == current_user.user_id,
-    )
-    result = await db.execute(stmt)
-    api_key = result.scalar_one_or_none()
-
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found",
-        )
-
-    api_key.is_active = False
-    await db.commit()
-    await db.refresh(api_key)
-
-    logger.info(f"Revoked API key {api_key.key_prefix}... for user {current_user.email}")
-
-    return ApiKeyResponse(
-        id=api_key.id,
-        name=api_key.name,
-        key_prefix=api_key.key_prefix,
-        is_active=api_key.is_active,
-        expires_at=api_key.expires_at,
-        last_used_at=api_key.last_used_at,
-        use_count=api_key.use_count,
-        created_at=api_key.created_at,
-    )
-
-
-# =============================================================================
 # CLI File Operations
 # =============================================================================
 
@@ -570,7 +283,7 @@ def _resolve_cli_file_path(path: str, location: str) -> Path:
 )
 async def cli_read_file(
     request: CLIFileReadRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
 ) -> str:
     """Read a file via CLI API."""
     try:
@@ -598,7 +311,7 @@ async def cli_read_file(
 )
 async def cli_write_file(
     request: CLIFileWriteRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
 ) -> None:
     """Write a file via CLI API."""
     try:
@@ -622,7 +335,7 @@ async def cli_write_file(
 )
 async def cli_list_files(
     request: CLIFileListRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
 ) -> list[str]:
     """List files in a directory via CLI API."""
     try:
@@ -655,7 +368,7 @@ async def cli_list_files(
 )
 async def cli_delete_file(
     request: CLIFileDeleteRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
 ) -> None:
     """Delete a file or directory via CLI API."""
     try:
@@ -686,7 +399,7 @@ async def cli_delete_file(
 
 
 async def _get_cli_org_id(
-    user: User,
+    user_id: UUID,
     requested_org_id: str | None,
     db: AsyncSession,
 ) -> str | None:
@@ -694,7 +407,7 @@ async def _get_cli_org_id(
     if requested_org_id:
         return requested_org_id
 
-    stmt = select(DeveloperContext).where(DeveloperContext.user_id == user.id)
+    stmt = select(DeveloperContext).where(DeveloperContext.user_id == user_id)
     result = await db.execute(stmt)
     dev_ctx = result.scalar_one_or_none()
 
@@ -711,11 +424,11 @@ async def _get_cli_org_id(
 )
 async def cli_get_config(
     request: CLIConfigGetRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CLIConfigValue | None:
     """Get a config value via CLI API."""
-    org_id = await _get_cli_org_id(current_user, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
 
     async with get_redis() as r:
         data = await r.hget(config_hash_key(org_id), request.key)  # type: ignore[misc]
@@ -758,14 +471,14 @@ async def cli_get_config(
 )
 async def cli_set_config(
     request: CLIConfigSetRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Set a config value via CLI API."""
     from src.models import Config as ConfigModel
     from src.models.enums import ConfigType as ConfigTypeEnum
 
-    org_id = await _get_cli_org_id(current_user, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
     org_uuid = UUID(org_id) if org_id else None
     now = datetime.utcnow()
 
@@ -829,11 +542,11 @@ async def cli_set_config(
 )
 async def cli_list_config(
     request: CLIConfigListRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """List all config values via CLI API."""
-    org_id = await _get_cli_org_id(current_user, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
 
     async with get_redis() as r:
         all_data = await r.hgetall(config_hash_key(org_id))  # type: ignore[misc]
@@ -877,13 +590,13 @@ async def cli_list_config(
 )
 async def cli_delete_config(
     request: CLIConfigDeleteRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> bool:
     """Delete a config value via CLI API."""
     from src.models import Config as ConfigModel
 
-    org_id = await _get_cli_org_id(current_user, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
     org_uuid = UUID(org_id) if org_id else None
 
     stmt = select(ConfigModel).where(
@@ -921,7 +634,7 @@ async def cli_delete_config(
 )
 async def sdk_integrations_get(
     request: SDKIntegrationsGetRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> SDKIntegrationsGetResponse | None:
     """Get integration mapping data for an organization via SDK.
@@ -935,7 +648,7 @@ async def sdk_integrations_get(
     from src.services.oauth_provider import resolve_url_template
     from src.core.security import decrypt_secret
 
-    org_id = await _get_cli_org_id(current_user, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
     org_uuid = UUID(org_id) if org_id else None
 
     try:
@@ -1072,7 +785,7 @@ def _build_oauth_data(
 )
 async def sdk_integrations_list_mappings(
     request: SDKIntegrationsListMappingsRequest,
-    current_user: User = Depends(get_current_user_from_api_key),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> SDKIntegrationsListMappingsResponse | None:
     """List all mappings for an integration via SDK."""
@@ -1125,7 +838,7 @@ async def sdk_integrations_list_mappings(
 )
 async def register_cli_session(
     request: CLISessionRegisterRequest,
-    current_user: User = Depends(get_current_user_dual_auth),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CLISessionResponse:
     """
@@ -1148,7 +861,7 @@ async def register_cli_session(
 
     session = await repo.create_session(
         session_id=UUID(request.session_id),
-        user_id=current_user.id,
+        user_id=current_user.user_id,
         file_path=request.file_path,
         workflows=workflows_data,
         selected_workflow=request.selected_workflow,
@@ -1163,7 +876,7 @@ async def register_cli_session(
     response = _session_to_response(session, is_connected=True)
 
     # Broadcast state update via websocket
-    await publish_cli_session_update(str(current_user.id), request.session_id, response.model_dump(mode="json"))
+    await publish_cli_session_update(str(current_user.user_id), request.session_id, response.model_dump(mode="json"))
 
     return response
 
@@ -1325,6 +1038,7 @@ async def continue_cli_session(
     execution = result.scalar_one_or_none()
     if execution:
         execution.session_id = session_uuid
+        await db.flush()  # Ensure session_id is persisted for history page icon
 
     # Update session state
     await repo.set_pending(
@@ -1359,7 +1073,7 @@ async def continue_cli_session(
 )
 async def get_pending_execution(
     session_id: str,
-    current_user: User = Depends(get_current_user_dual_auth),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CLISessionPendingResponse:
     """
@@ -1381,7 +1095,7 @@ async def get_pending_execution(
             detail="Invalid session ID format",
         )
 
-    session = await repo.get_session_for_user(session_uuid, current_user.id)
+    session = await repo.get_session_for_user(session_uuid, current_user.user_id)
 
     if session is None or not session.pending:
         raise HTTPException(
@@ -1436,7 +1150,7 @@ async def get_pending_execution(
     updated_session = await repo.get_session_with_executions(session_uuid)
     if updated_session:
         response_data = _session_to_response(updated_session, is_connected=repo.is_connected(updated_session))
-        await publish_cli_session_update(str(current_user.id), session_id, response_data.model_dump(mode="json"))
+        await publish_cli_session_update(str(current_user.user_id), session_id, response_data.model_dump(mode="json"))
 
     return CLISessionPendingResponse(
         execution_id=execution_id,
@@ -1452,7 +1166,7 @@ async def get_pending_execution(
 )
 async def session_heartbeat(
     session_id: str,
-    current_user: User = Depends(get_current_user_dual_auth),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Update session's last_seen timestamp (CLI heartbeat)."""
@@ -1466,7 +1180,7 @@ async def session_heartbeat(
             detail="Invalid session ID format",
         )
 
-    session = await repo.get_session_for_user(session_uuid, current_user.id)
+    session = await repo.get_session_for_user(session_uuid, current_user.user_id)
     if session:
         await repo.update_last_seen(session_uuid)
         await db.commit()
@@ -1481,7 +1195,7 @@ async def post_cli_log(
     session_id: str,
     execution_id: str,
     request: CLISessionLogRequest,
-    current_user: User = Depends(get_current_user_dual_auth),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Stream a log entry from CLI to the execution."""
@@ -1499,7 +1213,7 @@ async def post_cli_log(
     stmt = select(Execution).where(
         Execution.id == exec_uuid,
         Execution.session_id == session_uuid,
-        Execution.executed_by == current_user.id,
+        Execution.executed_by == current_user.user_id,
         Execution.is_local_execution == True,  # noqa: E712
     )
     result = await db.execute(stmt)
@@ -1546,7 +1260,7 @@ async def post_cli_result(
     session_id: str,
     execution_id: str,
     request: CLISessionResultRequest,
-    current_user: User = Depends(get_current_user_dual_auth),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Post execution result from CLI."""
@@ -1566,7 +1280,7 @@ async def post_cli_result(
     stmt = select(Execution).where(
         Execution.id == exec_uuid,
         Execution.session_id == session_uuid,
-        Execution.executed_by == current_user.id,
+        Execution.executed_by == current_user.user_id,
         Execution.is_local_execution == True,  # noqa: E712
     )
     result = await db.execute(stmt)
@@ -1669,7 +1383,7 @@ async def post_cli_result(
     updated_session = await session_repo.get_session_with_executions(session_uuid)
     if updated_session:
         response_data = _session_to_response(updated_session, is_connected=session_repo.is_connected(updated_session))
-        await publish_cli_session_update(str(current_user.id), session_id, response_data.model_dump(mode="json"))
+        await publish_cli_session_update(str(current_user.user_id), session_id, response_data.model_dump(mode="json"))
 
     total_logs = logs_persisted + logs_flushed
     logger.info(
@@ -1683,6 +1397,492 @@ async def post_cli_result(
         "logs_flushed": logs_flushed,
         "total_logs": total_logs,
     }
+
+
+# =============================================================================
+# SDK AI Endpoints
+# =============================================================================
+
+
+@router.post(
+    "/ai/complete",
+    summary="Generate AI completion",
+)
+async def cli_ai_complete(
+    request: "CLIAICompleteRequest",
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> "CLIAICompleteResponse":
+    """Generate an AI completion using platform-configured LLM."""
+    from src.models.contracts.cli import CLIAICompleteRequest, CLIAICompleteResponse
+    from src.services.llm import get_llm_client, LLMMessage
+
+    try:
+        client = await get_llm_client(db)
+
+        # Convert to LLMMessage objects
+        llm_messages = [
+            LLMMessage(role=msg["role"], content=msg["content"])  # type: ignore[arg-type]
+            for msg in request.messages
+        ]
+
+        response = await client.complete(
+            messages=llm_messages,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
+
+        logger.info(f"CLI AI complete: model={response.model}, tokens={response.input_tokens}/{response.output_tokens}")
+
+        return CLIAICompleteResponse(
+            content=response.content,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            model=response.model,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"CLI AI complete failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"AI completion failed: {str(e)}",
+        )
+
+
+@router.post(
+    "/ai/stream",
+    summary="Stream AI completion",
+)
+async def cli_ai_stream(
+    request: CLIAICompleteRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Generate a streaming AI completion using SSE."""
+    from src.services.llm import get_llm_client, LLMMessage
+
+    async def generate():
+        try:
+            client = await get_llm_client(db)
+
+            # Convert to LLMMessage objects
+            llm_messages = [
+                LLMMessage(role=msg["role"], content=msg["content"])  # type: ignore[arg-type]
+                for msg in request.messages
+            ]
+
+            async for chunk in client.stream(
+                messages=llm_messages,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+            ):
+                if chunk.type == "delta":
+                    yield f"data: {json.dumps({'content': chunk.content})}\n\n"
+                elif chunk.type == "done":
+                    yield f"data: {json.dumps({'done': True, 'input_tokens': chunk.input_tokens, 'output_tokens': chunk.output_tokens})}\n\n"
+                    yield "data: [DONE]\n\n"
+                elif chunk.type == "error":
+                    yield f"data: {json.dumps({'error': chunk.error})}\n\n"
+                    break
+        except ValueError as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        except Exception as e:
+            logger.error(f"CLI AI stream failed: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
+
+
+@router.get(
+    "/ai/info",
+    summary="Get AI model information",
+)
+async def cli_ai_info(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> "CLIAIInfoResponse":
+    """Get information about the configured LLM."""
+    from src.models.contracts.cli import CLIAIInfoResponse
+    from src.services.llm.factory import get_llm_config
+
+    try:
+        config = await get_llm_config(db)
+
+        return CLIAIInfoResponse(
+            provider=config.provider,
+            model=config.model,
+            max_tokens=config.max_tokens,
+            temperature=config.temperature,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
+# =============================================================================
+# SDK Knowledge Store Endpoints
+# =============================================================================
+
+
+@router.post(
+    "/knowledge/store",
+    summary="Store a document in knowledge store",
+)
+async def cli_knowledge_store(
+    request: "CLIKnowledgeStoreRequest",
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Store a document with its embedding in the knowledge store."""
+    from src.models.contracts.cli import CLIKnowledgeStoreRequest
+    from src.repositories.knowledge import KnowledgeRepository
+    from src.services.embeddings import get_embedding_client
+
+    try:
+        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+        org_uuid = None
+        if request.scope != "global" and org_id:
+            org_uuid = UUID(org_id)
+
+        # Generate embedding
+        embedding_client = await get_embedding_client(db)
+        embedding = await embedding_client.embed_single(request.content)
+
+        # Store document
+        repo = KnowledgeRepository(db)
+        doc_id = await repo.store(
+            content=request.content,
+            embedding=embedding,
+            namespace=request.namespace,
+            key=request.key,
+            metadata=request.metadata,
+            organization_id=org_uuid,
+            created_by=current_user.user_id,
+        )
+
+        await db.commit()
+
+        logger.info(f"CLI knowledge store: namespace={request.namespace}, key={request.key}, doc_id={doc_id}")
+
+        return {"id": doc_id}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"CLI knowledge store failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge store failed: {str(e)}",
+        )
+
+
+@router.post(
+    "/knowledge/store-many",
+    summary="Store multiple documents",
+)
+async def cli_knowledge_store_many(
+    request: "CLIKnowledgeStoreManyRequest",
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Store multiple documents with batch embedding."""
+    from src.models.contracts.cli import CLIKnowledgeStoreManyRequest
+    from src.repositories.knowledge import KnowledgeRepository
+    from src.services.embeddings import get_embedding_client
+
+    try:
+        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+        org_uuid = None
+        if request.scope != "global" and org_id:
+            org_uuid = UUID(org_id)
+
+        # Extract contents for batch embedding
+        contents = [doc["content"] for doc in request.documents]
+
+        # Batch generate embeddings
+        embedding_client = await get_embedding_client(db)
+        embeddings = await embedding_client.embed(contents)
+
+        # Store each document
+        repo = KnowledgeRepository(db)
+        doc_ids = []
+        for doc, embedding in zip(request.documents, embeddings):
+            doc_id = await repo.store(
+                content=doc["content"],
+                embedding=embedding,
+                namespace=request.namespace,
+                key=doc.get("key"),
+                metadata=doc.get("metadata"),
+                organization_id=org_uuid,
+                created_by=current_user.user_id,
+            )
+            doc_ids.append(doc_id)
+
+        await db.commit()
+
+        logger.info(f"CLI knowledge store-many: namespace={request.namespace}, count={len(doc_ids)}")
+
+        return {"ids": doc_ids}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"CLI knowledge store-many failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge store failed: {str(e)}",
+        )
+
+
+@router.post(
+    "/knowledge/search",
+    summary="Search for similar documents",
+)
+async def cli_knowledge_search(
+    request: "CLIKnowledgeSearchRequest",
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> list[CLIKnowledgeDocumentResponse]:
+    """Search for similar documents using vector similarity."""
+    from src.models.contracts.cli import CLIKnowledgeSearchRequest, CLIKnowledgeDocumentResponse
+    from src.repositories.knowledge import KnowledgeRepository
+    from src.services.embeddings import get_embedding_client
+
+    try:
+        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+        org_uuid = UUID(org_id) if org_id else None
+
+        # Generate query embedding
+        embedding_client = await get_embedding_client(db)
+        query_embedding = await embedding_client.embed_single(request.query)
+
+        # Search
+        repo = KnowledgeRepository(db)
+        results = await repo.search(
+            query_embedding=query_embedding,
+            namespace=request.namespace,
+            organization_id=org_uuid,
+            limit=request.limit,
+            min_score=request.min_score,
+            metadata_filter=request.metadata_filter,
+            fallback=request.fallback,
+        )
+
+        logger.info(f"CLI knowledge search: query={request.query[:50]}..., results={len(results)}")
+
+        return [
+            CLIKnowledgeDocumentResponse(
+                id=doc.id,
+                namespace=doc.namespace,
+                content=doc.content,
+                metadata=doc.metadata,
+                score=doc.score,
+                organization_id=doc.organization_id,
+                key=doc.key,
+                created_at=doc.created_at.isoformat() if doc.created_at else None,
+            )
+            for doc in results
+        ]
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"CLI knowledge search failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge search failed: {str(e)}",
+        )
+
+
+@router.post(
+    "/knowledge/delete",
+    summary="Delete a document by key",
+)
+async def cli_knowledge_delete(
+    request: "CLIKnowledgeDeleteRequest",
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete a document by key from the knowledge store."""
+    from src.models.contracts.cli import CLIKnowledgeDeleteRequest
+    from src.repositories.knowledge import KnowledgeRepository
+
+    try:
+        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+        org_uuid = None
+        if request.scope != "global" and org_id:
+            org_uuid = UUID(org_id)
+
+        repo = KnowledgeRepository(db)
+        deleted = await repo.delete_by_key(
+            key=request.key,
+            namespace=request.namespace,
+            organization_id=org_uuid,
+        )
+
+        await db.commit()
+
+        logger.info(f"CLI knowledge delete: namespace={request.namespace}, key={request.key}, deleted={deleted}")
+
+        return {"deleted": deleted}
+    except Exception as e:
+        logger.error(f"CLI knowledge delete failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge delete failed: {str(e)}",
+        )
+
+
+@router.delete(
+    "/knowledge/namespace/{namespace}",
+    summary="Delete all documents in namespace",
+)
+async def cli_knowledge_delete_namespace(
+    namespace: str,
+    org_id: str | None = None,
+    scope: str | None = None,
+    current_user: CurrentUser = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete all documents in a namespace."""
+    from src.repositories.knowledge import KnowledgeRepository
+
+    try:
+        resolved_org_id = await _get_cli_org_id(current_user.user_id, org_id, db)
+        org_uuid = None
+        if scope != "global" and resolved_org_id:
+            org_uuid = UUID(resolved_org_id)
+
+        repo = KnowledgeRepository(db)
+        deleted_count = await repo.delete_namespace(
+            namespace=namespace,
+            organization_id=org_uuid,
+        )
+
+        await db.commit()
+
+        logger.info(f"CLI knowledge delete namespace: namespace={namespace}, deleted_count={deleted_count}")
+
+        return {"deleted_count": deleted_count}
+    except Exception as e:
+        logger.error(f"CLI knowledge delete namespace failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge delete namespace failed: {str(e)}",
+        )
+
+
+@router.get(
+    "/knowledge/namespaces",
+    summary="List namespaces with document counts",
+)
+async def cli_knowledge_list_namespaces(
+    org_id: str | None = None,
+    include_global: bool = True,
+    current_user: CurrentUser = None,
+    db: AsyncSession = Depends(get_db),
+) -> list[CLIKnowledgeNamespaceInfo]:
+    """List all namespaces with document counts per scope."""
+    from src.models.contracts.cli import CLIKnowledgeNamespaceInfo
+    from src.repositories.knowledge import KnowledgeRepository
+
+    try:
+        resolved_org_id = await _get_cli_org_id(current_user.user_id, org_id, db)
+        org_uuid = UUID(resolved_org_id) if resolved_org_id else None
+
+        repo = KnowledgeRepository(db)
+        results = await repo.list_namespaces(
+            organization_id=org_uuid,
+            include_global=include_global,
+        )
+
+        return [
+            CLIKnowledgeNamespaceInfo(
+                namespace=ns.namespace,
+                scopes=ns.scopes,
+            )
+            for ns in results
+        ]
+    except Exception as e:
+        logger.error(f"CLI knowledge list namespaces failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge list namespaces failed: {str(e)}",
+        )
+
+
+@router.get(
+    "/knowledge/get",
+    summary="Get a document by key",
+)
+async def cli_knowledge_get(
+    key: str,
+    namespace: str = "default",
+    org_id: str | None = None,
+    scope: str | None = None,
+    current_user: CurrentUser = None,
+    db: AsyncSession = Depends(get_db),
+) -> CLIKnowledgeDocumentResponse | None:
+    """Get a document by key from the knowledge store."""
+    from src.models.contracts.cli import CLIKnowledgeDocumentResponse
+    from src.repositories.knowledge import KnowledgeRepository
+
+    try:
+        resolved_org_id = await _get_cli_org_id(current_user.user_id, org_id, db)
+        org_uuid = None
+        if scope != "global" and resolved_org_id:
+            org_uuid = UUID(resolved_org_id)
+
+        repo = KnowledgeRepository(db)
+        result = await repo.get_by_key(
+            key=key,
+            namespace=namespace,
+            organization_id=org_uuid,
+        )
+
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        return CLIKnowledgeDocumentResponse(
+            id=result.id,
+            namespace=result.namespace,
+            content=result.content,
+            metadata=result.metadata,
+            organization_id=result.organization_id,
+            key=result.key,
+            created_at=result.created_at.isoformat() if result.created_at else None,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CLI knowledge get failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge get failed: {str(e)}",
+        )
 
 
 # =============================================================================
@@ -1711,7 +1911,23 @@ async def download_cli() -> StreamingResponse:
         )
 
     buffer = io.BytesIO()
-    include_files = {"client.py", "files.py", "config.py", "integrations.py"}
+    include_files = {
+        "__init__.py",
+        # Note: _context.py is GENERATED inline below (different from platform version)
+        # Note: _internal.py is NOT included - platform-only (permission checks, context access)
+        # Note: _write_buffer.py is NOT included - requires redis, platform-only
+        # Note: users.py is NOT included - platform-only (admin operations, no external mode)
+        "client.py",
+        "config.py",
+        "credentials.py",
+        "executions.py",
+        "files.py",
+        "forms.py",
+        "integrations.py",
+        "organizations.py",
+        "roles.py",
+        "workflows.py",
+    }
 
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         for file_path in package_dir.rglob("*"):
@@ -1863,8 +2079,8 @@ if __name__ == "__main__":
 Bifrost CLI - External client for Bifrost API.
 
 Usage:
-    export BIFROST_DEV_URL=https://your-bifrost-instance.com
-    export BIFROST_DEV_KEY=bfsk_xxxxxxxxxxxx
+    # Login via browser (device code flow)
+    bifrost login
 
     from bifrost import workflow, context, config
 
@@ -1875,16 +2091,29 @@ Usage:
     # bifrost run my_workflows.py
 """
 from .client import BifrostClient, get_client
-from .files import files
 from .config import config
+from .executions import executions
+from .files import files
+from .forms import forms
 from .integrations import integrations
+from .organizations import organizations
+from .roles import roles
+from .workflows import workflows
 from ._context import context
 from .decorators import workflow, data_provider, WorkflowMetadata, DataProviderMetadata, WorkflowParameter
 from .errors import UserError, WorkflowError, ValidationError, IntegrationError, ConfigurationError
 
 __all__ = [
     "BifrostClient", "get_client",
-    "files", "config", "integrations", "context",
+    "config",
+    "executions",
+    "files",
+    "forms",
+    "integrations",
+    "organizations",
+    "roles",
+    "workflows",
+    "context",
     "workflow", "data_provider", "WorkflowMetadata", "DataProviderMetadata", "WorkflowParameter",
     "UserError", "WorkflowError", "ValidationError", "IntegrationError", "ConfigurationError",
 ]
@@ -1965,7 +2194,12 @@ class WorkflowMetadata:
     allowed_methods: list[str] = field(default_factory=lambda: ["POST"])
     disable_global_key: bool = False
     public_endpoint: bool = False
+    is_tool: bool = False
+    tool_description: str | None = None
+    time_saved: int = 0
+    value: float = 0.0
     source_file_path: str | None = None
+    relative_file_path: str | None = None
     parameters: list[WorkflowParameter] = field(default_factory=list)
     function: Any = None
 
@@ -2318,7 +2552,7 @@ def discover_workflows(module) -> list[dict]:
 
 
 async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_params: dict | None, open_browser: bool = False):
-    from .client import get_client
+    from .client import get_client, has_credentials
 
     spec = importlib.util.spec_from_file_location("workflow_module", file_path)
     module = importlib.util.module_from_spec(spec)
@@ -2354,6 +2588,15 @@ async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_para
             print(f"Error: {e}")
             sys.exit(1)
         return
+
+    # Check if credentials are available - if not, trigger login flow
+    if not has_credentials():
+        from .client import login_flow
+        print("\\033[93mNot logged in. Starting authentication...\\033[0m\\n")
+        if not await login_flow():
+            print("\\n\\033[93mLogin cancelled or failed. Running in standalone mode...\\033[0m\\n")
+            await run_with_terminal_input(workflows, workflow_map, workflow_name)
+            return
 
     client = get_client()
     abs_path = str(Path(file_path).resolve())

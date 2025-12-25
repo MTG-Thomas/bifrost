@@ -16,9 +16,48 @@ import json as json_module
 import logging
 from typing import Any
 
-from src.models.contracts.sdk import ConfigData
-
 from ._context import _execution_context
+
+
+class ConfigData:
+    """
+    Dynamic configuration access with dot notation.
+
+    Allows accessing config keys as attributes:
+        config_data = await config.list()
+        api_url = config_data.api_url
+        timeout = config_data.timeout
+
+    Also supports dict-like access:
+        api_url = config_data["api_url"]
+        "api_url" in config_data
+    """
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self._data.get(name)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data.get(key)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
 
 logger = logging.getLogger(__name__)
 

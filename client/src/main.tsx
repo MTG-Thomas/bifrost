@@ -6,11 +6,13 @@ import "./index.css";
 import App from "./App.tsx";
 import { queryClient } from "./lib/queryClient";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { OrgScopeQueryInvalidator } from "./components/OrgScopeQueryInvalidator";
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<ThemeProvider>
 			<QueryClientProvider client={queryClient}>
+				<OrgScopeQueryInvalidator />
 				<App />
 				<Toaster />
 			</QueryClientProvider>

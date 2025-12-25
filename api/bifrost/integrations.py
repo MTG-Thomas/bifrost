@@ -13,15 +13,62 @@ All methods are async and must be awaited.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import dataclass, fields
+from datetime import datetime
+from typing import Any, TypeVar
 from uuid import UUID
-
-from src.models.contracts.sdk import IntegrationData, OAuthCredentials
-from src.models.contracts.integrations import IntegrationMappingResponse
 
 from ._context import _execution_context
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def _from_api_response(cls: type[T], data: dict[str, Any]) -> T:
+    """Create a dataclass instance from API response, ignoring unknown fields."""
+    known_fields = {f.name for f in fields(cls)}
+    filtered = {k: v for k, v in data.items() if k in known_fields}
+    return cls(**filtered)
+
+
+# Local dataclasses (avoids src.* imports)
+@dataclass
+class OAuthCredentials:
+    """OAuth credentials for an integration."""
+    connection_name: str
+    client_id: str
+    client_secret: str | None = None
+    authorization_url: str | None = None
+    token_url: str | None = None
+    scopes: list[str] | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    expires_at: str | None = None
+
+
+@dataclass
+class IntegrationData:
+    """Integration configuration data."""
+    integration_id: str
+    entity_id: str | None = None
+    entity_name: str | None = None
+    config: dict[str, Any] | None = None
+    oauth: OAuthCredentials | None = None
+
+
+@dataclass
+class IntegrationMappingResponse:
+    """Integration mapping metadata."""
+    id: UUID
+    integration_id: UUID
+    organization_id: UUID
+    entity_id: str
+    entity_name: str | None = None
+    oauth_token_id: UUID | None = None
+    config: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 def _is_platform_context() -> bool:
@@ -304,8 +351,8 @@ class integrations:
                 result["integration_id"] = str(result.get("integration_id"))
             # Convert oauth dict to OAuthCredentials if present
             if result.get("oauth"):
-                result["oauth"] = OAuthCredentials(**result["oauth"])
-            return IntegrationData(**result)
+                result["oauth"] = _from_api_response(OAuthCredentials, result["oauth"])
+            return _from_api_response(IntegrationData, result)
         else:
             logger.warning(f"Integrations API call failed: {response.status_code}")
             return None
@@ -407,7 +454,7 @@ class integrations:
                 # Convert to IntegrationMappingResponse models
                 sdk_mappings: list[IntegrationMappingResponse] = []
                 for mapping_data in items:
-                    sdk_mappings.append(IntegrationMappingResponse(**mapping_data))
+                    sdk_mappings.append(_from_api_response(IntegrationMappingResponse, mapping_data))
                 return sdk_mappings
             else:
                 logger.warning(f"Integrations API call failed: {response.status_code}")

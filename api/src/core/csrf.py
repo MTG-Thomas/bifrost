@@ -36,6 +36,8 @@ CSRF_EXEMPT_PATHS = {
     "/auth/mfa/login/verify",
     "/auth/passkeys/authenticate/options",
     "/auth/passkeys/authenticate/verify",
+    "/auth/device/code",  # Device flow: request code (no auth)
+    "/auth/device/token",  # Device flow: exchange code for token (no auth)
     "/health",
     "/ready",
     "/",

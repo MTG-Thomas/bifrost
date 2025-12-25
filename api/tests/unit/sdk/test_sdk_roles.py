@@ -776,36 +776,36 @@ class TestRolesPlatformMode:
                 await roles.assign_forms("nonexistent-role-id", ["form-1"])
 
     @pytest.mark.asyncio
-    async def test_all_methods_require_platform_context(self):
-        """Test that all roles methods require execution context."""
+    async def test_all_methods_require_context_or_credentials(self):
+        """Test that all roles methods require execution context or CLI credentials."""
         from bifrost import roles
 
         clear_execution_context()
 
-        # Test methods that should fail without context
-        with pytest.raises(RuntimeError, match="execution context"):
+        # Without platform context or credentials, external mode fallback fails
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.list()
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.get("role-123")
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.create("Test Role")
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.update("role-123", name="New Name")
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.delete("role-123")
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.list_users("role-123")
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.list_forms("role-123")
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.assign_users("role-123", ["user-1"])
 
-        with pytest.raises(RuntimeError, match="execution context"):
+        with pytest.raises(RuntimeError, match="BIFROST_DEV_URL"):
             await roles.assign_forms("role-123", ["form-1"])

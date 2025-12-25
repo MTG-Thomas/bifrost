@@ -27,9 +27,9 @@ name: bifrost
 #   - Workers download workspace from S3 before execution (enables horizontal scaling)
 
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (with pgvector extension for semantic search)
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: bifrost-postgres
     environment:
       POSTGRES_DB: bifrost

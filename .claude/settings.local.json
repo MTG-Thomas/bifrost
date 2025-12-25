@@ -89,7 +89,15 @@
       "WebFetch(domain:docs.immy.bot)",
       "Bash(./venv/bin/python:*)",
       "Bash(/Users/jack/GitHub/bifrost-api/api/.venv/bin/python:*)",
-      "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/pip show:*)"
+      "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/pip show:*)",
+      "Bash(bifrost --help:*)",
+      "Bash(bifrost login --help:*)",
+      "Bash(bifrost logout --help:*)",
+      "Bash(bifrost logout:*)",
+      "WebFetch(domain:docs.n8n.io)",
+      "WebFetch(domain:community.n8n.io)",
+      "Bash(/Users/jack/GitHub/bifrost-api/api/test.sh tests/e2e/api/test_cli.py -v)",
+      "Bash(/Users/jack/GitHub/bifrost-api/test.sh:*)"
     ],
     "deny": [],
     "ask": [],

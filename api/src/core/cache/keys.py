@@ -244,6 +244,26 @@ def rate_limit_key(endpoint: str, identifier: str) -> str:
     return f"bifrost:ratelimit:{endpoint}:{identifier}"
 
 
+def device_code_key(device_code: str) -> str:
+    """
+    Key for device authorization code storage.
+
+    Structure: JSON with {"user_code": str, "status": str, "user_id": str | null}
+    TTL: 5 minutes
+    """
+    return f"bifrost:auth:device:{device_code}"
+
+
+def device_user_code_index_key(user_code: str) -> str:
+    """
+    Reverse index from user_code to device_code.
+
+    Structure: STRING containing device_code
+    TTL: 5 minutes
+    """
+    return f"bifrost:auth:device_user_code:{user_code}"
+
+
 # =============================================================================
 # TTL Constants
 # =============================================================================
@@ -261,3 +281,4 @@ TTL_PENDING_EXECUTION = 3600  # 1 hour (safety for orphaned pending executions)
 TTL_REFRESH_TOKEN = 604800  # 7 days (matches refresh token expiry)
 TTL_OAUTH_STATE = 600  # 10 minutes
 TTL_RATE_LIMIT = 60  # 1 minute window
+TTL_DEVICE_CODE = 300  # 5 minutes (device authorization flow)

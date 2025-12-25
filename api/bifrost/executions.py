@@ -3,30 +3,74 @@ Execution history SDK for Bifrost.
 
 Provides Python API for execution history operations (list, get).
 
+Works in two modes:
+1. Platform context (inside workflows): Database queries via session factory
+2. External context (via dev API key): API calls to /api/executions endpoints
+
 All methods are async and must be awaited.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field, fields
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm import joinedload
-
-from src.core.database import get_session_factory
-from src.models.contracts.executions import WorkflowExecution
-
-from ._internal import get_context
+from ._context import _execution_context
 
 if TYPE_CHECKING:
     from src.models import Execution as ExecutionORM
+
+T = TypeVar("T")
+
+
+def _from_api_response(cls: type[T], data: dict[str, Any]) -> T:
+    """Create a dataclass instance from API response, ignoring unknown fields."""
+    known_fields = {f.name for f in fields(cls)}
+    filtered = {k: v for k, v in data.items() if k in known_fields}
+    return cls(**filtered)
+
+
+@dataclass
+class WorkflowExecution:
+    """Execution history record."""
+    execution_id: str
+    workflow_name: str
+    executed_by: str
+    executed_by_name: str
+    status: str
+    org_id: str | None = None
+    form_id: str | None = None
+    input_data: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    result_type: str | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    logs: list[dict[str, Any]] = field(default_factory=list)
+    variables: dict[str, Any] | None = None
+    session_id: str | None = None
+    peak_memory_bytes: int | None = None
+    cpu_total_seconds: float | None = None
+
+
+def _is_platform_context() -> bool:
+    """Check if running inside platform execution context."""
+    return _execution_context.get() is not None
+
+
+def _get_client():
+    """Get the BifrostClient for API calls."""
+    from .client import get_client
+    return get_client()
 
 
 def _execution_to_model(execution: "ExecutionORM", include_logs: bool = False) -> WorkflowExecution:
     """Convert ORM Execution to WorkflowExecution model."""
     # Build logs list if requested
-    logs: list[dict[str, Any]] | None = None
+    logs: list[dict[str, Any]] = []
     if include_logs and hasattr(execution, 'logs'):
         logs = [
             {
@@ -85,6 +129,9 @@ class executions:
         Platform admins see all executions in their scope.
         Regular users see only their own executions.
 
+        In platform mode: Queries database via session factory.
+        In external mode: Calls /api/executions endpoint.
+
         Args:
             workflow_name: Filter by workflow name (optional)
             status: Filter by status (optional)
@@ -113,7 +160,7 @@ class executions:
                 - peak_memory_bytes, cpu_total_seconds: Resource metrics
 
         Raises:
-            RuntimeError: If no execution context
+            RuntimeError: If no execution context (platform mode) or missing env vars (external mode)
 
         Example:
             >>> from bifrost import executions
@@ -122,54 +169,81 @@ class executions:
             ...     print(f"{execution.workflow_name}: {execution.status}")
             >>> failed = await executions.list(status="Failed")
         """
-        from src.models import Execution
+        if _is_platform_context():
+            # Platform mode: query database
+            from sqlalchemy import select
+            from src.core.database import get_session_factory
+            from src.models import Execution
+            from ._internal import get_context
 
-        context = get_context()
+            context = get_context()
 
-        org_uuid = None
-        if context.org_id and context.org_id != "GLOBAL":
-            try:
-                org_uuid = UUID(context.org_id)
-            except ValueError:
-                pass
+            org_uuid = None
+            if context.org_id and context.org_id != "GLOBAL":
+                try:
+                    org_uuid = UUID(context.org_id)
+                except ValueError:
+                    pass
 
-        # Cap limit
-        limit = min(limit, 1000)
+            # Cap limit
+            limit = min(limit, 1000)
 
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            query = (
-                select(Execution)
-                .order_by(Execution.created_at.desc())
-                .limit(limit)
-            )
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                query = (
+                    select(Execution)
+                    .order_by(Execution.created_at.desc())
+                    .limit(limit)
+                )
 
-            # Organization filter
-            if org_uuid:
-                query = query.where(Execution.organization_id == org_uuid)
-            else:
-                query = query.where(Execution.organization_id.is_(None))
+                # Organization filter
+                if org_uuid:
+                    query = query.where(Execution.organization_id == org_uuid)
+                else:
+                    query = query.where(Execution.organization_id.is_(None))
 
-            # User filter for non-admins
-            if not context.is_platform_admin:
-                user_uuid = UUID(context.user_id)
-                query = query.where(Execution.executed_by == user_uuid)
+                # User filter for non-admins
+                if not context.is_platform_admin:
+                    user_uuid = UUID(context.user_id)
+                    query = query.where(Execution.executed_by == user_uuid)
 
-            # Optional filters
+                # Optional filters
+                if workflow_name:
+                    query = query.where(Execution.workflow_name == workflow_name)
+
+                if status:
+                    query = query.where(Execution.status == status)
+
+                if start_date:
+                    query = query.where(Execution.created_at >= start_date)
+
+                if end_date:
+                    query = query.where(Execution.created_at <= end_date)
+
+                result = await db.execute(query)
+                return [_execution_to_model(e) for e in result.scalars().all()]
+        else:
+            # External mode: call API
+            client = _get_client()
+
+            # Build query parameters
+            params = {}
             if workflow_name:
-                query = query.where(Execution.workflow_name == workflow_name)
-
+                params["workflowName"] = workflow_name
             if status:
-                query = query.where(Execution.status == status)
-
+                params["status"] = status
             if start_date:
-                query = query.where(Execution.created_at >= start_date)
-
+                params["startDate"] = start_date
             if end_date:
-                query = query.where(Execution.created_at <= end_date)
+                params["endDate"] = end_date
+            params["limit"] = min(limit, 1000)
 
-            result = await db.execute(query)
-            return [_execution_to_model(e) for e in result.scalars().all()]
+            response = await client.get("/api/executions", params=params)
+            response.raise_for_status()
+            data = response.json()
+            # API returns ExecutionsListResponse with executions array
+            executions_data = data.get("executions", [])
+            return [_from_api_response(WorkflowExecution, exec_data) for exec_data in executions_data]
 
     @staticmethod
     async def get(execution_id: str) -> WorkflowExecution:
@@ -179,6 +253,9 @@ class executions:
         Platform admins can view any execution in their scope.
         Regular users can only view their own executions.
 
+        In platform mode: Queries database via session factory.
+        In external mode: Calls /api/executions/{id} endpoint.
+
         Args:
             execution_id: Execution ID (UUID)
 
@@ -186,8 +263,9 @@ class executions:
             WorkflowExecution: Execution details including logs
 
         Raises:
-            ValueError: If execution not found or access denied
-            RuntimeError: If no execution context
+            ValueError: If execution not found
+            PermissionError: If access denied
+            RuntimeError: If no execution context (platform mode) or missing env vars (external mode)
 
         Example:
             >>> from bifrost import executions
@@ -195,39 +273,56 @@ class executions:
             >>> print(exec_details.status)
             >>> print(exec_details.result)
         """
-        from src.models import Execution
+        if _is_platform_context():
+            # Platform mode: query database
+            from sqlalchemy import select
+            from sqlalchemy.orm import joinedload
+            from src.core.database import get_session_factory
+            from src.models import Execution
+            from ._internal import get_context
 
-        context = get_context()
-        exec_uuid = UUID(execution_id)
+            context = get_context()
+            exec_uuid = UUID(execution_id)
 
-        org_uuid = None
-        if context.org_id and context.org_id != "GLOBAL":
-            try:
-                org_uuid = UUID(context.org_id)
-            except ValueError:
-                pass
+            org_uuid = None
+            if context.org_id and context.org_id != "GLOBAL":
+                try:
+                    org_uuid = UUID(context.org_id)
+                except ValueError:
+                    pass
 
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            query = (
-                select(Execution)
-                .options(joinedload(Execution.logs))
-                .where(Execution.id == exec_uuid)
-            )
-            result = await db.execute(query)
-            execution = result.scalars().unique().first()
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                query = (
+                    select(Execution)
+                    .options(joinedload(Execution.logs))
+                    .where(Execution.id == exec_uuid)
+                )
+                result = await db.execute(query)
+                execution = result.scalars().unique().first()
 
-            if not execution:
-                raise ValueError(f"Execution not found: {execution_id}")
+                if not execution:
+                    raise ValueError(f"Execution not found: {execution_id}")
 
-            # Check org access
-            if org_uuid and execution.organization_id != org_uuid:
-                raise PermissionError(f"Access denied to execution: {execution_id}")
-
-            # Check user access for non-admins
-            if not context.is_platform_admin:
-                user_uuid = UUID(context.user_id)
-                if execution.executed_by != user_uuid:
+                # Check org access
+                if org_uuid and execution.organization_id != org_uuid:
                     raise PermissionError(f"Access denied to execution: {execution_id}")
 
-            return _execution_to_model(execution, include_logs=True)
+                # Check user access for non-admins
+                if not context.is_platform_admin:
+                    user_uuid = UUID(context.user_id)
+                    if execution.executed_by != user_uuid:
+                        raise PermissionError(f"Access denied to execution: {execution_id}")
+
+                return _execution_to_model(execution, include_logs=True)
+        else:
+            # External mode: call API
+            client = _get_client()
+            response = await client.get(f"/api/executions/{execution_id}")
+            if response.status_code == 404:
+                raise ValueError(f"Execution not found: {execution_id}")
+            elif response.status_code == 403:
+                raise PermissionError(f"Access denied to execution: {execution_id}")
+            response.raise_for_status()
+            data = response.json()
+            return _from_api_response(WorkflowExecution, data)

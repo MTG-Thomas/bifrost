@@ -49,6 +49,11 @@ from src.models.contracts.users import (
 # Authentication & MFA
 from src.models.contracts.auth import (
     AuthStatusResponse,
+    DeviceAuthorizeRequest,
+    DeviceCodeResponse,
+    DeviceTokenErrorResponse,
+    DeviceTokenRequest,
+    DeviceTokenResponse,
     LoginResponse,
     MFAEnrollVerifyRequest,
     MFAEnrollVerifyResponse,
@@ -453,6 +458,11 @@ __all__ = [
     "MFAEnrollVerifyRequest",
     "MFAEnrollVerifyResponse",
     "OAuthLoginRequest",
+    "DeviceCodeResponse",
+    "DeviceTokenRequest",
+    "DeviceTokenResponse",
+    "DeviceTokenErrorResponse",
+    "DeviceAuthorizeRequest",
     # Passkeys/WebAuthn
     "PasskeyRegistrationOptionsRequest",
     "PasskeyRegistrationOptionsResponse",

@@ -7,9 +7,41 @@ All SDK methods are async and must be awaited.
 
 Usage:
     from bifrost import organizations, workflows, files, forms, executions, roles
-    from bifrost import config, integrations
+    from bifrost import config, integrations, ai, knowledge
 
 Example:
+    # AI Completions
+    response = await ai.complete("Summarize this text...")
+    print(response.content)
+
+    # Structured AI output with Pydantic
+    from pydantic import BaseModel
+    class Summary(BaseModel):
+        title: str
+        points: list[str]
+    result = await ai.complete("Summarize...", response_format=Summary)
+    print(result.title)  # Typed!
+
+    # AI with RAG context
+    response = await ai.complete(
+        "What is our refund policy?",
+        knowledge=["policies", "faq"]
+    )
+
+    # Streaming AI
+    async for chunk in ai.stream("Write a story..."):
+        print(chunk.content, end="")
+
+    # Knowledge Store (RAG)
+    await knowledge.store(
+        "Our refund policy allows 30-day returns.",
+        namespace="policies",
+        key="refund-policy"
+    )
+    results = await knowledge.search("return policy", namespace="policies")
+    for doc in results:
+        print(doc.content, doc.score)
+
     # Create an organization
     org = await organizations.create("Acme Corp", domain="acme.com")
 
@@ -45,13 +77,16 @@ Example:
 
 from dataclasses import dataclass
 
+from .ai import ai, AIResponse, AIStreamChunk
 from .config import config
 from .executions import executions
 from .files import files
 from .forms import forms
 from .integrations import integrations
+from .knowledge import knowledge, KnowledgeDocument, NamespaceInfo
 from .organizations import organizations
 from .roles import roles
+from .users import users
 from .workflows import workflows
 
 # Import decorators and context from shared module
@@ -91,14 +126,23 @@ class Caller:
 
 __all__ = [
     # SDK Modules
-    'organizations',
-    'workflows',
+    'ai',
+    'config',
+    'executions',
     'files',
     'forms',
-    'executions',
-    'roles',
-    'config',
     'integrations',
+    'knowledge',
+    'organizations',
+    'roles',
+    'users',
+    'workflows',
+    # AI Module Types
+    'AIResponse',
+    'AIStreamChunk',
+    # Knowledge Module Types
+    'KnowledgeDocument',
+    'NamespaceInfo',
     # Decorators
     'workflow',
     'data_provider',

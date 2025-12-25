@@ -1,14 +1,14 @@
 """
-Developer context and API key ORM models.
+Developer context ORM model.
 
-Represents developer configuration and API keys for SDK authentication.
+Represents developer configuration for SDK usage.
 """
 
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -56,57 +56,4 @@ class DeveloperContext(Base):
 
     __table_args__ = (
         Index("ix_developer_contexts_user_id", "user_id"),
-    )
-
-
-class DeveloperApiKey(Base):
-    """
-    Developer API key for SDK authentication.
-
-    These keys allow developers to authenticate their local SDK
-    installations with the Bifrost API.
-    """
-
-    __tablename__ = "developer_api_keys"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-
-    # Key identification
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    key_prefix: Mapped[str] = mapped_column(String(12), nullable=False)  # bfsk_xxxx
-    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)  # SHA-256
-
-    # Status
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-
-    # Usage tracking
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    last_used_ip: Mapped[str | None] = mapped_column(String(45), default=None)
-    use_count: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
-    )
-
-    # Relationships
-    user: Mapped["User"] = relationship(back_populates="developer_api_keys")
-
-    __table_args__ = (
-        Index("ix_developer_api_keys_user_id", "user_id"),
-        Index("ix_developer_api_keys_key_hash", "key_hash", unique=True),
-        Index(
-            "ix_developer_api_keys_active",
-            "user_id",
-            "is_active",
-            postgresql_where=text("is_active = true"),
-        ),
     )

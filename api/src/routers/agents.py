@@ -67,6 +67,7 @@ def _agent_to_public(agent: Agent) -> AgentPublic:
         tool_ids=[str(t.id) for t in agent.tools],
         delegated_agent_ids=[str(a.id) for a in agent.delegated_agents],
         role_ids=[str(r.id) for r in agent.roles],
+        knowledge_sources=agent.knowledge_sources or [],
     )
 
 
@@ -100,6 +101,7 @@ async def _write_agent_to_file(
         "is_active": agent.is_active,
         "tool_ids": [str(t.id) for t in tool_list],
         "delegated_agent_ids": [str(a.id) for a in delegate_list],
+        "knowledge_sources": agent.knowledge_sources or [],
         "created_at": agent.created_at.isoformat() if agent.created_at else None,
         "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
     }
@@ -206,6 +208,7 @@ async def create_agent(
         channels=[c.value for c in agent_data.channels],
         access_level=agent_data.access_level,
         is_active=True,
+        knowledge_sources=agent_data.knowledge_sources or [],
         created_by=user.email,
         created_at=now,
         updated_at=now,
@@ -361,6 +364,8 @@ async def update_agent(
         agent.access_level = agent_data.access_level
     if agent_data.is_active is not None:
         agent.is_active = agent_data.is_active
+    if agent_data.knowledge_sources is not None:
+        agent.knowledge_sources = agent_data.knowledge_sources
 
     agent.updated_at = datetime.utcnow()
 
