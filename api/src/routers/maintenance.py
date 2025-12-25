@@ -5,9 +5,11 @@ API endpoints for workspace maintenance operations.
 Platform admin resource - no org scoping.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
+import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,7 +67,10 @@ async def get_maintenance_status(
 
         decorator_service = DecoratorPropertyService()
 
-        for file_path in workspace_path.rglob("*.py"):
+        # Get all Python files (rglob is I/O bound, run in thread)
+        python_files = await asyncio.to_thread(lambda: list(workspace_path.rglob("*.py")))
+
+        for file_path in python_files:
             rel_path = str(file_path.relative_to(workspace_path))
 
             # Skip excluded paths
@@ -75,7 +80,8 @@ async def get_maintenance_status(
             total_files += 1
 
             try:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
+                async with aiofiles.open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = await f.read()
                 inject_result = decorator_service.inject_ids_if_missing(content)
 
                 if inject_result.modified:

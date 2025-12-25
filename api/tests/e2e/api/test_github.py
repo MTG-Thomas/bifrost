@@ -333,7 +333,7 @@ class TestGitHubFileIndexing:
         """After GitHub configure, files should appear in workspace_files table."""
         # Query workspace files via the editor API (list files in root directory)
         response = e2e_client.get(
-            "/api/editor/files",
+            "/api/files/editor",
             params={"path": ""},
             headers=platform_admin.headers,
         )
@@ -418,7 +418,7 @@ class TestGitHubSync:
 
         # Verify file exists locally via editor API
         response = e2e_client.get(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             params={"path": file_info["path"]},
             headers=platform_admin.headers,
         )
@@ -439,7 +439,7 @@ class TestGitHubSync:
 
         # Create a file via editor API (uses PUT for create/update)
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             json={
                 "path": file_path,
                 "content": file_content,
@@ -477,7 +477,7 @@ class TestGitHubSync:
 
         # Create a file (uses PUT for create/update)
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             json={
                 "path": file_path,
                 "content": f"Commit test at {timestamp}",

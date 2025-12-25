@@ -32,7 +32,7 @@ from src.routers import (
     data_providers_router,
     websocket_router,
     branding_router,
-    editor_files_router,
+    files_router,
     schedules_router,
     workflow_keys_router,
     logs_router,
@@ -220,7 +220,7 @@ def create_app() -> FastAPI:
     app.include_router(data_providers_router)
     app.include_router(websocket_router)
     app.include_router(branding_router)
-    app.include_router(editor_files_router)
+    app.include_router(files_router)
     app.include_router(schedules_router)
     app.include_router(workflow_keys_router)
     app.include_router(logs_router)

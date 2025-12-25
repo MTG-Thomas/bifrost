@@ -28,7 +28,7 @@ async def e2e_test_provider():
     return [{"id": 1, "name": "Test"}]
 '''
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_data_provider.py",
@@ -46,7 +46,7 @@ async def e2e_test_provider():
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_data_provider.py",
+            "/api/files/editor?path=e2e_data_provider.py",
             headers=platform_admin.headers,
         )
 
@@ -64,7 +64,7 @@ async def e2e_creation_test():
     return [{"id": 1, "value": "created"}]
 '''
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_creation_test_provider.py",
@@ -76,7 +76,7 @@ async def e2e_creation_test():
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_creation_test_provider.py",
+            "/api/files/editor?path=e2e_creation_test_provider.py",
             headers=platform_admin.headers,
         )
 
@@ -187,7 +187,7 @@ async def e2e_parametrized_provider(category: str = "default"):
     return data.get(category, data["default"])
 '''
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_parametrized_provider.py",
@@ -205,7 +205,7 @@ async def e2e_parametrized_provider(category: str = "default"):
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_parametrized_provider.py",
+            "/api/files/editor?path=e2e_parametrized_provider.py",
             headers=platform_admin.headers,
         )
 

@@ -66,7 +66,7 @@ class TestOrgUserRestrictions:
     def test_org_user_cannot_access_files(self, e2e_client, org1_user):
         """Org user should not be able to access workspace files."""
         response = e2e_client.get(
-            "/api/editor/files",
+            "/api/files/editor",
             headers=org1_user.headers,
         )
         assert response.status_code == 403

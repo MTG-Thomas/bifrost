@@ -108,25 +108,26 @@ class TestCLIContext:
 
 
 class TestCLIFileOperations:
-    """Test SDK file operation endpoints."""
+    """Test SDK file operation endpoints via /api/files."""
 
     def test_write_and_read_file(
         self,
         e2e_client,
         platform_admin,
     ):
-        """Test writing and reading a file via CLI."""
+        """Test writing and reading a file via unified files API."""
         test_path = "sdk-test-file.txt"
         test_content = "Hello from SDK E2E test!"
         headers = platform_admin.headers
 
-        # Write file
+        # Write file (using cloud mode which uses S3)
         response = e2e_client.post(
-            "/api/cli/files/write",
+            "/api/files/write",
             json={
                 "path": test_path,
                 "content": test_content,
                 "location": "temp",
+                "mode": "cloud",
             },
             headers=headers,
         )
@@ -137,20 +138,22 @@ class TestCLIFileOperations:
 
         # Read file back
         response = e2e_client.post(
-            "/api/cli/files/read",
+            "/api/files/read",
             json={
                 "path": test_path,
                 "location": "temp",
+                "mode": "cloud",
             },
             headers=headers,
         )
         assert response.status_code == 200
-        assert response.json() == test_content
+        data = response.json()
+        assert data["content"] == test_content
 
         # Cleanup
         e2e_client.post(
-            "/api/cli/files/delete",
-            json={"path": test_path, "location": "temp"},
+            "/api/files/delete",
+            json={"path": test_path, "location": "temp", "mode": "cloud"},
             headers=headers,
         )
 
@@ -164,11 +167,12 @@ class TestCLIFileOperations:
 
         # Create a test file first
         write_response = e2e_client.post(
-            "/api/cli/files/write",
+            "/api/files/write",
             json={
                 "path": "list-test.txt",
                 "content": "test content",
                 "location": "temp",
+                "mode": "cloud",
             },
             headers=headers,
         )
@@ -177,10 +181,11 @@ class TestCLIFileOperations:
 
         # List files
         response = e2e_client.post(
-            "/api/cli/files/list",
+            "/api/files/list",
             json={
                 "directory": "",
                 "location": "temp",
+                "mode": "cloud",
             },
             headers=headers,
         )
@@ -188,13 +193,13 @@ class TestCLIFileOperations:
         if response.status_code == 404:
             pytest.skip("Temp directory not available in test environment")
         assert response.status_code == 200
-        files = response.json()
-        assert isinstance(files, list)
+        data = response.json()
+        assert isinstance(data["files"], list)
 
         # Cleanup
         e2e_client.post(
-            "/api/cli/files/delete",
-            json={"path": "list-test.txt", "location": "temp"},
+            "/api/files/delete",
+            json={"path": "list-test.txt", "location": "temp", "mode": "cloud"},
             headers=headers,
         )
 
@@ -203,17 +208,18 @@ class TestCLIFileOperations:
         e2e_client,
         platform_admin,
     ):
-        """Test deleting a file via CLI."""
+        """Test deleting a file via unified files API."""
         test_path = "delete-test.txt"
         headers = platform_admin.headers
 
         # Create file
         write_response = e2e_client.post(
-            "/api/cli/files/write",
+            "/api/files/write",
             json={
                 "path": test_path,
                 "content": "to be deleted",
                 "location": "temp",
+                "mode": "cloud",
             },
             headers=headers,
         )
@@ -222,8 +228,8 @@ class TestCLIFileOperations:
 
         # Delete file
         response = e2e_client.post(
-            "/api/cli/files/delete",
-            json={"path": test_path, "location": "temp"},
+            "/api/files/delete",
+            json={"path": test_path, "location": "temp", "mode": "cloud"},
             headers=headers,
         )
         # Accept 204 (success) or 404 (file wasn't created)
@@ -233,8 +239,8 @@ class TestCLIFileOperations:
 
         # Verify deleted
         response = e2e_client.post(
-            "/api/cli/files/read",
-            json={"path": test_path, "location": "temp"},
+            "/api/files/read",
+            json={"path": test_path, "location": "temp", "mode": "cloud"},
             headers=headers,
         )
         assert response.status_code == 404
@@ -248,10 +254,11 @@ class TestCLIFileOperations:
         headers = platform_admin.headers
 
         response = e2e_client.post(
-            "/api/cli/files/read",
+            "/api/files/read",
             json={
                 "path": "nonexistent-file-12345.txt",
                 "location": "temp",
+                "mode": "cloud",
             },
             headers=headers,
         )
@@ -267,10 +274,11 @@ class TestCLIFileOperations:
 
         # Try to escape the sandbox
         response = e2e_client.post(
-            "/api/cli/files/read",
+            "/api/files/read",
             json={
                 "path": "../../../etc/passwd",
                 "location": "temp",
+                "mode": "cloud",
             },
             headers=headers,
         )

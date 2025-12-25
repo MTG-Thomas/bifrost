@@ -4,15 +4,16 @@ CLI Router
 Endpoints for the Bifrost CLI:
 - Developer context (default organization, parameters)
 - CLI package download
-- File operations (read, write, list, delete)
 - Config operations (get, set, list, delete)
 - CLI Sessions (register, state, continue, pending, log, result)
+
+Note: File operations have been moved to /api/files router.
 """
 
+import asyncio
 import io
 import json
 import logging
-import shutil
 import tarfile
 from datetime import datetime
 from pathlib import Path
@@ -37,10 +38,6 @@ from src.models.contracts.cli import (
     CLIConfigListRequest,
     CLIConfigSetRequest,
     CLIConfigValue,
-    CLIFileDeleteRequest,
-    CLIFileListRequest,
-    CLIFileReadRequest,
-    CLIFileWriteRequest,
     CLIKnowledgeDeleteRequest,
     CLIKnowledgeDocumentResponse,
     CLIKnowledgeNamespaceInfo,
@@ -246,154 +243,6 @@ async def update_dev_context(
 
 
 # =============================================================================
-# CLI File Operations
-# =============================================================================
-
-WORKSPACE_FILES_DIR = Path("/tmp/bifrost/workspace")
-TEMP_FILES_DIR = Path("/tmp/bifrost/tmp")
-WORKSPACE_FILES_DIR.mkdir(parents=True, exist_ok=True)
-TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _resolve_cli_file_path(path: str, location: str) -> Path:
-    """Resolve and validate a file path for CLI operations."""
-    if location == "temp":
-        base_dir = TEMP_FILES_DIR
-    else:
-        base_dir = WORKSPACE_FILES_DIR
-
-    p = Path(path)
-    if not p.is_absolute():
-        p = base_dir / p
-
-    try:
-        p = p.resolve()
-    except Exception as e:
-        raise ValueError(f"Invalid path: {path}") from e
-
-    if not str(p).startswith(str(base_dir.resolve())):
-        raise ValueError(f"Path must be within {location} directory: {path}")
-
-    return p
-
-
-@router.post(
-    "/files/read",
-    summary="Read file content",
-)
-async def cli_read_file(
-    request: CLIFileReadRequest,
-    current_user: CurrentUser,
-) -> str:
-    """Read a file via CLI API."""
-    try:
-        file_path = _resolve_cli_file_path(request.path, request.location)
-
-        if not file_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {request.path}",
-            )
-
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
-@router.post(
-    "/files/write",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Write file content",
-)
-async def cli_write_file(
-    request: CLIFileWriteRequest,
-    current_user: CurrentUser,
-) -> None:
-    """Write a file via CLI API."""
-    try:
-        file_path = _resolve_cli_file_path(request.path, request.location)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(request.content)
-
-        logger.info(f"CLI wrote file {request.path} for user {current_user.email}")
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
-@router.post(
-    "/files/list",
-    summary="List files in directory",
-)
-async def cli_list_files(
-    request: CLIFileListRequest,
-    current_user: CurrentUser,
-) -> list[str]:
-    """List files in a directory via CLI API."""
-    try:
-        dir_path = _resolve_cli_file_path(request.directory or "", request.location)
-
-        if not dir_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Directory not found: {request.directory}",
-            )
-
-        if not dir_path.is_dir():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Not a directory: {request.directory}",
-            )
-
-        return [item.name for item in dir_path.iterdir()]
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
-@router.post(
-    "/files/delete",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete file or directory",
-)
-async def cli_delete_file(
-    request: CLIFileDeleteRequest,
-    current_user: CurrentUser,
-) -> None:
-    """Delete a file or directory via CLI API."""
-    try:
-        file_path = _resolve_cli_file_path(request.path, request.location)
-
-        if not file_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Path not found: {request.path}",
-            )
-
-        if file_path.is_dir():
-            shutil.rmtree(file_path)
-        else:
-            file_path.unlink()
-
-        logger.info(f"CLI deleted {request.path} for user {current_user.email}")
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
-# =============================================================================
 # CLI Config Operations
 # =============================================================================
 
@@ -485,7 +334,7 @@ async def cli_set_config(
     if request.is_secret:
         from src.core.security import encrypt_secret
         config_type = ConfigTypeEnum.SECRET
-        stored_value = encrypt_secret(str(request.value))
+        stored_value = await asyncio.to_thread(encrypt_secret, str(request.value))
     elif isinstance(request.value, dict) or isinstance(request.value, list):
         config_type = ConfigTypeEnum.JSON
         stored_value = request.value
@@ -678,7 +527,7 @@ async def sdk_integrations_get(
                 token = mapping.oauth_token
                 if not token:
                     token = await repo.get_provider_org_token(integration.oauth_provider.id)
-                response_data["oauth"] = _build_oauth_data(
+                response_data["oauth"] = await _build_oauth_data(
                     integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret
                 )
 
@@ -705,7 +554,7 @@ async def sdk_integrations_get(
         # Build OAuth data if provider exists
         if integration.oauth_provider:
             token = await repo.get_provider_org_token(integration.oauth_provider.id)
-            response_data["oauth"] = _build_oauth_data(
+            response_data["oauth"] = await _build_oauth_data(
                 integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret
             )
 
@@ -717,7 +566,7 @@ async def sdk_integrations_get(
         return None
 
 
-def _build_oauth_data(
+async def _build_oauth_data(
     provider: Any,
     token: Any,
     entity_id: str | None,
@@ -730,7 +579,9 @@ def _build_oauth_data(
     if provider.encrypted_client_secret:
         try:
             raw = provider.encrypted_client_secret
-            client_secret = decrypt_secret(raw.decode() if isinstance(raw, bytes) else raw)
+            client_secret = await asyncio.to_thread(
+                decrypt_secret, raw.decode() if isinstance(raw, bytes) else raw
+            )
         except Exception:
             logger.warning("Failed to decrypt client_secret")
 
@@ -742,14 +593,18 @@ def _build_oauth_data(
         if token.encrypted_access_token:
             try:
                 raw = token.encrypted_access_token
-                access_token = decrypt_secret(raw.decode() if isinstance(raw, bytes) else raw)
+                access_token = await asyncio.to_thread(
+                    decrypt_secret, raw.decode() if isinstance(raw, bytes) else raw
+                )
             except Exception:
                 logger.warning("Failed to decrypt access_token")
 
         if token.encrypted_refresh_token:
             try:
                 raw = token.encrypted_refresh_token
-                refresh_token = decrypt_secret(raw.decode() if isinstance(raw, bytes) else raw)
+                refresh_token = await asyncio.to_thread(
+                    decrypt_secret, raw.decode() if isinstance(raw, bytes) else raw
+                )
             except Exception:
                 logger.warning("Failed to decrypt refresh_token")
 
@@ -1911,36 +1766,44 @@ async def download_cli() -> StreamingResponse:
         )
 
     buffer = io.BytesIO()
-    include_files = {
-        "__init__.py",
-        # Note: _context.py is GENERATED inline below (different from platform version)
-        # Note: _internal.py is NOT included - platform-only (permission checks, context access)
-        # Note: _write_buffer.py is NOT included - requires redis, platform-only
-        # Note: users.py is NOT included - platform-only (admin operations, no external mode)
-        "client.py",
-        "config.py",
-        "credentials.py",
-        "executions.py",
-        "files.py",
-        "forms.py",
-        "integrations.py",
-        "organizations.py",
-        "roles.py",
-        "workflows.py",
+
+    # Files to exclude (platform-only internal files)
+    exclude_files = {
+        "_internal.py",     # Platform-only permission checks
+        "_write_buffer.py", # Platform-only, requires Redis
+        "_logging.py",      # Platform-only logging
+        "_sync.py",         # Platform-only sync utilities
     }
 
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for file_path in package_dir.rglob("*"):
-            if file_path.is_file() and "__pycache__" not in str(file_path):
-                if file_path.name in include_files:
-                    arcname = f"bifrost/{file_path.relative_to(package_dir)}"
-                    tar.add(file_path, arcname=arcname)
+    def _generate_tarball():
+        """Generate tarball synchronously in thread."""
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            # Add pyproject.toml at root level
+            pyproject_path = package_dir / "pyproject.toml"
+            if pyproject_path.exists():
+                tar.add(pyproject_path, arcname="pyproject.toml")
 
-        # Create generated files inline (context, decorators, errors, cli, models, __init__, pyproject.toml)
-        # These are generated with /api/cli/* paths instead of /api/sdk/*
+            # Add all Python files from bifrost/
+            for file_path in package_dir.rglob("*"):
+                if not file_path.is_file():
+                    continue
 
-        _add_generated_files_to_tarball(tar)
+                # Skip __pycache__ and excluded internal files
+                if "__pycache__" in str(file_path):
+                    continue
+                if file_path.name in exclude_files:
+                    continue
+                # Skip non-Python files except pyproject.toml (already added at root)
+                if file_path.suffix not in (".py", ".toml"):
+                    continue
+                if file_path.name == "pyproject.toml":
+                    continue  # Already added at root
 
+                # Include all other files
+                arcname = f"bifrost/{file_path.relative_to(package_dir)}"
+                tar.add(file_path, arcname=arcname)
+
+    await asyncio.to_thread(_generate_tarball)
     buffer.seek(0)
 
     return StreamingResponse(
@@ -1950,896 +1813,3 @@ async def download_cli() -> StreamingResponse:
             "Content-Disposition": "attachment; filename=bifrost-cli-2.0.0.tar.gz",
         },
     )
-
-
-def _add_generated_files_to_tarball(tar: tarfile.TarFile) -> None:
-    """Add generated Python files to the tarball."""
-
-    # _context.py
-    context_py = '''"""
-Execution context for external Bifrost CLI.
-"""
-from contextvars import ContextVar
-from typing import Any
-
-
-class _ExternalContextProxy:
-    """Context proxy that fetches developer context from API."""
-
-    def __init__(self):
-        self._cached: dict[str, Any] | None = None
-
-    def _get_context(self) -> dict[str, Any]:
-        if self._cached is None:
-            from .client import get_client
-            client = get_client()
-            self._cached = client.context
-        return self._cached
-
-    def _clear_cache(self) -> None:
-        self._cached = None
-
-    @property
-    def user_id(self) -> str:
-        return self._get_context().get("user", {}).get("id", "")
-
-    @property
-    def email(self) -> str:
-        return self._get_context().get("user", {}).get("email", "")
-
-    @property
-    def name(self) -> str:
-        return self._get_context().get("user", {}).get("name", "")
-
-    @property
-    def org_id(self) -> str | None:
-        org = self._get_context().get("organization")
-        return org.get("id") if org else None
-
-    @property
-    def org_name(self) -> str | None:
-        org = self._get_context().get("organization")
-        return org.get("name") if org else None
-
-    @property
-    def organization(self) -> dict | None:
-        return self._get_context().get("organization")
-
-    @property
-    def scope(self) -> str:
-        return self.org_id or "GLOBAL"
-
-    @property
-    def default_parameters(self) -> dict[str, Any]:
-        return self._get_context().get("default_parameters", {})
-
-    @property
-    def track_executions(self) -> bool:
-        return self._get_context().get("track_executions", True)
-
-
-context = _ExternalContextProxy()
-_execution_context: ContextVar[None] = ContextVar("bifrost_execution_context", default=None)
-'''
-    _add_file_to_tar(tar, "bifrost/_context.py", context_py)
-
-    # errors.py
-    errors_py = '''"""Custom exception classes for Bifrost workflows."""
-
-
-class UserError(Exception):
-    """Exception that displays its message to end users."""
-    pass
-
-
-class WorkflowError(Exception):
-    """Base class for workflow-related errors."""
-    pass
-
-
-class ValidationError(WorkflowError):
-    """Raised when workflow input validation fails."""
-    pass
-
-
-class IntegrationError(WorkflowError):
-    """Raised when integration with external service fails."""
-    pass
-
-
-class ConfigurationError(WorkflowError):
-    """Raised when workflow configuration is invalid."""
-    pass
-'''
-    _add_file_to_tar(tar, "bifrost/errors.py", errors_py)
-
-    # decorators.py (abbreviated for space - full version in production)
-    decorators_py = _get_decorators_py()
-    _add_file_to_tar(tar, "bifrost/decorators.py", decorators_py)
-
-    # cli.py - the main CLI entry point with /api/cli/* paths
-    cli_py = _get_cli_runner_py()
-    _add_file_to_tar(tar, "bifrost/cli.py", cli_py)
-
-    # __main__.py
-    main_py = '''"""Entry point for python -m bifrost."""
-from .cli import main
-
-if __name__ == "__main__":
-    main()
-'''
-    _add_file_to_tar(tar, "bifrost/__main__.py", main_py)
-
-    # models.py
-    models_py = _get_models_py()
-    _add_file_to_tar(tar, "bifrost/models.py", models_py)
-
-    # __init__.py
-    init_py = '''"""
-Bifrost CLI - External client for Bifrost API.
-
-Usage:
-    # Login via browser (device code flow)
-    bifrost login
-
-    from bifrost import workflow, context, config
-
-    @workflow(category="Admin")
-    async def my_workflow(name: str) -> dict:
-        return {"message": f"Hello {name}"}
-
-    # bifrost run my_workflows.py
-"""
-from .client import BifrostClient, get_client
-from .config import config
-from .executions import executions
-from .files import files
-from .forms import forms
-from .integrations import integrations
-from .organizations import organizations
-from .roles import roles
-from .workflows import workflows
-from ._context import context
-from .decorators import workflow, data_provider, WorkflowMetadata, DataProviderMetadata, WorkflowParameter
-from .errors import UserError, WorkflowError, ValidationError, IntegrationError, ConfigurationError
-
-__all__ = [
-    "BifrostClient", "get_client",
-    "config",
-    "executions",
-    "files",
-    "forms",
-    "integrations",
-    "organizations",
-    "roles",
-    "workflows",
-    "context",
-    "workflow", "data_provider", "WorkflowMetadata", "DataProviderMetadata", "WorkflowParameter",
-    "UserError", "WorkflowError", "ValidationError", "IntegrationError", "ConfigurationError",
-]
-__version__ = "2.0.0"
-'''
-    _add_file_to_tar(tar, "bifrost/__init__.py", init_py)
-
-    # pyproject.toml
-    pyproject_toml = """
-[build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "bifrost-cli"
-version = "2.0.0"
-description = "Bifrost Platform CLI for workflow automation"
-requires-python = ">=3.11"
-dependencies = [
-    "httpx>=0.26.0",
-    "pydantic>=2.0.0",
-    "python-dotenv>=1.0.0",
-]
-
-[project.scripts]
-bifrost = "bifrost.cli:main"
-
-[tool.setuptools]
-packages = ["bifrost"]
-"""
-    _add_file_to_tar(tar, "pyproject.toml", pyproject_toml)
-
-
-def _add_file_to_tar(tar: tarfile.TarFile, name: str, content: str) -> None:
-    """Add a file to the tarball."""
-    info = tarfile.TarInfo(name=name)
-    content_bytes = content.encode("utf-8")
-    info.size = len(content_bytes)
-    tar.addfile(info, io.BytesIO(content_bytes))
-
-
-def _get_decorators_py() -> str:
-    """Return the decorators.py content."""
-    return '''"""Bifrost decorators for workflow development."""
-import inspect
-import re
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any, Literal, Union, get_args, get_origin
-
-TYPE_MAPPING: dict[type, str] = {
-    str: "string", int: "int", float: "float", bool: "bool", list: "list", dict: "json",
-}
-
-
-@dataclass
-class WorkflowParameter:
-    name: str
-    type: str
-    label: str | None = None
-    required: bool = False
-    default_value: Any | None = None
-    options: list[dict[str, str]] | None = None  # For Literal types
-
-
-@dataclass
-class WorkflowMetadata:
-    id: str | None = None
-    name: str = ""
-    description: str = ""
-    category: str = "General"
-    tags: list[str] = field(default_factory=list)
-    execution_mode: Literal["sync", "async"] = "async"
-    timeout_seconds: int = 1800
-    retry_policy: dict[str, Any] | None = None
-    schedule: str | None = None
-    endpoint_enabled: bool = False
-    allowed_methods: list[str] = field(default_factory=lambda: ["POST"])
-    disable_global_key: bool = False
-    public_endpoint: bool = False
-    is_tool: bool = False
-    tool_description: str | None = None
-    time_saved: int = 0
-    value: float = 0.0
-    source_file_path: str | None = None
-    relative_file_path: str | None = None
-    parameters: list[WorkflowParameter] = field(default_factory=list)
-    function: Any = None
-
-
-@dataclass
-class DataProviderMetadata:
-    name: str = ""
-    description: str = ""
-    category: str = "General"
-    cache_ttl_seconds: int = 300
-    function: Any = None
-    parameters: list[WorkflowParameter] = field(default_factory=list)
-    source: str | None = None
-    source_file_path: str | None = None
-
-
-def _get_ui_type(python_type: Any) -> str:
-    if python_type is type(None):
-        return "string"
-    if python_type in TYPE_MAPPING:
-        return TYPE_MAPPING[python_type]
-    origin = get_origin(python_type)
-    # Handle Literal types - infer base type from values
-    if origin is Literal:
-        args = get_args(python_type)
-        if args:
-            first_val = args[0]
-            if isinstance(first_val, str):
-                return "string"
-            elif isinstance(first_val, bool):
-                return "bool"
-            elif isinstance(first_val, int):
-                return "int"
-            elif isinstance(first_val, float):
-                return "float"
-        return "string"
-    if origin is list:
-        return "list"
-    if origin is dict:
-        return "json"
-    if origin is Union:
-        args = get_args(python_type)
-        non_none = [t for t in args if t is not type(None)]
-        if non_none:
-            return _get_ui_type(non_none[0])
-    return "json"
-
-
-def _get_literal_options(python_type: Any) -> list[dict[str, str]] | None:
-    """Extract options from Literal type."""
-    origin = get_origin(python_type)
-    if origin is Literal:
-        args = get_args(python_type)
-        return [{"label": str(v), "value": str(v)} for v in args]
-    if origin is Union:
-        args = get_args(python_type)
-        for arg in args:
-            if arg is not type(None):
-                options = _get_literal_options(arg)
-                if options:
-                    return options
-    return None
-
-
-def _is_optional(python_type: Any) -> bool:
-    origin = get_origin(python_type)
-    if origin is Union:
-        return type(None) in get_args(python_type)
-    return False
-
-
-def _extract_parameters(func: Callable) -> list[WorkflowParameter]:
-    params = []
-    try:
-        sig = inspect.signature(func)
-        hints = getattr(func, "__annotations__", {})
-        for name, param in sig.parameters.items():
-            if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-                continue
-            if name == "context":
-                continue
-            param_type = hints.get(name, param.annotation)
-            has_default = param.default is not inspect.Parameter.empty
-            default_val = param.default if has_default else None
-            if param_type is inspect.Parameter.empty:
-                ui_type = "string"
-                is_optional = has_default
-                options = None
-            else:
-                ui_type = _get_ui_type(param_type)
-                is_optional = _is_optional(param_type) or has_default
-                options = _get_literal_options(param_type)
-            label = name.replace("_", " ").title()
-            wp = WorkflowParameter(name=name, type=ui_type, required=not is_optional, label=label, options=options)
-            if has_default and default_val is not None:
-                if isinstance(default_val, (str, int, float, bool, list, dict)):
-                    wp.default_value = default_val
-            params.append(wp)
-    except Exception:
-        pass
-    return params
-
-
-def workflow(
-    _func: Callable | None = None,
-    *,
-    id: str | None = None,
-    name: str | None = None,
-    description: str | None = None,
-    category: str = "General",
-    tags: list[str] | None = None,
-    execution_mode: Literal["sync", "async"] | None = None,
-    timeout_seconds: int = 1800,
-    retry_policy: dict[str, Any] | None = None,
-    schedule: str | None = None,
-    endpoint_enabled: bool = False,
-    allowed_methods: list[str] | None = None,
-    disable_global_key: bool = False,
-    public_endpoint: bool = False,
-    time_saved: int = 0,
-    value: float = 0.0,
-):
-    def decorator(func: Callable) -> Callable:
-        wf_name = name or func.__name__
-        wf_desc = description
-        if wf_desc is None and func.__doc__:
-            wf_desc = func.__doc__.strip().split("\\n")[0].strip()
-        wf_desc = wf_desc or ""
-        source_path = func.__code__.co_filename if hasattr(func, "__code__") else None
-        metadata = WorkflowMetadata(
-            id=id, name=wf_name, description=wf_desc, category=category,
-            tags=tags or [], execution_mode=execution_mode or ("sync" if endpoint_enabled else "async"),
-            timeout_seconds=timeout_seconds, retry_policy=retry_policy, schedule=schedule,
-            endpoint_enabled=endpoint_enabled, allowed_methods=allowed_methods or ["POST"],
-            disable_global_key=disable_global_key, public_endpoint=public_endpoint,
-            time_saved=time_saved, value=value,
-            source_file_path=source_path, parameters=_extract_parameters(func), function=func,
-        )
-        func._workflow_metadata = metadata
-        return func
-    if _func is not None:
-        return decorator(_func)
-    return decorator
-
-
-def data_provider(
-    _func: Callable | None = None,
-    *,
-    name: str | None = None,
-    description: str | None = None,
-    category: str = "General",
-    cache_ttl_seconds: int = 300,
-):
-    def decorator(func: Callable) -> Callable:
-        dp_name = name or func.__name__
-        dp_desc = description
-        if dp_desc is None and func.__doc__:
-            dp_desc = func.__doc__.strip().split("\\n")[0].strip()
-        dp_desc = dp_desc or ""
-        source_path = func.__code__.co_filename if hasattr(func, "__code__") else None
-        metadata = DataProviderMetadata(
-            name=dp_name, description=dp_desc, category=category,
-            cache_ttl_seconds=cache_ttl_seconds, parameters=_extract_parameters(func),
-            function=func, source_file_path=source_path,
-        )
-        func._data_provider_metadata = metadata
-        return func
-    if _func is not None:
-        return decorator(_func)
-    return decorator
-'''
-
-
-def _get_cli_runner_py() -> str:
-    """Return the cli.py content with /api/cli/* paths."""
-    return '''"""
-Bifrost CLI for local workflow execution.
-
-Usage:
-    bifrost run my_workflows.py
-    bifrost run my_workflows.py --workflow greet_user
-"""
-import argparse
-import asyncio
-import importlib.util
-import json
-import logging
-import os
-import sys
-import time
-import uuid
-import webbrowser
-from datetime import datetime
-from pathlib import Path
-from typing import Any
-
-
-def is_html_result(result: Any) -> bool:
-    """Check if result looks like HTML content.
-
-    Mirrors backend detection in executions.py:150:
-    result.strip().startswith("<")
-    """
-    if not isinstance(result, str):
-        return False
-    return result.strip().startswith("<")
-
-
-def format_result_for_terminal(result: Any, session_url: str | None = None) -> str:
-    """Format result for terminal output, masking HTML like the web terminal does."""
-    if is_html_result(result):
-        # Mirror web terminal's "Click to view HTML result" messaging
-        if session_url:
-            return f"[HTML Result] Click to view in session: {session_url}"
-        else:
-            return "[HTML Result] Run with web UI to view HTML results"
-    return json.dumps(result, indent=2, default=str)
-
-
-class BifrostLoggingHandler(logging.Handler):
-    """Captures Python logging and forwards to Bifrost API.
-
-    Uses synchronous HTTP requests to ensure logs are sent in order and complete
-    before continuing, matching the engine's behavior with synchronous Redis.
-    """
-
-    def __init__(self, runner_logger: "LocalRunnerLogger", workflow_file: str):
-        super().__init__()
-        self.runner_logger = runner_logger
-        self.workflow_basename = os.path.basename(workflow_file)
-        self.workflow_dir = os.path.dirname(os.path.abspath(workflow_file))
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            is_root_log = record.name == "root"
-            record_basename = os.path.basename(record.pathname) if record.pathname else ""
-            is_workflow_file = record_basename == self.workflow_basename
-            record_dir = os.path.dirname(os.path.abspath(record.pathname)) if record.pathname else ""
-            is_same_dir = record_dir.startswith(self.workflow_dir)
-            if not (is_root_log or is_workflow_file or is_same_dir):
-                return
-            msg = self.format(record)
-            level = record.levelname.upper()
-            # Use synchronous logging to ensure logs complete in order
-            # This matches the engine's sync Redis approach
-            self.runner_logger.log_sync(level, msg)
-        except Exception:
-            pass
-
-
-class LocalRunnerLogger:
-    def __init__(self, client, session_id: str, execution_id: str, workflow_file: str):
-        self.client = client
-        self.session_id = session_id
-        self.execution_id = execution_id
-        self.workflow_file = workflow_file
-        self.start_time = time.time()
-        self._handler = None
-        # Collect logs in memory to send with result (avoids race conditions)
-        self._logs: list[dict] = []
-
-    def install_logging_handler(self) -> None:
-        self._handler = BifrostLoggingHandler(self, self.workflow_file)
-        self._handler.setLevel(logging.DEBUG)
-        self._handler.setFormatter(logging.Formatter("%(message)s"))
-        # Set root logger level to capture DEBUG/INFO (matches engine behavior)
-        # Without this, DEBUG/INFO logs are filtered at the logger level before
-        # reaching the handler, even though handler.setLevel(DEBUG) is set
-        logging.getLogger().setLevel(logging.DEBUG)
-        logging.getLogger().addHandler(self._handler)
-
-    def uninstall_logging_handler(self) -> None:
-        if self._handler:
-            logging.getLogger().removeHandler(self._handler)
-            self._handler = None
-
-    def log_sync(self, level: str, message: str, metadata: dict | None = None) -> None:
-        """Synchronous log method used by BifrostLoggingHandler.
-
-        Collects logs in memory to be sent with the result.
-        This avoids race conditions from multiple HTTP requests.
-        """
-        timestamp = datetime.utcnow().isoformat() + "Z"
-        colors = {"DEBUG": "\033[90m", "INFO": "\033[0m", "WARNING": "\033[93m", "ERROR": "\033[91m"}
-        print(f"{colors.get(level.upper(), '')}[{level.upper()}] {message}\033[0m")
-        # Collect log instead of POSTing immediately
-        self._logs.append({
-            "level": level.upper(),
-            "message": message,
-            "timestamp": timestamp,
-            "metadata": metadata,
-        })
-
-    async def log(self, level: str, message: str, metadata: dict | None = None) -> None:
-        """Async log method for direct calls from workflow code."""
-        timestamp = datetime.utcnow().isoformat() + "Z"
-        colors = {"DEBUG": "\033[90m", "INFO": "\033[0m", "WARNING": "\033[93m", "ERROR": "\033[91m"}
-        print(f"{colors.get(level.upper(), '')}[{level.upper()}] {message}\033[0m")
-        # Collect log instead of POSTing immediately
-        self._logs.append({
-            "level": level.upper(),
-            "message": message,
-            "timestamp": timestamp,
-            "metadata": metadata,
-        })
-
-    async def debug(self, message: str, metadata: dict | None = None) -> None:
-        await self.log("DEBUG", message, metadata)
-
-    async def info(self, message: str, metadata: dict | None = None) -> None:
-        await self.log("INFO", message, metadata)
-
-    async def warning(self, message: str, metadata: dict | None = None) -> None:
-        await self.log("WARNING", message, metadata)
-
-    async def error(self, message: str, metadata: dict | None = None) -> None:
-        await self.log("ERROR", message, metadata)
-
-    async def complete(self, status: str, result: Any = None, error: str | None = None) -> None:
-        duration_ms = int((time.time() - self.start_time) * 1000)
-        try:
-            # Send all logs with the result in a single request
-            # This eliminates race conditions from multiple HTTP requests
-            await self.client.post(
-                f"/api/cli/sessions/{self.session_id}/executions/{self.execution_id}/result",
-                json={
-                    "status": status,
-                    "result": result,
-                    "error_message": error,
-                    "duration_ms": duration_ms,
-                    "logs": self._logs,
-                },
-            )
-        except Exception as e:
-            print(f"\033[91m[ERROR] Failed to post result: {e}\033[0m")
-
-
-def discover_workflows(module) -> list[dict]:
-    workflows = []
-    for name in dir(module):
-        obj = getattr(module, name)
-        if callable(obj) and hasattr(obj, "_workflow_metadata"):
-            meta = obj._workflow_metadata
-            workflows.append({
-                "name": meta.name, "description": meta.description,
-                "parameters": [{"name": p.name, "type": p.type, "label": p.label, "required": p.required, "default_value": p.default_value} for p in meta.parameters],
-                "_func": obj,
-            })
-    return workflows
-
-
-async def run_with_web_ui(file_path: str, workflow_name: str | None, inline_params: dict | None, open_browser: bool = False):
-    from .client import get_client, has_credentials
-
-    spec = importlib.util.spec_from_file_location("workflow_module", file_path)
-    module = importlib.util.module_from_spec(spec)
-
-    # Add CWD (workspace root) to sys.path for imports like "from modules.x import y"
-    # This matches the platform behavior where /tmp/bifrost/workspace is in sys.path
-    cwd = str(Path.cwd())
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
-
-    # Also add workflow file's parent directory for relative imports within that directory
-    sys.path.insert(0, str(Path(file_path).parent))
-
-    spec.loader.exec_module(module)
-
-    workflows = discover_workflows(module)
-    if not workflows:
-        print("No @workflow decorated functions found")
-        sys.exit(1)
-
-    workflow_map = {w["name"]: w["_func"] for w in workflows}
-
-    if inline_params and workflow_name:
-        func = workflow_map.get(workflow_name)
-        if not func:
-            print(f"Workflow '{workflow_name}' not found. Available: {', '.join(workflow_map.keys())}")
-            sys.exit(1)
-        print(f"Running {workflow_name}...")
-        try:
-            result = await func(**inline_params) if asyncio.iscoroutinefunction(func) else func(**inline_params)
-            print(f"Result: {format_result_for_terminal(result)}")
-        except Exception as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-        return
-
-    # Check if credentials are available - if not, trigger login flow
-    if not has_credentials():
-        from .client import login_flow
-        print("\\033[93mNot logged in. Starting authentication...\\033[0m\\n")
-        if not await login_flow():
-            print("\\n\\033[93mLogin cancelled or failed. Running in standalone mode...\\033[0m\\n")
-            await run_with_terminal_input(workflows, workflow_map, workflow_name)
-            return
-
-    client = get_client()
-    abs_path = str(Path(file_path).resolve())
-
-    session_id = str(uuid.uuid4())
-
-    workflows_for_api = [{k: v for k, v in w.items() if k != "_func"} for w in workflows]
-    try:
-        response = await client.post("/api/cli/sessions", json={
-            "session_id": session_id,
-            "file_path": abs_path,
-            "workflows": workflows_for_api,
-            "selected_workflow": workflow_name,
-        })
-        response.raise_for_status()
-    except Exception as e:
-        print(f"Failed to register with API: {e}")
-        await run_with_terminal_input(workflows, workflow_map, workflow_name)
-        return
-
-    base_url = client.api_url.rstrip("/")
-    if base_url.endswith("/api"):
-        base_url = base_url[:-4]
-    url = f"{base_url}/cli/{session_id}"
-
-    # Open browser or just print URL
-    if open_browser:
-        webbrowser.open(url)
-        print(f"Opened browser (session: {session_id[:8]}...)")
-    else:
-        print(f"\\033[96m\\U0001F517 Web UI: {url}\\033[0m")
-
-    print("\\nWaiting for 'Continue' in web UI (Ctrl+C to cancel)\\n")
-
-    # Start heartbeat task
-    async def heartbeat():
-        while True:
-            try:
-                await client.post(f"/api/cli/sessions/{session_id}/heartbeat")
-            except Exception:
-                pass
-            await asyncio.sleep(5)
-
-    heartbeat_task = asyncio.create_task(heartbeat())
-
-    try:
-        while True:
-            try:
-                response = await client.get(f"/api/cli/sessions/{session_id}/pending")
-                if response.status_code == 204:
-                    await asyncio.sleep(1)
-                    continue
-
-                data = response.json()
-                wf_name = data["workflow_name"]
-                params = data["params"]
-                execution_id = data["execution_id"]
-
-                func = workflow_map.get(wf_name)
-                if not func:
-                    print(f"Workflow '{wf_name}' not found")
-                    continue
-
-                logger = LocalRunnerLogger(client, session_id, execution_id, file_path)
-                print(f"\\n{'='*60}")
-                print(f"Executing: {wf_name} (ID: {execution_id[:8]}...)")
-                print(f"{'='*60}")
-
-                logger.install_logging_handler()
-
-                try:
-                    result = await func(**params) if asyncio.iscoroutinefunction(func) else func(**params)
-                    await logger.complete("Success", result=result)
-                    session_url = f"{base_url}/cli/{session_id}"
-                    print(f"\\n\\033[92mResult:\\033[0m {format_result_for_terminal(result, session_url)}\\n")
-                except Exception as e:
-                    error_msg = str(e)
-                    await logger.error(f"Workflow failed: {error_msg}")
-                    await logger.complete("Failed", error=error_msg)
-                    print(f"\\n\\033[91mError:\\033[0m {error_msg}\\n")
-                finally:
-                    logger.uninstall_logging_handler()
-
-                print("Waiting for next 'Continue'...")
-
-            except KeyboardInterrupt:
-                print("\\nStopped.")
-                break
-    except KeyboardInterrupt:
-        print("\\nStopped.")
-    finally:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
-
-
-async def run_with_terminal_input(workflows: list[dict], workflow_map: dict, workflow_name: str | None):
-    if workflow_name:
-        func = workflow_map.get(workflow_name)
-        if not func:
-            print(f"Workflow '{workflow_name}' not found. Available: {', '.join(workflow_map.keys())}")
-            sys.exit(1)
-        selected = next(w for w in workflows if w["name"] == workflow_name)
-    elif len(workflows) == 1:
-        selected = workflows[0]
-        func = workflow_map[selected["name"]]
-    else:
-        print("Available workflows:")
-        for i, w in enumerate(workflows, 1):
-            print(f"  {i}. {w['name']} - {w['description']}")
-        choice = input("Select workflow number: ")
-        selected = workflows[int(choice) - 1]
-        func = workflow_map[selected["name"]]
-
-    params = {}
-    for p in selected["parameters"]:
-        label = p["label"] or p["name"]
-        prompt = f"{label}"
-        if not p["required"]:
-            prompt += f" (default: {p['default_value']})"
-        prompt += ": "
-        value = input(prompt)
-        if value:
-            if p["type"] == "int":
-                value = int(value)
-            elif p["type"] == "bool":
-                value = value.lower() in ("true", "1", "yes")
-            elif p["type"] == "json":
-                value = json.loads(value)
-            params[p["name"]] = value
-        elif p["default_value"] is not None:
-            params[p["name"]] = p["default_value"]
-
-    print(f"\\nRunning {selected['name']}...")
-    try:
-        result = await func(**params) if asyncio.iscoroutinefunction(func) else func(**params)
-        print(f"Result: {format_result_for_terminal(result)}")
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-
-
-def load_dotenv_from_file_path(file_path: str) -> None:
-    from dotenv import load_dotenv
-    current = Path(file_path).resolve().parent
-    env_files = []
-    while current != current.parent:
-        env_file = current / ".env"
-        if env_file.exists():
-            env_files.append(env_file)
-        current = current.parent
-    for env_file in reversed(env_files):
-        load_dotenv(env_file, override=True)
-
-
-def main():
-    parser = argparse.ArgumentParser(prog="bifrost", description="Bifrost CLI")
-    subparsers = parser.add_subparsers(dest="command")
-    run_parser = subparsers.add_parser("run", help="Run a workflow locally")
-    run_parser.add_argument("file", help="Python file containing workflows")
-    run_parser.add_argument("--workflow", "-w", help="Workflow name to run")
-    run_parser.add_argument("--params", "-p", help="JSON params (skips web UI)")
-    run_parser.add_argument("--open", action="store_true", help="Open browser automatically")
-    args = parser.parse_args()
-
-    if args.command == "run":
-        load_dotenv_from_file_path(args.file)
-        inline_params = json.loads(args.params) if args.params else None
-        try:
-            asyncio.run(run_with_web_ui(args.file, args.workflow, inline_params, getattr(args, 'open', False)))
-        except KeyboardInterrupt:
-            pass  # Already handled gracefully in run_with_web_ui
-    else:
-        parser.print_help()
-
-
-if __name__ == "__main__":
-    main()
-'''
-
-
-def _get_models_py() -> str:
-    """Return the models.py content."""
-    return '''"""Unified models for Bifrost CLI."""
-from typing import Any, Literal
-from pydantic import BaseModel, Field, ConfigDict
-
-
-class CLIFileReadRequest(BaseModel):
-    path: str = Field(..., description="Relative path to file")
-    location: Literal["temp", "workspace"] = Field(default="workspace")
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIFileWriteRequest(BaseModel):
-    path: str = Field(..., description="Relative path to file")
-    content: str = Field(..., description="File content")
-    location: Literal["temp", "workspace"] = Field(default="workspace")
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIFileListRequest(BaseModel):
-    directory: str = Field(default="", description="Directory path")
-    location: Literal["temp", "workspace"] = Field(default="workspace")
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIFileDeleteRequest(BaseModel):
-    path: str = Field(..., description="Path to file or directory")
-    location: Literal["temp", "workspace"] = Field(default="workspace")
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIConfigGetRequest(BaseModel):
-    key: str = Field(..., description="Configuration key")
-    org_id: str | None = Field(default=None)
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIConfigSetRequest(BaseModel):
-    key: str = Field(..., description="Configuration key")
-    value: Any = Field(..., description="Configuration value")
-    org_id: str | None = Field(default=None)
-    is_secret: bool = Field(default=False)
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIConfigListRequest(BaseModel):
-    org_id: str | None = Field(default=None)
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIConfigDeleteRequest(BaseModel):
-    key: str = Field(..., description="Configuration key")
-    org_id: str | None = Field(default=None)
-    model_config = ConfigDict(from_attributes=True)
-
-
-class CLIConfigValue(BaseModel):
-    key: str
-    value: Any
-    config_type: str
-    model_config = ConfigDict(from_attributes=True)
-'''

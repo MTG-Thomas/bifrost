@@ -311,7 +311,10 @@ async def send_message(
     # Verify conversation and optionally get agent
     result = await db.execute(
         select(Conversation)
-        .options(selectinload(Conversation.agent).selectinload(Agent.tools))
+        .options(
+            selectinload(Conversation.agent).selectinload(Agent.tools),
+            selectinload(Conversation.agent).selectinload(Agent.delegated_agents),
+        )
         .where(Conversation.id == conversation_id)
         .where(Conversation.user_id == user.user_id)
     )

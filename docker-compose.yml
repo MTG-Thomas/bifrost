@@ -245,6 +245,8 @@ services:
       # Message Queue & Cache
       BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       BIFROST_REDIS_URL: redis://redis:6379/0
+      # API URL (for SDK client injection in workflows)
+      BIFROST_API_URL: http://api:8000
       # S3 Storage (for scheduled jobs that need file access)
       BIFROST_S3_BUCKET: ${BIFROST_S3_BUCKET:-bifrost-local}
       BIFROST_S3_ENDPOINT_URL: ${BIFROST_S3_ENDPOINT_URL:-http://minio:9000}
@@ -282,6 +284,8 @@ services:
       # Message Queue & Cache
       BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       BIFROST_REDIS_URL: redis://redis:6379/0
+      # API URL (for SDK client injection in workflows)
+      BIFROST_API_URL: http://api:8000
       # S3 Storage (workers download workspace from S3)
       BIFROST_S3_BUCKET: ${BIFROST_S3_BUCKET:-bifrost-local}
       BIFROST_S3_ENDPOINT_URL: ${BIFROST_S3_ENDPOINT_URL:-http://minio:9000}

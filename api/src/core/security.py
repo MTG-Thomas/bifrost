@@ -332,3 +332,53 @@ def validate_csrf_token(cookie_token: str, header_token: str) -> bool:
     if not cookie_token or not header_token:
         return False
     return secrets.compare_digest(cookie_token, header_token)
+
+
+def authenticate_engine() -> None:
+    """
+    Create/refresh engine credentials for SDK calls in worker processes.
+
+    This creates a long-lived superuser token and saves it to the credentials
+    file (~/.bifrost/credentials.json). Called at the start of each workflow
+    execution as a failsafe to ensure the token is always valid.
+
+    The SDK's get_client() will find these credentials automatically, making
+    the worker behave identically to CLI mode but with superuser privileges.
+    """
+    import os
+
+    from bifrost.credentials import save_credentials
+
+    settings = get_settings()
+
+    # Use a fixed UUID for the engine service account
+    # This is a well-known UUID that represents the execution engine
+    ENGINE_USER_ID = "00000000-0000-0000-0000-000000000001"
+
+    # Create a long-lived superuser token (30 days)
+    token_data = {
+        "sub": ENGINE_USER_ID,
+        "email": "engine@bifrost.internal",
+        "name": "Bifrost Engine",
+        "user_type": "PLATFORM",  # PLATFORM users have elevated access
+        "is_superuser": True,
+    }
+
+    token = create_access_token(
+        token_data,
+        expires_delta=timedelta(days=30)
+    )
+
+    # Get API URL for internal communication
+    api_url = os.getenv("BIFROST_API_URL", "http://api:8000")
+
+    # Calculate expiration timestamp
+    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+
+    # Save to credentials file - SDK will find this automatically
+    save_credentials(
+        api_url=api_url,
+        access_token=token,
+        refresh_token=token,  # Not used but required by schema
+        expires_at=expires_at.isoformat(),
+    )

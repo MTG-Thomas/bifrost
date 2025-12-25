@@ -213,7 +213,7 @@ async def e2e_ws_exec_workflow(message: str = "test"):
     return {"status": "success", "message": message}
 '''
         e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_ws_exec_workflow.py",
@@ -238,7 +238,7 @@ async def e2e_ws_exec_workflow(message: str = "test"):
         # Cleanup
         try:
             e2e_client.delete(
-                "/api/editor/files",
+                "/api/files/editor",
                 headers=platform_admin.headers,
                 params={"path": "e2e_ws_exec_workflow.py"},
             )

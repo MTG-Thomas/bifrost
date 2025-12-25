@@ -113,6 +113,12 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     from src.sdk.context import Caller, Organization
     from src.services.execution.engine import ExecutionRequest, execute
     from src.models.enums import ExecutionStatus
+    from src.core.security import authenticate_engine
+
+    # Ensure engine has valid credentials for SDK calls
+    # This creates/refreshes a superuser token in ~/.bifrost/credentials.json
+    # so that SDK calls (files.read, etc.) work identically to CLI mode
+    authenticate_engine()
 
     start_time = datetime.utcnow()
 

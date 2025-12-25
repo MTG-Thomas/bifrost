@@ -86,7 +86,7 @@ def endpoint_workflow_file(e2e_client, platform_admin):
     """
     # Create workflow file
     response = e2e_client.put(
-        "/api/editor/files/content",
+        "/api/files/editor/content",
         headers=platform_admin.headers,
         json={
             "path": "e2e_endpoint_workflow.py",
@@ -105,7 +105,7 @@ def endpoint_workflow_file(e2e_client, platform_admin):
 
     # Cleanup: delete the workflow file
     e2e_client.delete(
-        "/api/editor/files?path=e2e_endpoint_workflow.py",
+        "/api/files/editor?path=e2e_endpoint_workflow.py",
         headers=platform_admin.headers,
     )
 
@@ -117,7 +117,7 @@ def post_only_workflow_file(e2e_client, platform_admin):
     """
     # Create workflow file
     response = e2e_client.put(
-        "/api/editor/files/content",
+        "/api/files/editor/content",
         headers=platform_admin.headers,
         json={
             "path": "e2e_endpoint_post_only.py",
@@ -135,7 +135,7 @@ def post_only_workflow_file(e2e_client, platform_admin):
 
     # Cleanup: delete the workflow file
     e2e_client.delete(
-        "/api/editor/files?path=e2e_endpoint_post_only.py",
+        "/api/files/editor?path=e2e_endpoint_post_only.py",
         headers=platform_admin.headers,
     )
 

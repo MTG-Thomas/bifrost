@@ -12,14 +12,10 @@ to avoid dependencies on src.* modules that only exist in the Docker environment
 """
 
 import asyncio
-import json
 import os
 import sys
-import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any
 
 import httpx
 
@@ -241,6 +237,9 @@ def main(args: list[str] | None = None) -> int:
     if command == "logout":
         return handle_logout(args[1:])
 
+    if command == "run":
+        return handle_run(args[1:])
+
     # Unknown command
     print(f"Unknown command: {command}", file=sys.stderr)
     print_help()
@@ -256,11 +255,13 @@ Usage:
   bifrost <command> [options]
 
 Commands:
+  run         Run a workflow file locally (standalone mode)
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
 
 Examples:
+  bifrost run my_workflow.py --params '{"name": "World"}'
   bifrost login
   bifrost login --url https://app.gobifrost.com
   bifrost logout
@@ -348,6 +349,139 @@ Examples:
     # Run logout
     logout_flow()
     return 0
+
+
+def handle_run(args: list[str]) -> int:
+    """
+    Handle 'bifrost run <file>' command.
+
+    Runs a workflow file locally in standalone mode.
+
+    Args:
+        args: Command arguments [file, --workflow, --params, etc.]
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    import importlib.util
+    import json
+
+    if not args:
+        print("Error: No workflow file specified", file=sys.stderr)
+        print("Usage: bifrost run <file> [--workflow NAME] [--params JSON]", file=sys.stderr)
+        return 1
+
+    workflow_file = args[0]
+    workflow_name = None
+    params: dict = {}
+
+    # Parse --workflow and --params arguments
+    i = 1
+    while i < len(args):
+        if args[i] in ("--workflow", "-w"):
+            if i + 1 >= len(args):
+                print("Error: --workflow requires a value", file=sys.stderr)
+                return 1
+            workflow_name = args[i + 1]
+            i += 2
+        elif args[i] in ("--params", "-p"):
+            if i + 1 >= len(args):
+                print("Error: --params requires a JSON value", file=sys.stderr)
+                return 1
+            try:
+                params = json.loads(args[i + 1])
+            except json.JSONDecodeError as e:
+                print(f"Error: Invalid JSON params: {e}", file=sys.stderr)
+                return 1
+            i += 2
+        elif args[i] in ("--help", "-h"):
+            print_run_help()
+            return 0
+        else:
+            print(f"Unknown option: {args[i]}", file=sys.stderr)
+            return 1
+
+    # Check file exists
+    if not os.path.isfile(workflow_file):
+        print(f"Error: File not found: {workflow_file}", file=sys.stderr)
+        return 1
+
+    # Load the workflow file
+    try:
+        spec = importlib.util.spec_from_file_location("workflow_module", workflow_file)
+        if spec is None or spec.loader is None:
+            print(f"Error: Cannot load {workflow_file}", file=sys.stderr)
+            return 1
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["workflow_module"] = module
+        spec.loader.exec_module(module)
+    except Exception as e:
+        print(f"Error loading workflow file: {e}", file=sys.stderr)
+        return 1
+
+    # Find @workflow decorated functions
+    workflows: dict = {}
+    for name in dir(module):
+        obj = getattr(module, name)
+        if callable(obj) and hasattr(obj, "_workflow_metadata"):
+            workflows[name] = obj
+
+    if not workflows:
+        print("Error: No @workflow decorated functions found", file=sys.stderr)
+        return 1
+
+    # Select workflow
+    if workflow_name:
+        if workflow_name not in workflows:
+            print(
+                f"Error: Workflow '{workflow_name}' not found. Available: {list(workflows.keys())}",
+                file=sys.stderr,
+            )
+            return 1
+        workflow_fn = workflows[workflow_name]
+    elif len(workflows) == 1:
+        workflow_fn = list(workflows.values())[0]
+        workflow_name = list(workflows.keys())[0]
+    else:
+        print(
+            f"Multiple workflows found. Use --workflow to specify: {list(workflows.keys())}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Run the workflow
+    print(f"Running in standalone mode: {workflow_name}")
+    try:
+        import json as json_module
+
+        result = asyncio.run(workflow_fn(**params))
+        print(json_module.dumps(result, indent=2, default=str))
+        return 0
+    except Exception as e:
+        print(f"Error executing workflow: {e}", file=sys.stderr)
+        return 1
+
+
+def print_run_help() -> None:
+    """Print run command help."""
+    print("""
+Usage: bifrost run <file> [options]
+
+Run a workflow file locally in standalone mode.
+
+Arguments:
+  file                  Python file containing @workflow decorated functions
+
+Options:
+  --workflow, -w NAME   Workflow name (required if file has multiple workflows)
+  --params, -p JSON     JSON object with workflow parameters
+  --help, -h            Show this help message
+
+Examples:
+  bifrost run my_workflow.py
+  bifrost run my_workflow.py --workflow greet
+  bifrost run my_workflow.py --workflow greet --params '{"name": "World"}'
+""".strip())
 
 
 if __name__ == "__main__":

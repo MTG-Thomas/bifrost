@@ -278,7 +278,7 @@ class TestFormFileSync:
 
         # List files in forms directory
         response = e2e_client.get(
-            "/api/editor/files",
+            "/api/files/editor",
             headers=platform_admin.headers,
             params={"path": "forms"},
         )
@@ -319,7 +319,7 @@ class TestFormFileSync:
         if "file_path" in form and form["file_path"]:
             file_path = form["file_path"]
             response = e2e_client.delete(
-                f"/api/editor/files?path={file_path}",
+                f"/api/files/editor?path={file_path}",
                 headers=platform_admin.headers,
             )
             # Should either succeed (204) or not find the file (404)

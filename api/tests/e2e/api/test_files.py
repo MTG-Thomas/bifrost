@@ -15,7 +15,7 @@ class TestFileOperations:
     def test_list_workspace_files(self, e2e_client, platform_admin):
         """Platform admin can list workspace files."""
         response = e2e_client.get(
-            "/api/editor/files?path=.",
+            "/api/files/editor?path=.",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List files failed: {response.text}"
@@ -25,7 +25,7 @@ class TestFileOperations:
     def test_write_file(self, e2e_client, platform_admin):
         """Platform admin can write a file."""
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_test_file.txt",
@@ -37,7 +37,7 @@ class TestFileOperations:
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_test_file.txt",
+            "/api/files/editor?path=e2e_test_file.txt",
             headers=platform_admin.headers,
         )
 
@@ -45,7 +45,7 @@ class TestFileOperations:
         """Platform admin can read file content."""
         # Create a file first
         e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_read_test.txt",
@@ -56,7 +56,7 @@ class TestFileOperations:
 
         # Read it back
         response = e2e_client.get(
-            "/api/editor/files/content?path=e2e_read_test.txt",
+            "/api/files/editor/content?path=e2e_read_test.txt",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"Read file failed: {response.text}"
@@ -65,14 +65,14 @@ class TestFileOperations:
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_read_test.txt",
+            "/api/files/editor?path=e2e_read_test.txt",
             headers=platform_admin.headers,
         )
 
     def test_create_folder(self, e2e_client, platform_admin):
         """Platform admin can create a folder."""
         response = e2e_client.post(
-            "/api/editor/files/folder?path=e2e_test_folder",
+            "/api/files/editor/folder?path=e2e_test_folder",
             headers=platform_admin.headers,
         )
         # 201 for new, or 409 if exists from previous run
@@ -80,7 +80,7 @@ class TestFileOperations:
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_test_folder",
+            "/api/files/editor?path=e2e_test_folder",
             headers=platform_admin.headers,
         )
 
@@ -88,7 +88,7 @@ class TestFileOperations:
         """Platform admin can delete a file."""
         # Create a file first
         e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_delete_test.txt",
@@ -99,7 +99,7 @@ class TestFileOperations:
 
         # Delete it
         response = e2e_client.delete(
-            "/api/editor/files?path=e2e_delete_test.txt",
+            "/api/files/editor?path=e2e_delete_test.txt",
             headers=platform_admin.headers,
         )
         assert response.status_code == 204, f"Delete file failed: {response.text}"
@@ -108,7 +108,7 @@ class TestFileOperations:
         """Platform admin can overwrite existing file content."""
         # Create initial file
         create_response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_update_test.txt",
@@ -120,7 +120,7 @@ class TestFileOperations:
 
         # Update file with new content
         update_response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_update_test.txt",
@@ -132,7 +132,7 @@ class TestFileOperations:
 
         # Verify content was updated
         read_response = e2e_client.get(
-            "/api/editor/files/content?path=e2e_update_test.txt",
+            "/api/files/editor/content?path=e2e_update_test.txt",
             headers=platform_admin.headers,
         )
         assert read_response.status_code == 200
@@ -141,7 +141,7 @@ class TestFileOperations:
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_update_test.txt",
+            "/api/files/editor?path=e2e_update_test.txt",
             headers=platform_admin.headers,
         )
 
@@ -149,7 +149,7 @@ class TestFileOperations:
         """Platform admin can write files in subdirectories."""
         # Create folder first
         folder_response = e2e_client.post(
-            "/api/editor/files/folder?path=e2e_test_subfolder",
+            "/api/files/editor/folder?path=e2e_test_subfolder",
             headers=platform_admin.headers,
         )
         assert folder_response.status_code in [201, 409], \
@@ -157,7 +157,7 @@ class TestFileOperations:
 
         # Write file in subfolder
         file_response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_test_subfolder/nested_file.txt",
@@ -170,7 +170,7 @@ class TestFileOperations:
 
         # Read it back to verify
         read_response = e2e_client.get(
-            "/api/editor/files/content?path=e2e_test_subfolder/nested_file.txt",
+            "/api/files/editor/content?path=e2e_test_subfolder/nested_file.txt",
             headers=platform_admin.headers,
         )
         assert read_response.status_code == 200
@@ -179,7 +179,7 @@ class TestFileOperations:
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_test_subfolder",
+            "/api/files/editor?path=e2e_test_subfolder",
             headers=platform_admin.headers,
         )
 
@@ -187,13 +187,13 @@ class TestFileOperations:
         """Platform admin can list folder contents including files and subfolders."""
         # Create test folder
         e2e_client.post(
-            "/api/editor/files/folder?path=e2e_folder_with_contents",
+            "/api/files/editor/folder?path=e2e_folder_with_contents",
             headers=platform_admin.headers,
         )
 
         # Create multiple files in the folder
         e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_folder_with_contents/file1.txt",
@@ -203,7 +203,7 @@ class TestFileOperations:
         )
 
         e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_folder_with_contents/file2.py",
@@ -214,7 +214,7 @@ class TestFileOperations:
 
         # List folder contents
         response = e2e_client.get(
-            "/api/editor/files?path=e2e_folder_with_contents",
+            "/api/files/editor?path=e2e_folder_with_contents",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List folder failed: {response.text}"
@@ -229,7 +229,7 @@ class TestFileOperations:
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_folder_with_contents",
+            "/api/files/editor?path=e2e_folder_with_contents",
             headers=platform_admin.headers,
         )
 
@@ -237,7 +237,7 @@ class TestFileOperations:
         """Platform admin can rename a file."""
         # Create file
         e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_rename_original.txt",
@@ -248,7 +248,7 @@ class TestFileOperations:
 
         # Rename file
         rename_response = e2e_client.post(
-            "/api/editor/files/rename",
+            "/api/files/editor/rename",
             headers=platform_admin.headers,
             params={
                 "old_path": "e2e_rename_original.txt",
@@ -260,7 +260,7 @@ class TestFileOperations:
 
         # Verify old path doesn't exist
         old_response = e2e_client.get(
-            "/api/editor/files/content?path=e2e_rename_original.txt",
+            "/api/files/editor/content?path=e2e_rename_original.txt",
             headers=platform_admin.headers,
         )
         assert old_response.status_code == 404, \
@@ -268,7 +268,7 @@ class TestFileOperations:
 
         # Verify new path exists with original content
         new_response = e2e_client.get(
-            "/api/editor/files/content?path=e2e_rename_new.txt",
+            "/api/files/editor/content?path=e2e_rename_new.txt",
             headers=platform_admin.headers,
         )
         assert new_response.status_code == 200
@@ -278,7 +278,7 @@ class TestFileOperations:
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_rename_new.txt",
+            "/api/files/editor?path=e2e_rename_new.txt",
             headers=platform_admin.headers,
         )
 
@@ -290,7 +290,7 @@ class TestFileAccess:
     def test_org_user_cannot_access_files(self, e2e_client, org1_user):
         """Org user cannot access file operations (403)."""
         response = e2e_client.get(
-            "/api/editor/files?path=.",
+            "/api/files/editor?path=.",
             headers=org1_user.headers,
         )
         assert response.status_code == 403, \
@@ -316,7 +316,7 @@ async def e2e_discovery_test_workflow(value: str):
     return {"value": value, "user": context.email}
 '''
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_discovery_test.py",
@@ -330,7 +330,7 @@ async def e2e_discovery_test_workflow(value: str):
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_discovery_test.py",
+            "/api/files/editor?path=e2e_discovery_test.py",
             headers=platform_admin.headers,
         )
 

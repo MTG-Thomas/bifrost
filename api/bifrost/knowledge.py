@@ -1,13 +1,10 @@
 """
-Knowledge Store SDK for Bifrost.
+Knowledge Store SDK for Bifrost - API-only implementation.
 
 Provides Python API for semantic search and RAG (Retrieval Augmented Generation).
 Uses pgvector for vector similarity search with org-scoped namespaces.
 
-Works in two modes:
-1. Platform context (inside workflows): Direct database access
-2. External context (via dev API key): API calls to SDK endpoints
-
+All operations go through HTTP API endpoints.
 All methods are async and must be awaited.
 
 Usage:
@@ -36,92 +33,10 @@ Usage:
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
-from uuid import UUID
 
-from ._context import _execution_context
-
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class KnowledgeDocument:
-    """
-    Document from knowledge store.
-
-    Attributes:
-        id: Document UUID
-        namespace: Namespace the document belongs to
-        content: Text content
-        metadata: Associated metadata dict
-        score: Similarity score (0-1) when returned from search
-        organization_id: Organization scope (None for global)
-        key: User-provided key (if any)
-        created_at: Creation timestamp
-    """
-
-    id: str
-    namespace: str
-    content: str
-    metadata: dict[str, Any]
-    score: float | None = None
-    organization_id: str | None = None
-    key: str | None = None
-    created_at: datetime | None = None
-
-
-@dataclass
-class NamespaceInfo:
-    """
-    Information about a namespace.
-
-    Attributes:
-        namespace: Namespace name
-        scopes: Dict with counts - {"global": N, "org": N, "total": N}
-    """
-
-    namespace: str
-    scopes: dict[str, int]
-
-
-def _is_platform_context() -> bool:
-    """Check if running inside platform execution context."""
-    return _execution_context.get() is not None
-
-
-def _get_client():
-    """Get the BifrostClient for API calls."""
-    from .client import get_client
-    return get_client()
-
-
-def _get_org_id(org_id: str | None, scope: str | None) -> UUID | None:
-    """
-    Resolve organization ID from parameters or context.
-
-    Args:
-        org_id: Explicit org ID
-        scope: Scope string ("global" for None)
-
-    Returns:
-        UUID or None for global scope
-    """
-    if scope == "global":
-        return None
-    if org_id:
-        return UUID(org_id) if isinstance(org_id, str) else org_id
-
-    if _is_platform_context():
-        from ._internal import get_context
-        context = get_context()
-        target_org_id = getattr(context, 'org_id', None) or getattr(context, 'scope', None)
-        if target_org_id:
-            return UUID(target_org_id) if isinstance(target_org_id, str) else target_org_id
-
-    return None
+from .client import get_client
+from .models import KnowledgeDocument, NamespaceInfo
 
 
 class knowledge:
@@ -130,6 +45,8 @@ class knowledge:
 
     Provides semantic search and storage for RAG.
     Documents are scoped to organizations with global fallback.
+
+    All operations are performed via HTTP API endpoints.
     """
 
     @staticmethod
@@ -167,56 +84,20 @@ class knowledge:
             ...     metadata={"source": "handbook"}
             ... )
         """
-        if _is_platform_context():
-            # Direct database access
-            from ._internal import get_context
-            from src.repositories.knowledge import KnowledgeRepository
-            from src.services.embeddings import get_embedding_client
-
-            context = get_context()
-            target_org_id = _get_org_id(org_id, scope)
-            user_id = getattr(context, 'user_id', None)
-            if user_id and isinstance(user_id, str):
-                user_id = UUID(user_id)
-
-            # Generate embedding
-            embedding_client = await get_embedding_client(context.db)
-            embedding = await embedding_client.embed_single(content)
-
-            # Store in database
-            repo = KnowledgeRepository(context.db)
-            doc_id = await repo.store(
-                content=content,
-                embedding=embedding,
-                namespace=namespace,
-                key=key,
-                metadata=metadata,
-                organization_id=target_org_id,
-                created_by=user_id,
-            )
-
-            logger.debug(
-                f"knowledge.store: namespace={namespace}, key={key}, "
-                f"org_id={target_org_id}, doc_id={doc_id}"
-            )
-
-            return doc_id
-        else:
-            # API call (external mode)
-            client = _get_client()
-            response = await client.post(
-                "/api/cli/knowledge/store",
-                json={
-                    "content": content,
-                    "namespace": namespace,
-                    "key": key,
-                    "metadata": metadata,
-                    "org_id": org_id,
-                    "scope": scope,
-                }
-            )
-            response.raise_for_status()
-            return response.json()["id"]
+        client = get_client()
+        response = await client.post(
+            "/api/cli/knowledge/store",
+            json={
+                "content": content,
+                "namespace": namespace,
+                "key": key,
+                "metadata": metadata,
+                "org_id": org_id,
+                "scope": scope,
+            }
+        )
+        response.raise_for_status()
+        return response.json()["id"]
 
     @staticmethod
     async def store_many(
@@ -249,53 +130,18 @@ class knowledge:
             ...     {"content": "Doc 2", "key": "doc-2", "metadata": {"type": "faq"}},
             ... ], namespace="faq")
         """
-        if _is_platform_context():
-            from ._internal import get_context
-            from src.repositories.knowledge import KnowledgeRepository
-            from src.services.embeddings import get_embedding_client
-
-            context = get_context()
-            target_org_id = _get_org_id(org_id, scope)
-            user_id = getattr(context, 'user_id', None)
-            if user_id and isinstance(user_id, str):
-                user_id = UUID(user_id)
-
-            # Extract contents for batch embedding
-            contents = [doc["content"] for doc in documents]
-
-            # Batch generate embeddings
-            embedding_client = await get_embedding_client(context.db)
-            embeddings = await embedding_client.embed(contents)
-
-            # Store each document
-            repo = KnowledgeRepository(context.db)
-            doc_ids = []
-            for doc, embedding in zip(documents, embeddings):
-                doc_id = await repo.store(
-                    content=doc["content"],
-                    embedding=embedding,
-                    namespace=namespace,
-                    key=doc.get("key"),
-                    metadata=doc.get("metadata"),
-                    organization_id=target_org_id,
-                    created_by=user_id,
-                )
-                doc_ids.append(doc_id)
-
-            return doc_ids
-        else:
-            client = _get_client()
-            response = await client.post(
-                "/api/cli/knowledge/store-many",
-                json={
-                    "documents": documents,
-                    "namespace": namespace,
-                    "org_id": org_id,
-                    "scope": scope,
-                }
-            )
-            response.raise_for_status()
-            return response.json()["ids"]
+        client = get_client()
+        response = await client.post(
+            "/api/cli/knowledge/store-many",
+            json={
+                "documents": documents,
+                "namespace": namespace,
+                "org_id": org_id,
+                "scope": scope,
+            }
+        )
+        response.raise_for_status()
+        return response.json()["ids"]
 
     @staticmethod
     async def search(
@@ -335,72 +181,24 @@ class knowledge:
             >>> for doc in results:
             ...     print(f"{doc.score:.2f}: {doc.content[:100]}")
         """
-        if _is_platform_context():
-            from ._internal import get_context
-            from src.repositories.knowledge import KnowledgeRepository
-            from src.services.embeddings import get_embedding_client
-
-            context = get_context()
-            target_org_id = _get_org_id(org_id, None)
-
-            # Generate query embedding
-            embedding_client = await get_embedding_client(context.db)
-            query_embedding = await embedding_client.embed_single(query)
-
-            # Search
-            repo = KnowledgeRepository(context.db)
-            results = await repo.search(
-                query_embedding=query_embedding,
-                namespace=namespace,
-                organization_id=target_org_id,
-                limit=limit,
-                min_score=min_score,
-                metadata_filter=metadata_filter,
-                fallback=fallback,
-            )
-
-            # Convert to SDK dataclass
-            return [
-                KnowledgeDocument(
-                    id=doc.id,
-                    namespace=doc.namespace,
-                    content=doc.content,
-                    metadata=doc.metadata,
-                    score=doc.score,
-                    organization_id=doc.organization_id,
-                    key=doc.key,
-                    created_at=doc.created_at,
-                )
-                for doc in results
-            ]
-        else:
-            client = _get_client()
-            response = await client.post(
-                "/api/cli/knowledge/search",
-                json={
-                    "query": query,
-                    "namespace": namespace if isinstance(namespace, list) else [namespace],
-                    "limit": limit,
-                    "min_score": min_score,
-                    "metadata_filter": metadata_filter,
-                    "org_id": org_id,
-                    "fallback": fallback,
-                }
-            )
-            response.raise_for_status()
-            return [
-                KnowledgeDocument(
-                    id=doc["id"],
-                    namespace=doc["namespace"],
-                    content=doc["content"],
-                    metadata=doc.get("metadata", {}),
-                    score=doc.get("score"),
-                    organization_id=doc.get("organization_id"),
-                    key=doc.get("key"),
-                    created_at=doc.get("created_at"),
-                )
-                for doc in response.json()
-            ]
+        client = get_client()
+        response = await client.post(
+            "/api/cli/knowledge/search",
+            json={
+                "query": query,
+                "namespace": namespace if isinstance(namespace, list) else [namespace],
+                "limit": limit,
+                "min_score": min_score,
+                "metadata_filter": metadata_filter,
+                "org_id": org_id,
+                "fallback": fallback,
+            }
+        )
+        response.raise_for_status()
+        return [
+            KnowledgeDocument.model_validate(doc)
+            for doc in response.json()
+        ]
 
     @staticmethod
     async def delete(
@@ -425,32 +223,18 @@ class knowledge:
         Example:
             >>> deleted = await knowledge.delete("ticket-123", namespace="tickets")
         """
-        if _is_platform_context():
-            from ._internal import get_context
-            from src.repositories.knowledge import KnowledgeRepository
-
-            context = get_context()
-            target_org_id = _get_org_id(org_id, scope)
-
-            repo = KnowledgeRepository(context.db)
-            return await repo.delete_by_key(
-                key=key,
-                namespace=namespace,
-                organization_id=target_org_id,
-            )
-        else:
-            client = _get_client()
-            response = await client.post(
-                "/api/cli/knowledge/delete",
-                json={
-                    "key": key,
-                    "namespace": namespace,
-                    "org_id": org_id,
-                    "scope": scope,
-                }
-            )
-            response.raise_for_status()
-            return response.json()["deleted"]
+        client = get_client()
+        response = await client.post(
+            "/api/cli/knowledge/delete",
+            json={
+                "key": key,
+                "namespace": namespace,
+                "org_id": org_id,
+                "scope": scope,
+            }
+        )
+        response.raise_for_status()
+        return response.json()["deleted"]
 
     @staticmethod
     async def delete_namespace(
@@ -474,26 +258,13 @@ class knowledge:
             >>> count = await knowledge.delete_namespace("old-data")
             >>> print(f"Deleted {count} documents")
         """
-        if _is_platform_context():
-            from ._internal import get_context
-            from src.repositories.knowledge import KnowledgeRepository
-
-            context = get_context()
-            target_org_id = _get_org_id(org_id, scope)
-
-            repo = KnowledgeRepository(context.db)
-            return await repo.delete_namespace(
-                namespace=namespace,
-                organization_id=target_org_id,
-            )
-        else:
-            client = _get_client()
-            response = await client.delete(
-                f"/api/cli/knowledge/namespace/{namespace}",
-                params={"org_id": org_id, "scope": scope},
-            )
-            response.raise_for_status()
-            return response.json()["deleted_count"]
+        client = get_client()
+        response = await client.delete(
+            f"/api/cli/knowledge/namespace/{namespace}",
+            params={"org_id": org_id, "scope": scope},
+        )
+        response.raise_for_status()
+        return response.json()["deleted_count"]
 
     @staticmethod
     async def list_namespaces(
@@ -515,40 +286,16 @@ class knowledge:
             >>> for ns in namespaces:
             ...     print(f"{ns.namespace}: {ns.scopes['total']} docs")
         """
-        if _is_platform_context():
-            from ._internal import get_context
-            from src.repositories.knowledge import KnowledgeRepository
-
-            context = get_context()
-            target_org_id = _get_org_id(org_id, None)
-
-            repo = KnowledgeRepository(context.db)
-            results = await repo.list_namespaces(
-                organization_id=target_org_id,
-                include_global=include_global,
-            )
-
-            return [
-                NamespaceInfo(
-                    namespace=ns.namespace,
-                    scopes=ns.scopes,
-                )
-                for ns in results
-            ]
-        else:
-            client = _get_client()
-            response = await client.get(
-                "/api/cli/knowledge/namespaces",
-                params={"org_id": org_id, "include_global": include_global},
-            )
-            response.raise_for_status()
-            return [
-                NamespaceInfo(
-                    namespace=ns["namespace"],
-                    scopes=ns["scopes"],
-                )
-                for ns in response.json()
-            ]
+        client = get_client()
+        response = await client.get(
+            "/api/cli/knowledge/namespaces",
+            params={"org_id": org_id, "include_global": include_global},
+        )
+        response.raise_for_status()
+        return [
+            NamespaceInfo.model_validate(ns)
+            for ns in response.json()
+        ]
 
     @staticmethod
     async def get(
@@ -575,53 +322,17 @@ class knowledge:
             >>> if doc:
             ...     print(doc.content)
         """
-        if _is_platform_context():
-            from ._internal import get_context
-            from src.repositories.knowledge import KnowledgeRepository
-
-            context = get_context()
-            target_org_id = _get_org_id(org_id, scope)
-
-            repo = KnowledgeRepository(context.db)
-            result = await repo.get_by_key(
-                key=key,
-                namespace=namespace,
-                organization_id=target_org_id,
-            )
-
-            if not result:
-                return None
-
-            return KnowledgeDocument(
-                id=result.id,
-                namespace=result.namespace,
-                content=result.content,
-                metadata=result.metadata,
-                organization_id=result.organization_id,
-                key=result.key,
-                created_at=result.created_at,
-            )
-        else:
-            client = _get_client()
-            response = await client.get(
-                f"/api/cli/knowledge/get",
-                params={
-                    "key": key,
-                    "namespace": namespace,
-                    "org_id": org_id,
-                    "scope": scope,
-                },
-            )
-            if response.status_code == 404:
-                return None
-            response.raise_for_status()
-            doc = response.json()
-            return KnowledgeDocument(
-                id=doc["id"],
-                namespace=doc["namespace"],
-                content=doc["content"],
-                metadata=doc.get("metadata", {}),
-                organization_id=doc.get("organization_id"),
-                key=doc.get("key"),
-                created_at=doc.get("created_at"),
-            )
+        client = get_client()
+        response = await client.get(
+            "/api/cli/knowledge/get",
+            params={
+                "key": key,
+                "namespace": namespace,
+                "org_id": org_id,
+                "scope": scope,
+            },
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return KnowledgeDocument.model_validate(response.json())

@@ -354,7 +354,14 @@ async def _upsert_workflow_roi(
     Upsert a single workflow ROI row.
 
     Uses PostgreSQL INSERT ... ON CONFLICT to atomically update.
+
+    There are two unique constraints:
+    - uq_workflow_roi_daily: (date, workflow_id, organization_id) for org-scoped rows
+    - uq_workflow_roi_daily_date_workflow_global: partial index on (date, workflow_id)
+      WHERE organization_id IS NULL for global rows
     """
+    from sqlalchemy import text
+
     # Build base values for insert
     insert_values = {
         "date": today,
@@ -369,17 +376,28 @@ async def _upsert_workflow_roi(
     # PostgreSQL upsert
     stmt = insert(WorkflowROIDaily).values(**insert_values)
 
-    # On conflict, increment counters
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_workflow_roi_daily",
-        set_={
-            "execution_count": WorkflowROIDaily.execution_count + 1,
-            "success_count": WorkflowROIDaily.success_count
-            + (1 if is_success else 0),
-            "total_time_saved": WorkflowROIDaily.total_time_saved + time_saved,
-            "total_value": WorkflowROIDaily.total_value + value,
-            "updated_at": datetime.utcnow(),
-        },
-    )
+    # Update values on conflict
+    update_set = {
+        "execution_count": WorkflowROIDaily.execution_count + 1,
+        "success_count": WorkflowROIDaily.success_count + (1 if is_success else 0),
+        "total_time_saved": WorkflowROIDaily.total_time_saved + time_saved,
+        "total_value": WorkflowROIDaily.total_value + value,
+        "updated_at": datetime.utcnow(),
+    }
+
+    # Use different conflict target based on whether org_id is NULL
+    if org_id is None:
+        # For global metrics (org_id IS NULL), use the partial unique index
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["date", "workflow_id"],
+            index_where=text("organization_id IS NULL"),
+            set_=update_set,
+        )
+    else:
+        # For org-scoped metrics, use the 3-column constraint
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_workflow_roi_daily",
+            set_=update_set,
+        )
 
     await db.execute(stmt)

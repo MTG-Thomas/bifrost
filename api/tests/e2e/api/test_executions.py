@@ -31,7 +31,7 @@ async def e2e_exec_sync_workflow(message: str, count: int = 1):
     }
 '''
     e2e_client.put(
-        "/api/editor/files/content",
+        "/api/files/editor/content",
         headers=platform_admin.headers,
         json={
             "path": "e2e_exec_sync_workflow.py",
@@ -51,7 +51,7 @@ async def e2e_exec_sync_workflow(message: str, count: int = 1):
 
     # Cleanup
     e2e_client.delete(
-        "/api/editor/files?path=e2e_exec_sync_workflow.py",
+        "/api/files/editor?path=e2e_exec_sync_workflow.py",
         headers=platform_admin.headers,
     )
 
@@ -73,7 +73,7 @@ async def e2e_exec_async_workflow(delay_seconds: int = 1):
     return {"status": "completed", "delayed": delay_seconds}
 '''
     e2e_client.put(
-        "/api/editor/files/content",
+        "/api/files/editor/content",
         headers=platform_admin.headers,
         json={
             "path": "e2e_exec_async_workflow.py",
@@ -93,7 +93,7 @@ async def e2e_exec_async_workflow(delay_seconds: int = 1):
 
     # Cleanup
     e2e_client.delete(
-        "/api/editor/files?path=e2e_exec_async_workflow.py",
+        "/api/files/editor?path=e2e_exec_async_workflow.py",
         headers=platform_admin.headers,
     )
 
@@ -266,7 +266,7 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
     return {"status": "completed", "slept_for": sleep_seconds}
 '''
         e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_cancellation_workflow.py",
@@ -289,7 +289,7 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_cancellation_workflow.py",
+            "/api/files/editor?path=e2e_cancellation_workflow.py",
             headers=platform_admin.headers,
         )
 

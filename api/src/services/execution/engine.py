@@ -226,6 +226,10 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     captured_variables: dict[str, Any] = {}  # Initialize to empty dict
     cache_expires_at_str: str | None = None  # For data providers
 
+    # Note: SDK authentication is handled by authenticate_engine() in worker.py
+    # which creates credentials in ~/.bifrost/credentials.json before each execution.
+    # The SDK's get_client() finds these credentials automatically.
+
     try:
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             # Check Redis cache for data providers

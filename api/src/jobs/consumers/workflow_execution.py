@@ -344,7 +344,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
             status = ExecutionStatus(status_str) if status_str in [s.value for s in ExecutionStatus] else ExecutionStatus.FAILED
 
             # Extract ROI from result (if available)
-            roi_data = result.get("roi", {})
+            # Use `or {}` to handle both missing keys and explicit None values
+            roi_data = result.get("roi") or {}
             final_time_saved = roi_data.get("time_saved", roi_time_saved)
             final_value = roi_data.get("value", roi_value)
 

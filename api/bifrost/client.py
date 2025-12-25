@@ -2,8 +2,9 @@
 Bifrost SDK Client
 
 HTTP client for Bifrost API communication.
-Auto-initializes from credentials file stored by 'bifrost login'.
-Supports interactive device authorization flow for CLI login.
+Supports two modes:
+1. Platform mode: Client is injected by workflow engine
+2. CLI mode: Auto-initializes from credentials file stored by 'bifrost login'
 """
 
 import asyncio
@@ -11,7 +12,7 @@ import os
 import sys
 import webbrowser
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -21,6 +22,9 @@ from .credentials import (
     is_token_expired,
     save_credentials,
 )
+
+# Global client injection for platform mode
+_injected_client: Optional["BifrostClient"] = None
 
 # Auto-load .env file if present (for local development)
 try:
@@ -219,7 +223,9 @@ class BifrostClient:
     """
     HTTP client for Bifrost API.
 
-    Singleton pattern - use get_client() to get the instance.
+    Used in two modes:
+    - Platform mode: Injected by workflow engine via _set_client()
+    - CLI mode: Singleton pattern via get_instance()
     """
 
     _instance: "BifrostClient | None" = None
@@ -230,7 +236,7 @@ class BifrostClient:
 
         Args:
             api_url: Bifrost API URL
-            access_token: JWT access token from device auth login
+            access_token: JWT access token (device auth for CLI, execution token for platform)
         """
         self.api_url = api_url.rstrip("/")
         self._access_token = access_token
@@ -361,6 +367,10 @@ class BifrostClient:
         """Make PUT request."""
         return await self._http.put(path, **kwargs)
 
+    async def patch(self, path: str, **kwargs) -> httpx.Response:
+        """Make PATCH request."""
+        return await self._http.patch(path, **kwargs)
+
     async def delete(self, path: str, **kwargs) -> httpx.Response:
         """Make DELETE request."""
         return await self._http.delete(path, **kwargs)
@@ -390,8 +400,52 @@ class BifrostClient:
         self._sync_http.close()
 
 
+def _set_client(client: BifrostClient) -> None:
+    """
+    Inject client for platform mode.
+
+    Called by workflow engine before executing workflow code.
+    This allows SDK calls to use an authenticated client without
+    needing credentials file.
+
+    Args:
+        client: BifrostClient instance with execution token
+    """
+    global _injected_client
+    _injected_client = client
+
+
+def _clear_client() -> None:
+    """
+    Clear injected client after workflow execution.
+
+    Called by workflow engine in finally block to clean up
+    after workflow execution completes.
+    """
+    global _injected_client
+    _injected_client = None
+
+
 def get_client() -> BifrostClient:
-    """Get the singleton Bifrost client."""
+    """
+    Get the active Bifrost client.
+
+    Returns injected client if available (platform mode),
+    otherwise falls back to singleton from credentials file (CLI mode).
+
+    Returns:
+        BifrostClient instance
+
+    Raises:
+        RuntimeError: If no injected client and no credentials file
+    """
+    global _injected_client
+
+    # Platform mode: use injected client
+    if _injected_client is not None:
+        return _injected_client
+
+    # CLI mode: use singleton from credentials
     return BifrostClient.get_instance()
 
 

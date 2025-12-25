@@ -27,7 +27,7 @@ export const fileService = {
 	 */
 	async listFiles(path: string = ""): Promise<FileMetadata[]> {
 		const response = await authFetch(
-			`/api/editor/files?path=${encodeURIComponent(path)}`,
+			`/api/files/editor?path=${encodeURIComponent(path)}`,
 		);
 
 		if (!response.ok) {
@@ -42,7 +42,7 @@ export const fileService = {
 	 */
 	async readFile(path: string): Promise<FileContentResponse> {
 		const response = await authFetch(
-			`/api/editor/files/content?path=${encodeURIComponent(path)}`,
+			`/api/files/editor/content?path=${encodeURIComponent(path)}`,
 		);
 
 		if (!response.ok) {
@@ -72,8 +72,8 @@ export const fileService = {
 		};
 
 		const url = index
-			? "/api/editor/files/content?index=true"
-			: "/api/editor/files/content";
+			? "/api/files/editor/content?index=true"
+			: "/api/files/editor/content";
 
 		const response = await authFetch(url, {
 			method: "PUT",
@@ -99,7 +99,7 @@ export const fileService = {
 	 */
 	async createFolder(path: string): Promise<FileMetadata> {
 		const response = await authFetch(
-			`/api/editor/files/folder?path=${encodeURIComponent(path)}`,
+			`/api/files/editor/folder?path=${encodeURIComponent(path)}`,
 			{ method: "POST" },
 		);
 
@@ -115,7 +115,7 @@ export const fileService = {
 	 */
 	async deletePath(path: string): Promise<void> {
 		const response = await authFetch(
-			`/api/editor/files?path=${encodeURIComponent(path)}`,
+			`/api/files/editor?path=${encodeURIComponent(path)}`,
 			{ method: "DELETE" },
 		);
 
@@ -129,7 +129,7 @@ export const fileService = {
 	 */
 	async renamePath(oldPath: string, newPath: string): Promise<FileMetadata> {
 		const response = await authFetch(
-			`/api/editor/files/rename?old_path=${encodeURIComponent(oldPath)}&new_path=${encodeURIComponent(newPath)}`,
+			`/api/files/editor/rename?old_path=${encodeURIComponent(oldPath)}&new_path=${encodeURIComponent(newPath)}`,
 			{ method: "POST" },
 		);
 

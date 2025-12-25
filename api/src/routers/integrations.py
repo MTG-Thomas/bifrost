@@ -11,6 +11,7 @@ from datetime import datetime
 from urllib.parse import urlencode
 from uuid import UUID
 
+import aiofiles
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from typing import Any
@@ -1389,7 +1390,8 @@ async def generate_sdk(
         modules_dir.mkdir(parents=True, exist_ok=True)
 
         module_path = modules_dir / f"{result.module_name}.py"
-        module_path.write_text(result.code)
+        async with aiofiles.open(module_path, "w", encoding="utf-8") as f:
+            await f.write(result.code)
 
         logger.info(
             f"Generated SDK for integration {integration.name}: "

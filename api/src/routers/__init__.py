@@ -14,7 +14,7 @@ from src.routers.config import router as config_router
 from src.routers.data_providers import router as data_providers_router
 from src.routers.websocket import router as websocket_router
 from src.routers.branding import router as branding_router
-from src.routers.editor_files import router as editor_files_router
+from src.routers.files import router as files_router
 from src.routers.schedules import router as schedules_router
 from src.routers.workflow_keys import router as workflow_keys_router
 from src.routers.logs import router as logs_router
@@ -51,7 +51,7 @@ __all__ = [
     "data_providers_router",
     "websocket_router",
     "branding_router",
-    "editor_files_router",
+    "files_router",
     "schedules_router",
     "workflow_keys_router",
     "logs_router",

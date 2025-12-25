@@ -1,208 +1,63 @@
 """
 File management SDK for Bifrost.
 
-Provides async Python API for file operations in workspace/files/, temp directories,
-and S3-stored uploads.
-
-Works in two modes:
-1. Platform context (inside workflows): Direct filesystem/S3 access to /tmp/bifrost
-2. External context (CLI/local dev): Direct local filesystem access to CWD
+Provides async Python API for file operations with two storage modes:
+- local: Local filesystem (CWD, /tmp/bifrost-tmp, /tmp/bifrost-uploads)
+- cloud: S3 storage (default)
 
 Location Options:
-- "temp": Temporary files (cleared periodically, for execution-scoped data)
-- "workspace": Persistent workspace files (survives across executions)
-- "uploads": Files uploaded via form file fields (S3 in platform, local temp in CLI)
+- "workspace": Persistent workspace files (CWD in local mode, S3 bucket root in cloud mode)
+- "temp": Temporary files (_tmp/ prefix in cloud, /tmp/bifrost-tmp in local)
+- "uploads": Files uploaded via form file fields (uploads/ prefix in cloud, /tmp/bifrost-uploads in local)
 
 Usage:
     from bifrost import files
 
-    # Write to temp (execution-scoped)
-    await files.write("temp-data.txt", "content", location="temp")
+    # Write to workspace (cloud mode by default)
+    await files.write("exports/report.csv", data)
 
-    # Write to workspace (persistent)
-    await files.write("exports/report.csv", data, location="workspace")
+    # Write to workspace (local mode)
+    await files.write("exports/report.csv", data, mode="local")
 
-    # Read uploaded file (from form file field)
-    content = await files.read("uploads/form_id/uuid/filename.txt", location="uploads")
+    # Read from temp location
+    content = await files.read("temp-data.txt", location="temp")
+
+    # Read uploaded file
+    content = await files.read("form_id/uuid/filename.txt", location="uploads")
 """
 
-import os
-import shutil
-import tempfile
-from pathlib import Path
 from typing import Literal
 
-from ._context import _execution_context
+from .client import get_client
 
-
-def _is_platform_context() -> bool:
-    """Check if running inside platform execution context."""
-    return _execution_context.get() is not None
-
-
-def _get_local_base_dir(location: Literal["temp", "workspace", "uploads"]) -> Path:
-    """
-    Get base directory for local (CLI) file operations.
-
-    Args:
-        location: Storage location type
-
-    Returns:
-        Path to the base directory for that location
-    """
-    if location == "temp":
-        # Cross-platform temp: /tmp/bifrost-tmp on Unix, %TEMP%/bifrost-tmp on Windows
-        return Path(tempfile.gettempdir()) / "bifrost-tmp"
-    elif location == "uploads":
-        # Local uploads for testing: /tmp/bifrost-uploads
-        return Path(tempfile.gettempdir()) / "bifrost-uploads"
-    else:
-        # workspace = current working directory
-        return Path(os.getcwd())
-
-
-def _resolve_local_path(path: str, location: Literal["temp", "workspace", "uploads"]) -> Path:
-    """
-    Resolve and validate a file path for local (CLI) operations.
-
-    Args:
-        path: Relative path to resolve
-        location: Storage location type
-
-    Returns:
-        Resolved absolute path
-
-    Raises:
-        ValueError: If path escapes the base directory
-    """
-    base_dir = _get_local_base_dir(location)
-
-    # Convert to Path and resolve
-    p = Path(path)
-    if p.is_absolute():
-        raise ValueError(f"Absolute paths not allowed in CLI mode: {path}")
-
-    file_path = (base_dir / p).resolve()
-
-    # Security: validate path stays within base directory
-    try:
-        if not file_path.is_relative_to(base_dir.resolve()):
-            raise ValueError(f"Path must be within {location} directory: {path}")
-    except AttributeError:
-        # Python < 3.9 doesn't have is_relative_to
-        if not str(file_path).startswith(str(base_dir.resolve())):
-            raise ValueError(f"Path must be within {location} directory: {path}")
-
-    return file_path
-
-
-async def _read_from_s3(path: str) -> bytes:
-    """Read file from S3 bucket.
-
-    Reads directly from S3 without requiring a database session.
-    This is used for uploaded files (form file fields).
-    """
-    from aiobotocore.session import get_session
-    from src.config import get_settings
-
-    settings = get_settings()
-    if not settings.s3_configured:
-        raise RuntimeError("S3 storage not configured - cannot read uploaded files")
-
-    session = get_session()
-    async with session.create_client(
-        "s3",
-        endpoint_url=settings.s3_endpoint_url,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
-        region_name=settings.s3_region,
-    ) as s3:
-        try:
-            response = await s3.get_object(
-                Bucket=settings.s3_bucket,
-                Key=path,
-            )
-            return await response["Body"].read()
-        except Exception as e:
-            # Handle NoSuchKey or any S3 error
-            if "NoSuchKey" in str(type(e).__name__) or "NoSuchKey" in str(e):
-                raise FileNotFoundError(f"File not found in S3: {path}")
-            raise
+Location = Literal["workspace", "temp", "uploads"]
+Mode = Literal["local", "cloud"]
 
 
 class files:
     """
     File management operations (async).
 
-    Provides safe file access within workspace/files/, temp directories, and S3 uploads.
-    All paths are sandboxed to prevent access outside allowed directories.
+    Provides safe file access with two storage modes:
+    - local: Local filesystem (for CLI usage)
+    - cloud: S3 storage (for platform execution, default)
 
-    Works in both platform context (direct access) and external context (API calls).
+    All operations are performed via HTTP API endpoints.
     """
 
-    # Hardcoded file storage paths - workspace kept in sync with S3 by WorkspaceSyncService
-    WORKSPACE_FILES_DIR = Path("/tmp/bifrost/workspace")
-    TEMP_FILES_DIR = Path("/tmp/bifrost/tmp")
-
     @staticmethod
-    def _resolve_path(path: str, location: Literal["temp", "workspace"]) -> Path:
-        """
-        Resolve and validate a file path.
-
-        Args:
-            path: Relative or absolute path
-            location: Storage location ("temp" or "workspace")
-
-        Returns:
-            Path: Resolved absolute path
-
-        Raises:
-            ValueError: If path is outside allowed directories
-        """
-        # Determine base directory based on location
-        if location == "temp":
-            base_dir = files.TEMP_FILES_DIR
-        else:  # workspace
-            base_dir = files.WORKSPACE_FILES_DIR
-
-        # Convert to Path object
-        p = Path(path)
-
-        # If relative, resolve against base directory
-        if not p.is_absolute():
-            p = base_dir / p
-
-        # Resolve to absolute path (handles .. and symlinks)
-        try:
-            p = p.resolve()
-        except Exception as e:
-            raise ValueError(f"Invalid path: {path}") from e
-
-        # Check if path is within allowed directory
-        try:
-            if not p.is_relative_to(base_dir):
-                raise ValueError(
-                    f"Path must be within {location} files directory: {path}")
-        except AttributeError:
-            # Python < 3.9 doesn't have is_relative_to
-            # Fallback to string comparison
-            if not str(p).startswith(str(base_dir)):
-                raise ValueError(
-                    f"Path must be within {location} files directory: {path}")
-
-        return p
-
-    @staticmethod
-    async def read(path: str, location: Literal["temp", "workspace", "uploads"] = "workspace") -> str:
+    async def read(
+        path: str,
+        location: Location = "workspace",
+        mode: Mode = "cloud",
+    ) -> str:
         """
         Read a text file.
 
         Args:
-            path: File path (relative path)
-            location: Storage location:
-                - "workspace": Persistent workspace files (default) - CWD in CLI, /tmp/bifrost/workspace on platform
-                - "temp": Temporary execution-scoped files - /tmp/bifrost-tmp in CLI, /tmp/bifrost/tmp on platform
-                - "uploads": Files uploaded via form file fields - /tmp/bifrost-uploads in CLI, S3 on platform
+            path: File path relative to location root
+            location: Storage location (workspace, temp, or uploads)
+            mode: Storage mode (local or cloud, default: cloud)
 
         Returns:
             str: File contents
@@ -213,38 +68,30 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> content = await files.read("data/customers.csv", location="workspace")
-            >>> uploaded = await files.read("uploads/form_id/uuid/file.txt", location="uploads")
+            >>> content = await files.read("data/customers.csv")
+            >>> uploaded = await files.read("form_id/uuid/file.txt", location="uploads")
         """
-        if _is_platform_context():
-            if location == "uploads":
-                # Read from S3 for uploaded files
-                content_bytes = await _read_from_s3(path)
-                return content_bytes.decode('utf-8')
-            else:
-                # Direct filesystem access (platform mode)
-                file_path = files._resolve_path(path, location)
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-        else:
-            # CLI mode - direct local filesystem access
-            file_path = _resolve_local_path(path, location)
-            if not file_path.exists():
-                raise FileNotFoundError(f"File not found: {path}")
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
+        client = get_client()
+        response = await client.post(
+            "/api/files/read",
+            json={"path": path, "location": location, "mode": mode, "binary": False}
+        )
+        response.raise_for_status()
+        return response.json()["content"]
 
     @staticmethod
-    async def read_bytes(path: str, location: Literal["temp", "workspace", "uploads"] = "workspace") -> bytes:
+    async def read_bytes(
+        path: str,
+        location: Location = "workspace",
+        mode: Mode = "cloud",
+    ) -> bytes:
         """
         Read a binary file.
 
         Args:
-            path: File path (relative path)
-            location: Storage location:
-                - "workspace": Persistent workspace files (default) - CWD in CLI, /tmp/bifrost/workspace on platform
-                - "temp": Temporary execution-scoped files - /tmp/bifrost-tmp in CLI, /tmp/bifrost/tmp on platform
-                - "uploads": Files uploaded via form file fields - /tmp/bifrost-uploads in CLI, S3 on platform
+            path: File path relative to location root
+            location: Storage location (workspace, temp, or uploads)
+            mode: Storage mode (local or cloud, default: cloud)
 
         Returns:
             bytes: File contents
@@ -255,140 +102,126 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> data = await files.read_bytes("reports/report.pdf", location="workspace")
+            >>> data = await files.read_bytes("reports/report.pdf")
         """
-        if _is_platform_context():
-            if location == "uploads":
-                # Read from S3 for uploaded files
-                return await _read_from_s3(path)
-            else:
-                # Direct filesystem access (platform mode)
-                file_path = files._resolve_path(path, location)
-                with open(file_path, 'rb') as f:
-                    return f.read()
-        else:
-            # CLI mode - direct local filesystem access
-            file_path = _resolve_local_path(path, location)
-            if not file_path.exists():
-                raise FileNotFoundError(f"File not found: {path}")
-            with open(file_path, 'rb') as f:
-                return f.read()
+        client = get_client()
+        response = await client.post(
+            "/api/files/read",
+            json={"path": path, "location": location, "mode": mode, "binary": True}
+        )
+        response.raise_for_status()
+        import base64
+        return base64.b64decode(response.json()["content"])
 
     @staticmethod
-    async def write(path: str, content: str, location: Literal["temp", "workspace"] = "workspace") -> None:
+    async def write(
+        path: str,
+        content: str,
+        location: Location = "workspace",
+        mode: Mode = "cloud",
+    ) -> None:
         """
         Write text to a file.
 
         Args:
-            path: File path (relative path)
+            path: File path relative to location root
             content: Text content to write
-            location: Storage location:
-                - "workspace": Persistent workspace files (default) - CWD in CLI, /tmp/bifrost/workspace on platform
-                - "temp": Temporary execution-scoped files - /tmp/bifrost-tmp in CLI, /tmp/bifrost/tmp on platform
+            location: Storage location (workspace or temp)
+            mode: Storage mode (local or cloud, default: cloud)
 
         Raises:
             ValueError: If path is outside allowed directories
 
         Example:
             >>> from bifrost import files
-            >>> await files.write("output/report.txt", "Report data", location="workspace")
+            >>> await files.write("output/report.txt", "Report data")
         """
-        if _is_platform_context():
-            # Direct filesystem access (platform mode)
-            file_path = files._resolve_path(path, location)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-        else:
-            # CLI mode - direct local filesystem access
-            file_path = _resolve_local_path(path, location)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+        client = get_client()
+        response = await client.post(
+            "/api/files/write",
+            json={"path": path, "content": content, "location": location, "mode": mode, "binary": False}
+        )
+        response.raise_for_status()
 
     @staticmethod
-    async def write_bytes(path: str, content: bytes, location: Literal["temp", "workspace"] = "workspace") -> None:
+    async def write_bytes(
+        path: str,
+        content: bytes,
+        location: Location = "workspace",
+        mode: Mode = "cloud",
+    ) -> None:
         """
         Write binary data to a file.
 
         Args:
-            path: File path (relative path)
+            path: File path relative to location root
             content: Binary content to write
-            location: Storage location:
-                - "workspace": Persistent workspace files (default) - CWD in CLI, /tmp/bifrost/workspace on platform
-                - "temp": Temporary execution-scoped files - /tmp/bifrost-tmp in CLI, /tmp/bifrost/tmp on platform
+            location: Storage location (workspace or temp)
+            mode: Storage mode (local or cloud, default: cloud)
 
         Raises:
             ValueError: If path is outside allowed directories
 
         Example:
             >>> from bifrost import files
-            >>> await files.write_bytes("uploads/image.png", image_data, location="workspace")
+            >>> await files.write_bytes("uploads/image.png", image_data)
         """
-        if _is_platform_context():
-            # Direct filesystem access (platform mode)
-            file_path = files._resolve_path(path, location)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, 'wb') as f:
-                f.write(content)
-        else:
-            # CLI mode - direct local filesystem access
-            file_path = _resolve_local_path(path, location)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, 'wb') as f:
-                f.write(content)
+        client = get_client()
+        import base64
+        encoded_content = base64.b64encode(content).decode('utf-8')
+        response = await client.post(
+            "/api/files/write",
+            json={"path": path, "content": encoded_content, "location": location, "mode": mode, "binary": True}
+        )
+        response.raise_for_status()
 
     @staticmethod
-    async def list(directory: str = "", location: Literal["temp", "workspace"] = "workspace") -> list[str]:
+    async def list(
+        directory: str = "",
+        location: Location = "workspace",
+        mode: Mode = "cloud",
+    ) -> list[str]:
         """
         List files in a directory.
 
         Args:
-            directory: Directory path (relative, default: root)
-            location: Storage location:
-                - "workspace": Persistent workspace files (default) - CWD in CLI, /tmp/bifrost/workspace on platform
-                - "temp": Temporary execution-scoped files - /tmp/bifrost-tmp in CLI, /tmp/bifrost/tmp on platform
+            directory: Directory path relative to location root (default: root)
+            location: Storage location (workspace or temp)
+            mode: Storage mode (local or cloud, default: cloud)
 
         Returns:
             list[str]: List of file and directory names
 
         Raises:
-            FileNotFoundError: If directory doesn't exist
             ValueError: If path is outside allowed directories
 
         Example:
             >>> from bifrost import files
-            >>> items = await files.list("uploads", location="workspace")
+            >>> items = await files.list("uploads")
             >>> for item in items:
             ...     print(item)
         """
-        if _is_platform_context():
-            # Direct filesystem access (platform mode)
-            dir_path = files._resolve_path(directory, location)
-            if not dir_path.exists():
-                raise FileNotFoundError(f"Directory not found: {directory}")
-            if not dir_path.is_dir():
-                raise ValueError(f"Not a directory: {directory}")
-            return [item.name for item in dir_path.iterdir()]
-        else:
-            # CLI mode - direct local filesystem access
-            dir_path = _resolve_local_path(directory or ".", location)
-            if not dir_path.exists():
-                raise FileNotFoundError(f"Directory not found: {directory}")
-            if not dir_path.is_dir():
-                raise ValueError(f"Not a directory: {directory}")
-            return [item.name for item in dir_path.iterdir()]
+        client = get_client()
+        response = await client.post(
+            "/api/files/list",
+            json={"directory": directory, "location": location, "mode": mode}
+        )
+        response.raise_for_status()
+        return response.json()["files"]
 
     @staticmethod
-    async def delete(path: str, location: Literal["temp", "workspace"] = "workspace") -> None:
+    async def delete(
+        path: str,
+        location: Location = "workspace",
+        mode: Mode = "cloud",
+    ) -> None:
         """
-        Delete a file or directory.
+        Delete a file.
 
         Args:
-            path: File or directory path (relative path)
-            location: Storage location:
-                - "workspace": Persistent workspace files (default) - CWD in CLI, /tmp/bifrost/workspace on platform
-                - "temp": Temporary execution-scoped files - /tmp/bifrost-tmp in CLI, /tmp/bifrost/tmp on platform
+            path: File path relative to location root
+            location: Storage location (workspace or temp)
+            mode: Storage mode (local or cloud, default: cloud)
 
         Raises:
             FileNotFoundError: If file doesn't exist
@@ -398,35 +231,26 @@ class files:
             >>> from bifrost import files
             >>> await files.delete("temp/old_file.txt", location="temp")
         """
-        if _is_platform_context():
-            # Direct filesystem access (platform mode)
-            file_path = files._resolve_path(path, location)
-            if not file_path.exists():
-                raise FileNotFoundError(f"Path not found: {path}")
-            if file_path.is_dir():
-                shutil.rmtree(file_path)
-            else:
-                file_path.unlink()
-        else:
-            # CLI mode - direct local filesystem access
-            file_path = _resolve_local_path(path, location)
-            if not file_path.exists():
-                raise FileNotFoundError(f"Path not found: {path}")
-            if file_path.is_dir():
-                shutil.rmtree(file_path)
-            else:
-                file_path.unlink()
+        client = get_client()
+        response = await client.post(
+            "/api/files/delete",
+            json={"path": path, "location": location, "mode": mode}
+        )
+        response.raise_for_status()
 
     @staticmethod
-    async def exists(path: str, location: Literal["temp", "workspace"] = "workspace") -> bool:
+    async def exists(
+        path: str,
+        location: Location = "workspace",
+        mode: Mode = "cloud",
+    ) -> bool:
         """
-        Check if a file or directory exists.
+        Check if a file exists.
 
         Args:
-            path: File or directory path (relative path)
-            location: Storage location:
-                - "workspace": Persistent workspace files (default) - CWD in CLI, /tmp/bifrost/workspace on platform
-                - "temp": Temporary execution-scoped files - /tmp/bifrost-tmp in CLI, /tmp/bifrost/tmp on platform
+            path: File path relative to location root
+            location: Storage location (workspace or temp)
+            mode: Storage mode (local or cloud, default: cloud)
 
         Returns:
             bool: True if path exists
@@ -436,20 +260,13 @@ class files:
 
         Example:
             >>> from bifrost import files
-            >>> if await files.exists("data/customers.csv", location="workspace"):
-            ...     data = await files.read("data/customers.csv", location="workspace")
+            >>> if await files.exists("data/customers.csv"):
+            ...     data = await files.read("data/customers.csv")
         """
-        if _is_platform_context():
-            # Direct filesystem access (platform mode)
-            try:
-                file_path = files._resolve_path(path, location)
-                return file_path.exists()
-            except ValueError:
-                return False
-        else:
-            # CLI mode - direct local filesystem access
-            try:
-                file_path = _resolve_local_path(path, location)
-                return file_path.exists()
-            except ValueError:
-                return False
+        client = get_client()
+        response = await client.post(
+            "/api/files/exists",
+            json={"path": path, "location": location, "mode": mode}
+        )
+        response.raise_for_status()
+        return response.json()["exists"]

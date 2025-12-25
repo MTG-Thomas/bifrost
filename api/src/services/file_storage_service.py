@@ -1736,6 +1736,96 @@ class FileStorageService:
         row_count = getattr(cursor, "rowcount", 0)
         return row_count if row_count >= 0 else 0
 
+    # =========================================================================
+    # Raw S3 operations (no workspace indexing)
+    # Used for temp and uploads locations
+    # =========================================================================
+
+    async def write_raw_to_s3(self, path: str, content: bytes) -> None:
+        """
+        Write content directly to S3 without workspace indexing.
+
+        Used for temp files and uploads that don't need tracking.
+
+        Args:
+            path: S3 key (e.g., _tmp/myfile.txt, uploads/form-id/file.pdf)
+            content: File content as bytes
+        """
+        async with self._get_s3_client() as s3:
+            await s3.put_object(
+                Bucket=self.settings.s3_bucket,
+                Key=path,
+                Body=content,
+                ContentType=self._guess_content_type(path),
+            )
+
+    async def delete_raw_from_s3(self, path: str) -> None:
+        """
+        Delete a file directly from S3 without workspace indexing.
+
+        Used for temp files and uploads that don't need tracking.
+
+        Args:
+            path: S3 key (e.g., _tmp/myfile.txt, uploads/form-id/file.pdf)
+        """
+        async with self._get_s3_client() as s3:
+            await s3.delete_object(
+                Bucket=self.settings.s3_bucket,
+                Key=path,
+            )
+
+    async def list_raw_s3(self, prefix: str) -> list[str]:
+        """
+        List objects directly from S3 by prefix.
+
+        Used for temp files and uploads that don't need tracking.
+
+        Args:
+            prefix: S3 key prefix (e.g., _tmp/, uploads/form-id/)
+
+        Returns:
+            List of S3 keys under the prefix
+        """
+        # Ensure prefix ends with / for directory listing
+        if prefix and not prefix.endswith("/"):
+            prefix = prefix + "/"
+
+        keys: list[str] = []
+        async with self._get_s3_client() as s3:
+            paginator = s3.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(
+                Bucket=self.settings.s3_bucket,
+                Prefix=prefix,
+            ):
+                for obj in page.get("Contents", []):
+                    key = obj.get("Key")
+                    if key:
+                        # Return path relative to prefix
+                        rel_path = key[len(prefix):] if key.startswith(prefix) else key
+                        if rel_path:
+                            keys.append(rel_path)
+        return keys
+
+    async def file_exists(self, path: str) -> bool:
+        """
+        Check if a file exists in S3.
+
+        Args:
+            path: S3 key
+
+        Returns:
+            True if file exists, False otherwise
+        """
+        async with self._get_s3_client() as s3:
+            try:
+                await s3.head_object(
+                    Bucket=self.settings.s3_bucket,
+                    Key=path,
+                )
+                return True
+            except s3.exceptions.ClientError:
+                return False
+
 
 def get_file_storage_service(db: AsyncSession) -> FileStorageService:
     """Factory function for FileStorageService."""

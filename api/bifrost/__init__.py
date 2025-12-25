@@ -77,44 +77,104 @@ Example:
 
 from dataclasses import dataclass
 
-from .ai import ai, AIResponse, AIStreamChunk
+# SDK Modules
+from .ai import ai
 from .config import config
 from .executions import executions
 from .files import files
 from .forms import forms
 from .integrations import integrations
-from .knowledge import knowledge, KnowledgeDocument, NamespaceInfo
+from .knowledge import knowledge
 from .organizations import organizations
 from .roles import roles
 from .users import users
 from .workflows import workflows
 
-# Import decorators and context from shared module
-from src.sdk.decorators import workflow, data_provider
-from src.sdk.context import ExecutionContext, Organization
+# SDK Models (single source of truth)
+from .models import (
+    Organization,
+    Role,
+    UserPublic,
+    FormPublic,
+    WorkflowMetadata,
+    WorkflowExecution,
+    IntegrationData,
+    OAuthCredentials,
+    IntegrationMappingResponse,
+    ConfigData,
+    AIResponse,
+    AIStreamChunk,
+    KnowledgeDocument,
+    NamespaceInfo,
+)
+
+# Import decorators - try platform module first, fall back to local SDK version
+try:
+    from src.sdk.decorators import workflow, data_provider
+    from src.sdk.context import ExecutionContext
+except ImportError:
+    # CLI/standalone mode - use local decorators
+    from .decorators import workflow, data_provider, WorkflowMetadata as _WFMeta
+    # Provide a minimal ExecutionContext for CLI mode
+    ExecutionContext = None  # type: ignore
 
 # Import context proxy for accessing ExecutionContext without parameter
 from ._context import context
-from src.sdk.errors import UserError, WorkflowError, ValidationError, IntegrationError, ConfigurationError
-from src.models.enums import ExecutionStatus, ConfigType, FormFieldType
-from src.models import (
-    OAuthCredentials,
-    IntegrationType,
-    Role,
-    Form,
-)
 
-# SDK Response Models (for typed return values)
-from src.models.contracts.sdk import (
-    ConfigData,
-    IntegrationData,
-    OAuthCredentials as SDKOAuthCredentials,
-)
-# Use existing contract models
-from src.models.contracts.executions import WorkflowExecution, ExecutionLogPublic
-from src.models.contracts.forms import FormPublic
-from src.models.contracts.workflows import WorkflowMetadata
-from src.models.contracts.integrations import IntegrationMappingResponse
+# SDK Errors - try platform module first, fall back to local definitions
+try:
+    from src.sdk.errors import UserError, WorkflowError, ValidationError, IntegrationError, ConfigurationError  # type: ignore[assignment]
+except ImportError:
+    # CLI/standalone mode - define minimal error classes
+    class UserError(Exception):  # type: ignore[no-redef]
+        """User-facing error with formatted message."""
+        pass
+
+    class WorkflowError(Exception):  # type: ignore[no-redef]
+        """Workflow execution error."""
+        pass
+
+    class ValidationError(Exception):  # type: ignore[no-redef]
+        """Validation error."""
+        pass
+
+    class IntegrationError(Exception):  # type: ignore[no-redef]
+        """Integration error."""
+        pass
+
+    class ConfigurationError(Exception):  # type: ignore[no-redef]
+        """Configuration error."""
+        pass
+
+# Enums - try platform module first, fall back to local definitions
+try:
+    from src.models.enums import ExecutionStatus, ConfigType, FormFieldType  # type: ignore[assignment]
+except ImportError:
+    from enum import Enum
+
+    class ExecutionStatus(str, Enum):  # type: ignore[no-redef]
+        """Workflow execution status."""
+        PENDING = "pending"
+        RUNNING = "running"
+        COMPLETED = "completed"
+        FAILED = "failed"
+        CANCELLED = "cancelled"
+
+    class ConfigType(str, Enum):  # type: ignore[no-redef]
+        """Configuration value type."""
+        STRING = "string"
+        SECRET = "secret"
+        JSON = "json"
+        BOOL = "bool"
+        INT = "int"
+
+    class FormFieldType(str, Enum):  # type: ignore[no-redef]
+        """Form field type."""
+        TEXT = "text"
+        NUMBER = "number"
+        SELECT = "select"
+        CHECKBOX = "checkbox"
+        DATE = "date"
 
 # For backwards compatibility with type stubs
 @dataclass
@@ -137,10 +197,19 @@ __all__ = [
     'roles',
     'users',
     'workflows',
-    # AI Module Types
+    # SDK Models
+    'Organization',
+    'Role',
+    'UserPublic',
+    'FormPublic',
+    'WorkflowMetadata',
+    'WorkflowExecution',
+    'IntegrationData',
+    'OAuthCredentials',
+    'IntegrationMappingResponse',
+    'ConfigData',
     'AIResponse',
     'AIStreamChunk',
-    # Knowledge Module Types
     'KnowledgeDocument',
     'NamespaceInfo',
     # Decorators
@@ -149,27 +218,11 @@ __all__ = [
     # Context
     'context',
     'ExecutionContext',
-    'Organization',
     'Caller',
     # Enums
     'ExecutionStatus',
     'ConfigType',
     'FormFieldType',
-    'IntegrationType',
-    # ORM Models (for type hints)
-    'OAuthCredentials',
-    'Role',
-    'Form',
-    # SDK Response Models
-    'ConfigData',
-    'IntegrationData',
-    'SDKOAuthCredentials',
-    # Contract Models (reused from API contracts)
-    'WorkflowExecution',
-    'ExecutionLogPublic',
-    'FormPublic',
-    'WorkflowMetadata',
-    'IntegrationMappingResponse',
     # Errors
     'UserError',
     'WorkflowError',

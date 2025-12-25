@@ -73,7 +73,7 @@ async def e2e_all_fields_workflow(
 '''
         # Save workflow
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_all_fields_workflow.py",
@@ -96,7 +96,7 @@ async def e2e_all_fields_workflow(
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_all_fields_workflow.py",
+            "/api/files/editor?path=e2e_all_fields_workflow.py",
             headers=platform_admin.headers,
         )
 

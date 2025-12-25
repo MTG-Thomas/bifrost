@@ -143,6 +143,11 @@ class TestFileUploads:
         assert s3_response.status_code in [200, 201, 204], \
             f"S3 upload failed: {s3_response.status_code}"
 
+        # Strip the "uploads/" prefix since location="uploads" adds it
+        # blob_uri is like "uploads/form_id/uuid/filename.txt"
+        # but files.read with location="uploads" expects "form_id/uuid/filename.txt"
+        file_path_for_workflow = blob_uri.removeprefix("uploads/")
+
         # Create workflow that reads the file
         workflow_content = '''"""E2E File Read Test Workflow"""
 from bifrost import workflow, files
@@ -155,6 +160,7 @@ from bifrost import workflow, files
 async def e2e_file_read_workflow(file_path: str):
     """Read a file from S3 and return contents."""
     # Use location="uploads" to read from S3 bucket
+    # file_path should NOT include the "uploads/" prefix as the location handles that
     content = await files.read(file_path, location="uploads")
     return {
         "file_path": file_path,
@@ -163,7 +169,7 @@ async def e2e_file_read_workflow(file_path: str):
     }
 '''
         response = e2e_client.put(
-            "/api/editor/files/content",
+            "/api/files/editor/content",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_file_read_workflow.py",
@@ -197,33 +203,41 @@ async def e2e_file_read_workflow(file_path: str):
         assert workflow_id, \
             f"Workflow e2e_file_read_workflow not discovered after {max_attempts}s"
 
-        # Execute workflow with the file path
+        # Execute workflow with the file path (without uploads/ prefix)
         response = e2e_client.post(
             "/api/workflows/execute",
             headers=platform_admin.headers,
             json={
                 "workflow_id": workflow_id,
-                "input_data": {"file_path": blob_uri},
+                "input_data": {"file_path": file_path_for_workflow},
             },
         )
         assert response.status_code == 200, f"Execute workflow failed: {response.text}"
         result = response.json()
 
+        # Debug: print the full response
+        print(f"\n=== Workflow execution response ===")
+        print(f"Status: {result.get('status')}")
+        print(f"Error: {result.get('error')}")
+        print(f"Error Type: {result.get('error_type')}")
+        print(f"Result: {result.get('result')}")
+        print(f"=== End response ===\n")
+
         # Verify the workflow could read the file content
         assert "result" in result, "Missing result in execution response"
         workflow_result = result["result"]
-        assert isinstance(workflow_result, dict), "Result should be a dict"
+        assert isinstance(workflow_result, dict), f"Result should be a dict, got {type(workflow_result)}: {workflow_result}"
         assert "content" in workflow_result, "Missing content in workflow result"
         assert workflow_result["content"] == file_content.decode("utf-8"), \
             f"File content mismatch: expected {file_content}, got {workflow_result['content']}"
         assert workflow_result["length"] == len(file_content), \
             f"File length mismatch: expected {len(file_content)}, got {workflow_result['length']}"
-        assert workflow_result["file_path"] == blob_uri, \
-            f"File path mismatch: expected {blob_uri}, got {workflow_result['file_path']}"
+        assert workflow_result["file_path"] == file_path_for_workflow, \
+            f"File path mismatch: expected {file_path_for_workflow}, got {workflow_result['file_path']}"
 
         # Cleanup
         e2e_client.delete(
-            "/api/editor/files?path=e2e_file_read_workflow.py",
+            "/api/files/editor?path=e2e_file_read_workflow.py",
             headers=platform_admin.headers,
         )
 

@@ -127,25 +127,15 @@ class TestSDKUsageFromWorkflow:
     async def test_sdk_without_context_raises_error(self):
         """Test that SDK raises clear error when used without context"""
         from bifrost import organizations
+        from bifrost.client import _clear_client
 
-        # Ensure no context is set
+        # Ensure no context is set and no client injected
         clear_execution_context()
+        _clear_client()
 
-        # Attempting to use SDK should raise RuntimeError
-        with pytest.raises(RuntimeError, match="No execution context found"):
+        # Attempting to use SDK should raise RuntimeError about not being logged in
+        with pytest.raises(RuntimeError, match="Not logged in"):
             await organizations.list()
-
-
-class TestSDKFileOperations:
-    """Test file operations through SDK"""
-
-    def test_file_path_sandboxing(self):
-        """Test that absolute paths outside /home are blocked"""
-        from bifrost import files
-
-        # Simple test: absolute paths outside /home should be rejected
-        with pytest.raises(ValueError, match="Path must be within"):
-            files._resolve_path("/etc/passwd", location="workspace")
 
 
 class TestImportRestrictions:

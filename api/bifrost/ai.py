@@ -4,10 +4,6 @@ AI SDK for Bifrost.
 Provides Python API for LLM completions using platform-configured providers.
 Supports structured outputs via Pydantic models and optional RAG integration.
 
-Works in two modes:
-1. Platform context (inside workflows): Direct LLM client access
-2. External context (via dev API key): API calls to SDK endpoints
-
 All methods are async and must be awaited.
 
 Usage:
@@ -52,64 +48,17 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
-from ._context import _execution_context
+from .client import get_client
+from .models import AIResponse, AIStreamChunk
 
 logger = logging.getLogger(__name__)
 
 # Type variable for structured outputs
 T = TypeVar("T", bound=BaseModel)
-
-
-@dataclass
-class AIResponse:
-    """
-    Response from AI completion.
-
-    Attributes:
-        content: Text content from the model
-        input_tokens: Number of input tokens used
-        output_tokens: Number of output tokens generated
-        model: Model identifier used
-    """
-
-    content: str | None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    model: str | None = None
-
-
-@dataclass
-class AIStreamChunk:
-    """
-    Streaming response chunk from AI.
-
-    Attributes:
-        content: Text content delta (None for non-delta chunks)
-        done: True if this is the final chunk
-        input_tokens: Token count (only in final chunk)
-        output_tokens: Token count (only in final chunk)
-    """
-
-    content: str | None = None
-    done: bool = False
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-
-
-def _is_platform_context() -> bool:
-    """Check if running inside platform execution context."""
-    return _execution_context.get() is not None
-
-
-def _get_client():
-    """Get the BifrostClient for API calls."""
-    from .client import get_client
-    return get_client()
 
 
 def _build_messages(
@@ -342,85 +291,38 @@ class ai:
         # Build message list
         msg_list = _build_messages(prompt, messages, system)
 
-        if _is_platform_context():
-            # Direct LLM client access (platform mode)
-            from ._internal import get_context
-            from src.services.llm import get_llm_client, LLMMessage
+        # Inject knowledge context if requested
+        if knowledge:
+            msg_list = await _inject_knowledge_context(msg_list, knowledge, org_id)
 
-            context = get_context()
-            target_org_id = org_id or getattr(context, 'org_id', None) or getattr(context, 'scope', None)
+        # Add structured output instructions
+        if response_format:
+            msg_list = _build_structured_prompt(msg_list, response_format)
 
-            # Inject knowledge context if requested
-            if knowledge:
-                msg_list = await _inject_knowledge_context(msg_list, knowledge, target_org_id)
+        # Call API
+        client = get_client()
+        response = await client.post(
+            "/api/cli/ai/complete",
+            json={
+                "messages": msg_list,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "org_id": org_id,
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
 
-            # Add structured output instructions
-            if response_format:
-                msg_list = _build_structured_prompt(msg_list, response_format)
+        # Parse structured response if requested
+        if response_format and data.get("content"):
+            return _parse_structured_response(data["content"], response_format)
 
-            # Convert to LLMMessage objects
-            llm_messages = [
-                LLMMessage(role=msg["role"], content=msg["content"])  # type: ignore[arg-type]
-                for msg in msg_list
-            ]
-
-            # Get LLM client and complete
-            client = await get_llm_client(context.db)
-            response = await client.complete(
-                messages=llm_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-
-            logger.debug(
-                f"ai.complete: model={response.model}, "
-                f"tokens={response.input_tokens}/{response.output_tokens}"
-            )
-
-            # Parse structured response if requested
-            if response_format and response.content:
-                return _parse_structured_response(response.content, response_format)
-
-            return AIResponse(
-                content=response.content,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                model=response.model,
-            )
-        else:
-            # API call (external mode)
-            client = _get_client()
-
-            # Inject knowledge context if requested
-            if knowledge:
-                msg_list = await _inject_knowledge_context(msg_list, knowledge, org_id)
-
-            # Add structured output instructions
-            if response_format:
-                msg_list = _build_structured_prompt(msg_list, response_format)
-
-            response = await client.post(
-                "/api/cli/ai/complete",
-                json={
-                    "messages": msg_list,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "org_id": org_id,
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            # Parse structured response if requested
-            if response_format and data.get("content"):
-                return _parse_structured_response(data["content"], response_format)
-
-            return AIResponse(
-                content=data.get("content"),
-                input_tokens=data.get("input_tokens"),
-                output_tokens=data.get("output_tokens"),
-                model=data.get("model"),
-            )
+        return AIResponse(
+            content=data.get("content") or "",
+            input_tokens=data.get("input_tokens") or 0,
+            output_tokens=data.get("output_tokens") or 0,
+            model=data.get("model") or "",
+        )
 
     @staticmethod
     async def stream(
@@ -464,82 +366,46 @@ class ai:
         # Build message list
         msg_list = _build_messages(prompt, messages, system)
 
-        if _is_platform_context():
-            # Direct LLM client access (platform mode)
-            from ._internal import get_context
-            from src.services.llm import get_llm_client, LLMMessage
+        # Inject knowledge context if requested
+        if knowledge:
+            msg_list = await _inject_knowledge_context(msg_list, knowledge, org_id)
 
-            context = get_context()
-            target_org_id = org_id or getattr(context, 'org_id', None) or getattr(context, 'scope', None)
+        # Call API with SSE streaming
+        client = get_client()
+        async with client.stream(
+            "POST",
+            "/api/cli/ai/stream",
+            json={
+                "messages": msg_list,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "org_id": org_id,
+            }
+        ) as response:
+            async for line in response.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
 
-            # Inject knowledge context if requested
-            if knowledge:
-                msg_list = await _inject_knowledge_context(msg_list, knowledge, target_org_id)
+                data_str = line[6:]  # Remove "data: " prefix
+                if data_str == "[DONE]":
+                    break
 
-            # Convert to LLMMessage objects
-            llm_messages = [
-                LLMMessage(role=msg["role"], content=msg["content"])  # type: ignore[arg-type]
-                for msg in msg_list
-            ]
-
-            # Get LLM client and stream
-            client = await get_llm_client(context.db)
-
-            async for chunk in client.stream(
-                messages=llm_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            ):
-                if chunk.type == "delta":
-                    yield AIStreamChunk(content=chunk.content)
-                elif chunk.type == "done":
-                    yield AIStreamChunk(
-                        done=True,
-                        input_tokens=chunk.input_tokens,
-                        output_tokens=chunk.output_tokens,
-                    )
-                elif chunk.type == "error":
-                    logger.error(f"ai.stream error: {chunk.error}")
-                    raise RuntimeError(f"Streaming error: {chunk.error}")
-        else:
-            # API call with SSE (external mode)
-            client = _get_client()
-
-            # Inject knowledge context if requested
-            if knowledge:
-                msg_list = await _inject_knowledge_context(msg_list, knowledge, org_id)
-
-            # Use SSE streaming endpoint
-            async with client.stream(
-                "POST",
-                "/api/cli/ai/stream",
-                json={
-                    "messages": msg_list,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "org_id": org_id,
-                }
-            ) as response:
-                async for line in response.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-
-                    data_str = line[6:]  # Remove "data: " prefix
-                    if data_str == "[DONE]":
-                        break
-
-                    try:
-                        data = json.loads(data_str)
-                        if data.get("done"):
-                            yield AIStreamChunk(
-                                done=True,
-                                input_tokens=data.get("input_tokens"),
-                                output_tokens=data.get("output_tokens"),
-                            )
-                        else:
-                            yield AIStreamChunk(content=data.get("content"))
-                    except json.JSONDecodeError:
-                        continue
+                try:
+                    data = json.loads(data_str)
+                    if data.get("done"):
+                        yield AIStreamChunk(
+                            content="",
+                            done=True,
+                            input_tokens=data.get("input_tokens"),
+                            output_tokens=data.get("output_tokens"),
+                        )
+                    else:
+                        yield AIStreamChunk(
+                            content=data.get("content") or "",
+                            done=False,
+                        )
+                except json.JSONDecodeError:
+                    continue
 
     @staticmethod
     async def get_model_info() -> dict[str, Any]:
@@ -553,21 +419,7 @@ class ai:
             >>> info = await ai.get_model_info()
             >>> print(f"Using {info['provider']}/{info['model']}")
         """
-        if _is_platform_context():
-            from ._internal import get_context
-            from src.services.llm.factory import get_llm_config
-
-            context = get_context()
-            config = await get_llm_config(context.db)
-
-            return {
-                "provider": config.provider,
-                "model": config.model,
-                "max_tokens": config.max_tokens,
-                "temperature": config.temperature,
-            }
-        else:
-            client = _get_client()
-            response = await client.get("/api/cli/ai/info")
-            response.raise_for_status()
-            return response.json()
+        client = get_client()
+        response = await client.get("/api/cli/ai/info")
+        response.raise_for_status()
+        return response.json()
