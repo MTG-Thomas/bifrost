@@ -12,15 +12,21 @@ to avoid dependencies on src.* modules that only exist in the Docker environment
 """
 
 import asyncio
+import inspect
+import json
 import os
 import sys
+import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import uuid4
 
 import httpx
 
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
+from bifrost.client import BifrostClient
 
 
 async def refresh_tokens() -> bool:
@@ -255,13 +261,14 @@ Usage:
   bifrost <command> [options]
 
 Commands:
-  run         Run a workflow file locally (standalone mode)
+  run         Run a workflow file with web-based parameter input
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
 
 Examples:
-  bifrost run my_workflow.py --params '{"name": "World"}'
+  bifrost run my_workflow.py
+  bifrost run my_workflow.py --workflow greet
   bifrost login
   bifrost login --url https://app.gobifrost.com
   bifrost logout
@@ -351,49 +358,81 @@ Examples:
     return 0
 
 
+def _extract_workflow_parameters(func: Any) -> list[dict[str, Any]]:
+    """Extract parameter info from a workflow function signature."""
+    params = []
+    sig = inspect.signature(func)
+
+    for name, param in sig.parameters.items():
+        # Skip *args and **kwargs
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+
+        param_info: dict[str, Any] = {
+            "name": name,
+            "type": "string",  # default
+            "required": param.default is inspect.Parameter.empty,
+            "label": name.replace("_", " ").title(),
+            "default_value": None if param.default is inspect.Parameter.empty else param.default,
+        }
+
+        # Try to determine type from annotation
+        if param.annotation is not inspect.Parameter.empty:
+            annotation = param.annotation
+            type_name = getattr(annotation, "__name__", str(annotation))
+            if type_name in ("int", "float", "bool", "str"):
+                param_info["type"] = type_name
+            elif "list" in type_name.lower():
+                param_info["type"] = "list"
+            elif "dict" in type_name.lower():
+                param_info["type"] = "dict"
+
+        params.append(param_info)
+
+    return params
+
+
 def handle_run(args: list[str]) -> int:
     """
     Handle 'bifrost run <file>' command.
 
-    Runs a workflow file locally in standalone mode.
+    Starts a dev session:
+    1. Discovers workflows in the file
+    2. Registers session with API
+    3. Opens browser to DevRun page
+    4. Polls for pending execution
+    5. Executes workflow locally
+    6. Posts results back to API
 
     Args:
-        args: Command arguments [file, --workflow, --params, etc.]
+        args: Command arguments [file, --workflow, etc.]
 
     Returns:
         Exit code (0 for success, 1 for error)
     """
     import importlib.util
-    import json
 
     if not args:
         print("Error: No workflow file specified", file=sys.stderr)
-        print("Usage: bifrost run <file> [--workflow NAME] [--params JSON]", file=sys.stderr)
+        print("Usage: bifrost run <file> [--workflow NAME]", file=sys.stderr)
         return 1
 
     workflow_file = args[0]
-    workflow_name = None
-    params: dict = {}
+    selected_workflow: str | None = None
+    no_browser = False
 
-    # Parse --workflow and --params arguments
+    # Parse arguments
     i = 1
     while i < len(args):
         if args[i] in ("--workflow", "-w"):
             if i + 1 >= len(args):
                 print("Error: --workflow requires a value", file=sys.stderr)
                 return 1
-            workflow_name = args[i + 1]
+            selected_workflow = args[i + 1]
             i += 2
-        elif args[i] in ("--params", "-p"):
-            if i + 1 >= len(args):
-                print("Error: --params requires a JSON value", file=sys.stderr)
-                return 1
-            try:
-                params = json.loads(args[i + 1])
-            except json.JSONDecodeError as e:
-                print(f"Error: Invalid JSON params: {e}", file=sys.stderr)
-                return 1
-            i += 2
+        elif args[i] in ("--no-browser", "-n"):
+            no_browser = True
+            i += 1
         elif args[i] in ("--help", "-h"):
             print_run_help()
             return 0
@@ -406,9 +445,12 @@ def handle_run(args: list[str]) -> int:
         print(f"Error: File not found: {workflow_file}", file=sys.stderr)
         return 1
 
+    # Get absolute path
+    abs_file_path = os.path.abspath(workflow_file)
+
     # Load the workflow file
     try:
-        spec = importlib.util.spec_from_file_location("workflow_module", workflow_file)
+        spec = importlib.util.spec_from_file_location("workflow_module", abs_file_path)
         if spec is None or spec.loader is None:
             print(f"Error: Cannot load {workflow_file}", file=sys.stderr)
             return 1
@@ -420,7 +462,7 @@ def handle_run(args: list[str]) -> int:
         return 1
 
     # Find @workflow decorated functions
-    workflows: dict = {}
+    workflows: dict[str, Any] = {}
     for name in dir(module):
         obj = getattr(module, name)
         if callable(obj) and hasattr(obj, "_workflow_metadata"):
@@ -430,36 +472,196 @@ def handle_run(args: list[str]) -> int:
         print("Error: No @workflow decorated functions found", file=sys.stderr)
         return 1
 
-    # Select workflow
-    if workflow_name:
-        if workflow_name not in workflows:
-            print(
-                f"Error: Workflow '{workflow_name}' not found. Available: {list(workflows.keys())}",
-                file=sys.stderr,
-            )
-            return 1
-        workflow_fn = workflows[workflow_name]
-    elif len(workflows) == 1:
-        workflow_fn = list(workflows.values())[0]
-        workflow_name = list(workflows.keys())[0]
-    else:
+    # Validate selected workflow if specified
+    if selected_workflow and selected_workflow not in workflows:
         print(
-            f"Multiple workflows found. Use --workflow to specify: {list(workflows.keys())}",
+            f"Error: Workflow '{selected_workflow}' not found. Available: {list(workflows.keys())}",
             file=sys.stderr,
         )
         return 1
 
-    # Run the workflow
-    print(f"Running in standalone mode: {workflow_name}")
+    # Ensure user is authenticated
     try:
-        import json as json_module
-
-        result = asyncio.run(workflow_fn(**params))
-        print(json_module.dumps(result, indent=2, default=str))
-        return 0
-    except Exception as e:
-        print(f"Error executing workflow: {e}", file=sys.stderr)
+        client = BifrostClient.get_instance(require_auth=True)
+    except RuntimeError as e:
+        print(f"Authentication required: {e}", file=sys.stderr)
         return 1
+
+    # Build workflow info for session registration
+    workflow_infos = []
+    for name, func in workflows.items():
+        metadata = getattr(func, "_workflow_metadata", None)
+        description = ""
+        if metadata is not None:
+            # WorkflowMetadata is a dataclass, access attributes directly
+            description = getattr(metadata, "description", "") or ""
+        workflow_infos.append({
+            "name": name,
+            "description": description,
+            "parameters": _extract_workflow_parameters(func),
+        })
+
+    # Generate session ID
+    session_id = str(uuid4())
+
+    # Run the session flow
+    return asyncio.run(_run_session_flow(
+        client=client,
+        session_id=session_id,
+        file_path=abs_file_path,
+        workflow_infos=workflow_infos,
+        workflows=workflows,
+        selected_workflow=selected_workflow,
+        no_browser=no_browser,
+    ))
+
+
+async def _run_session_flow(
+    client: BifrostClient,
+    session_id: str,
+    file_path: str,
+    workflow_infos: list[dict[str, Any]],
+    workflows: dict[str, Any],
+    selected_workflow: str | None,
+    no_browser: bool,
+) -> int:
+    """
+    Run the session-based workflow execution flow.
+
+    1. Register session with API
+    2. Open browser to DevRun page
+    3. Poll for pending execution
+    4. Execute workflow locally
+    5. Post results back to API
+    """
+    api_url = client.api_url
+
+    # Step 1: Register session
+    print(f"Registering session with {len(workflow_infos)} workflow(s)...")
+    try:
+        response = await client.post(
+            "/api/cli/sessions",
+            json={
+                "session_id": session_id,
+                "file_path": file_path,
+                "workflows": workflow_infos,
+                "selected_workflow": selected_workflow,
+            },
+        )
+        if response.status_code not in (200, 201):
+            print(f"Error registering session: {response.status_code} - {response.text}", file=sys.stderr)
+            return 1
+    except Exception as e:
+        print(f"Error registering session: {e}", file=sys.stderr)
+        return 1
+
+    # Step 2: Open browser to CLI session page
+    session_url = f"{api_url}/cli/{session_id}"
+    print(f"\nOpening browser to {session_url}")
+    print("Select a workflow and enter parameters in the browser, then click 'Continue'.\n")
+
+    if not no_browser:
+        try:
+            webbrowser.open(session_url)
+        except Exception:
+            pass  # Ignore browser open failures
+
+    # Step 3: Poll for pending execution
+    print("Waiting for execution", end="", flush=True)
+    poll_interval = 2  # seconds
+    heartbeat_interval = 5  # seconds
+    last_heartbeat = time.time()
+
+    while True:
+        await asyncio.sleep(poll_interval)
+        print(".", end="", flush=True)
+
+        # Send heartbeat periodically
+        if time.time() - last_heartbeat > heartbeat_interval:
+            try:
+                await client.post(f"/api/cli/sessions/{session_id}/heartbeat")
+                last_heartbeat = time.time()
+            except Exception:
+                pass  # Ignore heartbeat failures
+
+        # Poll for pending execution
+        try:
+            response = await client.get(f"/api/cli/sessions/{session_id}/pending")
+
+            if response.status_code == 204:
+                # No pending execution yet
+                continue
+            elif response.status_code == 200:
+                # Execution is pending!
+                pending_data = response.json()
+                execution_id = pending_data["execution_id"]
+                workflow_name = pending_data["workflow_name"]
+                params = pending_data["params"]
+                print(f" ✓\n\nExecuting workflow: {workflow_name}")
+                break
+            elif response.status_code == 404:
+                print("\n\nSession expired or deleted.", file=sys.stderr)
+                return 1
+            else:
+                print(f"\n\nError polling: {response.status_code}", file=sys.stderr)
+                return 1
+        except Exception as e:
+            print(f"\n\nError polling: {e}", file=sys.stderr)
+            return 1
+
+    # Step 4: Execute workflow locally
+    workflow_fn = workflows.get(workflow_name)
+    if not workflow_fn:
+        error_msg = f"Workflow '{workflow_name}' not found in loaded module"
+        print(f"Error: {error_msg}", file=sys.stderr)
+        await _post_result(client, session_id, execution_id, "Failed", None, error_msg, 0)
+        return 1
+
+    start_time = time.time()
+    result = None
+    error_message = None
+    status = "Success"
+
+    try:
+        result = await workflow_fn(**params)
+        print(f"\nResult: {json.dumps(result, indent=2, default=str)}")
+    except Exception as e:
+        status = "Failed"
+        error_message = str(e)
+        print(f"\nError: {error_message}", file=sys.stderr)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    # Step 5: Post results back to API
+    await _post_result(client, session_id, execution_id, status, result, error_message, duration_ms)
+
+    return 0 if status == "Success" else 1
+
+
+async def _post_result(
+    client: BifrostClient,
+    session_id: str,
+    execution_id: str,
+    status: str,
+    result: Any,
+    error_message: str | None,
+    duration_ms: int,
+) -> None:
+    """Post execution result back to API."""
+    try:
+        await client.post(
+            f"/api/cli/sessions/{session_id}/executions/{execution_id}/result",
+            json={
+                "status": status,
+                "result": result,
+                "error_message": error_message,
+                "duration_ms": duration_ms,
+                "logs": [],  # Could collect logs during execution
+            },
+        )
+        print(f"\nExecution completed ({status})")
+    except Exception as e:
+        print(f"\nWarning: Failed to post result: {e}", file=sys.stderr)
 
 
 def print_run_help() -> None:
@@ -467,20 +669,26 @@ def print_run_help() -> None:
     print("""
 Usage: bifrost run <file> [options]
 
-Run a workflow file locally in standalone mode.
+Run a workflow file with web-based parameter input.
+
+This command:
+1. Discovers @workflow decorated functions in your file
+2. Opens a browser to the DevRun page
+3. Waits for you to select a workflow and enter parameters
+4. Executes the workflow locally and shows results
 
 Arguments:
   file                  Python file containing @workflow decorated functions
 
 Options:
-  --workflow, -w NAME   Workflow name (required if file has multiple workflows)
-  --params, -p JSON     JSON object with workflow parameters
+  --workflow, -w NAME   Pre-select a workflow (optional)
+  --no-browser, -n      Don't automatically open browser
   --help, -h            Show this help message
 
 Examples:
   bifrost run my_workflow.py
   bifrost run my_workflow.py --workflow greet
-  bifrost run my_workflow.py --workflow greet --params '{"name": "World"}'
+  bifrost run my_workflow.py --no-browser
 """.strip())
 
 
