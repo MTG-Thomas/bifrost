@@ -5,6 +5,7 @@ Represents execution metrics and platform metrics snapshots.
 """
 
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import BigInteger, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, UniqueConstraint, text
@@ -50,6 +51,12 @@ class ExecutionMetricsDaily(Base):
     # Economics aggregates
     total_time_saved: Mapped[int] = mapped_column(BigInteger, default=0)
     total_value: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+
+    # AI usage aggregates (nullable for existing records)
+    total_ai_input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_ai_output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_ai_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    total_ai_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -127,6 +134,10 @@ class PlatformMetricsSnapshot(Base):
     # Economics (all time)
     time_saved_all_time: Mapped[int] = mapped_column(BigInteger, default=0)
     value_all_time: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+
+    # AI usage (last 24 hours) - nullable for existing records
+    ai_cost_24h: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    ai_calls_24h: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Timestamp
     refreshed_at: Mapped[datetime] = mapped_column(

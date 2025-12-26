@@ -9,6 +9,8 @@ import {
 	PlayCircle,
 	RefreshCw,
 	Code2,
+	Sparkles,
+	ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +20,11 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -44,7 +51,13 @@ import { useExecutionStreamStore } from "@/stores/executionStreamStore";
 import { PrettyInputDisplay } from "@/components/execution/PrettyInputDisplay";
 import { SafeHTMLRenderer } from "@/components/execution/SafeHTMLRenderer";
 import { VariablesTreeView } from "@/components/ui/variables-tree-view";
-import { formatDate, formatBytes } from "@/lib/utils";
+import {
+	formatDate,
+	formatBytes,
+	formatNumber,
+	formatCost,
+	formatDuration,
+} from "@/lib/utils";
 import type { components } from "@/lib/v1";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, useRef, useCallback } from "react";
@@ -58,6 +71,7 @@ type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
 type FileMetadata = components["schemas"]["FileMetadata"];
 type WorkflowExecutionResponse =
 	components["schemas"]["WorkflowExecutionResponse"];
+type AIUsagePublicSimple = components["schemas"]["AIUsagePublicSimple"];
 
 // Type for metadata response from useWorkflowsMetadata hook
 interface WorkflowsMetadataResponse {
@@ -109,6 +123,9 @@ export function ExecutionDetails({
 	// Fallback timer - enable fetch after 5s if WebSocket hasn't received updates
 	const [fetchFallbackEnabled, setFetchFallbackEnabled] = useState(false);
 	useEffect(() => {
+		// Reset fallback when execution ID changes (important for rerun navigation)
+		setFetchFallbackEnabled(false);
+
 		// If we have no navigation state (direct link), fetch immediately
 		if (!hasNavigationState) {
 			setFetchFallbackEnabled(true);
@@ -136,6 +153,9 @@ export function ExecutionDetails({
 	const [showRerunDialog, setShowRerunDialog] = useState(false);
 	const [isRerunning, setIsRerunning] = useState(false);
 	const [isOpeningInEditor, setIsOpeningInEditor] = useState(false);
+
+	// State for collapsible sections
+	const [isAiUsageOpen, setIsAiUsageOpen] = useState(true);
 
 	// Editor store actions
 	const openFileInTab = useEditorStore((state) => state.openFileInTab);
@@ -184,7 +204,13 @@ export function ExecutionDetails({
 	// Only disable when stream explicitly completes (not when status changes in cache)
 	// This prevents race condition where we disconnect before completion callback fires
 	useEffect(() => {
-		// Enable streaming if execution is in a running state
+		// If we came from an execution trigger (has navigation state), start WebSocket immediately
+		// We know the execution is fresh and will be Pending/Running
+		if (hasNavigationState) {
+			setSignalrEnabled(true);
+			return;
+		}
+		// Otherwise, enable streaming if execution is in a running state
 		if (
 			executionStatus === "Pending" ||
 			executionStatus === "Running" ||
@@ -194,7 +220,7 @@ export function ExecutionDetails({
 		}
 		// Only disable on initial load if already complete (not from stream updates)
 		// The stream's onComplete callback will handle cleanup for live executions
-	}, [executionStatus]);
+	}, [executionStatus, hasNavigationState]);
 
 	// Disable streaming when stream reports completion
 	useEffect(() => {
@@ -246,8 +272,12 @@ export function ExecutionDetails({
 
 	// Auto-scroll to bottom when new streaming logs arrive
 	useEffect(() => {
-		if (autoScroll && logsEndRef.current && streamingLogs.length > 0) {
-			logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+		const container = logsContainerRef.current;
+		if (autoScroll && logsEndRef.current && streamingLogs.length > 0 && container) {
+			// Only scroll if content exceeds container height
+			if (container.scrollHeight > container.clientHeight) {
+				logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+			}
 		}
 	}, [streamingLogs.length, autoScroll]);
 
@@ -433,9 +463,15 @@ export function ExecutionDetails({
 			);
 			setShowRerunDialog(false);
 
-			// Navigate to the new execution
+			// Navigate to the new execution with context to avoid 404 race condition
 			if (result?.execution_id) {
-				navigate(`/history/${result.execution_id}`);
+				navigate(`/history/${result.execution_id}`, {
+					state: {
+						workflow_name: execution.workflow_name,
+						workflow_id: workflow.id,
+						input_data: execution.input_data,
+					},
+				});
 			}
 		} catch (error) {
 			toast.error(`Failed to rerun workflow: ${error}`);
@@ -921,7 +957,7 @@ export function ExecutionDetails({
 												<div
 													ref={logsContainerRef}
 													onScroll={handleLogsScroll}
-													className="space-y-2 max-h-[600px] overflow-y-auto"
+													className="space-y-2 max-h-[70vh] overflow-y-auto"
 												>
 													{logsToDisplay.map(
 														(
@@ -1081,7 +1117,7 @@ export function ExecutionDetails({
 																	ref={
 																		logsContainerRef
 																	}
-																	className="space-y-2 max-h-[600px] overflow-y-auto"
+																	className="space-y-2 max-h-[70vh] overflow-y-auto"
 																>
 																	{completedLogs.map(
 																		(
@@ -1329,65 +1365,279 @@ export function ExecutionDetails({
 							</motion.div>
 						)}
 
-						{/* Resource Metrics Card - Platform admins only */}
-						{isPlatformAdmin &&
-							isComplete &&
-							(execution?.peak_memory_bytes ||
-								execution?.cpu_total_seconds) && (
+						{/* Usage Card - Compute resources (admin) + AI usage (all users) */}
+						{isComplete &&
+							((isPlatformAdmin &&
+								(execution?.peak_memory_bytes ||
+									execution?.cpu_total_seconds)) ||
+								(execution?.ai_usage &&
+									execution.ai_usage.length > 0)) && (
 								<motion.div
 									initial={{ opacity: 0, y: 20 }}
 									animate={{ opacity: 1, y: 0 }}
 									transition={{ duration: 0.3, delay: 0.2 }}
 								>
 									<Card>
-										<CardHeader>
-											<CardTitle>
-												Resource Usage
-											</CardTitle>
+										<CardHeader className="pb-3">
+											<CardTitle>Usage</CardTitle>
 											<CardDescription>
-												Execution resource metrics
+												Execution metrics and costs
 											</CardDescription>
 										</CardHeader>
-										<CardContent className="space-y-3">
-											{execution?.peak_memory_bytes && (
-												<div>
-													<p className="text-sm font-medium text-muted-foreground">
-														Peak Memory
-													</p>
-													<p className="text-sm font-mono">
-														{formatBytes(
-															execution.peak_memory_bytes,
+										<CardContent className="space-y-4">
+											{/* Compute Resources - Platform admins only */}
+											{isPlatformAdmin &&
+												(execution?.peak_memory_bytes ||
+													execution?.cpu_total_seconds) && (
+													<div className="space-y-3">
+														{execution?.peak_memory_bytes && (
+															<div>
+																<p className="text-sm font-medium text-muted-foreground">
+																	Peak Memory
+																</p>
+																<p className="text-sm font-mono">
+																	{formatBytes(
+																		execution.peak_memory_bytes,
+																	)}
+																</p>
+															</div>
 														)}
-													</p>
-												</div>
-											)}
-											{execution?.cpu_total_seconds && (
-												<div>
-													<p className="text-sm font-medium text-muted-foreground">
-														CPU Time
-													</p>
-													<p className="text-sm font-mono">
-														{execution.cpu_total_seconds.toFixed(
-															3,
+														{execution?.cpu_total_seconds && (
+															<div>
+																<p className="text-sm font-medium text-muted-foreground">
+																	CPU Time
+																</p>
+																<p className="text-sm font-mono">
+																	{execution.cpu_total_seconds.toFixed(
+																		3,
+																	)}
+																	s
+																</p>
+															</div>
 														)}
-														s
-													</p>
-												</div>
-											)}
-											{execution?.duration_ms && (
-												<div>
-													<p className="text-sm font-medium text-muted-foreground">
-														Duration
-													</p>
-													<p className="text-sm font-mono">
-														{(
-															execution.duration_ms /
-															1000
-														).toFixed(2)}
-														s
-													</p>
-												</div>
-											)}
+														{execution?.duration_ms && (
+															<div>
+																<p className="text-sm font-medium text-muted-foreground">
+																	Duration
+																</p>
+																<p className="text-sm font-mono">
+																	{(
+																		execution.duration_ms /
+																		1000
+																	).toFixed(2)}
+																	s
+																</p>
+															</div>
+														)}
+													</div>
+												)}
+
+											{/* Divider when both sections are shown */}
+											{isPlatformAdmin &&
+												(execution?.peak_memory_bytes ||
+													execution?.cpu_total_seconds) &&
+												execution?.ai_usage &&
+												execution.ai_usage.length > 0 && (
+													<div className="border-t pt-4" />
+												)}
+
+											{/* AI Usage - Available to all users */}
+											{execution?.ai_usage &&
+												execution.ai_usage.length > 0 && (
+													<Collapsible
+														open={isAiUsageOpen}
+														onOpenChange={
+															setIsAiUsageOpen
+														}
+													>
+														<div className="flex items-center justify-between">
+															<div className="flex items-center gap-2">
+																<Sparkles className="h-4 w-4 text-purple-500" />
+																<span className="text-sm font-medium">
+																	AI Usage
+																</span>
+																<Badge
+																	variant="secondary"
+																	className="text-xs"
+																>
+																	{execution
+																		.ai_totals
+																		?.call_count ||
+																		execution
+																			.ai_usage
+																			.length}{" "}
+																	{(execution
+																		.ai_totals
+																		?.call_count ||
+																		execution
+																			.ai_usage
+																			.length) ===
+																	1
+																		? "call"
+																		: "calls"}
+																</Badge>
+															</div>
+															<CollapsibleTrigger
+																asChild
+															>
+																<Button
+																	variant="ghost"
+																	size="sm"
+																>
+																	<ChevronDown
+																		className={`h-4 w-4 transition-transform duration-200 ${
+																			isAiUsageOpen
+																				? "rotate-180"
+																				: ""
+																		}`}
+																	/>
+																</Button>
+															</CollapsibleTrigger>
+														</div>
+														{execution.ai_totals && (
+															<p className="mt-1 text-xs text-muted-foreground">
+																Total:{" "}
+																{formatNumber(
+																	execution
+																		.ai_totals
+																		.total_input_tokens,
+																)}{" "}
+																in /{" "}
+																{formatNumber(
+																	execution
+																		.ai_totals
+																		.total_output_tokens,
+																)}{" "}
+																out tokens
+																{execution
+																	.ai_totals
+																	.total_cost &&
+																	` | ${formatCost(execution.ai_totals.total_cost)}`}
+															</p>
+														)}
+														<CollapsibleContent>
+															<div className="mt-3 overflow-x-auto">
+																<table className="w-full text-xs">
+																	<thead>
+																		<tr className="border-b">
+																			<th className="text-left py-2 pr-2 font-medium text-muted-foreground">
+																				Provider
+																			</th>
+																			<th className="text-left py-2 pr-2 font-medium text-muted-foreground">
+																				Model
+																			</th>
+																			<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
+																				In
+																			</th>
+																			<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
+																				Out
+																			</th>
+																			<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
+																				Cost
+																			</th>
+																			<th className="text-right py-2 font-medium text-muted-foreground">
+																				Time
+																			</th>
+																		</tr>
+																	</thead>
+																	<tbody>
+																		{(
+																			execution.ai_usage as AIUsagePublicSimple[]
+																		).map(
+																			(
+																				usage,
+																				index,
+																			) => (
+																				<tr
+																					key={
+																						index
+																					}
+																					className="border-b last:border-0"
+																				>
+																					<td className="py-2 pr-2 capitalize">
+																						{
+																							usage.provider
+																						}
+																					</td>
+																					<td className="py-2 pr-2 font-mono text-muted-foreground">
+																						{usage
+																							.model
+																							.length >
+																						20
+																							? `${usage.model.substring(0, 18)}...`
+																							: usage.model}
+																					</td>
+																					<td className="py-2 pr-2 text-right font-mono">
+																						{formatNumber(
+																							usage.input_tokens,
+																						)}
+																					</td>
+																					<td className="py-2 pr-2 text-right font-mono">
+																						{formatNumber(
+																							usage.output_tokens,
+																						)}
+																					</td>
+																					<td className="py-2 pr-2 text-right font-mono">
+																						{formatCost(
+																							usage.cost,
+																						)}
+																					</td>
+																					<td className="py-2 text-right font-mono">
+																						{formatDuration(
+																							usage.duration_ms,
+																						)}
+																					</td>
+																				</tr>
+																			),
+																		)}
+																	</tbody>
+																	{execution.ai_totals && (
+																		<tfoot>
+																			<tr className="bg-muted/50 font-medium">
+																				<td
+																					colSpan={
+																						2
+																					}
+																					className="py-2 pr-2"
+																				>
+																					Total
+																				</td>
+																				<td className="py-2 pr-2 text-right font-mono">
+																					{formatNumber(
+																						execution
+																							.ai_totals
+																							.total_input_tokens,
+																					)}
+																				</td>
+																				<td className="py-2 pr-2 text-right font-mono">
+																					{formatNumber(
+																						execution
+																							.ai_totals
+																							.total_output_tokens,
+																					)}
+																				</td>
+																				<td className="py-2 pr-2 text-right font-mono">
+																					{formatCost(
+																						execution
+																							.ai_totals
+																							.total_cost,
+																					)}
+																				</td>
+																				<td className="py-2 text-right font-mono">
+																					{formatDuration(
+																						execution
+																							.ai_totals
+																							.total_duration_ms,
+																					)}
+																				</td>
+																			</tr>
+																		</tfoot>
+																	)}
+																</table>
+															</div>
+														</CollapsibleContent>
+													</Collapsible>
+												)}
 										</CardContent>
 									</Card>
 								</motion.div>

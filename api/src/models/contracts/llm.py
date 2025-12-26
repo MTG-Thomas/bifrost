@@ -84,18 +84,25 @@ class LLMTestRequest(BaseModel):
     )
 
 
+class LLMModelInfo(BaseModel):
+    """Model information with both ID and display name."""
+
+    id: str
+    display_name: str
+
+
 class LLMTestResponse(BaseModel):
     """Response from testing LLM connection."""
 
     success: bool
     message: str
-    models: list[str] | None = None
+    models: list[LLMModelInfo] | None = None
 
 
 class LLMModelsResponse(BaseModel):
     """Response listing available models."""
 
-    models: list[str]
+    models: list[LLMModelInfo]
     provider: str
 
 

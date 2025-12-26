@@ -33,6 +33,15 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import {
 	Loader2,
@@ -42,10 +51,29 @@ import {
 	Trash2,
 	Zap,
 	Database,
+	DollarSign,
+	Plus,
+	Pencil,
+	X,
+	Check,
 } from "lucide-react";
 import { $api } from "@/lib/api-client";
+import {
+	listPricing,
+	createPricing,
+	updatePricing,
+	deletePricing,
+	type AIModelPricingListItem,
+	type AIModelPricingCreate,
+} from "@/services/ai-pricing";
 
 type Provider = "openai" | "anthropic" | "custom";
+
+// Model info with both ID and display name
+interface ModelInfo {
+	id: string;
+	display_name: string;
+}
 
 // Default models for each provider (fallback if API doesn't return models)
 const DEFAULT_MODELS: Record<Provider, string> = {
@@ -65,7 +93,7 @@ export function LLMConfig() {
 	const [defaultSystemPrompt, setDefaultSystemPrompt] = useState("");
 
 	// Models state (loaded dynamically after test)
-	const [availableModels, setAvailableModels] = useState<string[]>([]);
+	const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
 	const [modelsLoaded, setModelsLoaded] = useState(false);
 
 	// UI state
@@ -123,7 +151,9 @@ export function LLMConfig() {
 			try {
 				const result = await testSavedMutation.mutateAsync({});
 				if (result.success && result.models && result.models.length > 0) {
-					setAvailableModels(result.models);
+					// Cast to ModelInfo[] since API now returns objects
+					const models = result.models as unknown as ModelInfo[];
+					setAvailableModels(models);
 				}
 				setModelsLoaded(true);
 			} catch {
@@ -188,10 +218,13 @@ export function LLMConfig() {
 				});
 				// Load models from response
 				if (result.models && result.models.length > 0) {
-					setAvailableModels(result.models);
+					// Cast to ModelInfo[] since API now returns objects
+					const models = result.models as unknown as ModelInfo[];
+					setAvailableModels(models);
 					// If current model is not in list, select first available
-					if (!result.models.includes(model)) {
-						setModel(result.models[0]);
+					const modelIds = models.map((m) => m.id);
+					if (!modelIds.includes(model)) {
+						setModel(models[0].id);
 					}
 				}
 				setModelsLoaded(true);
@@ -514,12 +547,20 @@ export function LLMConfig() {
 							hasModels ? (
 								<Select value={model} onValueChange={setModel}>
 									<SelectTrigger id="model">
-										<SelectValue placeholder="Select model" />
+										<SelectValue placeholder="Select model">
+											{/* Show display name in trigger if we have model info */}
+											{availableModels.find((m) => m.id === model)?.display_name || model}
+										</SelectValue>
 									</SelectTrigger>
 									<SelectContent>
 										{availableModels.map((m) => (
-											<SelectItem key={m} value={m}>
-												{m}
+											<SelectItem key={m.id} value={m.id}>
+												<div className="flex flex-col">
+													<span>{m.display_name}</span>
+													<span className="text-xs text-muted-foreground">
+														{m.id}
+													</span>
+												</div>
 											</SelectItem>
 										))}
 									</SelectContent>
@@ -642,6 +683,9 @@ export function LLMConfig() {
 
 			{/* Embedding Configuration Card */}
 			<EmbeddingConfigCard llmProvider={config?.provider} />
+
+			{/* Model Pricing Card */}
+			<ModelPricingCard />
 
 			{/* Info Card */}
 			<Card>
@@ -1066,6 +1110,519 @@ function EmbeddingConfigCard({ llmProvider }: { llmProvider?: string }) {
 					</DialogContent>
 				</Dialog>
 			</CardContent>
+		</Card>
+	);
+}
+
+/**
+ * Model Pricing Configuration Component
+ *
+ * Manage AI model pricing for cost tracking.
+ * Shows models that have been used with their pricing, and allows adding/editing.
+ */
+function ModelPricingCard() {
+	const [pricingData, setPricingData] = useState<AIModelPricingListItem[]>([]);
+	const [modelsWithoutPricing, setModelsWithoutPricing] = useState<string[]>(
+		[],
+	);
+	const [isLoading, setIsLoading] = useState(true);
+	const [editingId, setEditingId] = useState<number | null>(null);
+	const [editValues, setEditValues] = useState<{
+		input: string;
+		output: string;
+	}>({ input: "", output: "" });
+	const [saving, setSaving] = useState(false);
+	const [showAddDialog, setShowAddDialog] = useState(false);
+	const [newPricing, setNewPricing] = useState<AIModelPricingCreate>({
+		provider: "openai",
+		model: "",
+		input_price_per_million: 0,
+		output_price_per_million: 0,
+	});
+
+	// Load pricing data
+	const loadPricing = async () => {
+		try {
+			setIsLoading(true);
+			const data = await listPricing();
+			setPricingData(data.pricing || []);
+			setModelsWithoutPricing(data.models_without_pricing || []);
+		} catch (error) {
+			toast.error("Failed to load pricing data", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setIsLoading(false);
+		}
+	};
+
+	useEffect(() => {
+		loadPricing();
+	}, []);
+
+	// Format price for display
+	const formatPrice = (price: number | string | null | undefined): string => {
+		if (price === null || price === undefined) return "-";
+		const numPrice = typeof price === "string" ? parseFloat(price) : price;
+		if (isNaN(numPrice)) return "-";
+		return `$${numPrice.toFixed(2)}`;
+	};
+
+	// Format date for display
+	const formatDate = (dateStr: string | null | undefined): string => {
+		if (!dateStr) return "-";
+		return new Date(dateStr).toLocaleDateString();
+	};
+
+	// Start editing a row
+	const startEdit = (item: AIModelPricingListItem) => {
+		if (item.id === null) return;
+		setEditingId(item.id);
+		setEditValues({
+			input: item.input_price_per_million?.toString() || "0",
+			output: item.output_price_per_million?.toString() || "0",
+		});
+	};
+
+	// Cancel editing
+	const cancelEdit = () => {
+		setEditingId(null);
+		setEditValues({ input: "", output: "" });
+	};
+
+	// Save edited values
+	const saveEdit = async () => {
+		if (editingId === null) return;
+
+		setSaving(true);
+		try {
+			await updatePricing(editingId, {
+				input_price_per_million: parseFloat(editValues.input) || 0,
+				output_price_per_million: parseFloat(editValues.output) || 0,
+			});
+			toast.success("Pricing updated");
+			await loadPricing();
+			cancelEdit();
+		} catch (error) {
+			toast.error("Failed to update pricing", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	// Add new pricing
+	const handleAddPricing = async () => {
+		if (!newPricing.model) {
+			toast.error("Please enter a model name");
+			return;
+		}
+
+		setSaving(true);
+		try {
+			await createPricing(newPricing);
+			toast.success("Pricing added", {
+				description: `Added pricing for ${newPricing.model}`,
+			});
+			await loadPricing();
+			setShowAddDialog(false);
+			setNewPricing({
+				provider: "openai",
+				model: "",
+				input_price_per_million: 0,
+				output_price_per_million: 0,
+			});
+		} catch (error) {
+			toast.error("Failed to add pricing", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	// Delete pricing
+	const handleDeletePricing = async (id: number) => {
+		setSaving(true);
+		try {
+			await deletePricing(id);
+			toast.success("Pricing deleted");
+			await loadPricing();
+		} catch (error) {
+			toast.error("Failed to delete pricing", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	if (isLoading) {
+		return (
+			<Card>
+				<CardContent className="flex items-center justify-center py-8">
+					<Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+				</CardContent>
+			</Card>
+		);
+	}
+
+	const hasWarnings = modelsWithoutPricing.length > 0;
+
+	// Parse "provider/model" strings into objects for display
+	const unpricedModels = modelsWithoutPricing.map((pm) => {
+		const [provider, ...modelParts] = pm.split("/");
+		return { provider, model: modelParts.join("/") };
+	});
+
+	return (
+		<Card>
+			<CardHeader>
+				<div className="flex items-center justify-between">
+					<div className="flex items-center gap-2">
+						<DollarSign className="h-5 w-5" />
+						<CardTitle>Model Pricing</CardTitle>
+						{hasWarnings && (
+							<Badge variant="warning">
+								{modelsWithoutPricing.length} unpriced
+							</Badge>
+						)}
+					</div>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setShowAddDialog(true)}
+					>
+						<Plus className="h-4 w-4 mr-1" />
+						Add Model
+					</Button>
+				</div>
+				<CardDescription>
+					Configure pricing per million tokens for cost tracking.
+					{hasWarnings && (
+						<span className="block mt-1 text-amber-600 dark:text-amber-400">
+							{modelsWithoutPricing.length} model(s) have been
+							used but don't have pricing configured.
+						</span>
+					)}
+				</CardDescription>
+			</CardHeader>
+			<CardContent>
+				{pricingData.length === 0 && modelsWithoutPricing.length === 0 ? (
+					<div className="text-center py-8 text-muted-foreground">
+						<DollarSign className="h-8 w-8 mx-auto mb-2 opacity-50" />
+						<p>No model pricing configured yet.</p>
+						<p className="text-sm mt-1">
+							Add pricing to track AI usage costs.
+						</p>
+					</div>
+				) : (
+					<div className="rounded-md border">
+						<Table>
+							<TableHeader>
+								<TableRow>
+									<TableHead>Provider</TableHead>
+									<TableHead>Model</TableHead>
+									<TableHead className="text-right">
+										Input ($/1M)
+									</TableHead>
+									<TableHead className="text-right">
+										Output ($/1M)
+									</TableHead>
+									<TableHead>Last Updated</TableHead>
+									<TableHead className="w-[100px]"></TableHead>
+								</TableRow>
+							</TableHeader>
+							<TableBody>
+								{/* Models without pricing (need attention) */}
+								{unpricedModels.map((item) => (
+									<TableRow
+										key={`unpriced-${item.provider}-${item.model}`}
+										className="bg-amber-50/50 dark:bg-amber-950/10"
+									>
+										<TableCell className="font-medium capitalize">
+											{item.provider}
+										</TableCell>
+										<TableCell>
+											<div className="flex items-center gap-2">
+												{item.model}
+												<Badge variant="warning">
+													No pricing
+												</Badge>
+											</div>
+										</TableCell>
+										<TableCell className="text-right text-muted-foreground">
+											-
+										</TableCell>
+										<TableCell className="text-right text-muted-foreground">
+											-
+										</TableCell>
+										<TableCell className="text-muted-foreground">
+											-
+										</TableCell>
+										<TableCell>
+											<div className="flex items-center justify-end">
+												<Button
+													variant="outline"
+													size="sm"
+													onClick={() => {
+														setNewPricing({
+															provider: item.provider,
+															model: item.model,
+															input_price_per_million: 0,
+															output_price_per_million: 0,
+														});
+														setShowAddDialog(true);
+													}}
+												>
+													<Plus className="h-4 w-4 mr-1" />
+													Add
+												</Button>
+											</div>
+										</TableCell>
+									</TableRow>
+								))}
+								{/* Models with pricing configured */}
+								{pricingData.map((item) => (
+									<TableRow key={item.id}>
+										<TableCell className="font-medium capitalize">
+											{item.provider}
+										</TableCell>
+										<TableCell>
+											<div className="flex items-center gap-2">
+												{item.model}
+												{item.is_used && (
+													<Badge variant="secondary">
+														In use
+													</Badge>
+												)}
+											</div>
+										</TableCell>
+										<TableCell className="text-right">
+											{editingId === item.id ? (
+												<Input
+													type="number"
+													step="0.01"
+													min="0"
+													value={editValues.input}
+													onChange={(e) =>
+														setEditValues({
+															...editValues,
+															input: e.target.value,
+														})
+													}
+													className="w-24 text-right"
+												/>
+											) : (
+												formatPrice(
+													item.input_price_per_million,
+												)
+											)}
+										</TableCell>
+										<TableCell className="text-right">
+											{editingId === item.id ? (
+												<Input
+													type="number"
+													step="0.01"
+													min="0"
+													value={editValues.output}
+													onChange={(e) =>
+														setEditValues({
+															...editValues,
+															output: e.target.value,
+														})
+													}
+													className="w-24 text-right"
+												/>
+											) : (
+												formatPrice(
+													item.output_price_per_million,
+												)
+											)}
+										</TableCell>
+										<TableCell>
+											{formatDate(item.updated_at)}
+										</TableCell>
+										<TableCell>
+											<div className="flex items-center gap-1 justify-end">
+												{editingId === item.id ? (
+													<>
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={saveEdit}
+															disabled={saving}
+														>
+															{saving ? (
+																<Loader2 className="h-4 w-4 animate-spin" />
+															) : (
+																<Check className="h-4 w-4 text-green-600" />
+															)}
+														</Button>
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={cancelEdit}
+															disabled={saving}
+														>
+															<X className="h-4 w-4" />
+														</Button>
+													</>
+												) : (
+													<>
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={() =>
+																startEdit(item)
+															}
+														>
+															<Pencil className="h-4 w-4" />
+														</Button>
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={() =>
+																handleDeletePricing(
+																	item.id,
+																)
+															}
+															className="text-destructive hover:text-destructive"
+														>
+															<Trash2 className="h-4 w-4" />
+														</Button>
+													</>
+												)}
+											</div>
+										</TableCell>
+									</TableRow>
+								))}
+							</TableBody>
+						</Table>
+					</div>
+				)}
+			</CardContent>
+
+			{/* Add Pricing Dialog */}
+			<Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Add Model Pricing</DialogTitle>
+						<DialogDescription>
+							Configure pricing for a new AI model.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="space-y-4 py-4">
+						<div className="space-y-2">
+							<Label htmlFor="new-provider">Provider</Label>
+							<Select
+								value={newPricing.provider}
+								onValueChange={(value) =>
+									setNewPricing({
+										...newPricing,
+										provider: value,
+									})
+								}
+							>
+								<SelectTrigger id="new-provider">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="openai">
+										OpenAI
+									</SelectItem>
+									<SelectItem value="anthropic">
+										Anthropic
+									</SelectItem>
+									<SelectItem value="custom">
+										Custom
+									</SelectItem>
+								</SelectContent>
+							</Select>
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="new-model">Model Name</Label>
+							<Input
+								id="new-model"
+								placeholder="e.g., gpt-4o, claude-3-opus"
+								value={newPricing.model}
+								onChange={(e) =>
+									setNewPricing({
+										...newPricing,
+										model: e.target.value,
+									})
+								}
+							/>
+						</div>
+						<div className="grid grid-cols-2 gap-4">
+							<div className="space-y-2">
+								<Label htmlFor="new-input-price">
+									Input Price ($/1M tokens)
+								</Label>
+								<Input
+									id="new-input-price"
+									type="number"
+									step="0.01"
+									min="0"
+									placeholder="0.00"
+									value={newPricing.input_price_per_million || ""}
+									onChange={(e) =>
+										setNewPricing({
+											...newPricing,
+											input_price_per_million:
+												parseFloat(e.target.value) || 0,
+										})
+									}
+								/>
+							</div>
+							<div className="space-y-2">
+								<Label htmlFor="new-output-price">
+									Output Price ($/1M tokens)
+								</Label>
+								<Input
+									id="new-output-price"
+									type="number"
+									step="0.01"
+									min="0"
+									placeholder="0.00"
+									value={newPricing.output_price_per_million || ""}
+									onChange={(e) =>
+										setNewPricing({
+											...newPricing,
+											output_price_per_million:
+												parseFloat(e.target.value) || 0,
+										})
+									}
+								/>
+							</div>
+						</div>
+					</div>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={() => setShowAddDialog(false)}
+							disabled={saving}
+						>
+							Cancel
+						</Button>
+						<Button onClick={handleAddPricing} disabled={saving}>
+							{saving ? (
+								<>
+									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+									Adding...
+								</>
+							) : (
+								"Add Pricing"
+							)}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</Card>
 	);
 }

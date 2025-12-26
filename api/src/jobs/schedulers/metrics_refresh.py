@@ -23,6 +23,7 @@ from src.models import (
     ExecutionMetricsDaily,
 )
 from src.models.enums import ExecutionStatus
+from src.models.orm.ai_usage import AIUsage
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,14 @@ async def refresh_metrics_snapshot() -> dict[str, Any]:
             roi_all_time_result = await db.execute(roi_all_time_query)
             roi_all_time = roi_all_time_result.one()
 
+            # AI usage (last 24 hours) - from ai_usage table
+            ai_24h_query = select(
+                func.sum(AIUsage.cost).label("total_cost"),
+                func.count(AIUsage.id).label("total_calls"),
+            ).where(AIUsage.timestamp >= yesterday)
+            ai_24h_result = await db.execute(ai_24h_query)
+            ai_24h = ai_24h_result.one()
+
             # Calculate success rates
             total_all_time = all_time.total or 0
             success_all_time = all_time.success or 0
@@ -171,6 +180,9 @@ async def refresh_metrics_snapshot() -> dict[str, Any]:
                     # ROI (all time)
                     time_saved_all_time=int(roi_all_time.time_saved or 0),
                     value_all_time=float(roi_all_time.value or 0),
+                    # AI usage (last 24 hours)
+                    ai_cost_24h=ai_24h.total_cost,
+                    ai_calls_24h=ai_24h.total_calls or 0,
                     # Timestamp
                     refreshed_at=now,
                 )
@@ -184,6 +196,8 @@ async def refresh_metrics_snapshot() -> dict[str, Any]:
                 "total_executions": total_all_time,
                 "executions_24h": total_24h,
                 "success_rate_24h": round(success_rate_24h, 2),
+                "ai_cost_24h": float(ai_24h.total_cost) if ai_24h.total_cost else 0.0,
+                "ai_calls_24h": ai_24h.total_calls or 0,
                 "refreshed_at": now.isoformat(),
             }
 

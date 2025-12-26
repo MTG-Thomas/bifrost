@@ -17,6 +17,7 @@ import {
 	Bot,
 	Plug,
 	DollarSign,
+	Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -151,6 +152,12 @@ const navSections: NavSection[] = [
 				title: "ROI",
 				href: "/reports/roi",
 				icon: DollarSign,
+				requiresPlatformAdmin: true,
+			},
+			{
+				title: "Usage",
+				href: "/reports/usage",
+				icon: Activity,
 				requiresPlatformAdmin: true,
 			},
 		],

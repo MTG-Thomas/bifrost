@@ -6,11 +6,12 @@ Provides access to workflow execution history with filtering capabilities.
 
 import logging
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import existing Pydantic models for API compatibility
@@ -22,6 +23,8 @@ from src.models import (
     CleanupTriggeredResponse,
     ExecutionLogPublic,
 )
+from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSimple
+from src.models.orm.ai_usage import AIUsage
 
 from src.core.auth import Context, UserPrincipal
 from src.core.pubsub import publish_execution_update
@@ -164,7 +167,52 @@ class ExecutionRepository:
             for log in log_entries
         ]
 
-        # 3. Build response with conditional admin-only fields
+        # 3. Fetch AI usage data
+        ai_usage_query = (
+            select(AIUsage)
+            .where(AIUsage.execution_id == execution_id)
+            .order_by(AIUsage.sequence)
+        )
+        ai_usage_result = await self.db.execute(ai_usage_query)
+        ai_usage_entries = ai_usage_result.scalars().all()
+
+        ai_usage_list = [
+            AIUsagePublicSimple(
+                provider=entry.provider,
+                model=entry.model,
+                input_tokens=entry.input_tokens,
+                output_tokens=entry.output_tokens,
+                cost=str(entry.cost) if entry.cost else None,
+                duration_ms=entry.duration_ms,
+                timestamp=entry.timestamp.isoformat() if entry.timestamp else "",
+                sequence=entry.sequence,
+            )
+            for entry in ai_usage_entries
+        ]
+
+        # 4. Calculate AI usage totals
+        ai_totals = None
+        if ai_usage_entries:
+            totals_query = select(
+                func.coalesce(func.sum(AIUsage.input_tokens), 0).label("total_input"),
+                func.coalesce(func.sum(AIUsage.output_tokens), 0).label("total_output"),
+                func.coalesce(func.sum(AIUsage.cost), Decimal("0")).label("total_cost"),
+                func.coalesce(func.sum(AIUsage.duration_ms), 0).label("total_duration"),
+                func.count(AIUsage.id).label("call_count"),
+            ).where(AIUsage.execution_id == execution_id)
+
+            totals_result = await self.db.execute(totals_query)
+            totals_row = totals_result.one()
+
+            ai_totals = AIUsageTotalsSimple(
+                total_input_tokens=int(totals_row.total_input or 0),
+                total_output_tokens=int(totals_row.total_output or 0),
+                total_cost=str(totals_row.total_cost or Decimal("0")),
+                total_duration_ms=int(totals_row.total_duration or 0),
+                call_count=int(totals_row.call_count or 0),
+            )
+
+        # 5. Build response with conditional admin-only fields
         return WorkflowExecution(
             execution_id=str(execution.id),
             workflow_name=execution.workflow_name,
@@ -185,6 +233,9 @@ class ExecutionRepository:
             variables=execution.variables if user.is_superuser else None,
             peak_memory_bytes=execution.peak_memory_bytes if user.is_superuser else None,
             cpu_total_seconds=execution.cpu_total_seconds if user.is_superuser else None,
+            # AI usage tracking (available to all users)
+            ai_usage=ai_usage_list if ai_usage_list else None,
+            ai_totals=ai_totals,
         ), None
 
     async def get_execution_result(

@@ -25,6 +25,27 @@ class ExecutionLogPublic(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class AIUsagePublicSimple(BaseModel):
+    """Simplified AI usage for embedding in execution responses."""
+    provider: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost: str | None = None  # Decimal as string
+    duration_ms: int | None = None
+    timestamp: str  # ISO datetime string
+    sequence: int = 1
+
+
+class AIUsageTotalsSimple(BaseModel):
+    """Aggregated AI usage totals for embedding in execution responses."""
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cost: str = "0"  # Decimal as string
+    total_duration_ms: int = 0
+    call_count: int = 0
+
+
 class WorkflowExecution(BaseModel):
     """Workflow execution entity"""
     execution_id: str
@@ -48,6 +69,9 @@ class WorkflowExecution(BaseModel):
     # Resource metrics (admin only, null for non-admins)
     peak_memory_bytes: int | None = None
     cpu_total_seconds: float | None = None
+    # AI usage tracking
+    ai_usage: list[AIUsagePublicSimple] | None = None
+    ai_totals: AIUsageTotalsSimple | None = None
 
 
 class WorkflowExecutionRequest(BaseModel):

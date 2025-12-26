@@ -16,6 +16,7 @@ from src.models.enums import AgentAccessLevel, MessageRole
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
+    from src.models.orm.ai_usage import AIUsage
     from src.models.orm.organizations import Organization
     from src.models.orm.users import Role, User
     from src.models.orm.workflows import Workflow
@@ -168,6 +169,7 @@ class Conversation(Base):
         cascade="all, delete-orphan",
         order_by="Message.sequence",
     )
+    ai_usages: Mapped[list["AIUsage"]] = relationship(back_populates="conversation")
 
     __table_args__ = (
         Index("ix_conversations_user_id", "user_id"),

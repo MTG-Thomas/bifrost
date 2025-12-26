@@ -8,6 +8,7 @@ For API schemas (Create/Update/Public), see schemas.py
 """
 
 from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool, Conversation, Message
+from src.models.orm.ai_usage import AIModelPricing, AIUsage
 from src.models.orm.audit import AuditLog
 from src.models.orm.base import Base
 from src.models.orm.branding import GlobalBranding
@@ -42,6 +43,9 @@ __all__ = [
     "AgentRole",
     "Conversation",
     "Message",
+    # AI Usage
+    "AIModelPricing",
+    "AIUsage",
     # Forms
     "Form",
     "FormField",

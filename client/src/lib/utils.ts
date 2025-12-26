@@ -133,3 +133,46 @@ export function formatBytes(bytes: number, decimals = 2): string {
 	const i = Math.floor(Math.log(bytes) / Math.log(k));
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
+
+/**
+ * Format a number with thousand separators
+ * @param num - Number to format
+ * @returns Formatted string (e.g., "1,234,567")
+ */
+export function formatNumber(num: number): string {
+	return num.toLocaleString();
+}
+
+/**
+ * Format a cost value as currency
+ * @param cost - Cost value as string or number (may be null)
+ * @returns Formatted currency string (e.g., "$0.0012") or "N/A" if null
+ */
+export function formatCost(cost: string | number | null | undefined): string {
+	if (cost === null || cost === undefined) return "N/A";
+	const numCost = typeof cost === "string" ? parseFloat(cost) : cost;
+	if (isNaN(numCost)) return "N/A";
+	// Use up to 6 decimal places for small costs, fewer for larger ones
+	if (numCost === 0) return "$0.00";
+	if (numCost < 0.01) {
+		return `$${numCost.toFixed(6)}`;
+	} else if (numCost < 1) {
+		return `$${numCost.toFixed(4)}`;
+	} else {
+		return `$${numCost.toFixed(2)}`;
+	}
+}
+
+/**
+ * Format duration in milliseconds to a human-readable string
+ * @param ms - Duration in milliseconds (may be null)
+ * @returns Formatted duration string (e.g., "1.23s" or "456ms")
+ */
+export function formatDuration(ms: number | null | undefined): string {
+	if (ms === null || ms === undefined) return "N/A";
+	if (ms < 1000) {
+		return `${Math.round(ms)}ms`;
+	} else {
+		return `${(ms / 1000).toFixed(2)}s`;
+	}
+}

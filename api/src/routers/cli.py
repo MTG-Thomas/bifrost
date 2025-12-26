@@ -1290,6 +1290,27 @@ async def cli_ai_complete(
 
         logger.info(f"CLI AI complete: model={response.model}, tokens={response.input_tokens}/{response.output_tokens}")
 
+        # Record AI usage
+        try:
+            from src.services.ai_usage_service import record_ai_usage
+            from src.core.cache import get_shared_redis
+
+            redis_client = await get_shared_redis()
+            org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+            await record_ai_usage(
+                session=db,
+                redis_client=redis_client,
+                provider=client.provider_name,
+                model=response.model or client.model_name,
+                input_tokens=response.input_tokens or 0,
+                output_tokens=response.output_tokens or 0,
+                execution_id=UUID(request.execution_id) if request.execution_id else None,
+                organization_id=UUID(org_id) if org_id else None,
+                user_id=current_user.user_id,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record AI usage: {e}")
+
         return CLIAICompleteResponse(
             content=response.content,
             input_tokens=response.input_tokens,
@@ -1321,6 +1342,11 @@ async def cli_ai_stream(
     """Generate a streaming AI completion using SSE."""
     from src.services.llm import get_llm_client, LLMMessage
 
+    # Capture context for usage recording
+    user_id = current_user.user_id
+    org_id_str = request.org_id
+    execution_id_str = request.execution_id
+
     async def generate():
         try:
             client = await get_llm_client(db)
@@ -1342,6 +1368,27 @@ async def cli_ai_stream(
                 elif chunk.type == "done":
                     yield f"data: {json.dumps({'done': True, 'input_tokens': chunk.input_tokens, 'output_tokens': chunk.output_tokens})}\n\n"
                     yield "data: [DONE]\n\n"
+
+                    # Record AI usage after stream completes
+                    try:
+                        from src.services.ai_usage_service import record_ai_usage
+                        from src.core.cache import get_shared_redis
+
+                        redis_client = await get_shared_redis()
+                        org_id = await _get_cli_org_id(user_id, org_id_str, db)
+                        await record_ai_usage(
+                            session=db,
+                            redis_client=redis_client,
+                            provider=client.provider_name,
+                            model=client.model_name,
+                            input_tokens=chunk.input_tokens or 0,
+                            output_tokens=chunk.output_tokens or 0,
+                            execution_id=UUID(execution_id_str) if execution_id_str else None,
+                            organization_id=UUID(org_id) if org_id else None,
+                            user_id=user_id,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to record AI usage: {e}")
                 elif chunk.type == "error":
                     yield f"data: {json.dumps({'error': chunk.error})}\n\n"
                     break

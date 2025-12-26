@@ -52,6 +52,8 @@ from src.routers import (
     maintenance_router,
     roi_settings_router,
     roi_reports_router,
+    usage_reports_router,
+    ai_pricing_router,
 )
 
 # Configure logging
@@ -240,6 +242,8 @@ def create_app() -> FastAPI:
     app.include_router(maintenance_router)
     app.include_router(roi_settings_router)
     app.include_router(roi_reports_router)
+    app.include_router(usage_reports_router)
+    app.include_router(ai_pricing_router)
 
     # Root endpoint
     @app.get("/")

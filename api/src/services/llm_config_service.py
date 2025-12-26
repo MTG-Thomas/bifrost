@@ -41,12 +41,20 @@ class LLMProviderConfig:
 
 
 @dataclass
+class LLMModelInfo:
+    """Model information with both ID and display name."""
+
+    id: str
+    display_name: str
+
+
+@dataclass
 class LLMTestResult:
     """Result of testing LLM connection."""
 
     success: bool
     message: str
-    models: list[str] | None = None  # Available models if provider supports listing
+    models: list[LLMModelInfo] | None = None  # Available models if provider supports listing
 
 
 class LLMConfigService:
@@ -232,6 +240,8 @@ class LLMConfigService:
 
     async def _test_openai(self, api_key: str, model: str) -> LLMTestResult:
         """Test OpenAI connection and list models."""
+        import re
+
         try:
             from openai import AsyncOpenAI
 
@@ -239,7 +249,30 @@ class LLMConfigService:
 
             # List models to verify the API key works
             models_response = await client.models.list()
-            available_models = [m.id for m in models_response.data if "gpt" in m.id.lower()]
+
+            # Filter for GPT models and create model info with display names
+            # OpenAI date suffix pattern: -YYYY-MM-DD
+            date_pattern = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
+            model_infos: list[LLMModelInfo] = []
+            seen_display_names: set[str] = set()
+
+            for m in sorted(models_response.data, key=lambda x: x.id, reverse=True):
+                if "gpt" not in m.id.lower():
+                    continue
+
+                # Derive display name by stripping date suffix
+                display_name = date_pattern.sub("", m.id)
+
+                # Only include the newest version of each model (first seen since sorted desc)
+                if display_name in seen_display_names:
+                    continue
+
+                seen_display_names.add(display_name)
+                model_infos.append(LLMModelInfo(id=m.id, display_name=display_name))
+
+            # Sort by display name for consistent ordering
+            model_infos.sort(key=lambda x: x.display_name)
 
             # Check if the configured model is available
             all_model_ids = [m.id for m in models_response.data]
@@ -248,7 +281,7 @@ class LLMConfigService:
             return LLMTestResult(
                 success=True,
                 message=f"Connected to OpenAI. Model '{model}' {'is' if model_available else 'may not be'} available.",
-                models=sorted(available_models)[:20],  # Return top 20 GPT models
+                models=model_infos[:20],  # Return top 20 GPT models
             )
 
         except Exception as e:
@@ -263,26 +296,45 @@ class LLMConfigService:
 
             # List models to verify the API key works
             models_response = await client.models.list()
-            available_models = [m.id for m in models_response.data]
+
+            # Anthropic API returns display_name directly
+            # Only include the newest version of each display name
+            seen_display_names: set[str] = set()
+            model_infos: list[LLMModelInfo] = []
+
+            # Sort by ID descending to get newest versions first
+            for m in sorted(models_response.data, key=lambda x: x.id, reverse=True):
+                display_name = getattr(m, "display_name", m.id)
+
+                # Only include the newest version of each model
+                if display_name in seen_display_names:
+                    continue
+
+                seen_display_names.add(display_name)
+                model_infos.append(LLMModelInfo(id=m.id, display_name=display_name))
+
+            # Sort by display name for consistent ordering
+            model_infos.sort(key=lambda x: x.display_name)
 
             # Check if the configured model is available
-            model_available = model in available_models
+            all_model_ids = [m.id for m in models_response.data]
+            model_available = model in all_model_ids
 
             return LLMTestResult(
                 success=True,
                 message=f"Connected to Anthropic. Model '{model}' {'is' if model_available else 'may not be'} available.",
-                models=available_models,
+                models=model_infos,
             )
 
         except Exception as e:
             return LLMTestResult(success=False, message=f"Anthropic connection failed: {e}")
 
-    async def list_models(self) -> list[str] | None:
+    async def list_models(self) -> list[LLMModelInfo] | None:
         """
         List available models from the configured provider.
 
         Returns:
-            List of model IDs, or None if not available
+            List of model info objects, or None if not available
         """
         result = await self.test_connection()
         return result.models if result.success else None

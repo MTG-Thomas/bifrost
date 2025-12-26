@@ -7,6 +7,7 @@ import { Branding } from "@/pages/settings/Branding";
 import { GitHub } from "@/pages/settings/GitHub";
 import { LLMConfig } from "@/pages/settings/LLMConfig";
 import { Maintenance } from "@/pages/settings/Maintenance";
+import { Bot } from "lucide-react";
 
 export function Settings() {
 	const navigate = useNavigate();
@@ -15,16 +16,16 @@ export function Settings() {
 
 	// Parse the current tab from the URL path
 	const currentTab =
-		location.pathname.split("/settings/")[1] || "workflow-keys";
+		location.pathname.split("/settings/")[1] || "ai";
 
 	const handleTabChange = (value: string) => {
 		navigate(`/settings/${value}`);
 	};
 
-	// Redirect /settings to /settings/workflow-keys
+	// Redirect /settings to /settings/ai (first tab)
 	useEffect(() => {
 		if (location.pathname === "/settings") {
-			navigate("/settings/workflow-keys", { replace: true });
+			navigate("/settings/ai", { replace: true });
 		}
 	}, [location.pathname, navigate]);
 
@@ -42,12 +43,15 @@ export function Settings() {
 			<Tabs value={currentTab} onValueChange={handleTabChange}>
 				<div className="flex items-center justify-between">
 					<TabsList>
+						<TabsTrigger value="ai">
+							<Bot className="h-4 w-4 mr-1" />
+							AI
+						</TabsTrigger>
+						<TabsTrigger value="branding">Branding</TabsTrigger>
+						<TabsTrigger value="github">GitHub</TabsTrigger>
 						<TabsTrigger value="workflow-keys">
 							Workflow Keys
 						</TabsTrigger>
-						<TabsTrigger value="github">GitHub</TabsTrigger>
-						<TabsTrigger value="branding">Branding</TabsTrigger>
-						<TabsTrigger value="ai">AI</TabsTrigger>
 						<TabsTrigger value="maintenance">
 							Maintenance
 						</TabsTrigger>
@@ -56,20 +60,20 @@ export function Settings() {
 					{tabActions && <TabActions>{tabActions}</TabActions>}
 				</div>
 
-				<TabsContent value="workflow-keys" className="mt-6">
-					<WorkflowKeys />
-				</TabsContent>
-
-				<TabsContent value="github" className="mt-6">
-					<GitHub />
+				<TabsContent value="ai" className="mt-6">
+					<LLMConfig />
 				</TabsContent>
 
 				<TabsContent value="branding" className="mt-6">
 					<Branding onActionsChange={setTabActions} />
 				</TabsContent>
 
-				<TabsContent value="ai" className="mt-6">
-					<LLMConfig />
+				<TabsContent value="github" className="mt-6">
+					<GitHub />
+				</TabsContent>
+
+				<TabsContent value="workflow-keys" className="mt-6">
+					<WorkflowKeys />
 				</TabsContent>
 
 				<TabsContent value="maintenance" className="mt-6">

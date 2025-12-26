@@ -4554,6 +4554,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reports/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get usage report
+         * @description Get AI usage report for a date range. Platform admin only.
+         */
+        get: operations["get_usage_report_api_reports_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/ai/pricing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List model pricing
+         * @description List all model pricing plus models used without pricing configured.
+         */
+        get: operations["list_pricing_api_settings_ai_pricing_get"];
+        put?: never;
+        /**
+         * Create model pricing
+         * @description Create a new model pricing entry.
+         */
+        post: operations["create_pricing_api_settings_ai_pricing_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/ai/pricing/{pricing_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update model pricing
+         * @description Update an existing model pricing entry.
+         */
+        put: operations["update_pricing_api_settings_ai_pricing__pricing_id__put"];
+        post?: never;
+        /**
+         * Delete model pricing
+         * @description Delete an existing model pricing entry.
+         */
+        delete: operations["delete_pricing_api_settings_ai_pricing__pricing_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -4575,6 +4643,201 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AIModelPricingCreate
+         * @description Request model for creating AI model pricing.
+         */
+        AIModelPricingCreate: {
+            /**
+             * Provider
+             * @description AI provider (e.g., openai, anthropic)
+             */
+            provider: string;
+            /**
+             * Model
+             * @description Model identifier
+             */
+            model: string;
+            /**
+             * Input Price Per Million
+             * @description Cost per million input tokens
+             */
+            input_price_per_million: number | string;
+            /**
+             * Output Price Per Million
+             * @description Cost per million output tokens
+             */
+            output_price_per_million: number | string;
+            /**
+             * Effective Date
+             * @description Date pricing takes effect
+             */
+            effective_date?: string | null;
+        };
+        /**
+         * AIModelPricingListItem
+         * @description Pricing list item with usage indicator.
+         */
+        AIModelPricingListItem: {
+            /**
+             * Provider
+             * @description AI provider (e.g., openai, anthropic)
+             */
+            provider: string;
+            /**
+             * Model
+             * @description Model identifier
+             */
+            model: string;
+            /**
+             * Input Price Per Million
+             * @description Cost per million input tokens
+             */
+            input_price_per_million: string;
+            /**
+             * Output Price Per Million
+             * @description Cost per million output tokens
+             */
+            output_price_per_million: string;
+            /** Id */
+            id: number;
+            /** Effective Date */
+            effective_date: string;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /**
+             * Is Used
+             * @description Whether this model has been used
+             * @default false
+             */
+            is_used: boolean;
+        };
+        /**
+         * AIModelPricingListResponse
+         * @description Response for listing model pricing.
+         */
+        AIModelPricingListResponse: {
+            /** Pricing */
+            pricing?: components["schemas"]["AIModelPricingListItem"][];
+            /**
+             * Models Without Pricing
+             * @description Models that have been used but don't have pricing configured
+             */
+            models_without_pricing?: string[];
+        };
+        /**
+         * AIModelPricingPublic
+         * @description AI model pricing for API responses.
+         */
+        AIModelPricingPublic: {
+            /**
+             * Provider
+             * @description AI provider (e.g., openai, anthropic)
+             */
+            provider: string;
+            /**
+             * Model
+             * @description Model identifier
+             */
+            model: string;
+            /**
+             * Input Price Per Million
+             * @description Cost per million input tokens
+             */
+            input_price_per_million: string;
+            /**
+             * Output Price Per Million
+             * @description Cost per million output tokens
+             */
+            output_price_per_million: string;
+            /** Id */
+            id: number;
+            /** Effective Date */
+            effective_date: string;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /**
+         * AIModelPricingUpdate
+         * @description Request model for updating AI model pricing.
+         */
+        AIModelPricingUpdate: {
+            /**
+             * Input Price Per Million
+             * @description Cost per million input tokens
+             */
+            input_price_per_million?: number | string | null;
+            /**
+             * Output Price Per Million
+             * @description Cost per million output tokens
+             */
+            output_price_per_million?: number | string | null;
+            /**
+             * Effective Date
+             * @description Date pricing takes effect
+             */
+            effective_date?: string | null;
+        };
+        /**
+         * AIUsagePublicSimple
+         * @description Simplified AI usage for embedding in execution responses.
+         */
+        AIUsagePublicSimple: {
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Cost */
+            cost?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Timestamp */
+            timestamp: string;
+            /**
+             * Sequence
+             * @default 1
+             */
+            sequence: number;
+        };
+        /**
+         * AIUsageTotalsSimple
+         * @description Aggregated AI usage totals for embedding in execution responses.
+         */
+        AIUsageTotalsSimple: {
+            /**
+             * Total Input Tokens
+             * @default 0
+             */
+            total_input_tokens: number;
+            /**
+             * Total Output Tokens
+             * @default 0
+             */
+            total_output_tokens: number;
+            /**
+             * Total Cost
+             * @default 0
+             */
+            total_cost: string;
+            /**
+             * Total Duration Ms
+             * @default 0
+             */
+            total_duration_ms: number;
+            /**
+             * Call Count
+             * @default 0
+             */
+            call_count: number;
+        };
         /**
          * AdminRevokeRequest
          * @description Admin revocation request.
@@ -4913,6 +5176,11 @@ export interface components {
              * @description Override model (e.g., 'gpt-4o', 'claude-sonnet-4-20250514')
              */
             model?: string | null;
+            /**
+             * Execution Id
+             * @description Execution ID for AI usage tracking
+             */
+            execution_id?: string | null;
         };
         /**
          * CLIAICompleteResponse
@@ -5738,6 +6006,33 @@ export interface components {
             last_message_preview?: string | null;
         };
         /**
+         * ConversationUsage
+         * @description AI usage by conversation.
+         */
+        ConversationUsage: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Conversation Title */
+            conversation_title?: string | null;
+            /**
+             * Message Count
+             * @default 0
+             */
+            message_count: number;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+            /** Ai Cost */
+            ai_cost?: string;
+        };
+        /**
          * CreateOAuthConnectionRequest
          * @description Request model for creating a new OAuth connection
          *     POST /api/oauth/connections
@@ -6471,6 +6766,13 @@ export interface components {
              * @description Expected ETag for conflict detection (optional)
              */
             expected_etag?: string | null;
+            /**
+             * Force Ids
+             * @description Map of function_name -> ID to inject. Used when user chooses 'Use Existing IDs' for workflow ID conflicts.
+             */
+            force_ids?: {
+                [key: string]: string;
+            } | null;
         };
         /**
          * FileContentResponse
@@ -8830,6 +9132,38 @@ export interface components {
             } | null;
         };
         /**
+         * OrganizationUsage
+         * @description AI usage by organization.
+         */
+        OrganizationUsage: {
+            /** Organization Id */
+            organization_id: string;
+            /** Organization Name */
+            organization_name: string;
+            /**
+             * Execution Count
+             * @default 0
+             */
+            execution_count: number;
+            /**
+             * Conversation Count
+             * @default 0
+             */
+            conversation_count: number;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+            /** Ai Cost */
+            ai_cost?: string;
+        };
+        /**
          * PackageInstallResponse
          * @description Response model for package installation
          */
@@ -10394,6 +10728,82 @@ export interface components {
             size: number;
         };
         /**
+         * UsageReportResponse
+         * @description Complete usage report response.
+         */
+        UsageReportResponse: {
+            summary: components["schemas"]["UsageReportSummary"];
+            /** Trends */
+            trends?: components["schemas"]["UsageTrend"][];
+            /** By Workflow */
+            by_workflow?: components["schemas"]["WorkflowUsage"][];
+            /** By Conversation */
+            by_conversation?: components["schemas"]["ConversationUsage"][];
+            /** By Organization */
+            by_organization?: components["schemas"]["OrganizationUsage"][];
+        };
+        /**
+         * UsageReportSummary
+         * @description Summary for usage reports.
+         */
+        UsageReportSummary: {
+            /**
+             * Total Ai Cost
+             * @description Total AI cost in USD
+             */
+            total_ai_cost?: string;
+            /**
+             * Total Input Tokens
+             * @description Total input tokens
+             * @default 0
+             */
+            total_input_tokens: number;
+            /**
+             * Total Output Tokens
+             * @description Total output tokens
+             * @default 0
+             */
+            total_output_tokens: number;
+            /**
+             * Total Ai Calls
+             * @description Total number of AI API calls
+             * @default 0
+             */
+            total_ai_calls: number;
+            /**
+             * Total Cpu Seconds
+             * @description Total CPU time in seconds
+             * @default 0
+             */
+            total_cpu_seconds: number;
+            /**
+             * Peak Memory Bytes
+             * @description Peak memory usage in bytes
+             * @default 0
+             */
+            peak_memory_bytes: number;
+        };
+        /**
+         * UsageTrend
+         * @description Usage trend data point.
+         */
+        UsageTrend: {
+            /** Date */
+            date: string;
+            /** Ai Cost */
+            ai_cost?: string;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+        };
+        /**
          * UserFormsResponse
          * @description Response model for getting forms accessible to a user
          */
@@ -10622,6 +11032,9 @@ export interface components {
             peak_memory_bytes?: number | null;
             /** Cpu Total Seconds */
             cpu_total_seconds?: number | null;
+            /** Ai Usage */
+            ai_usage?: components["schemas"]["AIUsagePublicSimple"][] | null;
+            ai_totals?: components["schemas"]["AIUsageTotalsSimple"] | null;
         };
         /**
          * WorkflowExecutionRequest
@@ -11042,6 +11455,41 @@ export interface components {
             total_time_saved: number;
             /** Total Value */
             total_value: number;
+        };
+        /**
+         * WorkflowUsage
+         * @description AI usage by workflow.
+         */
+        WorkflowUsage: {
+            /** Workflow Name */
+            workflow_name: string;
+            /**
+             * Execution Count
+             * @default 0
+             */
+            execution_count: number;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+            /** Ai Cost */
+            ai_cost?: string;
+            /**
+             * Cpu Seconds
+             * @default 0
+             */
+            cpu_seconds: number;
+            /**
+             * Memory Bytes
+             * @default 0
+             */
+            memory_bytes: number;
         };
         /**
          * WorkflowValidationRequest
@@ -18765,6 +19213,161 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ROITrendsResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_usage_report_api_reports_usage_get: {
+        parameters: {
+            query: {
+                /** @description Start date (inclusive) */
+                start_date: string;
+                /** @description End date (inclusive) */
+                end_date: string;
+                /** @description Source filter: executions, chat, or all */
+                source?: "executions" | "chat" | "all";
+                /** @description Filter by organization ID */
+                org_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageReportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_pricing_api_settings_ai_pricing_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIModelPricingListResponse"];
+                };
+            };
+        };
+    };
+    create_pricing_api_settings_ai_pricing_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIModelPricingCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIModelPricingPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_pricing_api_settings_ai_pricing__pricing_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pricing_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIModelPricingUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIModelPricingPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_pricing_api_settings_ai_pricing__pricing_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pricing_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

@@ -17,6 +17,7 @@ from src.models.contracts.llm import (
     EmbeddingTestResponse,
     LLMConfigRequest,
     LLMConfigResponse,
+    LLMModelInfo,
     LLMModelsResponse,
     LLMTestRequest,
     LLMTestResponse,
@@ -141,6 +142,7 @@ async def test_llm_connection(
 
     Tests the connection without saving the configuration.
     Useful for validating API keys before committing.
+    Also caches the model ID -> display name mapping for AI usage tracking.
     Requires platform admin access.
     """
     service = LLMConfigService(db)
@@ -160,10 +162,14 @@ async def test_llm_connection(
     # Rollback to not persist the test config
     await db.rollback()
 
+    # Cache model mapping for AI usage tracking (even if test-only)
+    if result.success and result.models:
+        await _cache_model_mapping_from_result(request.provider, result.models)
+
     return LLMTestResponse(
         success=result.success,
         message=result.message,
-        models=result.models,
+        models=[LLMModelInfo(id=m.id, display_name=m.display_name) for m in result.models] if result.models else None,
     )
 
 
@@ -176,6 +182,7 @@ async def test_saved_llm_connection(
     Test connection using saved LLM configuration.
 
     Tests the currently saved configuration.
+    Also refreshes the model ID -> display name mapping cache.
     Requires platform admin access.
     """
     service = LLMConfigService(db)
@@ -189,10 +196,14 @@ async def test_saved_llm_connection(
 
     result = await service.test_connection()
 
+    # Cache model mapping for AI usage tracking
+    if result.success and result.models:
+        await _cache_model_mapping_from_result(config.provider, result.models)
+
     return LLMTestResponse(
         success=result.success,
         message=result.message,
-        models=result.models,
+        models=[LLMModelInfo(id=m.id, display_name=m.display_name) for m in result.models] if result.models else None,
     )
 
 
@@ -225,7 +236,7 @@ async def list_llm_models(
         )
 
     return LLMModelsResponse(
-        models=models,
+        models=[LLMModelInfo(id=m.id, display_name=m.display_name) for m in models],
         provider=config.provider,
     )
 
@@ -434,3 +445,33 @@ async def test_embedding_connection(
             message=f"Connection failed: {str(e)}",
             dimensions=None,
         )
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+async def _cache_model_mapping_from_result(
+    provider: str,
+    models: list,
+) -> None:
+    """
+    Cache model ID -> display name mapping from test connection results.
+
+    This populates the model registry cache so that AI usage recording
+    can look up display names without making provider API calls.
+
+    Args:
+        provider: LLM provider ("openai" or "anthropic")
+        models: List of LLMModelInfo dataclasses from test result
+    """
+    from src.core.cache import get_shared_redis
+    from src.services.model_registry import cache_model_mapping
+
+    try:
+        redis_client = await get_shared_redis()
+        mapping = {m.id: m.display_name for m in models}
+        await cache_model_mapping(redis_client, provider, mapping)
+    except Exception as e:
+        logger.warning(f"Failed to cache model mapping for {provider}: {e}")

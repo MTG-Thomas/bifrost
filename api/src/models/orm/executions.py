@@ -16,6 +16,7 @@ from src.models.enums import ExecutionStatus
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
+    from src.models.orm.ai_usage import AIUsage
     from src.models.orm.cli import CLISession
     from src.models.orm.forms import Form
     from src.models.orm.organizations import Organization
@@ -87,6 +88,7 @@ class Execution(Base):
     )
     form: Mapped["Form | None"] = relationship(back_populates="executions")
     logs: Mapped[list["ExecutionLog"]] = relationship(back_populates="execution")
+    ai_usages: Mapped[list["AIUsage"]] = relationship(back_populates="execution")
 
     __table_args__ = (
         Index("ix_executions_org_status", "organization_id", "status"),

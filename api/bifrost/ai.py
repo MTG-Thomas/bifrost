@@ -307,6 +307,12 @@ class ai:
         if response_format:
             msg_list = _build_structured_prompt(msg_list, response_format)
 
+        # Get execution context for usage tracking
+        from ._context import _execution_context
+
+        ctx = _execution_context.get()
+        execution_id = str(ctx.execution_id) if ctx and ctx.execution_id else None
+
         # Call API
         client = get_client()
         response = await client.post(
@@ -317,6 +323,7 @@ class ai:
                 "temperature": temperature,
                 "org_id": org_id,
                 "model": model,
+                "execution_id": execution_id,
             }
         )
         response.raise_for_status()
@@ -385,6 +392,12 @@ class ai:
         if knowledge:
             msg_list = await _inject_knowledge_context(msg_list, knowledge, org_id)
 
+        # Get execution context for usage tracking
+        from ._context import _execution_context
+
+        ctx = _execution_context.get()
+        execution_id = str(ctx.execution_id) if ctx and ctx.execution_id else None
+
         # Call API with SSE streaming
         client = get_client()
         async with client.stream(
@@ -396,6 +409,7 @@ class ai:
                 "temperature": temperature,
                 "org_id": org_id,
                 "model": model,
+                "execution_id": execution_id,
             }
         ) as response:
             async for line in response.aiter_lines():

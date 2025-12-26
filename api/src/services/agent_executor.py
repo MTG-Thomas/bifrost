@@ -326,6 +326,22 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 duration_ms=duration_ms,
             )
 
+            # 6b. Record AI usage
+            try:
+                await self._record_ai_usage(
+                    provider=llm_client.provider_name,
+                    model=llm_client.model_name,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                    duration_ms=duration_ms,
+                    conversation_id=conversation.id,
+                    message_id=assistant_msg.id,
+                    organization_id=agent.organization_id if agent else None,
+                    user_id=conversation.user_id,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record AI usage: {e}")
+
             # 7. Yield done chunk with final content (for non-streaming mode)
             yield ChatStreamChunk(
                 type="done",
@@ -845,3 +861,47 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 error=str(e),
                 duration_ms=int((time.time() - start_time) * 1000),
             )
+
+    async def _record_ai_usage(
+        self,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        duration_ms: int | None = None,
+        conversation_id: UUID | None = None,
+        message_id: UUID | None = None,
+        organization_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> None:
+        """
+        Record AI usage for tracking and cost calculation.
+
+        Args:
+            provider: LLM provider name (e.g., 'openai', 'anthropic')
+            model: Model identifier
+            input_tokens: Number of input tokens used
+            output_tokens: Number of output tokens generated
+            duration_ms: Request duration in milliseconds
+            conversation_id: UUID of the conversation
+            message_id: UUID of the generated message
+            organization_id: UUID of the organization
+            user_id: UUID of the user
+        """
+        from src.core.cache import get_shared_redis
+        from src.services.ai_usage_service import record_ai_usage
+
+        redis_client = await get_shared_redis()
+        await record_ai_usage(
+            session=self.session,
+            redis_client=redis_client,
+            provider=provider,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration_ms=duration_ms,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            organization_id=organization_id,
+            user_id=user_id,
+        )

@@ -115,6 +115,11 @@ const ROIReports = lazy(() =>
 		default: m.ROIReports,
 	})),
 );
+const UsageReports = lazy(() =>
+	import("@/pages/UsageReports").then((m) => ({
+		default: m.UsageReports,
+	})),
+);
 const DevicePage = lazy(() =>
 	import("@/pages/DevicePage").then((m) => ({ default: m.DevicePage })),
 );
@@ -377,6 +382,14 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute requirePlatformAdmin>
 									<ROIReports />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="reports/usage"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<UsageReports />
 								</ProtectedRoute>
 							}
 						/>

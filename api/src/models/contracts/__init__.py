@@ -118,6 +118,8 @@ from src.models.contracts.agents import (
 
 # Executions & Logs
 from src.models.contracts.executions import (
+    AIUsagePublicSimple,
+    AIUsageTotalsSimple,
     CleanupTriggeredResponse,
     ExecutionBase,
     ExecutionCreate,
@@ -406,6 +408,27 @@ from src.models.contracts.roi import (
     ROITrendsResponse,
 )
 
+# AI Usage
+from src.models.contracts.ai_usage import (
+    AIModelPricingBase,
+    AIModelPricingCreate,
+    AIModelPricingUpdate,
+    AIModelPricingPublic,
+    AIModelPricingListItem,
+    AIModelPricingListResponse,
+    AIUsageBase,
+    AIUsagePublic,
+    AIUsageTotals,
+    AIUsageByModel,
+    AIUsageSummaryResponse,
+    UsageReportSummary,
+    UsageTrend,
+    WorkflowUsage,
+    ConversationUsage,
+    OrganizationUsage,
+    UsageReportResponse,
+)
+
 __all__ = [
     # Re-export everything defined above
     # NOTE: Bare names like User, Organization, Role, Form, Config, ExecutionLog
@@ -507,6 +530,8 @@ __all__ = [
     # Executions
     "ExecutionBase",
     "ExecutionLogPublic",
+    "AIUsagePublicSimple",
+    "AIUsageTotalsSimple",
     "WorkflowExecution",
     "WorkflowExecutionRequest",
     "WorkflowExecutionResponse",
@@ -724,6 +749,24 @@ __all__ = [
     "ROIByOrganizationResponse",
     "ROITrendEntry",
     "ROITrendsResponse",
+    # AI Usage
+    "AIModelPricingBase",
+    "AIModelPricingCreate",
+    "AIModelPricingUpdate",
+    "AIModelPricingPublic",
+    "AIModelPricingListItem",
+    "AIModelPricingListResponse",
+    "AIUsageBase",
+    "AIUsagePublic",
+    "AIUsageTotals",
+    "AIUsageByModel",
+    "AIUsageSummaryResponse",
+    "UsageReportSummary",
+    "UsageTrend",
+    "WorkflowUsage",
+    "ConversationUsage",
+    "OrganizationUsage",
+    "UsageReportResponse",
     # SDK Response Models
     "ConfigData",
     "IntegrationData",
