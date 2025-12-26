@@ -97,7 +97,7 @@ class WorkspaceSyncService:
         logger.info("Workspace sync service stopped")
 
     async def _download_initial_workspace(self) -> None:
-        """Download workspace from S3 on startup and reindex."""
+        """Download workspace from S3 on startup and check for files needing indexing."""
         from src.services.file_storage_service import FileStorageService
         from src.core.database import get_session_factory
 
@@ -109,17 +109,18 @@ class WorkspaceSyncService:
                 # Download all files from S3 to local workspace
                 await storage.download_workspace(WORKSPACE_PATH)
 
-                # Reindex workspace_files and reconcile orphaned workflows
-                # inject_ids=False means detect only, don't modify files
-                counts = await storage.reindex_workspace_files(WORKSPACE_PATH, inject_ids=False)
+                logger.info(f"Downloaded workspace from S3 to {WORKSPACE_PATH}")
 
-                await db.commit()
-                logger.info(f"Downloaded and reindexed workspace from S3 to {WORKSPACE_PATH}")
-
-                # Check if any files need ID injection and create notification
-                files_needing_ids = counts.get("files_needing_ids", [])
-                if isinstance(files_needing_ids, list) and len(files_needing_ids) > 0:
-                    await self._create_maintenance_notification(db, files_needing_ids)
+                # TODO: Re-enable after confirming not causing startup hang
+                # # Lightweight scan for files needing ID injection (read-only, no DB writes)
+                # files_needing_ids = storage.detect_files_needing_ids(WORKSPACE_PATH)
+                #
+                # if files_needing_ids:
+                #     logger.info(
+                #         f"Found {len(files_needing_ids)} file(s) needing indexing"
+                #     )
+                #     await self._create_maintenance_notification(db, files_needing_ids)
+                #     await db.commit()
 
         except Exception as e:
             logger.warning(f"Failed to download workspace from S3: {e}")

@@ -1306,6 +1306,69 @@ async def get_integration_sdk_data(
 # =============================================================================
 
 
+def _get_config_schema_for_auth_type(auth_type: str) -> list[ConfigSchemaItem]:
+    """Get config schema items required for a given auth type.
+
+    Auto-creates the necessary config fields (base_url, token, etc.)
+    so users can configure them in the UI.
+    """
+    items = [
+        ConfigSchemaItem(
+            key="base_url",
+            type="string",
+            required=True,
+            description="Base URL for the API (e.g., https://api.example.com)",
+        ),
+    ]
+
+    if auth_type == "bearer":
+        items.append(
+            ConfigSchemaItem(
+                key="token",
+                type="secret",
+                required=True,
+                description="Bearer token for authentication",
+            )
+        )
+    elif auth_type == "api_key":
+        items.extend(
+            [
+                ConfigSchemaItem(
+                    key="header_name",
+                    type="string",
+                    required=True,
+                    description="HTTP header name (e.g., x-api-key, Authorization)",
+                ),
+                ConfigSchemaItem(
+                    key="api_key",
+                    type="secret",
+                    required=True,
+                    description="API key value",
+                ),
+            ]
+        )
+    elif auth_type == "basic":
+        items.extend(
+            [
+                ConfigSchemaItem(
+                    key="username",
+                    type="string",
+                    required=True,
+                    description="Username for basic auth",
+                ),
+                ConfigSchemaItem(
+                    key="password",
+                    type="secret",
+                    required=True,
+                    description="Password for basic auth",
+                ),
+            ]
+        )
+    # oauth: only needs base_url (token comes from OAuth provider)
+
+    return items
+
+
 class GenerateSDKRequest(BaseModel):
     """Request model for generating an SDK from an OpenAPI spec."""
 
@@ -1368,12 +1431,19 @@ async def generate_sdk(
     repo = IntegrationsRepository(ctx.db)
 
     # Verify integration exists
-    integration = await repo.get_integration(integration_id)
+    integration = await repo.get_integration_by_id(integration_id)
     if not integration:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Integration not found",
         )
+
+    # Auto-create config schema for auth type (base_url, token, etc.)
+    schema_items = _get_config_schema_for_auth_type(request.auth_type)
+    await repo.update_integration(
+        integration_id,
+        IntegrationUpdate(config_schema=schema_items),
+    )
 
     try:
         # Generate the SDK

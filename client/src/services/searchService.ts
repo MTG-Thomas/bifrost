@@ -4,34 +4,36 @@
  * Uses auto-generated types from OpenAPI spec
  */
 
+import { apiClient, $api } from "@/lib/api-client";
 import type { components } from "@/lib/v1";
-import { authFetch } from "@/lib/api-client";
 
 // Auto-generated types from OpenAPI spec
 export type SearchRequest = components["schemas"]["SearchRequest"];
 export type SearchResult = components["schemas"]["SearchResult"];
 export type SearchResponse = components["schemas"]["SearchResponse"];
 
+/**
+ * Hook to search file contents (for React components)
+ */
+export function useSearchFiles() {
+	return $api.useMutation("post", "/api/files/search");
+}
+
+/**
+ * Imperative search service for use in callbacks
+ */
 export const searchService = {
-	/**
-	 * Search file contents for text or regex patterns
-	 */
 	async searchFiles(request: SearchRequest): Promise<SearchResponse> {
-		const response = await authFetch("/api/editor/search", {
-			method: "POST",
-			body: JSON.stringify(request),
+		const { data, error } = await apiClient.POST("/api/files/search", {
+			body: request,
 		});
 
-		if (!response.ok) {
-			const error = await response.json().catch(() => ({
-				error: "Unknown",
-				message: response.statusText,
-			}));
+		if (error) {
 			throw new Error(
-				`Failed to search files: ${error.message || response.statusText}`,
+				(error as { detail?: string }).detail || "Failed to search files",
 			);
 		}
 
-		return response.json();
+		return data;
 	},
 };

@@ -1,0 +1,295 @@
+"""
+{{ title }} - Python SDK
+
+Auto-generated from OpenAPI spec with Bifrost integration support.
+Integration: {{ integration_name }}
+Auth Type: {{ auth_type }}
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+import requests
+
+
+# =============================================================================
+# Helper Classes
+# =============================================================================
+
+
+class DotDict(dict):
+    """Dict subclass that allows dot notation access to keys."""
+
+    def __getattr__(self, key):
+        try:
+            value = self[key]
+            if isinstance(value, dict) and not isinstance(value, DotDict):
+                return DotDict(value)
+            elif isinstance(value, list):
+                return [DotDict(item) if isinstance(item, dict) else item for item in value]
+            return value
+        except KeyError:
+            raise AttributeError(f"No attribute {key}")
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+    def __delattr__(self, key):
+        try:
+            del self[key]
+        except KeyError:
+            raise AttributeError(f"No attribute {key}")
+
+
+class SDKError(Exception):
+    """SDK operation failed with details about the HTTP response."""
+
+    def __init__(self, message: str, status_code: int = None, response_body: str = None):
+        self.status_code = status_code
+        self.response_body = response_body
+        super().__init__(message)
+
+    def __str__(self):
+        return self.args[0] if self.args else "SDK Error"
+
+
+# =============================================================================
+# Data Models
+# =============================================================================
+
+{% for model in models %}
+@dataclass
+class {{ model.name }}:
+{% if model.description %}
+    """{{ model.description }}"""
+{% endif %}
+{% if not model.fields %}
+    pass
+{% else %}
+{% for field in model.fields %}
+    {{ field.name }}: {{ field.type }}{% if field.default is not none %} = {{ field.default }}{% endif %}{% if field.comment %}  # {{ field.comment }}{% endif %}
+
+{% endfor %}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> '{{ model.name }}':
+        if data is None:
+            return None
+        return cls(**{
+{% for field in model.fields %}
+            '{{ field.name }}': data.get('{{ field.original_name }}'),
+{% endfor %}
+        })
+{% endif %}
+
+
+{% endfor %}
+
+# =============================================================================
+# Internal Client
+# =============================================================================
+
+
+class _{{ class_name }}Client:
+    """Internal client implementation for {{ class_name }}."""
+
+    # Status codes that trigger automatic retry
+    RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+    def __init__(
+        self,
+        base_url: str,
+        session: requests.Session,
+        timeout: float = 30.0,
+        max_retries: int = 3,
+        base_backoff: float = 1.0,
+        max_backoff: float = 60.0,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.session = session
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.base_backoff = base_backoff
+        self.max_backoff = max_backoff
+
+    def _request_with_retry(
+        self, method: str, url: str, **kwargs
+    ) -> requests.Response:
+        """Execute HTTP request with exponential backoff retry for transient failures."""
+        kwargs.setdefault("timeout", self.timeout)
+        last_response = None
+
+        for attempt in range(self.max_retries + 1):
+            response = self.session.request(method, url, **kwargs)
+            last_response = response
+
+            # Success or non-retryable error - return immediately
+            if response.status_code not in self.RETRYABLE_STATUS_CODES:
+                return response
+
+            # Don't retry after the last attempt
+            if attempt >= self.max_retries:
+                break
+
+            # Calculate wait time
+            if response.status_code == 429:
+                # Respect Retry-After header if present
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        wait = float(retry_after)
+                    except ValueError:
+                        # Retry-After can be a date string, fall back to backoff
+                        wait = self.base_backoff * (2 ** attempt)
+                else:
+                    wait = self.base_backoff * (2 ** attempt)
+            else:
+                # Exponential backoff for 5xx errors
+                wait = self.base_backoff * (2 ** attempt)
+
+            # Cap the wait time
+            wait = min(wait, self.max_backoff)
+            time.sleep(wait)
+
+        return last_response
+
+    def _auto_convert(self, data):
+        """Automatically convert dicts to DotDict for dot notation access."""
+        if data is None:
+            return None
+        if isinstance(data, list):
+            return [self._auto_convert(item) for item in data]
+        if isinstance(data, dict):
+            return DotDict(data)
+        return data
+
+{% for method in methods %}
+    def {{ method.name }}(self, {{ method.params }}) -> {{ method.return_type }}:
+        """{{ method.summary }}"""
+        url = f"{self.base_url}{{ method.url_template }}"
+{% if method.http_method in ['post', 'put', 'patch'] %}
+        response = self._request_with_retry("{{ method.http_method | upper }}", url, json=data, params=kwargs)
+{% else %}
+        response = self._request_with_retry("{{ method.http_method | upper }}", url, params=kwargs)
+{% endif %}
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text[:1000] if e.response else "No response body"
+            raise SDKError(
+                f"HTTP {e.response.status_code}: {body}",
+                status_code=e.response.status_code,
+                response_body=body,
+            )
+        try:
+            result = response.json() if response.content else None
+        except requests.exceptions.JSONDecodeError:
+            raise SDKError(
+                f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
+                status_code=response.status_code,
+                response_body=response.text[:1000],
+            )
+        return self._auto_convert(result)
+
+{% endfor %}
+
+
+# =============================================================================
+# Lazy Client (Bifrost Integration)
+# =============================================================================
+
+
+class _LazyClient:
+    """
+    Module-level proxy that auto-initializes from Bifrost integration.
+    Provides zero-config authentication experience.
+    """
+
+    _client: Optional[_{{ class_name }}Client] = None
+    _integration_name: str = "{{ integration_name }}"
+    _auth_type: str = "{{ auth_type }}"
+
+    async def _ensure_client(self):
+        if self._client is not None:
+            return self._client
+
+        from bifrost import integrations
+
+        integration = await integrations.get(self._integration_name)
+        if not integration:
+            raise RuntimeError(f"Integration '{self._integration_name}' not found")
+
+        config = integration.config or {}
+        session = requests.Session()
+
+{% if auth_type == 'api_key' %}
+        # API Key authentication
+        header_name = config.get("header_name", "Authorization")
+        api_key = config.get("api_key")
+        if api_key:
+            session.headers[header_name] = api_key
+{% elif auth_type == 'bearer' %}
+        # Bearer token authentication
+        token = config.get("token")
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+{% elif auth_type == 'basic' %}
+        # Basic authentication
+        import base64
+        username = config.get("username", "")
+        password = config.get("password", "")
+        if username or password:
+            credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+            session.headers["Authorization"] = f"Basic {credentials}"
+{% elif auth_type == 'oauth' %}
+        # OAuth authentication
+        if integration.oauth and integration.oauth.access_token:
+            session.headers["Authorization"] = f"Bearer {integration.oauth.access_token}"
+        else:
+            raise RuntimeError("OAuth not configured or access token missing")
+{% endif %}
+
+        base_url = config.get("base_url", "")
+        if not base_url:
+            raise RuntimeError(f"base_url not configured for integration '{self._integration_name}'")
+
+        # Retry and timeout configuration (can be customized per-integration)
+        timeout = float(config.get("timeout", 30.0))
+        max_retries = int(config.get("max_retries", 3))
+        base_backoff = float(config.get("base_backoff", 1.0))
+        max_backoff = float(config.get("max_backoff", 60.0))
+
+        self._client = _{{ class_name }}Client(
+            base_url,
+            session,
+            timeout=timeout,
+            max_retries=max_retries,
+            base_backoff=base_backoff,
+            max_backoff=max_backoff,
+        )
+        return self._client
+
+    def __getattr__(self, name: str):
+        """Proxy attribute access to the real client."""
+        async def method_wrapper(*args, **kwargs):
+            client = await self._ensure_client()
+            method = getattr(client, name)
+            return method(*args, **kwargs)
+        return method_wrapper
+
+
+# =============================================================================
+# Module-level API
+# =============================================================================
+
+
+# Module-level lazy client instance
+_lazy = _LazyClient()
+
+
+def __getattr__(name: str):
+    """Enable module-level attribute access to lazy client methods."""
+    return getattr(_lazy, name)

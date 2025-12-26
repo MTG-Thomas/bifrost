@@ -935,6 +935,44 @@ class FileStorageService:
 
         return counts
 
+    def detect_files_needing_ids(self, workspace_path: Path) -> list[str]:
+        """
+        Scan workspace for Python files with decorators missing IDs.
+
+        This is a lightweight read-only operation that can run safely
+        from multiple processes without database writes.
+
+        Args:
+            workspace_path: Path to workspace directory
+
+        Returns:
+            List of relative file paths that need ID injection
+        """
+        from src.services.decorator_property_service import DecoratorPropertyService
+        from src.services.editor.file_filter import is_excluded_path
+
+        files_needing_ids: list[str] = []
+        decorator_service = DecoratorPropertyService()
+
+        for file_path in workspace_path.rglob("*.py"):
+            if not file_path.is_file():
+                continue
+
+            rel_path = str(file_path.relative_to(workspace_path))
+            if is_excluded_path(rel_path):
+                continue
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+                inject_result = decorator_service.inject_ids_if_missing(content)
+
+                if inject_result.modified:
+                    files_needing_ids.append(rel_path)
+            except Exception as e:
+                logger.warning(f"Failed to check {rel_path} for missing IDs: {e}")
+
+        return files_needing_ids
+
     async def _extract_metadata(
         self, path: str, content: bytes, skip_id_injection: bool = False
     ) -> tuple[bytes, bool, bool]:

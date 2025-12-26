@@ -19,18 +19,15 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import {
+	useGenerateSDK,
+	useUpdateIntegrationConfig,
+} from "@/services/integrations";
+import type { components } from "@/lib/v1";
 
 type AuthType = "bearer" | "api_key" | "basic" | "oauth";
 
-interface GenerateSDKResponse {
-	success: boolean;
-	module_name: string;
-	module_path: string;
-	class_name: string;
-	endpoint_count: number;
-	schema_count: number;
-	usage_example: string;
-}
+type GenerateSDKResponse = components["schemas"]["GenerateSDKResponse"];
 
 interface GenerateSDKDialogProps {
 	open: boolean;
@@ -50,8 +47,14 @@ export function GenerateSDKDialog({
 	const [specUrl, setSpecUrl] = useState("");
 	const [authType, setAuthType] = useState<AuthType>("bearer");
 	const [moduleName, setModuleName] = useState("");
-	const [isGenerating, setIsGenerating] = useState(false);
 	const [result, setResult] = useState<GenerateSDKResponse | null>(null);
+
+	// React Query mutations
+	const generateSDKMutation = useGenerateSDK();
+	const updateConfigMutation = useUpdateIntegrationConfig();
+
+	const isGenerating =
+		generateSDKMutation.isPending || updateConfigMutation.isPending;
 
 	// Auth-specific fields
 	const [baseUrl, setBaseUrl] = useState("");
@@ -119,54 +122,24 @@ export function GenerateSDKDialog({
 			return;
 		}
 
-		setIsGenerating(true);
 		try {
-			// First, save the config to the integration
-			if (authType !== "oauth") {
-				const configResponse = await fetch(
-					`/api/integrations/${integrationId}/config`,
-					{
-						method: "PUT",
-						headers: {
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify({
-							config: buildConfigPayload(),
-						}),
-					},
-				);
-
-				if (!configResponse.ok) {
-					const error = await configResponse.json();
-					throw new Error(
-						error.detail || "Failed to save configuration",
-					);
-				}
-			}
+			// Always save config - at minimum base_url is needed for SDK
+			await updateConfigMutation.mutateAsync({
+				params: { path: { integration_id: integrationId } },
+				body: { config: buildConfigPayload() },
+			});
 
 			// Then generate the SDK
-			const response = await fetch(
-				`/api/integrations/${integrationId}/generate-sdk`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify({
-						spec_url: specUrl.trim(),
-						auth_type: authType,
-						module_name: moduleName.trim() || undefined,
-					}),
+			const sdkResult = await generateSDKMutation.mutateAsync({
+				params: { path: { integration_id: integrationId } },
+				body: {
+					spec_url: specUrl.trim(),
+					auth_type: authType,
+					module_name: moduleName.trim() || undefined,
 				},
-			);
+			});
 
-			if (!response.ok) {
-				const error = await response.json();
-				throw new Error(error.detail || "Failed to generate SDK");
-			}
-
-			const data: GenerateSDKResponse = await response.json();
-			setResult(data);
+			setResult(sdkResult);
 			toast.success("SDK generated successfully!");
 		} catch (error) {
 			console.error("SDK generation failed:", error);
@@ -175,8 +148,6 @@ export function GenerateSDKDialog({
 					? error.message
 					: "Failed to generate SDK",
 			);
-		} finally {
-			setIsGenerating(false);
 		}
 	};
 
@@ -327,7 +298,7 @@ export function GenerateSDKDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={handleClose}>
-			<DialogContent className="max-w-lg">
+			<DialogContent className="max-w-xl">
 				{result ? (
 					// Success state
 					<>

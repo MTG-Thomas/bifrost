@@ -92,8 +92,6 @@ export interface LocalRunnerStateUpdate {
 	execution_id: string | null;
 }
 
-// Backwards compatibility alias
-export type DevRunStateUpdate = LocalRunnerStateUpdate;
 
 // CLI Session state from backend - uses generated CLISessionResponse type
 import type { CLISessionResponse } from "@/services/cli";
@@ -117,7 +115,10 @@ type WebSocketMessage =
 	| { type: "notification_dismissed"; notification_id: string }
 	| { type: "log"; level: string; message: string }
 	| { type: "complete"; status: "success" | "error"; message: string }
-	| { type: "devrun_state_update"; state: DevRunStateUpdate | null }
+	| {
+			type: "devrun_state_update";
+			state: LocalRunnerStateUpdate | null;
+	  }
 	| {
 			type: "local_runner_state_update";
 			state: LocalRunnerStateUpdate | null;
@@ -152,8 +153,6 @@ type PackageLogCallback = (log: PackageLog) => void;
 type PackageCompleteCallback = (complete: PackageComplete) => void;
 type LocalRunnerStateCallback = (state: LocalRunnerStateUpdate | null) => void;
 type CLISessionUpdateCallback = (update: CLISessionUpdate) => void;
-// Backwards compatibility alias
-type DevRunStateCallback = LocalRunnerStateCallback;
 
 class WebSocketService {
 	private ws: WebSocket | null = null;
@@ -678,13 +677,6 @@ class WebSocketService {
 		return () => {
 			this.localRunnerStateCallbacks.delete(callback);
 		};
-	}
-
-	/**
-	 * Subscribe to dev run state updates (backwards compatibility alias)
-	 */
-	onDevRunState(callback: DevRunStateCallback): () => void {
-		return this.onLocalRunnerState(callback);
 	}
 
 	/**

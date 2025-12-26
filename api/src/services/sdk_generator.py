@@ -15,14 +15,57 @@ Supported auth types:
 import json
 import logging
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import requests
 import yaml
+from jinja2 import Environment, FileSystemLoader
 
 logger = logging.getLogger(__name__)
 
 AuthType = Literal["bearer", "api_key", "basic", "oauth"]
+
+# Template directory
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+
+# =============================================================================
+# Data Structures for Template
+# =============================================================================
+
+
+@dataclass
+class FieldInfo:
+    """Information about a dataclass field."""
+
+    name: str
+    original_name: str
+    type: str
+    default: str | None = None
+    comment: str | None = None
+
+
+@dataclass
+class ModelInfo:
+    """Information about a generated model/dataclass."""
+
+    name: str
+    description: str | None = None
+    fields: list[FieldInfo] = field(default_factory=list)
+
+
+@dataclass
+class MethodInfo:
+    """Information about a generated API method."""
+
+    name: str
+    http_method: str
+    url_template: str
+    params: str
+    return_type: str
+    summary: str
 
 
 # =============================================================================
@@ -125,6 +168,30 @@ def pluralize(word: str) -> str:
             return word + "es"
 
     return word + "s"
+
+
+PYTHON_KEYWORDS = {
+    "and", "as", "assert", "break", "class", "continue", "def", "del", "elif",
+    "else", "except", "False", "finally", "for", "from", "global", "if",
+    "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass",
+    "raise", "return", "True", "try", "while", "with", "yield", "async", "await",
+}
+
+
+def sanitize_field_name(name: str) -> str:
+    """Sanitize a field name to be a valid Python identifier."""
+    py_name = to_snake_case(name)
+
+    if py_name and py_name[0].isdigit():
+        py_name = f"field_{py_name}"
+
+    py_name = re.sub(r"^[^a-zA-Z_]", "_", py_name)
+    py_name = re.sub(r"[^a-zA-Z0-9_]", "_", py_name)
+
+    if py_name in PYTHON_KEYWORDS:
+        py_name = f"{py_name}_"
+
+    return py_name
 
 
 # =============================================================================
@@ -238,51 +305,36 @@ def python_type_from_schema(
 
 
 # =============================================================================
-# Dataclass Generation
+# Model Generation
 # =============================================================================
 
-PYTHON_KEYWORDS = {
-    "and", "as", "assert", "break", "class", "continue", "def", "del", "elif",
-    "else", "except", "False", "finally", "for", "from", "global", "if",
-    "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass",
-    "raise", "return", "True", "try", "while", "with", "yield", "async", "await",
-}
 
-
-def generate_dataclass(
+def generate_model(
     name: str,
     schema: dict[str, Any],
     components: dict,
     inline_schemas: dict[str, dict] | None = None,
-) -> str:
-    """Generate a dataclass from an OpenAPI schema."""
+) -> ModelInfo:
+    """Generate a ModelInfo from an OpenAPI schema."""
     class_name = to_pascal_case(name)
     properties = schema.get("properties", {})
     required = set(schema.get("required", []))
 
-    lines = ["@dataclass", f"class {class_name}:"]
+    model = ModelInfo(
+        name=class_name,
+        description=schema.get("description"),
+        fields=[],
+    )
 
     if not properties:
-        lines.append("    pass")
-        return "\n".join(lines)
+        return model
 
-    if "description" in schema:
-        lines.append(f'    """{schema["description"]}"""')
-
-    fields_required = []
-    fields_optional = []
+    # Separate required and optional fields
+    required_fields = []
+    optional_fields = []
 
     for prop_name, prop_schema in properties.items():
-        py_name = to_snake_case(prop_name)
-
-        if py_name and py_name[0].isdigit():
-            py_name = f"field_{py_name}"
-
-        py_name = re.sub(r"^[^a-zA-Z_]", "_", py_name)
-        py_name = re.sub(r"[^a-zA-Z0-9_]", "_", py_name)
-
-        if py_name in PYTHON_KEYWORDS:
-            py_name = f"{py_name}_"
+        py_name = sanitize_field_name(prop_name)
 
         nested_context = (
             f"{class_name}{to_pascal_case(prop_name)}" if inline_schemas is not None else None
@@ -290,33 +342,24 @@ def generate_dataclass(
         py_type = python_type_from_schema(prop_schema, components, inline_schemas, nested_context)
 
         desc = prop_schema.get("description", "")
-        comment = f"  # {desc}" if desc else ""
 
-        if prop_name not in required:
-            py_type = f"Optional[{py_type}]"
-            fields_optional.append(f"    {py_name}: {py_type} = None{comment}")
+        field_info = FieldInfo(
+            name=py_name,
+            original_name=prop_name,
+            type=py_type if prop_name in required else f"Optional[{py_type}]",
+            default=None if prop_name in required else "None",
+            comment=desc if desc else None,
+        )
+
+        if prop_name in required:
+            required_fields.append(field_info)
         else:
-            fields_required.append(f"    {py_name}: {py_type}{comment}")
+            optional_fields.append(field_info)
 
-    for field in fields_required:
-        lines.append(field)
-    for field in fields_optional:
-        lines.append(field)
+    # Required fields first (no defaults), then optional (with defaults)
+    model.fields = required_fields + optional_fields
 
-    lines.append("")
-    lines.append("    @classmethod")
-    lines.append(f"    def from_dict(cls, data: Dict[str, Any]) -> '{class_name}':")
-    lines.append("        if data is None:")
-    lines.append("            return None")
-    lines.append("        return cls(**{")
-
-    for prop_name in properties.keys():
-        py_name = to_snake_case(prop_name)
-        lines.append(f"            '{py_name}': data.get('{prop_name}'),")
-
-    lines.append("        })")
-
-    return "\n".join(lines)
+    return model
 
 
 def generate_method_name(path: str, method: str) -> str:
@@ -349,21 +392,22 @@ def generate_method_name(path: str, method: str) -> str:
 
 
 # =============================================================================
-# Client Generation
+# SDK Generation
 # =============================================================================
 
 
-def generate_internal_client(spec: dict[str, Any], class_name: str) -> tuple[list[str], list[str]]:
-    """Generate the internal client class with all API methods.
-
-    Returns:
-        Tuple of (lines of generated code, list of method names)
-    """
+def extract_models_and_methods(
+    spec: dict[str, Any],
+    class_name: str,
+) -> tuple[list[ModelInfo], list[MethodInfo]]:
+    """Extract models and methods from an OpenAPI spec."""
     components = spec.get("components", {})
     paths = spec.get("paths", {})
     inline_schemas: dict[str, dict] = {}
 
-    lines: list[str] = []
+    models: list[ModelInfo] = []
+    methods: list[MethodInfo] = []
+    method_names: set[str] = set()
 
     # First pass: collect inline schemas from responses
     for path, path_item in paths.items():
@@ -393,57 +437,21 @@ def generate_internal_client(spec: dict[str, Any], class_name: str) -> tuple[lis
 
                     python_type_from_schema(schema, components, inline_schemas, context_name)
 
-    # Generate dataclasses for component schemas
+    # Generate models from component schemas
     schemas = components.get("schemas", {})
-    if schemas:
-        lines.append("# Data Models")
-        lines.append("")
+    for schema_name, schema_def in sorted(schemas.items()):
+        if schema_def.get("type") == "object":
+            models.append(generate_model(schema_name, schema_def, components, inline_schemas))
 
-        for schema_name, schema_def in sorted(schemas.items()):
-            if schema_def.get("type") == "object":
-                lines.append(generate_dataclass(schema_name, schema_def, components, inline_schemas))
-                lines.append("")
-                lines.append("")
-
-    # Generate inline response schemas
-    if inline_schemas:
-        lines.append("# Inline Response Models")
-        lines.append("")
-
-        generated_schemas: set[str] = set()
-        while len(generated_schemas) < len(inline_schemas):
-            for schema_name, schema_def in sorted(inline_schemas.items()):
-                if schema_name not in generated_schemas:
-                    lines.append(
-                        generate_dataclass(schema_name, schema_def, components, inline_schemas)
-                    )
-                    lines.append("")
-                    lines.append("")
-                    generated_schemas.add(schema_name)
-
-    # Generate internal client class
-    lines.append("")
-    lines.append(f"class _{class_name}Client:")
-    lines.append(f'    """Internal client implementation for {class_name}."""')
-    lines.append("")
-    lines.append("    def __init__(self, base_url: str, session: requests.Session):")
-    lines.append('        self.base_url = base_url.rstrip("/")')
-    lines.append("        self.session = session")
-    lines.append("")
-    lines.append("    def _auto_convert(self, data):")
-    lines.append('        """Automatically convert dicts to DotDict for dot notation access."""')
-    lines.append("        if data is None:")
-    lines.append("            return None")
-    lines.append("        if isinstance(data, list):")
-    lines.append("            return [self._auto_convert(item) for item in data]")
-    lines.append("        if isinstance(data, dict):")
-    lines.append("            return DotDict(data)")
-    lines.append("        return data")
-    lines.append("")
+    # Generate models from inline schemas
+    generated_schemas: set[str] = set()
+    while len(generated_schemas) < len(inline_schemas):
+        for schema_name, schema_def in sorted(inline_schemas.items()):
+            if schema_name not in generated_schemas:
+                models.append(generate_model(schema_name, schema_def, components, inline_schemas))
+                generated_schemas.add(schema_name)
 
     # Generate methods
-    method_names: set[str] = set()
-
     for path, path_item in sorted(paths.items()):
         for http_method in ["get", "post", "put", "patch", "delete"]:
             if http_method not in path_item:
@@ -451,6 +459,7 @@ def generate_internal_client(spec: dict[str, Any], class_name: str) -> tuple[lis
 
             operation = path_item[http_method]
 
+            # Generate unique method name
             base_method_name = generate_method_name(path, http_method)
             method_name = base_method_name
             counter = 1
@@ -459,8 +468,8 @@ def generate_internal_client(spec: dict[str, Any], class_name: str) -> tuple[lis
                 counter += 1
             method_names.add(method_name)
 
+            # Build parameters
             path_params = re.findall(r"\{([^}]+)\}", path)
-
             params = []
             for path_param in path_params:
                 params.append(f"{to_snake_case(path_param)}: str")
@@ -469,8 +478,9 @@ def generate_internal_client(spec: dict[str, Any], class_name: str) -> tuple[lis
                 params.append("data: Dict[str, Any] = None")
 
             params.append("**kwargs")
-            params_str = ", ".join(params) if params else "**kwargs"
+            params_str = ", ".join(params)
 
+            # Determine return type
             responses = operation.get("responses", {})
             success_response = (
                 responses.get("200")
@@ -495,125 +505,26 @@ def generate_internal_client(spec: dict[str, Any], class_name: str) -> tuple[lis
                     schema, components, inline_schemas, context_name
                 )
 
-            lines.append(f"    def {method_name}(self, {params_str}) -> {return_type}:")
-
-            summary = operation.get("summary", f"{http_method.upper()} {path}")
-            lines.append(f'        """{summary}"""')
-
+            # Build URL template with snake_case params
             url_template = path
             for path_param in path_params:
                 snake_param = to_snake_case(path_param)
                 url_template = url_template.replace(f"{{{path_param}}}", f"{{{snake_param}}}")
 
-            lines.append(f'        url = f"{{self.base_url}}{url_template}"')
+            summary = operation.get("summary", f"{http_method.upper()} {path}")
 
-            if http_method in ["post", "put", "patch"]:
-                lines.append(
-                    f"        response = self.session.{http_method}(url, json=data, params=kwargs)"
+            methods.append(
+                MethodInfo(
+                    name=method_name,
+                    http_method=http_method,
+                    url_template=url_template,
+                    params=params_str,
+                    return_type=return_type,
+                    summary=summary,
                 )
-            else:
-                lines.append(f"        response = self.session.{http_method}(url, params=kwargs)")
+            )
 
-            lines.append("        response.raise_for_status()")
-            lines.append("        result = response.json() if response.content else None")
-            lines.append("        return self._auto_convert(result)")
-            lines.append("")
-            lines.append("")
-
-    return lines, list(method_names)
-
-
-def generate_lazy_client(
-    class_name: str,
-    integration_name: str,
-    auth_type: AuthType,
-    method_names: list[str],
-) -> list[str]:
-    """Generate the lazy client wrapper that auto-initializes from Bifrost."""
-    lines = []
-
-    lines.append("")
-    lines.append("class _LazyClient:")
-    lines.append('    """')
-    lines.append("    Module-level proxy that auto-initializes from Bifrost integration.")
-    lines.append("    Provides zero-config authentication experience.")
-    lines.append('    """')
-    lines.append("")
-    lines.append(f"    _client: Optional[_{class_name}Client] = None")
-    lines.append(f'    _integration_name: str = "{integration_name}"')
-    lines.append(f'    _auth_type: str = "{auth_type}"')
-    lines.append("")
-    lines.append("    async def _ensure_client(self):")
-    lines.append("        if self._client is not None:")
-    lines.append("            return self._client")
-    lines.append("")
-    lines.append("        from bifrost import integrations")
-    lines.append("")
-    lines.append("        integration = await integrations.get(self._integration_name)")
-    lines.append("        if not integration:")
-    lines.append(
-        "            raise RuntimeError(f\"Integration '{self._integration_name}' not found\")"
-    )
-    lines.append("")
-    lines.append("        config = integration.config or {}")
-    lines.append("        session = requests.Session()")
-    lines.append("")
-
-    # Auth type-specific initialization
-    if auth_type == "api_key":
-        lines.append("        # API Key authentication")
-        lines.append('        header_name = config.get("header_name", "Authorization")')
-        lines.append('        api_key = config.get("api_key")')
-        lines.append("        if api_key:")
-        lines.append("            session.headers[header_name] = api_key")
-    elif auth_type == "bearer":
-        lines.append("        # Bearer token authentication")
-        lines.append('        token = config.get("token")')
-        lines.append("        if token:")
-        lines.append('            session.headers["Authorization"] = f"Bearer {token}"')
-    elif auth_type == "basic":
-        lines.append("        # Basic authentication")
-        lines.append("        import base64")
-        lines.append('        username = config.get("username", "")')
-        lines.append('        password = config.get("password", "")')
-        lines.append("        if username or password:")
-        lines.append(
-            '            credentials = base64.b64encode(f"{username}:{password}".encode()).decode()'
-        )
-        lines.append('            session.headers["Authorization"] = f"Basic {credentials}"')
-    elif auth_type == "oauth":
-        lines.append("        # OAuth authentication")
-        lines.append("        if integration.oauth and integration.oauth.access_token:")
-        lines.append(
-            '            session.headers["Authorization"] = f"Bearer {integration.oauth.access_token}"'
-        )
-        lines.append("        else:")
-        lines.append(
-            "            raise RuntimeError(\"OAuth not configured or access token missing\")"
-        )
-
-    lines.append("")
-    lines.append('        base_url = config.get("base_url", "")')
-    lines.append("        if not base_url:")
-    lines.append(
-        "            raise RuntimeError(f\"base_url not configured for integration '{self._integration_name}'\")"
-    )
-    lines.append("")
-    lines.append(f"        self._client = _{class_name}Client(base_url, session)")
-    lines.append("        return self._client")
-    lines.append("")
-
-    # Generate async wrapper methods for each API method
-    lines.append("    def __getattr__(self, name: str):")
-    lines.append('        """Proxy attribute access to the real client."""')
-    lines.append("        async def method_wrapper(*args, **kwargs):")
-    lines.append("            client = await self._ensure_client()")
-    lines.append("            method = getattr(client, name)")
-    lines.append("            return method(*args, **kwargs)")
-    lines.append("        return method_wrapper")
-    lines.append("")
-
-    return lines
+    return models, methods
 
 
 def generate_sdk(
@@ -643,70 +554,27 @@ def generate_sdk(
         pythonic_name = re.sub(r"[^a-zA-Z0-9]+", "_", title).lower().strip("_")
         module_name = pythonic_name
 
-    lines = [
-        '"""',
-        f"{title} - Python SDK",
-        "",
-        "Auto-generated from OpenAPI spec with Bifrost integration support.",
-        f"Integration: {integration_name}",
-        f"Auth Type: {auth_type}",
-        '"""',
-        "",
-        "from __future__ import annotations",
-        "",
-        "from dataclasses import dataclass",
-        "from typing import Any, Dict, List, Optional",
-        "",
-        "import requests",
-        "",
-        "",
-        "# Helper class for dot notation access on dicts",
-        "class DotDict(dict):",
-        '    """Dict subclass that allows dot notation access to keys."""',
-        "",
-        "    def __getattr__(self, key):",
-        "        try:",
-        "            value = self[key]",
-        "            if isinstance(value, dict) and not isinstance(value, DotDict):",
-        "                return DotDict(value)",
-        "            elif isinstance(value, list):",
-        "                return [DotDict(item) if isinstance(item, dict) else item for item in value]",
-        "            return value",
-        "        except KeyError:",
-        '            raise AttributeError(f"No attribute {key}")',
-        "",
-        "    def __setattr__(self, key, value):",
-        "        self[key] = value",
-        "",
-        "    def __delattr__(self, key):",
-        "        try:",
-        "            del self[key]",
-        "        except KeyError:",
-        '            raise AttributeError(f"No attribute {key}")',
-        "",
-        "",
-    ]
+    # Extract models and methods from spec
+    models, methods = extract_models_and_methods(spec, class_name)
 
-    # Generate internal client with all methods
-    client_lines, method_names = generate_internal_client(spec, class_name)
-    lines.extend(client_lines)
+    # Load and render Jinja template
+    env = Environment(
+        loader=FileSystemLoader(TEMPLATE_DIR),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    template = env.get_template("sdk.py.j2")
 
-    # Generate lazy client wrapper
-    lazy_lines = generate_lazy_client(class_name, integration_name, auth_type, method_names)
-    lines.extend(lazy_lines)
+    code = template.render(
+        title=title,
+        class_name=class_name,
+        integration_name=integration_name,
+        auth_type=auth_type,
+        models=models,
+        methods=methods,
+    )
 
-    # Module-level instance and __getattr__ for magic imports
-    lines.append("")
-    lines.append("# Module-level lazy client instance")
-    lines.append("_lazy = _LazyClient()")
-    lines.append("")
-    lines.append("")
-    lines.append("def __getattr__(name: str):")
-    lines.append('    """Enable module-level attribute access to lazy client methods."""')
-    lines.append("    return getattr(_lazy, name)")
-    lines.append("")
-
-    return "\n".join(lines), module_name
+    return code, module_name
 
 
 # =============================================================================

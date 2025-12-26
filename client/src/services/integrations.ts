@@ -206,3 +206,28 @@ export function useUpdateIntegrationConfig() {
 		},
 	);
 }
+
+/**
+ * Hook to generate SDK from OpenAPI spec
+ */
+export function useGenerateSDK() {
+	const queryClient = useQueryClient();
+
+	return $api.useMutation(
+		"post",
+		"/api/integrations/{integration_id}/generate-sdk",
+		{
+			onSuccess: (_, variables) => {
+				const integrationId = variables.params.path.integration_id;
+				// Invalidate the integration detail
+				queryClient.invalidateQueries({
+					queryKey: [
+						"get",
+						"/api/integrations/{integration_id}",
+						{ params: { path: { integration_id: integrationId } } },
+					],
+				});
+			},
+		},
+	);
+}

@@ -75,7 +75,6 @@ export interface ROITrends {
  * Organization filtering is controlled by the org switcher (X-Organization-Id header).
  */
 export function useROISummary(startDate: string, endDate: string) {
-	// @ts-expect-error - Endpoint not yet in OpenAPI spec, will be added when backend is implemented
 	return $api.useQuery("get", "/api/reports/roi/summary", {
 		params: {
 			query: {
@@ -91,7 +90,6 @@ export function useROISummary(startDate: string, endDate: string) {
  * Organization filtering is controlled by the org switcher (X-Organization-Id header).
  */
 export function useROIByWorkflow(startDate: string, endDate: string) {
-	// @ts-expect-error - Endpoint not yet in OpenAPI spec, will be added when backend is implemented
 	return $api.useQuery("get", "/api/reports/roi/by-workflow", {
 		params: {
 			query: {
@@ -111,7 +109,6 @@ export function useROIByWorkflow(startDate: string, endDate: string) {
  * This endpoint always returns all organizations (ignores org header).
  */
 export function useROIByOrganization(startDate: string, endDate: string) {
-	// @ts-expect-error - Endpoint not yet in OpenAPI spec, will be added when backend is implemented
 	return $api.useQuery("get", "/api/reports/roi/by-organization", {
 		params: {
 			query: {
@@ -135,7 +132,6 @@ export function useROITrends(
 	endDate: string,
 	granularity: "day" | "week" | "month" = "day",
 ) {
-	// @ts-expect-error - Endpoint not yet in OpenAPI spec, will be added when backend is implemented
 	return $api.useQuery("get", "/api/reports/roi/trends", {
 		params: {
 			query: {

@@ -103,9 +103,6 @@ const MFASetup = lazy(() =>
 const AuthCallback = lazy(() =>
 	import("@/pages/AuthCallback").then((m) => ({ default: m.AuthCallback })),
 );
-const DevRun = lazy(() =>
-	import("@/pages/DevRun").then((m) => ({ default: m.DevRun })),
-);
 const CLI = lazy(() => import("@/pages/CLI").then((m) => ({ default: m.CLI })));
 const Workbench = lazy(() =>
 	import("@/pages/Workbench").then((m) => ({ default: m.Workbench })),
@@ -398,17 +395,6 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute>
 									<UserSettings />
-								</ProtectedRoute>
-							}
-						/>
-
-						{/* Dev Run - PlatformAdmin only (CLI<->Web workflow execution) */}
-						{/* Legacy route - kept for backwards compatibility */}
-						<Route
-							path="dev/run"
-							element={
-								<ProtectedRoute requirePlatformAdmin>
-									<DevRun />
 								</ProtectedRoute>
 							}
 						/>
