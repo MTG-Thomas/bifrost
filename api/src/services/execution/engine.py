@@ -14,6 +14,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from src.sdk.context import Caller, ExecutionContext, Organization
 from src.sdk.error_handling import WorkflowError
 from src.sdk.errors import UserError, WorkflowExecutionException
@@ -810,6 +812,9 @@ async def _execute_workflow_with_trace(
                 return cleaned if isinstance(obj, list) else tuple(cleaned)
             elif isinstance(obj, set):
                 return [remove_circular_refs(item, seen) for item in obj]
+            elif isinstance(obj, BaseModel):
+                # Convert Pydantic models to dict and recursively clean
+                return remove_circular_refs(obj.model_dump(), seen)
             else:
                 # Test if primitive type is JSON serializable
                 import json

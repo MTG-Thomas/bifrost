@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
 	Play,
 	Loader2,
@@ -18,6 +18,13 @@ import { useExecutionStreamStore } from "@/stores/executionStreamStore";
 import { useScopeStore } from "@/stores/scopeStore";
 import { WorkflowParametersForm } from "@/components/workflows/WorkflowParametersForm";
 import { VariablesTreeView } from "@/components/ui/variables-tree-view";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { getExecutionVariables } from "@/hooks/useExecutions";
 import { validateWorkflow } from "@/hooks/useWorkflows";
@@ -91,8 +98,14 @@ export function RunPanel() {
 
 	const [detectedItem, setDetectedItem] = useState<{
 		type: "workflow" | "data_provider" | "script" | null;
+		// For workflows: can have multiple matching workflows for the same file
+		workflows?: WorkflowMetadata[];
+		// For backwards compat with data providers
 		metadata?: WorkflowMetadata | DataProviderMetadata;
 	}>({ type: null });
+	const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
+		null,
+	);
 	const firstInputRef = useRef<HTMLInputElement>(null);
 
 	// Get stream state and actions from store
@@ -222,22 +235,31 @@ export function RunPanel() {
 	// Detect file type when file or metadata changes
 	// First check is_workflow/is_data_provider flags from file metadata (fast path)
 	// Then fall back to matching against workflow/data_provider metadata for full details
+	// For workflows: find ALL matching workflows (same file can have multiple @workflow functions)
 	useEffect(() => {
 		if (!openFile || !openFile.name.endsWith(".py")) {
 			setDetectedItem({ type: null });
+			setSelectedWorkflowId(null);
 			return;
 		}
 
 		// Fast path: Check is_workflow flag from file metadata
 		if (openFile.is_workflow) {
-			// Look up full workflow metadata for parameters
-			const workflow = metadata?.workflows?.find(
-				(w: WorkflowMetadata) =>
-					w.relative_file_path === openFile.path ||
-					w.source_file_path?.endsWith(openFile.path),
-			);
-			// Set as workflow with metadata if found, or without if still loading
-			setDetectedItem({ type: "workflow", metadata: workflow });
+			// Look up ALL workflow metadata for this file (can have multiple workflows per file)
+			const matchingWorkflows =
+				metadata?.workflows?.filter(
+					(w: WorkflowMetadata) =>
+						w.relative_file_path === openFile.path ||
+						w.source_file_path?.endsWith(openFile.path),
+				) || [];
+
+			// Set as workflow with all matching workflows
+			setDetectedItem({
+				type: "workflow",
+				workflows: matchingWorkflows,
+				// Keep metadata for backwards compat (first workflow or undefined)
+				metadata: matchingWorkflows[0],
+			});
 			return;
 		}
 
@@ -254,13 +276,20 @@ export function RunPanel() {
 
 		// Slow path: File doesn't have flags set, check metadata (for backwards compat)
 		if (metadata) {
-			const workflow = metadata.workflows?.find(
-				(w: WorkflowMetadata) =>
-					w.relative_file_path === openFile.path ||
-					w.source_file_path?.endsWith(openFile.path),
-			);
-			if (workflow) {
-				setDetectedItem({ type: "workflow", metadata: workflow });
+			// Find ALL matching workflows
+			const matchingWorkflows =
+				metadata.workflows?.filter(
+					(w: WorkflowMetadata) =>
+						w.relative_file_path === openFile.path ||
+						w.source_file_path?.endsWith(openFile.path),
+				) || [];
+
+			if (matchingWorkflows.length > 0) {
+				setDetectedItem({
+					type: "workflow",
+					workflows: matchingWorkflows,
+					metadata: matchingWorkflows[0],
+				});
 				return;
 			}
 
@@ -281,8 +310,28 @@ export function RunPanel() {
 		setDetectedItem({ type: "script" });
 	}, [openFile, metadata]);
 
+	// Auto-select workflow when there's only one, reset when file changes
+	useEffect(() => {
+		const workflows = detectedItem.workflows || [];
+		if (workflows.length === 1) {
+			// Single workflow: auto-select
+			setSelectedWorkflowId(workflows[0].id);
+		} else if (workflows.length === 0) {
+			// No workflows: clear selection
+			setSelectedWorkflowId(null);
+		}
+		// For multiple workflows: don't auto-select, let user choose
+	}, [detectedItem.workflows]);
+
+	// Get the currently selected workflow metadata
+	const selectedWorkflow = useMemo(() => {
+		if (!selectedWorkflowId || !detectedItem.workflows) return undefined;
+		return detectedItem.workflows.find((w) => w.id === selectedWorkflowId);
+	}, [selectedWorkflowId, detectedItem.workflows]);
+
 	const handleExecuteWorkflow = async (params: Record<string, unknown>) => {
-		if (detectedItem.type !== "workflow" || !detectedItem.metadata) return;
+		// Use selectedWorkflow (derived from selectedWorkflowId) for execution
+		if (detectedItem.type !== "workflow" || !selectedWorkflow) return;
 
 		performance.mark("workflow-execute-start");
 
@@ -291,7 +340,7 @@ export function RunPanel() {
 		try {
 			const result = (await executeWorkflow.mutateAsync({
 				body: {
-					workflow_id: (detectedItem.metadata as WorkflowMetadata).id,
+					workflow_id: selectedWorkflow.id,
 					input_data: params,
 					form_id: null,
 					transient: true, // Editor executions are transient (no DB writes)
@@ -634,13 +683,12 @@ export function RunPanel() {
 	// Listen for execute-editor-file event (dispatched after panel switch)
 	useEffect(() => {
 		const handleExecuteEvent = () => {
-			// Check if there are parameters
+			// Check if there are parameters (use selectedWorkflow for workflows)
 			const hasParameters =
 				detectedItem.type === "workflow" &&
-				detectedItem.metadata &&
-				(detectedItem.metadata as WorkflowMetadata)?.parameters &&
-				((detectedItem.metadata as WorkflowMetadata)?.parameters
-					?.length ?? 0) > 0;
+				selectedWorkflow &&
+				selectedWorkflow.parameters &&
+				(selectedWorkflow.parameters.length ?? 0) > 0;
 
 			if (hasParameters && firstInputRef.current) {
 				// Focus first input if there are parameters
@@ -658,7 +706,7 @@ export function RunPanel() {
 				handleExecuteEvent,
 			);
 		};
-	}, [detectedItem, handleExecuteScript]);
+	}, [detectedItem, selectedWorkflow, handleExecuteScript]);
 
 	// No file open
 	if (!openFile) {
@@ -715,23 +763,70 @@ export function RunPanel() {
 									</p>
 								</div>
 							</div>
-							{detectedItem.metadata?.description && (
+
+							{/* Workflow selector: single workflow shows display card, multiple shows dropdown */}
+							{(detectedItem.workflows?.length ?? 0) > 1 ? (
+								// Multiple workflows: show Select dropdown
+								<div className="mt-2">
+									<Select
+										value={selectedWorkflowId || ""}
+										onValueChange={setSelectedWorkflowId}
+									>
+										<SelectTrigger className="w-full">
+											<SelectValue placeholder="Select a workflow to run" />
+										</SelectTrigger>
+										<SelectContent>
+											{detectedItem.workflows?.map(
+												(w) => (
+													<SelectItem
+														key={w.id}
+														value={w.id}
+													>
+														<div className="flex flex-col items-start">
+															<span>
+																{w.name}
+															</span>
+															{w.description && (
+																<span className="text-xs text-muted-foreground">
+																	{
+																		w.description
+																	}
+																</span>
+															)}
+														</div>
+													</SelectItem>
+												),
+											)}
+										</SelectContent>
+									</Select>
+								</div>
+							) : selectedWorkflow?.description ? (
+								// Single workflow with description
 								<p className="text-xs text-muted-foreground mt-2">
-									{detectedItem.metadata.description}
+									{selectedWorkflow.description}
 								</p>
-							)}
+							) : null}
 						</div>
-						<div className="p-3">
-							<WorkflowParametersForm
-								parameters={
-									(detectedItem.metadata as WorkflowMetadata)
-										?.parameters || []
-								}
-								onExecute={handleExecuteWorkflow}
-								isExecuting={isLoading}
-								executeButtonText="Run Workflow"
-							/>
-						</div>
+
+						{/* Parameters form - only show when a workflow is selected */}
+						{selectedWorkflow ? (
+							<div className="p-3">
+								<WorkflowParametersForm
+									key={selectedWorkflowId} // Reset form when workflow changes
+									parameters={
+										selectedWorkflow.parameters || []
+									}
+									onExecute={handleExecuteWorkflow}
+									isExecuting={isLoading}
+									executeButtonText="Run Workflow"
+								/>
+							</div>
+						) : (detectedItem.workflows?.length ?? 0) > 1 ? (
+							// Multiple workflows but none selected
+							<div className="p-3 text-center text-muted-foreground text-sm">
+								Select a workflow to see its parameters
+							</div>
+						) : null}
 
 						{/* Variables Section - show from last execution */}
 						{Object.keys(lastExecutionVariables).length > 0 && (

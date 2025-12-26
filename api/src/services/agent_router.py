@@ -69,7 +69,7 @@ class AgentRouter:
         return agent
 
     def _build_agent_description(self, agent: Agent) -> str:
-        """Build agent description including tool capabilities for routing."""
+        """Build agent description including tool and knowledge capabilities for routing."""
         description = agent.description or "General assistant"
 
         # Get tool names for this agent
@@ -78,9 +78,15 @@ class AgentRouter:
             if tool.is_active and tool.is_tool:
                 tool_names.append(tool.name)
 
+        # Build capability strings
+        capabilities = []
         if tool_names:
-            tools_str = ", ".join(tool_names)
-            return f"- {agent.name}: {description} (Tools: {tools_str})"
+            capabilities.append(f"Tools: {', '.join(tool_names)}")
+        if agent.knowledge_sources:
+            capabilities.append(f"Knowledge: {', '.join(agent.knowledge_sources)}")
+
+        if capabilities:
+            return f"- {agent.name}: {description} ({'; '.join(capabilities)})"
         return f"- {agent.name}: {description}"
 
     async def route_message(
@@ -114,7 +120,7 @@ class AgentRouter:
         if not available_agents:
             return None
 
-        # Build agent descriptions with tool info for better routing
+        # Build agent descriptions with tool and knowledge info for better routing
         agent_descriptions = "\n".join([
             self._build_agent_description(agent)
             for agent in available_agents
@@ -126,9 +132,10 @@ Available agents:
 {agent_descriptions}
 
 Rules:
-1. If the user's request matches an agent's specialty or tools, respond with ONLY the agent name (exactly as shown above).
+1. If the user's request matches an agent's specialty, tools, or knowledge sources, respond with ONLY the agent name (exactly as shown above).
 2. If the request is general or doesn't match any agent specialty, respond with "DIRECT".
-3. When in doubt, prefer routing to a specialist if their tools could help.
+3. When in doubt, prefer routing to a specialist if their tools or knowledge could help.
+4. If a user asks about data that matches an agent's knowledge source (e.g., "tickets" matches "halopsa-tickets"), route to that agent.
 
 User message: {message}
 
