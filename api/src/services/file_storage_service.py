@@ -1562,6 +1562,29 @@ class FileStorageService:
 
         return False
 
+    async def _resolve_workflow_name_to_id(self, workflow_name: str) -> str | None:
+        """
+        Resolve a workflow name to its UUID.
+
+        Used for legacy form files that use linked_workflow (name) instead of workflow_id (UUID).
+
+        Args:
+            workflow_name: The workflow name to resolve
+
+        Returns:
+            The workflow UUID as a string, or None if not found
+        """
+        from src.models import Workflow
+
+        result = await self.db.execute(
+            select(Workflow.id).where(
+                Workflow.name == workflow_name,
+                Workflow.is_active == True,  # noqa: E712
+            )
+        )
+        row = result.scalar_one_or_none()
+        return str(row) if row else None
+
     async def _index_form(self, path: str, content: bytes) -> None:
         """
         Parse and index form from .form.json file.
@@ -1602,14 +1625,33 @@ class FileStorageService:
 
         now = datetime.utcnow()
 
+        # Get workflow_id - prefer explicit workflow_id, fall back to linked_workflow (name lookup)
+        workflow_id = form_data.get("workflow_id")
+        if not workflow_id:
+            linked_workflow = form_data.get("linked_workflow")
+            if linked_workflow:
+                # Legacy format - resolve workflow name to UUID
+                workflow_id = await self._resolve_workflow_name_to_id(linked_workflow)
+                if workflow_id:
+                    logger.info(f"Resolved legacy linked_workflow '{linked_workflow}' to workflow_id '{workflow_id}'")
+                else:
+                    logger.warning(f"Could not resolve linked_workflow '{linked_workflow}' to workflow ID for form {path}")
+
+        # Same fallback for launch_workflow_id
+        launch_workflow_id = form_data.get("launch_workflow_id")
+        if not launch_workflow_id:
+            launch_workflow_name = form_data.get("launch_workflow")
+            if launch_workflow_name:
+                launch_workflow_id = await self._resolve_workflow_name_to_id(launch_workflow_name)
+
         # Upsert form - updates definition but NOT organization_id or access_level
         # These env-specific fields are only set via the API, not from file sync
         stmt = insert(Form).values(
             id=form_id,
             name=name,
             description=form_data.get("description"),
-            workflow_id=form_data.get("workflow_id"),
-            launch_workflow_id=form_data.get("launch_workflow_id"),
+            workflow_id=workflow_id,
+            launch_workflow_id=launch_workflow_id,
             default_launch_params=form_data.get("default_launch_params"),
             allowed_query_params=form_data.get("allowed_query_params"),
             file_path=path,
@@ -1622,8 +1664,8 @@ class FileStorageService:
                 # Update definition fields from file
                 "name": name,
                 "description": form_data.get("description"),
-                "workflow_id": form_data.get("workflow_id"),
-                "launch_workflow_id": form_data.get("launch_workflow_id"),
+                "workflow_id": workflow_id,
+                "launch_workflow_id": launch_workflow_id,
                 "default_launch_params": form_data.get("default_launch_params"),
                 "allowed_query_params": form_data.get("allowed_query_params"),
                 "file_path": path,

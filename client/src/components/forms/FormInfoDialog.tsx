@@ -117,7 +117,7 @@ export function FormInfoDialog({
 
 	// Get selected launch workflow metadata
 	const selectedLaunchWorkflow = metadata?.workflows?.find(
-		(w: WorkflowMetadata) => w.name === launchWorkflowId,
+		(w: WorkflowMetadata) => w.id === launchWorkflowId,
 	);
 	const launchWorkflowParams = selectedLaunchWorkflow?.parameters || [];
 
@@ -427,7 +427,7 @@ export function FormInfoDialog({
 											label: string;
 											description?: string;
 										} = {
-											value: workflow.name ?? "",
+											value: workflow.id ?? "",
 											label: workflow.name ?? "Unnamed",
 										};
 										if (workflow.description) {
@@ -626,7 +626,7 @@ export function FormInfoDialog({
 											label: string;
 											description?: string;
 										} = {
-											value: workflow.name ?? "",
+											value: workflow.id ?? "",
 											label: workflow.name ?? "Unnamed",
 										};
 										if (workflow.description) {

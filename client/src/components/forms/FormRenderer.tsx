@@ -478,7 +478,10 @@ function FormRendererInner({ form }: FormRendererProps) {
 		try {
 			const result = await submitForm.mutateAsync({
 				params: { path: { form_id: form.id } },
-				body: data,
+				body: {
+					form_data: data,
+					startup_data: context.workflow,
+				},
 			});
 			// Navigate with context so execution details can display immediately
 			navigate(`/history/${result.execution_id}`, {

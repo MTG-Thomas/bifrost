@@ -423,10 +423,11 @@ export function FieldsPanelDnD({
 	};
 
 	// Get the current workflow's parameters, filtering out ones already in the form
+	// linkedWorkflow is a workflow ID (UUID), not a name
 	const workflowParams = linkedWorkflow
 		? (
 				metadata?.workflows?.find(
-					(w: WorkflowMetadata) => w.name === linkedWorkflow,
+					(w: WorkflowMetadata) => w.id === linkedWorkflow,
 				)?.parameters || []
 			).filter(
 				(param: WorkflowParameter) =>

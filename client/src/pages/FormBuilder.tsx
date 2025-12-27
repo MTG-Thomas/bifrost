@@ -240,10 +240,10 @@ export function FormBuilder() {
 			return { valid: true, missingParams: [] };
 		}
 
-		// Find the linked workflow's metadata
+		// Find the linked workflow's metadata (linkedWorkflow is now a workflow ID)
 		const workflow = (
 			workflowsMetadata.workflows as WorkflowMetadata[]
-		).find((w: WorkflowMetadata) => w.name === linkedWorkflow);
+		).find((w: WorkflowMetadata) => w.id === linkedWorkflow);
 		if (!workflow || !workflow.parameters) {
 			return { valid: true, missingParams: [] };
 		}

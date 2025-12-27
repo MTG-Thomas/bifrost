@@ -204,7 +204,7 @@ async def _prewarm_forms(
             "id": str(form.id),
             "name": form.name,
             "description": form.description,
-            "linked_workflow": form.linked_workflow,
+            "workflow_id": form.workflow_id,
             "is_active": form.is_active,
             "organization_id": str(form.organization_id) if form.organization_id else None,
         }

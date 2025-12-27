@@ -114,7 +114,7 @@ class FormMetadata:
     """Lightweight form metadata for listing"""
     id: str
     name: str
-    linked_workflow: str
+    workflow_id: str | None
     org_id: str
     is_active: bool
     is_global: bool
@@ -568,10 +568,13 @@ def scan_all_forms() -> list[FormMetadata]:
                 is_global = data.get('is_global', False)
                 org_id = data.get('org_id', 'GLOBAL' if is_global else '')
 
+                # Prefer workflow_id, fall back to linked_workflow for legacy files
+                workflow_id = data.get('workflow_id') or data.get('linked_workflow')
+
                 forms.append(FormMetadata(
                     id=form_id,
                     name=data['name'],
-                    linked_workflow=data.get('linked_workflow', ''),
+                    workflow_id=workflow_id,
                     org_id=org_id,
                     is_active=data.get('is_active', True),
                     is_global=is_global,
@@ -657,18 +660,19 @@ def get_form_metadata(form_id: str) -> FormMetadata | None:
     return None
 
 
-def get_forms_by_workflow(workflow_name: str) -> list[FormMetadata]:
+def get_forms_by_workflow(workflow_id_or_name: str) -> list[FormMetadata]:
     """
     Get all forms that use a specific workflow.
 
     Args:
-        workflow_name: Workflow name to filter by
+        workflow_id_or_name: Workflow ID (UUID) or name to filter by
 
     Returns:
         List of FormMetadata for forms using this workflow
     """
     all_forms = scan_all_forms()
-    return [f for f in all_forms if f.linked_workflow == workflow_name]
+    # Match by workflow_id (for UUID-based lookups) or legacy name-based lookups
+    return [f for f in all_forms if f.workflow_id == workflow_id_or_name]
 
 
 # ==================== METADATA CONVERSION HELPERS ====================
