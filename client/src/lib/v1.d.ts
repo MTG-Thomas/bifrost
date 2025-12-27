@@ -3026,22 +3026,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4706,6 +4706,130 @@ export interface paths {
          *     Requires platform admin access.
          */
         post: operations["validate_email_workflow_api_admin_email_validate__workflow_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/oauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List OAuth provider configurations
+         * @description Get configuration status for all OAuth SSO providers (Platform admin only)
+         */
+        get: operations["list_oauth_configs_api_settings_oauth_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/oauth/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get OAuth provider configuration
+         * @description Get configuration for a specific OAuth provider (Platform admin only)
+         */
+        get: operations["get_oauth_config_api_settings_oauth__provider__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete OAuth provider configuration
+         * @description Remove configuration for an OAuth provider (Platform admin only)
+         */
+        delete: operations["delete_oauth_config_api_settings_oauth__provider__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/oauth/microsoft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Configure Microsoft OAuth
+         * @description Set up Microsoft Entra ID (Azure AD) OAuth SSO (Platform admin only)
+         */
+        put: operations["set_microsoft_config_api_settings_oauth_microsoft_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/oauth/google": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Configure Google OAuth
+         * @description Set up Google OAuth SSO (Platform admin only)
+         */
+        put: operations["set_google_config_api_settings_oauth_google_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/oauth/oidc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Configure OIDC provider
+         * @description Set up a generic OIDC provider for SSO (Platform admin only)
+         */
+        put: operations["set_oidc_config_api_settings_oauth_oidc_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/oauth/{provider}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test OAuth provider configuration
+         * @description Test connectivity to an OAuth provider (Platform admin only)
+         */
+        post: operations["test_oauth_config_api_settings_oauth__provider__test_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7871,6 +7995,22 @@ export interface components {
              */
             error?: string | null;
         };
+        /**
+         * GoogleOAuthConfigRequest
+         * @description Request model for configuring Google OAuth SSO.
+         */
+        GoogleOAuthConfigRequest: {
+            /**
+             * Client Id
+             * @description Google OAuth 2.0 Client ID
+             */
+            client_id: string;
+            /**
+             * Client Secret
+             * @description Google OAuth 2.0 Client secret
+             */
+            client_secret: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -8725,6 +8865,28 @@ export interface components {
          */
         MessageRole: "user" | "assistant" | "system" | "tool";
         /**
+         * MicrosoftOAuthConfigRequest
+         * @description Request model for configuring Microsoft OAuth SSO.
+         */
+        MicrosoftOAuthConfigRequest: {
+            /**
+             * Client Id
+             * @description Azure AD Application (client) ID
+             */
+            client_id: string;
+            /**
+             * Client Secret
+             * @description Azure AD client secret value
+             */
+            client_secret: string;
+            /**
+             * Tenant Id
+             * @description Azure AD tenant ID. Use 'common' for multi-tenant apps (allows any Microsoft account), 'organizations' for work/school only, or a specific tenant ID/domain for single-tenant
+             * @default common
+             */
+            tenant_id: string;
+        };
+        /**
          * NotificationCategory
          * @description Categories for grouping notifications.
          * @enum {string}
@@ -8871,6 +9033,22 @@ export interface components {
             error_message?: string | null;
         };
         /**
+         * OAuthConfigListResponse
+         * @description Response model for listing all OAuth provider configurations.
+         */
+        OAuthConfigListResponse: {
+            /**
+             * Providers
+             * @description List of OAuth provider configurations
+             */
+            providers?: components["schemas"]["OAuthProviderConfigResponse"][];
+            /**
+             * Callback Url
+             * @description OAuth callback URL to configure in each provider
+             */
+            callback_url: string;
+        };
+        /**
          * OAuthConfigResponse
          * @description Response model for OAuth provider configuration.
          */
@@ -8992,6 +9170,55 @@ export interface components {
              * @default false
              */
             has_refresh_token: boolean;
+        };
+        /**
+         * OAuthConfigTestRequest
+         * @description Request model for testing OAuth configuration.
+         */
+        OAuthConfigTestRequest: {
+            /**
+             * Client Id
+             * @description Client ID to test (uses saved if not provided)
+             */
+            client_id?: string | null;
+            /**
+             * Client Secret
+             * @description Client secret to test (uses saved if not provided)
+             */
+            client_secret?: string | null;
+            /**
+             * Tenant Id
+             * @description Microsoft tenant ID to test
+             */
+            tenant_id?: string | null;
+            /**
+             * Discovery Url
+             * @description OIDC discovery URL to test
+             */
+            discovery_url?: string | null;
+        };
+        /**
+         * OAuthConfigTestResponse
+         * @description Response model for OAuth configuration test.
+         */
+        OAuthConfigTestResponse: {
+            /**
+             * Success
+             * @description Whether the configuration is valid
+             */
+            success: boolean;
+            /**
+             * Message
+             * @description Test result message
+             */
+            message: string;
+            /**
+             * Details
+             * @description Additional details (e.g., discovered endpoints for OIDC)
+             */
+            details?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * OAuthConnectionDetail
@@ -9153,6 +9380,49 @@ export interface components {
             state: string;
         };
         /**
+         * OAuthProviderConfigResponse
+         * @description Response model for a configured OAuth provider.
+         */
+        OAuthProviderConfigResponse: {
+            /**
+             * Provider
+             * @description OAuth provider name
+             * @enum {string}
+             */
+            provider: "microsoft" | "google" | "oidc";
+            /**
+             * Configured
+             * @description Whether the provider is fully configured
+             */
+            configured: boolean;
+            /**
+             * Client Id
+             * @description Client ID (not sensitive)
+             */
+            client_id?: string | null;
+            /**
+             * Client Secret Set
+             * @description Whether client secret is configured
+             * @default false
+             */
+            client_secret_set: boolean;
+            /**
+             * Tenant Id
+             * @description Microsoft tenant ID
+             */
+            tenant_id?: string | null;
+            /**
+             * Discovery Url
+             * @description OIDC discovery URL
+             */
+            discovery_url?: string | null;
+            /**
+             * Display Name
+             * @description OIDC display name for login button
+             */
+            display_name?: string | null;
+        };
+        /**
          * OAuthProvidersResponse
          * @description Available OAuth providers.
          */
@@ -9174,6 +9444,33 @@ export interface components {
              * @default bearer
              */
             token_type: string;
+        };
+        /**
+         * OIDCConfigRequest
+         * @description Request model for configuring a generic OIDC provider.
+         */
+        OIDCConfigRequest: {
+            /**
+             * Discovery Url
+             * @description OIDC discovery URL (must be HTTPS, e.g., https://provider.com/.well-known/openid-configuration)
+             */
+            discovery_url: string;
+            /**
+             * Client Id
+             * @description OIDC Client ID
+             */
+            client_id: string;
+            /**
+             * Client Secret
+             * @description OIDC Client secret
+             */
+            client_secret: string;
+            /**
+             * Display Name
+             * @description Display name for the login button (e.g., 'Okta', 'Auth0', 'Company SSO')
+             * @default SSO
+             */
+            display_name: string;
         };
         /**
          * OrganizationCreate
@@ -16450,7 +16747,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -16483,7 +16780,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -16516,7 +16813,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -16549,7 +16846,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -19703,6 +20000,220 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EmailWorkflowValidationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_oauth_configs_api_settings_oauth_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthConfigListResponse"];
+                };
+            };
+        };
+    };
+    get_oauth_config_api_settings_oauth__provider__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "microsoft" | "google" | "oidc";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthProviderConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_oauth_config_api_settings_oauth__provider__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "microsoft" | "google" | "oidc";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_microsoft_config_api_settings_oauth_microsoft_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MicrosoftOAuthConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthProviderConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_google_config_api_settings_oauth_google_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoogleOAuthConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthProviderConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_oidc_config_api_settings_oauth_oidc_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OIDCConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthProviderConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_oauth_config_api_settings_oauth__provider__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "microsoft" | "google" | "oidc";
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["OAuthConfigTestRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthConfigTestResponse"];
                 };
             };
             /** @description Validation Error */

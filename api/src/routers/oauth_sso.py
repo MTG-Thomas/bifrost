@@ -163,7 +163,7 @@ async def get_oauth_providers(db: DbSession) -> OAuthProvidersResponse:
         List of available OAuth providers with display info
     """
     oauth_service = OAuthService(db)
-    available = oauth_service.get_available_providers()
+    available = await oauth_service.get_available_providers()
 
     providers = []
     for name in available:
@@ -208,7 +208,7 @@ async def init_oauth(
         code_verifier = OAuthService.generate_code_verifier()
         state = OAuthService.generate_state()
 
-        authorization_url = oauth_service.get_authorization_url(
+        authorization_url = await oauth_service.get_authorization_url(
             provider=provider,
             redirect_uri=redirect_uri,
             state=state,

@@ -5,10 +5,11 @@ import { TabActions } from "@/components/ui/tab-actions";
 import { WorkflowKeys } from "@/pages/WorkflowKeys";
 import { Branding } from "@/pages/settings/Branding";
 import { Email } from "@/pages/settings/Email";
+import { OAuth } from "@/pages/settings/OAuth";
 import { GitHub } from "@/pages/settings/GitHub";
 import { LLMConfig } from "@/pages/settings/LLMConfig";
 import { Maintenance } from "@/pages/settings/Maintenance";
-import { Bot, Mail } from "lucide-react";
+import { Bot, Mail, Shield } from "lucide-react";
 
 export function Settings() {
 	const navigate = useNavigate();
@@ -53,6 +54,10 @@ export function Settings() {
 							<Mail className="h-4 w-4 mr-1" />
 							Email
 						</TabsTrigger>
+						<TabsTrigger value="sso">
+							<Shield className="h-4 w-4 mr-1" />
+							SSO
+						</TabsTrigger>
 						<TabsTrigger value="github">GitHub</TabsTrigger>
 						<TabsTrigger value="workflow-keys">
 							Workflow Keys
@@ -75,6 +80,10 @@ export function Settings() {
 
 				<TabsContent value="email" className="mt-6">
 					<Email />
+				</TabsContent>
+
+				<TabsContent value="sso" className="mt-6">
+					<OAuth />
 				</TabsContent>
 
 				<TabsContent value="github" className="mt-6">

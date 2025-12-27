@@ -1244,21 +1244,28 @@ async def get_auth_status(db: DbSession = None) -> AuthStatusResponse:
     Returns:
         AuthStatusResponse with complete login page configuration
     """
-    from src.services.oauth_sso import OAuthService
+    from src.services.oauth_config_service import OAuthConfigService
 
     settings = get_settings()
     user_repo = UserRepository(db)
     has_users = await user_repo.has_any_users()
 
-    # Get available OAuth providers
-    oauth_service = OAuthService(db)
-    available_providers = oauth_service.get_available_providers()
+    # Get available OAuth providers from database config
+    oauth_config_service = OAuthConfigService(db)
+    available_providers = await oauth_config_service.get_available_providers()
+
+    # Get OIDC display name if configured
+    oidc_display_name = "SSO"
+    if "oidc" in available_providers:
+        oidc_config = await oauth_config_service.get_provider_config("oidc")
+        if oidc_config and oidc_config.display_name:
+            oidc_display_name = oidc_config.display_name
 
     # Provider display info
     provider_info_map = {
         "microsoft": {"display_name": "Microsoft", "icon": "microsoft"},
         "google": {"display_name": "Google", "icon": "google"},
-        "oidc": {"display_name": "SSO", "icon": "key"},
+        "oidc": {"display_name": oidc_display_name, "icon": "key"},
     }
 
     oauth_providers = [

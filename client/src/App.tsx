@@ -171,7 +171,7 @@ function AppRoutes() {
 					<Route path="login" element={<Login />} />
 					<Route path="setup" element={<Setup />} />
 					<Route path="mfa-setup" element={<MFASetup />} />
-					<Route path="auth/callback" element={<AuthCallback />} />
+					<Route path="auth/callback/:provider" element={<AuthCallback />} />
 
 					{/* Device authorization - requires auth, handles redirect internally */}
 					<Route path="device" element={<DevicePage />} />

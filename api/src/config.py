@@ -259,47 +259,6 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # OAuth SSO (Single Sign-On)
-    # ==========================================================================
-    # Microsoft Entra ID (Azure AD)
-    microsoft_client_id: str | None = Field(
-        default=None,
-        description="Microsoft OAuth client ID"
-    )
-    microsoft_client_secret: str | None = Field(
-        default=None,
-        description="Microsoft OAuth client secret"
-    )
-    microsoft_tenant_id: str | None = Field(
-        default=None,
-        description="Microsoft tenant ID (or 'common' for multi-tenant)"
-    )
-
-    # Google OAuth
-    google_client_id: str | None = Field(
-        default=None,
-        description="Google OAuth client ID"
-    )
-    google_client_secret: str | None = Field(
-        default=None,
-        description="Google OAuth client secret"
-    )
-
-    # Generic OIDC Provider
-    oidc_discovery_url: str | None = Field(
-        default=None,
-        description="OIDC discovery URL (e.g., https://provider/.well-known/openid-configuration)"
-    )
-    oidc_client_id: str | None = Field(
-        default=None,
-        description="OIDC client ID"
-    )
-    oidc_client_secret: str | None = Field(
-        default=None,
-        description="OIDC client secret"
-    )
-
-    # ==========================================================================
     # Server
     # ==========================================================================
     host: str = Field(
@@ -315,24 +274,6 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Computed Properties
     # ==========================================================================
-    @computed_field
-    @property
-    def microsoft_oauth_configured(self) -> bool:
-        """Check if Microsoft OAuth is configured."""
-        return bool(self.microsoft_client_id and self.microsoft_client_secret)
-
-    @computed_field
-    @property
-    def google_oauth_configured(self) -> bool:
-        """Check if Google OAuth is configured."""
-        return bool(self.google_client_id and self.google_client_secret)
-
-    @computed_field
-    @property
-    def oidc_configured(self) -> bool:
-        """Check if generic OIDC is configured."""
-        return bool(self.oidc_discovery_url and self.oidc_client_id and self.oidc_client_secret)
-
     @computed_field
     @property
     def is_development(self) -> bool:

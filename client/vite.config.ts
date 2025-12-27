@@ -140,9 +140,17 @@ export default defineConfig({
 				target: process.env.API_URL || "http://localhost:8000",
 				changeOrigin: true,
 			},
+			// Proxy /auth/* to backend EXCEPT /auth/callback/* which is handled client-side
 			"/auth": {
 				target: process.env.API_URL || "http://localhost:8000",
 				changeOrigin: true,
+				bypass: (req) => {
+					// Let /auth/callback/* be handled by React Router (client-side)
+					if (req.url?.startsWith("/auth/callback")) {
+						return req.url;
+					}
+					return undefined;
+				},
 			},
 			"/ws": {
 				target: process.env.WS_URL || "ws://localhost:8000",
