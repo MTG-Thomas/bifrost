@@ -514,6 +514,7 @@ async def _get_or_create_coding_client(
     user: UserPrincipal,
     api_key: str,
     model: str,
+    system_tools: list[str] | None = None,
 ) -> Any:
     """
     Get or create a coding mode client for a conversation.
@@ -526,6 +527,7 @@ async def _get_or_create_coding_client(
         user: The authenticated user
         api_key: Anthropic API key
         model: Model to use
+        system_tools: List of enabled system tool IDs from the coding agent
 
     Returns:
         CodingModeClient instance
@@ -542,6 +544,7 @@ async def _get_or_create_coding_client(
             org_id=user.organization_id,
             is_platform_admin=True,
             session_id=conversation_id,  # Use conversation ID as session ID
+            system_tools=system_tools,
         )
         _coding_clients[conversation_id] = client
         logger.info(f"Created new coding client for conversation {conversation_id}")
@@ -605,6 +608,12 @@ async def _process_coding_mode_message(
             })
             return
 
+        # Get coding agent to retrieve its enabled system_tools
+        from src.core.system_agents import get_coding_agent
+
+        coding_agent = await get_coding_agent(db)
+        system_tools = coding_agent.system_tools if coding_agent else []
+
         # Save user message first
         user_msg = Message(
             conversation_id=conversation.id,
@@ -621,6 +630,7 @@ async def _process_coding_mode_message(
             user=user,
             api_key=coding_config.api_key,
             model=coding_config.model,
+            system_tools=system_tools,
         )
 
         # Accumulators for message persistence

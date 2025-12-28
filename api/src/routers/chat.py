@@ -551,14 +551,16 @@ async def _handle_coding_mode(
     open during that time would block other operations on the conversation row.
     """
     from src.core.cache import get_shared_redis
+    from src.core.system_agents import get_coding_agent
     from src.models.enums import MessageRole
     from src.services.ai_usage_service import record_ai_usage
     from src.services.coding_mode import CodingModeClient
     from src.services.llm.factory import get_coding_mode_config
 
-    # Get coding mode config with fresh session (validates Anthropic is configured)
+    # Get coding mode config and coding agent with fresh session
     async with get_db_context() as db:
         config = await get_coding_mode_config(db)
+        coding_agent = await get_coding_agent(db)
 
     if not config:
         await websocket.send_json({
@@ -570,6 +572,9 @@ async def _handle_coding_mode(
         await websocket.close()
         return
 
+    # Get enabled system tools from the coding agent
+    system_tools = coding_agent.system_tools if coding_agent else []
+
     # Create coding mode client with config
     client = CodingModeClient(
         user_id=user_id,
@@ -580,6 +585,7 @@ async def _handle_coding_mode(
         org_id=org_id,
         is_platform_admin=True,
         session_id=str(conversation_id),  # Use conversation ID as session ID
+        system_tools=system_tools,
     )
 
     try:

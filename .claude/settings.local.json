@@ -101,7 +101,8 @@
       "Bash(/Users/jack/GitHub/bifrost-api/api/test.sh tests/integration/platform/test_sdk_from_workflow.py -v)",
       "Bash({} ;)",
       "Bash(/Users/jack/GitHub/bifrost-api/api/test.sh:*)",
-      "WebFetch(domain:gofastmcp.com)"
+      "WebFetch(domain:gofastmcp.com)",
+      "WebFetch(domain:www.buildwithmatija.com)"
     ],
     "deny": [],
     "ask": [],

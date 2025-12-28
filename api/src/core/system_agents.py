@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.enums import AgentAccessLevel
 from src.models.orm import Agent
+from src.routers.tools import get_system_tool_ids
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +158,23 @@ async def ensure_coding_agent(db: AsyncSession) -> Agent:
 
     if agent:
         logger.info(f"Coding Assistant agent already exists: {agent.id}")
+        needs_update = False
+
         # Update system prompt if changed
         if agent.system_prompt != CODING_AGENT_SYSTEM_PROMPT:
             agent.system_prompt = CODING_AGENT_SYSTEM_PROMPT
-            await db.commit()
+            needs_update = True
             logger.info("Updated Coding Assistant system prompt")
+
+        # Backfill system_tools if empty (existing agents from before this feature)
+        if not agent.system_tools:
+            agent.system_tools = get_system_tool_ids()
+            needs_update = True
+            logger.info(f"Backfilled Coding Assistant system_tools: {agent.system_tools}")
+
+        if needs_update:
+            await db.commit()
+
         return agent
 
     # Create new coding agent
@@ -176,6 +189,7 @@ async def ensure_coding_agent(db: AsyncSession) -> Agent:
         is_active=True,
         is_coding_mode=True,
         is_system=True,  # Can't be deleted
+        system_tools=get_system_tool_ids(),  # Enable all system tools
         created_by="system",
     )
     db.add(agent)

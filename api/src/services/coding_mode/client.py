@@ -96,6 +96,7 @@ class CodingModeClient:
         org_id: UUID | str | None = None,
         is_platform_admin: bool = True,
         session_id: str | None = None,
+        system_tools: list[str] | None = None,
     ):
         """
         Initialize coding mode client.
@@ -109,6 +110,8 @@ class CodingModeClient:
             org_id: Organization ID (optional)
             is_platform_admin: Whether user is platform admin
             session_id: Optional session ID to resume
+            system_tools: List of enabled system tool IDs (e.g., ["execute_workflow", "list_integrations"]).
+                         If empty or None, no system MCP tools will be available.
         """
         self.user_id = str(user_id)
         self.user_email = user_email
@@ -119,6 +122,7 @@ class CodingModeClient:
         self.is_platform_admin = is_platform_admin
         self.session_id = session_id or str(uuid4())
         self.session_manager = SessionManager()
+        self._system_tools = system_tools or []
 
         # Create MCP context
         self._mcp_context = MCPContext(
@@ -145,33 +149,39 @@ class CodingModeClient:
         - Model and system prompt
         - Working directory (workspace)
         - MCP servers (Bifrost tools)
-        - Allowed tools
+        - Allowed tools (filtered based on agent.system_tools)
         - Path restrictions for file operations
         """
         system_prompt = get_system_prompt()
         logger.info(f"Using system prompt ({len(system_prompt)} chars) for model {self._model}")
+
+        # Standard file tools are always available
+        allowed_tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+
+        # Map system tool IDs to MCP tool names
+        tool_id_to_mcp_name = {
+            "execute_workflow": "mcp__bifrost__execute_workflow",
+            "list_workflows": "mcp__bifrost__list_workflows",
+            "list_integrations": "mcp__bifrost__list_integrations",
+            "list_forms": "mcp__bifrost__list_forms",
+            "get_form_schema": "mcp__bifrost__get_form_schema",
+            "validate_form_schema": "mcp__bifrost__validate_form_schema",
+            "search_knowledge": "mcp__bifrost__search_knowledge",
+        }
+
+        # Add only enabled system MCP tools
+        for tool_id in self._system_tools:
+            if tool_id in tool_id_to_mcp_name:
+                allowed_tools.append(tool_id_to_mcp_name[tool_id])
+
+        logger.info(f"Coding mode allowed_tools: {allowed_tools}")
+
         return ClaudeAgentOptions(
             model=self._model,
             system_prompt=system_prompt,
             cwd=str(WORKSPACE_PATH),
             mcp_servers={"bifrost": self._mcp_server.get_sdk_server()},
-            allowed_tools=[
-                # Standard file tools
-                "Read",
-                "Write",
-                "Edit",
-                "Glob",
-                "Grep",
-                "Bash",
-                # Bifrost MCP tools
-                "mcp__bifrost__execute_workflow",
-                "mcp__bifrost__get_form_schema",
-                "mcp__bifrost__list_forms",
-                "mcp__bifrost__list_integrations",
-                "mcp__bifrost__list_workflows",
-                "mcp__bifrost__search_knowledge",
-                "mcp__bifrost__validate_form_schema",
-            ],
+            allowed_tools=allowed_tools,
             permission_mode="acceptEdits",  # Auto-accept file edits in coding mode
             include_partial_messages=True,  # Stream events as they happen (tools, text)
         )

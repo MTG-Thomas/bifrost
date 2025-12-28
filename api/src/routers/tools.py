@@ -86,6 +86,11 @@ def get_system_tools() -> list[ToolInfo]:
     return SYSTEM_TOOLS.copy()
 
 
+def get_system_tool_ids() -> list[str]:
+    """Get list of all system tool IDs (single source of truth)."""
+    return [tool.id for tool in SYSTEM_TOOLS]
+
+
 # =============================================================================
 # Tools Endpoint
 # =============================================================================

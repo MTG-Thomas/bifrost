@@ -59,7 +59,7 @@ def list_integrations_tool(context: MCPContext) -> Any:
         from sqlalchemy import select
 
         from src.core.database import get_db_context
-        from src.models.orm.integrations import Integration, IntegrationOrgMapping
+        from src.models.orm.integrations import Integration, IntegrationMapping
 
         logger.info("MCP list_integrations called")
 
@@ -70,10 +70,10 @@ def list_integrations_tool(context: MCPContext) -> Any:
                 # Org users see integrations mapped to their org
 
                 if context.is_platform_admin or not context.org_id:
-                    # Platform admin - show all active integrations
+                    # Platform admin - show all non-deleted integrations
                     result = await db.execute(
                         select(Integration)
-                        .where(Integration.is_active.is_(True))
+                        .where(Integration.is_deleted.is_(False))
                         .order_by(Integration.name)
                     )
                     integrations = result.scalars().all()
@@ -81,9 +81,9 @@ def list_integrations_tool(context: MCPContext) -> Any:
                     # Org user - show integrations mapped to their org
                     result = await db.execute(
                         select(Integration)
-                        .join(IntegrationOrgMapping)
-                        .where(IntegrationOrgMapping.organization_id == context.org_id)
-                        .where(Integration.is_active.is_(True))
+                        .join(IntegrationMapping)
+                        .where(IntegrationMapping.organization_id == context.org_id)
+                        .where(Integration.is_deleted.is_(False))
                         .order_by(Integration.name)
                     )
                     integrations = result.scalars().all()
@@ -104,11 +104,11 @@ def list_integrations_tool(context: MCPContext) -> Any:
                 lines = ["# Available Integrations\n"]
                 for integration in integrations:
                     lines.append(f"## {integration.name}")
-                    if integration.description:
-                        lines.append(f"{integration.description}")
-                    lines.append(f"- **Type:** {integration.integration_type or 'Custom'}")
-                    if integration.auth_type:
-                        lines.append(f"- **Auth:** {integration.auth_type}")
+                    # Check OAuth configuration
+                    if integration.has_oauth_config:
+                        lines.append("- **Auth:** OAuth configured")
+                    if integration.entity_id_name:
+                        lines.append(f"- **Entity:** {integration.entity_id_name}")
                     lines.append("")
 
                 lines.append("\n## Usage in Workflows\n")

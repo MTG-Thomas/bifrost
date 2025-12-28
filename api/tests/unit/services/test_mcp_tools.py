@@ -7,6 +7,8 @@ Tests the MCP tools for the Bifrost platform:
 - list_workflows: Lists registered workflows
 - list_forms: Lists forms with org scoping
 - search_knowledge: Searches the knowledge base
+- list_integrations: Lists available integrations
+- execute_workflow: Executes workflows and returns results
 
 Uses mocked database access for fast, isolated testing.
 
@@ -704,3 +706,296 @@ class TestSearchKnowledge:
                     # Verify limit capped at 10
                     call_args = mock_repo.search.call_args
                     assert call_args.kwargs["limit"] == 10
+
+
+# ==================== list_integrations Tests ====================
+
+
+@pytest.fixture
+def mock_integration():
+    """Create a mock integration ORM object."""
+    mock = MagicMock()
+    mock.id = uuid4()
+    mock.name = "Microsoft Graph"
+    mock.is_deleted = False
+    mock.has_oauth_config = True
+    mock.entity_id_name = "Tenant ID"
+    return mock
+
+
+class TestListIntegrations:
+    """Tests for the list_integrations MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_lists_integrations_for_platform_admin(
+        self, platform_admin_context, mock_integration
+    ):
+        """Should list all active integrations for platform admin."""
+        from src.services.mcp.tools.list_integrations import list_integrations_tool
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = [mock_integration]
+            mock_session.execute = AsyncMock(return_value=mock_result)
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            tool = list_integrations_tool(platform_admin_context)
+            result = await call_tool(tool, {})
+
+        text = result["content"][0]["text"]
+        assert "Available Integrations" in text
+        assert "Microsoft Graph" in text
+        assert "OAuth configured" in text
+        assert "Tenant ID" in text
+
+    @pytest.mark.asyncio
+    async def test_lists_integrations_for_org_user(
+        self, org_user_context, mock_integration
+    ):
+        """Should list org-mapped integrations for org user."""
+        from src.services.mcp.tools.list_integrations import list_integrations_tool
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = [mock_integration]
+            mock_session.execute = AsyncMock(return_value=mock_result)
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            tool = list_integrations_tool(org_user_context)
+            result = await call_tool(tool, {})
+
+        text = result["content"][0]["text"]
+        assert "Available Integrations" in text
+        assert "Microsoft Graph" in text
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_message(self, org_user_context):
+        """Should return helpful message when no integrations found."""
+        from src.services.mcp.tools.list_integrations import list_integrations_tool
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = []
+            mock_session.execute = AsyncMock(return_value=mock_result)
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            tool = list_integrations_tool(org_user_context)
+            result = await call_tool(tool, {})
+
+        text = result["content"][0]["text"]
+        assert "No integrations" in text
+        assert "admin panel" in text
+
+    @pytest.mark.asyncio
+    async def test_handles_database_error(self, org_user_context):
+        """Should return error message on database failure."""
+        from src.services.mcp.tools.list_integrations import list_integrations_tool
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(
+                side_effect=Exception("Database connection failed")
+            )
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            tool = list_integrations_tool(org_user_context)
+            result = await call_tool(tool, {})
+
+        text = result["content"][0]["text"]
+        assert "Error listing integrations" in text
+
+
+# ==================== execute_workflow Tests ====================
+
+
+class TestExecuteWorkflow:
+    """Tests for the execute_workflow MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_executes_workflow_successfully(
+        self, org_user_context, mock_workflow
+    ):
+        """Should execute workflow and return success result."""
+        from src.services.mcp.tools.execute_workflow import execute_workflow_tool
+
+        # Create mock execution result
+        mock_result = MagicMock()
+        mock_result.status.value = "Success"
+        mock_result.duration_ms = 150
+        mock_result.result = {"output": "test value"}
+        mock_result.error = None
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.repositories.workflows.WorkflowRepository"
+            ) as mock_repo_cls:
+                mock_repo = MagicMock()
+                mock_repo.get_by_name = AsyncMock(return_value=mock_workflow)
+                mock_repo_cls.return_value = mock_repo
+
+                with patch(
+                    "src.services.execution.service.execute_tool"
+                ) as mock_execute:
+                    mock_execute.return_value = mock_result
+
+                    tool = execute_workflow_tool(org_user_context)
+                    result = await call_tool(
+                        tool,
+                        {"workflow_name": "test_workflow", "inputs": {"key": "value"}},
+                    )
+
+        text = result["content"][0]["text"]
+        assert "executed successfully" in text
+        assert "test_workflow" in text
+        assert "150ms" in text
+        assert "test value" in text
+
+    @pytest.mark.asyncio
+    async def test_returns_error_workflow_not_found(self, org_user_context):
+        """Should return error when workflow not found."""
+        from src.services.mcp.tools.execute_workflow import execute_workflow_tool
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.repositories.workflows.WorkflowRepository"
+            ) as mock_repo_cls:
+                mock_repo = MagicMock()
+                mock_repo.get_by_name = AsyncMock(return_value=None)
+                mock_repo_cls.return_value = mock_repo
+
+                tool = execute_workflow_tool(org_user_context)
+                result = await call_tool(
+                    tool, {"workflow_name": "nonexistent_workflow"}
+                )
+
+        text = result["content"][0]["text"]
+        assert "not found" in text
+        assert "nonexistent_workflow" in text
+        assert "list_workflows" in text
+
+    @pytest.mark.asyncio
+    async def test_returns_error_on_execution_failure(
+        self, org_user_context, mock_workflow
+    ):
+        """Should return error details when workflow execution fails."""
+        from src.services.mcp.tools.execute_workflow import execute_workflow_tool
+
+        # Create mock failed execution result
+        mock_result = MagicMock()
+        mock_result.status.value = "Failed"
+        mock_result.error = "Division by zero"
+        mock_result.error_type = "ValueError"
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.repositories.workflows.WorkflowRepository"
+            ) as mock_repo_cls:
+                mock_repo = MagicMock()
+                mock_repo.get_by_name = AsyncMock(return_value=mock_workflow)
+                mock_repo_cls.return_value = mock_repo
+
+                with patch(
+                    "src.services.execution.service.execute_tool"
+                ) as mock_execute:
+                    mock_execute.return_value = mock_result
+
+                    tool = execute_workflow_tool(org_user_context)
+                    result = await call_tool(tool, {"workflow_name": "test_workflow"})
+
+        text = result["content"][0]["text"]
+        assert "failed" in text
+        assert "Division by zero" in text
+        assert "ValueError" in text
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_workflow_name(self, org_user_context):
+        """Should return error when workflow_name is missing."""
+        from src.services.mcp.tools.execute_workflow import execute_workflow_tool
+
+        tool = execute_workflow_tool(org_user_context)
+        result = await call_tool(tool, {})  # No workflow_name
+
+        text = result["content"][0]["text"]
+        assert "workflow_name is required" in text
+
+    @pytest.mark.asyncio
+    async def test_handles_exception(self, org_user_context):
+        """Should return error message on unexpected exception."""
+        from src.services.mcp.tools.execute_workflow import execute_workflow_tool
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(
+                side_effect=Exception("Unexpected error")
+            )
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            tool = execute_workflow_tool(org_user_context)
+            result = await call_tool(tool, {"workflow_name": "test_workflow"})
+
+        text = result["content"][0]["text"]
+        assert "Error executing workflow" in text
+
+
+# ==================== get_system_tool_ids Tests ====================
+
+
+class TestGetSystemToolIds:
+    """Tests for the get_system_tool_ids helper function."""
+
+    def test_returns_all_system_tool_ids(self):
+        """Should return IDs for all system tools."""
+        from src.routers.tools import get_system_tool_ids, SYSTEM_TOOLS
+
+        tool_ids = get_system_tool_ids()
+
+        # Should return same number as SYSTEM_TOOLS
+        assert len(tool_ids) == len(SYSTEM_TOOLS)
+
+        # Should contain all expected IDs
+        expected_ids = {tool.id for tool in SYSTEM_TOOLS}
+        assert set(tool_ids) == expected_ids
+
+    def test_contains_expected_tools(self):
+        """Should contain the expected system tool IDs."""
+        from src.routers.tools import get_system_tool_ids
+
+        tool_ids = get_system_tool_ids()
+
+        # These are the core system tools
+        expected = [
+            "execute_workflow",
+            "list_workflows",
+            "list_integrations",
+            "list_forms",
+            "get_form_schema",
+            "validate_form_schema",
+            "search_knowledge",
+        ]
+
+        for tool_id in expected:
+            assert tool_id in tool_ids, f"Missing expected tool: {tool_id}"
+
+    def test_returns_list_not_generator(self):
+        """Should return a list, not a generator or other iterable."""
+        from src.routers.tools import get_system_tool_ids
+
+        tool_ids = get_system_tool_ids()
+
+        assert isinstance(tool_ids, list)
