@@ -165,7 +165,12 @@ class CodingModeClient:
                 "Bash",
                 # Bifrost MCP tools
                 "mcp__bifrost__execute_workflow",
+                "mcp__bifrost__get_form_schema",
+                "mcp__bifrost__list_forms",
                 "mcp__bifrost__list_integrations",
+                "mcp__bifrost__list_workflows",
+                "mcp__bifrost__search_knowledge",
+                "mcp__bifrost__validate_form_schema",
             ],
             permission_mode="acceptEdits",  # Auto-accept file edits in coding mode
             include_partial_messages=True,  # Stream events as they happen (tools, text)
@@ -235,8 +240,9 @@ class CodingModeClient:
             has_sent_content = False
 
             # Stream response from Claude Agent SDK
-            # Use receive_messages() to get ToolResultBlock events (not receive_response())
-            async for sdk_message in client.receive_messages():
+            # Use receive_response() which terminates after ResultMessage
+            # (receive_messages() never terminates - it's for interactive multi-turn sessions)
+            async for sdk_message in client.receive_response():
                 # Convert SDK messages to our chunk format
                 async for chunk in self._convert_sdk_message(sdk_message, has_sent_content):
                     if chunk.type == "delta" and chunk.content:

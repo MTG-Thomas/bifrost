@@ -3026,22 +3026,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4877,6 +4877,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Tools
+         * @description List all available tools.
+         *
+         *     Returns both system tools (built-in platform tools) and workflow tools
+         *     (user workflows with is_tool=True). Use the `type` parameter to filter.
+         *
+         *     System tools are always available. Workflow tools follow organization scoping.
+         */
+        get: operations["list_tools_api_tools_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tools/system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List System Tools
+         * @description List system tools only.
+         *
+         *     Convenience endpoint that returns only built-in platform tools.
+         *     Equivalent to GET /api/tools?type=system
+         */
+        get: operations["list_system_tools_api_tools_system_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -5134,6 +5182,12 @@ export interface components {
              */
             organization_id?: string | null;
             /**
+             * Is Coding Mode
+             * @description Enable Claude Agent SDK for coding tasks (requires Anthropic API key)
+             * @default false
+             */
+            is_coding_mode: boolean;
+            /**
              * Tool Ids
              * @description List of workflow IDs to use as tools
              */
@@ -5153,6 +5207,11 @@ export interface components {
              * @description List of knowledge namespaces this agent can search
              */
             knowledge_sources?: string[];
+            /**
+             * System Tools
+             * @description List of system tool names enabled for this agent
+             */
+            system_tools?: string[];
         };
         /**
          * AgentPublic
@@ -5174,6 +5233,16 @@ export interface components {
             organization_id?: string | null;
             /** Is Active */
             is_active: boolean;
+            /**
+             * Is Coding Mode
+             * @default false
+             */
+            is_coding_mode: boolean;
+            /**
+             * Is System
+             * @default false
+             */
+            is_system: boolean;
             /** File Path */
             file_path?: string | null;
             /** Created By */
@@ -5190,6 +5259,8 @@ export interface components {
             role_ids?: string[];
             /** Knowledge Sources */
             knowledge_sources?: string[];
+            /** System Tools */
+            system_tools?: string[];
         };
         /**
          * AgentSummary
@@ -5206,6 +5277,11 @@ export interface components {
             channels: string[];
             /** Is Active */
             is_active: boolean;
+            /**
+             * Is Coding Mode
+             * @default false
+             */
+            is_coding_mode: boolean;
         };
         /**
          * AgentUpdate
@@ -5229,6 +5305,11 @@ export interface components {
             /** Is Active */
             is_active?: boolean | null;
             /**
+             * Is Coding Mode
+             * @description Enable Claude Agent SDK for coding tasks (requires Anthropic API key)
+             */
+            is_coding_mode?: boolean | null;
+            /**
              * Tool Ids
              * @description List of workflow IDs to use as tools
              */
@@ -5248,6 +5329,11 @@ export interface components {
              * @description List of knowledge namespaces this agent can search
              */
             knowledge_sources?: string[] | null;
+            /**
+             * System Tools
+             * @description List of system tool names enabled for this agent
+             */
+            system_tools?: string[] | null;
         };
         /**
          * AssignAgentsToRoleRequest
@@ -11121,6 +11207,53 @@ export interface components {
             };
         };
         /**
+         * ToolInfo
+         * @description Unified tool information for both system and workflow tools.
+         *
+         *     Used by the /api/tools endpoint to provide a single view of all available tools.
+         */
+        ToolInfo: {
+            /**
+             * Id
+             * @description Tool ID (UUID for workflows, name for system tools)
+             */
+            id: string;
+            /**
+             * Name
+             * @description Display name
+             */
+            name: string;
+            /**
+             * Description
+             * @description What the tool does
+             */
+            description: string;
+            /**
+             * Type
+             * @description Tool type: 'system' or 'workflow'
+             */
+            type: string;
+            /**
+             * Category
+             * @description Category for grouping (workflows only)
+             */
+            category?: string | null;
+            /**
+             * Default Enabled For Coding Agent
+             * @description Whether this tool is enabled by default for coding agents
+             * @default false
+             */
+            default_enabled_for_coding_agent: boolean;
+        };
+        /**
+         * ToolsResponse
+         * @description Response model for listing available tools.
+         */
+        ToolsResponse: {
+            /** Tools */
+            tools?: components["schemas"]["ToolInfo"][];
+        };
+        /**
          * TrustedDeviceResponse
          * @description Trusted device info.
          */
@@ -16843,7 +16976,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -16876,7 +17009,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -16909,7 +17042,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -16942,7 +17075,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -20403,6 +20536,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tools_api_tools_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by tool type: 'system' for built-in tools, 'workflow' for user workflows */
+                type?: ("system" | "workflow") | null;
+                /** @description Filter scope for workflows: omit for all, 'global' for global only, or org UUID */
+                scope?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_system_tools_api_tools_system_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolsResponse"];
                 };
             };
         };

@@ -56,6 +56,7 @@ from src.routers import (
     ai_pricing_router,
     email_config_router,
     oauth_config_router,
+    tools_router,
 )
 
 # Configure logging
@@ -268,6 +269,7 @@ def create_app() -> FastAPI:
     app.include_router(ai_pricing_router)
     app.include_router(email_config_router)
     app.include_router(oauth_config_router)
+    app.include_router(tools_router)
 
     # Root endpoint
     @app.get("/")

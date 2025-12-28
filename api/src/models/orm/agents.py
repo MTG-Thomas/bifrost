@@ -52,6 +52,10 @@ class Agent(Base):
     knowledge_sources: Mapped[list[str]] = mapped_column(
         ARRAY(String), nullable=False, default=list, server_default='{}'
     )
+    # System tools enabled for this agent (e.g., ["execute_workflow", "search_knowledge"])
+    system_tools: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False, default=list, server_default='{}'
+    )
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, server_default=text("NOW()")

@@ -89,11 +89,24 @@ class BifrostMCPServer:
 
     def _register_default_tools(self) -> None:
         """Register the default set of Bifrost MCP tools."""
-        from src.services.mcp.tools import execute_workflow_tool, list_integrations_tool
+        from src.services.mcp.tools import (
+            execute_workflow_tool,
+            get_form_schema_tool,
+            list_forms_tool,
+            list_integrations_tool,
+            list_workflows_tool,
+            search_knowledge_tool,
+            validate_form_schema_tool,
+        )
 
         # Create tool instances bound to our context
         self._tools.append(execute_workflow_tool(self.context))
+        self._tools.append(get_form_schema_tool(self.context))
+        self._tools.append(list_forms_tool(self.context))
         self._tools.append(list_integrations_tool(self.context))
+        self._tools.append(list_workflows_tool(self.context))
+        self._tools.append(search_knowledge_tool(self.context))
+        self._tools.append(validate_form_schema_tool(self.context))
 
     def register_tool(self, tool: Callable[..., Any]) -> None:
         """

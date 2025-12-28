@@ -17,6 +17,7 @@ type AgentSummary = components["schemas"]["AgentSummary"];
 interface MentionChip {
 	name: string;
 	position: number; // Where in the message this mention starts
+	is_coding_mode?: boolean;
 }
 
 interface ChatInputProps {
@@ -139,7 +140,14 @@ export function ChatInput({
 				if (prev.some((m) => m.name === agent.name)) {
 					return prev;
 				}
-				return [...prev, { name: agent.name, position: mentionStart }];
+				return [
+					...prev,
+					{
+						name: agent.name,
+						position: mentionStart,
+						is_coding_mode: agent.is_coding_mode,
+					},
+				];
 			});
 
 			setMessage(newMessage);
@@ -215,6 +223,11 @@ export function ChatInput({
 									>
 										<Bot className="h-3 w-3 shrink-0" />
 										{mention.name}
+										{mention.is_coding_mode && (
+											<span className="text-[10px] text-muted-foreground">
+												· Claude
+											</span>
+										)}
 										<button
 											type="button"
 											onClick={() =>

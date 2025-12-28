@@ -444,8 +444,38 @@ async def websocket_chat(
                     await websocket.close()
                     return
 
-                # Use coding mode client
-                await _handle_coding_mode(websocket, conversation, user, db)
+                # Extract data we need before closing session
+                coding_mode_params = {
+                    "conversation_id": conversation.id,
+                    "user_id": user.id,
+                    "user_email": user.email,
+                    "user_name": user.name or user.email,
+                    "org_id": user.organization_id,
+                }
+        # Session CLOSED here - critical to avoid holding locks during SDK operations
+
+        if coding_mode:
+            # Use coding mode client with fresh sessions for each DB operation
+            await _handle_coding_mode(websocket, **coding_mode_params)
+            return
+
+        # Regular chat mode continues with the session
+        async with get_db_context() as db:
+            # Re-fetch conversation for regular chat
+            result = await db.execute(
+                select(Conversation)
+                .options(
+                    selectinload(Conversation.agent).selectinload(Agent.tools),
+                    selectinload(Conversation.agent).selectinload(Agent.delegated_agents),
+                )
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.is_active.is_(True))
+            )
+            conversation = result.scalar_one_or_none()
+
+            if not conversation:
+                await websocket.send_json({"type": "error", "error": "Conversation not found"})
+                await websocket.close()
                 return
 
             # Regular chat mode
@@ -498,9 +528,11 @@ async def websocket_chat(
 
 async def _handle_coding_mode(
     websocket: WebSocket,
-    conversation: Conversation,
-    user,
-    db,
+    conversation_id: UUID,
+    user_id: UUID,
+    user_email: str,
+    user_name: str,
+    org_id: UUID | None,
 ) -> None:
     """
     Handle coding mode WebSocket session.
@@ -512,6 +544,11 @@ async def _handle_coding_mode(
     - Uses Claude Agent SDK instead of direct LLM calls
     - Saves messages to DB for persistence and token tracking
     - Records AI usage for cost reporting
+
+    IMPORTANT: This function uses short-lived database sessions for each operation
+    to avoid holding row locks during long-running SDK operations. The Claude Agent
+    SDK can run for minutes (tool loops, file edits, etc.), and holding a session
+    open during that time would block other operations on the conversation row.
     """
     from src.core.cache import get_shared_redis
     from src.models.enums import MessageRole
@@ -519,8 +556,10 @@ async def _handle_coding_mode(
     from src.services.coding_mode import CodingModeClient
     from src.services.llm.factory import get_coding_mode_config
 
-    # Get coding mode config (validates Anthropic is configured)
-    config = await get_coding_mode_config(db)
+    # Get coding mode config with fresh session (validates Anthropic is configured)
+    async with get_db_context() as db:
+        config = await get_coding_mode_config(db)
+
     if not config:
         await websocket.send_json({
             "type": "error",
@@ -531,24 +570,16 @@ async def _handle_coding_mode(
         await websocket.close()
         return
 
-    # Helper to get next message sequence number
-    async def get_next_sequence() -> int:
-        result = await db.execute(
-            select(func.coalesce(func.max(Message.sequence), 0))
-            .where(Message.conversation_id == conversation.id)
-        )
-        return (result.scalar() or 0) + 1
-
     # Create coding mode client with config
     client = CodingModeClient(
-        user_id=user.id,
-        user_email=user.email,
-        user_name=user.name or user.email,
+        user_id=user_id,
+        user_email=user_email,
+        user_name=user_name,
         api_key=config.api_key,
         model=config.model,
-        org_id=user.organization_id,
+        org_id=org_id,
         is_platform_admin=True,
-        session_id=str(conversation.id),  # Use conversation ID as session ID
+        session_id=str(conversation_id),  # Use conversation ID as session ID
     )
 
     try:
@@ -556,7 +587,7 @@ async def _handle_coding_mode(
         await websocket.send_json({
             "type": "session_start",
             "session_id": client.session_id,
-            "conversation_id": str(conversation.id),
+            "conversation_id": str(conversation_id),
             "mode": "coding",
         })
 
@@ -571,20 +602,30 @@ async def _handle_coding_mode(
                     await websocket.send_json({"type": "error", "error": "Empty message"})
                     continue
 
-                # 1. Save user message to database
-                user_msg = Message(
-                    id=uuid4(),
-                    conversation_id=conversation.id,
-                    role=MessageRole.USER,
-                    content=message_text,
-                    sequence=await get_next_sequence(),
-                )
-                db.add(user_msg)
-                await db.flush()
+                # 1. Save user message to database with fresh session
+                async with get_db_context() as db:
+                    # Get next sequence in same session to avoid nested sessions
+                    result = await db.execute(
+                        select(func.coalesce(func.max(Message.sequence), 0))
+                        .where(Message.conversation_id == conversation_id)
+                    )
+                    next_seq = (result.scalar() or 0) + 1
+
+                    user_msg = Message(
+                        id=uuid4(),
+                        conversation_id=conversation_id,
+                        role=MessageRole.USER,
+                        content=message_text,
+                        sequence=next_seq,
+                    )
+                    db.add(user_msg)
+                    # Context manager handles commit
+                # Session closed - no locks held during SDK operations
 
                 # 2. Stream response and accumulate for persistence
+                # This can take MINUTES - no DB session held during this time
                 assistant_content = ""
-                tool_calls_list = []
+                tool_calls_list: list[dict] = []
                 input_tokens = 0
                 output_tokens = 0
                 duration_ms = 0
@@ -637,53 +678,60 @@ async def _handle_coding_mode(
                         # Other chunk types (session_start, error, etc.)
                         await websocket.send_json(chunk.model_dump(exclude_none=True))
 
-                # 3. Save assistant message with token counts
-                assistant_msg = Message(
-                    id=message_id,
-                    conversation_id=conversation.id,
-                    role=MessageRole.ASSISTANT,
-                    content=assistant_content or None,
-                    tool_calls=tool_calls_list if tool_calls_list else None,
-                    token_count_input=input_tokens if input_tokens > 0 else None,
-                    token_count_output=output_tokens if output_tokens > 0 else None,
-                    model=config.model,
-                    duration_ms=duration_ms if duration_ms > 0 else None,
-                    sequence=await get_next_sequence(),
-                )
-                db.add(assistant_msg)
-                await db.flush()
+                # 3. Save assistant message with fresh session
+                async with get_db_context() as db:
+                    # Get next sequence in same session to avoid nested sessions
+                    result = await db.execute(
+                        select(func.coalesce(func.max(Message.sequence), 0))
+                        .where(Message.conversation_id == conversation_id)
+                    )
+                    next_seq = (result.scalar() or 0) + 1
+
+                    assistant_msg = Message(
+                        id=message_id,
+                        conversation_id=conversation_id,
+                        role=MessageRole.ASSISTANT,
+                        content=assistant_content or None,
+                        tool_calls=tool_calls_list if tool_calls_list else None,
+                        token_count_input=input_tokens if input_tokens > 0 else None,
+                        token_count_output=output_tokens if output_tokens > 0 else None,
+                        model=config.model,
+                        duration_ms=duration_ms if duration_ms > 0 else None,
+                        sequence=next_seq,
+                    )
+                    db.add(assistant_msg)
+                    # Context manager handles commit
+                # Session closed
 
                 # 4. Record AI usage for cost tracking (if we have token counts)
                 if input_tokens > 0 or output_tokens > 0:
                     try:
-                        redis_client = await get_shared_redis()
-                        await record_ai_usage(
-                            session=db,
-                            redis_client=redis_client,
-                            provider="anthropic",
-                            model=config.model,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            duration_ms=duration_ms if duration_ms > 0 else None,
-                            conversation_id=conversation.id,
-                            message_id=message_id,
-                            user_id=user.id,
-                        )
+                        async with get_db_context() as db:
+                            redis_client = await get_shared_redis()
+                            await record_ai_usage(
+                                session=db,
+                                redis_client=redis_client,
+                                provider="anthropic",
+                                model=config.model,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                duration_ms=duration_ms if duration_ms > 0 else None,
+                                conversation_id=conversation_id,
+                                message_id=message_id,
+                                user_id=user_id,
+                            )
                     except Exception as e:
                         logger.warning(f"Failed to record AI usage: {e}")
 
-                await db.commit()
-
             except WebSocketDisconnect:
-                logger.info(f"Coding mode WebSocket disconnected: {conversation.id}")
+                logger.info(f"Coding mode WebSocket disconnected: {conversation_id}")
                 break
             except json.JSONDecodeError:
                 await websocket.send_json({"type": "error", "error": "Invalid JSON"})
             except Exception as e:
                 logger.error(f"Coding mode error: {e}", exc_info=True)
                 await websocket.send_json({"type": "error", "error": str(e)})
-                # Rollback on error to avoid partial state
-                await db.rollback()
+                # No rollback needed - each operation has its own committed session
     finally:
         # Clean up SDK client resources
         await client.close()

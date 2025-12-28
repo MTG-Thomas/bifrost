@@ -59,10 +59,11 @@ import {
 	useCreateAgent,
 	useUpdateAgent,
 } from "@/hooks/useAgents";
-import { useToolWorkflows } from "@/hooks/useWorkflows";
+import { useToolsGrouped } from "@/hooks/useTools";
 import { useRoles } from "@/hooks/useRoles";
 import { useKnowledgeNamespaces } from "@/hooks/useKnowledge";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCodingConfig } from "@/hooks/useLLMConfig";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import type { components } from "@/lib/v1";
 
@@ -105,7 +106,9 @@ const formSchema = z.object({
 	channels: z.array(z.enum(["chat", "voice", "teams", "slack"])),
 	access_level: z.enum(["authenticated", "role_based"]),
 	organization_id: z.string().nullable(),
+	is_coding_mode: z.boolean(),
 	tool_ids: z.array(z.string()),
+	system_tools: z.array(z.string()),
 	delegated_agent_ids: z.array(z.string()),
 	role_ids: z.array(z.string()),
 	knowledge_sources: z.array(z.string()),
@@ -126,9 +129,10 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 		agentId ?? undefined,
 	);
 	const { data: allAgents } = useAgents();
-	const { data: toolWorkflows } = useToolWorkflows();
+	const { data: toolsGrouped } = useToolsGrouped();
 	const { data: roles } = useRoles();
 	const { data: knowledgeNamespaces } = useKnowledgeNamespaces();
+	const { isConfigured: isCodingConfigured, isLoading: isCodingConfigLoading } = useCodingConfig();
 	const createAgent = useCreateAgent();
 	const updateAgent = useUpdateAgent();
 
@@ -150,7 +154,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 			channels: ["chat"],
 			access_level: "role_based",
 			organization_id: defaultOrgId,
+			is_coding_mode: false,
 			tool_ids: [],
+			system_tools: [],
 			delegated_agent_ids: [],
 			role_ids: [],
 			knowledge_sources: [],
@@ -159,12 +165,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 
 	// eslint-disable-next-line react-hooks/incompatible-library -- React Hook Form's watch() is intentionally used for dynamic form state
 	const accessLevel = form.watch("access_level");
+	const systemTools = form.watch("system_tools");
+	const toolIds = form.watch("tool_ids");
 
 	// Load existing agent data when editing
 	useEffect(() => {
 		if (agent && isEditing) {
 			// Cast agent to access organization_id which may exist on the response
-			const agentWithOrg = agent as typeof agent & { organization_id?: string | null };
+			const agentWithOrg = agent as typeof agent & { organization_id?: string | null; system_tools?: string[] };
 			form.reset({
 				name: agent.name,
 				description: agent.description ?? "",
@@ -172,7 +180,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				channels: (agent.channels as AgentChannel[]) || ["chat"],
 				access_level: agent.access_level as "authenticated" | "role_based",
 				organization_id: agentWithOrg.organization_id ?? null,
+				is_coding_mode: agent.is_coding_mode ?? false,
 				tool_ids: agent.tool_ids ?? [],
+				system_tools: agentWithOrg.system_tools ?? [],
 				delegated_agent_ids: agent.delegated_agent_ids ?? [],
 				role_ids: agent.role_ids ?? [],
 				knowledge_sources: agent.knowledge_sources ?? [],
@@ -185,7 +195,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				channels: ["chat"],
 				access_level: "role_based",
 				organization_id: defaultOrgId,
+				is_coding_mode: false,
 				tool_ids: [],
+				system_tools: [],
 				delegated_agent_ids: [],
 				role_ids: [],
 				knowledge_sources: [],
@@ -203,8 +215,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 
 	const onSubmit = async (values: FormValues) => {
 		try {
-			// Build the body with organization_id
-			// Cast to include organization_id which may not be in generated types yet
+			// Build the body with organization_id and system_tools
 			const bodyWithOrg = {
 				name: values.name,
 				description: values.description || null,
@@ -212,7 +223,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				channels: values.channels,
 				access_level: values.access_level,
 				organization_id: values.organization_id,
+				is_coding_mode: values.is_coding_mode,
 				tool_ids: values.tool_ids,
+				system_tools: values.system_tools,
 				delegated_agent_ids: values.delegated_agent_ids,
 				role_ids: values.role_ids,
 				knowledge_sources: values.knowledge_sources,
@@ -238,7 +251,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 
 	return (
 		<Dialog open={open} onOpenChange={handleClose}>
-			<DialogContent className="sm:max-w-[900px] max-h-[90vh] overflow-y-auto">
+			<DialogContent className="sm:max-w-[900px] max-h-[90vh] flex flex-col overflow-hidden">
 				<DialogHeader>
 					<DialogTitle>
 						{isEditing ? "Edit Agent" : "Create Agent"}
@@ -258,24 +271,24 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 					<Form {...form}>
 						<form
 							onSubmit={form.handleSubmit(onSubmit)}
-							className="space-y-6"
+							className="flex flex-col flex-1 min-h-0"
 						>
 							{/* Two-column layout */}
-							<div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+							<div className="grid grid-cols-1 md:grid-cols-2 gap-6 flex-1 min-h-0 overflow-hidden">
 								{/* Left column: System Prompt */}
-								<div className="space-y-4">
+								<div className="flex flex-col min-h-0">
 									<FormField
 										control={form.control}
 										name="system_prompt"
 										render={({ field }) => (
-											<FormItem className="h-full flex flex-col">
+											<FormItem className="flex flex-col flex-1 min-h-0">
 												<FormLabel>
 													System Prompt
 												</FormLabel>
-												<FormControl>
+												<FormControl className="flex-1 min-h-0">
 													<Textarea
 														placeholder="You are a helpful sales assistant..."
-														className="resize-none font-mono text-sm flex-1 min-h-[400px]"
+														className="resize-none font-mono text-sm h-full min-h-[200px]"
 														{...field}
 													/>
 												</FormControl>
@@ -291,7 +304,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 								</div>
 
 								{/* Right column: Other fields */}
-								<div className="space-y-4">
+								<div className="space-y-4 overflow-y-auto min-h-0 pr-2">
 									{/* Organization Scope - Only show for platform admins */}
 									{isPlatformAdmin && (
 										<FormField
@@ -574,6 +587,49 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 										)}
 									/>
 
+									{/* Coding Mode */}
+									<FormField
+										control={form.control}
+										name="is_coding_mode"
+										render={({ field }) => (
+											<FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+												<FormControl>
+													<Checkbox
+														checked={field.value}
+														disabled={isCodingConfigLoading || isCodingConfigured === false}
+														onCheckedChange={(checked) => {
+															field.onChange(checked);
+															// Auto-select all system tools when enabling coding mode
+															if (checked && toolsGrouped?.system) {
+																const allSystemToolIds = toolsGrouped.system.map(t => t.id);
+																form.setValue("system_tools", allSystemToolIds);
+															}
+														}}
+													/>
+												</FormControl>
+												<div className="space-y-1 leading-none">
+													<FormLabel className="flex items-center gap-2">
+														Coding Mode
+														{isCodingConfigured && (
+															<Badge variant="secondary" className="text-xs">
+																Powered by Claude
+															</Badge>
+														)}
+													</FormLabel>
+													<FormDescription>
+														{isCodingConfigured === false ? (
+															<span className="text-destructive">
+																Requires Anthropic API configuration in Settings → LLM
+															</span>
+														) : (
+															"Enables file access (read, write, edit) for workflow development. Uses Claude Agent SDK."
+														)}
+													</FormDescription>
+												</div>
+											</FormItem>
+										)}
+									/>
+
 									{/* Roles - Only visible when role_based is selected */}
 									{accessLevel === "role_based" && (
 										<FormField
@@ -756,179 +812,186 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 										/>
 									)}
 
-									{/* Tools (Workflows) */}
-									<FormField
-										control={form.control}
-										name="tool_ids"
-										render={({ field }) => (
-											<FormItem>
-												<FormLabel>Tools</FormLabel>
-												<Popover
-													open={toolsOpen}
-													onOpenChange={setToolsOpen}
+									{/* Tools - Combined System and Workflow */}
+									<FormItem>
+										<FormLabel>
+											Tools{" "}
+											{((systemTools?.length || 0) + (toolIds?.length || 0)) > 0 &&
+												`(${(systemTools?.length || 0) + (toolIds?.length || 0)})`}
+										</FormLabel>
+										<Popover
+											open={toolsOpen}
+											onOpenChange={setToolsOpen}
+										>
+											<PopoverTrigger asChild>
+												<Button
+													variant="outline"
+													role="combobox"
+													aria-expanded={toolsOpen}
+													className="w-full justify-between h-auto min-h-10"
 												>
-													<PopoverTrigger asChild>
-														<FormControl>
-															<Button
-																variant="outline"
-																role="combobox"
-																aria-expanded={
-																	toolsOpen
-																}
-																className="w-full justify-between h-auto min-h-10"
-															>
-																{field.value
-																	?.length >
-																0 ? (
-																	<div className="flex flex-wrap gap-1">
-																		{field.value.map(
-																			(
-																				toolId,
-																			) => {
-																				const workflow =
-																					toolWorkflows?.find(
-																						(
-																							w,
-																						) =>
-																							w.id ===
-																							toolId,
-																					);
-																				return (
-																					<Badge
-																						key={
-																							toolId
-																						}
-																						variant="secondary"
-																						className="mr-1"
-																					>
-																						{workflow?.name ||
-																							toolId}
-																						<button
-																							type="button"
-																							className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-																							onClick={(
-																								e,
-																							) => {
-																								e.stopPropagation();
-																								field.onChange(
-																									field.value.filter(
-																										(
-																											id,
-																										) =>
-																											id !==
-																											toolId,
-																									),
-																								);
-																							}}
-																						>
-																							<X className="h-3 w-3" />
-																						</button>
-																					</Badge>
+													{((systemTools?.length || 0) + (toolIds?.length || 0)) > 0 ? (
+														<div className="flex flex-wrap gap-1">
+															{/* System tool badges */}
+															{systemTools?.map((toolId) => {
+																const tool = toolsGrouped?.system.find(
+																	(t) => t.id === toolId
+																);
+																return (
+																	<Badge
+																		key={toolId}
+																		variant="secondary"
+																		className="mr-1 font-mono text-xs"
+																	>
+																		{tool?.name || toolId}
+																		<button
+																			type="button"
+																			className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																			onClick={(e) => {
+																				e.stopPropagation();
+																				form.setValue(
+																					"system_tools",
+																					systemTools?.filter(
+																						(id) => id !== toolId
+																					) || []
 																				);
-																			},
-																		)}
-																	</div>
-																) : (
-																	<span className="text-muted-foreground">
-																		Select
-																		tools...
-																	</span>
-																)}
-																<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-															</Button>
-														</FormControl>
-													</PopoverTrigger>
-													<PopoverContent
-														className="w-[400px] p-0"
-														align="start"
-													>
-														<Command>
-															<CommandInput placeholder="Search tools..." />
-															<CommandList>
-																<CommandEmpty>
-																	No tools
-																	found.
-																</CommandEmpty>
-																<CommandGroup>
-																	{toolWorkflows?.map(
-																		(
-																			workflow,
-																		) => (
-																			<CommandItem
-																				key={
-																					workflow.id
-																				}
-																				value={
-																					workflow.name
-																				}
-																				onSelect={() => {
-																					const current =
-																						field.value ||
-																						[];
-																					if (
-																						current.includes(
-																							workflow.id,
-																						)
-																					) {
-																						field.onChange(
-																							current.filter(
-																								(
-																									id,
-																								) =>
-																									id !==
-																									workflow.id,
-																							),
-																						);
-																					} else {
-																						field.onChange(
-																							[
-																								...current,
-																								workflow.id,
-																							],
-																						);
-																					}
-																				}}
-																			>
-																				<Check
-																					className={cn(
-																						"mr-2 h-4 w-4",
-																						field.value?.includes(
-																							workflow.id,
-																						)
-																							? "opacity-100"
-																							: "opacity-0",
-																					)}
-																				/>
-																				<div className="flex flex-col">
-																					<span>
-																						{
-																							workflow.name
-																						}
-																					</span>
-																					{workflow.description && (
-																						<span className="text-xs text-muted-foreground">
-																							{
-																								workflow.description
-																							}
-																						</span>
-																					)}
-																				</div>
-																			</CommandItem>
-																		),
-																	)}
-																</CommandGroup>
-															</CommandList>
-														</Command>
-													</PopoverContent>
-												</Popover>
-												<FormDescription>
-													Workflows this agent can
-													execute as tools
-												</FormDescription>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
+																			}}
+																		>
+																			<X className="h-3 w-3" />
+																		</button>
+																	</Badge>
+																);
+															})}
+															{/* Workflow tool badges */}
+															{toolIds?.map((toolId) => {
+																const tool = toolsGrouped?.workflow.find(
+																	(t) => t.id === toolId
+																);
+																return (
+																	<Badge
+																		key={toolId}
+																		variant="secondary"
+																		className="mr-1"
+																	>
+																		{tool?.name || toolId}
+																		<button
+																			type="button"
+																			className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																			onClick={(e) => {
+																				e.stopPropagation();
+																				form.setValue(
+																					"tool_ids",
+																					toolIds?.filter(
+																						(id) => id !== toolId
+																					) || []
+																				);
+																			}}
+																		>
+																			<X className="h-3 w-3" />
+																		</button>
+																	</Badge>
+																);
+															})}
+														</div>
+													) : (
+														<span className="text-muted-foreground">
+															Select tools...
+														</span>
+													)}
+													<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+												</Button>
+											</PopoverTrigger>
+											<PopoverContent className="w-[400px] p-0" align="start">
+												<Command>
+													<CommandInput placeholder="Search tools..." />
+													<CommandList>
+														<CommandEmpty>No tools found.</CommandEmpty>
+
+														{/* System Tools Group */}
+														{toolsGrouped?.system && toolsGrouped.system.length > 0 && (
+															<CommandGroup heading="System Tools">
+																{toolsGrouped.system.map((tool) => (
+																	<CommandItem
+																		key={tool.id}
+																		value={`system-${tool.name}`}
+																		onSelect={() => {
+																			const current = systemTools || [];
+																			if (current.includes(tool.id)) {
+																				form.setValue(
+																					"system_tools",
+																					current.filter((id) => id !== tool.id)
+																				);
+																			} else {
+																				form.setValue("system_tools", [...current, tool.id]);
+																			}
+																		}}
+																	>
+																		<Check
+																			className={cn(
+																				"mr-2 h-4 w-4",
+																				systemTools?.includes(tool.id)
+																					? "opacity-100"
+																					: "opacity-0"
+																			)}
+																		/>
+																		<div className="flex flex-col">
+																			<span className="font-mono text-sm">{tool.id}</span>
+																			<span className="text-xs text-muted-foreground">
+																				{tool.description}
+																			</span>
+																		</div>
+																	</CommandItem>
+																))}
+															</CommandGroup>
+														)}
+
+														{/* Workflow Tools Group */}
+														{toolsGrouped?.workflow && toolsGrouped.workflow.length > 0 && (
+															<CommandGroup heading="Workflow Tools">
+																{toolsGrouped.workflow.map((tool) => (
+																	<CommandItem
+																		key={tool.id}
+																		value={`workflow-${tool.name}`}
+																		onSelect={() => {
+																			const current = toolIds || [];
+																			if (current.includes(tool.id)) {
+																				form.setValue(
+																					"tool_ids",
+																					current.filter((id) => id !== tool.id)
+																				);
+																			} else {
+																				form.setValue("tool_ids", [...current, tool.id]);
+																			}
+																		}}
+																	>
+																		<Check
+																			className={cn(
+																				"mr-2 h-4 w-4",
+																				toolIds?.includes(tool.id)
+																					? "opacity-100"
+																					: "opacity-0"
+																			)}
+																		/>
+																		<div className="flex flex-col">
+																			<span>{tool.name}</span>
+																			{tool.description && (
+																				<span className="text-xs text-muted-foreground">
+																					{tool.description}
+																				</span>
+																			)}
+																		</div>
+																	</CommandItem>
+																))}
+															</CommandGroup>
+														)}
+													</CommandList>
+												</Command>
+											</PopoverContent>
+										</Popover>
+										<FormDescription>
+											System tools and workflows this agent can use
+										</FormDescription>
+									</FormItem>
 
 									{/* Delegated Agents */}
 									<FormField
@@ -1269,9 +1332,20 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 														</Command>
 													</PopoverContent>
 												</Popover>
+												{field.value?.length > 0 && (
+													<div className="flex items-center gap-2 p-2 border rounded-md bg-muted/30">
+														<Badge variant="secondary" className="font-mono text-xs">
+															search_knowledge
+														</Badge>
+														<span className="text-xs text-muted-foreground">
+															tool auto-enabled
+														</span>
+													</div>
+												)}
 												<FormDescription>
 													Knowledge namespaces this
-													agent can search for context
+													agent can search for context.
+													Adding namespaces enables the search_knowledge tool.
 												</FormDescription>
 												<FormMessage />
 											</FormItem>
@@ -1280,7 +1354,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 								</div>
 							</div>
 
-							<DialogFooter>
+							<DialogFooter className="mt-6 flex-shrink-0">
 								<Button
 									type="button"
 									variant="outline"

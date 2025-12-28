@@ -38,6 +38,7 @@ from src.routers.usage_reports import router as usage_reports_router
 from src.routers.ai_pricing import router as ai_pricing_router
 from src.routers.email_config import router as email_config_router
 from src.routers.oauth_config import router as oauth_config_router
+from src.routers.tools import router as tools_router
 
 __all__ = [
     "auth_router",
@@ -79,4 +80,5 @@ __all__ = [
     "ai_pricing_router",
     "email_config_router",
     "oauth_config_router",
+    "tools_router",
 ]

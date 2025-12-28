@@ -1286,6 +1286,9 @@ function CodingConfigCard({
 				<div className="flex items-center gap-2">
 					<Code className="h-5 w-5" />
 					<CardTitle>Coding Mode</CardTitle>
+					<Badge variant="outline" className="text-xs font-normal">
+						Powered by Claude
+					</Badge>
 				</div>
 				<CardDescription>
 					Configure the AI model for the Bifrost coding assistant.

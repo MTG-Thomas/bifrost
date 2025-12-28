@@ -44,10 +44,15 @@ class AgentCreate(BaseModel):
     organization_id: UUID | None = Field(
         default=None, description="Organization ID (null = global resource)"
     )
+    is_coding_mode: bool = Field(
+        default=False,
+        description="Enable Claude Agent SDK for coding tasks (requires Anthropic API key)"
+    )
     tool_ids: list[str] = Field(default_factory=list, description="List of workflow IDs to use as tools")
     delegated_agent_ids: list[str] = Field(default_factory=list, description="List of agent IDs this agent can delegate to")
     role_ids: list[str] = Field(default_factory=list, description="List of role IDs that can access this agent (for role_based access)")
     knowledge_sources: list[str] = Field(default_factory=list, description="List of knowledge namespaces this agent can search")
+    system_tools: list[str] = Field(default_factory=list, description="List of system tool names enabled for this agent")
 
 
 class AgentUpdate(BaseModel):
@@ -61,10 +66,15 @@ class AgentUpdate(BaseModel):
         default=None, description="Organization ID (null = global resource)"
     )
     is_active: bool | None = None
+    is_coding_mode: bool | None = Field(
+        default=None,
+        description="Enable Claude Agent SDK for coding tasks (requires Anthropic API key)"
+    )
     tool_ids: list[str] | None = Field(default=None, description="List of workflow IDs to use as tools")
     delegated_agent_ids: list[str] | None = Field(default=None, description="List of agent IDs this agent can delegate to")
     role_ids: list[str] | None = Field(default=None, description="List of role IDs that can access this agent (for role_based access)")
     knowledge_sources: list[str] | None = Field(default=None, description="List of knowledge namespaces this agent can search")
+    system_tools: list[str] | None = Field(default=None, description="List of system tool names enabled for this agent")
 
 
 class AgentPublic(BaseModel):
@@ -79,6 +89,8 @@ class AgentPublic(BaseModel):
     access_level: AgentAccessLevel
     organization_id: UUID | None = None
     is_active: bool
+    is_coding_mode: bool = False
+    is_system: bool = False
     file_path: str | None = None
     created_by: str
     created_at: datetime
@@ -88,6 +100,7 @@ class AgentPublic(BaseModel):
     delegated_agent_ids: list[str] = Field(default_factory=list)
     role_ids: list[str] = Field(default_factory=list)
     knowledge_sources: list[str] = Field(default_factory=list)
+    system_tools: list[str] = Field(default_factory=list)
 
     @field_serializer("id", "organization_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:
@@ -107,6 +120,7 @@ class AgentSummary(BaseModel):
     description: str | None = None
     channels: list[str]
     is_active: bool
+    is_coding_mode: bool = False
 
     @field_serializer("id")
     def serialize_uuid(self, v: UUID) -> str:
@@ -289,3 +303,28 @@ class AssignToolsToAgentRequest(BaseModel):
 class AssignDelegationsToAgentRequest(BaseModel):
     """Request for assigning delegation targets to an agent."""
     agent_ids: list[str] = Field(..., min_length=1)
+
+
+# ==================== UNIFIED TOOLS ====================
+
+
+class ToolInfo(BaseModel):
+    """
+    Unified tool information for both system and workflow tools.
+
+    Used by the /api/tools endpoint to provide a single view of all available tools.
+    """
+    id: str = Field(..., description="Tool ID (UUID for workflows, name for system tools)")
+    name: str = Field(..., description="Display name")
+    description: str = Field(..., description="What the tool does")
+    type: str = Field(..., description="Tool type: 'system' or 'workflow'")
+    category: str | None = Field(default=None, description="Category for grouping (workflows only)")
+    default_enabled_for_coding_agent: bool = Field(
+        default=False,
+        description="Whether this tool is enabled by default for coding agents"
+    )
+
+
+class ToolsResponse(BaseModel):
+    """Response model for listing available tools."""
+    tools: list[ToolInfo] = Field(default_factory=list)

@@ -277,10 +277,15 @@ export function Agents() {
 										<div className="flex-1 min-w-0">
 											<div className="flex items-center gap-2">
 												<Bot className="h-4 w-4 text-muted-foreground shrink-0" />
-												<CardTitle className="text-base break-all">
+												<CardTitle className="text-base break-words">
 													{agent.name}
 												</CardTitle>
 											</div>
+											{agent.is_coding_mode && (
+												<Badge variant="outline" className="text-xs font-normal mt-1.5 w-fit">
+													Powered by Claude
+												</Badge>
+											)}
 											<CardDescription className="mt-1.5 text-sm break-words line-clamp-2">
 												{agent.description || (
 													<span className="italic text-muted-foreground/60">
@@ -407,6 +412,11 @@ export function Agents() {
 											<div className="flex items-center gap-2">
 												<Bot className="h-4 w-4 text-muted-foreground" />
 												{agent.name}
+												{agent.is_coding_mode && (
+													<Badge variant="outline" className="text-xs font-normal">
+														Powered by Claude
+													</Badge>
+												)}
 											</div>
 										</DataTableCell>
 										<DataTableCell className="max-w-xs truncate text-muted-foreground">

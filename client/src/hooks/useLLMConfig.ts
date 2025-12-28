@@ -1,12 +1,15 @@
 /**
- * Hook for checking LLM configuration status
+ * Hooks for checking LLM configuration status
  *
- * Used to determine if AI chat is available and configured.
+ * Used to determine if AI chat and coding mode are available and configured.
  * Only works for platform admins (the config endpoint requires admin access).
  */
 
 import { $api } from "@/lib/api-client";
 import { useUserPermissions } from "@/hooks/useUserPermissions";
+import type { components } from "@/lib/v1";
+
+export type CodingConfigResponse = components["schemas"]["CodingConfigResponse"];
 
 /**
  * Hook to check if LLM provider is configured
@@ -37,6 +40,46 @@ export function useLLMConfig() {
 	// They'll get an error when trying to chat if not configured
 	const isConfigured = isPlatformAdmin
 		? (config?.is_configured ?? false)
+		: null; // null means "unknown" for non-admins
+
+	return {
+		isConfigured,
+		isPlatformAdmin,
+		isLoading: permissionsLoading || (isPlatformAdmin && configLoading),
+		config,
+		error,
+	};
+}
+
+/**
+ * Hook to check if coding mode is configured
+ *
+ * Returns:
+ * - isConfigured: whether coding mode has a valid Anthropic API key (main LLM or override)
+ * - isLoading: whether the query is in progress
+ * - config: the full coding config response (for admins only)
+ */
+export function useCodingConfig() {
+	const { isPlatformAdmin, isLoading: permissionsLoading } =
+		useUserPermissions();
+
+	const {
+		data: config,
+		isLoading: configLoading,
+		error,
+	} = $api.useQuery("get", "/api/admin/llm/coding-config", undefined, {
+		// Only fetch if user is a platform admin
+		enabled: isPlatformAdmin && !permissionsLoading,
+		// Cache for 5 minutes
+		staleTime: 5 * 60 * 1000,
+		// Don't retry on 404
+		retry: false,
+	});
+
+	// For non-admins, we can't check config - assume it might work
+	// They'll get an error when trying to use coding mode if not configured
+	const isConfigured = isPlatformAdmin
+		? (config?.configured ?? false)
 		: null; // null means "unknown" for non-admins
 
 	return {

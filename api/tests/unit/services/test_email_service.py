@@ -4,7 +4,6 @@ Unit tests for EmailService.
 Tests email workflow configuration and validation with mocked database.
 """
 
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -13,13 +12,10 @@ import pytest
 from src.services.email_service import (
     EmailService,
     EmailWorkflowConfig,
-    EmailValidationResult,
-    SendEmailResult,
     send_email,
     EMAIL_CONFIG_CATEGORY,
     EMAIL_CONFIG_KEY,
     REQUIRED_PARAMS,
-    OPTIONAL_PARAMS,
 )
 
 

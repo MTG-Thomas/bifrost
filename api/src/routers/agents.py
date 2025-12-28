@@ -62,6 +62,8 @@ def _agent_to_public(agent: Agent) -> AgentPublic:
         access_level=agent.access_level,
         organization_id=agent.organization_id,
         is_active=agent.is_active,
+        is_coding_mode=agent.is_coding_mode,
+        is_system=agent.is_system,
         file_path=agent.file_path,
         created_by=agent.created_by,
         created_at=agent.created_at,
@@ -70,6 +72,7 @@ def _agent_to_public(agent: Agent) -> AgentPublic:
         delegated_agent_ids=[str(a.id) for a in agent.delegated_agents],
         role_ids=[str(r.id) for r in agent.roles],
         knowledge_sources=agent.knowledge_sources or [],
+        system_tools=agent.system_tools or [],
     )
 
 
@@ -202,6 +205,7 @@ async def list_agents(
             description=a.description,
             channels=a.channels,
             is_active=a.is_active,
+            is_coding_mode=a.is_coding_mode,
         )
         for a in agents
     ]
@@ -231,7 +235,9 @@ async def create_agent(
         access_level=agent_data.access_level,
         organization_id=agent_data.organization_id,
         is_active=True,
+        is_coding_mode=agent_data.is_coding_mode,
         knowledge_sources=agent_data.knowledge_sources or [],
+        system_tools=agent_data.system_tools or [],
         created_by=user.email,
         created_at=now,
         updated_at=now,
@@ -389,8 +395,12 @@ async def update_agent(
         agent.organization_id = agent_data.organization_id
     if agent_data.is_active is not None:
         agent.is_active = agent_data.is_active
+    if agent_data.is_coding_mode is not None:
+        agent.is_coding_mode = agent_data.is_coding_mode
     if agent_data.knowledge_sources is not None:
         agent.knowledge_sources = agent_data.knowledge_sources
+    if agent_data.system_tools is not None:
+        agent.system_tools = agent_data.system_tools
 
     agent.updated_at = datetime.utcnow()
 
