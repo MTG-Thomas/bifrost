@@ -315,8 +315,9 @@ from bifrost import workflow, context
 async def e2e_discovery_test_workflow(value: str):
     return {"value": value, "user": context.email}
 '''
+        # Use index=true to inject workflow ID into decorator
         response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "e2e_discovery_test.py",

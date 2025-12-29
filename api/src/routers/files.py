@@ -24,6 +24,7 @@ from src.models import (
     FileContentRequest,
     FileContentResponse,
     FileConflictResponse,
+    FileDiagnostic,
     FileMetadata,
     FileType,
     SearchRequest,
@@ -399,6 +400,18 @@ async def put_file_content_editor(
                     file_path=c.file_path,
                 ))
 
+        # Convert diagnostics to response model
+        diagnostics = []
+        if write_result.diagnostics:
+            for d in write_result.diagnostics:
+                diagnostics.append(FileDiagnostic(
+                    severity=d.severity,  # type: ignore[arg-type]
+                    message=d.message,
+                    line=d.line,
+                    column=d.column,
+                    source=d.source,
+                ))
+
         return FileContentResponse(
             path=request.path,
             content=response_content,
@@ -409,6 +422,7 @@ async def put_file_content_editor(
             content_modified=write_result.content_modified,
             needs_indexing=write_result.needs_indexing,
             workflow_id_conflicts=conflicts,
+            diagnostics=diagnostics,
         )
 
     except HTTPException:

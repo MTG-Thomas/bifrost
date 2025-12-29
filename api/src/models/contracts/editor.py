@@ -65,6 +65,27 @@ class WorkflowIdConflict(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class FileDiagnostic(BaseModel):
+    """
+    A file-specific issue detected during save/indexing.
+
+    These are returned to the client for display in the editor (Monaco markers)
+    and also used to create system notifications for errors.
+    """
+    severity: Literal["error", "warning", "info"] = Field(
+        ..., description="Severity level of the diagnostic"
+    )
+    message: str = Field(..., description="Human-readable description of the issue")
+    line: int | None = Field(default=None, description="Line number (1-indexed) if applicable")
+    column: int | None = Field(default=None, description="Column number if applicable")
+    source: str = Field(
+        default="bifrost",
+        description="Source of the diagnostic (e.g., 'syntax', 'indexing', 'sdk')"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class FileContentResponse(BaseModel):
     """Response with file content"""
     path: str = Field(..., description="Relative path from /home/repo")
@@ -84,6 +105,10 @@ class FileContentResponse(BaseModel):
     workflow_id_conflicts: list[WorkflowIdConflict] = Field(
         default_factory=list,
         description="List of workflows that would lose their existing IDs. Client should prompt user."
+    )
+    diagnostics: list[FileDiagnostic] = Field(
+        default_factory=list,
+        description="File-specific issues detected during save (syntax errors, indexing warnings, etc.)"
     )
 
     model_config = ConfigDict(from_attributes=True)

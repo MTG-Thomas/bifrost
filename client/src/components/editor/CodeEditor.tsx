@@ -7,6 +7,7 @@ import { useWindowFocusRefresh } from "@/hooks/useWindowFocusRefresh";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useCmdCtrlShortcut } from "@/contexts/KeyboardContext";
 import { fileService } from "@/services/fileService";
+import type { FileDiagnostic } from "@/stores/editorStore";
 import { Loader2, FileIcon } from "lucide-react";
 import { toast } from "sonner";
 import type * as Monaco from "monaco-editor";
@@ -27,6 +28,7 @@ export function CodeEditor() {
 		unsavedChanges,
 		gitConflict,
 		isLoadingFile,
+		diagnostics,
 		setFileContent,
 		setCursorPosition,
 		setSelectedLanguage,
@@ -38,6 +40,7 @@ export function CodeEditor() {
 	useWindowFocusRefresh(); // Still refresh file tree on window focus
 	const { theme } = useTheme();
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+	const monacoRef = useRef<typeof Monaco | null>(null);
 	const monacoInitializedRef = useRef<boolean>(false);
 	const conflictDisposableRef = useRef<Monaco.IDisposable | null>(null);
 
@@ -52,6 +55,8 @@ export function CodeEditor() {
 		(state) => state.resolveWorkflowIdConflict,
 	);
 	const updateTabContent = useEditorStore((state) => state.updateTabContent);
+	const setDiagnostics = useEditorStore((state) => state.setDiagnostics);
+	const activeTabIndex = useEditorStore((state) => state.activeTabIndex);
 
 	// Line reveal state (for scrolling to specific line when opening from maintenance page, etc.)
 	const pendingLineReveal = useEditorStore((state) => state.pendingLineReveal);
@@ -117,8 +122,16 @@ export function CodeEditor() {
 					?.run();
 			}
 
-			await fileService.writeFile(openFile.path, fileContent);
+			const response = await fileService.writeFile(openFile.path, fileContent);
+
+			// Store diagnostics in tab state - the useEffect watching diagnostics will apply to Monaco
+			setDiagnostics(
+				activeTabIndex,
+				response.diagnostics as FileDiagnostic[] | undefined,
+			);
+
 			markSaved();
+
 			toast.success("File saved", {
 				description: openFile.name,
 			});
@@ -128,7 +141,7 @@ export function CodeEditor() {
 					error instanceof Error ? error.message : String(error),
 			});
 		}
-	}, [openFile, fileContent, unsavedChanges, markSaved]);
+	}, [openFile, fileContent, unsavedChanges, markSaved, setDiagnostics, activeTabIndex]);
 
 	// Register global Cmd/Ctrl+S shortcut for saving
 	useCmdCtrlShortcut("editor-save", "s", () => {
@@ -186,6 +199,7 @@ export function CodeEditor() {
 
 	const handleEditorMount: OnMount = async (editor, monaco) => {
 		editorRef.current = editor;
+		monacoRef.current = monaco;
 
 		// Check for pending line reveal and execute it
 		// This handles the case when opening a new file with a line number
@@ -247,6 +261,58 @@ export function CodeEditor() {
 			setSelectedLanguage(language);
 		}
 	}, [openFile, setSelectedLanguage]);
+
+	// Apply diagnostics from store to Monaco markers
+	// This watches the diagnostics in the store (set by useAutoSave after save)
+	// and applies them as Monaco editor markers
+	useEffect(() => {
+		const editor = editorRef.current;
+		const monaco = monacoRef.current;
+
+		if (!editor || !monaco) return;
+
+		const model = editor.getModel();
+		if (!model) return;
+
+		// Clear previous markers first
+		monaco.editor.setModelMarkers(model, "bifrost", []);
+
+		// If no diagnostics, we're done (markers cleared)
+		if (!diagnostics || diagnostics.length === 0) return;
+
+		// Convert diagnostics to Monaco markers
+		const markers: Monaco.editor.IMarkerData[] = diagnostics.map((d) => ({
+			severity:
+				d.severity === "error"
+					? monaco.MarkerSeverity.Error
+					: d.severity === "warning"
+						? monaco.MarkerSeverity.Warning
+						: monaco.MarkerSeverity.Info,
+			message: d.message,
+			startLineNumber: d.line ?? 1,
+			startColumn: d.column ?? 1,
+			endLineNumber: d.line ?? 1,
+			endColumn: 1000, // Highlight to end of line
+			source: d.source ?? "bifrost",
+		}));
+
+		monaco.editor.setModelMarkers(model, "bifrost", markers);
+
+		// Show toast with summary
+		const errorCount = diagnostics.filter((d) => d.severity === "error").length;
+		const warningCount = diagnostics.filter((d) => d.severity === "warning").length;
+
+		if (errorCount > 0) {
+			toast.warning(`${errorCount} error${errorCount > 1 ? "s" : ""} found`, {
+				description:
+					warningCount > 0
+						? `Plus ${warningCount} warning${warningCount > 1 ? "s" : ""}`
+						: undefined,
+			});
+		} else if (warningCount > 0) {
+			toast.info(`${warningCount} warning${warningCount > 1 ? "s" : ""} found`);
+		}
+	}, [diagnostics]);
 
 	// Cleanup conflict resolution when component unmounts or file changes
 	useEffect(() => {

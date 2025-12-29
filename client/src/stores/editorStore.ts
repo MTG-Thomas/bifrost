@@ -55,6 +55,15 @@ interface ConflictInfo {
 	base_content?: string;
 }
 
+// Diagnostic from file save response
+export interface FileDiagnostic {
+	severity: "error" | "warning" | "info";
+	message: string;
+	line?: number;
+	column?: number;
+	source?: string;
+}
+
 export interface EditorTab {
 	file: FileMetadata;
 	content: string;
@@ -67,6 +76,7 @@ export interface EditorTab {
 	selectedLanguage?: string;
 	etag?: string | undefined; // File version identifier for change detection
 	gitConflict?: ConflictInfo; // Git merge conflict data from API (current/incoming content)
+	diagnostics?: FileDiagnostic[]; // Diagnostics from last save (syntax errors, etc.)
 }
 
 interface EditorState {
@@ -136,6 +146,7 @@ interface EditorState {
 	markSaved: () => void;
 	setSaveState: (tabIndex: number, state: SaveState) => void;
 	setConflictState: (tabIndex: number, reason: ConflictReason) => void;
+	setDiagnostics: (tabIndex: number, diagnostics: FileDiagnostic[] | undefined) => void;
 	resolveConflict: (
 		tabIndex: number,
 		action: "keep_mine" | "use_server" | "recreate" | "close",
@@ -457,6 +468,21 @@ export const useEditorStore = create<EditorState>()(
 						...tab,
 						saveState: "conflict",
 						conflictReason: reason,
+					};
+					set({ tabs: newTabs });
+				}
+			},
+
+			setDiagnostics: (tabIndex, diagnostics) => {
+				const state = get();
+				if (tabIndex < 0 || tabIndex >= state.tabs.length) return;
+
+				const newTabs = [...state.tabs];
+				const tab = newTabs[tabIndex];
+				if (tab) {
+					newTabs[tabIndex] = {
+						...tab,
+						diagnostics,
 					};
 					set({ tabs: newTabs });
 				}

@@ -22,6 +22,7 @@ export function useAutoSave() {
 	const activeTabIndex = useEditorStore((state) => state.activeTabIndex);
 	const setSaveState = useEditorStore((state) => state.setSaveState);
 	const setConflictState = useEditorStore((state) => state.setConflictState);
+	const setDiagnostics = useEditorStore((state) => state.setDiagnostics);
 	const setIndexing = useEditorStore((state) => state.setIndexing);
 	const updateTabContent = useEditorStore((state) => state.updateTabContent);
 	const setPendingWorkflowConflict = useEditorStore(
@@ -73,7 +74,10 @@ export function useAutoSave() {
 			fileContent,
 			encoding,
 			currentEtag,
-			async (newEtag, newContent, needsIndexing) => {
+			async (newEtag, newContent, needsIndexing, diagnostics) => {
+				// Store diagnostics in tab state for CodeEditor to display
+				setDiagnostics(activeTabIndex, diagnostics);
+
 				// If server modified content (e.g., injected IDs), update editor buffer
 				if (newContent) {
 					updateTabContent(activeTabIndex, newContent, newEtag);
@@ -218,6 +222,12 @@ export function useAutoSave() {
 				false, // index=false: detect only
 			);
 
+			// Store diagnostics in tab state for CodeEditor to display
+			setDiagnostics(
+				activeTabIndex,
+				response.diagnostics as import("@/stores/editorStore").FileDiagnostic[] | undefined,
+			);
+
 			// If server modified content, update editor buffer
 			if (response.content_modified && response.content) {
 				updateTabContent(
@@ -328,6 +338,7 @@ export function useAutoSave() {
 		activeTabIndex,
 		setSaveState,
 		setConflictState,
+		setDiagnostics,
 		setIndexing,
 		updateTabContent,
 		reloadWorkflowFile,

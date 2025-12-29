@@ -14,6 +14,7 @@ import {
 	Package,
 	Cog,
 	Play,
+	FileCode,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -141,10 +142,12 @@ function ProgressNotificationItem({
 	notification,
 	onDismiss,
 	onAction,
+	onNavigate,
 }: {
 	notification: Notification;
 	onDismiss: () => void;
 	onAction: (notification: Notification) => Promise<void>;
+	onNavigate: (path: string) => void;
 }) {
 	const [isActionLoading, setIsActionLoading] = useState(false);
 	const Icon = categoryIcons[notification.category] || Cog;
@@ -152,10 +155,17 @@ function ProgressNotificationItem({
 	const isActive = isActiveNotification(notification);
 	const isAwaitingAction = isAwaitingActionNotification(notification);
 
-	// Check if notification has an action button
-	const hasAction = isAwaitingAction && !!notification.metadata?.action;
+	// Check if notification has an action button (but not view_file - that's a link, not a button)
+	const action = notification.metadata?.action as string | undefined;
+	const hasAction =
+		isAwaitingAction && !!action && action !== "view_file";
 	const actionLabel =
 		(notification.metadata?.action_label as string) || "Run";
+
+	// Check if notification has a file link (view_file action with file_path)
+	const filePath = notification.metadata?.file_path as string | undefined;
+	const lineNumber = notification.metadata?.line_number as number | undefined;
+	const hasFileLink = !!filePath;
 
 	const handleAction = async () => {
 		setIsActionLoading(true);
@@ -199,6 +209,21 @@ function ProgressNotificationItem({
 					<p className="text-xs text-red-500 mt-1">
 						{notification.error}
 					</p>
+				)}
+				{/* Clickable file link for file-related notifications */}
+				{hasFileLink && (
+					<button
+						onClick={() => {
+							const url = lineNumber
+								? `/editor?file=${encodeURIComponent(filePath)}&line=${lineNumber}`
+								: `/editor?file=${encodeURIComponent(filePath)}`;
+							onNavigate(url);
+						}}
+						className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 hover:underline mt-1.5 transition-colors"
+					>
+						<FileCode className="h-3 w-3" />
+						{filePath}
+					</button>
 				)}
 				{/* Progress bar for determinate progress */}
 				{isActive && notification.percent !== null && (
@@ -410,6 +435,10 @@ export function NotificationCenter() {
 									notification={notification}
 									onDismiss={() => dismiss(notification.id)}
 									onAction={handleAction}
+									onNavigate={(path) => {
+										navigate(path);
+										setIsOpen(false);
+									}}
 								/>
 							))}
 

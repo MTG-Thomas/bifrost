@@ -44,6 +44,17 @@ class WorkflowIdConflictInfo:
 
 
 @dataclass
+class FileDiagnosticInfo:
+    """A file-specific issue detected during save/indexing."""
+
+    severity: str  # "error", "warning", "info"
+    message: str
+    line: int | None = None
+    column: int | None = None
+    source: str = "bifrost"  # e.g., "syntax", "indexing", "sdk"
+
+
+@dataclass
 class WriteResult:
     """Result of a file write operation."""
 
@@ -52,6 +63,7 @@ class WriteResult:
     content_modified: bool  # True if server modified content (e.g., injected IDs)
     needs_indexing: bool = False  # True if file has decorators that need ID injection
     workflow_id_conflicts: list[WorkflowIdConflictInfo] | None = None  # Workflows that would lose IDs
+    diagnostics: list[FileDiagnosticInfo] | None = None  # File issues detected during save
 
 
 class FileStorageService:
@@ -268,6 +280,7 @@ class FileStorageService:
             content_modified,
             needs_indexing,
             workflow_id_conflicts,
+            diagnostics,
         ) = await self._extract_metadata(
             path, content, skip_id_injection=not index, force_ids=force_ids
         )
@@ -291,6 +304,21 @@ class FileStorageService:
             except Exception as e:
                 logger.warning(f"Failed to scan for SDK issues in {path}: {e}")
 
+        # Create or clear system notification based on diagnostic errors
+        # This ensures visibility when files are written from any source (editor, git sync, MCP)
+        has_errors = diagnostics and any(d.severity == "error" for d in diagnostics)
+        if has_errors:
+            try:
+                await self._create_diagnostic_notification(path, diagnostics)
+            except Exception as e:
+                logger.warning(f"Failed to create diagnostic notification for {path}: {e}")
+        else:
+            # Clear any existing diagnostic notification for this file
+            try:
+                await self._clear_diagnostic_notification(path)
+            except Exception as e:
+                logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
+
         logger.info(f"File written: {path} ({size_bytes} bytes) by {updated_by}")
         return WriteResult(
             file_record=file_record,
@@ -298,6 +326,7 @@ class FileStorageService:
             content_modified=content_modified,
             needs_indexing=needs_indexing,
             workflow_id_conflicts=workflow_id_conflicts,
+            diagnostics=diagnostics if diagnostics else None,
         )
 
     async def _write_file_for_id_injection(
@@ -1016,7 +1045,7 @@ class FileStorageService:
         content: bytes,
         skip_id_injection: bool = False,
         force_ids: dict[str, str] | None = None,
-    ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None]:
+    ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None, list[FileDiagnosticInfo]]:
         """
         Extract workflow/form/agent metadata from file content.
 
@@ -1029,11 +1058,12 @@ class FileStorageService:
             force_ids: Map of function_name -> ID to inject (for reusing existing IDs)
 
         Returns:
-            Tuple of (final_content, content_modified, needs_indexing, conflicts) where:
+            Tuple of (final_content, content_modified, needs_indexing, conflicts, diagnostics) where:
             - final_content: The content after any modifications (e.g., ID injection)
             - content_modified: True if the content was modified by the server
             - needs_indexing: True if IDs are needed but skip_id_injection was True
             - conflicts: List of workflows that would lose their IDs (if any)
+            - diagnostics: List of file issues detected during indexing
         """
         try:
             if path.endswith(".py"):
@@ -1048,7 +1078,7 @@ class FileStorageService:
             # Log but don't fail the write
             logger.warning(f"Failed to extract metadata from {path}: {e}")
 
-        return content, False, False, None
+        return content, False, False, None, []
 
     async def _index_python_file(
         self,
@@ -1056,7 +1086,7 @@ class FileStorageService:
         content: bytes,
         skip_id_injection: bool = False,
         force_ids: dict[str, str] | None = None,
-    ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None]:
+    ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None, list[FileDiagnosticInfo]]:
         """
         Extract and index workflows/providers from Python file.
 
@@ -1074,11 +1104,12 @@ class FileStorageService:
             force_ids: Map of function_name -> ID to inject (for reusing existing IDs)
 
         Returns:
-            Tuple of (final_content, content_modified, needs_indexing, conflicts) where:
+            Tuple of (final_content, content_modified, needs_indexing, conflicts, diagnostics) where:
             - final_content: The content after any modifications (e.g., ID injection)
             - content_modified: True if IDs were injected into decorators
             - needs_indexing: True if IDs are needed but skip_id_injection was True
             - conflicts: List of workflows that would lose their IDs (if any)
+            - diagnostics: List of file issues detected during indexing
         """
         from src.models import Workflow, DataProvider
 
@@ -1087,6 +1118,7 @@ class FileStorageService:
         content_modified = False
         needs_indexing = False
         workflow_id_conflicts: list[WorkflowIdConflictInfo] | None = None
+        diagnostics: list[FileDiagnosticInfo] = []
 
         # Check if decorators need IDs
         try:
@@ -1170,7 +1202,14 @@ class FileStorageService:
             tree = ast.parse(content_str, filename=path)
         except SyntaxError as e:
             logger.warning(f"Syntax error parsing {path}: {e}")
-            return final_content, content_modified, needs_indexing, workflow_id_conflicts
+            diagnostics.append(FileDiagnosticInfo(
+                severity="error",
+                message=f"Syntax error: {e.msg}" if e.msg else str(e),
+                line=e.lineno,
+                column=e.offset,
+                source="syntax",
+            ))
+            return final_content, content_modified, needs_indexing, workflow_id_conflicts, diagnostics
 
         now = datetime.utcnow()
 
@@ -1196,6 +1235,12 @@ class FileStorageService:
                     workflow_id_str = kwargs.get("id")
                     if not workflow_id_str:
                         logger.warning(f"Workflow in {path} has no id - skipping indexing")
+                        diagnostics.append(FileDiagnosticInfo(
+                            severity="warning",
+                            message=f"Workflow '{kwargs.get('name') or node.name}' has no id - skipping indexing. Save the file to inject an ID.",
+                            line=node.lineno,
+                            source="indexing",
+                        ))
                         continue
 
                     # Convert string UUID to UUID object
@@ -1204,6 +1249,12 @@ class FileStorageService:
                         workflow_uuid = UUID_type(workflow_id_str)
                     except ValueError:
                         logger.warning(f"Invalid workflow id '{workflow_id_str}' in {path} - skipping indexing")
+                        diagnostics.append(FileDiagnosticInfo(
+                            severity="error",
+                            message=f"Invalid workflow id '{workflow_id_str}' - must be a valid UUID",
+                            line=node.lineno,
+                            source="indexing",
+                        ))
                         continue
 
                     # Get workflow name from decorator or function name
@@ -1326,7 +1377,7 @@ class FileStorageService:
         )
         await self.db.execute(stmt)
 
-        return final_content, content_modified, needs_indexing, workflow_id_conflicts
+        return final_content, content_modified, needs_indexing, workflow_id_conflicts, diagnostics
 
     def _parse_decorator(self, decorator: ast.AST) -> tuple[str, dict[str, Any]] | None:
         """
@@ -2000,6 +2051,108 @@ class FileStorageService:
         )
 
         logger.info(f"Created SDK issues notification for {path}: {len(issues)} issues")
+
+    async def _create_diagnostic_notification(
+        self, path: str, diagnostics: list[FileDiagnosticInfo]
+    ) -> None:
+        """
+        Create a system notification for file diagnostics that contain errors.
+
+        Called after file writes to ensure visibility when files have issues,
+        regardless of the source (editor, git sync, MCP).
+
+        Args:
+            path: Relative file path
+            diagnostics: List of file diagnostics
+        """
+        from pathlib import Path
+        from src.services.notification_service import get_notification_service
+        from src.models.contracts.notifications import (
+            NotificationCreate,
+            NotificationCategory,
+            NotificationStatus,
+        )
+
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if not errors:
+            return
+
+        service = get_notification_service()
+
+        # Build title from file name
+        file_name = Path(path).name
+        title = f"File issues: {file_name}"
+
+        # Check for existing notification to avoid duplicates
+        existing = await service.find_admin_notification_by_title(
+            title=title,
+            category=NotificationCategory.SYSTEM,
+        )
+        if existing:
+            logger.debug(f"Diagnostic notification already exists for {path}")
+            return
+
+        # Build description from first few errors
+        error_msgs = [e.message for e in errors[:3]]
+        description = "; ".join(error_msgs)
+        if len(errors) > 3:
+            description += f"... (+{len(errors) - 3} more)"
+
+        await service.create_notification(
+            user_id="system",
+            request=NotificationCreate(
+                category=NotificationCategory.SYSTEM,
+                title=title,
+                description=description,
+                metadata={
+                    "action": "view_file",
+                    "file_path": path,
+                    "line_number": errors[0].line if errors[0].line else 1,
+                    "diagnostics": [
+                        {
+                            "severity": d.severity,
+                            "message": d.message,
+                            "line": d.line,
+                            "column": d.column,
+                            "source": d.source,
+                        }
+                        for d in diagnostics
+                    ],
+                },
+            ),
+            for_admins=True,
+            initial_status=NotificationStatus.AWAITING_ACTION,
+        )
+
+        logger.info(f"Created diagnostic notification for {path}: {len(errors)} errors")
+
+    async def _clear_diagnostic_notification(self, path: str) -> None:
+        """
+        Clear diagnostic notification for a file when issues are fixed.
+
+        Called when a file is saved without errors to remove any existing
+        diagnostic notification that was created for previous errors.
+
+        Args:
+            path: Relative file path
+        """
+        from pathlib import Path
+        from src.services.notification_service import get_notification_service
+        from src.models.contracts.notifications import NotificationCategory
+
+        service = get_notification_service()
+
+        # Match the title format used in _create_diagnostic_notification
+        file_name = Path(path).name
+        title = f"File issues: {file_name}"
+
+        existing = await service.find_admin_notification_by_title(
+            title=title,
+            category=NotificationCategory.SYSTEM,
+        )
+        if existing:
+            await service.dismiss_notification(existing.id)
+            logger.info(f"Cleared diagnostic notification for {path}")
 
     async def update_git_status(
         self,

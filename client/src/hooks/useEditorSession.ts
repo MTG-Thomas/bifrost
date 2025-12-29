@@ -45,6 +45,7 @@ export function useEditorSession() {
 				saveState: activeTab?.saveState,
 				gitConflict: activeTab?.gitConflict,
 				etag: activeTab?.etag,
+				diagnostics: activeTab?.diagnostics,
 
 				// Editor visibility
 				isOpen: state.isOpen,

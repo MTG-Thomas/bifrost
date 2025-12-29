@@ -1,6 +1,6 @@
 import { useRef, useCallback } from "react";
 import { fileService, FileConflictError } from "@/services/fileService";
-import type { ConflictReason } from "@/stores/editorStore";
+import type { ConflictReason, FileDiagnostic } from "@/stores/editorStore";
 
 interface SaveQueueEntry {
 	filePath: string;
@@ -15,6 +15,7 @@ interface SaveQueueEntry {
 				newEtag: string,
 				newContent?: string,
 				needsIndexing?: boolean,
+				diagnostics?: FileDiagnostic[],
 		  ) => void)
 		| undefined;
 	onConflict?: ((reason: ConflictReason) => void) | undefined;
@@ -43,6 +44,7 @@ export function useSaveQueue() {
 			content?: string;
 			contentModified?: boolean;
 			needsIndexing?: boolean;
+			diagnostics?: FileDiagnostic[];
 		}> => {
 			try {
 				// Pass etag for conflict detection and index flag
@@ -59,6 +61,7 @@ export function useSaveQueue() {
 					content: response.content,
 					contentModified: response.content_modified ?? false,
 					needsIndexing: response.needs_indexing ?? false,
+					diagnostics: response.diagnostics as FileDiagnostic[] | undefined,
 				};
 			} catch (error) {
 				// Handle conflict errors specially
@@ -108,11 +111,13 @@ export function useSaveQueue() {
 				// Call completion callback if provided
 				// If content was modified (e.g., IDs injected), pass new content
 				// Also pass needsIndexing flag for deferred indexing flow
+				// Pass diagnostics (syntax errors, etc.) for editor display
 				if (result.success && entry.onComplete && result.etag) {
 					entry.onComplete(
 						result.etag,
 						result.contentModified ? result.content : undefined,
 						result.needsIndexing,
+						result.diagnostics,
 					);
 				}
 
@@ -139,6 +144,7 @@ export function useSaveQueue() {
 	 * @param onComplete - Called when save completes. If server modified content
 	 *                     (e.g., injected IDs), newContent will be provided.
 	 *                     Also receives needsIndexing flag for deferred indexing.
+	 *                     Also receives diagnostics (syntax errors, etc.) for editor display.
 	 * @param index - If true, inject IDs into decorators. If false (default), detect only.
 	 */
 	const enqueueSave = useCallback(
@@ -151,6 +157,7 @@ export function useSaveQueue() {
 				newEtag: string,
 				newContent?: string,
 				needsIndexing?: boolean,
+				diagnostics?: FileDiagnostic[],
 			) => void,
 			onConflict?: (reason: ConflictReason) => void,
 			index: boolean = false,

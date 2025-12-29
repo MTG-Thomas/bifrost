@@ -7386,6 +7386,11 @@ export interface components {
              * @description List of workflows that would lose their existing IDs. Client should prompt user.
              */
             workflow_id_conflicts?: components["schemas"]["WorkflowIdConflict"][];
+            /**
+             * Diagnostics
+             * @description File-specific issues detected during save (syntax errors, indexing warnings, etc.)
+             */
+            diagnostics?: components["schemas"]["FileDiagnostic"][];
         };
         /**
          * FileDeleteRequest
@@ -7411,6 +7416,42 @@ export interface components {
              * @enum {string}
              */
             mode: "local" | "cloud";
+        };
+        /**
+         * FileDiagnostic
+         * @description A file-specific issue detected during save/indexing.
+         *
+         *     These are returned to the client for display in the editor (Monaco markers)
+         *     and also used to create system notifications for errors.
+         */
+        FileDiagnostic: {
+            /**
+             * Severity
+             * @description Severity level of the diagnostic
+             * @enum {string}
+             */
+            severity: "error" | "warning" | "info";
+            /**
+             * Message
+             * @description Human-readable description of the issue
+             */
+            message: string;
+            /**
+             * Line
+             * @description Line number (1-indexed) if applicable
+             */
+            line?: number | null;
+            /**
+             * Column
+             * @description Column number if applicable
+             */
+            column?: number | null;
+            /**
+             * Source
+             * @description Source of the diagnostic (e.g., 'syntax', 'indexing', 'sdk')
+             * @default bifrost
+             */
+            source: string;
         };
         /**
          * FileExistsRequest
@@ -9293,11 +9334,20 @@ export interface components {
         };
         /**
          * MFAVerifyRequest
-         * @description Request to verify MFA code.
+         * @description Request to verify MFA code during login.
          */
         MFAVerifyRequest: {
+            /** Mfa Token */
+            mfa_token: string;
             /** Code */
             code: string;
+            /**
+             * Trust Device
+             * @default false
+             */
+            trust_device: boolean;
+            /** Device Name */
+            device_name?: string | null;
         };
         /**
          * MFAVerifyResponse
@@ -9519,24 +9569,15 @@ export interface components {
         };
         /**
          * OAuthCallbackRequest
-         * @description Request model for OAuth callback endpoint
+         * @description OAuth callback request (for when frontend handles callback).
          */
         OAuthCallbackRequest: {
-            /**
-             * Code
-             * @description Authorization code from OAuth provider
-             */
+            /** Provider */
+            provider: string;
+            /** Code */
             code: string;
-            /**
-             * State
-             * @description State parameter for CSRF protection
-             */
-            state?: string | null;
-            /**
-             * Redirect Uri
-             * @description Redirect URI used in authorization request
-             */
-            redirect_uri?: string | null;
+            /** State */
+            state: string;
         };
         /**
          * OAuthCallbackResponse
@@ -12681,21 +12722,25 @@ export interface components {
             icon?: string | null;
         };
         /**
-         * MFAVerifyRequest
-         * @description Request to verify MFA code during login.
+         * OAuthCallbackRequest
+         * @description Request model for OAuth callback endpoint
          */
-        src__routers__auth__MFAVerifyRequest: {
-            /** Mfa Token */
-            mfa_token: string;
-            /** Code */
+        src__models__contracts__oauth__OAuthCallbackRequest: {
+            /**
+             * Code
+             * @description Authorization code from OAuth provider
+             */
             code: string;
             /**
-             * Trust Device
-             * @default false
+             * State
+             * @description State parameter for CSRF protection
              */
-            trust_device: boolean;
-            /** Device Name */
-            device_name?: string | null;
+            state?: string | null;
+            /**
+             * Redirect Uri
+             * @description Redirect URI used in authorization request
+             */
+            redirect_uri?: string | null;
         };
         /**
          * UserCreate
@@ -12713,16 +12758,12 @@ export interface components {
             name?: string | null;
         };
         /**
-         * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
+         * MFAVerifyRequest
+         * @description Request to verify MFA code.
          */
-        src__routers__oauth_sso__OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
+        src__routers__mfa__MFAVerifyRequest: {
             /** Code */
             code: string;
-            /** State */
-            state: string;
         };
     };
     responses: never;
@@ -12855,7 +12896,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__MFAVerifyRequest"];
+                "application/json": components["schemas"]["MFAVerifyRequest"];
             };
         };
         responses: {
@@ -13206,7 +13247,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MFAVerifyRequest"];
+                "application/json": components["schemas"]["src__routers__mfa__MFAVerifyRequest"];
             };
         };
         responses: {
@@ -13456,7 +13497,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
+                "application/json": components["schemas"]["OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -17202,7 +17243,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__models__contracts__oauth__OAuthCallbackRequest"];
             };
         };
         responses: {
