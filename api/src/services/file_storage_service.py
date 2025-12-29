@@ -2003,6 +2003,8 @@ class FileStorageService:
         issues = await scanner.scan_file(path, content_str)
 
         if not issues:
+            # Clear any existing notification since issues are resolved
+            await self._clear_sdk_issues_notification(path)
             return
 
         # Create platform admin notification
@@ -2051,6 +2053,34 @@ class FileStorageService:
         )
 
         logger.info(f"Created SDK issues notification for {path}: {len(issues)} issues")
+
+    async def _clear_sdk_issues_notification(self, path: str) -> None:
+        """
+        Clear SDK issues notification for a file when issues are resolved.
+
+        Called when a file is saved without SDK reference issues to remove
+        any existing notification that was created for previous issues.
+
+        Args:
+            path: Relative file path
+        """
+        from pathlib import Path
+        from src.services.notification_service import get_notification_service
+        from src.models.contracts.notifications import NotificationCategory
+
+        service = get_notification_service()
+
+        # Match the title format used in _scan_for_sdk_issues
+        file_name = Path(path).name
+        title = f"Missing SDK References: {file_name}"
+
+        existing = await service.find_admin_notification_by_title(
+            title=title,
+            category=NotificationCategory.SYSTEM,
+        )
+        if existing:
+            await service.dismiss_notification(existing.id, user_id="system")
+            logger.info(f"Cleared SDK issues notification for {path}")
 
     async def _create_diagnostic_notification(
         self, path: str, diagnostics: list[FileDiagnosticInfo]
@@ -2151,7 +2181,7 @@ class FileStorageService:
             category=NotificationCategory.SYSTEM,
         )
         if existing:
-            await service.dismiss_notification(existing.id)
+            await service.dismiss_notification(existing.id, user_id="system")
             logger.info(f"Cleared diagnostic notification for {path}")
 
     async def update_git_status(

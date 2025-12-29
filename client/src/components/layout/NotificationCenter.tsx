@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
 	Bell,
@@ -37,6 +37,8 @@ import {
 	type AlertStatus,
 	getAlertCounts,
 } from "@/stores/notificationStore";
+import { useEditorStore } from "@/stores/editorStore";
+import { fileService } from "@/services/fileService";
 import { cn } from "@/lib/utils";
 import { authFetch } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -142,12 +144,12 @@ function ProgressNotificationItem({
 	notification,
 	onDismiss,
 	onAction,
-	onNavigate,
+	onOpenFile,
 }: {
 	notification: Notification;
 	onDismiss: () => void;
 	onAction: (notification: Notification) => Promise<void>;
-	onNavigate: (path: string) => void;
+	onOpenFile: (filePath: string, lineNumber?: number) => Promise<void>;
 }) {
 	const [isActionLoading, setIsActionLoading] = useState(false);
 	const Icon = categoryIcons[notification.category] || Cog;
@@ -213,12 +215,7 @@ function ProgressNotificationItem({
 				{/* Clickable file link for file-related notifications */}
 				{hasFileLink && (
 					<button
-						onClick={() => {
-							const url = lineNumber
-								? `/editor?file=${encodeURIComponent(filePath)}&line=${lineNumber}`
-								: `/editor?file=${encodeURIComponent(filePath)}`;
-							onNavigate(url);
-						}}
+						onClick={() => onOpenFile(filePath, lineNumber)}
 						className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 hover:underline mt-1.5 transition-colors"
 					>
 						<FileCode className="h-3 w-3" />
@@ -318,6 +315,11 @@ export function NotificationCenter() {
 	const removeAlert = useNotificationStore((state) => state.removeAlert);
 	const clearAlerts = useNotificationStore((state) => state.clearAlerts);
 
+	// Editor store actions for opening files
+	const openFileInTab = useEditorStore((state) => state.openFileInTab);
+	const openEditor = useEditorStore((state) => state.openEditor);
+	const revealLine = useEditorStore((state) => state.revealLine);
+
 	// Handler for notification actions (navigation, maintenance, etc.)
 	const handleAction = async (notification: Notification) => {
 		await handleNotificationAction(notification, navigate);
@@ -326,6 +328,46 @@ export function NotificationCenter() {
 			setIsOpen(false);
 		}
 	};
+
+	// Handler for opening a file in the editor (used by file link in notifications)
+	const openFileInEditor = useCallback(
+		async (filePath: string, lineNumber?: number) => {
+			try {
+				const response = await fileService.readFile(filePath);
+				const fileName = filePath.split("/").pop() || filePath;
+				const extension = fileName.includes(".")
+					? fileName.split(".").pop() || ""
+					: "";
+
+				const fileMetadata = {
+					path: filePath,
+					name: fileName,
+					type: "file" as const,
+					size: response.size,
+					extension,
+					modified: new Date().toISOString(),
+					is_workflow: false,
+					is_data_provider: false,
+				};
+				openEditor();
+				openFileInTab(
+					fileMetadata,
+					response.content,
+					response.encoding as "utf-8" | "base64",
+					response.etag,
+				);
+				if (lineNumber) {
+					// Small delay to ensure editor is ready before revealing line
+					setTimeout(() => revealLine(lineNumber), 100);
+				}
+				setIsOpen(false);
+			} catch (error) {
+				console.error("Failed to open file:", error);
+				toast.error("Failed to open file");
+			}
+		},
+		[openFileInTab, openEditor, revealLine],
+	);
 
 	const notificationCounts = getNotificationCounts(notifications);
 	const alertCounts = getAlertCounts(alerts);
@@ -435,10 +477,7 @@ export function NotificationCenter() {
 									notification={notification}
 									onDismiss={() => dismiss(notification.id)}
 									onAction={handleAction}
-									onNavigate={(path) => {
-										navigate(path);
-										setIsOpen(false);
-									}}
+									onOpenFile={openFileInEditor}
 								/>
 							))}
 

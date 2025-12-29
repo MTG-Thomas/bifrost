@@ -234,7 +234,7 @@ class NotificationService:
 
         Args:
             notification_id: Notification to dismiss
-            user_id: User requesting dismissal (must own the notification)
+            user_id: User requesting dismissal (must own or be admin for admin notifications)
 
         Returns:
             True if dismissed, False if not found or unauthorized
@@ -248,25 +248,29 @@ class NotificationService:
             return False
 
         notification_dict = json.loads(data)
-        if notification_dict.get("user_id") != user_id:
+        owner_id = notification_dict.get("user_id")
+
+        # Allow dismissal if user owns it OR if it's an admin notification
+        # (platform admins can dismiss any admin notification they can see)
+        is_admin_notif = await self._is_admin_notification(notification_id)
+        if owner_id != user_id and not is_admin_notif:
             logger.warning(
-                f"User {user_id} attempted to dismiss notification "
-                f"owned by {notification_dict.get('user_id')}"
+                f"User {user_id} attempted to dismiss notification owned by {owner_id}"
             )
             return False
 
         # Delete notification
         await redis_client.delete(key)
 
-        # Remove from user's set
-        user_key = f"{USER_NOTIFICATIONS_PREFIX}{user_id}"
-        await cast(Awaitable[int], redis_client.srem(user_key, notification_id))
+        # Remove from owner's set (use actual owner, not requesting user)
+        owner_key = f"{USER_NOTIFICATIONS_PREFIX}{owner_id}"
+        await cast(Awaitable[int], redis_client.srem(owner_key, notification_id))
 
         # Remove from admin set if present
         await cast(Awaitable[int], redis_client.srem(ADMIN_NOTIFICATIONS_KEY, notification_id))
 
-        # Publish dismissal
-        await self._publish_dismissal(user_id, notification_id)
+        # Publish dismissal to owner's channel
+        await self._publish_dismissal(owner_id, notification_id)
 
         logger.info(f"Dismissed notification: {notification_id}")
         return True
