@@ -149,17 +149,28 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         is_script = bool(context_data.get("code"))
 
         if not is_script:
-            from src.services.execution.module_loader import get_workflow, get_data_provider
+            from src.services.execution.module_loader import (
+                get_workflow,
+                get_data_provider,
+                load_workflow_by_file_path,
+            )
 
             name = context_data["name"]
             tags = context_data.get("tags", [])
+            file_path = context_data.get("file_path")
 
             # Check if this is a data provider or workflow
             if "data_provider" in tags:
                 result = get_data_provider(name)
                 entity_type = "Data provider"
                 error_type = "DataProviderNotFound"
+            elif file_path:
+                # FAST PATH: Use file path for direct loading (skips filesystem scan)
+                result = load_workflow_by_file_path(file_path, name)
+                entity_type = "Workflow"
+                error_type = "WorkflowNotFound"
             else:
+                # SLOW PATH: Full filesystem scan (fallback for older messages)
                 result = get_workflow(name)
                 entity_type = "Workflow"
                 error_type = "WorkflowNotFound"

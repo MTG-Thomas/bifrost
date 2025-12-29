@@ -740,6 +740,170 @@ def _convert_parameters(params: list) -> list[WorkflowParameter]:
 # These use the watchdog index for O(1) lookup, then import just one file
 
 
+def _clear_single_module(file_path: Path, workspace_paths: Sequence[Path | str]) -> str | None:
+    """
+    Clear a single module from sys.modules (if loaded).
+
+    Unlike _clear_workspace_modules which clears ALL workspace modules,
+    this only clears the specific module for the given file path.
+
+    Args:
+        file_path: Path to the Python file
+        workspace_paths: List of workspace root paths
+
+    Returns:
+        Module name that was cleared, or None if not found
+    """
+    # Calculate expected module name
+    module_name = None
+    for workspace_path in workspace_paths:
+        wp = Path(workspace_path) if isinstance(workspace_path, str) else workspace_path
+        try:
+            relative_path = file_path.relative_to(wp)
+            module_parts = list(relative_path.parts[:-1]) + [file_path.stem]
+            module_name = '.'.join(module_parts) if module_parts else file_path.stem
+            break
+        except ValueError:
+            continue
+
+    if not module_name:
+        module_name = file_path.stem
+
+    # Clear this specific module from sys.modules
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+        logger.debug(f"Cleared module from cache: {module_name}")
+        return module_name
+
+    return None
+
+
+def _clear_single_pyc(file_path: Path) -> bool:
+    """
+    Clear the .pyc file for a single Python file.
+
+    Args:
+        file_path: Path to the .py file
+
+    Returns:
+        True if a .pyc file was deleted, False otherwise
+    """
+    # .pyc files are in __pycache__/<name>.cpython-<version>.pyc
+    pycache_dir = file_path.parent / "__pycache__"
+    if not pycache_dir.exists():
+        return False
+
+    # Match any cpython version
+    pattern = f"{file_path.stem}.cpython-*.pyc"
+    deleted = False
+    for pyc_file in pycache_dir.glob(pattern):
+        try:
+            pyc_file.unlink()
+            deleted = True
+        except OSError:
+            pass
+
+    return deleted
+
+
+def load_workflow_by_file_path(
+    file_path: str | Path,
+    workflow_name: str,
+) -> tuple[Callable, WorkflowMetadata] | None:
+    """
+    Load a specific workflow from a known file path.
+
+    This is the FAST path for workflow loading:
+    - Only clears the specific module from sys.modules (not all modules)
+    - Loads a single file (not full workspace scan)
+    - Preserves freshness: file is always read from disk
+
+    Use this when you already know the file path (from database or cache).
+
+    Args:
+        file_path: Path to the workflow Python file (relative or absolute)
+        workflow_name: Expected workflow name to find
+
+    Returns:
+        Tuple of (function, metadata) or None if not found
+    """
+    workspace_paths = get_workspace_paths()
+
+    # Resolve to absolute path if relative
+    if isinstance(file_path, str):
+        file_path = Path(file_path)
+
+    if not file_path.is_absolute():
+        # Assume relative to workspace root
+        file_path = WORKSPACE_PATH / file_path
+
+    if not file_path.exists():
+        logger.warning(f"Workflow file not found: {file_path}")
+        return None
+
+    # Clear only this specific module (not all workspace modules)
+    _clear_single_module(file_path, workspace_paths)
+
+    # Clear only this file's .pyc (not all workspace .pyc files)
+    _clear_single_pyc(file_path)
+
+    # Ensure workspace paths are in sys.path
+    for wp in workspace_paths:
+        wp_str = str(wp)
+        if wp_str not in sys.path:
+            sys.path.insert(0, wp_str)
+
+    # Import the module fresh
+    try:
+        # Calculate module name
+        module_name = None
+        for workspace_path in workspace_paths:
+            try:
+                relative_path = file_path.relative_to(workspace_path)
+                module_parts = list(relative_path.parts[:-1]) + [file_path.stem]
+                module_name = '.'.join(module_parts) if module_parts else file_path.stem
+                break
+            except ValueError:
+                continue
+
+        if not module_name:
+            module_name = file_path.stem
+
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if not spec or not spec.loader:
+            logger.error(f"Could not create module spec for {file_path}")
+            return None
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+
+        try:
+            spec.loader.exec_module(module)
+        except Exception as e:
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            logger.error(f"Failed to import {file_path}: {e}")
+            return None
+
+        # Find the workflow function by name
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if callable(attr) and hasattr(attr, '_workflow_metadata'):
+                metadata = getattr(attr, '_workflow_metadata', None)
+                if metadata and hasattr(metadata, 'name') and metadata.name == workflow_name:
+                    if isinstance(metadata, WorkflowMetadata):
+                        return (attr, metadata)
+                    else:
+                        return (attr, _convert_workflow_metadata(metadata))
+
+        logger.warning(f"Workflow '{workflow_name}' not found in {file_path}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error loading workflow '{workflow_name}' from {file_path}: {e}")
+        return None
+
+
 def get_workflow(name: str) -> tuple[Callable, WorkflowMetadata] | None:
     """
     Get a workflow by name.

@@ -30,6 +30,19 @@ from src.core.redis_client import get_redis_client, DEFAULT_TIMEOUT_SECONDS
 from src.routers.workflow_keys import validate_workflow_key
 from src.repositories.workflows import WorkflowRepository
 
+# Dataclass-like holder for cached workflow metadata (avoids module loading)
+from dataclasses import dataclass
+
+
+@dataclass
+class CachedWorkflowMetadata:
+    """Minimal workflow metadata for endpoint execution (cached in Redis)."""
+    workflow_id: str
+    file_path: str
+    execution_mode: str
+    timeout_seconds: int
+    allowed_methods: list[str]
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/endpoints", tags=["Endpoints"])
@@ -157,6 +170,22 @@ async def execute_endpoint(
     Returns:
         Execution response with result or async execution ID
     """
+    redis_client = get_redis_client()
+
+    # Try to get workflow metadata from cache (FAST path - skips module loading)
+    cached = await redis_client.get_endpoint_workflow_cache(workflow_name)
+    workflow_metadata: CachedWorkflowMetadata | None = None
+
+    if cached:
+        logger.debug(f"Cache hit for endpoint workflow: {workflow_name}")
+        workflow_metadata = CachedWorkflowMetadata(
+            workflow_id=cached["workflow_id"],
+            file_path=cached["file_path"],
+            execution_mode=cached["execution_mode"],
+            timeout_seconds=cached["timeout_seconds"],
+            allowed_methods=cached["allowed_methods"],
+        )
+
     async with get_db_context() as db:
         # Validate API key
         is_valid, key_id = await validate_workflow_key(db, x_bifrost_key, workflow_name)
@@ -168,61 +197,82 @@ async def execute_endpoint(
                 detail="Invalid or expired API key",
             )
 
-        logger.info(f"API key validated for workflow: {workflow_name} (key_id: {key_id})")
+        logger.debug(f"API key validated for workflow: {workflow_name} (key_id: {key_id})")
 
-        # Get workflow from database (need the UUID for execution)
-        workflow_repo = WorkflowRepository(db)
-        try:
-            workflow = await workflow_repo.get_endpoint_workflow_by_name(workflow_name)
-        except ValueError as e:
-            # Multiple workflows with same name and endpoint_enabled
-            logger.error(f"Duplicate endpoint workflows: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e),
+        # If no cache hit, load from DB and module
+        if workflow_metadata is None:
+            logger.debug(f"Cache miss for endpoint workflow: {workflow_name}")
+
+            # Get workflow from database (need the UUID for execution)
+            workflow_repo = WorkflowRepository(db)
+            try:
+                workflow = await workflow_repo.get_endpoint_workflow_by_name(workflow_name)
+            except ValueError as e:
+                # Multiple workflows with same name and endpoint_enabled
+                logger.error(f"Duplicate endpoint workflows: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(e),
+                )
+
+            if not workflow:
+                logger.warning(f"Endpoint workflow not found: {workflow_name}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Endpoint workflow '{workflow_name}' not found or not enabled",
+                )
+
+            # Load workflow module to get metadata (SLOW path - only on cache miss)
+            try:
+                result = get_workflow(workflow_name)
+                if not result:
+                    logger.warning(f"Workflow module not found: {workflow_name}")
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Workflow '{workflow_name}' not found",
+                    )
+                _, loaded_metadata = result
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to load workflow {workflow_name}: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to load workflow '{workflow_name}': {str(e)}",
+                )
+
+            # Build cached metadata
+            workflow_metadata = CachedWorkflowMetadata(
+                workflow_id=str(workflow.id),
+                file_path=workflow.file_path,
+                execution_mode=loaded_metadata.execution_mode,
+                timeout_seconds=loaded_metadata.timeout_seconds,
+                allowed_methods=loaded_metadata.allowed_methods or ["POST"],
             )
 
-        if not workflow:
-            logger.warning(f"Endpoint workflow not found: {workflow_name}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Endpoint workflow '{workflow_name}' not found or not enabled",
+            # Cache for future requests
+            await redis_client.set_endpoint_workflow_cache(
+                workflow_name=workflow_name,
+                workflow_id=workflow_metadata.workflow_id,
+                file_path=workflow_metadata.file_path,
+                execution_mode=workflow_metadata.execution_mode,
+                timeout_seconds=workflow_metadata.timeout_seconds,
+                allowed_methods=workflow_metadata.allowed_methods,
             )
-
-        workflow_id = str(workflow.id)
-
-    # Load workflow module (for metadata like allowed_methods, execution_mode)
-    try:
-        result = get_workflow(workflow_name)
-        if not result:
-            logger.warning(f"Workflow module not found: {workflow_name}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Workflow '{workflow_name}' not found",
-            )
-        workflow_func, workflow_metadata = result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to load workflow {workflow_name}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to load workflow '{workflow_name}': {str(e)}",
-        )
 
     # Check HTTP method
     http_method = request.method
-    allowed_methods = workflow_metadata.allowed_methods or ["POST"]
-    if http_method not in allowed_methods:
+    if http_method not in workflow_metadata.allowed_methods:
         logger.warning(f"Method {http_method} not allowed for {workflow_name}")
         raise HTTPException(
             status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail=f"Method {http_method} not allowed. Allowed: {', '.join(allowed_methods)}",
+            detail=f"Method {http_method} not allowed. Allowed: {', '.join(workflow_metadata.allowed_methods)}",
         )
 
     # Parse input data (query params + body)
-    # Coerce query params to expected types based on workflow function signature
-    input_data = _coerce_query_params(dict(request.query_params), workflow_func)
+    # Note: We can't do type coercion without loading the function, so we pass strings
+    # The worker will handle type coercion when it loads the function
+    input_data = dict(request.query_params)
     try:
         body = await request.json()
         if isinstance(body, dict):
@@ -246,20 +296,22 @@ async def execute_endpoint(
     if workflow_metadata.execution_mode == "async":
         return await _execute_async(
             context=context,
-            workflow_id=workflow_id,
+            workflow_id=workflow_metadata.workflow_id,
             workflow_name=workflow_name,
             input_data=input_data,
-            api_key_id=workflow_id,  # Track which workflow's API key was used
+            api_key_id=workflow_metadata.workflow_id,
+            file_path=workflow_metadata.file_path,
         )
 
     # Execute synchronously
     return await _execute_sync(
         context=context,
-        workflow_id=workflow_id,
+        workflow_id=workflow_metadata.workflow_id,
         workflow_name=workflow_name,
         input_data=input_data,
-        workflow_metadata=workflow_metadata,
-        api_key_id=workflow_id,  # Track which workflow's API key was used
+        timeout_seconds=workflow_metadata.timeout_seconds,
+        api_key_id=workflow_metadata.workflow_id,
+        file_path=workflow_metadata.file_path,
     )
 
 
@@ -269,6 +321,7 @@ async def _execute_async(
     workflow_name: str,
     input_data: dict[str, Any],
     api_key_id: str | None = None,
+    file_path: str | None = None,
 ) -> EndpointExecuteResponse:
     """Execute workflow asynchronously via queue."""
     from src.services.execution.async_executor import enqueue_workflow_execution
@@ -279,6 +332,7 @@ async def _execute_async(
         parameters=input_data,
         form_id=None,
         api_key_id=api_key_id,
+        file_path=file_path,
     )
 
     logger.info(f"Queued async workflow execution: {workflow_name} ({execution_id})")
@@ -295,8 +349,9 @@ async def _execute_sync(
     workflow_id: str,
     workflow_name: str,
     input_data: dict[str, Any],
-    workflow_metadata: Any,
+    timeout_seconds: int,
     api_key_id: str | None = None,
+    file_path: str | None = None,
 ) -> EndpointExecuteResponse:
     """
     Execute workflow synchronously via queue.
@@ -329,9 +384,6 @@ async def _execute_sync(
         api_key_id=api_key_id,
     )
 
-    # Get timeout from workflow metadata (default 5 minutes)
-    timeout_seconds = getattr(workflow_metadata, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
-
     # Queue execution with sync=True
     await enqueue_workflow_execution(
         context=context,
@@ -341,6 +393,7 @@ async def _execute_sync(
         execution_id=execution_id,
         sync=True,
         api_key_id=api_key_id,
+        file_path=file_path,
     )
 
     logger.info(f"Queued sync workflow execution: {workflow_name} ({execution_id})")

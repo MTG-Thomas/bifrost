@@ -39,13 +39,13 @@ export function useExecutions(
 	if (filters?.workflow_name)
 		queryParams["workflow_name"] = filters.workflow_name;
 	if (filters?.status) queryParams["status"] = filters.status;
-	if (filters?.start_date) queryParams["start_date"] = filters.start_date;
-	if (filters?.end_date) queryParams["end_date"] = filters.end_date;
+	if (filters?.start_date) queryParams["startDate"] = filters.start_date;
+	if (filters?.end_date) queryParams["endDate"] = filters.end_date;
 	if (filters?.limit) queryParams["limit"] = filters.limit.toString();
 	if (filters?.excludeLocal !== undefined)
 		queryParams["excludeLocal"] = filters.excludeLocal.toString();
 	if (continuationToken)
-		queryParams["continuation_token"] = continuationToken;
+		queryParams["continuationToken"] = continuationToken;
 
 	return $api.useQuery("get", "/api/executions", {
 		params: { query: queryParams },

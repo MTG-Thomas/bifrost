@@ -33,6 +33,7 @@ async def enqueue_workflow_execution(
     execution_id: str | None = None,
     sync: bool = False,
     api_key_id: str | None = None,
+    file_path: str | None = None,
 ) -> str:
     """
     Enqueue a workflow for async execution.
@@ -48,6 +49,7 @@ async def enqueue_workflow_execution(
         execution_id: Optional pre-generated execution ID (for sync execution)
         sync: If True, worker will push result to Redis for caller to BLPOP
         api_key_id: Optional workflow ID whose API key triggered this execution
+        file_path: Optional file path (for fast direct loading, avoids filesystem scan)
 
     Returns:
         execution_id: UUID of the queued execution
@@ -80,11 +82,15 @@ async def enqueue_workflow_execution(
     await add_to_queue(execution_id)
 
     # Prepare queue message (minimal - worker reads full context from Redis)
-    message = {
+    message: dict[str, Any] = {
         "execution_id": execution_id,
         "workflow_id": workflow_id,
         "sync": sync,
     }
+
+    # Include file_path for fast direct loading (avoids filesystem scan)
+    if file_path:
+        message["file_path"] = file_path
 
     # Enqueue message via RabbitMQ
     await publish_message(QUEUE_NAME, message)

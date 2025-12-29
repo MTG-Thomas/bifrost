@@ -64,6 +64,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         code_base64 = message_data.get("code")
         script_name = message_data.get("script_name")
         is_sync = message_data.get("sync", False)
+        file_path = message_data.get("file_path")  # For fast direct loading
         start_time = datetime.utcnow()
 
         # Remove from queue tracking (execution is now being processed)
@@ -286,6 +287,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     "time_saved": roi_time_saved,
                     "value": roi_value,
                 },
+                "file_path": file_path,  # For fast direct loading (skips filesystem scan)
             }
 
             # Execute in isolated process

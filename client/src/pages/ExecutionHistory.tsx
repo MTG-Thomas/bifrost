@@ -159,8 +159,8 @@ export function ExecutionHistory() {
 
 			return {
 				...baseFilters,
-				startDate: startDate.toISOString(),
-				endDate: endDate.toISOString(),
+				start_date: startDate.toISOString(),
+				end_date: endDate.toISOString(),
 			};
 		}
 
