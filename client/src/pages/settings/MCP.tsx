@@ -41,6 +41,7 @@ import {
 	Check,
 	ChevronsUpDown,
 	RotateCcw,
+	Copy,
 } from "lucide-react";
 import { $api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -60,6 +61,14 @@ export function MCP() {
 	const [hasChanges, setHasChanges] = useState(false);
 	const [allowedToolsOpen, setAllowedToolsOpen] = useState(false);
 	const [blockedToolsOpen, setBlockedToolsOpen] = useState(false);
+
+	// MCP Server URL
+	const mcpUrl = `${window.location.origin}/mcp`;
+
+	const handleCopyMcpUrl = () => {
+		navigator.clipboard.writeText(mcpUrl);
+		toast.success("MCP URL copied to clipboard");
+	};
 
 	// Load current configuration
 	const {
@@ -199,6 +208,21 @@ export function MCP() {
 					<span className="font-medium">Using Default Configuration</span>
 				</div>
 			)}
+
+			{/* MCP Server URL */}
+			<div className="rounded-lg border bg-muted/50 p-3">
+				<div className="flex items-center justify-between">
+					<div>
+						<p className="text-sm font-medium">MCP Server URL</p>
+						<p className="text-xs text-muted-foreground mt-1 font-mono break-all">
+							{mcpUrl}
+						</p>
+					</div>
+					<Button variant="ghost" size="sm" onClick={handleCopyMcpUrl}>
+						<Copy className="h-4 w-4" />
+					</Button>
+				</div>
+			</div>
 
 			{/* Main Configuration Card */}
 			<Card>

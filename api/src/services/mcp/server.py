@@ -100,32 +100,40 @@ class MCPContext:
 
 async def _execute_workflow_impl(
     context: MCPContext,
-    workflow_name: str,
-    inputs: dict[str, Any] | None = None,
+    workflow_id: str,
+    params: dict[str, Any] | None = None,
 ) -> str:
-    """Execute a workflow and return results."""
+    """Execute a workflow by ID and return results."""
+    from uuid import UUID
+
     from src.core.database import get_db_context
     from src.repositories.workflows import WorkflowRepository
     from src.services.execution.service import execute_tool
 
-    if not workflow_name:
-        return "Error: workflow_name is required"
+    if not workflow_id:
+        return "Error: workflow_id is required"
 
-    inputs = inputs or {}
-    logger.info(f"MCP execute_workflow: {workflow_name} with inputs: {inputs}")
+    # Validate UUID format
+    try:
+        workflow_uuid = UUID(workflow_id)
+    except ValueError:
+        return f"Error: '{workflow_id}' is not a valid UUID. Use list_workflows to get workflow IDs."
+
+    params = params or {}
+    logger.info(f"MCP execute_workflow: {workflow_id} with params: {params}")
 
     try:
         async with get_db_context() as db:
             repo = WorkflowRepository(db)
-            workflow = await repo.get_by_name(workflow_name)
+            workflow = await repo.get_by_id(workflow_uuid)
 
             if not workflow:
-                return f"Error: Workflow '{workflow_name}' not found. Use list_workflows to see available workflows."
+                return f"Error: Workflow with ID '{workflow_id}' not found. Use list_workflows to see available workflows."
 
             result = await execute_tool(
                 workflow_id=str(workflow.id),
                 workflow_name=workflow.name,
-                parameters=inputs,
+                parameters=params,
                 user_id=str(context.user_id),
                 user_email=context.user_email or "mcp@bifrost.local",
                 user_name=context.user_name or "MCP User",
@@ -137,13 +145,13 @@ async def _execute_workflow_impl(
                 import json
                 result_str = json.dumps(result.result, indent=2, default=str) if result.result else "null"
                 return (
-                    f"✓ Workflow '{workflow_name}' executed successfully!\n\n"
+                    f"✓ Workflow '{workflow.name}' executed successfully!\n\n"
                     f"**Duration:** {result.duration_ms}ms\n\n"
                     f"**Result:**\n```json\n{result_str}\n```"
                 )
             else:
                 return (
-                    f"✗ Workflow '{workflow_name}' failed!\n\n"
+                    f"✗ Workflow '{workflow.name}' failed!\n\n"
                     f"**Status:** {result.status.value}\n"
                     f"**Error:** {result.error or 'Unknown error'}\n\n"
                     f"**Error Type:** {result.error_type or 'Unknown'}"
@@ -185,6 +193,7 @@ async def _list_workflows_impl(
 
             for workflow in workflows:
                 lines.append(f"## {workflow.name}")
+                lines.append(f"- ID: `{workflow.id}`")
                 if workflow.description:
                     lines.append(f"{workflow.description}")
 
@@ -1450,18 +1459,18 @@ def _create_sdk_tools(context: MCPContext, enabled_tools: set[str] | None) -> li
     if enabled_tools is None or "execute_workflow" in enabled_tools:
         @sdk_tool(
             name="execute_workflow",
-            description="Execute a Bifrost workflow by name and return the results. Use this to test workflows you've written.",
+            description="Execute a Bifrost workflow by ID and return the results. Use list_workflows to get workflow IDs.",
             input_schema={
                 "type": "object",
                 "properties": {
-                    "workflow_name": {"type": "string", "description": "Name of the workflow to execute"},
-                    "inputs": {"type": "object", "description": "Input parameters for the workflow"},
+                    "workflow_id": {"type": "string", "description": "UUID of the workflow to execute"},
+                    "params": {"type": "object", "description": "Input parameters for the workflow"},
                 },
-                "required": ["workflow_name"],
+                "required": ["workflow_id"],
             },
         )
         async def execute_workflow(args: dict[str, Any]) -> dict[str, Any]:
-            result = await _execute_workflow_impl(context, args.get("workflow_name", ""), args.get("inputs"))
+            result = await _execute_workflow_impl(context, args.get("workflow_id", ""), args.get("params"))
             return {"content": [{"type": "text", "text": result}]}
         tools.append(execute_workflow)
 
@@ -2305,10 +2314,10 @@ def _register_fastmcp_tools(mcp: "FastMCP", context: MCPContext, enabled_tools: 
     if enabled_tools is None or "execute_workflow" in enabled_tools:
         @mcp.tool(
             name="execute_workflow",
-            description="Execute a Bifrost workflow by name and return the results.",
+            description="Execute a Bifrost workflow by ID and return the results. Use list_workflows to get workflow IDs.",
         )
-        async def execute_workflow(workflow_name: str, inputs: dict[str, Any] | None = None) -> str:
-            return await _execute_workflow_impl(_get_context(), workflow_name, inputs)
+        async def execute_workflow(workflow_id: str, params: dict[str, Any] | None = None) -> str:
+            return await _execute_workflow_impl(_get_context(), workflow_id, params)
 
     if enabled_tools is None or "list_workflows" in enabled_tools:
         @mcp.tool(

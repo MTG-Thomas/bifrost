@@ -237,6 +237,7 @@ class TestListWorkflows:
         assert "test_workflow" in result
         assert "A test workflow for testing" in result
         assert "Endpoint: Enabled" in result
+        assert f"ID: `{mock_workflow.id}`" in result
 
     @pytest.mark.asyncio
     async def test_returns_empty_message(self, org_user_context):
@@ -588,7 +589,7 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.get_by_name = AsyncMock(return_value=mock_workflow)
+                mock_repo.get_by_id = AsyncMock(return_value=mock_workflow)
                 mock_repo_cls.return_value = mock_repo
 
                 with patch(
@@ -598,7 +599,7 @@ class TestExecuteWorkflow:
 
                     result = await _execute_workflow_impl(
                         org_user_context,
-                        "test_workflow",
+                        str(mock_workflow.id),
                         {"key": "value"},
                     )
 
@@ -610,6 +611,7 @@ class TestExecuteWorkflow:
     @pytest.mark.asyncio
     async def test_returns_error_workflow_not_found(self, org_user_context):
         """Should return error when workflow not found."""
+        workflow_id = str(uuid4())
         with patch("src.core.database.get_db_context") as mock_db_ctx:
             mock_session = AsyncMock()
             mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
@@ -619,16 +621,27 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.get_by_name = AsyncMock(return_value=None)
+                mock_repo.get_by_id = AsyncMock(return_value=None)
                 mock_repo_cls.return_value = mock_repo
 
                 result = await _execute_workflow_impl(
                     org_user_context,
-                    "nonexistent_workflow",
+                    workflow_id,
                 )
 
         assert "not found" in result
-        assert "nonexistent_workflow" in result
+        assert workflow_id in result
+        assert "list_workflows" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_error_invalid_uuid(self, org_user_context):
+        """Should return error when workflow_id is not a valid UUID."""
+        result = await _execute_workflow_impl(
+            org_user_context,
+            "not-a-valid-uuid",
+        )
+
+        assert "not a valid UUID" in result
         assert "list_workflows" in result
 
     @pytest.mark.asyncio
@@ -651,7 +664,7 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.get_by_name = AsyncMock(return_value=mock_workflow)
+                mock_repo.get_by_id = AsyncMock(return_value=mock_workflow)
                 mock_repo_cls.return_value = mock_repo
 
                 with patch(
@@ -661,7 +674,7 @@ class TestExecuteWorkflow:
 
                     result = await _execute_workflow_impl(
                         org_user_context,
-                        "test_workflow",
+                        str(mock_workflow.id),
                     )
 
         assert "failed" in result
@@ -669,13 +682,13 @@ class TestExecuteWorkflow:
         assert "ValueError" in result
 
     @pytest.mark.asyncio
-    async def test_handles_missing_workflow_name(self, org_user_context):
-        """Should return error when workflow_name is empty."""
+    async def test_handles_missing_workflow_id(self, org_user_context):
+        """Should return error when workflow_id is empty."""
         result = await _execute_workflow_impl(org_user_context, "")
-        assert "workflow_name is required" in result
+        assert "workflow_id is required" in result
 
     @pytest.mark.asyncio
-    async def test_handles_exception(self, org_user_context):
+    async def test_handles_exception(self, org_user_context, mock_workflow):
         """Should return error message on unexpected exception."""
         with patch("src.core.database.get_db_context") as mock_db_ctx:
             mock_db_ctx.return_value.__aenter__ = AsyncMock(
@@ -685,7 +698,7 @@ class TestExecuteWorkflow:
 
             result = await _execute_workflow_impl(
                 org_user_context,
-                "test_workflow",
+                str(mock_workflow.id),
             )
 
         assert "Error executing workflow" in result

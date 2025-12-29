@@ -3,8 +3,9 @@
 
 # =============================================================================
 # Stage 1: Base with dependencies
+# Uses BUILDPLATFORM to run on native architecture (no QEMU emulation)
 # =============================================================================
-FROM node:20-slim AS base
+FROM --platform=$BUILDPLATFORM node:20-slim AS base
 
 WORKDIR /app
 
