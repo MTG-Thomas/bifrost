@@ -255,8 +255,13 @@ class Settings(BaseSettings):
 
     webauthn_origin: str = Field(
         default="http://localhost:3000",
-        description="WebAuthn expected origin URL"
+        description="WebAuthn expected origin URLs (comma-separated for multiple)"
     )
+
+    @property
+    def webauthn_origins(self) -> list[str]:
+        """Parse webauthn_origin into a list of origins."""
+        return [o.strip() for o in self.webauthn_origin.split(",") if o.strip()]
 
     # ==========================================================================
     # MCP (Model Context Protocol)

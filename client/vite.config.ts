@@ -110,8 +110,13 @@ export default defineConfig({
 		// Allow all hosts in development (ngrok, tunnels, etc.)
 		allowedHosts: true,
 		hmr: {
-			// When running in Docker, HMR connects directly to Vite
-			// When running behind SWA proxy, set clientPort: 4280
+			// When VITE_HMR_HOST is set (e.g., for ngrok), use WSS on port 443
+			// Otherwise, let Vite auto-detect (works for localhost and Docker)
+			...(process.env.VITE_HMR_HOST && {
+				protocol: "wss",
+				host: process.env.VITE_HMR_HOST,
+				port: 443,
+			}),
 		},
 		watch: {
 			usePolling: true,

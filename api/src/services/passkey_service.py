@@ -165,7 +165,7 @@ class PasskeyService:
             verification = verify_registration_response(
                 credential=credential,
                 expected_challenge=expected_challenge,
-                expected_origin=self.settings.webauthn_origin,
+                expected_origin=self.settings.webauthn_origins,
                 expected_rp_id=self.settings.webauthn_rp_id,
             )
         except Exception as e:
@@ -286,7 +286,7 @@ class PasskeyService:
             verification = verify_authentication_response(
                 credential=credential,
                 expected_challenge=expected_challenge,
-                expected_origin=self.settings.webauthn_origin,
+                expected_origin=self.settings.webauthn_origins,
                 expected_rp_id=self.settings.webauthn_rp_id,
                 credential_public_key=passkey.public_key,
                 credential_current_sign_count=passkey.sign_count,
