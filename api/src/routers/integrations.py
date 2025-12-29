@@ -34,6 +34,8 @@ from src.models import (
     IntegrationMappingUpdate,
     IntegrationResponse,
     IntegrationSDKResponse,
+    IntegrationTestRequest,
+    IntegrationTestResponse,
     IntegrationUpdate,
     OAuthConfigSummary,
 )
@@ -1299,6 +1301,241 @@ async def get_integration_sdk_data(
         oauth_token_url=oauth_token_url,
         oauth_scopes=oauth_scopes,
     )
+
+
+# =============================================================================
+# HTTP Endpoints - Integration Testing
+# =============================================================================
+
+
+# Test code template that runs in workflow execution context
+_TEST_INTEGRATION_CODE = '''
+from bifrost import integrations
+import httpx
+import time
+
+async def test():
+    """Test integration connectivity by making a GET request to the specified endpoint."""
+    integration_name = "{integration_name}"
+    endpoint = "{endpoint}"
+    org_id = {org_id}
+
+    # Get integration config (includes OAuth tokens if available)
+    integration = await integrations.get(integration_name, org_id)
+    if not integration:
+        return {{"success": False, "error": f"Integration '{{integration_name}}' not found"}}
+
+    base_url = integration.config.get("base_url", "").rstrip("/")
+    if not base_url:
+        return {{"success": False, "error": "base_url not configured"}}
+
+    # Build headers based on available auth
+    headers = {{}}
+    auth_method = "none"
+
+    if integration.oauth and integration.oauth.access_token:
+        headers["Authorization"] = f"Bearer {{integration.oauth.access_token}}"
+        auth_method = "oauth"
+    elif integration.config.get("token"):
+        headers["Authorization"] = f"Bearer {{integration.config['token']}}"
+        auth_method = "bearer"
+    elif integration.config.get("api_key"):
+        header_name = integration.config.get("header_name", "Authorization")
+        headers[header_name] = integration.config["api_key"]
+        auth_method = "api_key"
+
+    # Make request
+    url = f"{{base_url}}{{endpoint}}"
+    start_time = time.time()
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=30.0)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    return {{
+        "success": response.status_code < 400,
+        "status_code": response.status_code,
+        "url": url,
+        "auth_method": auth_method,
+        "duration_ms": duration_ms,
+    }}
+
+result = await test()
+'''
+
+
+@router.post(
+    "/{integration_id}/test",
+    response_model=IntegrationTestResponse,
+    summary="Test integration connection",
+    description="Test connectivity to an integration by making a GET request to the specified endpoint (Platform admin only)",
+)
+async def test_integration_connection(
+    integration_id: UUID,
+    request: IntegrationTestRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+) -> IntegrationTestResponse:
+    """
+    Test an integration's connectivity.
+
+    Executes inline code synchronously that:
+    1. Uses bifrost.integrations.get() to fetch config and OAuth tokens
+    2. Makes a GET request to the specified endpoint
+    3. Returns success/failure with status code
+
+    Uses sync execution pattern (queue + Redis BLPOP) to wait for result.
+    """
+    import base64
+    import time
+    from uuid import uuid4
+    from src.sdk.context import ExecutionContext as SharedContext, Organization
+    from src.services.execution.async_executor import enqueue_code_execution
+    from src.core.redis_client import get_redis_client
+
+    repo = IntegrationsRepository(ctx.db)
+
+    # Get integration
+    integration = await repo.get_integration_by_id(integration_id)
+    if not integration:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Integration not found",
+        )
+
+    # Build execution context
+    # If org_id provided, use that org's context; otherwise use global scope
+    org = None
+    scope = "GLOBAL"
+    if request.organization_id:
+        org = Organization(id=str(request.organization_id), name="", is_active=True)
+        scope = str(request.organization_id)
+
+    execution_id = str(uuid4())
+    shared_ctx = SharedContext(
+        user_id=str(ctx.user.user_id),
+        name=ctx.user.name,
+        email=ctx.user.email,
+        scope=scope,
+        organization=org,
+        is_platform_admin=ctx.user.is_superuser,
+        is_function_key=False,
+        execution_id=execution_id,
+    )
+
+    # Format the test code with parameters
+    org_id_str = f'"{request.organization_id}"' if request.organization_id else "None"
+    test_code = _TEST_INTEGRATION_CODE.format(
+        integration_name=integration.name,
+        endpoint=request.endpoint,
+        org_id=org_id_str,
+    )
+
+    script_name = f"test_integration_{integration.name}"
+    scope_label = f"org {request.organization_id}" if request.organization_id else "global"
+    start_time = time.time()
+
+    try:
+        # Store pending execution in Redis
+        redis_client = get_redis_client()
+        await redis_client.set_pending_execution(
+            execution_id=execution_id,
+            workflow_id=None,  # Inline code, no workflow
+            script_name=script_name,
+            parameters={},
+            org_id=shared_ctx.org_id,
+            user_id=shared_ctx.user_id,
+            user_name=shared_ctx.name,
+            user_email=shared_ctx.email,
+            form_id=None,
+        )
+
+        # Queue with sync=True to wait for result
+        await enqueue_code_execution(
+            context=shared_ctx,
+            script_name=script_name,
+            code_base64=base64.b64encode(test_code.encode()).decode(),
+            parameters={},
+            execution_id=execution_id,
+            sync=True,
+        )
+
+        # Wait for result from worker via Redis BLPOP
+        worker_result = await redis_client.wait_for_result(execution_id, timeout_seconds=60)
+
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        if worker_result is None:
+            logger.error(f"Integration test for {integration.name} ({scope_label}): timeout")
+            return IntegrationTestResponse(
+                success=False,
+                message=f"Test timed out for {integration.name}",
+                error_details="Execution timed out after 60 seconds",
+                duration_ms=duration_ms,
+            )
+
+        # Check execution status from worker
+        status_str = worker_result.get("status", "Failed")
+        if status_str == "Failed":
+            error = worker_result.get("error", "Unknown error")
+            logger.info(
+                f"Integration test for {integration.name} ({scope_label}): failed - {error}"
+            )
+            return IntegrationTestResponse(
+                success=False,
+                message=f"Test execution failed for {integration.name}",
+                error_details=error[:500] if error else "Unknown error",
+                duration_ms=duration_ms,
+            )
+
+        # Parse the result from the test code
+        result = worker_result.get("result")
+        if isinstance(result, dict):
+            success = result.get("success", False)
+            if success:
+                logger.info(
+                    f"Integration test for {integration.name} ({scope_label}): success - "
+                    f"HTTP {result.get('status_code')} at {result.get('url')}"
+                )
+                return IntegrationTestResponse(
+                    success=True,
+                    message=f"Successfully connected to {integration.name}",
+                    method_called=f"GET {request.endpoint}",
+                    duration_ms=result.get("duration_ms", duration_ms),
+                )
+            else:
+                error = result.get("error", f"HTTP {result.get('status_code', 'unknown')}")
+                logger.info(
+                    f"Integration test for {integration.name} ({scope_label}): failed - {error}"
+                )
+                return IntegrationTestResponse(
+                    success=False,
+                    message=f"Connection test failed for {integration.name}",
+                    method_called=f"GET {request.endpoint}",
+                    error_details=error,
+                    duration_ms=result.get("duration_ms", duration_ms),
+                )
+
+        # Unexpected result format
+        logger.warning(f"Unexpected test result format: {result}")
+        return IntegrationTestResponse(
+            success=False,
+            message=f"Unexpected test result for {integration.name}",
+            error_details=str(result)[:500] if result else "No result returned",
+            duration_ms=duration_ms,
+        )
+
+    except Exception as e:
+        import traceback
+        logger.error(
+            f"Integration test error for {integration.name}: {e}\n{traceback.format_exc()}"
+        )
+        return IntegrationTestResponse(
+            success=False,
+            message=f"Test execution error for {integration.name}",
+            error_details=str(e)[:500],
+        )
 
 
 # =============================================================================

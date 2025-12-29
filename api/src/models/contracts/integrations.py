@@ -410,3 +410,44 @@ class IntegrationSDKResponse(BaseModel):
         default=None,
         description="OAuth scopes for this integration",
     )
+
+
+# ==================== INTEGRATION TEST MODELS ====================
+
+
+class IntegrationTestRequest(BaseModel):
+    """
+    Request model for testing an integration connection.
+    POST /api/integrations/{integration_id}/test
+    """
+
+    organization_id: UUID | None = Field(
+        default=None,
+        description="Organization ID to test with. If None, uses global defaults only.",
+    )
+    endpoint: str = Field(
+        default="/",
+        description="API endpoint path to test (e.g., /api/users). Appended to base_url.",
+    )
+
+
+class IntegrationTestResponse(BaseModel):
+    """
+    Response model for integration connection test.
+    POST /api/integrations/{integration_id}/test
+    """
+
+    success: bool = Field(..., description="Whether the test succeeded")
+    message: str = Field(..., description="Human-readable result message")
+    method_called: str | None = Field(
+        default=None,
+        description="The SDK method that was called for the test",
+    )
+    duration_ms: int | None = Field(
+        default=None,
+        description="Time taken for the test call in milliseconds",
+    )
+    error_details: str | None = Field(
+        default=None,
+        description="Detailed error message if test failed",
+    )

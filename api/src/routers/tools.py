@@ -78,6 +78,85 @@ SYSTEM_TOOLS: list[ToolInfo] = [
         type="system",
         default_enabled_for_coding_agent=True,
     ),
+    # File Operations (disabled for coding agent - it has local file access)
+    ToolInfo(
+        id="read_file",
+        name="Read File",
+        description="Read a file from the workspace",
+        type="system",
+        default_enabled_for_coding_agent=False,
+    ),
+    ToolInfo(
+        id="write_file",
+        name="Write File",
+        description="Write content to a file in the workspace (creates or overwrites)",
+        type="system",
+        default_enabled_for_coding_agent=False,
+    ),
+    ToolInfo(
+        id="list_files",
+        name="List Files",
+        description="List files and directories in the workspace",
+        type="system",
+        default_enabled_for_coding_agent=False,
+    ),
+    ToolInfo(
+        id="delete_file",
+        name="Delete File",
+        description="Delete a file or directory from the workspace",
+        type="system",
+        default_enabled_for_coding_agent=False,
+    ),
+    ToolInfo(
+        id="search_files",
+        name="Search Files",
+        description="Search for text patterns across files in the workspace",
+        type="system",
+        default_enabled_for_coding_agent=False,
+    ),
+    ToolInfo(
+        id="create_folder",
+        name="Create Folder",
+        description="Create a new folder in the workspace",
+        type="system",
+        default_enabled_for_coding_agent=False,
+    ),
+    # Workflow and Execution Tools
+    ToolInfo(
+        id="validate_workflow",
+        name="Validate Workflow",
+        description="Validate a workflow Python file for syntax and decorator issues",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="get_workflow_schema",
+        name="Get Workflow Schema",
+        description="Get documentation about workflow structure, decorators, and SDK features",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="get_workflow",
+        name="Get Workflow",
+        description="Get detailed metadata for a specific workflow by ID or name",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="list_executions",
+        name="List Executions",
+        description="List recent workflow executions with optional filtering",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="get_execution",
+        name="Get Execution",
+        description="Get details and logs for a specific workflow execution",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
 ]
 
 

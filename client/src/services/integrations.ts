@@ -247,3 +247,15 @@ export function useGenerateSDK() {
 		},
 	);
 }
+
+// Re-export test response type
+export type IntegrationTestResponse =
+	components["schemas"]["IntegrationTestResponse"];
+
+/**
+ * Hook to test integration connection
+ * Tests connectivity by calling a simple SDK method
+ */
+export function useTestIntegration() {
+	return $api.useMutation("post", "/api/integrations/{integration_id}/test");
+}

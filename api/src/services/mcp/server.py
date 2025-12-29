@@ -482,6 +482,482 @@ async def _search_knowledge_impl(
 
 
 # =============================================================================
+# File Operation Tool Implementations
+# =============================================================================
+
+
+async def _read_file_impl(context: MCPContext, path: str) -> str:
+    """Read a file from the workspace."""
+    from src.services.editor import file_operations
+
+    logger.info(f"MCP read_file called with path={path}")
+
+    if not path:
+        return "Error: path is required"
+
+    try:
+        result = await file_operations.read_file(path)
+        if result.encoding == "base64":
+            return f"Binary file ({result.size} bytes). Base64 content available but too large to display."
+        return result.content or ""
+    except FileNotFoundError:
+        return f"Error: File not found: {path}"
+    except PermissionError:
+        return f"Error: Permission denied: {path}"
+    except Exception as e:
+        logger.exception(f"Error reading file via MCP: {e}")
+        return f"Error reading file: {str(e)}"
+
+
+async def _write_file_impl(context: MCPContext, path: str, content: str) -> str:
+    """Write content to a file in the workspace."""
+    from src.services.editor import file_operations
+
+    logger.info(f"MCP write_file called with path={path}")
+
+    if not path:
+        return "Error: path is required"
+    if content is None:
+        return "Error: content is required"
+
+    try:
+        result = await file_operations.write_file(path, content)
+        return f"✓ File written successfully: {path} ({result.size} bytes)"
+    except PermissionError:
+        return f"Error: Permission denied: {path}"
+    except Exception as e:
+        logger.exception(f"Error writing file via MCP: {e}")
+        return f"Error writing file: {str(e)}"
+
+
+async def _list_files_impl(context: MCPContext, directory: str = "") -> str:
+    """List files and directories in the workspace."""
+    from src.services.editor import file_operations
+
+    logger.info(f"MCP list_files called with directory={directory}")
+
+    try:
+        items = file_operations.list_directory(directory or "")
+
+        if not items:
+            return f"No files found in: {directory or '/'}"
+
+        lines = [f"# Files in {directory or '/'}\n"]
+        for item in items:
+            icon = "📁" if item.type.value == "folder" else "📄"
+            size_str = f" ({item.size} bytes)" if item.type.value == "file" and item.size else ""
+            lines.append(f"- {icon} `{item.name}`{size_str}")
+
+        return "\n".join(lines)
+    except FileNotFoundError:
+        return f"Error: Directory not found: {directory}"
+    except Exception as e:
+        logger.exception(f"Error listing files via MCP: {e}")
+        return f"Error listing files: {str(e)}"
+
+
+async def _delete_file_impl(context: MCPContext, path: str) -> str:
+    """Delete a file or directory from the workspace."""
+    from src.services.editor import file_operations
+
+    logger.info(f"MCP delete_file called with path={path}")
+
+    if not path:
+        return "Error: path is required"
+
+    try:
+        file_operations.delete_path(path)
+        return f"✓ Deleted: {path}"
+    except FileNotFoundError:
+        return f"Error: Path not found: {path}"
+    except PermissionError:
+        return f"Error: Permission denied: {path}"
+    except Exception as e:
+        logger.exception(f"Error deleting file via MCP: {e}")
+        return f"Error deleting file: {str(e)}"
+
+
+async def _search_files_impl(
+    context: MCPContext,
+    query: str,
+    pattern: str = "**/*",
+    case_sensitive: bool = False,
+) -> str:
+    """Search for text patterns across files in the workspace."""
+    from src.services.editor import search as search_module
+    from src.services.editor.search import SearchRequest
+
+    logger.info(f"MCP search_files called with query={query}, pattern={pattern}")
+
+    if not query:
+        return "Error: query is required"
+
+    try:
+        request = SearchRequest(
+            query=query,
+            include_pattern=pattern,
+            case_sensitive=case_sensitive,
+            max_results=50,
+        )
+        response = search_module.search_files(request)
+        results = response.results
+
+        if not results:
+            return f"No matches found for: '{query}'"
+
+        lines = [f"# Search Results for '{query}'\n"]
+        lines.append(f"Found {len(results)} matches\n")
+
+        for result in results[:20]:  # Limit to 20 results in output
+            lines.append(f"## {result.file_path}:{result.line_number}")
+            lines.append("```")
+            lines.append(result.line_content.strip())
+            lines.append("```\n")
+
+        if len(results) > 20:
+            lines.append(f"... and {len(results) - 20} more matches")
+
+        return "\n".join(lines)
+    except Exception as e:
+        logger.exception(f"Error searching files via MCP: {e}")
+        return f"Error searching files: {str(e)}"
+
+
+async def _create_folder_impl(context: MCPContext, path: str) -> str:
+    """Create a new folder in the workspace."""
+    from src.services.editor import file_operations
+
+    logger.info(f"MCP create_folder called with path={path}")
+
+    if not path:
+        return "Error: path is required"
+
+    try:
+        file_operations.create_folder(path)
+        return f"✓ Folder created: {path}"
+    except FileExistsError:
+        return f"Folder already exists: {path}"
+    except Exception as e:
+        logger.exception(f"Error creating folder via MCP: {e}")
+        return f"Error creating folder: {str(e)}"
+
+
+# =============================================================================
+# Workflow and Execution Tool Implementations
+# =============================================================================
+
+
+async def _validate_workflow_impl(context: MCPContext, file_path: str) -> str:
+    """Validate a workflow Python file."""
+    import ast
+    from pathlib import Path
+
+    logger.info(f"MCP validate_workflow called with file_path={file_path}")
+
+    if not file_path:
+        return "Error: file_path is required"
+
+    try:
+        workspace_path = Path("/tmp/bifrost/workspace")
+        full_path = workspace_path / file_path.lstrip("/")
+
+        if not full_path.exists():
+            return f"Error: File not found: {file_path}"
+
+        content = full_path.read_text()
+        errors = []
+
+        # Check syntax
+        try:
+            ast.parse(content)
+        except SyntaxError as e:
+            errors.append(f"Syntax error on line {e.lineno}: {e.msg}")
+            return "# Validation Failed\n\n" + "\n".join(f"- {e}" for e in errors)
+
+        # Check for @workflow decorator
+        if "@workflow" not in content:
+            errors.append("Missing @workflow decorator")
+
+        # Check for bifrost import
+        if "from bifrost" not in content and "import bifrost" not in content:
+            errors.append("Missing bifrost import (e.g., from bifrost import workflow)")
+
+        # Check for async def
+        if "async def" not in content:
+            errors.append("Workflow function should be async (use 'async def')")
+
+        if errors:
+            return "# Validation Issues\n\n" + "\n".join(f"- {e}" for e in errors)
+
+        return "✓ Workflow syntax is valid!"
+
+    except Exception as e:
+        logger.exception(f"Error validating workflow via MCP: {e}")
+        return f"Error validating workflow: {str(e)}"
+
+
+async def _get_workflow_schema_impl(context: MCPContext) -> str:
+    """Get documentation about workflow structure and SDK features."""
+    return """# Workflow Schema Documentation
+
+## Basic Workflow Structure
+
+```python
+from bifrost import workflow
+
+@workflow(
+    name="My Workflow",
+    description="What this workflow does",
+    category="automation",  # Optional: group related workflows
+)
+async def my_workflow(param1: str, param2: int = 10):
+    # Workflow logic here
+    return {"result": "value"}
+```
+
+## Decorator Properties
+
+- `name`: Display name for the workflow (required)
+- `description`: Human-readable description
+- `category`: Group workflows by category
+- `schedule`: Cron expression for scheduled execution (e.g., "0 9 * * *")
+- `is_tool`: Enable as MCP tool for AI agents (default: False)
+- `endpoint_enabled`: Enable REST API endpoint (default: False)
+
+## SDK Modules
+
+### AI Module
+```python
+from bifrost import ai
+
+response = await ai.chat("Hello, how are you?")
+structured = await ai.chat("Extract name", response_model=MyModel)
+```
+
+### HTTP Module
+```python
+from bifrost import http
+
+response = await http.get("https://api.example.com/data")
+data = await http.post("https://api.example.com", json={"key": "value"})
+```
+
+### Integrations Module
+```python
+from bifrost import integrations
+
+integration = await integrations.get("MyIntegration")
+if integration and integration.oauth:
+    token = integration.oauth.access_token
+```
+
+### Config Module
+```python
+from bifrost import config
+
+api_key = await config.get("MY_API_KEY")
+await config.set("MY_SETTING", "value")
+```
+
+### Knowledge Module
+```python
+from bifrost import knowledge
+
+results = await knowledge.search("my query", limit=5)
+await knowledge.store(key="doc1", content="Document content")
+```
+
+## Parameter Types
+
+Supported parameter types for workflow functions:
+- `str` - Text input
+- `int` - Integer number
+- `float` - Decimal number
+- `bool` - True/False
+- `dict` - JSON object
+- `list` - JSON array
+- `Optional[T]` - Optional parameter with None default
+
+## Return Values
+
+Workflows can return:
+- `dict` - JSON object (most common)
+- `list` - JSON array
+- `str` - Plain text
+- HTML string (for rich display in UI)
+- `None` - No output
+"""
+
+
+async def _get_workflow_impl(
+    context: MCPContext,
+    workflow_id: str | None = None,
+    workflow_name: str | None = None,
+) -> str:
+    """Get detailed metadata for a specific workflow."""
+    from src.core.database import get_db_context
+    from src.repositories.workflows import WorkflowRepository
+
+    logger.info(f"MCP get_workflow called with id={workflow_id}, name={workflow_name}")
+
+    if not workflow_id and not workflow_name:
+        return "Error: Either workflow_id or workflow_name is required"
+
+    try:
+        async with get_db_context() as db:
+            repo = WorkflowRepository(db)
+
+            if workflow_id:
+                workflow = await repo.get_by_id(workflow_id)
+            else:
+                workflow = await repo.get_by_name(workflow_name or "")
+
+            if not workflow:
+                return "Error: Workflow not found"
+
+            lines = [f"# {workflow.name}\n"]
+            if workflow.description:
+                lines.append(f"{workflow.description}\n")
+
+            lines.append("## Properties\n")
+            lines.append(f"- **ID:** `{workflow.id}`")
+            lines.append(f"- **File:** `{workflow.file_path}`")
+            if workflow.category:
+                lines.append(f"- **Category:** {workflow.category}")
+            lines.append(f"- **Is Tool:** {'Yes' if workflow.is_tool else 'No'}")
+            lines.append(f"- **Endpoint Enabled:** {'Yes' if workflow.endpoint_enabled else 'No'}")
+            if workflow.schedule:
+                lines.append(f"- **Schedule:** `{workflow.schedule}`")
+
+            if workflow.parameters_schema:
+                lines.append("\n## Parameters\n")
+                for param in workflow.parameters_schema:
+                    param_name = param.get("name", "unknown")
+                    param_type = param.get("type", "string")
+                    required = "required" if param.get("required") else "optional"
+                    lines.append(f"- `{param_name}`: {param_type} ({required})")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"Error getting workflow via MCP: {e}")
+        return f"Error getting workflow: {str(e)}"
+
+
+async def _list_executions_impl(
+    context: MCPContext,
+    workflow_name: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+) -> str:
+    """List recent workflow executions."""
+    from src.core.database import get_db_context
+    from src.repositories.executions import ExecutionRepository
+
+    logger.info(f"MCP list_executions called with workflow={workflow_name}, status={status}")
+
+    try:
+        async with get_db_context() as db:
+            repo = ExecutionRepository(db)
+
+            # Build filters
+            filters: dict[str, Any] = {}
+            if workflow_name:
+                filters["workflow_name"] = workflow_name
+            if status:
+                filters["status"] = status
+
+            executions = await repo.list_executions(
+                filters=filters,
+                limit=limit,
+                user_id=str(context.user_id) if not context.is_platform_admin else None,
+                org_id=str(context.org_id) if context.org_id else None,
+            )
+
+            if not executions:
+                return "No executions found."
+
+            lines = ["# Recent Executions\n"]
+            for ex in executions:
+                status_icon = "✓" if ex.status.value == "Success" else "✗" if ex.status.value == "Failed" else "⏳"
+                lines.append(f"## {status_icon} {ex.workflow_name or 'Unknown'}")
+                lines.append(f"- **ID:** `{ex.id}`")
+                lines.append(f"- **Status:** {ex.status.value}")
+                if ex.duration_ms:
+                    lines.append(f"- **Duration:** {ex.duration_ms}ms")
+                if ex.created_at:
+                    lines.append(f"- **Started:** {ex.created_at.isoformat()}")
+                if ex.error:
+                    lines.append(f"- **Error:** {ex.error[:100]}...")
+                lines.append("")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"Error listing executions via MCP: {e}")
+        return f"Error listing executions: {str(e)}"
+
+
+async def _get_execution_impl(context: MCPContext, execution_id: str) -> str:
+    """Get details and logs for a specific workflow execution."""
+    import json as json_module
+
+    from src.core.database import get_db_context
+    from src.repositories.executions import ExecutionRepository
+
+    logger.info(f"MCP get_execution called with id={execution_id}")
+
+    if not execution_id:
+        return "Error: execution_id is required"
+
+    try:
+        async with get_db_context() as db:
+            repo = ExecutionRepository(db)
+            execution = await repo.get_execution(execution_id)
+
+            if not execution:
+                return f"Error: Execution not found: {execution_id}"
+
+            # Check access
+            if not context.is_platform_admin and str(execution.user_id) != str(context.user_id):
+                return "Error: Access denied"
+
+            lines = [f"# Execution: {execution.workflow_name or 'Unknown'}\n"]
+
+            status_icon = "✓" if execution.status.value == "Success" else "✗" if execution.status.value == "Failed" else "⏳"
+            lines.append(f"## Status: {status_icon} {execution.status.value}\n")
+
+            lines.append("## Details\n")
+            lines.append(f"- **ID:** `{execution.id}`")
+            if execution.duration_ms:
+                lines.append(f"- **Duration:** {execution.duration_ms}ms")
+            if execution.created_at:
+                lines.append(f"- **Started:** {execution.created_at.isoformat()}")
+            if execution.completed_at:
+                lines.append(f"- **Completed:** {execution.completed_at.isoformat()}")
+
+            if execution.error:
+                lines.append(f"\n## Error\n```\n{execution.error}\n```")
+
+            if execution.result:
+                result_str = json_module.dumps(execution.result, indent=2, default=str)
+                lines.append(f"\n## Result\n```json\n{result_str}\n```")
+
+            # Get logs
+            logs = await repo.get_execution_logs(execution_id)
+            if logs:
+                lines.append("\n## Logs\n")
+                for log in logs[-20:]:  # Last 20 logs
+                    lines.append(f"[{log.level}] {log.message}")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"Error getting execution via MCP: {e}")
+        return f"Error getting execution: {str(e)}"
+
+
+# =============================================================================
 # SDK Tool Wrappers (for Claude Agent SDK in-process MCP)
 # =============================================================================
 
@@ -593,6 +1069,199 @@ def _create_sdk_tools(context: MCPContext, enabled_tools: set[str] | None) -> li
             result = await _search_knowledge_impl(context, args.get("query", ""), args.get("limit", 5))
             return {"content": [{"type": "text", "text": result}]}
         tools.append(search_knowledge)
+
+    # File Operations (not enabled for coding agent by default - uses local file access)
+    if enabled_tools is not None and "read_file" in enabled_tools:
+        @sdk_tool(
+            name="read_file",
+            description="Read a file from the Bifrost workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file (relative to workspace)"},
+                },
+                "required": ["path"],
+            },
+        )
+        async def read_file(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _read_file_impl(context, args.get("path", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(read_file)
+
+    if enabled_tools is not None and "write_file" in enabled_tools:
+        @sdk_tool(
+            name="write_file",
+            description="Write content to a file in the Bifrost workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file (relative to workspace)"},
+                    "content": {"type": "string", "description": "Content to write"},
+                },
+                "required": ["path", "content"],
+            },
+        )
+        async def write_file(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _write_file_impl(context, args.get("path", ""), args.get("content", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(write_file)
+
+    if enabled_tools is not None and "list_files" in enabled_tools:
+        @sdk_tool(
+            name="list_files",
+            description="List files and directories in the Bifrost workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "directory": {"type": "string", "description": "Directory path (default: root)"},
+                },
+                "required": [],
+            },
+        )
+        async def list_files(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _list_files_impl(context, args.get("directory", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(list_files)
+
+    if enabled_tools is not None and "delete_file" in enabled_tools:
+        @sdk_tool(
+            name="delete_file",
+            description="Delete a file or directory from the Bifrost workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to delete"},
+                },
+                "required": ["path"],
+            },
+        )
+        async def delete_file(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _delete_file_impl(context, args.get("path", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(delete_file)
+
+    if enabled_tools is not None and "search_files" in enabled_tools:
+        @sdk_tool(
+            name="search_files",
+            description="Search for text patterns across files in the Bifrost workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query or regex pattern"},
+                    "pattern": {"type": "string", "description": "File glob pattern (default: **/*)", "default": "**/*"},
+                    "case_sensitive": {"type": "boolean", "description": "Case sensitive search", "default": False},
+                },
+                "required": ["query"],
+            },
+        )
+        async def search_files(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _search_files_impl(
+                context, args.get("query", ""), args.get("pattern", "**/*"), args.get("case_sensitive", False)
+            )
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(search_files)
+
+    if enabled_tools is not None and "create_folder" in enabled_tools:
+        @sdk_tool(
+            name="create_folder",
+            description="Create a new folder in the Bifrost workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path for the new folder"},
+                },
+                "required": ["path"],
+            },
+        )
+        async def create_folder(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _create_folder_impl(context, args.get("path", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(create_folder)
+
+    # Workflow and Execution Tools
+    if enabled_tools is None or "validate_workflow" in enabled_tools:
+        @sdk_tool(
+            name="validate_workflow",
+            description="Validate a workflow Python file for syntax and decorator issues.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to workflow file (relative to workspace)"},
+                },
+                "required": ["file_path"],
+            },
+        )
+        async def validate_workflow(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _validate_workflow_impl(context, args.get("file_path", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(validate_workflow)
+
+    if enabled_tools is None or "get_workflow_schema" in enabled_tools:
+        @sdk_tool(
+            name="get_workflow_schema",
+            description="Get documentation about workflow structure, decorators, and SDK features.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+        )
+        async def get_workflow_schema(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _get_workflow_schema_impl(context)
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(get_workflow_schema)
+
+    if enabled_tools is None or "get_workflow" in enabled_tools:
+        @sdk_tool(
+            name="get_workflow",
+            description="Get detailed metadata for a specific workflow.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string", "description": "Workflow UUID"},
+                    "workflow_name": {"type": "string", "description": "Workflow name (alternative to ID)"},
+                },
+                "required": [],
+            },
+        )
+        async def get_workflow(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _get_workflow_impl(context, args.get("workflow_id"), args.get("workflow_name"))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(get_workflow)
+
+    if enabled_tools is None or "list_executions" in enabled_tools:
+        @sdk_tool(
+            name="list_executions",
+            description="List recent workflow executions.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_name": {"type": "string", "description": "Filter by workflow name"},
+                    "status": {"type": "string", "description": "Filter by status (Success, Failed, Running)"},
+                    "limit": {"type": "integer", "description": "Maximum results (default: 20)"},
+                },
+                "required": [],
+            },
+        )
+        async def list_executions(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _list_executions_impl(
+                context, args.get("workflow_name"), args.get("status"), args.get("limit", 20)
+            )
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(list_executions)
+
+    if enabled_tools is None or "get_execution" in enabled_tools:
+        @sdk_tool(
+            name="get_execution",
+            description="Get details and logs for a specific workflow execution.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "execution_id": {"type": "string", "description": "Execution UUID"},
+                },
+                "required": ["execution_id"],
+            },
+        )
+        async def get_execution(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _get_execution_impl(context, args.get("execution_id", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(get_execution)
 
     return tools
 
@@ -1062,6 +1731,98 @@ def _register_fastmcp_tools(mcp: "FastMCP", context: MCPContext, enabled_tools: 
         async def search_knowledge(query: str, limit: int = 5) -> str:
             return await _search_knowledge_impl(_get_context(), query, limit)
 
+    # File Operations (for external access like Claude Desktop)
+    if enabled_tools is None or "read_file" in enabled_tools:
+        @mcp.tool(
+            name="read_file",
+            description="Read a file from the Bifrost workspace.",
+        )
+        async def read_file(path: str) -> str:
+            return await _read_file_impl(_get_context(), path)
+
+    if enabled_tools is None or "write_file" in enabled_tools:
+        @mcp.tool(
+            name="write_file",
+            description="Write content to a file in the Bifrost workspace.",
+        )
+        async def write_file(path: str, content: str) -> str:
+            return await _write_file_impl(_get_context(), path, content)
+
+    if enabled_tools is None or "list_files" in enabled_tools:
+        @mcp.tool(
+            name="list_files",
+            description="List files and directories in the Bifrost workspace.",
+        )
+        async def list_files(directory: str = "") -> str:
+            return await _list_files_impl(_get_context(), directory)
+
+    if enabled_tools is None or "delete_file" in enabled_tools:
+        @mcp.tool(
+            name="delete_file",
+            description="Delete a file or directory from the Bifrost workspace.",
+        )
+        async def delete_file(path: str) -> str:
+            return await _delete_file_impl(_get_context(), path)
+
+    if enabled_tools is None or "search_files" in enabled_tools:
+        @mcp.tool(
+            name="search_files",
+            description="Search for text patterns across files in the Bifrost workspace.",
+        )
+        async def search_files(query: str, pattern: str = "**/*", case_sensitive: bool = False) -> str:
+            return await _search_files_impl(_get_context(), query, pattern, case_sensitive)
+
+    if enabled_tools is None or "create_folder" in enabled_tools:
+        @mcp.tool(
+            name="create_folder",
+            description="Create a new folder in the Bifrost workspace.",
+        )
+        async def create_folder(path: str) -> str:
+            return await _create_folder_impl(_get_context(), path)
+
+    # Workflow and Execution Tools
+    if enabled_tools is None or "validate_workflow" in enabled_tools:
+        @mcp.tool(
+            name="validate_workflow",
+            description="Validate a workflow Python file for syntax and decorator issues.",
+        )
+        async def validate_workflow(file_path: str) -> str:
+            return await _validate_workflow_impl(_get_context(), file_path)
+
+    if enabled_tools is None or "get_workflow_schema" in enabled_tools:
+        @mcp.tool(
+            name="get_workflow_schema",
+            description="Get documentation about workflow structure, decorators, and SDK features.",
+        )
+        async def get_workflow_schema() -> str:
+            return await _get_workflow_schema_impl(_get_context())
+
+    if enabled_tools is None or "get_workflow" in enabled_tools:
+        @mcp.tool(
+            name="get_workflow",
+            description="Get detailed metadata for a specific workflow.",
+        )
+        async def get_workflow(workflow_id: str | None = None, workflow_name: str | None = None) -> str:
+            return await _get_workflow_impl(_get_context(), workflow_id, workflow_name)
+
+    if enabled_tools is None or "list_executions" in enabled_tools:
+        @mcp.tool(
+            name="list_executions",
+            description="List recent workflow executions.",
+        )
+        async def list_executions(
+            workflow_name: str | None = None, status: str | None = None, limit: int = 20
+        ) -> str:
+            return await _list_executions_impl(_get_context(), workflow_name, status, limit)
+
+    if enabled_tools is None or "get_execution" in enabled_tools:
+        @mcp.tool(
+            name="get_execution",
+            description="Get details and logs for a specific workflow execution.",
+        )
+        async def get_execution(execution_id: str) -> str:
+            return await _get_execution_impl(_get_context(), execution_id)
+
 
 # =============================================================================
 # BifrostMCPServer
@@ -1176,7 +1937,7 @@ class BifrostMCPServer:
                 icons=icons,
             )
             _register_fastmcp_tools(mcp, self.context, self._enabled_tools)
-            tool_count = len(self._enabled_tools) if self._enabled_tools else 7
+            tool_count = len(self._enabled_tools) if self._enabled_tools else 18
             logger.info(f"Created FastMCP server with {tool_count} tools and auth")
             return mcp
 
@@ -1189,14 +1950,20 @@ class BifrostMCPServer:
                 icons=icons,
             )
             _register_fastmcp_tools(self._fastmcp, self.context, self._enabled_tools)
-            tool_count = len(self._enabled_tools) if self._enabled_tools else 7
+            tool_count = len(self._enabled_tools) if self._enabled_tools else 18
             logger.info(f"Created FastMCP server with {tool_count} tools")
         return self._fastmcp
 
     def get_tool_names(self) -> list[str]:
         """Get list of registered tool names (prefixed for SDK use)."""
-        all_tools = ["execute_workflow", "list_workflows", "list_integrations",
-                     "list_forms", "get_form_schema", "validate_form_schema", "search_knowledge"]
+        all_tools = [
+            "execute_workflow", "list_workflows", "list_integrations",
+            "list_forms", "get_form_schema", "validate_form_schema", "search_knowledge",
+            # File operations
+            "read_file", "write_file", "list_files", "delete_file", "search_files", "create_folder",
+            # Workflow and execution tools
+            "validate_workflow", "get_workflow_schema", "get_workflow", "list_executions", "get_execution",
+        ]
         if self._enabled_tools:
             tools = [t for t in all_tools if t in self._enabled_tools]
         else:

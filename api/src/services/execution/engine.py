@@ -588,8 +588,10 @@ def _script_to_callable(code: str, name: str):
 
     # Wrap script code in an async main() function
     # This allows sys.settrace() to capture variables properly
+    # Add return statement to capture 'result' variable if set
     wrapped_code = f"""async def main():
 {textwrap.indent(script_code, '    ')}
+    return result if 'result' in dir() else None
 """
 
     # Compile wrapped script
@@ -650,10 +652,11 @@ def _script_to_callable(code: str, name: str):
             # Execute wrapped script (defines main() function)
             exec(compiled_code, exec_globals)
 
-            # Call main() from async context
-            await exec_globals['main']()
+            # Call main() from async context and capture return value
+            main_result = await exec_globals['main']()
 
-            return {"status": "completed", "message": "Script executed successfully"}
+            # Return main's result if set, otherwise return success message
+            return main_result if main_result is not None else {"status": "completed", "message": "Script executed successfully"}
         finally:
             # Restore original logging module
             if original_logging is not None:

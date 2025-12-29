@@ -16,6 +16,7 @@ import {
 	MoreVertical,
 	Trash2,
 	Code,
+	Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,7 +71,9 @@ import {
 	useDeleteMapping,
 	useUpdateIntegration,
 	useUpdateIntegrationConfig,
+	useTestIntegration,
 	type IntegrationMapping,
+	type IntegrationTestResponse,
 } from "@/services/integrations";
 import { $api } from "@/lib/api-client";
 import {
@@ -89,6 +92,7 @@ import { EntitySelector } from "@/components/integrations/EntitySelector";
 import { AutoMatchControls } from "@/components/integrations/AutoMatchControls";
 import { MatchSuggestionBadge } from "@/components/integrations/MatchSuggestionBadge";
 import { GenerateSDKDialog } from "@/components/integrations/GenerateSDKDialog";
+import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 
 // Format datetime with relative time for dates within 7 days
 const formatDateTime = (dateStr?: string | null) => {
@@ -177,6 +181,12 @@ export function IntegrationDetail() {
 	const [editingOAuthConfig, setEditingOAuthConfig] = useState(false);
 	const [deleteOAuthDialogOpen, setDeleteOAuthDialogOpen] = useState(false);
 	const [generateSDKDialogOpen, setGenerateSDKDialogOpen] = useState(false);
+	const [testDialogOpen, setTestDialogOpen] = useState(false);
+	const [testOrgId, setTestOrgId] = useState<string | null>(null);
+	const [testEndpoint, setTestEndpoint] = useState<string>("/");
+	const [testResult, setTestResult] = useState<IntegrationTestResponse | null>(
+		null,
+	);
 
 	// Fetch integration details (includes mappings and OAuth config)
 	const {
@@ -199,6 +209,7 @@ export function IntegrationDetail() {
 	const authorizeMutation = useAuthorizeOAuthConnection();
 	const refreshMutation = useRefreshOAuthToken();
 	const deleteOAuthMutation = useDeleteOAuthConnection();
+	const testMutation = useTestIntegration();
 
 	// Memoize to stabilize references for the useEffect that combines them
 	const organizations = useMemo(
@@ -712,6 +723,37 @@ export function IntegrationDetail() {
 		});
 	};
 
+	// Handle test connection
+	const handleTestConnection = async () => {
+		if (!integrationId) return;
+
+		setTestResult(null);
+
+		try {
+			const result = await testMutation.mutateAsync({
+				params: { path: { integration_id: integrationId } },
+				body: { organization_id: testOrgId, endpoint: testEndpoint },
+			});
+			setTestResult(result);
+			if (result.success) {
+				toast.success(result.message);
+			} else {
+				toast.error(result.message);
+			}
+		} catch (error) {
+			console.error("Test connection failed:", error);
+			toast.error("Failed to test connection");
+		}
+	};
+
+	const handleOpenTestDialog = () => {
+		// Default to Global (null) - tests with integration defaults only
+		setTestOrgId(null);
+		setTestEndpoint("/");
+		setTestResult(null);
+		setTestDialogOpen(true);
+	};
+
 	const isLoading = isLoadingIntegration || isLoadingOrgs;
 
 	if (isLoading) {
@@ -770,6 +812,15 @@ export function IntegrationDetail() {
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={handleOpenTestDialog}
+							title="Test integration connection"
+						>
+							<Zap className="h-4 w-4 mr-2" />
+							Test Connection
+						</Button>
 						<Button
 							variant="outline"
 							size="sm"
@@ -1620,6 +1671,127 @@ export function IntegrationDetail() {
 					hasOAuth={integration?.has_oauth_config || false}
 				/>
 			)}
+
+			{/* Test Connection Dialog */}
+			<Dialog open={testDialogOpen} onOpenChange={setTestDialogOpen}>
+				<DialogContent className="max-w-md">
+					<DialogHeader>
+						<DialogTitle>Test Integration Connection</DialogTitle>
+						<DialogDescription>
+							Test connectivity by making a GET request to the specified endpoint.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="space-y-4 py-4">
+						<div className="space-y-2">
+							<Label htmlFor="test-org">Organization</Label>
+							<OrganizationSelect
+								value={testOrgId}
+								onChange={(value) => {
+									// OrganizationSelect uses undefined for "All", but we only care about null (Global) or string (org)
+									setTestOrgId(value === undefined ? null : value);
+									setTestResult(null);
+								}}
+								showGlobal={true}
+								showAll={false}
+								placeholder="Select organization..."
+							/>
+							<p className="text-sm text-muted-foreground">
+								Select "Global" to test with integration defaults only, or choose an organization to test with merged config and OAuth.
+							</p>
+						</div>
+
+						<div className="space-y-2">
+							<Label htmlFor="test-endpoint">Endpoint</Label>
+							<Input
+								id="test-endpoint"
+								value={testEndpoint}
+								onChange={(e) => {
+									setTestEndpoint(e.target.value);
+									setTestResult(null);
+								}}
+								placeholder="/api/users"
+							/>
+							<p className="text-sm text-muted-foreground">
+								API endpoint path to test. Will be appended to the integration's base_url.
+							</p>
+						</div>
+
+						{/* Test Result Display */}
+						{testResult && (
+							<div
+								className={`p-4 rounded-lg border ${
+									testResult.success
+										? "bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800"
+										: "bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800"
+								}`}
+							>
+								<div className="flex items-start gap-2">
+									{testResult.success ? (
+										<CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400 mt-0.5" />
+									) : (
+										<XCircle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5" />
+									)}
+									<div className="flex-1 min-w-0">
+										<p
+											className={`font-medium ${
+												testResult.success
+													? "text-green-800 dark:text-green-200"
+													: "text-red-800 dark:text-red-200"
+											}`}
+										>
+											{testResult.message}
+										</p>
+										{testResult.method_called && (
+											<p className="text-sm text-muted-foreground mt-1">
+												Method:{" "}
+												<code className="bg-muted px-1 rounded">
+													{testResult.method_called}()
+												</code>
+											</p>
+										)}
+										{testResult.duration_ms && (
+											<p className="text-sm text-muted-foreground">
+												Duration: {testResult.duration_ms}
+												ms
+											</p>
+										)}
+										{testResult.error_details && (
+											<p className="text-sm text-red-600 dark:text-red-400 mt-2 break-words">
+												{testResult.error_details}
+											</p>
+										)}
+									</div>
+								</div>
+							</div>
+						)}
+					</div>
+					<DialogFooter>
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => setTestDialogOpen(false)}
+						>
+							Close
+						</Button>
+						<Button
+							onClick={handleTestConnection}
+							disabled={testMutation.isPending}
+						>
+							{testMutation.isPending ? (
+								<>
+									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+									Testing...
+								</>
+							) : (
+								<>
+									<Zap className="h-4 w-4 mr-2" />
+									Test
+								</>
+							)}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

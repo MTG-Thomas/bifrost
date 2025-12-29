@@ -48,7 +48,7 @@ class Workflow(Base):
     # Endpoint configuration
     endpoint_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     allowed_methods: Mapped[list] = mapped_column(JSONB, default=["POST"])
-    execution_mode: Mapped[str] = mapped_column(String(20), default="sync")
+    execution_mode: Mapped[str] = mapped_column(String(20), default="async")
 
     # Tool configuration (for AI agent tool calling)
     is_tool: Mapped[bool] = mapped_column(Boolean, default=False)

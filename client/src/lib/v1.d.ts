@@ -3026,22 +3026,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4405,6 +4405,26 @@ export interface paths {
         get: operations["get_integration_sdk_data_api_integrations_sdk__name__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/integrations/{integration_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test integration connection
+         * @description Test connectivity to an integration by making a GET request to the specified endpoint (Platform admin only)
+         */
+        post: operations["test_integration_connection_api_integrations__integration_id__test_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8755,6 +8775,56 @@ export interface components {
             oauth_scopes?: string | null;
         };
         /**
+         * IntegrationTestRequest
+         * @description Request model for testing an integration connection.
+         *     POST /api/integrations/{integration_id}/test
+         */
+        IntegrationTestRequest: {
+            /**
+             * Organization Id
+             * @description Organization ID to test with. If None, uses global defaults only.
+             */
+            organization_id?: string | null;
+            /**
+             * Endpoint
+             * @description API endpoint path to test (e.g., /api/users). Appended to base_url.
+             * @default /
+             */
+            endpoint: string;
+        };
+        /**
+         * IntegrationTestResponse
+         * @description Response model for integration connection test.
+         *     POST /api/integrations/{integration_id}/test
+         */
+        IntegrationTestResponse: {
+            /**
+             * Success
+             * @description Whether the test succeeded
+             */
+            success: boolean;
+            /**
+             * Message
+             * @description Human-readable result message
+             */
+            message: string;
+            /**
+             * Method Called
+             * @description The SDK method that was called for the test
+             */
+            method_called?: string | null;
+            /**
+             * Duration Ms
+             * @description Time taken for the test call in milliseconds
+             */
+            duration_ms?: number | null;
+            /**
+             * Error Details
+             * @description Detailed error message if test failed
+             */
+            error_details?: string | null;
+        };
+        /**
          * IntegrationUpdate
          * @description Request model for updating an integration.
          *     PUT /api/integrations/{integration_id}
@@ -9449,15 +9519,24 @@ export interface components {
         };
         /**
          * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
+         * @description Request model for OAuth callback endpoint
          */
         OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
-            /** Code */
+            /**
+             * Code
+             * @description Authorization code from OAuth provider
+             */
             code: string;
-            /** State */
-            state: string;
+            /**
+             * State
+             * @description State parameter for CSRF protection
+             */
+            state?: string | null;
+            /**
+             * Redirect Uri
+             * @description Redirect URI used in authorization request
+             */
+            redirect_uri?: string | null;
         };
         /**
          * OAuthCallbackResponse
@@ -12602,27 +12681,6 @@ export interface components {
             icon?: string | null;
         };
         /**
-         * OAuthCallbackRequest
-         * @description Request model for OAuth callback endpoint
-         */
-        src__models__contracts__oauth__OAuthCallbackRequest: {
-            /**
-             * Code
-             * @description Authorization code from OAuth provider
-             */
-            code: string;
-            /**
-             * State
-             * @description State parameter for CSRF protection
-             */
-            state?: string | null;
-            /**
-             * Redirect Uri
-             * @description Redirect URI used in authorization request
-             */
-            redirect_uri?: string | null;
-        };
-        /**
          * MFAVerifyRequest
          * @description Request to verify MFA code during login.
          */
@@ -12653,6 +12711,18 @@ export interface components {
             password: string;
             /** Name */
             name?: string | null;
+        };
+        /**
+         * OAuthCallbackRequest
+         * @description OAuth callback request (for when frontend handles callback).
+         */
+        src__routers__oauth_sso__OAuthCallbackRequest: {
+            /** Provider */
+            provider: string;
+            /** Code */
+            code: string;
+            /** State */
+            state: string;
         };
     };
     responses: never;
@@ -13386,7 +13456,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -17132,7 +17202,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__models__contracts__oauth__OAuthCallbackRequest"];
+                "application/json": components["schemas"]["OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -17227,7 +17297,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -17260,7 +17330,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -17293,7 +17363,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -17326,7 +17396,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -19933,6 +20003,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IntegrationSDKResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_integration_connection_api_integrations__integration_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IntegrationTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrationTestResponse"];
                 };
             };
             /** @description Validation Error */

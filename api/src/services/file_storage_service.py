@@ -1191,6 +1191,21 @@ class FileStorageService:
 
                 if decorator_name == "workflow":
                     found_workflow = True
+
+                    # Extract workflow id from decorator - required for upsert
+                    workflow_id_str = kwargs.get("id")
+                    if not workflow_id_str:
+                        logger.warning(f"Workflow in {path} has no id - skipping indexing")
+                        continue
+
+                    # Convert string UUID to UUID object
+                    from uuid import UUID as UUID_type
+                    try:
+                        workflow_uuid = UUID_type(workflow_id_str)
+                    except ValueError:
+                        logger.warning(f"Invalid workflow id '{workflow_id_str}' in {path} - skipping indexing")
+                        continue
+
                     # Get workflow name from decorator or function name
                     workflow_name = kwargs.get("name") or node.name
                     description = kwargs.get("description")
@@ -1206,7 +1221,10 @@ class FileStorageService:
                     schedule = kwargs.get("schedule")
                     endpoint_enabled = kwargs.get("endpoint_enabled", False)
                     allowed_methods = kwargs.get("allowed_methods", ["POST"])
-                    execution_mode = kwargs.get("execution_mode", "sync")
+                    # Apply same logic as decorator: endpoints default to sync, others to async
+                    execution_mode = kwargs.get("execution_mode")
+                    if execution_mode is None:
+                        execution_mode = "sync" if endpoint_enabled else "async"
                     is_tool = kwargs.get("is_tool", False)
                     tool_description = kwargs.get("tool_description")
                     time_saved = kwargs.get("time_saved", 0)
@@ -1219,7 +1237,10 @@ class FileStorageService:
                     # workflow_name is the display name from decorator (can have duplicates)
                     function_name = node.name
 
+                    # Use workflow ID as the conflict key for upsert
+                    # This ensures we update the correct workflow even if file_path or function_name changes
                     stmt = insert(Workflow).values(
+                        id=workflow_uuid,
                         name=workflow_name,
                         function_name=function_name,
                         file_path=path,
@@ -1238,9 +1259,11 @@ class FileStorageService:
                         is_active=True,
                         last_seen_at=now,
                     ).on_conflict_do_update(
-                        index_elements=[Workflow.file_path, Workflow.function_name],
+                        index_elements=[Workflow.id],
                         set_={
                             "name": workflow_name,
+                            "function_name": function_name,
+                            "file_path": path,
                             "description": description,
                             "category": category,
                             "parameters_schema": parameters_schema,

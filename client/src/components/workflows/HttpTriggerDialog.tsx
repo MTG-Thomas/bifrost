@@ -104,7 +104,7 @@ export function HttpTriggerDialog({
   -d '${JSON.stringify(exampleParams, null, 2)}'`
 		: `curl -X POST "${directUrl}" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer ${apiKeyValue}" \\
+  -H "X-Bifrost-Key: ${apiKeyValue}" \\
   -d '${JSON.stringify(exampleParams, null, 2)}'`;
 
 	const handleManageKeys = () => {

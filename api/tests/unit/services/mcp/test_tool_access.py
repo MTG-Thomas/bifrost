@@ -475,6 +475,7 @@ class TestSystemToolMetadata:
     def test_known_system_tools_have_metadata(self, service):
         """Known system tools should have proper metadata."""
         expected_tools = [
+            # Original tools
             "execute_workflow",
             "list_workflows",
             "list_integrations",
@@ -482,6 +483,19 @@ class TestSystemToolMetadata:
             "get_form_schema",
             "validate_form_schema",
             "search_knowledge",
+            # File operation tools
+            "read_file",
+            "write_file",
+            "list_files",
+            "delete_file",
+            "search_files",
+            "create_folder",
+            # Workflow and execution tools
+            "validate_workflow",
+            "get_workflow_schema",
+            "get_workflow",
+            "list_executions",
+            "get_execution",
         ]
 
         for tool_id in expected_tools:

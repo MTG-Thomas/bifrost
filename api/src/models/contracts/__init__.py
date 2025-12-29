@@ -376,6 +376,8 @@ from src.models.contracts.integrations import (
     IntegrationMappingListResponse,
     OAuthConfigSummary,
     IntegrationSDKResponse,  # For API SDK endpoint responses (no decrypted tokens)
+    IntegrationTestRequest,
+    IntegrationTestResponse,
 )
 
 # Decorator Properties
@@ -729,6 +731,8 @@ __all__ = [
     "IntegrationMappingListResponse",
     "IntegrationData",
     "IntegrationSDKResponse",
+    "IntegrationTestRequest",
+    "IntegrationTestResponse",
     "OAuthConfigSummary",
     # Decorator Properties
     "DecoratorType",

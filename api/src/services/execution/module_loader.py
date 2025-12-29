@@ -60,7 +60,7 @@ class WorkflowMetadata:
     tags: list[str] = field(default_factory=list)
 
     # Execution
-    execution_mode: Literal["sync", "async"] = "sync"
+    execution_mode: Literal["sync", "async"] = "async"
     timeout_seconds: int = 1800  # Default 30 minutes
 
     # Retry (for future use)
