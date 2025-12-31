@@ -192,7 +192,14 @@ def create_mfa_token(user_id: str, purpose: str = "mfa_verify") -> str:
     """
     settings = get_settings()
 
-    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    # Use different expiry times based on purpose
+    # Setup needs more time for users to install/configure authenticator apps
+    if purpose == "mfa_setup":
+        expire_minutes = settings.mfa_setup_token_expire_minutes
+    else:
+        expire_minutes = settings.mfa_verify_token_expire_minutes
+
+    expire = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
 
     to_encode = {
         "sub": user_id,

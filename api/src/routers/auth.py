@@ -40,6 +40,12 @@ from src.models import (
     DeviceTokenResponse,
     OAuthProviderInfo,
 )
+from src.models.contracts.passkeys import (
+    SetupPasskeyOptionsRequest,
+    SetupPasskeyOptionsResponse,
+    SetupPasskeyVerifyRequest,
+    SetupPasskeyVerifyResponse,
+)
 from src.config import get_settings
 from src.core.auth import CurrentActiveUser
 from src.core.database import DbSession
@@ -390,12 +396,18 @@ class MFASetupResponse(BaseModel):
     provisioning_uri: str
     issuer: str
     account_name: str
+    is_existing: bool = False
 
 
 class MFAEnrollVerifyRequest(BaseModel):
     """Request to verify MFA during initial enrollment."""
     mfa_token: str
     code: str
+
+
+class MFASetupRequest(BaseModel):
+    """Optional request body for MFA setup."""
+    force_new: bool = False
 
 
 class MFAEnrollVerifyResponse(BaseModel):
@@ -409,6 +421,7 @@ class MFAEnrollVerifyResponse(BaseModel):
 
 @router.post("/mfa/setup", response_model=MFASetupResponse)
 async def mfa_initial_setup(
+    setup_request: MFASetupRequest | None = None,
     db: DbSession = None,
     request: Request = None,
 ) -> MFASetupResponse:
@@ -418,6 +431,9 @@ async def mfa_initial_setup(
     This endpoint is for users who just logged in with password for the first time
     and need to enroll in MFA. Requires an mfa_token with purpose "mfa_setup"
     in the Authorization header.
+
+    By default, returns an existing pending setup if valid (to prevent QR invalidation
+    on page refresh). Set force_new=true to generate a new secret.
 
     Returns:
         MFA setup data including secret and QR code URI
@@ -457,12 +473,14 @@ async def mfa_initial_setup(
             detail="User not found or inactive",
         )
 
+    force_new = setup_request.force_new if setup_request else False
+
     mfa_service = MFAService(db)
-    setup_data = await mfa_service.setup_totp(user)
+    setup_data = await mfa_service.setup_totp(user, force_new=force_new)
     await db.commit()
 
     logger.info(
-        f"MFA setup initiated for user: {user.email}",
+        f"MFA setup initiated for user: {user.email} (force_new={force_new})",
         extra={"user_id": str(user.id)}
     )
 
@@ -1501,6 +1519,159 @@ async def exchange_device_token(
 class DeviceAuthorizeResponse(BaseModel):
     """Response for device authorization."""
     success: bool
+
+
+# =============================================================================
+# First-Time Setup with Passkey (Passwordless Registration)
+# =============================================================================
+
+
+@router.post("/setup/passkey/options", response_model=SetupPasskeyOptionsResponse)
+async def setup_passkey_options(
+    request: Request,
+    setup_request: SetupPasskeyOptionsRequest,
+    db: DbSession = None,
+) -> SetupPasskeyOptionsResponse:
+    """
+    Start passwordless passkey registration for first-time platform setup.
+
+    This endpoint is ONLY available when no users exist in the system.
+    It allows the first user to register with a passkey instead of a password.
+
+    Flow:
+    1. Client calls this endpoint with email/name
+    2. Server returns WebAuthn options + registration token
+    3. Client performs WebAuthn ceremony (Face ID, Touch ID, etc.)
+    4. Client calls /auth/setup/passkey/verify with credential
+
+    Rate limited: 10 requests per minute per IP address.
+
+    Args:
+        request: FastAPI request object
+        setup_request: Email and optional name for the new account
+        db: Database session
+
+    Returns:
+        SetupPasskeyOptionsResponse with registration token and WebAuthn options
+
+    Raises:
+        HTTPException: If users already exist or email is invalid
+    """
+    from src.services.passkey_service import PasskeyService
+
+    # Rate limiting
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("register", client_ip)
+
+    passkey_service = PasskeyService(db)
+
+    try:
+        registration_token, options = await passkey_service.generate_setup_registration_options(
+            email=setup_request.email,
+            name=setup_request.name,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    logger.info(
+        f"Passkey setup initiated for first-time registration: {setup_request.email}",
+    )
+
+    return SetupPasskeyOptionsResponse(
+        registration_token=registration_token,
+        options=options,
+        expires_in=300,
+    )
+
+
+@router.post("/setup/passkey/verify", response_model=SetupPasskeyVerifyResponse)
+async def setup_passkey_verify(
+    request: Request,
+    response: Response,
+    verify_request: SetupPasskeyVerifyRequest,
+    db: DbSession = None,
+) -> SetupPasskeyVerifyResponse:
+    """
+    Complete passwordless passkey registration for first-time platform setup.
+
+    This endpoint verifies the WebAuthn credential and creates the user + passkey
+    atomically. On success, returns JWT tokens so the user is immediately logged in.
+
+    Rate limited: 10 requests per minute per IP address.
+
+    Args:
+        request: FastAPI request object
+        response: FastAPI response object (for setting cookies)
+        verify_request: Registration token and WebAuthn credential
+        db: Database session
+
+    Returns:
+        SetupPasskeyVerifyResponse with user info and JWT tokens
+
+    Raises:
+        HTTPException: If token is invalid/expired or verification fails
+    """
+    import json
+
+    from src.services.passkey_service import PasskeyService
+
+    # Rate limiting
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("register", client_ip)
+
+    passkey_service = PasskeyService(db)
+
+    try:
+        user, passkey = await passkey_service.verify_setup_registration(
+            registration_token=verify_request.registration_token,
+            credential_json=json.dumps(verify_request.credential),
+            device_name=verify_request.device_name,
+        )
+        await db.commit()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    logger.info(
+        f"Passkey setup completed for first-time registration: {user.email}",
+        extra={"user_id": str(user.id), "passkey_id": str(passkey.id)},
+    )
+
+    # Generate tokens for immediate login
+    db_roles = await get_user_roles(db, user.id)
+    roles = ["authenticated", "PlatformAdmin"]  # First user is always PlatformAdmin
+    roles.extend(db_roles)
+
+    token_data = {
+        "sub": str(user.id),
+        "email": user.email,
+        "name": user.name or user.email.split("@")[0],
+        "user_type": user.user_type.value,
+        "is_superuser": user.is_superuser,
+        "org_id": str(user.organization_id) if user.organization_id else None,
+        "roles": roles,
+    }
+
+    access_token = create_access_token(data=token_data)
+    refresh_token_str, jti = create_refresh_token(data={"sub": str(user.id)})
+
+    # Store JTI in Redis for revocation support
+    await store_refresh_token_jti(str(user.id), jti)
+
+    # Set cookies for browser clients
+    set_auth_cookies(response, access_token, refresh_token_str)
+
+    return SetupPasskeyVerifyResponse(
+        user_id=str(user.id),
+        email=user.email,
+        access_token=access_token,
+        refresh_token=refresh_token_str,
+    )
 
 
 @router.post("/device/authorize", response_model=DeviceAuthorizeResponse)

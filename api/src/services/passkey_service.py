@@ -43,6 +43,7 @@ from src.models.orm.mfa import UserPasskey
 # Redis key prefixes and TTLs
 PASSKEY_REG_CHALLENGE_PREFIX = "passkey_reg_challenge:"
 PASSKEY_AUTH_CHALLENGE_PREFIX = "passkey_auth_challenge:"
+PASSKEY_SETUP_TOKEN_PREFIX = "passkey_setup:"
 CHALLENGE_TTL_SECONDS = 300  # 5 minutes
 
 
@@ -405,3 +406,165 @@ class PasskeyService:
             select(User).where(User.id == user_id)
         )
         return result.scalar_one_or_none()
+
+    # ========================================================================
+    # First-Time Setup with Passkey (Passwordless Registration)
+    # ========================================================================
+
+    async def generate_setup_registration_options(
+        self,
+        email: str,
+        name: str | None = None,
+    ) -> tuple[str, dict]:
+        """
+        Generate WebAuthn options for first-time platform setup (passwordless).
+
+        This creates a registration token that stores the pending user info,
+        and returns WebAuthn options for the browser to create a passkey.
+
+        Args:
+            email: Email address for the new admin account
+            name: Optional display name
+
+        Returns:
+            Tuple of (registration_token, options_dict)
+
+        Raises:
+            ValueError: If users already exist (not first-time setup) or email in use
+        """
+        from src.repositories.users import UserRepository
+
+        user_repo = UserRepository(self.db)
+
+        # Validate first-user scenario
+        if await user_repo.has_any_users():
+            raise ValueError("Passkey setup registration is only available during first-time platform setup")
+
+        # Check email not already registered (race condition protection)
+        existing = await self._get_user_by_email(email)
+        if existing:
+            raise ValueError("Email already registered")
+
+        # Generate a temporary WebAuthn user handle
+        temp_user_id = generate_user_handle()
+
+        # Generate registration options
+        options = generate_registration_options(
+            rp_id=self.settings.webauthn_rp_id,
+            rp_name=self.settings.webauthn_rp_name,
+            user_id=temp_user_id,
+            user_name=email,
+            user_display_name=name or email.split("@")[0],
+            authenticator_selection=AuthenticatorSelectionCriteria(
+                resident_key=ResidentKeyRequirement.REQUIRED,
+                user_verification=UserVerificationRequirement.REQUIRED,
+            ),
+        )
+
+        # Create registration token
+        registration_token = secrets.token_urlsafe(32)
+
+        # Store pending registration data in Redis
+        redis = await get_shared_redis()
+        setup_data = {
+            "email": email,
+            "name": name or email.split("@")[0],
+            "webauthn_user_id": bytes_to_base64url(temp_user_id),
+            "challenge": bytes_to_base64url(options.challenge),
+        }
+        await redis.setex(
+            f"{PASSKEY_SETUP_TOKEN_PREFIX}{registration_token}",
+            CHALLENGE_TTL_SECONDS,
+            json.dumps(setup_data),
+        )
+
+        return registration_token, json.loads(options_to_json(options))
+
+    async def verify_setup_registration(
+        self,
+        registration_token: str,
+        credential_json: str,
+        device_name: str | None = None,
+    ) -> tuple[User, UserPasskey]:
+        """
+        Verify setup registration and create user + passkey atomically.
+
+        Args:
+            registration_token: Token from generate_setup_registration_options
+            credential_json: JSON string of the registration response from browser
+            device_name: Optional friendly name for the passkey
+
+        Returns:
+            Tuple of (created_user, created_passkey)
+
+        Raises:
+            ValueError: If token invalid, expired, or verification fails
+        """
+        from src.repositories.users import UserRepository
+
+        # Get and delete setup data from Redis (single-use)
+        redis = await get_shared_redis()
+        setup_key = f"{PASSKEY_SETUP_TOKEN_PREFIX}{registration_token}"
+        setup_data_json = await redis.get(setup_key)
+        if not setup_data_json:
+            raise ValueError("Registration token not found or expired")
+        await redis.delete(setup_key)
+
+        setup_data = json.loads(setup_data_json)
+        expected_challenge = base64url_to_bytes(setup_data["challenge"])
+
+        # Parse the credential JSON
+        credential = parse_registration_credential_json(credential_json)
+
+        # Verify the registration response
+        try:
+            verification = verify_registration_response(
+                credential=credential,
+                expected_challenge=expected_challenge,
+                expected_origin=self.settings.webauthn_origins,
+                expected_rp_id=self.settings.webauthn_rp_id,
+            )
+        except Exception as e:
+            raise ValueError(f"Registration verification failed: {e}") from e
+
+        # Double-check first-user scenario (race condition protection)
+        user_repo = UserRepository(self.db)
+        if await user_repo.has_any_users():
+            raise ValueError("Another user was created during registration")
+
+        # Create user as Platform admin (first user)
+        from src.models.enums import UserType
+
+        user = User(
+            email=setup_data["email"],
+            name=setup_data["name"],
+            is_active=True,
+            is_superuser=True,
+            is_registered=True,
+            user_type=UserType.PLATFORM,
+            hashed_password=None,  # Passwordless user
+            webauthn_user_id=base64url_to_bytes(setup_data["webauthn_user_id"]),
+        )
+        self.db.add(user)
+        await self.db.flush()  # Get user.id
+
+        # Extract transports from credential response if available
+        transports = []
+        if hasattr(credential.response, 'transports') and credential.response.transports:
+            transports = list(credential.response.transports)
+
+        # Create passkey
+        passkey = UserPasskey(
+            user_id=user.id,
+            credential_id=verification.credential_id,
+            public_key=verification.credential_public_key,
+            sign_count=verification.sign_count,
+            transports=transports,
+            device_type=verification.credential_device_type,
+            backed_up=verification.credential_backed_up,
+            name=device_name or "Setup Passkey",
+        )
+        self.db.add(passkey)
+        await self.db.flush()
+
+        return user, passkey

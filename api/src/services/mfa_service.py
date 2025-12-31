@@ -31,18 +31,44 @@ class MFAService:
     # TOTP Operations
     # ========================================================================
 
-    async def setup_totp(self, user: User) -> dict:
+    async def setup_totp(self, user: User, force_new: bool = False) -> dict:
         """
         Initialize TOTP enrollment for a user.
 
-        Creates a pending MFA method with encrypted secret.
+        Creates a pending MFA method with encrypted secret, or returns existing
+        pending setup if still valid (to prevent QR code invalidation on page refresh).
 
         Args:
             user: User to set up TOTP for
+            force_new: If True, always generate a new secret even if pending exists
 
         Returns:
             Dictionary with secret, QR code URI, and provisioning details
         """
+        # Check for existing valid pending TOTP (to prevent invalidation on refresh)
+        pending_validity_minutes = self.settings.mfa_pending_validity_minutes
+        if not force_new:
+            existing = await self._get_pending_totp(user.id)
+            if existing and existing.created_at:
+                age = datetime.now(timezone.utc) - existing.created_at.replace(tzinfo=timezone.utc)
+                if age < timedelta(minutes=pending_validity_minutes):
+                    # Return existing pending setup instead of regenerating
+                    if existing.encrypted_secret:
+                        secret = decrypt_secret(existing.encrypted_secret)
+                        totp = pyotp.TOTP(secret)
+                        provisioning_uri = totp.provisioning_uri(
+                            name=user.email,
+                            issuer_name=self.settings.mfa_totp_issuer
+                        )
+                        return {
+                            "secret": secret,
+                            "provisioning_uri": provisioning_uri,
+                            "qr_code_uri": provisioning_uri,
+                            "issuer": self.settings.mfa_totp_issuer,
+                            "account_name": user.email,
+                            "is_existing": True,
+                        }
+
         # Delete any existing pending TOTP methods
         await self._delete_pending_totp(user.id)
 
@@ -72,6 +98,7 @@ class MFAService:
             "qr_code_uri": provisioning_uri,  # Same URI, frontend generates QR
             "issuer": self.settings.mfa_totp_issuer,
             "account_name": user.email,
+            "is_existing": False,
         }
 
     async def verify_totp_enrollment(self, user: User, code: str) -> list[str]:
@@ -99,7 +126,9 @@ class MFAService:
         secret = decrypt_secret(mfa_method.encrypted_secret)
         totp = pyotp.TOTP(secret)
 
-        if not totp.verify(code, valid_window=1):
+        # Use wider window for enrollment to accommodate clock skew
+        enrollment_window = self.settings.mfa_totp_enrollment_window
+        if not totp.verify(code, valid_window=enrollment_window):
             raise ValueError("Invalid TOTP code")
 
         # Activate method
@@ -139,7 +168,9 @@ class MFAService:
         secret = decrypt_secret(mfa_method.encrypted_secret)
         totp = pyotp.TOTP(secret)
 
-        if not totp.verify(code, valid_window=1):
+        # Use standard window for login verification
+        login_window = self.settings.mfa_totp_login_window
+        if not totp.verify(code, valid_window=login_window):
             return False
 
         # Update last used

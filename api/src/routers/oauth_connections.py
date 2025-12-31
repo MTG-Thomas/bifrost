@@ -29,6 +29,7 @@ from src.models import (
 )
 from src.core.auth import Context, CurrentSuperuser
 from src.models import OAuthProvider, OAuthToken
+from src.services.oauth_provider import resolve_url_template
 
 # Import cache invalidation
 try:
@@ -42,6 +43,36 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/oauth", tags=["OAuth Connections"])
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+async def get_url_resolution_defaults(
+    db: AsyncSession,
+    provider: OAuthProvider,
+) -> dict[str, str]:
+    """Get defaults for URL template resolution from provider and linked integration.
+
+    OAuth URLs may contain {entity_id} placeholders that need to be resolved
+    before making HTTP requests. This function gathers the default values
+    from the provider's token_url_defaults and the linked integration's
+    default_entity_id.
+    """
+    defaults: dict[str, str] = dict(provider.token_url_defaults) if provider.token_url_defaults else {}
+
+    if provider.integration_id:
+        from src.models.orm import Integration
+        result = await db.execute(
+            select(Integration).where(Integration.id == provider.integration_id)
+        )
+        integration = result.scalar_one_or_none()
+        if integration and integration.default_entity_id:
+            defaults["entity_id"] = integration.default_entity_id
+
+    return defaults
 
 
 # =============================================================================
@@ -611,6 +642,13 @@ async def authorize_connection(
             detail="This connection uses client_credentials flow and doesn't require user authorization",
         )
 
+    # Resolve URL template placeholders (e.g., {entity_id} -> actual tenant ID)
+    defaults = await get_url_resolution_defaults(ctx.db, provider)
+    resolved_authorization_url = resolve_url_template(
+        url=provider.authorization_url,
+        defaults=defaults,
+    )
+
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
 
@@ -625,7 +663,7 @@ async def authorize_connection(
         "redirect_uri": redirect_uri,
     }
 
-    authorization_url = f"{provider.authorization_url}?{urlencode(params)}"
+    authorization_url = f"{resolved_authorization_url}?{urlencode(params)}"
 
     # Update status to waiting
     await repo.update_status(
@@ -730,10 +768,17 @@ async def refresh_token(
             detail="Failed to decrypt credentials",
         )
 
+    # Resolve URL template placeholders (e.g., {entity_id} -> actual tenant ID)
+    defaults = await get_url_resolution_defaults(ctx.db, provider)
+    resolved_token_url = resolve_url_template(
+        url=provider.token_url,
+        defaults=defaults,
+    )
+
     # Call OAuth provider to refresh token
     oauth_client = OAuthProviderClient()
     success, result = await oauth_client.refresh_access_token(
-        token_url=provider.token_url,
+        token_url=resolved_token_url,
         refresh_token=refresh_token_value,
         client_id=provider.client_id,
         client_secret=client_secret,
@@ -828,10 +873,17 @@ async def oauth_callback(
         )
     redirect_uri = request.redirect_uri
 
+    # Resolve URL template placeholders (e.g., {entity_id} -> actual tenant ID)
+    defaults = await get_url_resolution_defaults(ctx.db, provider)
+    resolved_token_url = resolve_url_template(
+        url=provider.token_url,
+        defaults=defaults,
+    )
+
     # Exchange authorization code for tokens
     oauth_client = OAuthProviderClient()
     success, result = await oauth_client.exchange_code_for_token(
-        token_url=provider.token_url,
+        token_url=resolved_token_url,
         code=request.code,
         client_id=provider.client_id,
         client_secret=client_secret,

@@ -17,7 +17,8 @@ from sqlalchemy.orm import selectinload
 from src.core.database import get_db_context
 from src.core.security import decrypt_secret, encrypt_secret
 from src.models import OAuthToken, OAuthProvider
-from src.services.oauth_provider import OAuthProviderClient
+from src.models.orm import Integration
+from src.services.oauth_provider import OAuthProviderClient, resolve_url_template
 
 logger = logging.getLogger(__name__)
 
@@ -195,10 +196,24 @@ async def _refresh_single_token(
             client_secret = decrypt_secret(provider.encrypted_client_secret.decode())
 
         # Build refresh request
-        token_url = provider.token_url
-        if not token_url:
+        if not provider.token_url:
             logger.warning(f"No token URL configured for provider {provider.provider_name}")
             return False
+
+        # Resolve URL template placeholders (e.g., {entity_id} -> actual tenant ID)
+        defaults: dict[str, str] = dict(provider.token_url_defaults) if provider.token_url_defaults else {}
+        if provider.integration_id:
+            result_int = await db.execute(
+                select(Integration).where(Integration.id == provider.integration_id)
+            )
+            integration = result_int.scalar_one_or_none()
+            if integration and integration.default_entity_id:
+                defaults["entity_id"] = integration.default_entity_id
+
+        token_url = resolve_url_template(
+            url=provider.token_url,
+            defaults=defaults,
+        )
 
         # Use the shared OAuth provider client
         oauth_client = OAuthProviderClient()

@@ -124,3 +124,63 @@ class PasskeyDeleteResponse(BaseModel):
 
     deleted: bool = Field(description="Whether the passkey was deleted")
     passkey_id: UUID = Field(description="ID of the deleted passkey")
+
+
+# =============================================================================
+# First-Time Setup with Passkey (Passwordless Registration)
+# =============================================================================
+
+
+class SetupPasskeyOptionsRequest(BaseModel):
+    """Request to start passwordless setup with passkey for first-time platform setup."""
+
+    email: str = Field(
+        description="Email address for the new admin account",
+        max_length=255,
+    )
+    name: str | None = Field(
+        default=None,
+        description="Display name for the user",
+        max_length=255,
+    )
+
+
+class SetupPasskeyOptionsResponse(BaseModel):
+    """Response with registration token and WebAuthn options for first-time setup."""
+
+    registration_token: str = Field(
+        description="Token to complete registration (expires in 5 minutes)"
+    )
+    options: dict[str, Any] = Field(
+        description="WebAuthn registration options JSON for navigator.credentials.create()"
+    )
+    expires_in: int = Field(
+        default=300,
+        description="Token expiry in seconds"
+    )
+
+
+class SetupPasskeyVerifyRequest(BaseModel):
+    """Request to complete passwordless setup with passkey."""
+
+    registration_token: str = Field(
+        description="Token from the options response"
+    )
+    credential: dict[str, Any] = Field(
+        description="WebAuthn credential from navigator.credentials.create()"
+    )
+    device_name: str | None = Field(
+        default=None,
+        description="Friendly name for the passkey",
+        max_length=255,
+    )
+
+
+class SetupPasskeyVerifyResponse(BaseModel):
+    """Response after successful passwordless setup with passkey."""
+
+    user_id: str = Field(description="Created user ID")
+    email: str = Field(description="User email")
+    access_token: str = Field(description="JWT access token")
+    refresh_token: str = Field(description="JWT refresh token")
+    token_type: str = "bearer"

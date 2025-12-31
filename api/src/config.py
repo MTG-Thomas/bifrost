@@ -240,6 +240,31 @@ class Settings(BaseSettings):
         description="Number of days a device stays trusted after MFA verification"
     )
 
+    mfa_setup_token_expire_minutes: int = Field(
+        default=15,
+        description="MFA setup token expiration time in minutes (longer than verify for setup flow)"
+    )
+
+    mfa_verify_token_expire_minutes: int = Field(
+        default=5,
+        description="MFA verify token expiration time in minutes (during login)"
+    )
+
+    mfa_pending_validity_minutes: int = Field(
+        default=10,
+        description="How long a pending TOTP setup remains valid before regeneration"
+    )
+
+    mfa_totp_enrollment_window: int = Field(
+        default=2,
+        description="TOTP valid window for enrollment (+/- N*30 seconds, more lenient)"
+    )
+
+    mfa_totp_login_window: int = Field(
+        default=1,
+        description="TOTP valid window for login (+/- N*30 seconds, more strict)"
+    )
+
     # ==========================================================================
     # WebAuthn/Passkeys
     # ==========================================================================

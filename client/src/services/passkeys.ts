@@ -233,3 +233,92 @@ export async function deletePasskey(
 	}
 	return res.json();
 }
+
+// =============================================================================
+// First-Time Setup with Passkey (Passwordless Registration)
+// =============================================================================
+
+export interface SetupPasskeyResult {
+	user_id: string;
+	email: string;
+	access_token: string;
+	refresh_token: string;
+}
+
+/**
+ * Register with a passkey during first-time platform setup.
+ * This is for NEW users when no users exist in the system.
+ *
+ * Flow:
+ * 1. Get registration options with email/name
+ * 2. Trigger browser passkey creation (Face ID, Touch ID, etc.)
+ * 3. Verify credential and create user + passkey atomically
+ * 4. Receive JWT tokens (user is immediately logged in)
+ *
+ * @param email - Email address for the new account
+ * @param name - Optional display name
+ * @param deviceName - Optional friendly name for the passkey
+ * @returns JWT tokens and user info on success
+ */
+export async function setupWithPasskey(
+	email: string,
+	name?: string,
+	deviceName?: string,
+): Promise<SetupPasskeyResult> {
+	// Step 1: Get registration options from server
+	const optionsRes = await fetch("/auth/setup/passkey/options", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ email, name }),
+	});
+
+	if (!optionsRes.ok) {
+		const error = await optionsRes.json().catch(() => ({}));
+		throw new Error(error.detail || "Failed to start passkey setup");
+	}
+
+	const { registration_token, options } = await optionsRes.json();
+
+	// Step 2: Trigger browser passkey creation
+	let credential;
+	try {
+		credential = await startRegistration({
+			optionsJSON: options as PublicKeyCredentialCreationOptionsJSON,
+		});
+	} catch (error) {
+		// Handle specific WebAuthn errors
+		if (error instanceof Error) {
+			if (error.name === "NotAllowedError") {
+				throw new Error("Passkey creation was cancelled or not allowed");
+			}
+			if (error.name === "InvalidStateError") {
+				throw new Error("This passkey is already registered on this device");
+			}
+			if (error.name === "NotSupportedError") {
+				throw new Error(
+					"Your browser or device does not support passkeys",
+				);
+			}
+		}
+		throw error;
+	}
+
+	// Step 3: Send credential to server for verification and user creation
+	const verifyRes = await fetch("/auth/setup/passkey/verify", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		credentials: "same-origin",
+		body: JSON.stringify({
+			registration_token,
+			credential,
+			device_name: deviceName,
+		}),
+	});
+
+	if (!verifyRes.ok) {
+		const error = await verifyRes.json().catch(() => ({}));
+		throw new Error(error.detail || "Failed to complete passkey setup");
+	}
+
+	return verifyRes.json();
+}
