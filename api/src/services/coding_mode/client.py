@@ -34,6 +34,7 @@ try:
         PermissionResultAllow,
         PermissionResultDeny,
         ResultMessage,
+        StreamEvent,
         TextBlock,
         ToolResultBlock,
         ToolUseBlock,
@@ -64,6 +65,7 @@ except ImportError:
     PermissionResultAllow = Any  # type: ignore
     PermissionResultDeny = Any  # type: ignore
     ResultMessage = Any  # type: ignore
+    StreamEvent = Any  # type: ignore
     TextBlock = Any  # type: ignore
     ToolResultBlock = Any  # type: ignore
     ToolUseBlock = Any  # type: ignore
@@ -460,7 +462,10 @@ class CodingModeClient:
         """
         Convert Claude Agent SDK message to our chunk format.
 
-        Maps SDK types to ChatStreamChunk-compatible format for frontend reuse.
+        Handles StreamEvent for real-time streaming data. The SDK yields:
+        - StreamEvent (many): Real-time text deltas, tool calls, tool results
+        - AssistantMessage: Final text response only (skip, already streamed)
+        - ResultMessage: Cost/usage metrics (handled in chat() method)
 
         Args:
             sdk_message: Message from Claude Agent SDK
@@ -469,80 +474,117 @@ class CodingModeClient:
         # Debug logging to understand SDK message structure
         logger.info(f"[SDK DEBUG] Message received: {type(sdk_message).__name__}")
 
-        if isinstance(sdk_message, AssistantMessage):
-            logger.info(f"[SDK DEBUG] AssistantMessage has {len(sdk_message.content)} content blocks")
-            is_first_text_in_message = True
-            for i, block in enumerate(sdk_message.content):
-                block_type = type(block).__name__
-                logger.info(f"[SDK DEBUG]   Block {i}: {block_type}")
-                if isinstance(block, TextBlock):
-                    full_content = block.text
-                    # Debug: Log text content and check for XML tool calls
-                    preview = full_content[:200] if len(full_content) > 200 else full_content
-                    logger.info(f"[SDK DEBUG]     TextBlock preview: {preview!r}")
-                    if "<function_calls>" in full_content or "<invoke" in full_content:
-                        logger.warning("[SDK DEBUG]     ⚠️ XML tool call detected in TextBlock! SDK may not be executing tools properly.")
+        # Handle StreamEvent for ALL real-time streaming data
+        if HAS_CLAUDE_SDK and isinstance(sdk_message, StreamEvent):
+            event = sdk_message.event
+            event_type = event.get("type")
+            logger.info(f"[SDK DEBUG] StreamEvent type: {event_type}")
 
-                    # Compute delta: SDK sends cumulative content, we only want what's new
-                    # This prevents duplicate text when include_partial_messages=True
-                    if full_content.startswith(self._last_text_content):
-                        delta = full_content[len(self._last_text_content):]
-                    else:
-                        # Content doesn't match what we've seen - could be a new message
-                        # or the SDK reset. Send full content as delta.
-                        delta = full_content
-                        logger.info("[SDK DEBUG]     Content mismatch, sending full content as delta")
+            if event_type == "message_start":
+                yield CodingModeChunk(type="assistant_message_start")
 
-                    self._last_text_content = full_content
+            elif event_type == "content_block_start":
+                content_block = event.get("content_block", {})
+                block_type = content_block.get("type")
+                index = event.get("index", 0)
+                logger.info(f"[SDK DEBUG] content_block_start: type={block_type}, index={index}")
 
-                    # Only yield if there's new content
-                    if delta:
-                        # Add separator if this is continuation of prior content
-                        if (has_prior_content or not is_first_text_in_message) and delta:
-                            # Only add separator if delta doesn't already start with newlines
-                            if not delta.startswith("\n"):
-                                delta = "\n\n" + delta
-                        is_first_text_in_message = False
-                        yield CodingModeChunk(
-                            type="delta",
-                            content=delta,
-                        )
-                elif isinstance(block, ToolUseBlock):
-                    # Debug: Log tool use details
-                    logger.info(f"[SDK DEBUG]     ToolUseBlock: name={block.name}, id={block.id}")
-                    logger.info(f"[SDK DEBUG]     ToolUseBlock input: {block.input}")
-                    # Tool being called - use nested ToolCall object for frontend compatibility
+                if block_type == "tool_use":
+                    # Tool is being called
                     yield CodingModeChunk(
                         type="tool_call",
                         tool_call=ToolCall(
-                            id=block.id,
-                            name=block.name,
-                            arguments=block.input if isinstance(block.input, dict) else {},
+                            id=content_block.get("id", ""),
+                            name=content_block.get("name", ""),
+                            arguments={},  # Input comes in deltas
                         ),
                     )
+                elif block_type == "tool_result":
+                    # Tool has completed - emit tool_result
+                    tool_use_id = content_block.get("tool_use_id", "")
+                    is_error = content_block.get("is_error", False)
+                    content = content_block.get("content", "")
+
+                    # Handle content that's a list of text blocks
+                    if isinstance(content, list):
+                        text_parts = []
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                        content = "\n".join(text_parts)
+
+                    logger.info(f"[SDK DEBUG] tool_result: tool_use_id={tool_use_id}, is_error={is_error}")
+                    yield CodingModeChunk(
+                        type="tool_result",
+                        tool_result=ToolResult(
+                            tool_call_id=tool_use_id,
+                            tool_name="",
+                            result=content,
+                            error=str(content) if is_error else None,
+                        ),
+                    )
+
+            elif event_type == "content_block_delta":
+                delta = event.get("delta", {})
+                delta_type = delta.get("type")
+
+                if delta_type == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        yield CodingModeChunk(type="delta", content=text)
+                # Note: input_json_delta for tool arguments could be handled here too
+
+            elif event_type == "message_delta":
+                # Contains stop_reason
+                delta = event.get("delta", {})
+                stop_reason = delta.get("stop_reason")
+                if stop_reason:
+                    logger.info(f"[SDK DEBUG] message_delta stop_reason: {stop_reason}")
+
+            elif event_type == "message_stop":
+                yield CodingModeChunk(
+                    type="assistant_message_end",
+                    stop_reason="end_turn",
+                )
+
+            return  # StreamEvent handled
+
+        # AssistantMessage contains final content - skip text (already streamed via StreamEvent)
+        # but process ToolResultBlock for tool completion
+        if isinstance(sdk_message, AssistantMessage):
+            logger.info(f"[SDK DEBUG] AssistantMessage has {len(sdk_message.content)} content blocks")
+            for i, block in enumerate(sdk_message.content):
+                block_type = type(block).__name__
+                logger.info(f"[SDK DEBUG]   Block {i}: {block_type}")
+
+                # Skip TextBlock - already streamed via StreamEvent
+                if isinstance(block, TextBlock):
+                    continue
+
+                # Handle ToolResultBlock - tool execution completed
                 elif isinstance(block, ToolResultBlock):
-                    # Tool result - SDK executed the tool and returned the result
                     tool_use_id = getattr(block, "tool_use_id", None)
-                    logger.info(f"[SDK DEBUG]     ToolResultBlock: tool_use_id={tool_use_id}")
+                    is_error = getattr(block, "is_error", False)
+                    logger.info(f"[SDK DEBUG]     ToolResultBlock: tool_use_id={tool_use_id}, is_error={is_error}")
+
                     result_content = block.content
                     if isinstance(result_content, list):
-                        # Extract text from content blocks
                         text_parts = []
                         for item in result_content:
                             if isinstance(item, dict) and item.get("type") == "text":
                                 text_parts.append(item.get("text", ""))
                         result_content = "\n".join(text_parts)
 
-                    tool_call_id = getattr(block, "tool_use_id", None)
-                    # Use nested ToolResult object for frontend compatibility
                     yield CodingModeChunk(
                         type="tool_result",
                         tool_result=ToolResult(
-                            tool_call_id=tool_call_id or "",
-                            tool_name="",  # SDK doesn't provide this in result block
+                            tool_call_id=tool_use_id or "",
+                            tool_name="",
                             result=result_content,
+                            error=str(result_content) if is_error else None,
                         ),
                     )
+            return
 
         # Handle UserMessage which contains ToolResultBlock from SDK tool execution
         elif isinstance(sdk_message, UserMessage):

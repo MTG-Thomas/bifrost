@@ -43,6 +43,15 @@ class CodingModeChunk(BaseModel):
 
     Designed to be compatible with existing ChatStreamChunk format
     so frontend can reuse existing components.
+
+    Message boundary signals:
+    - assistant_message_start: Emitted when an AssistantMessage begins
+    - assistant_message_end: Emitted when an AssistantMessage is complete
+      (all text and tool_call chunks for this message have been sent)
+
+    This allows the frontend to know when to finalize a message segment,
+    especially important for parallel tool execution where multiple tool_calls
+    belong to the same message.
     """
 
     type: Literal[
@@ -54,6 +63,8 @@ class CodingModeChunk(BaseModel):
         "done",
         "error",
         "ask_user_question",
+        "assistant_message_start",
+        "assistant_message_end",
     ]
 
     # Session info (for session_start)
@@ -80,3 +91,7 @@ class CodingModeChunk(BaseModel):
     # AskUserQuestion fields
     questions: list[AskUserQuestion] | None = None
     request_id: str | None = None
+
+    # Message boundary fields (for assistant_message_end)
+    # stop_reason indicates why the message ended: "tool_use" or "end_turn"
+    stop_reason: str | None = None

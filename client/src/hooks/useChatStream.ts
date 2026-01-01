@@ -177,12 +177,20 @@ export function useChatStream({
 					break;
 
 				case "tool_result":
+					// Just update tool state - message completion is signaled by assistant_message_end
 					if (chunk.tool_result) {
 						addStreamToolResult(chunk.tool_result);
-						// Tool result signals end of current assistant message
-						// Complete current streaming message and start a new one
-						completeCurrentStreamingMessage();
 					}
+					break;
+
+				case "assistant_message_start":
+					// Message segment is starting - nothing to do, message is already being built
+					break;
+
+				case "assistant_message_end":
+					// Message segment complete (all text and tool_calls for this message have been sent)
+					// This is the deterministic signal to finalize the current streaming message
+					completeCurrentStreamingMessage();
 					break;
 
 				case "done": {

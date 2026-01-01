@@ -349,65 +349,153 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
 	updateToolExecutionStatus: (toolCallId, status) => {
 		set((state) => {
-			if (!state.streamingMessage) return {};
-			const execution = state.streamingMessage.toolExecutions[toolCallId];
-			if (!execution) return {};
+			// First, try to find in current streaming message
+			if (state.streamingMessage) {
+				const execution = state.streamingMessage.toolExecutions[toolCallId];
+				if (execution) {
+					return {
+						streamingMessage: {
+							...state.streamingMessage,
+							toolExecutions: {
+								...state.streamingMessage.toolExecutions,
+								[toolCallId]: {
+									...execution,
+									status,
+								},
+							},
+						},
+					};
+				}
+			}
 
-			return {
-				streamingMessage: {
-					...state.streamingMessage,
+			// If not found, search in completed streaming messages
+			const completedIndex = state.completedStreamingMessages.findIndex(
+				(msg) => msg.toolExecutions[toolCallId],
+			);
+
+			if (completedIndex >= 0) {
+				const completedMessages = [...state.completedStreamingMessages];
+				const msg = completedMessages[completedIndex];
+				const execution = msg.toolExecutions[toolCallId];
+
+				completedMessages[completedIndex] = {
+					...msg,
 					toolExecutions: {
-						...state.streamingMessage.toolExecutions,
+						...msg.toolExecutions,
 						[toolCallId]: {
 							...execution,
 							status,
 						},
 					},
-				},
-			};
+				};
+
+				return { completedStreamingMessages: completedMessages };
+			}
+
+			// Tool not found anywhere
+			return {};
 		});
 	},
 
 	setToolExecutionId: (toolCallId, executionId) => {
 		set((state) => {
-			if (!state.streamingMessage) return {};
-			const execution = state.streamingMessage.toolExecutions[toolCallId];
-			if (!execution) return {};
+			// First, try to find in current streaming message
+			if (state.streamingMessage) {
+				const execution = state.streamingMessage.toolExecutions[toolCallId];
+				if (execution) {
+					return {
+						streamingMessage: {
+							...state.streamingMessage,
+							toolExecutions: {
+								...state.streamingMessage.toolExecutions,
+								[toolCallId]: {
+									...execution,
+									executionId,
+								},
+							},
+						},
+					};
+				}
+			}
 
-			return {
-				streamingMessage: {
-					...state.streamingMessage,
+			// If not found, search in completed streaming messages
+			const completedIndex = state.completedStreamingMessages.findIndex(
+				(msg) => msg.toolExecutions[toolCallId],
+			);
+
+			if (completedIndex >= 0) {
+				const completedMessages = [...state.completedStreamingMessages];
+				const msg = completedMessages[completedIndex];
+				const execution = msg.toolExecutions[toolCallId];
+
+				completedMessages[completedIndex] = {
+					...msg,
 					toolExecutions: {
-						...state.streamingMessage.toolExecutions,
+						...msg.toolExecutions,
 						[toolCallId]: {
 							...execution,
 							executionId,
 						},
 					},
-				},
-			};
+				};
+
+				return { completedStreamingMessages: completedMessages };
+			}
+
+			// Tool not found anywhere
+			return {};
 		});
 	},
 
 	addToolExecutionLog: (toolCallId, log) => {
 		set((state) => {
-			if (!state.streamingMessage) return {};
-			const execution = state.streamingMessage.toolExecutions[toolCallId];
-			if (!execution) return {};
+			// First, try to find in current streaming message
+			if (state.streamingMessage) {
+				const execution = state.streamingMessage.toolExecutions[toolCallId];
+				if (execution) {
+					return {
+						streamingMessage: {
+							...state.streamingMessage,
+							toolExecutions: {
+								...state.streamingMessage.toolExecutions,
+								[toolCallId]: {
+									...execution,
+									status: "running", // Auto-set to running when logs come in
+									logs: [...execution.logs, log],
+								},
+							},
+						},
+					};
+				}
+			}
 
-			return {
-				streamingMessage: {
-					...state.streamingMessage,
+			// If not found, search in completed streaming messages
+			const completedIndex = state.completedStreamingMessages.findIndex(
+				(msg) => msg.toolExecutions[toolCallId],
+			);
+
+			if (completedIndex >= 0) {
+				const completedMessages = [...state.completedStreamingMessages];
+				const msg = completedMessages[completedIndex];
+				const execution = msg.toolExecutions[toolCallId];
+
+				completedMessages[completedIndex] = {
+					...msg,
 					toolExecutions: {
-						...state.streamingMessage.toolExecutions,
+						...msg.toolExecutions,
 						[toolCallId]: {
 							...execution,
 							status: "running", // Auto-set to running when logs come in
 							logs: [...execution.logs, log],
 						},
 					},
-				},
-			};
+				};
+
+				return { completedStreamingMessages: completedMessages };
+			}
+
+			// Tool not found anywhere
+			return {};
 		});
 	},
 

@@ -718,6 +718,7 @@ async def _process_coding_mode_message(
 
             elif chunk_type == "tool_result" and chunk.get("tool_result"):
                 tool_result = chunk["tool_result"]
+                logger.info(f"[WS] Received tool_result: tool_call_id={tool_result.get('tool_call_id')}")
 
                 # If we have accumulated assistant content + tool calls, save as assistant message
                 if accumulated_content or tool_calls_batch:
@@ -747,6 +748,7 @@ async def _process_coding_mode_message(
 
                 # Send tool_progress success
                 if tool_result.get("tool_call_id"):
+                    logger.info(f"[WS] Sending tool_progress success: tool_call_id={tool_result['tool_call_id']}")
                     await websocket.send_json({
                         "type": "tool_progress",
                         "conversation_id": conversation_id,

@@ -174,7 +174,9 @@ export interface ChatStreamChunk {
 		| "done"
 		| "error"
 		| "title_update"
-		| "ask_user_question";
+		| "ask_user_question"
+		| "assistant_message_start"
+		| "assistant_message_end";
 	conversation_id?: string;
 	content?: string | null;
 	tool_call?: ChatToolCall | null;
@@ -194,6 +196,8 @@ export interface ChatStreamChunk {
 	// AskUserQuestion fields
 	questions?: AskUserQuestion[] | null;
 	request_id?: string | null;
+	// Message boundary fields (for assistant_message_end)
+	stop_reason?: "tool_use" | "end_turn" | null;
 }
 
 // Message types from backend
@@ -542,6 +546,8 @@ class WebSocketService {
 			case "error":
 			case "title_update":
 			case "ask_user_question":
+			case "assistant_message_start":
+			case "assistant_message_end":
 				this.dispatchChatStreamChunk(message as ChatStreamChunk);
 				break;
 		}
