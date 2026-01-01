@@ -103,14 +103,14 @@ class TestPatternMatching:
         matches = INTEGRATIONS_PATTERN.findall(code)
         assert set(matches) == {"HaloPSA", "Microsoft Partner"}
 
-    def test_pattern_ignores_comments(self):
-        """Test that patterns work even in commented code (we scan all)."""
+    def test_pattern_matches_commented_code(self):
+        """Test that raw pattern matches commented code (filtering happens in extract_references)."""
         code = '''
         # config.get("commented_out")
         real = config.get("real_key")
         '''
         matches = CONFIG_PATTERN.findall(code)
-        # Both match - we don't parse comments
+        # Raw pattern matches both - comment filtering happens in extract_references
         assert "real_key" in matches
         assert "commented_out" in matches
 
@@ -125,6 +125,141 @@ class TestPatternMatching:
         integration_matches = INTEGRATIONS_PATTERN.findall(code)
         assert config_matches == []
         assert integration_matches == []
+
+
+class TestCommentFiltering:
+    """Test comment filtering in extract_references."""
+
+    @pytest.fixture
+    def scanner(self):
+        """Create scanner with mock db."""
+        mock_db = MagicMock()
+        return SDKReferenceScanner(mock_db)
+
+    def test_ignores_full_line_comment(self, scanner):
+        """Test that full-line commented SDK calls are ignored."""
+        code = '''
+        # config.get("commented_out")
+        real = config.get("real_key")
+        '''
+        config_refs, _ = scanner.extract_references(code)
+        assert config_refs == {"real_key"}
+        assert "commented_out" not in config_refs
+
+    def test_ignores_indented_comment(self, scanner):
+        """Test that indented commented SDK calls are ignored."""
+        code = '''
+            # This is a comment with config.get("ignored")
+        key = config.get("active")
+        '''
+        config_refs, _ = scanner.extract_references(code)
+        assert config_refs == {"active"}
+
+    def test_captures_code_before_inline_comment(self, scanner):
+        """Test that SDK calls before inline comments are captured."""
+        code = '''key = config.get("api_key")  # Get the API key'''
+        config_refs, _ = scanner.extract_references(code)
+        assert config_refs == {"api_key"}
+
+    def test_ignores_sdk_in_inline_comment(self, scanner):
+        """Test that SDK calls in inline comments are ignored."""
+        code = '''x = 1  # config.get("old_key") was removed'''
+        config_refs, _ = scanner.extract_references(code)
+        assert config_refs == set()
+
+    def test_hash_inside_string_not_comment(self, scanner):
+        """Test that # inside string values is not treated as comment."""
+        code = '''key = config.get("api#key")'''
+        config_refs, _ = scanner.extract_references(code)
+        assert config_refs == {"api#key"}
+
+    def test_hash_in_key_with_following_code(self, scanner):
+        """Test hash in key followed by real code on same line."""
+        # This is contrived but tests the parser
+        code = '''x = config.get("key#1"); y = config.get("key2")'''
+        config_refs, _ = scanner.extract_references(code)
+        assert "key#1" in config_refs
+        assert "key2" in config_refs
+
+    def test_multiple_lines_mixed_comments(self, scanner):
+        """Test multiple lines with mix of comments and real code."""
+        code = '''
+        # Old code: config.get("deprecated")
+        active = config.get("active_key")
+        # integrations.get("OldIntegration")
+        halo = integrations.get("HaloPSA")
+        final = config.get("final_key")  # This one is important
+        '''
+        config_refs, integration_refs = scanner.extract_references(code)
+        assert config_refs == {"active_key", "final_key"}
+        assert integration_refs == {"HaloPSA"}
+        assert "deprecated" not in config_refs
+        assert "OldIntegration" not in integration_refs
+
+    def test_comment_after_complex_string(self, scanner):
+        """Test comment detection after a complex string expression."""
+        code = '''key = config.get("value") + "extra"  # comment with config.get("ignored")'''
+        config_refs, _ = scanner.extract_references(code)
+        # Only the real config.get should be captured, not the one in the comment
+        assert config_refs == {"value"}
+
+    def test_single_quotes_with_hash(self, scanner):
+        """Test single quoted strings containing hash."""
+        code = """key = config.get('api#secret')"""
+        config_refs, _ = scanner.extract_references(code)
+        assert config_refs == {"api#secret"}
+
+    def test_integration_comment_filtering(self, scanner):
+        """Test that integration calls in comments are also filtered."""
+        code = '''
+        # integrations.get("DisabledIntegration")
+        active = integrations.get("ActiveIntegration")
+        '''
+        _, integration_refs = scanner.extract_references(code)
+        assert integration_refs == {"ActiveIntegration"}
+        assert "DisabledIntegration" not in integration_refs
+
+
+class TestFindCommentPosition:
+    """Test the _find_comment_position helper method."""
+
+    @pytest.fixture
+    def scanner(self):
+        """Create scanner with mock db."""
+        mock_db = MagicMock()
+        return SDKReferenceScanner(mock_db)
+
+    def test_no_comment(self, scanner):
+        """Test line with no comment."""
+        assert scanner._find_comment_position("x = 1") is None
+
+    def test_comment_at_start(self, scanner):
+        """Test comment at start of line."""
+        assert scanner._find_comment_position("# comment") == 0
+
+    def test_comment_after_code(self, scanner):
+        """Test comment after code."""
+        assert scanner._find_comment_position("x = 1  # comment") == 7
+
+    def test_hash_in_double_quoted_string(self, scanner):
+        """Test hash inside double-quoted string is not a comment."""
+        assert scanner._find_comment_position('x = "a#b"') is None
+
+    def test_hash_in_single_quoted_string(self, scanner):
+        """Test hash inside single-quoted string is not a comment."""
+        assert scanner._find_comment_position("x = 'a#b'") is None
+
+    def test_hash_after_string(self, scanner):
+        """Test hash after a string is a comment."""
+        result = scanner._find_comment_position('x = "value"  # comment')
+        assert result == 13
+
+    def test_escaped_quote(self, scanner):
+        """Test escaped quote doesn't break string detection."""
+        # String: "test\"value" followed by comment
+        result = scanner._find_comment_position(r'x = "test\"val"  # note')
+        assert result is not None
+        assert result > 0
 
 
 class TestExtractReferences:

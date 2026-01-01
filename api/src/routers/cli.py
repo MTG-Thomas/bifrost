@@ -59,6 +59,10 @@ from src.models.contracts.cli import (
     SDKIntegrationsOAuthData,
     SDKIntegrationsListMappingsRequest,
     SDKIntegrationsListMappingsResponse,
+    SDKIntegrationsGetMappingRequest,
+    SDKIntegrationsUpsertMappingRequest,
+    SDKIntegrationsDeleteMappingRequest,
+    SDKIntegrationsMappingItem,
 )
 from src.core.cache import config_hash_key, get_redis
 from src.core.pubsub import publish_cli_session_update, publish_execution_log, publish_execution_update
@@ -249,13 +253,31 @@ async def update_dev_context(
 
 async def _get_cli_org_id(
     user_id: UUID,
-    requested_org_id: str | None,
+    scope: str | None,
     db: AsyncSession,
 ) -> str | None:
-    """Get the organization ID for CLI config operations."""
-    if requested_org_id:
-        return requested_org_id
+    """Get the organization ID for CLI config operations.
 
+    Args:
+        user_id: Current user's ID
+        scope: Organization scope - can be:
+            - None: Use execution context default org
+            - org UUID string: Target specific organization
+            - "global": Returns None (global scope, no org)
+        db: Database session
+
+    Returns:
+        Organization UUID string, or None for global scope
+    """
+    # "global" scope means no org resolution
+    if scope == "global":
+        return None
+
+    # If scope is a UUID, use it directly as the org_id
+    if scope:
+        return scope
+
+    # Fall back to developer context default org
     stmt = select(DeveloperContext).where(DeveloperContext.user_id == user_id)
     result = await db.execute(stmt)
     dev_ctx = result.scalar_one_or_none()
@@ -277,7 +299,7 @@ async def cli_get_config(
     db: AsyncSession = Depends(get_db),
 ) -> CLIConfigValue | None:
     """Get a config value via CLI API."""
-    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
 
     async with get_redis() as r:
         data = await r.hget(config_hash_key(org_id), request.key)  # type: ignore[misc]
@@ -327,7 +349,7 @@ async def cli_set_config(
     from src.models import Config as ConfigModel
     from src.models.enums import ConfigType as ConfigTypeEnum
 
-    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
     now = datetime.utcnow()
 
@@ -395,7 +417,7 @@ async def cli_list_config(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """List all config values via CLI API."""
-    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
 
     async with get_redis() as r:
         all_data = await r.hgetall(config_hash_key(org_id))  # type: ignore[misc]
@@ -445,7 +467,7 @@ async def cli_delete_config(
     """Delete a config value via CLI API."""
     from src.models import Config as ConfigModel
 
-    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
     stmt = select(ConfigModel).where(
@@ -488,16 +510,17 @@ async def sdk_integrations_get(
 ) -> SDKIntegrationsGetResponse | None:
     """Get integration mapping data for an organization via SDK.
 
-    Supports two modes:
-    1. Org-specific mapping: Returns mapping entity_id, config, and OAuth data
-    2. Fallback to integration defaults: When no org mapping exists, returns
+    Supports three modes:
+    1. Global scope (scope="global"): Returns integration defaults only (no org mapping)
+    2. Org-specific mapping: Returns mapping entity_id, config, and OAuth data
+    3. Fallback to integration defaults: When no org mapping exists, returns
        integration.default_entity_id, integration-level config, and OAuth data
     """
     from src.repositories.integrations import IntegrationsRepository
     from src.services.oauth_provider import resolve_url_template
     from src.core.security import decrypt_secret
 
-    org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
     try:
@@ -679,6 +702,199 @@ async def sdk_integrations_list_mappings(
     except Exception as e:
         logger.error(f"SDK integrations.list_mappings failed: {e}")
         return None
+
+
+@router.post(
+    "/integrations/get_mapping",
+    response_model=SDKIntegrationsMappingItem | None,
+    summary="Get a specific mapping by org_id or entity_id",
+)
+async def sdk_integrations_get_mapping(
+    request: SDKIntegrationsGetMappingRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> SDKIntegrationsMappingItem | None:
+    """Get a specific integration mapping by org_id or entity_id via SDK."""
+    from src.repositories.integrations import IntegrationsRepository
+
+    try:
+        repo = IntegrationsRepository(db)
+        integration = await repo.get_integration_by_name(request.name)
+
+        if not integration:
+            logger.warning(f"SDK integrations.get_mapping: integration '{request.name}' not found")
+            return None
+
+        mapping = None
+
+        # Look up by scope (org_id) if provided
+        if request.scope:
+            org_uuid = UUID(request.scope)
+            mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
+
+        # If no mapping found and entity_id provided, search by entity_id
+        if not mapping and request.entity_id:
+            # Search through all mappings for the entity_id
+            all_mappings = await repo.list_mappings(integration.id)
+            for m in all_mappings:
+                if m.entity_id == request.entity_id:
+                    mapping = m
+                    break
+
+        if not mapping:
+            return None
+
+        # Get merged config for the mapping
+        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+
+        logger.info(f"SDK retrieved mapping for integration '{request.name}' for user {current_user.email}")
+
+        return SDKIntegrationsMappingItem(
+            id=str(mapping.id),
+            integration_id=str(mapping.integration_id),
+            organization_id=str(mapping.organization_id),
+            entity_id=mapping.entity_id,
+            entity_name=mapping.entity_name,
+            oauth_token_id=str(mapping.oauth_token_id) if mapping.oauth_token_id else None,
+            config=config,
+            created_at=mapping.created_at.isoformat(),
+            updated_at=mapping.updated_at.isoformat(),
+        )
+
+    except Exception as e:
+        logger.error(f"SDK integrations.get_mapping failed: {e}")
+        return None
+
+
+@router.post(
+    "/integrations/upsert_mapping",
+    response_model=SDKIntegrationsMappingItem,
+    summary="Create or update a mapping for an organization",
+)
+async def sdk_integrations_upsert_mapping(
+    request: SDKIntegrationsUpsertMappingRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> SDKIntegrationsMappingItem:
+    """Create or update an integration mapping for an organization via SDK."""
+    from src.repositories.integrations import IntegrationsRepository
+    from src.models.contracts.integrations import IntegrationMappingCreate, IntegrationMappingUpdate
+
+    try:
+        repo = IntegrationsRepository(db)
+        integration = await repo.get_integration_by_name(request.name)
+
+        if not integration:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Integration '{request.name}' not found",
+            )
+
+        org_uuid = UUID(request.scope)
+
+        # Check if mapping already exists
+        existing_mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
+
+        if existing_mapping:
+            # Update existing mapping
+            update_data = IntegrationMappingUpdate(
+                entity_id=request.entity_id,
+                entity_name=request.entity_name,
+                config=request.config,
+            )
+            mapping = await repo.update_mapping(
+                existing_mapping.id,
+                update_data,
+                updated_by=current_user.email,
+            )
+            if not mapping:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to update mapping",
+                )
+            logger.info(f"SDK updated mapping for integration '{request.name}', org '{request.scope}' by {current_user.email}")
+        else:
+            # Create new mapping
+            create_data = IntegrationMappingCreate(
+                organization_id=org_uuid,
+                entity_id=request.entity_id,
+                entity_name=request.entity_name,
+                config=request.config,
+            )
+            mapping = await repo.create_mapping(
+                integration.id,
+                create_data,
+                updated_by=current_user.email,
+            )
+            logger.info(f"SDK created mapping for integration '{request.name}', org '{request.scope}' by {current_user.email}")
+
+        await db.commit()
+
+        # Get merged config for response
+        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+
+        return SDKIntegrationsMappingItem(
+            id=str(mapping.id),
+            integration_id=str(mapping.integration_id),
+            organization_id=str(mapping.organization_id),
+            entity_id=mapping.entity_id,
+            entity_name=mapping.entity_name,
+            oauth_token_id=str(mapping.oauth_token_id) if mapping.oauth_token_id else None,
+            config=config,
+            created_at=mapping.created_at.isoformat(),
+            updated_at=mapping.updated_at.isoformat(),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"SDK integrations.upsert_mapping failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upsert mapping: {str(e)}",
+        )
+
+
+@router.post(
+    "/integrations/delete_mapping",
+    summary="Delete a mapping for an organization",
+)
+async def sdk_integrations_delete_mapping(
+    request: SDKIntegrationsDeleteMappingRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete an integration mapping for an organization via SDK."""
+    from src.repositories.integrations import IntegrationsRepository
+
+    try:
+        repo = IntegrationsRepository(db)
+        integration = await repo.get_integration_by_name(request.name)
+
+        if not integration:
+            logger.warning(f"SDK integrations.delete_mapping: integration '{request.name}' not found")
+            return {"deleted": False}
+
+        org_uuid = UUID(request.scope)
+
+        # Find the mapping
+        mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
+
+        if not mapping:
+            logger.warning(f"SDK integrations.delete_mapping: mapping not found for org '{request.scope}'")
+            return {"deleted": False}
+
+        # Delete the mapping
+        deleted = await repo.delete_mapping(mapping.id)
+        await db.commit()
+
+        logger.info(f"SDK deleted mapping for integration '{request.name}', org '{request.scope}' by {current_user.email}")
+
+        return {"deleted": deleted}
+
+    except Exception as e:
+        logger.error(f"SDK integrations.delete_mapping failed: {e}")
+        return {"deleted": False}
 
 
 # =============================================================================
@@ -1456,10 +1672,8 @@ async def cli_knowledge_store(
     from src.services.embeddings import get_embedding_client
 
     try:
-        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
-        org_uuid = None
-        if request.scope != "global" and org_id:
-            org_uuid = UUID(org_id)
+        org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+        org_uuid = UUID(org_id) if org_id else None
 
         # Generate embedding
         embedding_client = await get_embedding_client(db)
@@ -1509,10 +1723,8 @@ async def cli_knowledge_store_many(
     from src.services.embeddings import get_embedding_client
 
     try:
-        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
-        org_uuid = None
-        if request.scope != "global" and org_id:
-            org_uuid = UUID(org_id)
+        org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+        org_uuid = UUID(org_id) if org_id else None
 
         # Extract contents for batch embedding
         contents = [doc["content"] for doc in request.documents]
@@ -1569,7 +1781,7 @@ async def cli_knowledge_search(
     from src.services.embeddings import get_embedding_client
 
     try:
-        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
+        org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
         # Generate query embedding
@@ -1629,10 +1841,8 @@ async def cli_knowledge_delete(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        org_id = await _get_cli_org_id(current_user.user_id, request.org_id, db)
-        org_uuid = None
-        if request.scope != "global" and org_id:
-            org_uuid = UUID(org_id)
+        org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+        org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db)
         deleted = await repo.delete_by_key(
@@ -1660,7 +1870,6 @@ async def cli_knowledge_delete(
 )
 async def cli_knowledge_delete_namespace(
     namespace: str,
-    org_id: str | None = None,
     scope: str | None = None,
     current_user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),
@@ -1669,10 +1878,8 @@ async def cli_knowledge_delete_namespace(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        resolved_org_id = await _get_cli_org_id(current_user.user_id, org_id, db)
-        org_uuid = None
-        if scope != "global" and resolved_org_id:
-            org_uuid = UUID(resolved_org_id)
+        org_id = await _get_cli_org_id(current_user.user_id, scope, db)
+        org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db)
         deleted_count = await repo.delete_namespace(
@@ -1698,7 +1905,7 @@ async def cli_knowledge_delete_namespace(
     summary="List namespaces with document counts",
 )
 async def cli_knowledge_list_namespaces(
-    org_id: str | None = None,
+    scope: str | None = None,
     include_global: bool = True,
     current_user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),
@@ -1708,8 +1915,8 @@ async def cli_knowledge_list_namespaces(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        resolved_org_id = await _get_cli_org_id(current_user.user_id, org_id, db)
-        org_uuid = UUID(resolved_org_id) if resolved_org_id else None
+        org_id = await _get_cli_org_id(current_user.user_id, scope, db)
+        org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db)
         results = await repo.list_namespaces(
@@ -1739,7 +1946,6 @@ async def cli_knowledge_list_namespaces(
 async def cli_knowledge_get(
     key: str,
     namespace: str = "default",
-    org_id: str | None = None,
     scope: str | None = None,
     current_user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),
@@ -1749,10 +1955,8 @@ async def cli_knowledge_get(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        resolved_org_id = await _get_cli_org_id(current_user.user_id, org_id, db)
-        org_uuid = None
-        if scope != "global" and resolved_org_id:
-            org_uuid = UUID(resolved_org_id)
+        org_id = await _get_cli_org_id(current_user.user_id, scope, db)
+        org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db)
         result = await repo.get_by_key(

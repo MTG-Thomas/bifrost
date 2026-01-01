@@ -155,8 +155,10 @@ class CLIFileDeleteRequest(BaseModel):
 class CLIConfigGetRequest(BaseModel):
     """Request to get a config value via CLI."""
     key: str = Field(..., description="Configuration key")
-    org_id: str | None = Field(
-        default=None, description="Organization ID (optional, uses context default)")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -165,18 +167,22 @@ class CLIConfigSetRequest(BaseModel):
     """Request to set a config value via CLI."""
     key: str = Field(..., description="Configuration key")
     value: Any = Field(..., description="Configuration value")
-    org_id: str | None = Field(
-        default=None, description="Organization ID (optional, uses context default)")
     is_secret: bool = Field(
         default=False, description="Whether to encrypt the value")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class CLIConfigListRequest(BaseModel):
     """Request to list config values via CLI."""
-    org_id: str | None = Field(
-        default=None, description="Organization ID (optional, uses context default)")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -184,8 +190,10 @@ class CLIConfigListRequest(BaseModel):
 class CLIConfigDeleteRequest(BaseModel):
     """Request to delete a config value via CLI."""
     key: str = Field(..., description="Configuration key")
-    org_id: str | None = Field(
-        default=None, description="Organization ID (optional, uses context default)")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -205,8 +213,10 @@ class CLIConfigValue(BaseModel):
 class SDKIntegrationsGetRequest(BaseModel):
     """Request to get integration configuration via SDK."""
     name: str = Field(..., description="Integration name")
-    org_id: str | None = Field(
-        default=None, description="Organization ID (optional, uses context default)")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -270,6 +280,37 @@ class SDKIntegrationsListMappingsResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SDKIntegrationsGetMappingRequest(BaseModel):
+    """Request to get a specific mapping via SDK."""
+    name: str = Field(..., description="Integration name")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org"
+    )
+    entity_id: str | None = Field(default=None, description="External entity ID")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SDKIntegrationsUpsertMappingRequest(BaseModel):
+    """Request to create or update a mapping via SDK."""
+    name: str = Field(..., description="Integration name")
+    scope: str = Field(..., description="Organization ID (required for upsert)")
+    entity_id: str = Field(..., description="External entity ID")
+    entity_name: str | None = Field(default=None, description="Display name for the entity")
+    config: dict[str, Any] | None = Field(default=None, description="Org-specific configuration")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SDKIntegrationsDeleteMappingRequest(BaseModel):
+    """Request to delete a mapping via SDK."""
+    name: str = Field(..., description="Integration name")
+    scope: str = Field(..., description="Organization ID (required for delete)")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ==================== SDK AI MODELS ====================
 
 
@@ -314,8 +355,10 @@ class CLIKnowledgeStoreRequest(BaseModel):
     namespace: str = Field(default="default", description="Namespace for organization")
     key: str | None = Field(default=None, description="Optional key for upserts")
     metadata: dict[str, Any] | None = Field(default=None, description="Optional metadata dict")
-    org_id: str | None = Field(default=None, description="Organization scope")
-    scope: str | None = Field(default=None, description="'global' for global scope")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -324,8 +367,10 @@ class CLIKnowledgeStoreManyRequest(BaseModel):
     """Request to store multiple documents."""
     documents: list[dict[str, Any]] = Field(..., description="List of document dicts with content, key, metadata")
     namespace: str = Field(default="default", description="Namespace for all documents")
-    org_id: str | None = Field(default=None, description="Organization scope")
-    scope: str | None = Field(default=None, description="'global' for global scope")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -337,7 +382,10 @@ class CLIKnowledgeSearchRequest(BaseModel):
     limit: int = Field(default=5, description="Maximum results")
     min_score: float | None = Field(default=None, description="Minimum similarity score (0-1)")
     metadata_filter: dict[str, Any] | None = Field(default=None, description="Filter by metadata fields")
-    org_id: str | None = Field(default=None, description="Organization scope")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
     fallback: bool = Field(default=True, description="If True, also search global scope")
 
     model_config = ConfigDict(from_attributes=True)
@@ -361,8 +409,10 @@ class CLIKnowledgeDeleteRequest(BaseModel):
     """Request to delete a document by key."""
     key: str = Field(..., description="Document key")
     namespace: str = Field(default="default", description="Namespace")
-    org_id: str | None = Field(default=None, description="Organization scope")
-    scope: str | None = Field(default=None, description="'global' for global scope")
+    scope: str | None = Field(
+        default=None,
+        description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

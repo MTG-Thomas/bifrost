@@ -8,15 +8,21 @@
 import { useCallback, useRef, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { components } from "@/lib/v1";
 import { useChatStore } from "@/stores/chatStore";
+import type { components } from "@/lib/v1";
 import {
 	webSocketService,
 	type ChatStreamChunk,
 	type ChatAgentSwitch,
+	type AskUserQuestion,
 } from "@/services/websocket";
 
 type MessagePublic = components["schemas"]["MessagePublic"];
+
+export interface PendingQuestion {
+	questions: AskUserQuestion[];
+	requestId: string;
+}
 
 export interface UseChatStreamOptions {
 	conversationId: string | undefined;
@@ -30,6 +36,11 @@ export interface UseChatStreamReturn {
 	isStreaming: boolean;
 	connect: () => void;
 	disconnect: () => void;
+	// AskUserQuestion support
+	pendingQuestion: PendingQuestion | null;
+	answerQuestion: (answers: Record<string, string>) => void;
+	// Stop/interrupt support
+	stopStreaming: () => void;
 }
 
 export function useChatStream({
@@ -39,6 +50,7 @@ export function useChatStream({
 }: UseChatStreamOptions): UseChatStreamReturn {
 	const queryClient = useQueryClient();
 	const [isConnected, setIsConnected] = useState(false);
+	const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
 
 	// Track current conversation for closure safety
 	const currentConversationIdRef = useRef<string | undefined>(conversationId);
@@ -60,12 +72,13 @@ export function useChatStream({
 		setToolExecutionId,
 		addToolExecutionLog,
 		addStreamToolResult,
+		completeCurrentStreamingMessage,
 		completeStream,
 		setStreamError,
 		resetStream,
-		addMessage,
 		addSystemEvent,
 		saveToolExecutions,
+		addMessage,
 	} = useChatStore();
 
 	// Update ref when conversationId changes
@@ -108,6 +121,26 @@ export function useChatStream({
 			}
 
 			switch (chunk.type) {
+				case "message_start": {
+					// Backend has saved the user message and generated real IDs
+					// Invalidate messages query to fetch the real user message from DB
+					const convId = currentConversationIdRef.current;
+					if (convId) {
+						queryClient.invalidateQueries({
+							queryKey: [
+								"get",
+								"/api/chat/conversations/{conversation_id}/messages",
+								{
+									params: {
+										path: { conversation_id: convId },
+									},
+								},
+							],
+						});
+					}
+					break;
+				}
+
 				case "delta":
 					if (chunk.content) {
 						appendStreamContent(chunk.content);
@@ -146,40 +179,41 @@ export function useChatStream({
 				case "tool_result":
 					if (chunk.tool_result) {
 						addStreamToolResult(chunk.tool_result);
+						// Tool result signals end of current assistant message
+						// Complete current streaming message and start a new one
+						completeCurrentStreamingMessage();
 					}
 					break;
 
 				case "done": {
 					const convId = currentConversationIdRef.current;
-					const streamState = useChatStore.getState().streamingMessage;
+					const storeState = useChatStore.getState();
+					const streamState = storeState.streamingMessage;
+					const completedMessages = storeState.completedStreamingMessages;
 
-					if (convId && streamState) {
-						// Save tool executions for persistence
-						if (Object.keys(streamState.toolExecutions).length > 0) {
+					if (convId) {
+						// Save tool executions from current streaming message
+						if (
+							streamState &&
+							Object.keys(streamState.toolExecutions).length > 0
+						) {
 							saveToolExecutions(convId, streamState.toolExecutions);
 						}
-
-						const completedMessage: MessagePublic = {
-							id: chunk.message_id || `completed-${Date.now()}`,
-							conversation_id: convId,
-							role: "assistant",
-							content: streamState.content || "",
-							tool_calls:
-								streamState.toolCalls.length > 0
-									? streamState.toolCalls
-									: undefined,
-							sequence: Date.now(),
-							created_at: new Date().toISOString(),
-							token_count_input: chunk.token_count_input ?? undefined,
-							token_count_output: chunk.token_count_output ?? undefined,
-							duration_ms: chunk.duration_ms ?? undefined,
-						};
-						addMessage(convId, completedMessage);
+						// Save tool executions from completed streaming messages
+						for (const msg of completedMessages) {
+							if (Object.keys(msg.toolExecutions).length > 0) {
+								saveToolExecutions(convId, msg.toolExecutions);
+							}
+						}
 					}
 
+					// Mark streaming complete - this keeps the streaming message visible
+					// with isComplete=true until the API returns the authoritative message.
+					// We intentionally don't add a local "completed-*" message to avoid
+					// duplication issues during the race between local and API state.
 					completeStream(chunk.message_id ?? undefined);
 
-					// Refresh messages
+					// Refresh messages from API - this is the source of truth
 					if (convId) {
 						queryClient.invalidateQueries({
 							queryKey: [
@@ -220,6 +254,17 @@ export function useChatStream({
 					break;
 				}
 
+				case "ask_user_question": {
+					// SDK is asking user a question - show modal
+					if (chunk.questions && chunk.request_id) {
+						setPendingQuestion({
+							questions: chunk.questions,
+							requestId: chunk.request_id,
+						});
+					}
+					break;
+				}
+
 				case "error": {
 					const errorMsg = chunk.error || "Unknown error occurred";
 					setStreamError(errorMsg);
@@ -235,6 +280,8 @@ export function useChatStream({
 						});
 					}
 
+					// Clear any pending question on error
+					setPendingQuestion(null);
 					resetStream();
 					break;
 				}
@@ -248,12 +295,12 @@ export function useChatStream({
 			setToolExecutionId,
 			addToolExecutionLog,
 			addStreamToolResult,
+			completeCurrentStreamingMessage,
 			completeStream,
 			setStreamError,
 			resetStream,
 			onError,
 			onAgentSwitch,
-			addMessage,
 			addSystemEvent,
 			saveToolExecutions,
 		],
@@ -316,7 +363,7 @@ export function useChatStream({
 				);
 			}
 
-			// Add optimistic user message
+			// Add optimistic user message for immediate display
 			const userMessage: MessagePublic = {
 				id: `temp-${Date.now()}`,
 				conversation_id: conversationId,
@@ -405,11 +452,42 @@ export function useChatStream({
 		return () => clearInterval(interval);
 	}, []);
 
+	// Answer a pending AskUserQuestion
+	const answerQuestion = useCallback(
+		(answers: Record<string, string>) => {
+			if (!conversationId || !pendingQuestion) {
+				return;
+			}
+
+			webSocketService.sendChatAnswer(
+				conversationId,
+				pendingQuestion.requestId,
+				answers,
+			);
+			setPendingQuestion(null);
+		},
+		[conversationId, pendingQuestion],
+	);
+
+	// Stop the current streaming operation
+	const stopStreaming = useCallback(() => {
+		if (!conversationId) {
+			return;
+		}
+
+		webSocketService.sendChatStop(conversationId);
+		setPendingQuestion(null);
+		resetStream();
+	}, [conversationId, resetStream]);
+
 	return {
 		sendMessage,
 		isConnected,
 		isStreaming,
 		connect,
 		disconnect,
+		pendingQuestion,
+		answerQuestion,
+		stopStreaming,
 	};
 }

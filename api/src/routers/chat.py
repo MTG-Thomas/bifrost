@@ -8,6 +8,7 @@ For real-time streaming, use the WebSocket endpoint at /ws/connect
 (see websocket.py) with chat:{conversation_id} channel subscription.
 """
 
+import json
 import logging
 from datetime import datetime
 from uuid import UUID, uuid4
@@ -282,7 +283,13 @@ async def get_messages(
             role=m.role,
             content=m.content,
             tool_calls=[
-                {"id": tc["id"], "name": tc["name"], "arguments": tc.get("arguments", {})}
+                {
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "arguments": json.loads(tc.get("arguments", "{}"))
+                    if isinstance(tc.get("arguments"), str)
+                    else tc.get("arguments", {}),
+                }
                 for tc in (m.tool_calls or [])
             ] if m.tool_calls else None,
             tool_call_id=m.tool_call_id,

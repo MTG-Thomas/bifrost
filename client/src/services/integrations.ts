@@ -25,26 +25,10 @@ export type IntegrationMappingUpdate =
 	components["schemas"]["IntegrationMappingUpdate"];
 
 /**
- * Hook to fetch all integrations with optional organization filtering
- * @param organizationId - Organization ID to filter by (null = global only, undefined = all)
- *
- * Note: The organization_id query param is supported by the backend but may not yet
- * be reflected in the generated OpenAPI types. Regenerate types after API changes
- * are deployed: `cd client && npm run generate:types`
+ * Hook to fetch all integrations
  */
-export function useIntegrations(organizationId?: string | null) {
-	// Build query params - organization_id is supported by backend even if not in generated types
-	const queryParams: Record<string, string | undefined> = {};
-	if (organizationId !== undefined && organizationId !== null) {
-		queryParams.organization_id = organizationId;
-	}
-
-	return $api.useQuery("get", "/api/integrations", {
-		params: {
-			// Type assertion needed until types are regenerated
-			query: Object.keys(queryParams).length > 0 ? queryParams : undefined,
-		} as { query?: undefined },
-	});
+export function useIntegrations() {
+	return $api.useQuery("get", "/api/integrations");
 }
 
 /**

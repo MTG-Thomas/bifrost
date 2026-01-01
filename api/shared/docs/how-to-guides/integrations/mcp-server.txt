@@ -1,0 +1,44 @@
+# MCP Server
+
+Enable external AI tools to access Bifrost via Model Context Protocol
+
+---
+
+The Model Context Protocol (MCP) allows external AI tools to interact with Bifrost, enabling them to execute workflows, manage forms, and access platform features.
+
+## What is MCP?
+
+MCP is an open protocol that standardizes how AI assistants connect to external tools and data sources. When enabled, Bifrost exposes an MCP server that external clients can connect to.
+
+## Enabling MCP
+
+1. Navigate to **Settings** > **Platform**
+
+2. Enable the **MCP Server** toggle
+
+3. The MCP endpoint URL will be displayed
+
+## Connecting External Clients
+
+External AI tools like Claude Desktop can connect to the Bifrost MCP server:
+
+1. Configure your client with the Bifrost MCP endpoint URL
+2. Authenticate using your API credentials
+3. The client will discover available tools automatically
+
+For Claude Desktop, add the MCP server configuration to your Claude config file.
+
+## Tool Availability
+
+Tools available through MCP are determined by:
+
+- **Agent configuration**: Tools assigned to agents are exposed via MCP
+- **Workflow tools**: Workflows marked with `is_tool=True` appear as callable tools
+- **System tools**: Platform capabilities like file operations and execution management
+
+Only tools that the authenticated user has permission to access will be available.
+
+## See Also
+
+- [Agents and Chat](/how-to-guides/ai/agents-and-chat) - Agent configuration
+- [AI Tools](/how-to-guides/workflows/ai-tools) - Making workflows callable as tools

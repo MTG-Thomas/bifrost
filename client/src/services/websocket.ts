@@ -150,8 +150,22 @@ export interface ChatToolProgress {
 	};
 }
 
+// AskUserQuestion types for SDK permission prompts
+export interface AskUserQuestionOption {
+	label: string;
+	description: string;
+}
+
+export interface AskUserQuestion {
+	question: string;
+	header: string;
+	options: AskUserQuestionOption[];
+	multi_select: boolean;
+}
+
 export interface ChatStreamChunk {
 	type:
+		| "message_start"
 		| "delta"
 		| "tool_call"
 		| "tool_progress"
@@ -159,7 +173,8 @@ export interface ChatStreamChunk {
 		| "agent_switch"
 		| "done"
 		| "error"
-		| "title_update";
+		| "title_update"
+		| "ask_user_question";
 	conversation_id?: string;
 	content?: string | null;
 	tool_call?: ChatToolCall | null;
@@ -167,12 +182,18 @@ export interface ChatStreamChunk {
 	tool_result?: ChatToolResult | null;
 	agent_switch?: ChatAgentSwitch | null;
 	message_id?: string | null;
+	// message_start fields - real UUIDs sent before streaming begins
+	user_message_id?: string | null;
+	assistant_message_id?: string | null;
 	token_count_input?: number | null;
 	token_count_output?: number | null;
 	duration_ms?: number | null;
 	error?: string | null;
 	execution_id?: string | null;
 	title?: string | null;
+	// AskUserQuestion fields
+	questions?: AskUserQuestion[] | null;
+	request_id?: string | null;
 }
 
 // Message types from backend
@@ -511,6 +532,7 @@ class WebSocketService {
 				break;
 
 			// Chat streaming message types
+			case "message_start":
 			case "delta":
 			case "tool_call":
 			case "tool_progress":
@@ -519,6 +541,7 @@ class WebSocketService {
 			case "done":
 			case "error":
 			case "title_update":
+			case "ask_user_question":
 				this.dispatchChatStreamChunk(message as ChatStreamChunk);
 				break;
 		}
@@ -900,6 +923,46 @@ class WebSocketService {
 				type: "chat",
 				conversation_id: conversationId,
 				message,
+			}),
+		);
+		return true;
+	}
+
+	/**
+	 * Send an answer to an AskUserQuestion prompt from the SDK
+	 */
+	sendChatAnswer(
+		conversationId: string,
+		requestId: string,
+		answers: Record<string, string>,
+	): boolean {
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			return false;
+		}
+
+		this.ws.send(
+			JSON.stringify({
+				type: "chat_answer",
+				conversation_id: conversationId,
+				request_id: requestId,
+				answers,
+			}),
+		);
+		return true;
+	}
+
+	/**
+	 * Send a stop signal to interrupt the current chat operation
+	 */
+	sendChatStop(conversationId: string): boolean {
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			return false;
+		}
+
+		this.ws.send(
+			JSON.stringify({
+				type: "chat_stop",
+				conversation_id: conversationId,
 			}),
 		);
 		return true;

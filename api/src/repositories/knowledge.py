@@ -374,3 +374,84 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
             key=doc.key,
             created_at=doc.created_at,
         )
+
+    async def get_all_by_namespace(
+        self,
+        namespace: str,
+        organization_id: UUID | None = None,
+    ) -> dict[str, KnowledgeDocument]:
+        """
+        Get all documents in a namespace, keyed by their key field.
+
+        Used for batch operations like checking which documents need re-indexing.
+
+        Args:
+            namespace: Namespace to query
+            organization_id: Organization scope (None for global)
+
+        Returns:
+            Dict mapping key -> KnowledgeDocument (only docs with keys)
+        """
+        stmt = select(KnowledgeStore).where(
+            KnowledgeStore.namespace == namespace,
+            KnowledgeStore.key.isnot(None),
+        )
+
+        if organization_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        else:
+            stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
+
+        result = await self.session.execute(stmt)
+        docs = result.scalars().all()
+
+        return {
+            doc.key: KnowledgeDocument(
+                id=str(doc.id),
+                namespace=doc.namespace,
+                content=doc.content,
+                metadata=doc.doc_metadata,
+                organization_id=str(doc.organization_id) if doc.organization_id else None,
+                key=doc.key,
+                created_at=doc.created_at,
+            )
+            for doc in docs
+            if doc.key is not None
+        }
+
+    async def delete_orphaned_docs(
+        self,
+        namespace: str,
+        organization_id: UUID | None,
+        valid_keys: set[str],
+    ) -> int:
+        """
+        Delete documents not in the valid_keys set.
+
+        Used to clean up stale documents after re-indexing. Any document
+        in the namespace that is NOT in valid_keys will be deleted.
+
+        Args:
+            namespace: Namespace to clean up
+            organization_id: Organization scope (None for global)
+            valid_keys: Set of keys that should be kept
+
+        Returns:
+            Number of documents deleted
+        """
+        if not valid_keys:
+            # Safety: don't delete everything if valid_keys is empty
+            return 0
+
+        stmt = delete(KnowledgeStore).where(
+            KnowledgeStore.namespace == namespace,
+            KnowledgeStore.key.notin_(valid_keys),
+        )
+
+        if organization_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        else:
+            stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
+
+        result = await self.session.execute(stmt)
+        return result.rowcount

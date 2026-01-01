@@ -173,10 +173,18 @@ class AgentExecutor:
                         agent = routed_agent
 
             # 3. Save user message
-            await self._save_message(
+            user_msg = await self._save_message(
                 conversation_id=conversation.id,
                 role=MessageRole.USER,
                 content=user_message,
+            )
+
+            # 3b. Generate assistant message ID upfront and send message_start
+            assistant_message_id = uuid4()
+            yield ChatStreamChunk(
+                type="message_start",
+                user_message_id=str(user_msg.id),
+                assistant_message_id=str(assistant_message_id),
             )
 
             # 4. Get tool definitions for this agent (empty if agentless)
@@ -348,7 +356,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
                 # Continue loop to get LLM response with tool results
 
-            # 6. Save final assistant message
+            # 6. Save final assistant message (using pre-generated ID)
             duration_ms = int((time.time() - start_time) * 1000)
             assistant_msg = await self._save_message(
                 conversation_id=conversation.id,
@@ -358,6 +366,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 token_count_output=total_output_tokens,
                 model=llm_client.model_name,
                 duration_ms=duration_ms,
+                message_id=assistant_message_id,
             )
 
             # 6b. Record AI usage
@@ -530,6 +539,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         token_count_output: int | None = None,
         model: str | None = None,
         duration_ms: int | None = None,
+        message_id: UUID | None = None,
     ) -> Message:
         """Save a message to the conversation."""
         # Get next sequence number
@@ -541,6 +551,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         next_sequence = max_sequence + 1
 
         message = Message(
+            id=message_id if message_id else uuid4(),
             conversation_id=conversation_id,
             role=role,
             content=content,

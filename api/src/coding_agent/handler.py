@@ -5,13 +5,15 @@ Orchestrates Claude Agent SDK and publishes response chunks to RabbitMQ.
 Manages SDK client lifecycle per session.
 """
 
+import asyncio
 import logging
 from typing import Any
 from uuid import UUID
 
 from src.core.database import get_db_context
-from src.jobs.rabbitmq import publish_to_exchange
+from src.jobs.rabbitmq import consume_from_exchange, publish_to_exchange
 from src.services.coding_mode.client import CodingModeClient
+from src.services.coding_mode.models import CodingModeChunk
 from src.services.llm.factory import get_coding_mode_config
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,11 @@ logger = logging.getLogger(__name__)
 def get_response_exchange(session_id: str) -> str:
     """Get the exchange name for a session's response stream."""
     return f"coding.responses.{session_id}"
+
+
+def get_answer_exchange(session_id: str) -> str:
+    """Get the exchange name for receiving answers from the API."""
+    return f"coding.answers.{session_id}"
 
 
 class CodingAgentHandler:
@@ -44,6 +51,10 @@ class CodingAgentHandler:
         """
         Process a chat message and stream responses to RabbitMQ.
 
+        Supports bidirectional messaging for AskUserQuestion:
+        - Publishes chunks (including ask_user_question) to response exchange
+        - Listens for answers/stop commands on answer exchange
+
         Args:
             session_id: Unique session identifier
             conversation_id: Conversation ID for message persistence
@@ -54,38 +65,96 @@ class CodingAgentHandler:
                 - system_tools, knowledge_sources
                 - model
         """
-        exchange_name = get_response_exchange(session_id)
+        response_exchange = get_response_exchange(session_id)
+        answer_exchange = get_answer_exchange(session_id)
+
+        # Get or create SDK client for this session
+        client = await self._get_or_create_client(session_id, context)
+
+        # Helper to publish chunks to RabbitMQ
+        async def publish_chunk(chunk: CodingModeChunk) -> None:
+            chunk_data = chunk.model_dump(exclude_none=True)
+            chunk_data["session_id"] = session_id
+            chunk_data["conversation_id"] = conversation_id
+            await publish_to_exchange(response_exchange, chunk_data)
+            logger.debug(f"Published chunk type={chunk.type} to {response_exchange}")
+
+        # Set up chunk callback for AskUserQuestion
+        client.set_chunk_callback(publish_chunk)
+
+        # Background task to listen for answers/stop commands
+        answer_task: asyncio.Task[None] | None = None
+        stop_event = asyncio.Event()
+
+        async def answer_listener() -> None:
+            """Listen for answers and stop commands from the API."""
+            try:
+                async for msg in consume_from_exchange(answer_exchange, timeout=600.0):
+                    msg_type = msg.get("type")
+                    logger.debug(f"Received answer exchange message: {msg_type}")
+
+                    if msg_type == "answer":
+                        # Forward answer to client
+                        request_id = msg.get("request_id", "")
+                        answers = msg.get("answers", {})
+                        await client.provide_answer(request_id, answers)
+
+                    elif msg_type == "stop":
+                        # Interrupt the SDK
+                        logger.info(f"Stop command received for session {session_id}")
+                        await client.interrupt()
+                        stop_event.set()
+                        break
+
+            except asyncio.CancelledError:
+                logger.debug(f"Answer listener cancelled for session {session_id}")
+            except Exception as e:
+                logger.warning(f"Answer listener error: {e}")
 
         try:
-            # Get or create SDK client for this session
-            client = await self._get_or_create_client(session_id, context)
+            # Start answer listener in background
+            answer_task = asyncio.create_task(answer_listener())
 
             # Stream response from SDK
             async for chunk in client.chat(message):
-                # Convert chunk to dict and add session info
-                chunk_data = chunk.model_dump(exclude_none=True)
-                chunk_data["session_id"] = session_id
-                chunk_data["conversation_id"] = conversation_id
+                # Check if we've been stopped
+                if stop_event.is_set():
+                    logger.info(f"Chat interrupted for session {session_id}")
+                    break
 
-                # Publish to exchange for API to consume
-                await publish_to_exchange(exchange_name, chunk_data)
+                # Publish regular chunks
+                await publish_chunk(chunk)
 
-                logger.debug(f"Published chunk type={chunk.type} to {exchange_name}")
+        except asyncio.CancelledError:
+            logger.info(f"Chat cancelled for session {session_id}")
+            # Publish error chunk so frontend knows
+            error_chunk = CodingModeChunk(
+                type="error",
+                error_message="Chat was cancelled",
+            )
+            await publish_chunk(error_chunk)
 
         except Exception as e:
             logger.error(f"Error in chat processing: {e}", exc_info=True)
 
             # Publish error chunk so API knows something went wrong
-            error_chunk = {
-                "type": "error",
-                "session_id": session_id,
-                "conversation_id": conversation_id,
-                "error_message": str(e),
-            }
-            await publish_to_exchange(exchange_name, error_chunk)
+            error_chunk = CodingModeChunk(
+                type="error",
+                error_message=str(e),
+            )
+            await publish_chunk(error_chunk)
 
             # Re-raise to trigger DLQ if this was a systemic failure
             raise
+
+        finally:
+            # Clean up answer listener
+            if answer_task and not answer_task.done():
+                answer_task.cancel()
+                try:
+                    await answer_task
+                except asyncio.CancelledError:
+                    pass
 
     async def _get_or_create_client(
         self,
@@ -133,6 +202,29 @@ class CodingAgentHandler:
         logger.info(f"Created new SDK client for session {session_id}")
 
         return client
+
+    async def interrupt_session(self, session_id: str) -> bool:
+        """
+        Interrupt the current SDK operation for a session.
+
+        Args:
+            session_id: Session to interrupt
+
+        Returns:
+            True if session was found and interrupted, False otherwise
+        """
+        if session_id in self._clients:
+            client = self._clients[session_id]
+            try:
+                await client.interrupt()
+                logger.info(f"Interrupted SDK client for session {session_id}")
+                return True
+            except Exception as e:
+                logger.warning(f"Error interrupting SDK client: {e}")
+                return False
+        else:
+            logger.warning(f"No client found for session {session_id} to interrupt")
+            return False
 
     async def cleanup_session(self, session_id: str) -> None:
         """

@@ -178,6 +178,28 @@ SYSTEM_TOOLS: list[ToolInfo] = [
         type="system",
         default_enabled_for_coding_agent=True,
     ),
+    # Data Provider Tools
+    ToolInfo(
+        id="list_data_providers",
+        name="List Data Providers",
+        description="List all available data providers with their parameters",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="get_data_provider_schema",
+        name="Get Data Provider Schema",
+        description="Get documentation about data provider structure, decorators, and examples",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="validate_data_provider",
+        name="Validate Data Provider",
+        description="Validate a data provider Python file for syntax and decorator issues",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
 ]
 
 

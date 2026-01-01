@@ -11,10 +11,13 @@ import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import { ToolExecutionCard } from "./ToolExecutionCard";
 import { ToolExecutionBadge } from "./ToolExecutionBadge";
+import { ToolExecutionGroup } from "./ToolExecutionGroup";
 import { ChatSystemEvent, type SystemEvent } from "./ChatSystemEvent";
+import { AskUserQuestionModal } from "./AskUserQuestionModal";
 import {
 	useChatStore,
 	useStreamingMessage,
+	useCompletedStreamingMessages,
 	type StreamingMessage,
 } from "@/stores/chatStore";
 import { useMessages } from "@/hooks/useChat";
@@ -61,33 +64,39 @@ function StreamingMessageDisplay({
 	};
 
 	return (
-		<div className="space-y-3">
-			{/* Tool Execution Badges (streaming) - compact horizontal flow */}
-			{hasToolExecutions && (
-				<div className="px-4 flex flex-wrap gap-2">
-					{toolExecutions.map((execution) => (
-						<ToolExecutionBadge
-							key={execution.toolCall.id}
-							toolCall={execution.toolCall}
-							status={execution.status}
-							result={execution.result}
-							error={execution.error}
-							durationMs={execution.durationMs}
-							logs={execution.logs}
-						/>
-					))}
-				</div>
-			)}
-
-			{/* Text Content */}
+		<div className="space-y-1">
+			{/* Text Content first (to match completed message layout) */}
 			{(hasContent || !hasToolExecutions) && (
 				<ChatMessage
 					message={message}
 					isStreaming={
-						!hasToolExecutions || !streamingMessage.content
+						!streamingMessage.isComplete &&
+						(!hasToolExecutions || !streamingMessage.content)
 					}
 					onToolCallClick={onToolCallClick}
+					hideToolBadges={true} // We render tool badges separately below
 				/>
+			)}
+
+			{/* Tool Execution Badges (streaming) - with vertical connecting line */}
+			{hasToolExecutions && (
+				<>
+					{/* Small spacer when tools appear without preceding text */}
+					{!hasContent && <div className="h-2" />}
+					<ToolExecutionGroup>
+						{toolExecutions.map((execution) => (
+							<ToolExecutionBadge
+								key={execution.toolCall.id}
+								toolCall={execution.toolCall}
+								status={execution.status}
+								result={execution.result}
+								error={execution.error}
+								durationMs={execution.durationMs}
+								logs={execution.logs}
+							/>
+						))}
+					</ToolExecutionGroup>
+				</>
 			)}
 		</div>
 	);
@@ -139,10 +148,10 @@ function MessageWithToolCards({
 	const allSDKTools = toolsInfo.every((t) => t.isSDKTool);
 
 	return (
-		<div className="space-y-3">
-			{/* SDK Tools - compact badges in horizontal flow */}
+		<div className="space-y-1">
+			{/* SDK Tools - compact badges with vertical connecting line */}
 			{allSDKTools ? (
-				<div className="px-4 flex flex-wrap gap-2">
+				<ToolExecutionGroup>
 					{toolsInfo.map(({ tc, savedExecution, resultMsg }) => (
 						<ToolExecutionBadge
 							key={tc.id}
@@ -157,22 +166,24 @@ function MessageWithToolCards({
 							logs={savedExecution?.logs}
 						/>
 					))}
-				</div>
+				</ToolExecutionGroup>
 			) : (
-				/* Workflow Tools - full cards for execution details */
-				<div className="px-4 space-y-2">
-					{toolsInfo.map(
-						({ tc, executionId, savedExecution, resultMsg }) => (
-							<ToolExecutionCard
-								key={tc.id}
-								executionId={executionId}
-								toolCall={tc}
-								execution={savedExecution}
-								hasResultMessage={!!resultMsg}
-							/>
-						),
-					)}
-				</div>
+				/* Workflow Tools - full cards with vertical connecting line */
+				<ToolExecutionGroup>
+					<div className="space-y-2 w-full">
+						{toolsInfo.map(
+							({ tc, executionId, savedExecution, resultMsg }) => (
+								<ToolExecutionCard
+									key={tc.id}
+									executionId={executionId}
+									toolCall={tc}
+									execution={savedExecution}
+									hasResultMessage={!!resultMsg}
+								/>
+							),
+						)}
+					</div>
+				</ToolExecutionGroup>
 			)}
 
 			{/* Message text content (if any) */}
@@ -234,10 +245,17 @@ export function ChatWindow({
 				state.systemEventsByConversation[conversationId]) ||
 			EMPTY_EVENTS,
 	);
+	const completedStreamingMessages = useCompletedStreamingMessages();
 	const streamingMessage = useStreamingMessage();
 
 	// Use WebSocket streaming
-	const { sendMessage, isStreaming } = useChatStream({
+	const {
+		sendMessage,
+		isStreaming,
+		pendingQuestion,
+		answerQuestion,
+		stopStreaming,
+	} = useChatStream({
 		conversationId,
 		onError: (error) => {
 			console.error("[ChatWindow] Stream error:", error);
@@ -377,6 +395,24 @@ export function ChatWindow({
 		clearMessages,
 	]);
 
+	// Clear streaming message once API returns the authoritative data
+	// This prevents the streaming message from lingering after the API message arrives
+	const resetStream = useChatStore((state) => state.resetStream);
+	useEffect(() => {
+		if (!streamingMessage?.isComplete || !apiMessages) return;
+
+		// Check if API now has a message matching the streamed content
+		const streamContent = streamingMessage.content?.slice(0, 100) || "";
+		const apiHasMessage = apiMessages.some(
+			(m) => m.role === "assistant" && m.content?.slice(0, 100) === streamContent
+		);
+
+		if (apiHasMessage) {
+			// API has the message - clear the streaming state
+			resetStream();
+		}
+	}, [streamingMessage, apiMessages, resetStream]);
+
 	// Auto-scroll to bottom on new messages or events (only if user is at bottom)
 	useEffect(() => {
 		if (isAtBottom) {
@@ -477,8 +513,30 @@ export function ChatWindow({
 						),
 					)}
 
-					{/* Streaming Message */}
-					{streamingMessage && !streamingMessage.isComplete && (
+					{/* Completed Streaming Messages - messages that have finished streaming but API hasn't returned yet */}
+					{completedStreamingMessages.map((msg, index) => (
+						<StreamingMessageDisplay
+							key={`completed-streaming-${index}`}
+							conversationId={conversationId}
+							streamingMessage={msg}
+							onToolCallClick={onToolCallClick}
+						/>
+					))}
+
+					{/* Current Streaming Message - show while streaming OR while waiting for API to return the final message */}
+					{streamingMessage && (() => {
+						// Still actively streaming - always show if has content or tools
+						if (!streamingMessage.isComplete) {
+							return streamingMessage.content || streamingMessage.toolCalls.length > 0;
+						}
+						// Streaming complete - show until API returns the message
+						// Check if any API message has matching content (first 100 chars)
+						const streamContent = streamingMessage.content?.slice(0, 100) || "";
+						const apiHasMessage = apiMessages?.some(
+							(m) => m.role === "assistant" && m.content?.slice(0, 100) === streamContent
+						);
+						return !apiHasMessage;
+					})() && (
 						<StreamingMessageDisplay
 							conversationId={conversationId}
 							streamingMessage={streamingMessage}
@@ -496,10 +554,22 @@ export function ChatWindow({
 			<ChatInput
 				onSend={handleSendMessage}
 				isLoading={isStreaming}
+				onStop={stopStreaming}
 				placeholder={
 					agentName ? `Message ${agentName}...` : "Send a message..."
 				}
 			/>
+
+			{/* AskUserQuestion Modal */}
+			{pendingQuestion && (
+				<AskUserQuestionModal
+					isOpen={true}
+					questions={pendingQuestion.questions}
+					requestId={pendingQuestion.requestId}
+					onSubmit={answerQuestion}
+					onCancel={stopStreaming}
+				/>
+			)}
 		</div>
 	);
 }

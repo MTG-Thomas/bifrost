@@ -56,7 +56,6 @@ class knowledge:
         namespace: str = "default",
         key: str | None = None,
         metadata: dict[str, Any] | None = None,
-        org_id: str | None = None,
         scope: str | None = None,
     ) -> str:
         """
@@ -69,8 +68,10 @@ class knowledge:
             namespace: Namespace for organization (defaults to "default")
             key: Optional key for upserts (e.g., "ticket-123")
             metadata: Optional metadata dict
-            org_id: Organization scope (defaults to current org)
-            scope: "global" for global scope, otherwise uses org_id
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Bypass org resolution, use global scope
 
         Returns:
             Document ID (UUID as string)
@@ -92,7 +93,6 @@ class knowledge:
                 "namespace": namespace,
                 "key": key,
                 "metadata": metadata,
-                "org_id": org_id,
                 "scope": scope,
             }
         )
@@ -104,7 +104,6 @@ class knowledge:
         documents: list[dict[str, Any]],
         *,
         namespace: str = "default",
-        org_id: str | None = None,
         scope: str | None = None,
     ) -> list[str]:
         """
@@ -118,8 +117,10 @@ class knowledge:
         Args:
             documents: List of document dicts
             namespace: Namespace for all documents
-            org_id: Organization scope
-            scope: "global" for global scope
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Bypass org resolution, use global scope
 
         Returns:
             List of document IDs
@@ -136,7 +137,6 @@ class knowledge:
             json={
                 "documents": documents,
                 "namespace": namespace,
-                "org_id": org_id,
                 "scope": scope,
             }
         )
@@ -151,7 +151,7 @@ class knowledge:
         limit: int = 5,
         min_score: float | None = None,
         metadata_filter: dict[str, Any] | None = None,
-        org_id: str | None = None,
+        scope: str | None = None,
         fallback: bool = True,
     ) -> list[KnowledgeDocument]:
         """
@@ -165,7 +165,10 @@ class knowledge:
             limit: Maximum results (default 5)
             min_score: Minimum similarity score (0-1)
             metadata_filter: Filter by metadata fields (e.g., {"status": "open"})
-            org_id: Organization scope (defaults to current org)
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Search only global scope
             fallback: If True, also search global scope (default True)
 
         Returns:
@@ -190,7 +193,7 @@ class knowledge:
                 "limit": limit,
                 "min_score": min_score,
                 "metadata_filter": metadata_filter,
-                "org_id": org_id,
+                "scope": scope,
                 "fallback": fallback,
             }
         )
@@ -205,7 +208,6 @@ class knowledge:
         key: str,
         *,
         namespace: str = "default",
-        org_id: str | None = None,
         scope: str | None = None,
     ) -> bool:
         """
@@ -214,8 +216,10 @@ class knowledge:
         Args:
             key: Document key
             namespace: Namespace
-            org_id: Organization scope
-            scope: "global" for global scope
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Delete from global scope
 
         Returns:
             True if deleted, False if not found
@@ -229,7 +233,6 @@ class knowledge:
             json={
                 "key": key,
                 "namespace": namespace,
-                "org_id": org_id,
                 "scope": scope,
             }
         )
@@ -240,7 +243,6 @@ class knowledge:
     async def delete_namespace(
         namespace: str,
         *,
-        org_id: str | None = None,
         scope: str | None = None,
     ) -> int:
         """
@@ -248,8 +250,10 @@ class knowledge:
 
         Args:
             namespace: Namespace to delete
-            org_id: Organization scope
-            scope: "global" for global scope
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Delete from global scope
 
         Returns:
             Number of documents deleted
@@ -261,21 +265,23 @@ class knowledge:
         client = get_client()
         response = await client.delete(
             f"/api/cli/knowledge/namespace/{namespace}",
-            params={"org_id": org_id, "scope": scope},
+            params={"scope": scope},
         )
         response.raise_for_status()
         return response.json()["deleted_count"]
 
     @staticmethod
     async def list_namespaces(
-        org_id: str | None = None,
+        scope: str | None = None,
         include_global: bool = True,
     ) -> list[NamespaceInfo]:
         """
         List available namespaces with document counts per scope.
 
         Args:
-            org_id: Filter to specific org (defaults to current org)
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
             include_global: If True, include global namespaces (default True)
 
         Returns:
@@ -289,7 +295,7 @@ class knowledge:
         client = get_client()
         response = await client.get(
             "/api/cli/knowledge/namespaces",
-            params={"org_id": org_id, "include_global": include_global},
+            params={"scope": scope, "include_global": include_global},
         )
         response.raise_for_status()
         return [
@@ -302,7 +308,6 @@ class knowledge:
         key: str,
         *,
         namespace: str = "default",
-        org_id: str | None = None,
         scope: str | None = None,
     ) -> KnowledgeDocument | None:
         """
@@ -311,8 +316,10 @@ class knowledge:
         Args:
             key: Document key
             namespace: Namespace
-            org_id: Organization scope
-            scope: "global" for global scope
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Get from global scope
 
         Returns:
             KnowledgeDocument or None if not found
@@ -328,7 +335,6 @@ class knowledge:
             params={
                 "key": key,
                 "namespace": namespace,
-                "org_id": org_id,
                 "scope": scope,
             },
         )

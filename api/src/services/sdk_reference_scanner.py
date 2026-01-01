@@ -64,7 +64,7 @@ class SDKReferenceScanner:
 
     def extract_references(self, content: str) -> tuple[set[str], set[str]]:
         """
-        Extract SDK references from Python code.
+        Extract SDK references from Python code, ignoring commented lines.
 
         Args:
             content: Python file content
@@ -72,9 +72,54 @@ class SDKReferenceScanner:
         Returns:
             Tuple of (config_keys, integration_names)
         """
-        config_keys = set(CONFIG_PATTERN.findall(content))
-        integration_names = set(INTEGRATIONS_PATTERN.findall(content))
+        config_keys: set[str] = set()
+        integration_names: set[str] = set()
+
+        for line in content.split('\n'):
+            # Find position of # that starts a comment (not inside a string)
+            comment_pos = self._find_comment_position(line)
+
+            # Check for config.get matches before comment
+            for match in CONFIG_PATTERN.finditer(line):
+                if comment_pos is None or match.start() < comment_pos:
+                    config_keys.add(match.group(1))
+
+            # Check for integrations.get matches before comment
+            for match in INTEGRATIONS_PATTERN.finditer(line):
+                if comment_pos is None or match.start() < comment_pos:
+                    integration_names.add(match.group(1))
+
         return config_keys, integration_names
+
+    def _find_comment_position(self, line: str) -> int | None:
+        """
+        Find the position of a # that starts a comment (not inside a string).
+
+        Args:
+            line: A single line of Python code
+
+        Returns:
+            Position of comment start, or None if no comment exists
+        """
+        in_single_quote = False
+        in_double_quote = False
+        i = 0
+        while i < len(line):
+            char = line[i]
+            # Handle escape sequences
+            if char == '\\' and i + 1 < len(line):
+                i += 2
+                continue
+            # Toggle string state
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+            elif char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+            # Check for comment outside strings
+            elif char == '#' and not in_single_quote and not in_double_quote:
+                return i
+            i += 1
+        return None
 
     async def get_all_config_keys(self) -> set[str]:
         """Get all config keys that exist in the system (any org or global)."""

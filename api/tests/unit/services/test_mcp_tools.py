@@ -193,20 +193,21 @@ class TestValidateFormSchema:
 
     @pytest.mark.asyncio
     async def test_rejects_missing_fields(self, org_user_context):
-        """Should reject form missing fields array."""
+        """Should reject form missing form_schema wrapper."""
         form = json.dumps({"name": "Test"})
         result = await _validate_form_schema_impl(org_user_context, form)
-        assert "fields" in result.lower()
+        assert "form_schema" in result.lower()
 
     @pytest.mark.asyncio
     async def test_rejects_invalid_field_type(self, org_user_context):
-        """Should reject fields with invalid types."""
+        """Should reject fields not nested inside form_schema.fields."""
         form = json.dumps({
             "name": "Test",
             "fields": [{"name": "test", "type": "invalid_type"}]
         })
         result = await _validate_form_schema_impl(org_user_context, form)
-        assert "invalid type" in result.lower()
+        # Fields must be nested inside form_schema.fields, not at top level
+        assert "form_schema" in result.lower() or "nested" in result.lower()
 
 
 # ==================== list_workflows Tests ====================

@@ -172,6 +172,12 @@ async def ensure_coding_agent(db: AsyncSession) -> Agent:
             needs_update = True
             logger.info(f"Backfilled Coding Assistant system_tools: {agent.system_tools}")
 
+        # Ensure bifrost-docs is in knowledge_sources for platform documentation access
+        if not agent.knowledge_sources or "bifrost-docs" not in agent.knowledge_sources:
+            agent.knowledge_sources = list(agent.knowledge_sources or []) + ["bifrost-docs"]
+            needs_update = True
+            logger.info("Added bifrost-docs to Coding Assistant knowledge_sources")
+
         if needs_update:
             await db.commit()
 
@@ -190,6 +196,7 @@ async def ensure_coding_agent(db: AsyncSession) -> Agent:
         is_coding_mode=True,
         is_system=True,  # Can't be deleted
         system_tools=get_system_tool_ids(),  # Enable all system tools
+        knowledge_sources=["bifrost-docs"],  # Platform documentation access
         created_by="system",
     )
     db.add(agent)

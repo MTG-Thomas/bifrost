@@ -21,6 +21,22 @@ class CodingModeSession(BaseModel):
     last_activity: datetime
 
 
+class AskUserQuestionOption(BaseModel):
+    """Option for a user question from the SDK."""
+
+    label: str
+    description: str
+
+
+class AskUserQuestion(BaseModel):
+    """Question from SDK requiring user input."""
+
+    question: str
+    header: str
+    options: list[AskUserQuestionOption]
+    multi_select: bool = False
+
+
 class CodingModeChunk(BaseModel):
     """
     Streaming chunk from coding mode.
@@ -37,6 +53,7 @@ class CodingModeChunk(BaseModel):
         "tool_result",
         "done",
         "error",
+        "ask_user_question",
     ]
 
     # Session info (for session_start)
@@ -59,3 +76,7 @@ class CodingModeChunk(BaseModel):
     output_tokens: int | None = None
     cost_usd: float | None = None
     duration_ms: int | None = None
+
+    # AskUserQuestion fields
+    questions: list[AskUserQuestion] | None = None
+    request_id: str | None = None

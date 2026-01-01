@@ -12,6 +12,7 @@ import type { components } from "@/lib/v1";
 import { Badge } from "@/components/ui/badge";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
@@ -19,45 +20,60 @@ type MessagePublic = components["schemas"]["MessagePublic"];
 type ToolCall = components["schemas"]["ToolCall"];
 
 /**
- * Parse message content and render @mentions as styled tags
+ * Detect if text is a progress/status update rather than the final result.
+ * Progress updates are rendered with subdued styling.
+ */
+function isProgressUpdate(text: string): boolean {
+	const trimmed = text.trim();
+
+	// Patterns that indicate progress/status updates
+	const progressPatterns = [
+		// Starting patterns - agent announcing what it's about to do
+		/^(Let me|I'll|I will|Now I'm|I'm going to|I'm now|Now let me)/i,
+		/^(Searching|Looking|Checking|Analyzing|Reading|Processing|Fetching|Loading)/i,
+		/^(First,|Next,|Then,|Finally,|Now,|Alright,|Okay,)/i,
+
+		// Transitional/enthusiastic openers
+		/^(Excellent|Great|Perfect|Good|Wonderful|Alright)(!|,)/i,
+
+		// Short status updates (under 100 chars and matches pattern)
+		/^(I found|I see|I notice|I can see|I've found|I've located)/i,
+	];
+
+	// Check if matches any progress pattern
+	if (progressPatterns.some((p) => p.test(trimmed))) {
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * Convert @mentions to HTML spans for markdown rendering
  * Supports both @[Agent Name] (new) and @AgentName (legacy) formats
  */
-function renderWithMentions(content: string): React.ReactNode[] {
+function preprocessMentions(content: string): string {
 	// Match both formats:
 	// 1. @[Agent Name] - bracketed format (preferred)
 	// 2. @Word - single word without brackets (legacy fallback)
 	const mentionRegex = /@\[([^\]]+)\]|@(\w+)/g;
-	const parts: React.ReactNode[] = [];
-	let lastIndex = 0;
-	let match;
+	return content.replace(mentionRegex, (_, bracketName, wordName) => {
+		const agentName = bracketName || wordName;
+		// Use data attribute to mark as mention for custom rendering
+		return `<span data-mention="${agentName}"></span>`;
+	});
+}
 
-	while ((match = mentionRegex.exec(content)) !== null) {
-		// Add text before the mention
-		if (match.index > lastIndex) {
-			parts.push(content.slice(lastIndex, match.index));
-		}
-
-		// Get agent name from either capture group
-		const agentName = match[1] || match[2];
-		parts.push(
-			<span
-				key={`mention-${match.index}`}
-				className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/25 font-medium text-sm"
-			>
-				<Bot className="h-3 w-3 shrink-0" />
-				{agentName}
-			</span>,
-		);
-
-		lastIndex = match.index + match[0].length;
-	}
-
-	// Add remaining text
-	if (lastIndex < content.length) {
-		parts.push(content.slice(lastIndex));
-	}
-
-	return parts.length > 0 ? parts : [content];
+/**
+ * Mention badge component for use in markdown
+ */
+function MentionBadge({ name }: { name: string }) {
+	return (
+		<span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/25 font-medium text-sm">
+			<Bot className="h-3 w-3 shrink-0" />
+			{name}
+		</span>
+	);
 }
 
 interface ChatMessageProps {
@@ -75,12 +91,68 @@ export function ChatMessage({
 }: ChatMessageProps) {
 	const isUser = message.role === "user";
 
-	// User message - clean right-aligned bubble with @mention badges
+	// User message - right-aligned bubble with markdown rendering
 	if (isUser) {
 		return (
 			<div className="flex justify-end py-2 px-4">
-				<div className="max-w-[80%] bg-primary text-primary-foreground rounded-2xl px-4 py-2.5 whitespace-pre-wrap">
-					{renderWithMentions(message.content || "")}
+				<div className="max-w-[80%] bg-primary text-primary-foreground rounded-2xl px-4 py-2.5 overflow-x-auto break-words">
+					<div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-p:leading-relaxed prose-p:text-primary-foreground prose-headings:text-primary-foreground prose-strong:text-primary-foreground prose-code:text-primary-foreground prose-pre:my-2 prose-pre:p-0 prose-pre:bg-transparent">
+						<ReactMarkdown
+							remarkPlugins={[remarkGfm]}
+							rehypePlugins={[rehypeRaw]}
+							components={{
+								code({ className, children }) {
+									const match = /language-(\w+)/.exec(className || "");
+									const content = String(children).replace(/\n$/, "");
+									const isCodeBlock = content.includes("\n") || className;
+
+									if (isCodeBlock) {
+										return (
+											<SyntaxHighlighter
+												style={oneDark}
+												language={match?.[1] || "text"}
+												PreTag="div"
+												className="rounded-md !my-2"
+											>
+												{content}
+											</SyntaxHighlighter>
+										);
+									}
+
+									// Inline code - darker bg within blue bubble
+									return (
+										<code className="bg-black/20 px-1.5 py-0.5 rounded text-sm font-mono">
+											{children}
+										</code>
+									);
+								},
+								p: ({ children }) => (
+									<p className="my-1 leading-relaxed">{children}</p>
+								),
+								// Links in user messages
+								a: ({ href, children }) => (
+									<a
+										href={href}
+										target="_blank"
+										rel="noopener noreferrer"
+										className="text-primary-foreground underline hover:opacity-80"
+									>
+										{children}
+									</a>
+								),
+								// Handle @mention spans
+								span: ({ node, ...props }) => {
+									const mention = (node?.properties as Record<string, unknown>)?.dataMention as string | undefined;
+									if (mention) {
+										return <MentionBadge name={mention} />;
+									}
+									return <span {...props} />;
+								},
+							}}
+						>
+							{preprocessMentions(message.content || "")}
+						</ReactMarkdown>
+					</div>
 				</div>
 			</div>
 		);
@@ -94,36 +166,26 @@ export function ChatMessage({
 				<div className="prose prose-slate dark:prose-invert max-w-none prose-p:my-2 prose-p:leading-7 prose-headings:font-semibold prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-pre:my-2 prose-pre:p-0 prose-pre:bg-transparent">
 					<ReactMarkdown
 						remarkPlugins={[remarkGfm]}
+						rehypePlugins={[rehypeRaw]}
 						components={{
 							code({ className, children }) {
 								const match = /language-(\w+)/.exec(
 									className || "",
 								);
-								const isInline = !className;
 								const content = String(children).replace(
 									/\n$/,
 									"",
 								);
 
-								if (!isInline && match) {
-									return (
-										<SyntaxHighlighter
-											style={oneDark}
-											language={match[1]}
-											PreTag="div"
-											className="rounded-md !my-2"
-										>
-											{content}
-										</SyntaxHighlighter>
-									);
-								}
+								// Check if it's a code block (has newlines or className)
+								const isCodeBlock =
+									content.includes("\n") || className;
 
-								// Code block without language
-								if (!isInline) {
+								if (isCodeBlock) {
 									return (
 										<SyntaxHighlighter
 											style={oneDark}
-											language="text"
+											language={match?.[1] || "text"}
 											PreTag="div"
 											className="rounded-md !my-2"
 										>
@@ -140,9 +202,33 @@ export function ChatMessage({
 								);
 							},
 							// Tighter spacing for chat context
-							p: ({ children }) => (
-								<p className="my-2 leading-7">{children}</p>
-							),
+							// Apply subdued styling for progress updates
+							p: ({ children }) => {
+								const text =
+									typeof children === "string"
+										? children
+										: Array.isArray(children)
+											? children
+													.filter(
+														(c) =>
+															typeof c ===
+															"string",
+													)
+													.join("")
+											: "";
+								const isProgress = isProgressUpdate(text);
+								return (
+									<p
+										className={cn(
+											"my-2 leading-7",
+											isProgress &&
+												"text-sm text-muted-foreground",
+										)}
+									>
+										{children}
+									</p>
+								);
+							},
 							ul: ({ children }) => (
 								<ul className="my-2 ml-4 list-disc space-y-1">
 									{children}

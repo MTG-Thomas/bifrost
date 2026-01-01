@@ -71,6 +71,9 @@ interface ChatState {
 
 	// Streaming state
 	isStreaming: boolean;
+	/** Completed streaming messages (for multi-message responses like coding mode) */
+	completedStreamingMessages: StreamingMessage[];
+	/** Currently building streaming message */
 	streamingMessage: StreamingMessage | null;
 
 	// Studio mode (admin feature for debugging)
@@ -124,6 +127,8 @@ interface ChatActions {
 	setToolExecutionId: (toolCallId: string, executionId: string) => void;
 	addToolExecutionLog: (toolCallId: string, log: ToolExecutionLog) => void;
 	addStreamToolResult: (toolResult: ToolResult) => void;
+	/** Complete current streaming message and start a new one (for multi-message responses) */
+	completeCurrentStreamingMessage: () => void;
 	completeStream: (messageId?: string) => void;
 	setStreamError: (error: string) => void;
 	resetStream: () => void;
@@ -152,6 +157,7 @@ const initialState: ChatState = {
 	toolExecutionsByConversation: {},
 	messagesByConversation: {},
 	isStreaming: false,
+	completedStreamingMessages: [],
 	streamingMessage: null,
 	isStudioMode: false,
 	selectedToolCallId: null,
@@ -293,6 +299,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 	startStreaming: () => {
 		set({
 			isStreaming: true,
+			completedStreamingMessages: [],
 			streamingMessage: {
 				content: "",
 				toolCalls: [],
@@ -437,6 +444,40 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 		});
 	},
 
+	completeCurrentStreamingMessage: () => {
+		set((state) => {
+			// Only complete if there's content or tools in the current message
+			if (
+				!state.streamingMessage ||
+				(!state.streamingMessage.content &&
+					state.streamingMessage.toolCalls.length === 0)
+			) {
+				return {};
+			}
+
+			// Mark current message as complete and add to completed list
+			const completedMessage: StreamingMessage = {
+				...state.streamingMessage,
+				isComplete: true,
+			};
+
+			return {
+				completedStreamingMessages: [
+					...state.completedStreamingMessages,
+					completedMessage,
+				],
+				// Start fresh streaming message
+				streamingMessage: {
+					content: "",
+					toolCalls: [],
+					toolResults: [],
+					toolExecutions: {},
+					isComplete: false,
+				},
+			};
+		});
+	},
+
 	completeStream: (_messageId) => {
 		set((state) => ({
 			isStreaming: false,
@@ -465,6 +506,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 	resetStream: () => {
 		set({
 			isStreaming: false,
+			completedStreamingMessages: [],
 			streamingMessage: null,
 		});
 	},
@@ -503,6 +545,8 @@ export const useActiveConversation = () =>
 export const useActiveAgent = () =>
 	useChatStore((state) => state.activeAgentId);
 export const useIsStreaming = () => useChatStore((state) => state.isStreaming);
+export const useCompletedStreamingMessages = () =>
+	useChatStore((state) => state.completedStreamingMessages);
 export const useStreamingMessage = () =>
 	useChatStore((state) => state.streamingMessage);
 export const useIsStudioMode = () =>

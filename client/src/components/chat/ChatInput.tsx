@@ -6,7 +6,7 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { ArrowUp, Bot, Loader2, Paperclip, Plus, X } from "lucide-react";
+import { ArrowUp, Bot, Loader2, Paperclip, Plus, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MentionPicker } from "./MentionPicker";
@@ -25,6 +25,7 @@ interface ChatInputProps {
 	disabled?: boolean;
 	isLoading?: boolean;
 	placeholder?: string;
+	onStop?: () => void;
 }
 
 export function ChatInput({
@@ -32,6 +33,7 @@ export function ChatInput({
 	disabled = false,
 	isLoading = false,
 	placeholder = "Reply...",
+	onStop,
 }: ChatInputProps) {
 	const [message, setMessage] = useState("");
 	const [mentions, setMentions] = useState<MentionChip[]>([]);
@@ -289,25 +291,40 @@ export function ChatInput({
 							</Button>
 						</div>
 
-						{/* Right side: send button */}
-						<Button
-							onClick={handleSend}
-							disabled={!canSend}
-							size="icon"
-							className={cn(
-								"h-8 w-8 rounded-full shrink-0",
-								"transition-all duration-200",
-								canSend
-									? "bg-primary text-primary-foreground hover:bg-primary/90"
-									: "bg-muted-foreground/20 text-muted-foreground",
-							)}
-						>
-							{isLoading ? (
-								<Loader2 className="h-4 w-4 animate-spin" />
-							) : (
-								<ArrowUp className="h-4 w-4" />
-							)}
-						</Button>
+						{/* Right side: stop or send button */}
+						{isLoading && onStop ? (
+							<Button
+								onClick={onStop}
+								size="icon"
+								variant="destructive"
+								className={cn(
+									"h-8 w-8 rounded-full shrink-0",
+									"transition-all duration-200",
+								)}
+								title="Stop generation"
+							>
+								<Square className="h-3 w-3 fill-current" />
+							</Button>
+						) : (
+							<Button
+								onClick={handleSend}
+								disabled={!canSend}
+								size="icon"
+								className={cn(
+									"h-8 w-8 rounded-full shrink-0",
+									"transition-all duration-200",
+									canSend
+										? "bg-primary text-primary-foreground hover:bg-primary/90"
+										: "bg-muted-foreground/20 text-muted-foreground",
+								)}
+							>
+								{isLoading ? (
+									<Loader2 className="h-4 w-4 animate-spin" />
+								) : (
+									<ArrowUp className="h-4 w-4" />
+								)}
+							</Button>
+						)}
 					</div>
 				</div>
 

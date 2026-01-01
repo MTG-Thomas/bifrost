@@ -5,16 +5,21 @@ Wraps Claude Agent SDK for Bifrost workflow development.
 Handles session management, MCP tool registration, and streaming.
 """
 
+import asyncio
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from src.models.contracts.agents import ToolCall, ToolResult
-from src.services.coding_mode.models import CodingModeChunk
+from src.services.coding_mode.models import (
+    AskUserQuestion,
+    AskUserQuestionOption,
+    CodingModeChunk,
+)
 from src.services.coding_mode.prompts import get_system_prompt
 from src.services.coding_mode.session import SessionManager
 from src.services.mcp import BifrostMCPServer, MCPContext
@@ -26,6 +31,8 @@ try:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient  # type: ignore
     from claude_agent_sdk.types import (  # type: ignore
         AssistantMessage,
+        PermissionResultAllow,
+        PermissionResultDeny,
         ResultMessage,
         TextBlock,
         ToolResultBlock,
@@ -54,6 +61,8 @@ except ImportError:
 
     # Type stubs
     AssistantMessage = Any  # type: ignore
+    PermissionResultAllow = Any  # type: ignore
+    PermissionResultDeny = Any  # type: ignore
     ResultMessage = Any  # type: ignore
     TextBlock = Any  # type: ignore
     ToolResultBlock = Any  # type: ignore
@@ -144,6 +153,14 @@ class CodingModeClient:
         # SDK client instance - created lazily and reused for conversation continuity
         self._sdk_client: Any = None  # ClaudeSDKClient when initialized
 
+        # For AskUserQuestion support
+        self._pending_question: asyncio.Future[dict[str, str]] | None = None
+        self._pending_request_id: str | None = None
+        self._chunk_callback: Callable[[CodingModeChunk], Awaitable[None]] | None = None
+
+        # For streaming delta tracking (SDK sends cumulative content, we compute deltas)
+        self._last_text_content: str = ""
+
         logger.info(
             f"Initialized CodingModeClient for user {user_email}, session {self.session_id}"
         )
@@ -162,8 +179,8 @@ class CodingModeClient:
         system_prompt = get_system_prompt()
         logger.info(f"Using system prompt ({len(system_prompt)} chars) for model {self._model}")
 
-        # Standard file tools are always available
-        allowed_tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+        # Standard file tools are always available, plus WebSearch
+        allowed_tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebSearch"]
 
         # Map system tool IDs to MCP tool names
         tool_id_to_mcp_name = {
@@ -191,7 +208,140 @@ class CodingModeClient:
             allowed_tools=allowed_tools,
             permission_mode="acceptEdits",  # Auto-accept file edits in coding mode
             include_partial_messages=True,  # Stream events as they happen (tools, text)
+            can_use_tool=self._can_use_tool,  # Handle AskUserQuestion and other permissions
         )
+
+    def set_chunk_callback(
+        self, callback: Callable[[CodingModeChunk], Awaitable[None]]
+    ) -> None:
+        """
+        Set callback for emitting chunks during can_use_tool.
+
+        Used to send ask_user_question chunks to the frontend while
+        the SDK is waiting for user input.
+        """
+        self._chunk_callback = callback
+
+    async def _can_use_tool(
+        self, tool_name: str, input_data: dict[str, Any], context: dict[str, Any]
+    ) -> Any:
+        """
+        Handle SDK permission requests, including AskUserQuestion.
+
+        This callback is invoked by the SDK when it wants to use a tool
+        that requires permission. For AskUserQuestion, we emit a chunk
+        to the frontend and block until the user provides an answer.
+
+        Args:
+            tool_name: Name of the tool being requested
+            input_data: Input parameters for the tool
+            context: SDK context with abort signal (reserved for future use)
+
+        Returns:
+            PermissionResultAllow or PermissionResultDeny
+        """
+        # Note: context contains { signal: AbortSignal | None } for abort handling
+        # Currently unused but required by SDK callback signature
+        if tool_name == "AskUserQuestion":
+            request_id = str(uuid4())
+            self._pending_request_id = request_id
+            self._pending_question = asyncio.get_event_loop().create_future()
+
+            logger.info(f"AskUserQuestion received, request_id={request_id}")
+
+            # Emit question chunk to frontend via callback
+            if self._chunk_callback:
+                questions = [
+                    AskUserQuestion(
+                        question=q["question"],
+                        header=q["header"],
+                        options=[
+                            AskUserQuestionOption(
+                                label=o["label"],
+                                description=o.get("description", ""),
+                            )
+                            for o in q.get("options", [])
+                        ],
+                        multi_select=q.get("multiSelect", False),
+                    )
+                    for q in input_data.get("questions", [])
+                ]
+                await self._chunk_callback(
+                    CodingModeChunk(
+                        type="ask_user_question",
+                        request_id=request_id,
+                        questions=questions,
+                    )
+                )
+            else:
+                logger.warning(
+                    "AskUserQuestion received but no chunk callback set - denying"
+                )
+                return PermissionResultDeny(message="No UI available for questions")
+
+            # Block here until provide_answer() is called
+            try:
+                answers = await self._pending_question
+                logger.info(f"AskUserQuestion answered, request_id={request_id}")
+            except asyncio.CancelledError:
+                logger.info(f"AskUserQuestion cancelled, request_id={request_id}")
+                return PermissionResultDeny(message="User cancelled")
+
+            return PermissionResultAllow(
+                updated_input={
+                    "questions": input_data.get("questions"),
+                    "answers": answers,
+                }
+            )
+
+        # All other tools: allow by default
+        return PermissionResultAllow(updated_input=input_data)
+
+    async def provide_answer(
+        self, request_id: str, answers: dict[str, str]
+    ) -> None:
+        """
+        Provide user's answer to a pending AskUserQuestion.
+
+        Unblocks the waiting can_use_tool callback with the user's answers.
+
+        Args:
+            request_id: The request_id from the ask_user_question chunk
+            answers: Map of question text to selected answer label(s)
+        """
+        if self._pending_question and self._pending_request_id == request_id:
+            if not self._pending_question.done():
+                self._pending_question.set_result(answers)
+                logger.info(f"Answer provided for request_id={request_id}")
+            self._pending_question = None
+            self._pending_request_id = None
+        else:
+            logger.warning(
+                f"Answer received for unknown request_id={request_id} "
+                f"(pending={self._pending_request_id})"
+            )
+
+    async def interrupt(self) -> None:
+        """
+        Interrupt the current SDK operation.
+
+        Cancels any pending AskUserQuestion and interrupts the SDK client.
+        """
+        logger.info(f"Interrupting session {self.session_id}")
+
+        # Cancel pending question first (so can_use_tool unblocks)
+        if self._pending_question and not self._pending_question.done():
+            self._pending_question.cancel()
+        self._pending_question = None
+        self._pending_request_id = None
+
+        # Interrupt SDK client
+        if self._sdk_client:
+            try:
+                await self._sdk_client.interrupt()
+                logger.info(f"SDK client interrupted for session {self.session_id}")
+            except Exception as e:
+                logger.warning(f"Error interrupting SDK client: {e}")
 
     async def _ensure_client(self) -> Any:
         """
@@ -240,6 +390,9 @@ class CodingModeClient:
         total_input_tokens = 0
         total_output_tokens = 0
         total_cost_usd = 0.0
+
+        # Reset delta tracking for this chat turn
+        self._last_text_content = ""
 
         # Track session activity
         await self.session_manager.update_activity(self.session_id, self.user_id)
@@ -323,23 +476,37 @@ class CodingModeClient:
                 block_type = type(block).__name__
                 logger.info(f"[SDK DEBUG]   Block {i}: {block_type}")
                 if isinstance(block, TextBlock):
-                    content = block.text
+                    full_content = block.text
                     # Debug: Log text content and check for XML tool calls
-                    preview = content[:200] if len(content) > 200 else content
+                    preview = full_content[:200] if len(full_content) > 200 else full_content
                     logger.info(f"[SDK DEBUG]     TextBlock preview: {preview!r}")
-                    if "<function_calls>" in content or "<invoke" in content:
+                    if "<function_calls>" in full_content or "<invoke" in full_content:
                         logger.warning("[SDK DEBUG]     ⚠️ XML tool call detected in TextBlock! SDK may not be executing tools properly.")
-                    # Add separator if this is continuation of prior content
-                    if (has_prior_content or not is_first_text_in_message) and content:
-                        # Only add separator if content doesn't already start with newlines
-                        if not content.startswith("\n"):
-                            content = "\n\n" + content
-                    is_first_text_in_message = False
-                    # Text content
-                    yield CodingModeChunk(
-                        type="delta",
-                        content=content,
-                    )
+
+                    # Compute delta: SDK sends cumulative content, we only want what's new
+                    # This prevents duplicate text when include_partial_messages=True
+                    if full_content.startswith(self._last_text_content):
+                        delta = full_content[len(self._last_text_content):]
+                    else:
+                        # Content doesn't match what we've seen - could be a new message
+                        # or the SDK reset. Send full content as delta.
+                        delta = full_content
+                        logger.info("[SDK DEBUG]     Content mismatch, sending full content as delta")
+
+                    self._last_text_content = full_content
+
+                    # Only yield if there's new content
+                    if delta:
+                        # Add separator if this is continuation of prior content
+                        if (has_prior_content or not is_first_text_in_message) and delta:
+                            # Only add separator if delta doesn't already start with newlines
+                            if not delta.startswith("\n"):
+                                delta = "\n\n" + delta
+                        is_first_text_in_message = False
+                        yield CodingModeChunk(
+                            type="delta",
+                            content=delta,
+                        )
                 elif isinstance(block, ToolUseBlock):
                     # Debug: Log tool use details
                     logger.info(f"[SDK DEBUG]     ToolUseBlock: name={block.name}, id={block.id}")

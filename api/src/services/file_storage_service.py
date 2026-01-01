@@ -1071,7 +1071,7 @@ class FileStorageService:
                     path, content, skip_id_injection, force_ids
                 )
             elif path.endswith(".form.json"):
-                await self._index_form(path, content)
+                return await self._index_form(path, content)
             elif path.endswith(".agent.json"):
                 await self._index_agent(path, content)
         except Exception as e:
@@ -1682,43 +1682,63 @@ class FileStorageService:
         row = result.scalar_one_or_none()
         return str(row) if row else None
 
-    async def _index_form(self, path: str, content: bytes) -> None:
+    async def _index_form(
+        self, path: str, content: bytes
+    ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None, list[FileDiagnosticInfo]]:
         """
         Parse and index form from .form.json file.
 
         If the JSON contains an 'id' field, uses that ID (for dual-write from API).
-        Otherwise generates a new ID (for files synced from git/editor).
+        Otherwise generates a new ID and writes it back to the file.
 
         Updates form definition (name, description, workflow_id, form_schema, etc.)
         but preserves environment-specific fields (organization_id, access_level).
 
         Uses ON CONFLICT on primary key (id) to update existing forms.
+
+        Returns:
+            Tuple of (final_content, content_modified, needs_indexing, conflicts, diagnostics)
         """
         import json
         from uuid import UUID, uuid4
         from src.models import Form, FormField as FormFieldORM
 
+        content_modified = False
+        final_content = content
+        diagnostics: list[FileDiagnosticInfo] = []
+
         try:
             form_data = json.loads(content.decode("utf-8"))
         except json.JSONDecodeError:
             logger.warning(f"Invalid JSON in form file: {path}")
-            return
+            return content, False, False, None, []
 
         name = form_data.get("name")
         if not name:
             logger.warning(f"Form file missing name: {path}")
-            return
+            return content, False, False, None, []
 
-        # Use ID from JSON if present (for API-created forms), otherwise generate new
+        # Use ID from JSON if present (for API-created forms), otherwise generate and inject
         form_id_str = form_data.get("id")
         if form_id_str:
             try:
                 form_id = UUID(form_id_str)
             except ValueError:
                 logger.warning(f"Invalid form ID in {path}: {form_id_str}")
-                form_id = uuid4()  # Generate new ID if invalid
+                form_id = uuid4()
+                form_data["id"] = str(form_id)
+                content_modified = True
         else:
-            form_id = uuid4()  # Generate new ID for files without one
+            # Generate new ID and inject it into the file
+            form_id = uuid4()
+            form_data["id"] = str(form_id)
+            content_modified = True
+            logger.info(f"Injecting ID {form_id} into form file: {path}")
+
+        # If content was modified, write it back
+        if content_modified:
+            final_content = json.dumps(form_data, indent=2).encode("utf-8")
+            await self._write_file_for_id_injection(path, final_content)
 
         now = datetime.utcnow()
 
@@ -1813,6 +1833,7 @@ class FileStorageService:
                     self.db.add(field_orm)
 
         logger.debug(f"Indexed form: {name} from {path}")
+        return final_content, content_modified, True, None, diagnostics
 
     async def _index_agent(self, path: str, content: bytes) -> None:
         """

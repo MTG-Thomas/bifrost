@@ -8,8 +8,6 @@ import {
 	Trash2,
 	Link2,
 	Pencil,
-	Globe,
-	Building2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,58 +37,29 @@ import {
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
 import { CreateIntegrationDialog } from "@/components/integrations/CreateIntegrationDialog";
-import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import {
 	useIntegrations,
 	useDeleteIntegration,
 	type Integration,
 } from "@/services/integrations";
-import { useAuth } from "@/contexts/AuthContext";
-import { useOrganizations } from "@/hooks/useOrganizations";
 import { toast } from "sonner";
-import type { components } from "@/lib/v1";
-
-// Extended type to include organization_id (supported by backend, pending type regeneration)
-type IntegrationWithOrg = Integration & {
-	organization_id?: string | null;
-};
-type Organization = components["schemas"]["OrganizationPublic"];
 
 export function Integrations() {
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
-	const { isPlatformAdmin } = useAuth();
-	const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(undefined);
 	const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
 	const [editIntegrationId, setEditIntegrationId] = useState<
 		string | undefined
 	>();
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 	const [integrationToDelete, setIntegrationToDelete] =
-		useState<IntegrationWithOrg | null>(null);
+		useState<Integration | null>(null);
 	const [searchTerm, setSearchTerm] = useState("");
 
-	// Pass filterOrgId to backend for filtering (undefined = all, null = global only)
-	// For platform admins, undefined means show all. For non-admins, backend handles filtering.
-	const { data, isLoading, refetch } = useIntegrations(
-		isPlatformAdmin ? filterOrgId : undefined,
-	);
+	const { data, isLoading, refetch } = useIntegrations();
 	const deleteMutation = useDeleteIntegration();
 
-	// Fetch organizations for the org name lookup (platform admins only)
-	const { data: organizations } = useOrganizations({
-		enabled: isPlatformAdmin,
-	});
-
-	// Helper to get organization name from ID
-	const getOrgName = (orgId: string | null | undefined): string => {
-		if (!orgId) return "Global";
-		const org = organizations?.find((o: Organization) => o.id === orgId);
-		return org?.name || orgId;
-	};
-
-	// Cast to extended type that includes organization_id (pending type regeneration)
-	const integrations = (data?.items || []) as IntegrationWithOrg[];
+	const integrations = data?.items || [];
 
 	// Apply search filter
 	const filteredIntegrations = useSearch(integrations, searchTerm, [
@@ -112,7 +81,7 @@ export function Integrations() {
 		navigate(`/integrations/${integrationId}`);
 	};
 
-	const handleDelete = (integration: IntegrationWithOrg) => {
+	const handleDelete = (integration: Integration) => {
 		setIntegrationToDelete(integration);
 		setDeleteDialogOpen(true);
 	};
@@ -175,17 +144,6 @@ export function Integrations() {
 					placeholder="Search integrations by name, OAuth provider, or data provider..."
 					className="max-w-md"
 				/>
-				{isPlatformAdmin && (
-					<div className="w-64">
-						<OrganizationSelect
-							value={filterOrgId}
-							onChange={setFilterOrgId}
-							showAll={true}
-							showGlobal={true}
-							placeholder="All organizations"
-						/>
-					</div>
-				)}
 			</div>
 
 			{/* Content */}
@@ -200,9 +158,6 @@ export function Integrations() {
 					<DataTable className="max-h-full">
 						<DataTableHeader>
 							<DataTableRow>
-								{isPlatformAdmin && (
-									<DataTableHead>Organization</DataTableHead>
-								)}
 								<DataTableHead>Name</DataTableHead>
 								<DataTableHead>OAuth Status</DataTableHead>
 								<DataTableHead>Data Provider</DataTableHead>
@@ -219,21 +174,6 @@ export function Integrations() {
 										handleOpenIntegration(integration.id)
 									}
 								>
-									{isPlatformAdmin && (
-										<DataTableCell>
-											{integration.organization_id ? (
-												<Badge variant="outline" className="text-xs">
-													<Building2 className="mr-1 h-3 w-3" />
-													{getOrgName(integration.organization_id)}
-												</Badge>
-											) : (
-												<Badge variant="default" className="text-xs">
-													<Globe className="mr-1 h-3 w-3" />
-													Global
-												</Badge>
-											)}
-										</DataTableCell>
-									)}
 									<DataTableCell className="font-medium">
 										{integration.name}
 									</DataTableCell>

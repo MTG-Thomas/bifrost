@@ -268,13 +268,16 @@ class ToolProgress(BaseModel):
 
 class ChatStreamChunk(BaseModel):
     """Streaming chat response chunk."""
-    type: str = Field(..., description="Chunk type: delta, tool_call, tool_progress, tool_result, agent_switch, done, error")
+    type: str = Field(..., description="Chunk type: message_start, delta, tool_call, tool_progress, tool_result, agent_switch, done, error")
     content: str | None = None
     tool_call: ToolCall | None = None
     tool_progress: ToolProgress | None = None
     tool_result: ToolResult | None = None
     agent_switch: AgentSwitch | None = None
     message_id: str | None = None
+    # message_start fields - sent before streaming begins with real UUIDs
+    user_message_id: str | None = Field(default=None, description="Real UUID of user message (sent in message_start)")
+    assistant_message_id: str | None = Field(default=None, description="Real UUID of assistant message (sent in message_start)")
     execution_id: str | None = Field(default=None, description="Execution ID for tool_call chunks")
     token_count_input: int | None = None
     token_count_output: int | None = None

@@ -293,6 +293,54 @@ async def websocket_connect(
                     )
                 )
 
+            elif data.get("type") == "chat_answer":
+                # Handle user's answer to AskUserQuestion from coding mode
+                conversation_id = data.get("conversation_id")
+                request_id = data.get("request_id")
+                answers = data.get("answers", {})
+
+                if not conversation_id or not request_id:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Missing conversation_id or request_id"
+                    })
+                    continue
+
+                # Validate access
+                has_access, conversation = await can_access_conversation(user, conversation_id)
+                if not has_access or not conversation:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Conversation not found or access denied"
+                    })
+                    continue
+
+                # Publish answer to the coding agent's answer exchange
+                await _send_coding_answer(conversation_id, request_id, answers)
+
+            elif data.get("type") == "chat_stop":
+                # Handle user's request to stop the current chat operation
+                conversation_id = data.get("conversation_id")
+
+                if not conversation_id:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Missing conversation_id"
+                    })
+                    continue
+
+                # Validate access
+                has_access, conversation = await can_access_conversation(user, conversation_id)
+                if not has_access or not conversation:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Conversation not found or access denied"
+                    })
+                    continue
+
+                # Send stop signal to coding agent
+                await _send_coding_stop(conversation_id)
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
         logger.info(f"WebSocket disconnected for user {user.user_id}")
@@ -540,8 +588,6 @@ async def _process_coding_mode_message(
     5. API consumes from exchange and forwards to WebSocket
     6. Save assistant message to database
     """
-    import json as json_module
-
     from sqlalchemy import func, select
 
     from src.core.system_agents import get_coding_agent
@@ -589,6 +635,15 @@ async def _process_coding_mode_message(
         )
         db.add(user_msg)
         await db.flush()
+
+        # 1b. Generate assistant message ID upfront and send message_start
+        assistant_message_id = uuid4()
+        await websocket.send_json({
+            "type": "message_start",
+            "conversation_id": conversation_id,
+            "user_message_id": str(user_msg.id),
+            "assistant_message_id": str(assistant_message_id),
+        })
 
         # Build context for coding agent
         coding_context = {
@@ -641,7 +696,7 @@ async def _process_coding_mode_message(
                 tool_calls_batch.append({
                     "id": tool_call.get("id"),
                     "name": tool_call.get("name"),
-                    "arguments": json_module.dumps(tool_call.get("arguments") or {}),
+                    "arguments": tool_call.get("arguments") or {},
                 })
 
                 # Send tool_call chunk to client (with execution_id)
@@ -701,14 +756,23 @@ async def _process_coding_mode_message(
                         }
                     })
 
+            elif chunk_type == "ask_user_question":
+                # Forward ask_user_question to client for modal display
+                chunk["conversation_id"] = conversation_id
+                await websocket.send_json(chunk)
+                # Don't break - we wait for answer and continue streaming
+                continue
+
             elif chunk_type == "done":
                 input_tokens = chunk.get("input_tokens") or 0
                 output_tokens = chunk.get("output_tokens") or 0
                 duration_ms = chunk.get("duration_ms") or 0
 
                 # Save final assistant message if we have accumulated content
+                # Use pre-generated assistant_message_id
                 if accumulated_content or tool_calls_batch:
                     assistant_msg = Message(
+                        id=assistant_message_id,
                         conversation_id=conversation.id,
                         role=MessageRole.ASSISTANT,
                         content=accumulated_content if accumulated_content else None,
@@ -759,3 +823,55 @@ async def _process_coding_mode_message(
             "conversation_id": conversation_id,
             "error": str(e)
         })
+
+
+async def _send_coding_answer(
+    conversation_id: str,
+    request_id: str,
+    answers: dict[str, str],
+) -> None:
+    """
+    Send user's answer to AskUserQuestion to the coding agent.
+
+    Publishes the answer to the coding agent's answer exchange.
+
+    Args:
+        conversation_id: Conversation ID (used as session_id)
+        request_id: The request_id from the ask_user_question chunk
+        answers: Map of question text to selected answer label(s)
+    """
+    from src.jobs.rabbitmq import publish_to_exchange
+
+    session_id = conversation_id
+    answer_exchange = f"coding.answers.{session_id}"
+
+    answer_message = {
+        "type": "answer",
+        "request_id": request_id,
+        "answers": answers,
+    }
+
+    await publish_to_exchange(answer_exchange, answer_message)
+    logger.info(f"Published answer for request {request_id} to session {session_id}")
+
+
+async def _send_coding_stop(conversation_id: str) -> None:
+    """
+    Send stop signal to the coding agent.
+
+    Publishes a stop message to the coding agent's answer exchange.
+
+    Args:
+        conversation_id: Conversation ID (used as session_id)
+    """
+    from src.jobs.rabbitmq import publish_to_exchange
+
+    session_id = conversation_id
+    answer_exchange = f"coding.answers.{session_id}"
+
+    stop_message = {
+        "type": "stop",
+    }
+
+    await publish_to_exchange(answer_exchange, stop_message)
+    logger.info(f"Published stop signal for session {session_id}")

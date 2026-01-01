@@ -331,10 +331,21 @@ Forms in Bifrost are defined using a JSON schema with the following structure:
 {
   "name": "Example Form",
   "description": "Form description",
-  "fields": [...],
-  "workflow_id": "optional-workflow-uuid"
+  "workflow_id": "optional-workflow-uuid",
+  "form_schema": {
+    "fields": [
+      {
+        "name": "field_name",
+        "type": "text",
+        "label": "Field Label",
+        "required": true
+      }
+    ]
+  }
 }
 ```
+
+**Important:** Fields must be nested inside `form_schema.fields`, not at the top level.
 
 ## Field Types
 
@@ -346,6 +357,17 @@ Forms in Bifrost are defined using a JSON schema with the following structure:
   "label": "Username",
   "required": true,
   "placeholder": "Enter username"
+}
+```
+
+### Textarea Field
+```json
+{
+  "name": "description",
+  "type": "textarea",
+  "label": "Description",
+  "placeholder": "Enter details...",
+  "help_text": "Provide a detailed description"
 }
 ```
 
@@ -395,12 +417,46 @@ Forms in Bifrost are defined using a JSON schema with the following structure:
 ## Common Field Properties
 
 - `name`: Field identifier (required)
-- `type`: Field type (required)
+- `type`: Field type (required) - text, textarea, number, select, boolean, date, email, password
 - `label`: Display label
-- `required`: Whether field is required
+- `required`: Whether field is required (default: false)
 - `default`: Default value
 - `placeholder`: Placeholder text
-- `description`: Help text
+- `help_text`: Help text shown below the field
+
+## Complete Example
+
+```json
+{
+  "name": "User Registration",
+  "description": "Register a new user account",
+  "workflow_id": "abc123-workflow-uuid",
+  "form_schema": {
+    "fields": [
+      {
+        "name": "email",
+        "type": "email",
+        "label": "Email Address",
+        "required": true,
+        "placeholder": "user@example.com"
+      },
+      {
+        "name": "full_name",
+        "type": "text",
+        "label": "Full Name",
+        "required": true
+      },
+      {
+        "name": "notes",
+        "type": "textarea",
+        "label": "Additional Notes",
+        "required": false,
+        "help_text": "Any additional information"
+      }
+    ]
+  }
+}
+```
 """
 
 
@@ -415,18 +471,33 @@ async def _validate_form_schema_impl(context: MCPContext, form_json: str) -> str
 
     errors = []
 
-    # Check required fields
+    # Check required top-level fields
     if "name" not in form_data:
         errors.append("Missing required field: 'name'")
-    if "fields" not in form_data:
-        errors.append("Missing required field: 'fields'")
-    elif not isinstance(form_data.get("fields"), list):
-        errors.append("'fields' must be an array")
 
-    # Validate each field
+    # Check for form_schema structure (fields must be nested)
+    form_schema = form_data.get("form_schema")
+    if "fields" in form_data and "form_schema" not in form_data:
+        errors.append(
+            "Fields must be nested inside 'form_schema.fields', not at the top level. "
+            "Use: {\"form_schema\": {\"fields\": [...]}}"
+        )
+    elif not form_schema:
+        errors.append("Missing required field: 'form_schema'")
+    elif not isinstance(form_schema, dict):
+        errors.append("'form_schema' must be an object")
+    elif "fields" not in form_schema:
+        errors.append("Missing required field: 'form_schema.fields'")
+    elif not isinstance(form_schema.get("fields"), list):
+        errors.append("'form_schema.fields' must be an array")
+
+    # Validate each field in form_schema.fields
     valid_types = {"text", "number", "select", "boolean", "date", "textarea", "email", "password"}
-    if isinstance(form_data.get("fields"), list):
-        for i, fld in enumerate(form_data["fields"]):
+    fields = []
+    if isinstance(form_schema, dict):
+        fields = form_schema.get("fields", [])
+    if isinstance(fields, list):
+        for i, fld in enumerate(fields):
             if not isinstance(fld, dict):
                 errors.append(f"Field {i}: must be an object")
                 continue
@@ -435,7 +506,7 @@ async def _validate_form_schema_impl(context: MCPContext, form_json: str) -> str
             if "type" not in fld:
                 errors.append(f"Field {i}: missing 'type'")
             elif fld["type"] not in valid_types:
-                errors.append(f"Field {i}: invalid type '{fld['type']}'. Valid types: {', '.join(valid_types)}")
+                errors.append(f"Field {i}: invalid type '{fld['type']}'. Valid types: {', '.join(sorted(valid_types))}")
 
     if errors:
         return "Validation errors:\n" + "\n".join(f"- {e}" for e in errors)
@@ -1448,6 +1519,219 @@ async def _get_execution_impl(context: MCPContext, execution_id: str) -> str:
 
 
 # =============================================================================
+# Data Provider Tool Implementations
+# =============================================================================
+
+
+async def _list_data_providers_impl(
+    context: MCPContext,
+    query: str | None = None,
+) -> str:
+    """List all available data providers."""
+    from src.core.database import get_db_context
+    from src.repositories.data_providers import DataProviderRepository
+
+    logger.info(f"MCP list_data_providers called with query={query}")
+
+    try:
+        async with get_db_context() as db:
+            repo = DataProviderRepository(db)
+            providers = await repo.search(query=query, limit=100)
+            total_count = await repo.count_active()
+
+            if not providers:
+                return (
+                    "No data providers found.\n\n"
+                    "Data providers are Python functions decorated with `@data_provider` "
+                    "that supply dynamic options for form select fields.\n\n"
+                    "Create a data provider by adding a Python file with the "
+                    "`@data_provider` decorator in your workspace."
+                )
+
+            lines = ["# Available Data Providers\n"]
+            lines.append(f"Showing {len(providers)} of {total_count} total providers\n")
+
+            for provider in providers:
+                lines.append(f"## {provider.name}")
+                lines.append(f"- ID: `{provider.id}`")
+                if provider.description:
+                    lines.append(f"{provider.description}")
+
+                meta_parts = []
+                if provider.category:
+                    meta_parts.append(f"Category: {provider.category}")
+                if provider.cache_ttl_seconds:
+                    lines.append(f"- Cache TTL: {provider.cache_ttl_seconds}s")
+
+                if meta_parts:
+                    lines.append(f"- {' | '.join(meta_parts)}")
+
+                # Show parameters if available
+                if provider.parameters:
+                    lines.append("- **Parameters:**")
+                    for param in provider.parameters:
+                        req = "(required)" if param.required else "(optional)"
+                        lines.append(f"  - `{param.name}`: {param.type} {req}")
+
+                if provider.file_path:
+                    lines.append(f"- File: `{provider.file_path}`")
+                lines.append("")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"Error listing data providers via MCP: {e}")
+        return f"Error listing data providers: {str(e)}"
+
+
+async def _get_data_provider_schema_impl(context: MCPContext) -> str:
+    """Get documentation about data provider structure and decorators."""
+    return """# Data Provider Schema Documentation
+
+Data providers are Python functions that supply dynamic options for form select fields.
+
+## Basic Structure
+
+```python
+from bifrost import data_provider
+
+@data_provider(
+    name="Customer List",
+    description="Returns list of customers",
+    cache_ttl_seconds=300,  # Cache for 5 minutes
+)
+async def get_customers():
+    # Return list of options
+    return [
+        {"label": "Acme Corp", "value": "acme-123"},
+        {"label": "TechCo", "value": "tech-456"},
+    ]
+```
+
+## Decorator Properties
+
+- `name`: Display name for the data provider (required)
+- `description`: Human-readable description of what data it provides
+- `cache_ttl_seconds`: How long to cache results (0 = no caching)
+- `category`: Group related providers
+
+## With Parameters
+
+Data providers can accept input parameters from form field mappings:
+
+```python
+from bifrost import data_provider, param
+
+@data_provider(
+    name="Users by Department",
+    description="Returns users filtered by department",
+)
+@param(name="department_id", type="string", required=True)
+@param(name="include_inactive", type="boolean", required=False)
+async def get_users_by_dept(department_id: str, include_inactive: bool = False):
+    # Query users based on department
+    users = await fetch_users(department_id, include_inactive)
+    return [
+        {"label": user.name, "value": str(user.id)}
+        for user in users
+    ]
+```
+
+## Return Format
+
+Data providers must return a list of objects with `label` and `value`:
+
+```python
+[
+    {"label": "Display Text", "value": "unique_value"},
+    {"label": "Another Option", "value": "another_value", "metadata": {"extra": "info"}},
+]
+```
+
+- `label`: Text shown to the user in the dropdown
+- `value`: The actual value stored when selected
+- `metadata`: Optional extra data (not displayed, but available to workflows)
+
+## Using in Forms
+
+Reference a data provider in form field definitions:
+
+```json
+{
+  "name": "customer",
+  "type": "select",
+  "label": "Select Customer",
+  "data_provider_id": "uuid-of-provider",
+  "data_provider_inputs": {
+    "department_id": "{{department}}"
+  }
+}
+```
+
+## Parameter Types
+
+Valid parameter types for `@param`:
+- `string` - Text input
+- `number` - Numeric value
+- `boolean` - True/false
+- `json` - Complex object (as JSON string)
+"""
+
+
+async def _validate_data_provider_impl(context: MCPContext, file_path: str) -> str:
+    """Validate a data provider Python file."""
+    import ast
+    from pathlib import Path
+
+    logger.info(f"MCP validate_data_provider called with file_path={file_path}")
+
+    if not file_path:
+        return "Error: file_path is required"
+
+    try:
+        workspace_path = Path("/tmp/bifrost/workspace")
+        full_path = workspace_path / file_path.lstrip("/")
+
+        if not full_path.exists():
+            return f"Error: File not found: {file_path}"
+
+        content = full_path.read_text()
+        errors = []
+
+        # Check syntax
+        try:
+            ast.parse(content)
+        except SyntaxError as e:
+            errors.append(f"Syntax error on line {e.lineno}: {e.msg}")
+            return "# Validation Failed\n\n" + "\n".join(f"- {e}" for e in errors)
+
+        # Check for @data_provider decorator
+        if "@data_provider" not in content:
+            errors.append("Missing @data_provider decorator")
+
+        # Check for bifrost import
+        if "from bifrost" not in content and "import bifrost" not in content:
+            errors.append("Missing bifrost import (e.g., from bifrost import data_provider)")
+
+        # Check for async def (data providers should be async)
+        if "async def" not in content and "def " in content:
+            # Only warn if there's a non-async function - could still be valid
+            errors.append(
+                "Warning: Data provider functions should be async (use 'async def'). "
+                "Sync functions will work but may block the event loop."
+            )
+
+        if errors:
+            return "# Validation Issues\n\n" + "\n".join(f"- {e}" for e in errors)
+
+        return "✓ Data provider syntax is valid!"
+
+    except Exception as e:
+        logger.exception(f"Error validating data provider via MCP: {e}")
+        return f"Error validating data provider: {str(e)}"
+
+
+# =============================================================================
 # SDK Tool Wrappers (for Claude Agent SDK in-process MCP)
 # =============================================================================
 
@@ -1853,6 +2137,51 @@ def _create_sdk_tools(context: MCPContext, enabled_tools: set[str] | None) -> li
             result = await _get_execution_impl(context, args.get("execution_id", ""))
             return {"content": [{"type": "text", "text": result}]}
         tools.append(get_execution)
+
+    # Data Provider Tools
+    if enabled_tools is None or "list_data_providers" in enabled_tools:
+        @sdk_tool(
+            name="list_data_providers",
+            description="List all available data providers with their parameters.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Optional search query"},
+                },
+            },
+        )
+        async def list_data_providers(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _list_data_providers_impl(context, args.get("query"))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(list_data_providers)
+
+    if enabled_tools is None or "get_data_provider_schema" in enabled_tools:
+        @sdk_tool(
+            name="get_data_provider_schema",
+            description="Get documentation about data provider structure, decorators, and examples.",
+            input_schema={"type": "object", "properties": {}},
+        )
+        async def get_data_provider_schema(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _get_data_provider_schema_impl(context)
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(get_data_provider_schema)
+
+    if enabled_tools is None or "validate_data_provider" in enabled_tools:
+        @sdk_tool(
+            name="validate_data_provider",
+            description="Validate a data provider Python file for syntax and decorator issues.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to the data provider file"},
+                },
+                "required": ["file_path"],
+            },
+        )
+        async def validate_data_provider(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _validate_data_provider_impl(context, args.get("file_path", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(validate_data_provider)
 
     return tools
 
@@ -2502,6 +2831,31 @@ def _register_fastmcp_tools(mcp: "FastMCP", context: MCPContext, enabled_tools: 
         )
         async def get_execution(execution_id: str) -> str:
             return await _get_execution_impl(_get_context(), execution_id)
+
+    # Data Provider Tools
+    if enabled_tools is None or "list_data_providers" in enabled_tools:
+        @mcp.tool(
+            name="list_data_providers",
+            description="List all available data providers with their parameters.",
+        )
+        async def list_data_providers(query: str | None = None) -> str:
+            return await _list_data_providers_impl(_get_context(), query)
+
+    if enabled_tools is None or "get_data_provider_schema" in enabled_tools:
+        @mcp.tool(
+            name="get_data_provider_schema",
+            description="Get documentation about data provider structure, decorators, and examples.",
+        )
+        async def get_data_provider_schema() -> str:
+            return await _get_data_provider_schema_impl(_get_context())
+
+    if enabled_tools is None or "validate_data_provider" in enabled_tools:
+        @mcp.tool(
+            name="validate_data_provider",
+            description="Validate a data provider Python file for syntax and decorator issues.",
+        )
+        async def validate_data_provider(file_path: str) -> str:
+            return await _validate_data_provider_impl(_get_context(), file_path)
 
 
 # =============================================================================

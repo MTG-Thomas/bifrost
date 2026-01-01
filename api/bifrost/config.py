@@ -25,7 +25,11 @@ class config:
     """
 
     @staticmethod
-    async def get(key: str, org_id: str | None = None, default: Any = None) -> Any:
+    async def get(
+        key: str,
+        default: Any = None,
+        scope: str | None = None,
+    ) -> Any:
         """
         Get configuration value with automatic secret decryption.
 
@@ -33,8 +37,11 @@ class config:
 
         Args:
             key: Configuration key
-            org_id: Organization ID (defaults to current org from context)
             default: Default value if key not found (optional)
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Bypass org resolution, use global config
 
         Returns:
             Any: Configuration value, or default if not found
@@ -46,11 +53,13 @@ class config:
             >>> from bifrost import config
             >>> api_key = await config.get("api_key")
             >>> timeout = await config.get("timeout", default=30)
+            >>> global_setting = await config.get("global_key", scope="global")
+            >>> org_setting = await config.get("key", scope="org-uuid-here")
         """
         client = get_client()
         response = await client.post(
             "/api/cli/config/get",
-            json={"key": key, "org_id": org_id}
+            json={"key": key, "scope": scope}
         )
 
         if response.status_code == 200:
@@ -62,7 +71,12 @@ class config:
             return default
 
     @staticmethod
-    async def set(key: str, value: Any, org_id: str | None = None, is_secret: bool = False) -> None:
+    async def set(
+        key: str,
+        value: Any,
+        is_secret: bool = False,
+        scope: str | None = None,
+    ) -> None:
         """
         Set configuration value.
 
@@ -71,8 +85,11 @@ class config:
         Args:
             key: Configuration key
             value: Configuration value (must be JSON-serializable)
-            org_id: Organization ID (defaults to current org from context)
             is_secret: If True, encrypts the value before storage
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Bypass org resolution, use global config
 
         Raises:
             RuntimeError: If not authenticated
@@ -82,23 +99,33 @@ class config:
             >>> from bifrost import config
             >>> await config.set("api_url", "https://api.example.com")
             >>> await config.set("api_key", "secret123", is_secret=True)
+            >>> await config.set("global_setting", "value", scope="global")
+            >>> await config.set("org_setting", "value", scope="org-uuid-here")
         """
         client = get_client()
         response = await client.post(
             "/api/cli/config/set",
-            json={"key": key, "value": value, "org_id": org_id, "is_secret": is_secret}
+            json={
+                "key": key,
+                "value": value,
+                "is_secret": is_secret,
+                "scope": scope,
+            }
         )
         response.raise_for_status()
 
     @staticmethod
-    async def list(org_id: str | None = None) -> ConfigData:
+    async def list(scope: str | None = None) -> ConfigData:
         """
         List configuration key-value pairs.
 
         Note: Secret values are shown as the decrypted value (or "[SECRET]" on error).
 
         Args:
-            org_id: Organization ID (optional, defaults to current org)
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Bypass org resolution, use global config
 
         Returns:
             ConfigData: Configuration data with dot-notation and dict-like access:
@@ -116,17 +143,18 @@ class config:
             >>> cfg = await config.list()
             >>> api_url = cfg.api_url
             >>> timeout = cfg.timeout or 30
+            >>> global_cfg = await config.list(scope="global")
         """
         client = get_client()
         response = await client.post(
             "/api/cli/config/list",
-            json={"org_id": org_id}
+            json={"scope": scope}
         )
         response.raise_for_status()
         return ConfigData.model_validate({"data": response.json()})
 
     @staticmethod
-    async def delete(key: str, org_id: str | None = None) -> bool:
+    async def delete(key: str, scope: str | None = None) -> bool:
         """
         Delete configuration value.
 
@@ -134,7 +162,10 @@ class config:
 
         Args:
             key: Configuration key
-            org_id: Organization ID (defaults to current org from context)
+            scope: Organization scope - can be:
+                - None: Use execution context default org
+                - org UUID string: Target specific organization
+                - "global": Bypass org resolution, use global config
 
         Returns:
             bool: True if deleted successfully
@@ -145,11 +176,12 @@ class config:
         Example:
             >>> from bifrost import config
             >>> await config.delete("old_api_url")
+            >>> await config.delete("global_key", scope="global")
         """
         client = get_client()
         response = await client.post(
             "/api/cli/config/delete",
-            json={"key": key, "org_id": org_id}
+            json={"key": key, "scope": scope}
         )
         response.raise_for_status()
         return response.json()
