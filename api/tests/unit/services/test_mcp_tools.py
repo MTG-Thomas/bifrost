@@ -317,7 +317,7 @@ class TestListForms:
 
             with patch("src.repositories.forms.FormRepository") as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.list_by_organization = AsyncMock(return_value=[mock_form])
+                mock_repo.list_forms = AsyncMock(return_value=[mock_form])
                 mock_repo_cls.return_value = mock_repo
 
                 result = await _list_forms_impl(org_user_context)
@@ -338,7 +338,7 @@ class TestListForms:
 
             with patch("src.repositories.forms.FormRepository") as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.list_all = AsyncMock(return_value=[mock_form])
+                mock_repo.list_forms = AsyncMock(return_value=[mock_form])
                 mock_repo_cls.return_value = mock_repo
 
                 result = await _list_forms_impl(platform_admin_context)
@@ -356,7 +356,7 @@ class TestListForms:
 
             with patch("src.repositories.forms.FormRepository") as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.list_by_organization = AsyncMock(return_value=[])
+                mock_repo.list_forms = AsyncMock(return_value=[])
                 mock_repo_cls.return_value = mock_repo
 
                 result = await _list_forms_impl(org_user_context)

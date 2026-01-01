@@ -13,7 +13,7 @@ import { ToolExecutionCard } from "./ToolExecutionCard";
 import { ToolExecutionBadge } from "./ToolExecutionBadge";
 import { ToolExecutionGroup } from "./ToolExecutionGroup";
 import { ChatSystemEvent, type SystemEvent } from "./ChatSystemEvent";
-import { AskUserQuestionModal } from "./AskUserQuestionModal";
+import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import {
 	useChatStore,
 	useStreamingMessage,
@@ -418,7 +418,7 @@ export function ChatWindow({
 		if (isAtBottom) {
 			messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 		}
-	}, [timeline, streamingMessage?.content, isAtBottom]);
+	}, [timeline, streamingMessage?.content, pendingQuestion, isAtBottom]);
 
 	// Handle send message
 	const handleSendMessage = (message: string) => {
@@ -546,6 +546,15 @@ export function ChatWindow({
 
 					{/* Streaming Error - now shown inline via system events */}
 
+					{/* AskUserQuestion Card - inline at end of stream */}
+					{pendingQuestion && (
+						<AskUserQuestionCard
+							questions={pendingQuestion.questions}
+							onSubmit={answerQuestion}
+							onCancel={stopStreaming}
+						/>
+					)}
+
 					<div ref={messagesEndRef} />
 				</div>
 			</div>
@@ -559,17 +568,6 @@ export function ChatWindow({
 					agentName ? `Message ${agentName}...` : "Send a message..."
 				}
 			/>
-
-			{/* AskUserQuestion Modal */}
-			{pendingQuestion && (
-				<AskUserQuestionModal
-					isOpen={true}
-					questions={pendingQuestion.questions}
-					requestId={pendingQuestion.requestId}
-					onSubmit={answerQuestion}
-					onCancel={stopStreaming}
-				/>
-			)}
 		</div>
 	);
 }

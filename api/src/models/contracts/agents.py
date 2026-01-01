@@ -252,6 +252,14 @@ class AgentSwitch(BaseModel):
     reason: str = Field(default="", description="Reason for the switch (e.g., '@mention', 'routed')")
 
 
+class ContextWarning(BaseModel):
+    """Context window warning/compaction event."""
+    current_tokens: int = Field(..., description="Estimated current token count")
+    max_tokens: int = Field(..., description="Configured threshold")
+    action: str = Field(..., description="'warning' or 'compacted'")
+    message: str = Field(..., description="Human-readable explanation")
+
+
 class ToolProgressLog(BaseModel):
     """Log entry for tool execution progress."""
     level: str = Field(..., description="Log level: debug, info, warning, error")
@@ -268,12 +276,13 @@ class ToolProgress(BaseModel):
 
 class ChatStreamChunk(BaseModel):
     """Streaming chat response chunk."""
-    type: str = Field(..., description="Chunk type: message_start, delta, tool_call, tool_progress, tool_result, agent_switch, done, error")
+    type: str = Field(..., description="Chunk type: message_start, delta, tool_call, tool_progress, tool_result, agent_switch, context_warning, done, error")
     content: str | None = None
     tool_call: ToolCall | None = None
     tool_progress: ToolProgress | None = None
     tool_result: ToolResult | None = None
     agent_switch: AgentSwitch | None = None
+    context_warning: ContextWarning | None = None
     message_id: str | None = None
     # message_start fields - sent before streaming begins with real UUIDs
     user_message_id: str | None = Field(default=None, description="Real UUID of user message (sent in message_start)")

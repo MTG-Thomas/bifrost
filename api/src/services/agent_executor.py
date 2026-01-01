@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.contracts.agents import (
     AgentSwitch,
     ChatStreamChunk,
+    ContextWarning,
     ToolCall,
     ToolProgress,
     ToolResult,
@@ -44,6 +45,12 @@ logger = logging.getLogger(__name__)
 
 # Maximum tool call iterations to prevent infinite loops
 MAX_TOOL_ITERATIONS = 10
+
+# Context window management thresholds
+# Claude models have ~200K context, we use conservative limits
+CONTEXT_MAX_TOKENS = 120_000  # Prune when exceeding this
+CONTEXT_WARNING_TOKENS = 100_000  # Warn when approaching this
+CONTEXT_KEEP_RECENT = 20  # Keep this many recent messages when pruning
 
 # Fallback system prompt (used if no config set)
 FALLBACK_SYSTEM_PROMPT = """You are a helpful AI assistant. You can help users with a variety of tasks including answering questions, providing information, and having general conversations.
@@ -218,6 +225,45 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
             # 4. Get LLM client
             llm_client = await get_llm_client(self.session)
+
+            # 5a. Check context size and prune if needed
+            estimated_tokens = self._estimate_tokens(messages)
+
+            if estimated_tokens > CONTEXT_WARNING_TOKENS:
+                if estimated_tokens > CONTEXT_MAX_TOKENS:
+                    # Prune and notify
+                    messages, original_tokens = await self._prune_context(
+                        messages, llm_client
+                    )
+                    new_tokens = self._estimate_tokens(messages)
+                    yield ChatStreamChunk(
+                        type="context_warning",
+                        context_warning=ContextWarning(
+                            current_tokens=original_tokens,
+                            max_tokens=CONTEXT_MAX_TOKENS,
+                            action="compacted",
+                            message=(
+                                f"Conversation history was summarized to stay within "
+                                f"context limits. Original: ~{original_tokens:,} tokens, "
+                                f"now: ~{new_tokens:,} tokens."
+                            ),
+                        ),
+                    )
+                else:
+                    # Just warn - approaching limit
+                    yield ChatStreamChunk(
+                        type="context_warning",
+                        context_warning=ContextWarning(
+                            current_tokens=estimated_tokens,
+                            max_tokens=CONTEXT_MAX_TOKENS,
+                            action="warning",
+                            message=(
+                                f"Approaching context limit (~{estimated_tokens:,} of "
+                                f"{CONTEXT_MAX_TOKENS:,} tokens). Consider starting a "
+                                f"new conversation soon."
+                            ),
+                        ),
+                    )
 
             # 5. Run completion loop with tool calling
             iteration = 0
@@ -525,6 +571,161 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 pass
 
         return messages
+
+    def _estimate_tokens(self, messages: list[LLMMessage]) -> int:
+        """
+        Estimate token count for a list of messages.
+
+        Uses a simple heuristic of ~4 characters per token, which is
+        reasonably accurate for English text and provides a conservative
+        estimate for context management purposes.
+        """
+        total = 0
+        for msg in messages:
+            if msg.content:
+                total += len(msg.content) // 4
+            if msg.tool_calls:
+                # Estimate tokens for tool call JSON
+                tool_json = json.dumps([
+                    {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                    for tc in msg.tool_calls
+                ])
+                total += len(tool_json) // 4
+        return total
+
+    async def _summarize_messages(
+        self,
+        messages: list[LLMMessage],
+        llm_client: Any,
+    ) -> str:
+        """
+        Summarize a batch of messages into a concise context string.
+
+        Used when pruning context to preserve important information
+        from older messages that are being removed.
+        """
+        # Build a text representation of the messages to summarize
+        message_texts = []
+        for msg in messages:
+            if msg.content:
+                role_label = msg.role.upper()
+                message_texts.append(f"{role_label}: {msg.content}")
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    message_texts.append(f"TOOL_CALL: {tc.name}({json.dumps(tc.arguments)})")
+            if msg.role == "tool" and msg.tool_name:
+                message_texts.append(f"TOOL_RESULT ({msg.tool_name}): {msg.content}")
+
+        conversation_text = "\n\n".join(message_texts)
+
+        summary_prompt = [
+            LLMMessage(
+                role="system",
+                content=(
+                    "Summarize this conversation history concisely. "
+                    "Include key facts, decisions made, and important outcomes. "
+                    "Focus on information that would be useful context for continuing "
+                    "the conversation. Keep your summary under 1000 words."
+                ),
+            ),
+            LLMMessage(
+                role="user",
+                content=conversation_text,
+            ),
+        ]
+
+        response = await llm_client.complete(messages=summary_prompt)
+        return response.content or ""
+
+    async def _prune_context(
+        self,
+        messages: list[LLMMessage],
+        llm_client: Any,
+        keep_recent: int = CONTEXT_KEEP_RECENT,
+    ) -> tuple[list[LLMMessage], int]:
+        """
+        Prune messages if context is too large using smart summarization.
+
+        Strategy:
+        1. Always keep the system prompt (first message)
+        2. Keep the first user message (original intent/context)
+        3. Keep the last N messages (recent context)
+        4. Summarize everything in between
+
+        Args:
+            messages: Full message history
+            llm_client: LLM client for summarization
+            keep_recent: Number of recent messages to preserve
+
+        Returns:
+            Tuple of (pruned_messages, original_token_estimate)
+        """
+        original_tokens = self._estimate_tokens(messages)
+
+        if original_tokens <= CONTEXT_MAX_TOKENS:
+            return messages, original_tokens
+
+        logger.info(
+            f"Context pruning triggered: {original_tokens:,} tokens exceeds "
+            f"{CONTEXT_MAX_TOKENS:,} limit"
+        )
+
+        # Keep system prompt (always first)
+        system_msg = messages[0]
+
+        # Find first user message
+        first_user_idx = next(
+            (i for i, m in enumerate(messages) if m.role == "user"),
+            None,
+        )
+        first_user_msg = messages[first_user_idx] if first_user_idx else None
+
+        # Messages to keep at the end (recent context)
+        recent_messages = messages[-keep_recent:] if len(messages) > keep_recent else []
+
+        # Determine what to summarize (middle section)
+        if first_user_idx is not None:
+            middle_start = first_user_idx + 1
+        else:
+            middle_start = 1  # After system message
+
+        middle_end = len(messages) - keep_recent
+
+        if middle_end <= middle_start:
+            # Not enough messages to summarize, return as-is
+            logger.info("Not enough middle messages to summarize, keeping original")
+            return messages, original_tokens
+
+        to_summarize = messages[middle_start:middle_end]
+        logger.info(f"Summarizing {len(to_summarize)} messages from the middle of conversation")
+
+        # Generate summary
+        summary = await self._summarize_messages(to_summarize, llm_client)
+
+        # Build pruned message list
+        pruned: list[LLMMessage] = [system_msg]
+
+        if first_user_msg:
+            pruned.append(first_user_msg)
+
+        # Add summary as a system context message
+        pruned.append(
+            LLMMessage(
+                role="user",
+                content=f"[Previous conversation summary]\n{summary}",
+            )
+        )
+
+        # Add recent messages
+        pruned.extend(recent_messages)
+
+        new_tokens = self._estimate_tokens(pruned)
+        logger.info(
+            f"Context pruned: {original_tokens:,} -> {new_tokens:,} tokens "
+            f"({len(messages)} -> {len(pruned)} messages)"
+        )
+
+        return pruned, original_tokens
 
     async def _save_message(
         self,

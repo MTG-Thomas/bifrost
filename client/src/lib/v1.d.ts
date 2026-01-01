@@ -112,6 +112,9 @@ export interface paths {
          *     and need to enroll in MFA. Requires an mfa_token with purpose "mfa_setup"
          *     in the Authorization header.
          *
+         *     By default, returns an existing pending setup if valid (to prevent QR invalidation
+         *     on page refresh). Set force_new=true to generate a new secret.
+         *
          *     Returns:
          *         MFA setup data including secret and QR code URI
          *
@@ -503,6 +506,85 @@ export interface paths {
          *         DeviceTokenResponse with tokens or DeviceTokenErrorResponse with error
          */
         post: operations["exchange_device_token_auth_device_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/setup/passkey/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Setup Passkey Options
+         * @description Start passwordless passkey registration for first-time platform setup.
+         *
+         *     This endpoint is ONLY available when no users exist in the system.
+         *     It allows the first user to register with a passkey instead of a password.
+         *
+         *     Flow:
+         *     1. Client calls this endpoint with email/name
+         *     2. Server returns WebAuthn options + registration token
+         *     3. Client performs WebAuthn ceremony (Face ID, Touch ID, etc.)
+         *     4. Client calls /auth/setup/passkey/verify with credential
+         *
+         *     Rate limited: 10 requests per minute per IP address.
+         *
+         *     Args:
+         *         request: FastAPI request object
+         *         setup_request: Email and optional name for the new account
+         *         db: Database session
+         *
+         *     Returns:
+         *         SetupPasskeyOptionsResponse with registration token and WebAuthn options
+         *
+         *     Raises:
+         *         HTTPException: If users already exist or email is invalid
+         */
+        post: operations["setup_passkey_options_auth_setup_passkey_options_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/setup/passkey/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Setup Passkey Verify
+         * @description Complete passwordless passkey registration for first-time platform setup.
+         *
+         *     This endpoint verifies the WebAuthn credential and creates the user + passkey
+         *     atomically. On success, returns JWT tokens so the user is immediately logged in.
+         *
+         *     Rate limited: 10 requests per minute per IP address.
+         *
+         *     Args:
+         *         request: FastAPI request object
+         *         response: FastAPI response object (for setting cookies)
+         *         verify_request: Registration token and WebAuthn credential
+         *         db: Database session
+         *
+         *     Returns:
+         *         SetupPasskeyVerifyResponse with user info and JWT tokens
+         *
+         *     Raises:
+         *         HTTPException: If token is invalid/expired or verification fails
+         */
+        post: operations["setup_passkey_verify_auth_setup_passkey_verify_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3164,9 +3246,10 @@ export interface paths {
          * Get integration data for an organization
          * @description Get integration mapping data for an organization via SDK.
          *
-         *     Supports two modes:
-         *     1. Org-specific mapping: Returns mapping entity_id, config, and OAuth data
-         *     2. Fallback to integration defaults: When no org mapping exists, returns
+         *     Supports three modes:
+         *     1. Global scope (scope="global"): Returns integration defaults only (no org mapping)
+         *     2. Org-specific mapping: Returns mapping entity_id, config, and OAuth data
+         *     3. Fallback to integration defaults: When no org mapping exists, returns
          *        integration.default_entity_id, integration-level config, and OAuth data
          */
         post: operations["sdk_integrations_get_api_cli_integrations_get_post"];
@@ -3190,6 +3273,66 @@ export interface paths {
          * @description List all mappings for an integration via SDK.
          */
         post: operations["sdk_integrations_list_mappings_api_cli_integrations_list_mappings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cli/integrations/get_mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get a specific mapping by org_id or entity_id
+         * @description Get a specific integration mapping by org_id or entity_id via SDK.
+         */
+        post: operations["sdk_integrations_get_mapping_api_cli_integrations_get_mapping_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cli/integrations/upsert_mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create or update a mapping for an organization
+         * @description Create or update an integration mapping for an organization via SDK.
+         */
+        post: operations["sdk_integrations_upsert_mapping_api_cli_integrations_upsert_mapping_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cli/integrations/delete_mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete a mapping for an organization
+         * @description Delete an integration mapping for an organization via SDK.
+         */
+        post: operations["sdk_integrations_delete_mapping_api_cli_integrations_delete_mapping_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5747,7 +5890,7 @@ export interface components {
             /** Mfa Required For Password */
             mfa_required_for_password: boolean;
             /** Oauth Providers */
-            oauth_providers: components["schemas"]["OAuthProviderInfo"][];
+            oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
         };
         /**
          * AuthorizeResponse
@@ -5944,10 +6087,10 @@ export interface components {
              */
             key: string;
             /**
-             * Org Id
-             * @description Organization ID (optional, uses context default)
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
-            org_id?: string | null;
+            scope?: string | null;
         };
         /**
          * CLIConfigGetRequest
@@ -5960,10 +6103,10 @@ export interface components {
              */
             key: string;
             /**
-             * Org Id
-             * @description Organization ID (optional, uses context default)
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
-            org_id?: string | null;
+            scope?: string | null;
         };
         /**
          * CLIConfigListRequest
@@ -5971,10 +6114,10 @@ export interface components {
          */
         CLIConfigListRequest: {
             /**
-             * Org Id
-             * @description Organization ID (optional, uses context default)
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
-            org_id?: string | null;
+            scope?: string | null;
         };
         /**
          * CLIConfigSetRequest
@@ -5992,16 +6135,16 @@ export interface components {
              */
             value: unknown;
             /**
-             * Org Id
-             * @description Organization ID (optional, uses context default)
-             */
-            org_id?: string | null;
-            /**
              * Is Secret
              * @description Whether to encrypt the value
              * @default false
              */
             is_secret: boolean;
+            /**
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
+             */
+            scope?: string | null;
         };
         /**
          * CLIConfigValue
@@ -6041,13 +6184,8 @@ export interface components {
              */
             namespace: string;
             /**
-             * Org Id
-             * @description Organization scope
-             */
-            org_id?: string | null;
-            /**
              * Scope
-             * @description 'global' for global scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
             scope?: string | null;
         };
@@ -6154,10 +6292,10 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             /**
-             * Org Id
-             * @description Organization scope
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
-            org_id?: string | null;
+            scope?: string | null;
             /**
              * Fallback
              * @description If True, also search global scope
@@ -6184,13 +6322,8 @@ export interface components {
              */
             namespace: string;
             /**
-             * Org Id
-             * @description Organization scope
-             */
-            org_id?: string | null;
-            /**
              * Scope
-             * @description 'global' for global scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
             scope?: string | null;
         };
@@ -6223,13 +6356,8 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             /**
-             * Org Id
-             * @description Organization scope
-             */
-            org_id?: string | null;
-            /**
              * Scope
-             * @description 'global' for global scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
             scope?: string | null;
         };
@@ -10051,6 +10179,17 @@ export interface components {
             mfa_code?: string | null;
         };
         /**
+         * MFASetupRequest
+         * @description Optional request body for MFA setup.
+         */
+        MFASetupRequest: {
+            /**
+             * Force New
+             * @default false
+             */
+            force_new: boolean;
+        };
+        /**
          * MFASetupResponse
          * @description MFA setup response with secret.
          */
@@ -10065,6 +10204,11 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -10310,24 +10454,15 @@ export interface components {
         };
         /**
          * OAuthCallbackRequest
-         * @description Request model for OAuth callback endpoint
+         * @description OAuth callback request (for when frontend handles callback).
          */
         OAuthCallbackRequest: {
-            /**
-             * Code
-             * @description Authorization code from OAuth provider
-             */
+            /** Provider */
+            provider: string;
+            /** Code */
             code: string;
-            /**
-             * State
-             * @description State parameter for CSRF protection
-             */
-            state?: string | null;
-            /**
-             * Redirect Uri
-             * @description Redirect URI used in authorization request
-             */
-            redirect_uri?: string | null;
+            /** State */
+            state: string;
         };
         /**
          * OAuthCallbackResponse
@@ -10757,7 +10892,7 @@ export interface components {
         };
         /**
          * OAuthProviderInfo
-         * @description OAuth provider information for login page
+         * @description OAuth provider information.
          */
         OAuthProviderInfo: {
             /** Name */
@@ -10773,7 +10908,7 @@ export interface components {
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
+            providers: components["schemas"]["OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -11864,6 +11999,43 @@ export interface components {
             user_ids: string[];
         };
         /**
+         * SDKIntegrationsDeleteMappingRequest
+         * @description Request to delete a mapping via SDK.
+         */
+        SDKIntegrationsDeleteMappingRequest: {
+            /**
+             * Name
+             * @description Integration name
+             */
+            name: string;
+            /**
+             * Scope
+             * @description Organization ID (required for delete)
+             */
+            scope: string;
+        };
+        /**
+         * SDKIntegrationsGetMappingRequest
+         * @description Request to get a specific mapping via SDK.
+         */
+        SDKIntegrationsGetMappingRequest: {
+            /**
+             * Name
+             * @description Integration name
+             */
+            name: string;
+            /**
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org
+             */
+            scope?: string | null;
+            /**
+             * Entity Id
+             * @description External entity ID
+             */
+            entity_id?: string | null;
+        };
+        /**
          * SDKIntegrationsGetRequest
          * @description Request to get integration configuration via SDK.
          */
@@ -11874,10 +12046,10 @@ export interface components {
              */
             name: string;
             /**
-             * Org Id
-             * @description Organization ID (optional, uses context default)
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
              */
-            org_id?: string | null;
+            scope?: string | null;
         };
         /**
          * SDKIntegrationsGetResponse
@@ -12034,6 +12206,39 @@ export interface components {
              * @description Token expiration (ISO format)
              */
             expires_at?: string | null;
+        };
+        /**
+         * SDKIntegrationsUpsertMappingRequest
+         * @description Request to create or update a mapping via SDK.
+         */
+        SDKIntegrationsUpsertMappingRequest: {
+            /**
+             * Name
+             * @description Integration name
+             */
+            name: string;
+            /**
+             * Scope
+             * @description Organization ID (required for upsert)
+             */
+            scope: string;
+            /**
+             * Entity Id
+             * @description External entity ID
+             */
+            entity_id: string;
+            /**
+             * Entity Name
+             * @description Display name for the entity
+             */
+            entity_name?: string | null;
+            /**
+             * Config
+             * @description Org-specific configuration
+             */
+            config?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * SDKScanResponse
@@ -12268,6 +12473,100 @@ export interface components {
              * @description Optional description of this config entry
              */
             description?: string | null;
+        };
+        /**
+         * SetupPasskeyOptionsRequest
+         * @description Request to start passwordless setup with passkey for first-time platform setup.
+         */
+        SetupPasskeyOptionsRequest: {
+            /**
+             * Email
+             * @description Email address for the new admin account
+             */
+            email: string;
+            /**
+             * Name
+             * @description Display name for the user
+             */
+            name?: string | null;
+        };
+        /**
+         * SetupPasskeyOptionsResponse
+         * @description Response with registration token and WebAuthn options for first-time setup.
+         */
+        SetupPasskeyOptionsResponse: {
+            /**
+             * Registration Token
+             * @description Token to complete registration (expires in 5 minutes)
+             */
+            registration_token: string;
+            /**
+             * Options
+             * @description WebAuthn registration options JSON for navigator.credentials.create()
+             */
+            options: {
+                [key: string]: unknown;
+            };
+            /**
+             * Expires In
+             * @description Token expiry in seconds
+             * @default 300
+             */
+            expires_in: number;
+        };
+        /**
+         * SetupPasskeyVerifyRequest
+         * @description Request to complete passwordless setup with passkey.
+         */
+        SetupPasskeyVerifyRequest: {
+            /**
+             * Registration Token
+             * @description Token from the options response
+             */
+            registration_token: string;
+            /**
+             * Credential
+             * @description WebAuthn credential from navigator.credentials.create()
+             */
+            credential: {
+                [key: string]: unknown;
+            };
+            /**
+             * Device Name
+             * @description Friendly name for the passkey
+             */
+            device_name?: string | null;
+        };
+        /**
+         * SetupPasskeyVerifyResponse
+         * @description Response after successful passwordless setup with passkey.
+         */
+        SetupPasskeyVerifyResponse: {
+            /**
+             * User Id
+             * @description Created user ID
+             */
+            user_id: string;
+            /**
+             * Email
+             * @description User email
+             */
+            email: string;
+            /**
+             * Access Token
+             * @description JWT access token
+             */
+            access_token: string;
+            /**
+             * Refresh Token
+             * @description JWT refresh token
+             */
+            refresh_token: string;
+            /**
+             * Token Type
+             * @default bearer
+             */
+            token_type: string;
         };
         /**
          * StuckExecutionsResponse
@@ -12706,7 +13005,7 @@ export interface components {
         };
         /**
          * UserCreate
-         * @description Input for creating a user.
+         * @description User creation request model.
          */
         UserCreate: {
             /**
@@ -12714,24 +13013,10 @@ export interface components {
              * Format: email
              */
             email: string;
+            /** Password */
+            password: string;
             /** Name */
             name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** @default ORG */
-            user_type: components["schemas"]["UserType"];
-            /** Organization Id */
-            organization_id?: string | null;
         };
         /**
          * UserFormsResponse
@@ -13605,6 +13890,68 @@ export interface components {
             backup_will_be_created: boolean;
         };
         /**
+         * OAuthProviderInfo
+         * @description OAuth provider information for login page
+         */
+        src__models__contracts__auth__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
+        };
+        /**
+         * OAuthCallbackRequest
+         * @description Request model for OAuth callback endpoint
+         */
+        src__models__contracts__oauth__OAuthCallbackRequest: {
+            /**
+             * Code
+             * @description Authorization code from OAuth provider
+             */
+            code: string;
+            /**
+             * State
+             * @description State parameter for CSRF protection
+             */
+            state?: string | null;
+            /**
+             * Redirect Uri
+             * @description Redirect URI used in authorization request
+             */
+            redirect_uri?: string | null;
+        };
+        /**
+         * UserCreate
+         * @description Input for creating a user.
+         */
+        src__models__contracts__users__UserCreate: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Name */
+            name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** @default ORG */
+            user_type: components["schemas"]["UserType"];
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /**
          * MFAVerifyRequest
          * @description Request to verify MFA code during login.
          */
@@ -13622,43 +13969,20 @@ export interface components {
             device_name?: string | null;
         };
         /**
-         * UserCreate
-         * @description User creation request model.
+         * MFASetupResponse
+         * @description MFA setup response with secret.
          */
-        src__routers__auth__UserCreate: {
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Password */
-            password: string;
-            /** Name */
-            name?: string | null;
-        };
-        /**
-         * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
-         */
-        src__routers__oauth_sso__OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
-            /** Code */
-            code: string;
-            /** State */
-            state: string;
-        };
-        /**
-         * OAuthProviderInfo
-         * @description OAuth provider information.
-         */
-        src__routers__oauth_sso__OAuthProviderInfo: {
-            /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
+        src__routers__mfa__MFASetupResponse: {
+            /** Secret */
+            secret: string;
+            /** Qr Code Uri */
+            qr_code_uri: string;
+            /** Provisioning Uri */
+            provisioning_uri: string;
+            /** Issuer */
+            issuer: string;
+            /** Account Name */
+            account_name: string;
         };
     };
     responses: never;
@@ -13749,7 +14073,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MFASetupRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -13758,6 +14086,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MFASetupResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -13963,7 +14300,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__UserCreate"];
+                "application/json": components["schemas"]["UserCreate"];
             };
         };
         responses: {
@@ -14060,6 +14397,72 @@ export interface operations {
             };
         };
     };
+    setup_passkey_options_auth_setup_passkey_options_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupPasskeyOptionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupPasskeyOptionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    setup_passkey_verify_auth_setup_passkey_verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupPasskeyVerifyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupPasskeyVerifyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     authorize_device_auth_device_authorize_post: {
         parameters: {
             query?: never;
@@ -14128,7 +14531,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
                 };
             };
         };
@@ -14392,7 +14795,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
+                "application/json": components["schemas"]["OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -14843,7 +15246,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
             };
         };
         responses: {
@@ -18138,7 +18541,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__models__contracts__oauth__OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -18603,6 +19006,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SDKIntegrationsListMappingsResponse"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_integrations_get_mapping_api_cli_integrations_get_mapping_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKIntegrationsGetMappingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKIntegrationsMappingItem"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_integrations_upsert_mapping_api_cli_integrations_upsert_mapping_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKIntegrationsUpsertMappingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKIntegrationsMappingItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_integrations_delete_mapping_api_cli_integrations_delete_mapping_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKIntegrationsDeleteMappingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -19123,7 +19627,6 @@ export interface operations {
     cli_knowledge_delete_namespace_api_cli_knowledge_namespace__namespace__delete: {
         parameters: {
             query?: {
-                org_id?: string | null;
                 scope?: string | null;
             };
             header?: never;
@@ -19159,7 +19662,7 @@ export interface operations {
     cli_knowledge_list_namespaces_api_cli_knowledge_namespaces_get: {
         parameters: {
             query?: {
-                org_id?: string | null;
+                scope?: string | null;
                 include_global?: boolean;
             };
             header?: never;
@@ -19193,7 +19696,6 @@ export interface operations {
             query: {
                 key: string;
                 namespace?: string;
-                org_id?: string | null;
                 scope?: string | null;
             };
             header?: never;

@@ -31,9 +31,12 @@ import type { DataProviderOption } from "@/services/dataProviders";
 import { getDataProviderOptions } from "@/services/dataProviders";
 import { FormContextProvider, useFormContext } from "@/contexts/FormContext";
 import { useLaunchWorkflow } from "@/hooks/useLaunchWorkflow";
+import { FormContextPanel } from "@/components/forms/FormContextPanel";
 
 interface FormRendererProps {
 	form: Form;
+	/** Show developer context panel (platform admin only) */
+	devMode?: boolean;
 }
 
 // Helper function to convert DataProviderOption[] to ComboboxOption[]
@@ -62,7 +65,7 @@ function isFormSchema(schema: unknown): schema is FormSchema {
  * Inner component that uses FormContext
  * Separated to allow FormContextProvider to wrap it
  */
-function FormRendererInner({ form }: FormRendererProps) {
+function FormRendererInner({ form, devMode }: FormRendererProps) {
 	const navigate = useNavigate();
 	const submitForm = useSubmitForm();
 	const { context, isFieldVisible, setFieldValue, isLoadingLaunchWorkflow } =
@@ -1085,103 +1088,109 @@ function FormRendererInner({ form }: FormRendererProps) {
 
 	if (showLoadingState) {
 		return (
-			<div className="flex justify-center">
-				<Card className="w-full max-w-2xl">
-					<CardContent className="pt-6">
-						<div className="space-y-6">
-							{/* Loading indicator */}
-							<div className="flex items-center gap-3 p-4 bg-muted/50 rounded-lg">
-								<Loader2 className="h-5 w-5 animate-spin text-primary" />
-								<div className="flex-1">
-									<p className="text-sm font-medium">
-										{isLoadingLaunchWorkflow
-											? "Loading form data..."
-											: "Loading form options..."}
-									</p>
-									<p className="text-xs text-muted-foreground mt-0.5">
-										{isLoadingLaunchWorkflow
-											? "Executing launch workflow to populate form context"
-											: "Fetching dynamic options from data providers"}
-									</p>
+			<div className={devMode ? "flex gap-6" : ""}>
+				<div className={devMode ? "flex-1 flex justify-center" : "flex justify-center"}>
+					<Card className="w-full max-w-2xl">
+						<CardContent className="pt-6">
+							<div className="space-y-6">
+								{/* Loading indicator */}
+								<div className="flex items-center gap-3 p-4 bg-muted/50 rounded-lg">
+									<Loader2 className="h-5 w-5 animate-spin text-primary" />
+									<div className="flex-1">
+										<p className="text-sm font-medium">
+											{isLoadingLaunchWorkflow
+												? "Loading form data..."
+												: "Loading form options..."}
+										</p>
+										<p className="text-xs text-muted-foreground mt-0.5">
+											{isLoadingLaunchWorkflow
+												? "Executing launch workflow to populate form context"
+												: "Fetching dynamic options from data providers"}
+										</p>
+									</div>
+								</div>
+
+								{/* Skeleton loader for form fields */}
+								<div className="space-y-4">
+									<Skeleton className="h-12 w-full" />
+									<Skeleton className="h-12 w-full" />
+									<Skeleton className="h-24 w-full" />
+									<Skeleton className="h-12 w-full" />
+									<Skeleton className="h-10 w-32" />
 								</div>
 							</div>
-
-							{/* Skeleton loader for form fields */}
-							<div className="space-y-4">
-								<Skeleton className="h-12 w-full" />
-								<Skeleton className="h-12 w-full" />
-								<Skeleton className="h-24 w-full" />
-								<Skeleton className="h-12 w-full" />
-								<Skeleton className="h-10 w-32" />
-							</div>
-						</div>
-					</CardContent>
-				</Card>
+						</CardContent>
+					</Card>
+				</div>
+				{devMode && <FormContextPanel className="w-80 shrink-0 sticky top-4" />}
 			</div>
 		);
 	}
 
 	return (
-		<div className="flex justify-center">
-			<Card className="w-full max-w-2xl">
-				<CardContent className="pt-6">
-					<form
-						onSubmit={handleSubmit(onSubmit)}
-						className="space-y-4"
-					>
-						<AnimatePresence mode="popLayout" initial={false}>
-							{visibleFields.map((field: FormField) => (
-								<motion.div
-									key={field.name}
-									initial={{
-										opacity: 0,
-										height: 0,
-										marginBottom: 0,
-									}}
-									animate={{
-										opacity: 1,
-										height: "auto",
-										marginBottom: 16,
-									}}
-									exit={{
-										opacity: 0,
-										height: 0,
-										marginBottom: 0,
-									}}
-									transition={{
-										opacity: { duration: 0.15 },
-										height: {
-											duration: 0.2,
-											ease: "easeInOut",
-										},
-										marginBottom: {
-											duration: 0.2,
-											ease: "easeInOut",
-										},
-									}}
-									style={{ overflow: "hidden" }}
+		<div className={devMode ? "flex gap-6" : ""}>
+			<div className={devMode ? "flex-1 flex justify-center" : "flex justify-center"}>
+				<Card className="w-full max-w-2xl">
+					<CardContent className="pt-6">
+						<form
+							onSubmit={handleSubmit(onSubmit)}
+							className="space-y-4"
+						>
+							<AnimatePresence mode="popLayout" initial={false}>
+								{visibleFields.map((field: FormField) => (
+									<motion.div
+										key={field.name}
+										initial={{
+											opacity: 0,
+											height: 0,
+											marginBottom: 0,
+										}}
+										animate={{
+											opacity: 1,
+											height: "auto",
+											marginBottom: 16,
+										}}
+										exit={{
+											opacity: 0,
+											height: 0,
+											marginBottom: 0,
+										}}
+										transition={{
+											opacity: { duration: 0.15 },
+											height: {
+												duration: 0.2,
+												ease: "easeInOut",
+											},
+											marginBottom: {
+												duration: 0.2,
+												ease: "easeInOut",
+											},
+										}}
+										style={{ overflow: "hidden" }}
+									>
+										{renderField(field)}
+									</motion.div>
+								))}
+							</AnimatePresence>
+							<div className="pt-4">
+								<Button
+									type="submit"
+									disabled={
+										!isValid ||
+										submitForm.isPending ||
+										isNavigating
+									}
 								>
-									{renderField(field)}
-								</motion.div>
-							))}
-						</AnimatePresence>
-						<div className="pt-4">
-							<Button
-								type="submit"
-								disabled={
-									!isValid ||
-									submitForm.isPending ||
-									isNavigating
-								}
-							>
-								{submitForm.isPending || isNavigating
-									? "Submitting..."
-									: "Submit"}
-							</Button>
-						</div>
-					</form>
-				</CardContent>
-			</Card>
+									{submitForm.isPending || isNavigating
+										? "Submitting..."
+										: "Submit"}
+								</Button>
+							</div>
+						</form>
+					</CardContent>
+				</Card>
+			</div>
+			{devMode && <FormContextPanel className="w-80 shrink-0 sticky top-4" />}
 		</div>
 	);
 }
@@ -1190,7 +1199,7 @@ function FormRendererInner({ form }: FormRendererProps) {
  * FormRenderer with FormContext wrapper
  * Extracts query parameters from URL and provides them to context
  */
-export function FormRenderer({ form }: FormRendererProps) {
+export function FormRenderer({ form, devMode }: FormRendererProps) {
 	const [searchParams] = useSearchParams();
 
 	// Convert URLSearchParams to plain object
@@ -1204,7 +1213,7 @@ export function FormRenderer({ form }: FormRendererProps) {
 
 	return (
 		<FormContextProvider form={form} queryParams={queryParams}>
-			<FormRendererInner form={form} />
+			<FormRendererInner form={form} devMode={devMode} />
 		</FormContextProvider>
 	);
 }

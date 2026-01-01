@@ -108,7 +108,7 @@ export_docker_logs() {
     } > "$LOG_DIR/docker-logs.txt" 2>&1 || true
 
     # Also export individual service logs for easier debugging
-    for service in api worker postgres rabbitmq redis pgbouncer client playwright-runner; do
+    for service in api worker coding-agent postgres rabbitmq redis pgbouncer client playwright-runner; do
         docker compose -f "$COMPOSE_FILE" logs --no-color "$service" > "$LOG_DIR/$service.log" 2>&1 || true
     done
 
@@ -320,9 +320,9 @@ if [ "$CLIENT_DEV" = true ]; then
             sleep 1
         done
 
-        # Start API and Worker
-        echo "Starting API and Worker..."
-        docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build api worker
+        # Start API, Worker, and Coding Agent
+        echo "Starting API, Worker, and Coding Agent..."
+        docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
 
         # Wait for API
         echo "Waiting for API..."
@@ -368,9 +368,9 @@ if [ "$CLIENT_DEV" = true ]; then
         docker compose -f "$COMPOSE_FILE" exec -T postgres \
             psql -U bifrost -d postgres -c "CREATE DATABASE bifrost_test;" > /dev/null
 
-        # Restart API to run migrations and start server
+        # Restart API, Worker, and Coding Agent to run migrations and start server
         echo "Restarting API (runs migrations on startup)..."
-        docker compose -f "$COMPOSE_FILE" start api worker
+        docker compose -f "$COMPOSE_FILE" --profile e2e start api worker coding-agent
 
         # Wait for API to be ready
         echo "Waiting for API to be ready..."
@@ -518,7 +518,7 @@ done
 # =============================================================================
 echo ""
 echo "Starting API and Worker for E2E tests..."
-docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build api worker
+docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
 
 # Wait for API to be healthy
 echo "Waiting for API to be ready..."
