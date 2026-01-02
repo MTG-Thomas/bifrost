@@ -43,7 +43,6 @@ COPY api/src/ /app/src/
 COPY api/shared/ /app/shared/
 COPY api/alembic/ /app/alembic/
 COPY api/alembic.ini /app/
-COPY api/platform/ /app/platform/
 COPY api/bifrost/ /app/bifrost/
 COPY api/bifrost.py /app/
 
