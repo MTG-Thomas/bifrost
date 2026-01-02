@@ -423,9 +423,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					>
 																						{channel?.label ||
 																							channelValue}
-																						<button
-																							type="button"
-																							className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																						<X
+																							className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
 																							onClick={(
 																								e,
 																							) => {
@@ -440,9 +439,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																									),
 																								);
 																							}}
-																						>
-																							<X className="h-3 w-3" />
-																						</button>
+																						/>
 																					</Badge>
 																				);
 																			},
@@ -844,9 +841,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																		className="mr-1 font-mono text-xs"
 																	>
 																		{tool?.name || toolId}
-																		<button
-																			type="button"
-																			className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																		<X
+																			className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
 																			onClick={(e) => {
 																				e.stopPropagation();
 																				form.setValue(
@@ -856,9 +852,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					) || []
 																				);
 																			}}
-																		>
-																			<X className="h-3 w-3" />
-																		</button>
+																		/>
 																	</Badge>
 																);
 															})}
@@ -874,9 +868,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																		className="mr-1"
 																	>
 																		{tool?.name || toolId}
-																		<button
-																			type="button"
-																			className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																		<X
+																			className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
 																			onClick={(e) => {
 																				e.stopPropagation();
 																				form.setValue(
@@ -886,9 +879,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					) || []
 																				);
 																			}}
-																		>
-																			<X className="h-3 w-3" />
-																		</button>
+																		/>
 																	</Badge>
 																);
 															})}
@@ -1044,9 +1035,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					>
 																						{delegateAgent?.name ||
 																							agentIdValue}
-																						<button
-																							type="button"
-																							className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																						<X
+																							className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
 																							onClick={(
 																								e,
 																							) => {
@@ -1061,9 +1051,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																									),
 																								);
 																							}}
-																						>
-																							<X className="h-3 w-3" />
-																						</button>
+																						/>
 																					</Badge>
 																				);
 																			},
@@ -1214,9 +1202,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					{
 																						namespace
 																					}
-																					<button
-																						type="button"
-																						className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+																					<X
+																						className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
 																						onClick={(
 																							e,
 																						) => {
@@ -1231,9 +1218,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																								),
 																							);
 																						}}
-																					>
-																						<X className="h-3 w-3" />
-																					</button>
+																					/>
 																				</Badge>
 																			),
 																		)}

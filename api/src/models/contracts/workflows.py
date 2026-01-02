@@ -39,7 +39,7 @@ class WorkflowMetadata(BaseModel):
     id: str = Field(..., description="Workflow UUID")
 
     # Required fields
-    name: str = Field(..., min_length=1, pattern=r"^[a-z0-9_]+$", description="Workflow name (snake_case)")
+    name: str = Field(..., min_length=1, max_length=200, description="Human-readable workflow name")
     description: str | None = Field(default=None, description="Human-readable description")
 
     # Optional fields with defaults

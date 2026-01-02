@@ -25,14 +25,14 @@ import type { RegisteredComponentProps } from "../ComponentRegistry";
  */
 export function DividerComponent({ component }: RegisteredComponentProps) {
 	const { props } = component as DividerComponentProps;
-	const orientation = props.orientation || "horizontal";
+	const orientation = props?.orientation || "horizontal";
 
 	if (orientation === "vertical") {
 		return (
 			<div
 				className={cn(
 					"mx-2 h-full w-px shrink-0 bg-border",
-					props.className,
+					props?.className,
 				)}
 				role="separator"
 				aria-orientation="vertical"
@@ -44,7 +44,7 @@ export function DividerComponent({ component }: RegisteredComponentProps) {
 		<div
 			className={cn(
 				"my-4 h-px w-full shrink-0 bg-border",
-				props.className,
+				props?.className,
 			)}
 			role="separator"
 			aria-orientation="horizontal"

@@ -10,6 +10,7 @@ import type { ButtonComponentProps } from "@/lib/app-builder-types";
 import { evaluateExpression } from "@/lib/expression-parser";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { Button } from "@/components/ui/button";
+import { getIcon } from "@/lib/icons";
 
 /**
  * Button Component
@@ -58,11 +59,13 @@ export function ButtonComponent({
 	context,
 }: RegisteredComponentProps) {
 	const { props } = component as ButtonComponentProps;
-	const label = String(evaluateExpression(props.label, context) ?? "");
+	// Support both 'label' and 'text' for button text
+	const labelValue = props?.label ?? (props as Record<string, unknown>)?.text ?? "";
+	const label = String(evaluateExpression(labelValue as string, context) ?? "");
 
 	// Evaluate disabled state - can be boolean or expression string
 	const isDisabled = (() => {
-		if (props.disabled === undefined || props.disabled === null) {
+		if (props?.disabled === undefined || props?.disabled === null) {
 			return false;
 		}
 		if (typeof props.disabled === "boolean") {
@@ -73,54 +76,69 @@ export function ButtonComponent({
 	})();
 
 	const handleClick = useCallback(() => {
-		switch (props.actionType) {
+		// Support both old format (actionType at top level) and new format (onClick object)
+		const onClick = (props as Record<string, unknown>)?.onClick as {
+			type?: string;
+			navigateTo?: string;
+			workflowId?: string;
+			actionParams?: Record<string, unknown>;
+			onComplete?: unknown[];
+		} | undefined;
+
+		const actionType = props?.actionType || onClick?.type;
+		const navigateTo = props?.navigateTo || onClick?.navigateTo;
+		const workflowId = props?.workflowId || onClick?.workflowId;
+		const actionParams = props?.actionParams || onClick?.actionParams;
+		const onComplete = props?.onComplete || onClick?.onComplete;
+
+		switch (actionType) {
 			case "navigate":
-				if (props.navigateTo && context.navigate) {
+				if (navigateTo && context.navigate) {
 					// Evaluate navigation path in case it contains expressions
 					const path = String(
-						evaluateExpression(props.navigateTo, context) ?? props.navigateTo,
+						evaluateExpression(navigateTo, context) ?? navigateTo,
 					);
 					context.navigate(path);
 				}
 				break;
 
 			case "workflow":
-				if (props.workflowId && context.triggerWorkflow) {
-					context.triggerWorkflow(props.workflowId, props.actionParams, props.onComplete);
+				if (workflowId && context.triggerWorkflow) {
+					context.triggerWorkflow(workflowId, actionParams, onComplete as never);
 				}
 				break;
 
 			case "submit":
 				// Submit form - collects all field values and triggers workflow
-				if (props.workflowId && context.submitForm) {
-					context.submitForm(props.workflowId, props.actionParams);
+				if (workflowId && context.submitForm) {
+					context.submitForm(workflowId, actionParams);
 				}
 				break;
 
 			case "custom":
-				if (props.customActionId && context.onCustomAction) {
-					context.onCustomAction(props.customActionId, props.actionParams);
+				if (props?.customActionId && context.onCustomAction) {
+					context.onCustomAction(props.customActionId, actionParams);
 				}
 				break;
 		}
-	}, [
-		props.actionType,
-		props.navigateTo,
-		props.workflowId,
-		props.customActionId,
-		props.actionParams,
-		props.onComplete,
-		context,
-	]);
+	}, [props, context]);
+
+	// Render button with optional icon
+	const renderIcon = () => {
+		if (!props?.icon) return null;
+		const Icon = getIcon(props.icon);
+		return <Icon className="h-4 w-4 mr-2" />;
+	};
 
 	return (
 		<Button
-			variant={props.variant || "default"}
-			size={props.size || "default"}
+			variant={props?.variant || "default"}
+			size={props?.size || "default"}
 			disabled={isDisabled}
 			onClick={handleClick}
-			className={cn(props.className)}
+			className={cn(props?.className)}
 		>
+			{renderIcon()}
 			{label}
 		</Button>
 	);

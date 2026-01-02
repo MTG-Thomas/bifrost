@@ -39,19 +39,19 @@ import { LayoutRenderer } from "../LayoutRenderer";
  */
 export function CardComponent({ component, context }: RegisteredComponentProps) {
 	const { props } = component as CardComponentProps;
-	const title = props.title
+	const title = props?.title
 		? String(evaluateExpression(props.title, context) ?? "")
 		: undefined;
-	const description = props.description
+	const description = props?.description
 		? String(evaluateExpression(props.description, context) ?? "")
 		: undefined;
 
 	const hasHeader = title || description;
 
-	const hasChildren = props.children && props.children.length > 0;
+	const hasChildren = props?.children && props.children.length > 0;
 
 	return (
-		<Card className={cn("h-full", props.className)}>
+		<Card className={cn("h-full", props?.className)}>
 			{hasHeader && (
 				<CardHeader>
 					{title && <CardTitle>{title}</CardTitle>}

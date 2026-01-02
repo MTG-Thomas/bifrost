@@ -86,11 +86,13 @@ function getSpacingStyle(size?: number | string): { className?: string; style?: 
  */
 export function SpacerComponent({ component }: RegisteredComponentProps) {
 	const { props } = component as SpacerComponentProps;
-	const { className: spacingClass, style } = getSpacingStyle(props.size);
+	// Handle missing props gracefully
+	const size = props?.size ?? props?.height;
+	const { className: spacingClass, style } = getSpacingStyle(size);
 
 	return (
 		<div
-			className={cn("w-full", spacingClass, props.className)}
+			className={cn("w-full", spacingClass, props?.className)}
 			style={style}
 			aria-hidden="true"
 		/>

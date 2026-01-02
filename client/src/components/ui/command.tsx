@@ -88,11 +88,11 @@ function CommandList({
 }: React.ComponentProps<typeof CommandPrimitive.List>) {
 	const listRef = React.useRef<HTMLDivElement>(null);
 
-	const handleWheel = React.useCallback(
-		(e: React.WheelEvent<HTMLDivElement>) => {
-			const target = listRef.current;
-			if (!target) return;
+	React.useEffect(() => {
+		const target = listRef.current;
+		if (!target) return;
 
+		const handleWheel = (e: WheelEvent) => {
 			const { scrollHeight, clientHeight } = target;
 			const isScrollable = scrollHeight > clientHeight;
 
@@ -111,9 +111,15 @@ function CommandList({
 					e.stopPropagation();
 				}
 			}
-		},
-		[],
-	);
+		};
+
+		// Use native event listener with passive: false to allow preventDefault
+		target.addEventListener("wheel", handleWheel, { passive: false });
+
+		return () => {
+			target.removeEventListener("wheel", handleWheel);
+		};
+	}, []);
 
 	return (
 		<CommandPrimitive.List
@@ -123,7 +129,6 @@ function CommandList({
 				"max-h-[300px] scroll-py-1 overflow-x-hidden overflow-y-auto overscroll-contain",
 				className,
 			)}
-			onWheel={handleWheel}
 			{...props}
 		/>
 	);

@@ -29,35 +29,23 @@ import { useAuth } from "@/contexts/AuthContext";
 import type { ApplicationDefinition, NavItem, ExpressionContext } from "@/lib/app-builder-types";
 import { evaluateExpression } from "@/lib/expression-parser";
 import { hasPageAccess } from "@/lib/app-builder-permissions";
-import * as LucideIcons from "lucide-react";
+import { getIcon } from "@/lib/icons";
 
 interface AppShellProps {
 	/** The application definition */
 	app: ApplicationDefinition;
+	/** Application slug for URL routing (uses app.id if not provided) */
+	slug?: string;
 	/** Current page ID */
 	currentPageId?: string;
 	/** Avatar URL for the current user */
 	avatarUrl?: string | null;
 	/** Whether to show the back button */
 	showBackButton?: boolean;
+	/** Children to render in the main content area (alternative to Outlet) */
+	children?: React.ReactNode;
 }
 
-/**
- * Get icon component by name from lucide-react
- */
-function getIcon(iconName?: string): LucideIcons.LucideIcon {
-	if (!iconName) return LucideIcons.Home;
-
-	// Convert icon name to PascalCase
-	const pascalName = iconName
-		.split("-")
-		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-		.join("");
-
-	const icons = LucideIcons as unknown as Record<string, LucideIcons.LucideIcon>;
-	const IconComponent = icons[pascalName];
-	return IconComponent || LucideIcons.Home;
-}
 
 /**
  * App Shell provides the chrome around a running App Builder application.
@@ -65,11 +53,15 @@ function getIcon(iconName?: string): LucideIcons.LucideIcon {
  */
 export function AppShell({
 	app,
+	slug,
 	currentPageId,
 	avatarUrl,
 	showBackButton = true,
+	children,
 }: AppShellProps) {
 	const navigate = useNavigate();
+	// Use slug prop if provided, otherwise fall back to app.id
+	const appSlug = slug || app.id;
 	const { user, logout } = useAuth();
 	const [isCollapsed, setIsCollapsed] = useState(false);
 	const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -208,23 +200,25 @@ export function AppShell({
 								);
 							}
 
+							// Check if this nav item is currently active
+							const isCurrentPage = item.id === currentPageId ||
+								(currentPage && (item.id === currentPage.id || path === currentPage.path));
+
 							return (
 								<NavLink
 									key={item.id}
-									to={`/apps/${app.id}/${path}`}
+									to={`/apps/${appSlug}/${path}`}
 									title={isCollapsed ? item.label : undefined}
-									className={({ isActive }) =>
-										cn(
-											"flex items-center rounded-lg text-sm font-medium transition-colors",
-											"hover:bg-accent hover:text-accent-foreground",
-											isActive
-												? "bg-accent text-accent-foreground"
-												: "text-muted-foreground",
-											isCollapsed
-												? "justify-center w-10 h-10 mx-auto"
-												: "gap-3 px-3 py-2",
-										)
-									}
+									className={cn(
+										"flex items-center rounded-lg text-sm font-medium transition-colors",
+										"hover:bg-accent hover:text-accent-foreground",
+										isCurrentPage
+											? "bg-accent text-accent-foreground"
+											: "text-muted-foreground",
+										isCollapsed
+											? "justify-center w-10 h-10 mx-auto"
+											: "gap-3 px-3 py-2",
+									)}
 								>
 									<IconComponent
 										className={cn(isCollapsed ? "h-5 w-5" : "h-4 w-4")}
@@ -278,20 +272,22 @@ export function AppShell({
 									);
 								}
 
+								// Check if this nav item is currently active
+								const isCurrentPage = item.id === currentPageId ||
+									(currentPage && (item.id === currentPage.id || path === currentPage.path));
+
 								return (
 									<NavLink
 										key={item.id}
-										to={`/apps/${app.id}/${path}`}
+										to={`/apps/${appSlug}/${path}`}
 										onClick={() => setIsMobileMenuOpen(false)}
-										className={({ isActive }) =>
-											cn(
-												"flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-												"hover:bg-accent hover:text-accent-foreground",
-												isActive
-													? "bg-accent text-accent-foreground"
-													: "text-muted-foreground",
-											)
-										}
+										className={cn(
+											"flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+											"hover:bg-accent hover:text-accent-foreground",
+											isCurrentPage
+												? "bg-accent text-accent-foreground"
+												: "text-muted-foreground",
+										)}
 									>
 										<IconComponent className="h-4 w-4" />
 										{item.label}
@@ -397,7 +393,7 @@ export function AppShell({
 
 				{/* Page Content */}
 				<main className="flex-1 overflow-auto p-6">
-					<Outlet />
+					{children || <Outlet />}
 				</main>
 			</div>
 		</div>

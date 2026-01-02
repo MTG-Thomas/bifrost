@@ -308,11 +308,11 @@ export function Applications() {
 									)}
 
 									{/* Version info */}
-									{app.live_version && (
+									{app.live_version ? (
 										<div className="text-xs text-muted-foreground mb-3">
 											Version {app.live_version}
 										</div>
-									)}
+									) : null}
 
 									<div className="flex gap-2 mt-auto">
 										<Button

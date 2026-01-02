@@ -73,6 +73,8 @@ interface AppRendererProps {
 	onRefreshTable?: (dataSourceKey: string) => void;
 	/** Current workflow result for context injection */
 	workflowResult?: WorkflowResult;
+	/** Custom navigate function (for relative path handling) */
+	navigate?: (path: string) => void;
 }
 
 /**
@@ -103,6 +105,7 @@ export function AppRenderer({
 	executeWorkflow,
 	onRefreshTable,
 	workflowResult,
+	navigate: customNavigate,
 }: AppRendererProps) {
 	const { user: authUser } = useAuth();
 
@@ -221,9 +224,11 @@ export function AppRenderer({
 		<AppContextProvider
 			initialVariables={initialVariables}
 			initialData={pageData}
+			isDataLoading={isDataLoading}
 			onTriggerWorkflow={onTriggerWorkflow}
 			onRefreshTable={handleRefreshTable}
 			workflowResult={combinedWorkflowResult}
+			customNavigate={customNavigate}
 		>
 			{isDataLoading && (
 				<div className="absolute top-2 right-2 flex items-center gap-2 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">

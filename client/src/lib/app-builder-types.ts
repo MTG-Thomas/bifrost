@@ -130,6 +130,8 @@ export interface ExpressionContext {
 	field?: Record<string, unknown>;
 	/** Last workflow execution result (accessed via {{ workflow.result.* }}) */
 	workflow?: WorkflowResult;
+	/** Whether any data source is currently loading */
+	isDataLoading?: boolean;
 	/** Navigation function for button actions */
 	navigate?: (path: string) => void;
 	/** Workflow trigger function - returns Promise with result for onComplete handling */
@@ -246,6 +248,8 @@ export interface SpacerComponentProps extends BaseComponentProps {
 	props: {
 		/** Size in pixels or Tailwind spacing units */
 		size?: number | string;
+		/** Alias for size - supports legacy definitions */
+		height?: number | string;
 		/** Additional CSS classes */
 		className?: string;
 	};
@@ -293,6 +297,8 @@ export interface ButtonComponentProps extends BaseComponentProps {
 		size?: "default" | "sm" | "lg";
 		/** Disabled state (boolean or expression like "{{ row.status == 'completed' }}") */
 		disabled?: boolean | string;
+		/** Icon name to display (from lucide-react) */
+		icon?: string;
 		/** Additional CSS classes */
 		className?: string;
 	};
@@ -779,6 +785,12 @@ export interface LayoutContainer {
 	justify?: LayoutJustify;
 	/** Grid column count (for grid type) */
 	columns?: number;
+	/**
+	 * When true, children keep their natural size instead of expanding to fill space.
+	 * Useful for button rows where you want to use justify to position buttons.
+	 * Default: false (children expand equally in row layouts)
+	 */
+	autoSize?: boolean;
 	/** Visibility expression */
 	visible?: string;
 	/** Additional CSS classes */

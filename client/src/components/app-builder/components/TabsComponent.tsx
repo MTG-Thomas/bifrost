@@ -13,28 +13,30 @@ import { LayoutRenderer } from "../LayoutRenderer";
 export function TabsComponent({ component, context }: RegisteredComponentProps) {
 	const { props } = component as TabsComponentProps;
 
-	const defaultTab = props.defaultTab || props.items[0]?.id;
-	const isVertical = props.orientation === "vertical";
-
-	if (props.items.length === 0) {
+	// Guard against undefined props or items
+	const items = props?.items ?? [];
+	if (items.length === 0) {
 		return null;
 	}
+
+	const defaultTab = props?.defaultTab || items[0]?.id;
+	const isVertical = props?.orientation === "vertical";
 
 	return (
 		<Tabs
 			defaultValue={defaultTab}
 			className={cn(
 				isVertical && "flex gap-4",
-				props.className,
+				props?.className,
 			)}
-			orientation={props.orientation}
+			orientation={props?.orientation}
 		>
 			<TabsList
 				className={cn(
 					isVertical && "flex-col h-auto items-stretch",
 				)}
 			>
-				{props.items.map((item) => (
+				{items.map((item) => (
 					<TabsTrigger
 						key={item.id}
 						value={item.id}
@@ -47,7 +49,7 @@ export function TabsComponent({ component, context }: RegisteredComponentProps) 
 				))}
 			</TabsList>
 			<div className={cn(isVertical ? "flex-1" : "mt-4")}>
-				{props.items.map((item) => (
+				{items.map((item) => (
 					<TabsContent key={item.id} value={item.id} className="mt-0">
 						<LayoutRenderer layout={item.content} context={context} />
 					</TabsContent>

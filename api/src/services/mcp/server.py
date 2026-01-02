@@ -22,6 +22,7 @@ Usage:
     app = fastmcp_server.http_app()
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -980,6 +981,734 @@ async def _update_form_impl(
         return f"Error updating form: {str(e)}"
 
 
+# =============================================================================
+# Application Tool Implementations
+# =============================================================================
+
+
+async def _get_app_schema_impl(context: MCPContext) -> str:
+    """Get application schema documentation."""
+    return """# App Builder Schema Documentation
+
+Applications in Bifrost are defined using a JSON schema with pages, layouts, and components.
+
+## Application Definition
+
+```json
+{
+  "name": "My Application",
+  "description": "Application description",
+  "version": "1.0.0",
+  "pages": [...],
+  "navigation": {...},
+  "permissions": {...}
+}
+```
+
+## Page Definition
+
+Each page has a path, title, layout, and optional data sources:
+
+```json
+{
+  "id": "dashboard",
+  "title": "Dashboard",
+  "path": "/",
+  "dataSources": [
+    {
+      "id": "stats",
+      "type": "workflow",
+      "workflowId": "get_dashboard_stats"
+    }
+  ],
+  "layout": {
+    "type": "column",
+    "gap": 16,
+    "children": [...]
+  }
+}
+```
+
+## Layout Types
+
+- **column**: Vertical flex container (children stack vertically)
+- **row**: Horizontal flex container (children side by side)
+- **grid**: CSS grid with configurable columns
+
+Layout properties:
+- `gap`: Space between children (pixels)
+- `padding`: Internal padding (pixels)
+- `align`: Cross-axis alignment (start, center, end, stretch)
+- `justify`: Main-axis alignment (start, center, end, between, around)
+- `columns`: Number of grid columns (grid type only)
+
+## Component Types
+
+### Display Components
+
+**heading** - Page/section headings
+```json
+{"id": "h1", "type": "heading", "props": {"text": "Welcome", "level": 1}}
+```
+
+**text** - Text content with optional label
+```json
+{"id": "t1", "type": "text", "props": {"text": "Description here", "label": "Details"}}
+```
+
+**badge** - Status badges
+```json
+{"id": "b1", "type": "badge", "props": {"text": "Active", "variant": "default"}}
+```
+Variants: default, secondary, destructive, outline
+
+**stat-card** - Dashboard statistics
+```json
+{
+  "id": "sc1",
+  "type": "stat-card",
+  "props": {
+    "title": "Total Users",
+    "value": "{{ data.stats.userCount }}",
+    "icon": "users",
+    "trend": {"value": "+12%", "direction": "up"}
+  }
+}
+```
+
+**image** - Images with sizing
+```json
+{"id": "img1", "type": "image", "props": {"src": "{{ data.user.avatar }}", "alt": "Avatar", "maxWidth": 100}}
+```
+
+**card** - Container with optional header
+```json
+{"id": "c1", "type": "card", "props": {"title": "Section", "children": [...]}}
+```
+
+**divider** - Horizontal/vertical line separator
+**spacer** - Empty space with configurable size
+
+### Data Components
+
+**data-table** - Full-featured data table
+```json
+{
+  "id": "table1",
+  "type": "data-table",
+  "props": {
+    "dataSource": "customers",
+    "columns": [
+      {"key": "name", "header": "Name", "sortable": true},
+      {"key": "status", "header": "Status", "type": "badge"}
+    ],
+    "searchable": true,
+    "paginated": true,
+    "rowActions": [
+      {
+        "label": "Edit",
+        "icon": "pencil",
+        "onClick": {"type": "navigate", "navigateTo": "/customers/{{ row.id }}/edit"}
+      }
+    ]
+  }
+}
+```
+
+**tabs** - Tabbed content sections
+```json
+{
+  "id": "tabs1",
+  "type": "tabs",
+  "props": {
+    "defaultTab": "overview",
+    "items": [
+      {"id": "overview", "label": "Overview", "content": {"type": "column", "children": [...]}},
+      {"id": "settings", "label": "Settings", "content": {"type": "column", "children": [...]}}
+    ]
+  }
+}
+```
+
+### Form Input Components
+
+**text-input** - Text field
+```json
+{"id": "ti1", "type": "text-input", "props": {"fieldId": "name", "label": "Name", "required": true}}
+```
+
+**number-input** - Number field with min/max
+```json
+{"id": "ni1", "type": "number-input", "props": {"fieldId": "quantity", "label": "Qty", "min": 1, "max": 100}}
+```
+
+**select** - Dropdown (static or data-driven)
+```json
+{
+  "id": "sel1",
+  "type": "select",
+  "props": {
+    "fieldId": "status",
+    "label": "Status",
+    "options": [
+      {"value": "active", "label": "Active"},
+      {"value": "inactive", "label": "Inactive"}
+    ]
+  }
+}
+```
+
+**checkbox** - Boolean checkbox
+```json
+{"id": "cb1", "type": "checkbox", "props": {"fieldId": "agree", "label": "I agree to terms"}}
+```
+
+### Interactive Components
+
+**button** - Action trigger
+```json
+{
+  "id": "btn1",
+  "type": "button",
+  "props": {
+    "label": "Save",
+    "actionType": "submit",
+    "workflowId": "save_data",
+    "variant": "default"
+  }
+}
+```
+Action types: navigate, workflow, submit, custom
+Variants: default, destructive, outline, secondary, ghost, link
+
+**modal** - Dialog with content
+```json
+{
+  "id": "m1",
+  "type": "modal",
+  "props": {
+    "title": "Add Item",
+    "triggerLabel": "Add New",
+    "content": {"type": "column", "children": [...]},
+    "footerActions": [{"label": "Save", "actionType": "submit", "workflowId": "create_item"}]
+  }
+}
+```
+
+## Expressions
+
+Use `{{ }}` syntax for dynamic values:
+
+- `{{ user.name }}` - Current user's name
+- `{{ user.email }}` - Current user's email
+- `{{ user.role }}` - Current user's role
+- `{{ variables.selectedId }}` - Page variable
+- `{{ field.customerName }}` - Form field value
+- `{{ data.customers }}` - Data from data source
+- `{{ workflow.result.id }}` - Last workflow result
+- `{{ row.id }}` - Current row in table actions
+
+Comparisons: `{{ user.role == 'admin' }}`
+Logic: `{{ isActive && hasPermission }}`
+
+## Data Sources
+
+```json
+{
+  "dataSources": [
+    {"id": "customers", "type": "workflow", "workflowId": "get_customers"},
+    {"id": "categories", "type": "data-provider", "dataProviderId": "get_categories"},
+    {"id": "config", "type": "static", "data": {"theme": "dark"}}
+  ]
+}
+```
+
+Types: workflow, data-provider, api, static, computed
+
+## Navigation
+
+```json
+{
+  "navigation": {
+    "showSidebar": true,
+    "sidebar": [
+      {"id": "home", "label": "Dashboard", "icon": "home", "path": "/"},
+      {"id": "users", "label": "Users", "icon": "users", "path": "/users"}
+    ]
+  }
+}
+```
+
+## Actions
+
+Button/table action types:
+- **navigate**: Go to path `{"type": "navigate", "navigateTo": "/path"}`
+- **workflow**: Execute workflow `{"type": "workflow", "workflowId": "...", "actionParams": {...}}`
+- **submit**: Collect form fields and execute workflow
+- **set-variable**: Update page variable
+
+OnComplete actions (after workflow):
+```json
+{
+  "onComplete": [
+    {"type": "refresh-table", "dataSourceKey": "customers"},
+    {"type": "navigate", "navigateTo": "/success"}
+  ]
+}
+```
+
+## Visibility & Disabled
+
+Any component can have:
+- `visible`: Expression to control visibility `"{{ user.role == 'admin' }}"`
+- `disabled`: Expression for buttons `"{{ !field.name }}"`
+
+## Complete Example
+
+```json
+{
+  "name": "Customer Manager",
+  "version": "1.0.0",
+  "pages": [
+    {
+      "id": "list",
+      "title": "Customers",
+      "path": "/",
+      "dataSources": [
+        {"id": "customers", "type": "workflow", "workflowId": "list_customers"}
+      ],
+      "layout": {
+        "type": "column",
+        "gap": 16,
+        "padding": 24,
+        "children": [
+          {"id": "h1", "type": "heading", "props": {"text": "Customers", "level": 1}},
+          {
+            "id": "table",
+            "type": "data-table",
+            "props": {
+              "dataSource": "customers",
+              "columns": [
+                {"key": "name", "header": "Name"},
+                {"key": "email", "header": "Email"},
+                {"key": "status", "header": "Status", "type": "badge"}
+              ],
+              "searchable": true,
+              "onRowClick": {"type": "navigate", "navigateTo": "/customers/{{ row.id }}"}
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "navigation": {
+    "showSidebar": true,
+    "sidebar": [
+      {"id": "list", "label": "Customers", "icon": "users", "path": "/"}
+    ]
+  }
+}
+```
+"""
+
+
+async def _validate_app_schema_impl(context: MCPContext, app_json: str) -> str:
+    """Validate an application JSON structure."""
+    import json
+
+    try:
+        app_data = json.loads(app_json)
+    except json.JSONDecodeError as e:
+        return f"Invalid JSON: {str(e)}"
+
+    errors: list[str] = []
+
+    # Check required top-level fields
+    if "name" not in app_data:
+        errors.append("Missing required field: 'name'")
+
+    if "pages" not in app_data:
+        errors.append("Missing required field: 'pages'")
+    elif not isinstance(app_data.get("pages"), list):
+        errors.append("'pages' must be an array")
+    elif len(app_data.get("pages", [])) == 0:
+        errors.append("'pages' must have at least one page")
+
+    # Validate each page
+    valid_layout_types = {"row", "column", "grid"}
+    valid_component_types = {
+        "heading", "text", "html", "card", "divider", "spacer", "button",
+        "stat-card", "image", "badge", "progress", "data-table", "tabs",
+        "file-viewer", "modal", "text-input", "number-input", "select",
+        "checkbox", "form-embed", "form-group"
+    }
+
+    def validate_layout(layout: dict[str, Any], path: str) -> None:
+        """Recursively validate layout structure."""
+        if not isinstance(layout, dict):
+            errors.append(f"{path}: layout must be an object")
+            return
+
+        layout_type = layout.get("type")
+        if layout_type not in valid_layout_types and layout_type not in valid_component_types:
+            errors.append(f"{path}: invalid type '{layout_type}'")
+            return
+
+        if layout_type in valid_layout_types:
+            # It's a layout container
+            children = layout.get("children", [])
+            if not isinstance(children, list):
+                errors.append(f"{path}: 'children' must be an array")
+            else:
+                for i, child in enumerate(children):
+                    validate_layout(child, f"{path}.children[{i}]")
+        else:
+            # It's a component
+            if "props" not in layout and layout_type not in {"divider", "spacer"}:
+                errors.append(f"{path}: component missing 'props'")
+
+    pages = app_data.get("pages", [])
+    if isinstance(pages, list):
+        for i, page in enumerate(pages):
+            if not isinstance(page, dict):
+                errors.append(f"pages[{i}]: must be an object")
+                continue
+
+            if "id" not in page:
+                errors.append(f"pages[{i}]: missing 'id'")
+            if "title" not in page:
+                errors.append(f"pages[{i}]: missing 'title'")
+            if "path" not in page:
+                errors.append(f"pages[{i}]: missing 'path'")
+            if "layout" not in page:
+                errors.append(f"pages[{i}]: missing 'layout'")
+            elif isinstance(page.get("layout"), dict):
+                validate_layout(page["layout"], f"pages[{i}].layout")
+
+            # Validate data sources if present
+            data_sources = page.get("dataSources", [])
+            if not isinstance(data_sources, list):
+                errors.append(f"pages[{i}].dataSources: must be an array")
+            else:
+                valid_ds_types = {"workflow", "data-provider", "api", "static", "computed"}
+                for j, ds in enumerate(data_sources):
+                    if not isinstance(ds, dict):
+                        errors.append(f"pages[{i}].dataSources[{j}]: must be an object")
+                        continue
+                    if "id" not in ds:
+                        errors.append(f"pages[{i}].dataSources[{j}]: missing 'id'")
+                    if "type" not in ds:
+                        errors.append(f"pages[{i}].dataSources[{j}]: missing 'type'")
+                    elif ds["type"] not in valid_ds_types:
+                        errors.append(
+                            f"pages[{i}].dataSources[{j}]: invalid type '{ds['type']}'. "
+                            f"Valid: {', '.join(sorted(valid_ds_types))}"
+                        )
+
+    if errors:
+        return "Validation errors:\n" + "\n".join(f"- {e}" for e in errors)
+
+    return "✓ Application schema is valid!"
+
+
+async def _list_apps_impl(context: MCPContext) -> str:
+    """List all applications."""
+    from src.core.database import get_db_context
+    from src.models.orm.applications import Application as ApplicationORM
+
+    from sqlalchemy import select
+
+    logger.info("MCP list_apps called")
+
+    try:
+        async with get_db_context() as db:
+            query = select(ApplicationORM)
+
+            # Non-admins can only see their org's apps
+            if not context.is_platform_admin and context.org_id:
+                query = query.where(ApplicationORM.organization_id == context.org_id)
+
+            result = await db.execute(query)
+            apps = result.scalars().all()
+
+            if not apps:
+                return "No applications found."
+
+            lines = ["# Applications\n"]
+            for app in apps:
+                status = "Published" if app.live_definition else "Draft only"
+                lines.append(f"## {app.name}")
+                lines.append(f"- **ID:** {app.id}")
+                lines.append(f"- **Slug:** {app.slug}")
+                lines.append(f"- **Status:** {status}")
+                if app.live_version:
+                    lines.append(f"- **Live Version:** v{app.live_version}")
+                if app.draft_version:
+                    lines.append(f"- **Draft Version:** v{app.draft_version}")
+                if app.description:
+                    lines.append(f"- **Description:** {app.description}")
+                lines.append(f"- **URL:** /apps/{app.slug}")
+                lines.append("")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"Error listing apps via MCP: {e}")
+        return f"Error listing apps: {str(e)}"
+
+
+async def _get_app_impl(
+    context: MCPContext,
+    app_id: str | None = None,
+    app_slug: str | None = None,
+) -> str:
+    """Get detailed application information."""
+    import json as json_module
+
+    from src.core.database import get_db_context
+    from src.models.orm.applications import Application as ApplicationORM
+
+    from sqlalchemy import select
+
+    logger.info(f"MCP get_app called with id={app_id}, slug={app_slug}")
+
+    if not app_id and not app_slug:
+        return "Error: Either app_id or app_slug is required"
+
+    try:
+        async with get_db_context() as db:
+            query = select(ApplicationORM)
+
+            if app_id:
+                query = query.where(ApplicationORM.id == app_id)
+            else:
+                query = query.where(ApplicationORM.slug == app_slug)
+
+            # Non-admins can only see their org's apps
+            if not context.is_platform_admin and context.org_id:
+                query = query.where(ApplicationORM.organization_id == context.org_id)
+
+            result = await db.execute(query)
+            app = result.scalar_one_or_none()
+
+            if not app:
+                return f"Application not found: {app_id or app_slug}"
+
+            lines = [f"# {app.name}\n"]
+            lines.append(f"**ID:** {app.id}")
+            lines.append(f"**Slug:** {app.slug}")
+            if app.description:
+                lines.append(f"**Description:** {app.description}")
+            lines.append(f"**Live Version:** v{app.live_version or 0}")
+            lines.append(f"**Draft Version:** v{app.draft_version or 0}")
+            lines.append(f"**URL:** /apps/{app.slug}")
+            lines.append("")
+
+            # Show draft definition (what's being edited)
+            if app.draft_definition:
+                lines.append("## Draft Definition\n")
+                lines.append("```json")
+                lines.append(json_module.dumps(app.draft_definition, indent=2))
+                lines.append("```")
+
+            # Show live definition summary
+            if app.live_definition:
+                lines.append("\n## Live Definition (Published)\n")
+                lines.append("```json")
+                lines.append(json_module.dumps(app.live_definition, indent=2))
+                lines.append("```")
+
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"Error getting app via MCP: {e}")
+        return f"Error getting app: {str(e)}"
+
+
+async def _create_app_impl(
+    context: MCPContext,
+    name: str,
+    definition: dict[str, Any],
+    description: str | None = None,
+    slug: str | None = None,
+) -> str:
+    """Create a new application."""
+    import re
+    from uuid import uuid4
+
+    from src.core.database import get_db_context
+    from src.models.orm.applications import Application as ApplicationORM
+
+    logger.info(f"MCP create_app called with name={name}")
+
+    if not name:
+        return "Error: name is required"
+
+    if not definition:
+        return "Error: definition is required"
+
+    # Validate definition has required structure
+    if "pages" not in definition:
+        return "Error: definition must have 'pages' array"
+
+    if not isinstance(definition.get("pages"), list) or len(definition["pages"]) == 0:
+        return "Error: definition must have at least one page"
+
+    # Generate slug if not provided
+    if not slug:
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+    try:
+        async with get_db_context() as db:
+            # Check for duplicate slug
+            from sqlalchemy import select
+
+            existing = await db.execute(
+                select(ApplicationORM).where(
+                    ApplicationORM.slug == slug,
+                    ApplicationORM.organization_id == context.org_id,
+                )
+            )
+            if existing.scalar_one_or_none():
+                return f"Error: An application with slug '{slug}' already exists"
+
+            # Ensure definition has name and version
+            definition["name"] = name
+            if "version" not in definition:
+                definition["version"] = "1.0.0"
+
+            app = ApplicationORM(
+                id=uuid4(),
+                name=name,
+                slug=slug,
+                description=description,
+                organization_id=context.org_id,
+                draft_definition=definition,
+                draft_version=1,
+                live_version=0,
+                live_definition=None,
+                created_by=str(context.user_id),
+            )
+
+            db.add(app)
+            await db.commit()
+            await db.refresh(app)
+
+            return (
+                f"✓ Application '{name}' created successfully!\n\n"
+                f"**ID:** {app.id}\n"
+                f"**Slug:** {app.slug}\n"
+                f"**Draft Version:** v1\n"
+                f"**Editor URL:** /apps/{app.slug}/editor\n"
+                f"**Preview URL:** /apps/{app.slug}\n\n"
+                f"The app is in draft mode. Use the editor to preview and publish."
+            )
+
+    except Exception as e:
+        logger.exception(f"Error creating app via MCP: {e}")
+        return f"Error creating app: {str(e)}"
+
+
+async def _update_app_impl(
+    context: MCPContext,
+    app_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    definition: dict[str, Any] | None = None,
+    publish: bool = False,
+) -> str:
+    """Update an existing application."""
+    from src.core.database import get_db_context
+    from src.models.orm.applications import Application as ApplicationORM
+
+    from sqlalchemy import select
+
+    logger.info(f"MCP update_app called with id={app_id}, publish={publish}")
+
+    if not app_id:
+        return "Error: app_id is required"
+
+    try:
+        async with get_db_context() as db:
+            query = select(ApplicationORM).where(ApplicationORM.id == app_id)
+
+            # Non-admins can only update their org's apps
+            if not context.is_platform_admin and context.org_id:
+                query = query.where(ApplicationORM.organization_id == context.org_id)
+
+            result = await db.execute(query)
+            app = result.scalar_one_or_none()
+
+            if not app:
+                return f"Application not found: {app_id}"
+
+            updates_made = []
+
+            if name is not None:
+                app.name = name
+                # Also update name in definition
+                if app.draft_definition:
+                    app.draft_definition["name"] = name
+                updates_made.append("name")
+
+            if description is not None:
+                app.description = description
+                updates_made.append("description")
+
+            if definition is not None:
+                # Validate definition
+                if "pages" not in definition:
+                    return "Error: definition must have 'pages' array"
+                if not isinstance(definition.get("pages"), list) or len(definition["pages"]) == 0:
+                    return "Error: definition must have at least one page"
+
+                # Ensure name and version
+                definition["name"] = app.name
+                if "version" not in definition:
+                    definition["version"] = f"1.0.{app.draft_version}"
+
+                app.draft_definition = definition
+                app.draft_version = (app.draft_version or 0) + 1
+                updates_made.append(f"definition (v{app.draft_version})")
+
+            if publish:
+                if not app.draft_definition:
+                    return "Error: No draft definition to publish"
+
+                # Store current live in history
+                if app.live_definition:
+                    history = app.version_history or []
+                    history.insert(0, {
+                        "version": app.live_version,
+                        "definition": app.live_definition,
+                    })
+                    # Keep last 10 versions
+                    app.version_history = history[:10]
+
+                app.live_definition = app.draft_definition
+                app.live_version = app.draft_version
+                from datetime import datetime
+                app.published_at = datetime.utcnow()
+                updates_made.append(f"published (v{app.live_version})")
+
+            if not updates_made:
+                return "No updates specified"
+
+            await db.commit()
+
+            return (
+                f"✓ Application '{app.name}' updated successfully!\n\n"
+                f"**ID:** {app.id}\n"
+                f"**Updates:** {', '.join(updates_made)}\n"
+                f"**Draft Version:** v{app.draft_version}\n"
+                f"**Live Version:** v{app.live_version or 'not published'}\n"
+            )
+
+    except Exception as e:
+        logger.exception(f"Error updating app via MCP: {e}")
+        return f"Error updating app: {str(e)}"
+
+
 async def _search_knowledge_impl(
     context: MCPContext,
     query: str,
@@ -1336,6 +2065,62 @@ results = await knowledge.search("my query", limit=5)
 await knowledge.store(key="doc1", content="Document content")
 ```
 
+### Tables Module (Document Storage)
+
+**IMPORTANT**: All tables methods return Pydantic models, NOT dicts. Use attribute access (`.id`, `.data`, `.documents`), not dict access (`.get()`, `["key"]`).
+
+```python
+from bifrost import tables
+
+# Create a table (auto-creates if doesn't exist on first insert)
+# Tables are scoped to the organization
+
+# Insert a document - returns DocumentData model
+result = await tables.insert("my_table", {"name": "John", "age": 30})
+doc_id = result.id  # NOT result["id"]
+
+# Get a document by ID - returns DocumentData model or None
+doc = await tables.get("my_table", doc_id)
+if doc:
+    data = doc.data  # NOT doc["data"] or doc.get("data")
+    doc_id = doc.id
+    created = doc.created_at
+    updated = doc.updated_at
+
+# Query documents - returns DocumentList model
+result = await tables.query(
+    "my_table",
+    where={"status": "active"},  # Filter conditions
+    order_by="created_at",
+    order_dir="desc",  # "asc" or "desc"
+    limit=10,
+    offset=0,
+)
+# Iterate over result.documents (NOT result.get("documents"))
+for doc in result.documents:
+    print(doc.id, doc.data)
+
+# Update a document - returns DocumentData model or None
+updated = await tables.update("my_table", doc_id, {"age": 31})
+if updated:
+    new_data = updated.data
+
+# Delete a document - returns bool
+deleted = await tables.delete("my_table", doc_id)
+
+# Count documents
+count = await tables.count("my_table")
+count_filtered = await tables.count("my_table", where={"status": "active"})
+```
+
+**Return Types:**
+- `insert()` → `DocumentData` with `.id`, `.data`, `.created_at`, `.updated_at`
+- `get()` → `DocumentData | None`
+- `query()` → `DocumentList` with `.documents` (list of DocumentData)
+- `update()` → `DocumentData | None`
+- `delete()` → `bool`
+- `count()` → `int`
+
 ## Parameter Types
 
 Supported parameter types for workflow functions:
@@ -1564,23 +2349,6 @@ async def _list_data_providers_impl(
                 lines.append(f"- ID: `{provider.id}`")
                 if provider.description:
                     lines.append(f"{provider.description}")
-
-                meta_parts = []
-                if provider.category:
-                    meta_parts.append(f"Category: {provider.category}")
-                if provider.cache_ttl_seconds:
-                    lines.append(f"- Cache TTL: {provider.cache_ttl_seconds}s")
-
-                if meta_parts:
-                    lines.append(f"- {' | '.join(meta_parts)}")
-
-                # Show parameters if available
-                if provider.parameters:
-                    lines.append("- **Parameters:**")
-                    for param in provider.parameters:
-                        req = "(required)" if param.required else "(optional)"
-                        lines.append(f"  - `{param.name}`: {param.type} {req}")
-
                 if provider.file_path:
                     lines.append(f"- File: `{provider.file_path}`")
                 lines.append("")
@@ -2190,6 +2958,124 @@ def _create_sdk_tools(context: MCPContext, enabled_tools: set[str] | None) -> li
             result = await _validate_data_provider_impl(context, args.get("file_path", ""))
             return {"content": [{"type": "text", "text": result}]}
         tools.append(validate_data_provider)
+
+    # App Builder Tools (enabled by default for coding agent)
+    if enabled_tools is None or "get_app_schema" in enabled_tools:
+        @sdk_tool(
+            name="get_app_schema",
+            description="Get documentation about App Builder application structure, components, expressions, and actions.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+        )
+        async def get_app_schema(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _get_app_schema_impl(context)
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(get_app_schema)
+
+    if enabled_tools is None or "validate_app_schema" in enabled_tools:
+        @sdk_tool(
+            name="validate_app_schema",
+            description="Validate an App Builder application JSON structure before saving.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "app_json": {"type": "string", "description": "JSON string of the application definition to validate"},
+                },
+                "required": ["app_json"],
+            },
+        )
+        async def validate_app_schema(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _validate_app_schema_impl(context, args.get("app_json", ""))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(validate_app_schema)
+
+    if enabled_tools is None or "list_apps" in enabled_tools:
+        @sdk_tool(
+            name="list_apps",
+            description="List all App Builder applications with their URLs.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+        )
+        async def list_apps(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _list_apps_impl(context)
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(list_apps)
+
+    if enabled_tools is None or "get_app" in enabled_tools:
+        @sdk_tool(
+            name="get_app",
+            description="Get detailed information about a specific App Builder application including its full definition.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "app_id": {"type": "string", "description": "Application UUID"},
+                    "app_slug": {"type": "string", "description": "Application slug (alternative to ID)"},
+                },
+                "required": [],
+            },
+        )
+        async def get_app(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _get_app_impl(context, args.get("app_id"), args.get("app_slug"))
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(get_app)
+
+    if enabled_tools is None or "create_app" in enabled_tools:
+        @sdk_tool(
+            name="create_app",
+            description="Create a new App Builder application with pages, layouts, and components.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Application name (1-200 chars)"},
+                    "definition": {
+                        "type": "object",
+                        "description": "Application definition object with pages, navigation, permissions, etc.",
+                    },
+                    "description": {"type": "string", "description": "Optional application description"},
+                    "slug": {"type": "string", "description": "Optional URL-friendly slug (auto-generated if not provided)"},
+                },
+                "required": ["name", "definition"],
+            },
+        )
+        async def create_app(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _create_app_impl(
+                context,
+                args.get("name", ""),
+                args.get("definition", {}),
+                args.get("description"),
+                args.get("slug"),
+            )
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(create_app)
+
+    if enabled_tools is None or "update_app" in enabled_tools:
+        @sdk_tool(
+            name="update_app",
+            description="Update an existing App Builder application. Set publish=true to publish the current draft as a new live version.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "app_id": {"type": "string", "description": "Application UUID (required)"},
+                    "name": {"type": "string", "description": "New application name"},
+                    "description": {"type": "string", "description": "New description"},
+                    "definition": {
+                        "type": "object",
+                        "description": "New application definition (replaces draft)",
+                    },
+                    "publish": {"type": "boolean", "description": "Publish current draft as new live version"},
+                },
+                "required": ["app_id"],
+            },
+        )
+        async def update_app(args: dict[str, Any]) -> dict[str, Any]:
+            result = await _update_app_impl(
+                context,
+                args.get("app_id", ""),
+                args.get("name"),
+                args.get("description"),
+                args.get("definition"),
+                args.get("publish", False),
+            )
+            return {"content": [{"type": "text", "text": result}]}
+        tools.append(update_app)
 
     return tools
 
@@ -2865,6 +3751,80 @@ def _register_fastmcp_tools(mcp: "FastMCP", context: MCPContext, enabled_tools: 
         async def validate_data_provider(file_path: str) -> str:
             return await _validate_data_provider_impl(_get_context(), file_path)
 
+    # App Builder Tools
+    if enabled_tools is None or "get_app_schema" in enabled_tools:
+        @mcp.tool(
+            name="get_app_schema",
+            description="Get documentation about App Builder application structure, components, expressions, and actions.",
+        )
+        async def get_app_schema() -> str:
+            return await _get_app_schema_impl(_get_context())
+
+    if enabled_tools is None or "validate_app_schema" in enabled_tools:
+        @mcp.tool(
+            name="validate_app_schema",
+            description="Validate an App Builder application JSON structure.",
+        )
+        async def validate_app_schema(app_definition: str) -> str:
+            return await _validate_app_schema_impl(_get_context(), app_definition)
+
+    if enabled_tools is None or "list_apps" in enabled_tools:
+        @mcp.tool(
+            name="list_apps",
+            description="List all App Builder applications with their URLs.",
+        )
+        async def list_apps() -> str:
+            return await _list_apps_impl(_get_context())
+
+    if enabled_tools is None or "get_app" in enabled_tools:
+        @mcp.tool(
+            name="get_app",
+            description="Get detailed information about a specific App Builder application including its full definition.",
+        )
+        async def get_app(app_id: str | None = None, app_slug: str | None = None) -> str:
+            return await _get_app_impl(_get_context(), app_id, app_slug)
+
+    if enabled_tools is None or "create_app" in enabled_tools:
+        @mcp.tool(
+            name="create_app",
+            description="Create a new App Builder application with pages, layouts, and components.",
+        )
+        async def create_app(
+            name: str,
+            description: str | None = None,
+            app_definition: str | None = None,
+            slug: str | None = None,
+        ) -> str:
+            # Parse JSON string to dict
+            definition = None
+            if app_definition:
+                try:
+                    definition = json.loads(app_definition)
+                except json.JSONDecodeError as e:
+                    return f"Error: Invalid JSON in app_definition: {e}"
+            return await _create_app_impl(_get_context(), name, definition, description, slug)
+
+    if enabled_tools is None or "update_app" in enabled_tools:
+        @mcp.tool(
+            name="update_app",
+            description="Update an existing App Builder application. Set publish=true to publish the current draft as a new live version.",
+        )
+        async def update_app(
+            app_id: str,
+            name: str | None = None,
+            description: str | None = None,
+            app_definition: str | None = None,
+            publish: bool = False,
+        ) -> str:
+            # Parse JSON string to dict
+            definition = None
+            if app_definition:
+                try:
+                    definition = json.loads(app_definition)
+                except json.JSONDecodeError as e:
+                    return f"Error: Invalid JSON in app_definition: {e}"
+            return await _update_app_impl(_get_context(), app_id, name, description, definition, publish)
+
 
 # =============================================================================
 # BifrostMCPServer
@@ -2975,6 +3935,7 @@ class BifrostMCPServer:
             mcp = _FastMCP(
                 self._name,
                 auth=auth,
+                stateless_http=True,
                 website_url=BIFROST_WEBSITE_URL,
                 icons=icons,
             )
@@ -2988,6 +3949,7 @@ class BifrostMCPServer:
             assert _FastMCP is not None  # For type checker; HAS_FASTMCP check above ensures this
             self._fastmcp = _FastMCP(
                 self._name,
+                stateless_http=True,
                 website_url=BIFROST_WEBSITE_URL,
                 icons=icons,
             )
@@ -3000,11 +3962,17 @@ class BifrostMCPServer:
         """Get list of registered tool names (prefixed for SDK use)."""
         all_tools = [
             "execute_workflow", "list_workflows", "list_integrations",
-            "list_forms", "get_form_schema", "validate_form_schema", "search_knowledge",
+            "list_forms", "get_form", "get_form_schema", "validate_form_schema",
+            "create_form", "update_form",
+            "search_knowledge",
             # File operations
             "read_file", "write_file", "list_files", "delete_file", "search_files", "create_folder",
             # Workflow and execution tools
             "validate_workflow", "get_workflow_schema", "get_workflow", "list_executions", "get_execution",
+            # Data provider tools
+            "list_data_providers", "get_data_provider_schema", "validate_data_provider",
+            # App Builder tools
+            "get_app_schema", "validate_app_schema", "list_apps", "get_app", "create_app", "update_app",
         ]
         if self._enabled_tools:
             tools = [t for t in all_tools if t in self._enabled_tools]

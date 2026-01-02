@@ -14,7 +14,7 @@ export function ProgressComponent({ component, context }: RegisteredComponentPro
 	const { props } = component as ProgressComponentProps;
 
 	// Evaluate expressions
-	const rawValue = evaluateExpression(String(props.value), context);
+	const rawValue = evaluateExpression(String(props?.value ?? 0), context);
 	const value = typeof rawValue === "number"
 		? rawValue
 		: parseFloat(String(rawValue)) || 0;
@@ -23,9 +23,9 @@ export function ProgressComponent({ component, context }: RegisteredComponentPro
 	const clampedValue = Math.max(0, Math.min(100, value));
 
 	return (
-		<div className={cn("w-full", props.className)}>
+		<div className={cn("w-full", props?.className)}>
 			<Progress value={clampedValue} className="h-2" />
-			{props.showLabel && (
+			{props?.showLabel && (
 				<p className="mt-1 text-right text-sm text-muted-foreground">
 					{Math.round(clampedValue)}%
 				</p>

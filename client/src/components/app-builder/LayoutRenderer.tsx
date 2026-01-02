@@ -153,13 +153,13 @@ function renderLayoutContainer(
 	const layoutStyles = getLayoutStyles(layout);
 
 	// For rows, we want children to flex and share space equally by default
-	// unless they have an explicit width set
-	const renderChild = (child: LayoutContainer | AppComponent, index: number, parentType: "row" | "column" | "grid") => {
+	// unless they have an explicit width set OR autoSize is enabled
+	const renderChild = (child: LayoutContainer | AppComponent, index: number, parentType: "row" | "column" | "grid", autoSize?: boolean) => {
 		const key = isLayoutContainer(child) ? `layout-${index}` : child.id;
 
 		// In row layouts, wrap children with flex-1 to distribute space evenly
-		// unless the child has an explicit width
-		if (parentType === "row") {
+		// unless the child has an explicit width OR autoSize is enabled on the parent
+		if (parentType === "row" && !autoSize) {
 			const hasExplicitWidth = !isLayoutContainer(child) && child.width && child.width !== "auto";
 			return (
 				<div key={key} className={hasExplicitWidth ? undefined : "flex-1 min-w-0"}>
@@ -181,7 +181,7 @@ function renderLayoutContainer(
 		case "row":
 			return (
 				<div className={cn("flex flex-row flex-wrap", baseClasses)} style={layoutStyles}>
-					{layout.children.map((child, index) => renderChild(child, index, "row"))}
+					{layout.children.map((child, index) => renderChild(child, index, "row", layout.autoSize))}
 				</div>
 			);
 

@@ -11,6 +11,7 @@ import {
 	useMemo,
 	useCallback,
 	useState,
+	useEffect,
 	type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -57,6 +58,8 @@ interface AppContextProviderProps {
 	initialVariables?: Record<string, unknown>;
 	/** Initial data from data sources */
 	initialData?: Record<string, unknown>;
+	/** Whether any data source is currently loading */
+	isDataLoading?: boolean;
 	/** Custom workflow trigger handler with onComplete actions */
 	onTriggerWorkflow?: (
 		workflowId: string,
@@ -67,6 +70,8 @@ interface AppContextProviderProps {
 	onRefreshTable?: (dataSourceKey: string) => void;
 	/** Externally controlled workflow result (for injection from parent) */
 	workflowResult?: WorkflowResult;
+	/** Custom navigate function (defaults to react-router navigate) */
+	customNavigate?: (path: string) => void;
 }
 
 /**
@@ -87,9 +92,11 @@ export function AppContextProvider({
 	children,
 	initialVariables = {},
 	initialData = {},
+	isDataLoading = false,
 	onTriggerWorkflow,
 	onRefreshTable,
 	workflowResult: externalWorkflowResult,
+	customNavigate,
 }: AppContextProviderProps) {
 	const navigate = useNavigate();
 	const { user: authUser } = useAuth();
@@ -102,6 +109,12 @@ export function AppContextProvider({
 	const [fieldValues, setFieldValuesState] = useState<Record<string, unknown>>(
 		{},
 	);
+
+	// Sync initialData prop changes to internal data state
+	// This is needed because useState only uses initialData on first mount
+	useEffect(() => {
+		setDataState(initialData);
+	}, [initialData]);
 
 	// Custom action handlers registry
 	const [customActions, setCustomActions] = useState<
@@ -129,12 +142,16 @@ export function AppContextProvider({
 		};
 	}, [authUser]);
 
-	// Navigation handler
+	// Navigation handler - use custom navigate if provided, else default
 	const handleNavigate = useCallback(
 		(path: string) => {
-			navigate(path);
+			if (customNavigate) {
+				customNavigate(path);
+			} else {
+				navigate(path);
+			}
 		},
-		[navigate],
+		[navigate, customNavigate],
 	);
 
 	// Workflow trigger handler
@@ -235,6 +252,7 @@ export function AppContextProvider({
 			data,
 			field: fieldValues,
 			workflow: workflowResult,
+			isDataLoading,
 			navigate: handleNavigate,
 			triggerWorkflow: handleTriggerWorkflow,
 			submitForm: handleSubmitForm,
@@ -249,6 +267,7 @@ export function AppContextProvider({
 			data,
 			fieldValues,
 			workflowResult,
+			isDataLoading,
 			handleNavigate,
 			handleTriggerWorkflow,
 			handleSubmitForm,

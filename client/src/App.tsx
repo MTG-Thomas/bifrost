@@ -216,6 +216,24 @@ function AppRoutes() {
 					{/* Embed route - minimal chrome for iframe embedding */}
 					<Route path="embed/:applicationId/*" element={<ApplicationEmbed />} />
 
+					{/* Application Runner & Preview - Own layout (no main sidebar) */}
+					<Route
+						path="apps/:applicationId/preview/*"
+						element={
+							<ProtectedRoute requirePlatformAdmin>
+								<ApplicationPreview />
+							</ProtectedRoute>
+						}
+					/>
+					<Route
+						path="apps/:applicationId/*"
+						element={
+							<ProtectedRoute requireOrgUser>
+								<ApplicationRunner />
+							</ProtectedRoute>
+						}
+					/>
+
 					<Route path="/" element={<Layout />}>
 						{/* Dashboard - PlatformAdmin only (OrgUsers redirected to /forms) */}
 						<Route index element={<Dashboard />} />
@@ -342,7 +360,7 @@ function AppRoutes() {
 							}
 						/>
 
-						{/* Applications - PlatformAdmin only */}
+						{/* Applications List & Editor - PlatformAdmin only (with sidebar) */}
 						<Route
 							path="apps"
 							element={
@@ -364,22 +382,6 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute requirePlatformAdmin>
 									<ApplicationEditor />
-								</ProtectedRoute>
-							}
-						/>
-						<Route
-							path="apps/:applicationId/preview/*"
-							element={
-								<ProtectedRoute requirePlatformAdmin>
-									<ApplicationPreview />
-								</ProtectedRoute>
-							}
-						/>
-						<Route
-							path="apps/:applicationId/*"
-							element={
-								<ProtectedRoute requireOrgUser>
-									<ApplicationRunner />
 								</ProtectedRoute>
 							}
 						/>

@@ -28,13 +28,13 @@ import type { RegisteredComponentProps } from "../ComponentRegistry";
  */
 export function TextComponent({ component, context }: RegisteredComponentProps) {
 	const { props } = component as TextComponentProps;
-	const text = String(evaluateExpression(props.text, context) ?? "");
-	const label = props.label
+	const text = String(evaluateExpression(props?.text ?? "", context) ?? "");
+	const label = props?.label
 		? String(evaluateExpression(props.label, context) ?? "")
 		: undefined;
 
 	return (
-		<div className={cn("space-y-1", props.className)}>
+		<div className={cn("space-y-1", props?.className)}>
 			{label && (
 				<p className="text-sm font-medium text-muted-foreground">{label}</p>
 			)}

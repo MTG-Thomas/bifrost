@@ -52,10 +52,10 @@ export function HeadingComponent({
 	context,
 }: RegisteredComponentProps) {
 	const { props } = component as HeadingComponentProps;
-	const level = props.level || 1;
-	const text = String(evaluateExpression(props.text, context) ?? "");
+	const level = props?.level || 1;
+	const text = String(evaluateExpression(props?.text ?? "", context) ?? "");
 
-	const classes = cn(getHeadingClasses(level), props.className);
+	const classes = cn(getHeadingClasses(level), props?.className);
 
 	// Render the appropriate heading element
 	switch (level) {

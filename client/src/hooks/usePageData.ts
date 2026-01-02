@@ -5,7 +5,8 @@
  * Handles loading data on page mount and provides refresh functionality.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
 import type { DataSource, PageDefinition, WorkflowResult, ExpressionContext } from "@/lib/app-builder-types";
 import { evaluateExpression } from "@/lib/expression-parser";
@@ -91,6 +92,15 @@ export function usePageData({
 		launchWorkflowResult: undefined,
 	});
 
+	// Track whether initial data load has occurred to prevent infinite loops
+	const hasLoadedRef = useRef(false);
+	const pageId = page?.id;
+
+	// Reset loaded flag when page changes
+	useEffect(() => {
+		hasLoadedRef.current = false;
+	}, [pageId]);
+
 	// Build expression context including loaded data
 	const expressionContext = useMemo(
 		(): Partial<ExpressionContext> => ({
@@ -127,6 +137,7 @@ export function usePageData({
 						return response.data;
 					} catch (error) {
 						console.error(`Failed to load data provider "${dataSource.dataProviderId}":`, error);
+						toast.error(`Failed to load data: ${error instanceof Error ? error.message : "Unknown error"}`);
 						return null;
 					}
 
@@ -140,6 +151,7 @@ export function usePageData({
 						return result?.result ?? null;
 					} catch (error) {
 						console.error(`Failed to execute workflow "${dataSource.workflowId}":`, error);
+						toast.error(`Failed to load data: ${error instanceof Error ? error.message : "Unknown error"}`);
 						return null;
 					}
 
@@ -153,6 +165,7 @@ export function usePageData({
 						return response.json();
 					} catch (error) {
 						console.error(`Failed to fetch "${dataSource.endpoint}":`, error);
+						toast.error(`Failed to load data: ${error instanceof Error ? error.message : "Unknown error"}`);
 						return null;
 					}
 
@@ -190,6 +203,7 @@ export function usePageData({
 				}));
 			} catch (error) {
 				console.error(`Failed to refresh data source "${dataSourceId}":`, error);
+				toast.error(`Failed to refresh data: ${error instanceof Error ? error.message : "Unknown error"}`);
 			}
 		},
 		[page, loadDataSource],
@@ -246,6 +260,8 @@ export function usePageData({
 				}
 			} catch (error) {
 				if (!cancelled) {
+					console.error("Launch workflow failed:", error);
+					toast.error(`Failed to initialize page: ${error instanceof Error ? error.message : "Unknown error"}`);
 					setState((prev) => ({
 						...prev,
 						isLaunchWorkflowLoading: false,
@@ -263,13 +279,19 @@ export function usePageData({
 	}, [page?.launchWorkflowId, page?.launchWorkflowParams, baseContext, executeWorkflow]);
 
 	// Load data sources on page mount (after launch workflow completes if present)
+	// Note: refreshAll is intentionally excluded from deps to prevent infinite loops.
+	// The hasLoadedRef ensures this only runs once per page.
 	useEffect(() => {
 		if (!page?.dataSources?.length) return;
 		// Wait for launch workflow to complete if present
 		if (page.launchWorkflowId && state.isLaunchWorkflowLoading) return;
+		// Prevent re-runs after initial load (breaks dependency cycle)
+		if (hasLoadedRef.current) return;
 
+		hasLoadedRef.current = true;
 		refreshAll();
-	}, [page, state.isLaunchWorkflowLoading, refreshAll]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [page, state.isLaunchWorkflowLoading]);
 
 	return {
 		...state,

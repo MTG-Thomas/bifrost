@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -106,12 +107,19 @@ export function DataTableComponent({
 	const { props } = component as DataTableComponentProps;
 
 	// Get data from context - memoize to prevent dependency changes
-	const data = useMemo(() => {
+	const rawData = useMemo(() => {
 		const dataSource = props.dataSource.startsWith("{{")
 			? evaluateExpression(props.dataSource, context)
 			: context.data?.[props.dataSource];
-		return Array.isArray(dataSource) ? dataSource : [];
+		return dataSource;
 	}, [props.dataSource, context]);
+
+	const data = useMemo(() => {
+		return Array.isArray(rawData) ? rawData : [];
+	}, [rawData]);
+
+	// Show skeleton if data is undefined AND we're loading
+	const isLoading = rawData === undefined && context.isDataLoading;
 
 	// State
 	const [searchQuery, setSearchQuery] = useState("");
@@ -363,7 +371,8 @@ export function DataTableComponent({
 		);
 	};
 
-	if (data.length === 0 && !props.emptyMessage) {
+	// Don't show empty message when loading - skeleton will be shown instead
+	if (data.length === 0 && !props.emptyMessage && !isLoading) {
 		return (
 			<div className={cn("text-center py-8 text-muted-foreground", props.className)}>
 				No data available
@@ -449,7 +458,28 @@ export function DataTableComponent({
 						</TableRow>
 					</TableHeader>
 					<TableBody>
-						{paginatedData.length === 0 ? (
+						{isLoading ? (
+							// Show skeleton rows when loading
+							Array.from({ length: 5 }).map((_, rowIndex) => (
+								<TableRow key={`skeleton-${rowIndex}`}>
+									{props.selectable && (
+										<TableCell>
+											<Skeleton className="h-4 w-4" />
+										</TableCell>
+									)}
+									{props.columns.map((column) => (
+										<TableCell key={column.key}>
+											<Skeleton className="h-4 w-full" />
+										</TableCell>
+									))}
+									{props.rowActions?.length && (
+										<TableCell className="text-right">
+											<Skeleton className="h-8 w-16 ml-auto" />
+										</TableCell>
+									)}
+								</TableRow>
+							))
+						) : paginatedData.length === 0 ? (
 							<TableRow>
 								<TableCell
 									colSpan={

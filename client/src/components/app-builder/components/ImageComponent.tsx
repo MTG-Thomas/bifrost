@@ -13,26 +13,26 @@ export function ImageComponent({ component, context }: RegisteredComponentProps)
 	const { props } = component as ImageComponentProps;
 
 	// Evaluate expressions
-	const src = String(evaluateExpression(props.src, context) ?? "");
-	const alt = props.alt
+	const src = String(evaluateExpression(props?.src ?? "", context) ?? "");
+	const alt = props?.alt
 		? String(evaluateExpression(props.alt, context) ?? "")
 		: "";
 
 	const style: React.CSSProperties = {};
 
-	if (props.maxWidth) {
+	if (props?.maxWidth) {
 		style.maxWidth = typeof props.maxWidth === "number"
 			? `${props.maxWidth}px`
 			: props.maxWidth;
 	}
 
-	if (props.maxHeight) {
+	if (props?.maxHeight) {
 		style.maxHeight = typeof props.maxHeight === "number"
 			? `${props.maxHeight}px`
 			: props.maxHeight;
 	}
 
-	const objectFitClass = props.objectFit
+	const objectFitClass = props?.objectFit
 		? `object-${props.objectFit}`
 		: "object-contain";
 
@@ -41,7 +41,7 @@ export function ImageComponent({ component, context }: RegisteredComponentProps)
 			src={src}
 			alt={alt}
 			style={style}
-			className={cn(objectFitClass, props.className)}
+			className={cn(objectFitClass, props?.className)}
 		/>
 	);
 }

@@ -14,12 +14,12 @@ export function BadgeComponent({ component, context }: RegisteredComponentProps)
 	const { props } = component as BadgeComponentProps;
 
 	// Evaluate expressions
-	const text = String(evaluateExpression(props.text, context) ?? "");
+	const text = String(evaluateExpression(props?.text ?? "", context) ?? "");
 
 	return (
 		<Badge
-			variant={props.variant || "default"}
-			className={cn(props.className)}
+			variant={props?.variant || "default"}
+			className={cn(props?.className)}
 		>
 			{text}
 		</Badge>

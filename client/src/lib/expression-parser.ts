@@ -56,12 +56,21 @@ function getNestedValue(obj: unknown, path: string): unknown {
 
 /**
  * Build a context object for expression evaluation
+ *
+ * Follows documented expression conventions:
+ * - {{ user.name }} - user info
+ * - {{ variables.selectedId }} - page variables
+ * - {{ data.customers }} - data from data sources
+ * - {{ field.customerName }} - form field values
+ * - {{ workflow.result.id }} - workflow result
  */
 function buildEvaluationContext(context: ExpressionContext): Record<string, unknown> {
 	return {
 		user: context.user,
-		...context.variables,
-		...context.data,
+		variables: context.variables,
+		data: context.data,
+		field: context.field,
+		workflow: context.workflow,
 	};
 }
 
@@ -263,6 +272,15 @@ export function evaluateExpression(
 	template: string,
 	context: ExpressionContext,
 ): unknown {
+	// Handle non-string inputs gracefully
+	if (template === null || template === undefined) {
+		return template;
+	}
+	if (typeof template !== "string") {
+		// Non-string values pass through as-is (numbers, booleans, objects)
+		return template;
+	}
+
 	// Check if the entire template is a single expression
 	const singleExprMatch = template.match(/^\{\{\s*(.+?)\s*\}\}$/);
 	if (singleExprMatch) {

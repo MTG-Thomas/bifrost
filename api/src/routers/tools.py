@@ -200,6 +200,49 @@ SYSTEM_TOOLS: list[ToolInfo] = [
         type="system",
         default_enabled_for_coding_agent=True,
     ),
+    # App Builder Tools
+    ToolInfo(
+        id="get_app_schema",
+        name="Get App Schema",
+        description="Get documentation about App Builder application structure, components, expressions, and actions",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="validate_app_schema",
+        name="Validate App Schema",
+        description="Validate an App Builder application JSON structure",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="list_apps",
+        name="List Apps",
+        description="List all App Builder applications with their URLs",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="get_app",
+        name="Get App",
+        description="Get detailed information about a specific App Builder application",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="create_app",
+        name="Create App",
+        description="Create a new App Builder application with pages, layouts, and components",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
+    ToolInfo(
+        id="update_app",
+        name="Update App",
+        description="Update an existing App Builder application",
+        type="system",
+        default_enabled_for_coding_agent=True,
+    ),
 ]
 
 

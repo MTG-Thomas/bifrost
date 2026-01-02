@@ -22,12 +22,14 @@ import {
 	useApplicationDefinition,
 	useApplicationDraft,
 } from "@/hooks/useApplications";
-import { useWorkflows, useExecuteWorkflow } from "@/hooks/useWorkflows";
-import { AppRenderer } from "@/components/app-builder";
+import { useWorkflows } from "@/hooks/useWorkflows";
+import { useWorkflowExecution } from "@/hooks/useWorkflowExecution";
+import { AppRenderer, AppShell } from "@/components/app-builder";
 import {
 	WorkflowExecutionModal,
 	type PendingWorkflow,
 } from "@/components/app-builder/WorkflowExecutionModal";
+import { WorkflowLoadingIndicator } from "@/components/app-builder/WorkflowLoadingIndicator";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 import type { ApplicationDefinition, WorkflowResult, OnCompleteAction } from "@/lib/app-builder-types";
 import { evaluateExpression } from "@/lib/expression-parser";
@@ -75,7 +77,24 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 
 	// Fetch workflows metadata for parameter lookup
 	const { data: workflows } = useWorkflows();
-	const executeWorkflowMutation = useExecuteWorkflow();
+
+	// Workflow execution with real-time WebSocket subscription
+	const {
+		executeWorkflow: executeWorkflowWithSubscription,
+		activeExecutionIds,
+		isExecuting,
+		activeWorkflowNames,
+	} = useWorkflowExecution({
+		onExecutionComplete: (_executionId, result) => {
+			setWorkflowResult(result);
+			// Only show error toasts - success is silent for background tasks
+			if (result.status === "failed") {
+				toast.error(
+					`Workflow "${result.workflowName}" failed: ${result.error || "Unknown error"}`,
+				);
+			}
+		},
+	});
 
 	// Reset the runtime store when the application changes
 	useEffect(() => {
@@ -153,58 +172,16 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 		[workflows],
 	);
 
-	// Execute workflow with parameters
+	// Execute workflow with parameters - now waits for actual completion via WebSocket
 	const executeWorkflow = useCallback(
 		async (workflowId: string, params: Record<string, unknown>): Promise<WorkflowResult | undefined> => {
 			const workflow = findWorkflow(workflowId);
 			try {
-				const response = await executeWorkflowMutation.mutateAsync({
-					body: {
-						workflow_id: workflow?.id ?? workflowId,
-						input_data: params,
-						form_id: null,
-						transient: false,
-						code: null,
-						script_name: null,
-					},
-				});
-
-				// Build workflow result from response
-				// Map API statuses to our simplified status type
-				const mapStatus = (apiStatus: string): WorkflowResult["status"] => {
-					switch (apiStatus) {
-						case "Success":
-						case "CompletedWithErrors":
-							return "completed";
-						case "Failed":
-						case "Timeout":
-						case "Cancelled":
-							return "failed";
-						case "Running":
-						case "Cancelling":
-							return "running";
-						case "Pending":
-						default:
-							return "pending";
-					}
-				};
-
-				const result: WorkflowResult = {
-					executionId: response.execution_id,
-					workflowId: response.workflow_id ?? undefined,
-					workflowName: response.workflow_name ?? undefined,
-					status: mapStatus(response.status),
-					result: response.result ?? undefined,
-					error: response.error ?? undefined,
-				};
-
-				// Update workflow result in context
-				setWorkflowResult(result);
-
-				toast.success(
-					`Workflow "${workflow?.name || workflowId}" executed successfully`,
+				// Execute and wait for completion (hook handles WebSocket subscription)
+				const result = await executeWorkflowWithSubscription(
+					workflow?.id ?? workflowId,
+					params,
 				);
-
 				return result;
 			} catch (error) {
 				const errorResult: WorkflowResult = {
@@ -215,15 +192,13 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 					error: error instanceof Error ? error.message : "Unknown error",
 				};
 				setWorkflowResult(errorResult);
-
 				toast.error(
 					`Failed to execute workflow: ${error instanceof Error ? error.message : "Unknown error"}`,
 				);
-
 				return errorResult;
 			}
 		},
-		[executeWorkflowMutation, findWorkflow],
+		[executeWorkflowWithSubscription, findWorkflow],
 	);
 
 	// Check if workflow has required parameters that need user input
@@ -242,6 +217,18 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 		[],
 	);
 
+	// Create a navigate function that handles relative paths within the app
+	const appNavigate = useCallback((path: string) => {
+		// If the path is relative (doesn't start with /apps/), make it relative to current app
+		if (!path.startsWith("/apps/") && !path.startsWith("http")) {
+			const basePath = `/apps/${slugParam}`;
+			const relativePath = path.startsWith("/") ? path : `/${path}`;
+			navigate(`${basePath}${relativePath}`);
+		} else {
+			navigate(path);
+		}
+	}, [navigate, slugParam]);
+
 	// Execute onComplete actions after workflow completes
 	const executeOnCompleteActions = useCallback(
 		(actions: OnCompleteAction[], result: WorkflowResult) => {
@@ -259,7 +246,7 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 							const path = action.navigateTo.includes("{{")
 								? String(evaluateExpression(action.navigateTo, context) ?? action.navigateTo)
 								: action.navigateTo;
-							navigate(path);
+							appNavigate(path);
 						}
 						break;
 
@@ -283,7 +270,7 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 				}
 			}
 		},
-		[navigate, refreshDataSource],
+		[appNavigate, refreshDataSource],
 	);
 
 	// Workflow trigger handler with onComplete support
@@ -482,10 +469,42 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 	}
 
 	// Render the application
+	const appContent = (
+		<AppRenderer
+			definition={currentPage || appDefinition}
+			pageId={currentPage?.id}
+			onTriggerWorkflow={handleTriggerWorkflow}
+			executeWorkflow={executeWorkflow}
+			onRefreshTable={handleRefreshTable}
+			workflowResult={workflowResult}
+			navigate={appNavigate}
+		/>
+	);
+
+	// In embed mode, use minimal shell
+	if (embed) {
+		return (
+			<div className="min-h-screen bg-background" style={embedThemeStyles}>
+				<div className="p-4">
+					{appContent}
+				</div>
+				<WorkflowLoadingIndicator
+					activeCount={activeExecutionIds.length}
+					workflowNames={activeWorkflowNames}
+				/>
+				<WorkflowExecutionModal
+					pending={pendingWorkflow}
+					isExecuting={isExecuting}
+				/>
+			</div>
+		);
+	}
+
+	// Use AppShell for full application experience
 	return (
 		<div className="min-h-screen bg-background" style={embedThemeStyles}>
-			{/* Preview Banner - not shown in embed mode */}
-			{preview && !embed && (
+			{/* Preview Banner */}
+			{preview && (
 				<div className="bg-amber-500 text-amber-950 px-4 py-2 text-center text-sm font-medium">
 					Preview Mode - This is the draft version
 					<Button
@@ -499,22 +518,26 @@ export function ApplicationRunner({ preview = false, embed = false }: Applicatio
 				</div>
 			)}
 
-			{/* Application Content - minimal padding in embed mode */}
-			<div className={embed ? "p-4" : "p-6"}>
-				<AppRenderer
-					definition={currentPage || appDefinition}
-					pageId={currentPage?.id}
-					onTriggerWorkflow={handleTriggerWorkflow}
-					executeWorkflow={executeWorkflow}
-					onRefreshTable={handleRefreshTable}
-					workflowResult={workflowResult}
-				/>
-			</div>
+			{/* AppShell with sidebar and header */}
+			<AppShell
+				app={appDefinition}
+				slug={slugParam}
+				currentPageId={currentPage?.id}
+				showBackButton={!preview}
+			>
+				{appContent}
+			</AppShell>
+
+			{/* Workflow Loading Indicator */}
+			<WorkflowLoadingIndicator
+				activeCount={activeExecutionIds.length}
+				workflowNames={activeWorkflowNames}
+			/>
 
 			{/* Workflow Parameters Modal */}
 			<WorkflowExecutionModal
 				pending={pendingWorkflow}
-				isExecuting={executeWorkflowMutation.isPending}
+				isExecuting={isExecuting}
 			/>
 		</div>
 	);
