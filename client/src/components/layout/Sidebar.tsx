@@ -20,6 +20,7 @@ import {
 	Activity,
 	Webhook,
 	Database,
+	AppWindow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -60,6 +61,12 @@ const navSections: NavSection[] = [
 				title: "Chat",
 				href: "/chat",
 				icon: MessageSquare,
+			},
+			{
+				title: "Apps",
+				href: "/apps",
+				icon: AppWindow,
+				requiresPlatformAdmin: true,
 			},
 			{
 				title: "Forms",

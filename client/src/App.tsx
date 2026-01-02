@@ -130,6 +130,29 @@ const Tables = lazy(() =>
 const TableDetail = lazy(() =>
 	import("@/pages/TableDetail").then((m) => ({ default: m.TableDetail })),
 );
+const Applications = lazy(() =>
+	import("@/pages/Applications").then((m) => ({ default: m.Applications })),
+);
+const ApplicationEditor = lazy(() =>
+	import("@/pages/ApplicationEditor").then((m) => ({
+		default: m.ApplicationEditor,
+	})),
+);
+const ApplicationRunner = lazy(() =>
+	import("@/pages/ApplicationRunner").then((m) => ({
+		default: m.ApplicationRunner,
+	})),
+);
+const ApplicationPreview = lazy(() =>
+	import("@/pages/ApplicationRunner").then((m) => ({
+		default: m.ApplicationPreview,
+	})),
+);
+const ApplicationEmbed = lazy(() =>
+	import("@/pages/ApplicationRunner").then((m) => ({
+		default: m.ApplicationEmbed,
+	})),
+);
 
 function AppRoutes() {
 	const { brandingLoaded } = useOrgScope();
@@ -189,6 +212,9 @@ function AppRoutes() {
 						path="oauth/callback/:integrationId"
 						element={<OAuthCallback />}
 					/>
+
+					{/* Embed route - minimal chrome for iframe embedding */}
+					<Route path="embed/:applicationId/*" element={<ApplicationEmbed />} />
 
 					<Route path="/" element={<Layout />}>
 						{/* Dashboard - PlatformAdmin only (OrgUsers redirected to /forms) */}
@@ -312,6 +338,48 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute requirePlatformAdmin>
 									<TableDetail />
+								</ProtectedRoute>
+							}
+						/>
+
+						{/* Applications - PlatformAdmin only */}
+						<Route
+							path="apps"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<Applications />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="apps/new"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<ApplicationEditor />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="apps/:applicationId/edit"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<ApplicationEditor />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="apps/:applicationId/preview/*"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<ApplicationPreview />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="apps/:applicationId/*"
+							element={
+								<ProtectedRoute requireOrgUser>
+									<ApplicationRunner />
 								</ProtectedRoute>
 							}
 						/>

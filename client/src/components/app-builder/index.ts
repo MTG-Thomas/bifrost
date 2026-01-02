@@ -7,6 +7,23 @@
 // Core rendering
 export { AppRenderer, StandalonePageRenderer } from "./AppRenderer";
 export { LayoutRenderer } from "./LayoutRenderer";
+export { AppShell, AppShellMinimal } from "./AppShell";
+
+// Editor
+export {
+	EditorShell,
+	ComponentPalette,
+	EditorCanvas,
+	PropertyEditor,
+	PageTree,
+	type EditorShellProps,
+	type ComponentPaletteProps,
+	type PaletteDragData,
+	type DragData,
+	type DropTarget,
+	type PropertyEditorProps,
+	type PageTreeProps,
+} from "./editor";
 
 // Component registry
 export {
@@ -21,14 +38,25 @@ export {
 	type RegisteredComponentProps,
 } from "./ComponentRegistry";
 
-// Basic components
+// Components
 export {
+	// Basic
 	HeadingComponent,
 	TextComponent,
 	CardComponent,
 	DividerComponent,
 	SpacerComponent,
 	ButtonComponent,
+	// Display
+	StatCardComponent,
+	ImageComponent,
+	BadgeComponent,
+	ProgressComponent,
+	// Data
+	DataTableComponent,
+	TabsComponent,
+	// Registration
+	registerAllComponents,
 	registerBasicComponents,
 } from "./components";
 
@@ -51,6 +79,15 @@ export type {
 	DividerComponentProps,
 	SpacerComponentProps,
 	ButtonComponentProps,
+	StatCardComponentProps,
+	ImageComponentProps,
+	BadgeComponentProps,
+	ProgressComponentProps,
+	DataTableComponentProps,
+	TabsComponentProps,
+	TableColumn,
+	TableAction,
+	TabItem,
 	AppComponent,
 	LayoutContainer,
 	PageDefinition,

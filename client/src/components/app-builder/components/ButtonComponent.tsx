@@ -60,6 +60,18 @@ export function ButtonComponent({
 	const { props } = component as ButtonComponentProps;
 	const label = String(evaluateExpression(props.label, context) ?? "");
 
+	// Evaluate disabled state - can be boolean or expression string
+	const isDisabled = (() => {
+		if (props.disabled === undefined || props.disabled === null) {
+			return false;
+		}
+		if (typeof props.disabled === "boolean") {
+			return props.disabled;
+		}
+		// It's a string - evaluate as expression
+		return Boolean(evaluateExpression(props.disabled, context));
+	})();
+
 	const handleClick = useCallback(() => {
 		switch (props.actionType) {
 			case "navigate":
@@ -74,7 +86,14 @@ export function ButtonComponent({
 
 			case "workflow":
 				if (props.workflowId && context.triggerWorkflow) {
-					context.triggerWorkflow(props.workflowId, props.actionParams);
+					context.triggerWorkflow(props.workflowId, props.actionParams, props.onComplete);
+				}
+				break;
+
+			case "submit":
+				// Submit form - collects all field values and triggers workflow
+				if (props.workflowId && context.submitForm) {
+					context.submitForm(props.workflowId, props.actionParams);
 				}
 				break;
 
@@ -90,6 +109,7 @@ export function ButtonComponent({
 		props.workflowId,
 		props.customActionId,
 		props.actionParams,
+		props.onComplete,
 		context,
 	]);
 
@@ -97,7 +117,7 @@ export function ButtonComponent({
 		<Button
 			variant={props.variant || "default"}
 			size={props.size || "default"}
-			disabled={props.disabled}
+			disabled={isDisabled}
 			onClick={handleClick}
 			className={cn(props.className)}
 		>

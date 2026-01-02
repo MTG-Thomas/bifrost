@@ -48,18 +48,20 @@ export function CardComponent({ component, context }: RegisteredComponentProps) 
 
 	const hasHeader = title || description;
 
+	const hasChildren = props.children && props.children.length > 0;
+
 	return (
-		<Card className={cn(props.className)}>
+		<Card className={cn("h-full", props.className)}>
 			{hasHeader && (
 				<CardHeader>
 					{title && <CardTitle>{title}</CardTitle>}
 					{description && <CardDescription>{description}</CardDescription>}
 				</CardHeader>
 			)}
-			{props.children && props.children.length > 0 && (
+			{hasChildren ? (
 				<CardContent>
 					<div className="flex flex-col gap-4">
-						{props.children.map((child, index) => (
+						{props.children!.map((child, index) => (
 							<LayoutRenderer
 								key={"id" in child ? child.id : `child-${index}`}
 								layout={child}
@@ -68,7 +70,14 @@ export function CardComponent({ component, context }: RegisteredComponentProps) 
 						))}
 					</div>
 				</CardContent>
-			)}
+			) : !hasHeader ? (
+				// If card has no header and no children, show placeholder
+				<CardContent>
+					<div className="h-24 flex items-center justify-center text-muted-foreground text-sm">
+						Empty card
+					</div>
+				</CardContent>
+			) : null}
 		</Card>
 	);
 }

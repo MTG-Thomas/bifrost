@@ -105,7 +105,10 @@
       "WebFetch(domain:www.buildwithmatija.com)",
       "WebFetch(domain:www.twilio.com)",
       "WebFetch(domain:spec.modelcontextprotocol.io)",
-      "WebFetch(domain:reenhanced.com)"
+      "WebFetch(domain:reenhanced.com)",
+      "Bash(openspec validate:*)",
+      "Bash(openspec list:*)",
+      "mcp__context7__query-docs"
     ],
     "deny": [],
     "ask": [],

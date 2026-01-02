@@ -37,6 +37,10 @@ interface FormRendererProps {
 	form: Form;
 	/** Show developer context panel (platform admin only) */
 	devMode?: boolean;
+	/** Callback when execution starts (called with execution ID) */
+	onExecutionStart?: (executionId: string) => void;
+	/** If true, don't navigate after submission (for embedded forms) */
+	preventNavigation?: boolean;
 }
 
 // Helper function to convert DataProviderOption[] to ComboboxOption[]
@@ -65,7 +69,12 @@ function isFormSchema(schema: unknown): schema is FormSchema {
  * Inner component that uses FormContext
  * Separated to allow FormContextProvider to wrap it
  */
-function FormRendererInner({ form, devMode }: FormRendererProps) {
+function FormRendererInner({
+	form,
+	devMode,
+	onExecutionStart,
+	preventNavigation,
+}: FormRendererProps) {
 	const navigate = useNavigate();
 	const submitForm = useSubmitForm();
 	const { context, isFieldVisible, setFieldValue, isLoadingLaunchWorkflow } =
@@ -486,15 +495,23 @@ function FormRendererInner({ form, devMode }: FormRendererProps) {
 					startup_data: context.workflow,
 				},
 			});
-			// Navigate with context so execution details can display immediately
-			navigate(`/history/${result.execution_id}`, {
-				state: {
-					workflow_name: form.name,
-					form_id: form.id,
-					input_data: data,
-				},
-			});
-			// Don't reset isNavigating - component will unmount on navigation
+
+			// Call callback if provided (for embedded forms)
+			if (onExecutionStart) {
+				onExecutionStart(result.execution_id);
+			}
+
+			// Only navigate if not prevented (embedded forms handle their own display)
+			if (!preventNavigation) {
+				navigate(`/history/${result.execution_id}`, {
+					state: {
+						workflow_name: form.name,
+						form_id: form.id,
+						input_data: data,
+					},
+				});
+			}
+			// Don't reset isNavigating - component will unmount on navigation (or stay disabled in embedded mode)
 		} catch {
 			setIsNavigating(false); // Only re-enable button on error
 		}
@@ -1199,7 +1216,12 @@ function FormRendererInner({ form, devMode }: FormRendererProps) {
  * FormRenderer with FormContext wrapper
  * Extracts query parameters from URL and provides them to context
  */
-export function FormRenderer({ form, devMode }: FormRendererProps) {
+export function FormRenderer({
+	form,
+	devMode,
+	onExecutionStart,
+	preventNavigation,
+}: FormRendererProps) {
 	const [searchParams] = useSearchParams();
 
 	// Convert URLSearchParams to plain object
@@ -1213,7 +1235,12 @@ export function FormRenderer({ form, devMode }: FormRendererProps) {
 
 	return (
 		<FormContextProvider form={form} queryParams={queryParams}>
-			<FormRendererInner form={form} devMode={devMode} />
+			<FormRendererInner
+				form={form}
+				devMode={devMode}
+				onExecutionStart={onExecutionStart}
+				preventNavigation={preventNavigation}
+			/>
 		</FormContextProvider>
 	);
 }

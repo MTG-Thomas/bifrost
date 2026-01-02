@@ -5,6 +5,7 @@
  * Handles row/column/grid layouts and delegates component rendering to the registry.
  */
 
+import type React from "react";
 import { cn } from "@/lib/utils";
 import type {
 	LayoutContainer,
@@ -38,6 +39,10 @@ function getWidthClasses(width?: ComponentWidth): string {
 			return "w-1/3";
 		case "1/4":
 			return "w-1/4";
+		case "2/3":
+			return "w-2/3";
+		case "3/4":
+			return "w-3/4";
 		case "auto":
 		default:
 			return "w-auto";
@@ -83,63 +88,29 @@ function getJustifyClasses(justify?: string): string {
 }
 
 /**
- * Get Tailwind gap class from numeric value
+ * Get inline style for gap (Tailwind JIT can't compile dynamic values)
  */
-function getGapClass(gap?: number): string {
-	if (gap === undefined) return "";
-	// Map common pixel values to Tailwind spacing
-	const gapMap: Record<number, string> = {
-		0: "gap-0",
-		1: "gap-px",
-		2: "gap-0.5",
-		4: "gap-1",
-		6: "gap-1.5",
-		8: "gap-2",
-		10: "gap-2.5",
-		12: "gap-3",
-		14: "gap-3.5",
-		16: "gap-4",
-		20: "gap-5",
-		24: "gap-6",
-		28: "gap-7",
-		32: "gap-8",
-		36: "gap-9",
-		40: "gap-10",
-		48: "gap-12",
-		56: "gap-14",
-		64: "gap-16",
-	};
-	return gapMap[gap] || `gap-[${gap}px]`;
+function getGapStyle(gap?: number): React.CSSProperties {
+	if (gap === undefined || gap === 0) return {};
+	return { gap: `${gap}px` };
 }
 
 /**
- * Get Tailwind padding class from numeric value
+ * Get inline style for padding (Tailwind JIT can't compile dynamic values)
  */
-function getPaddingClass(padding?: number): string {
-	if (padding === undefined) return "";
-	// Map common pixel values to Tailwind spacing
-	const paddingMap: Record<number, string> = {
-		0: "p-0",
-		1: "p-px",
-		2: "p-0.5",
-		4: "p-1",
-		6: "p-1.5",
-		8: "p-2",
-		10: "p-2.5",
-		12: "p-3",
-		14: "p-3.5",
-		16: "p-4",
-		20: "p-5",
-		24: "p-6",
-		28: "p-7",
-		32: "p-8",
-		36: "p-9",
-		40: "p-10",
-		48: "p-12",
-		56: "p-14",
-		64: "p-16",
+function getPaddingStyle(padding?: number): React.CSSProperties {
+	if (padding === undefined || padding === 0) return {};
+	return { padding: `${padding}px` };
+}
+
+/**
+ * Get combined layout styles
+ */
+function getLayoutStyles(layout: { gap?: number; padding?: number }): React.CSSProperties {
+	return {
+		...getGapStyle(layout.gap),
+		...getPaddingStyle(layout.padding),
 	};
-	return paddingMap[padding] || `p-[${padding}px]`;
 }
 
 /**
@@ -173,34 +144,51 @@ function renderLayoutContainer(
 	}
 
 	const baseClasses = cn(
-		getGapClass(layout.gap),
-		getPaddingClass(layout.padding),
 		getAlignClasses(layout.align),
 		getJustifyClasses(layout.justify),
 		layout.className,
 		className,
 	);
 
-	const children = layout.children.map((child, index) => (
-		<LayoutRenderer
-			key={isLayoutContainer(child) ? `layout-${index}` : child.id}
-			layout={child}
-			context={context}
-		/>
-	));
+	const layoutStyles = getLayoutStyles(layout);
+
+	// For rows, we want children to flex and share space equally by default
+	// unless they have an explicit width set
+	const renderChild = (child: LayoutContainer | AppComponent, index: number, parentType: "row" | "column" | "grid") => {
+		const key = isLayoutContainer(child) ? `layout-${index}` : child.id;
+
+		// In row layouts, wrap children with flex-1 to distribute space evenly
+		// unless the child has an explicit width
+		if (parentType === "row") {
+			const hasExplicitWidth = !isLayoutContainer(child) && child.width && child.width !== "auto";
+			return (
+				<div key={key} className={hasExplicitWidth ? undefined : "flex-1 min-w-0"}>
+					<LayoutRenderer layout={child} context={context} />
+				</div>
+			);
+		}
+
+		return (
+			<LayoutRenderer
+				key={key}
+				layout={child}
+				context={context}
+			/>
+		);
+	};
 
 	switch (layout.type) {
 		case "row":
 			return (
-				<div className={cn("flex flex-row flex-wrap", baseClasses)}>
-					{children}
+				<div className={cn("flex flex-row flex-wrap", baseClasses)} style={layoutStyles}>
+					{layout.children.map((child, index) => renderChild(child, index, "row"))}
 				</div>
 			);
 
 		case "column":
 			return (
-				<div className={cn("flex flex-col", baseClasses)}>
-					{children}
+				<div className={cn("flex flex-col", baseClasses)} style={layoutStyles}>
+					{layout.children.map((child, index) => renderChild(child, index, "column"))}
 				</div>
 			);
 
@@ -212,8 +200,9 @@ function renderLayoutContainer(
 						getGridColumnsClass(layout.columns),
 						baseClasses,
 					)}
+					style={layoutStyles}
 				>
-					{children}
+					{layout.children.map((child, index) => renderChild(child, index, "grid"))}
 				</div>
 			);
 

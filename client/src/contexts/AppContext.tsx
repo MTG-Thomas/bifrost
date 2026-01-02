@@ -17,6 +17,8 @@ import { useNavigate } from "react-router-dom";
 import type {
 	ExpressionContext,
 	ExpressionUser,
+	WorkflowResult,
+	OnCompleteAction,
 } from "@/lib/app-builder-types";
 import { useAuth } from "./AuthContext";
 
@@ -32,11 +34,19 @@ interface AppContextValue {
 	setVariables: (updates: Record<string, unknown>) => void;
 	/** Set data from a data source */
 	setData: (key: string, data: unknown) => void;
+	/** Set a field value (for form inputs) */
+	setFieldValue: (fieldId: string, value: unknown) => void;
+	/** Get all field values (for form submission) */
+	getFieldValues: () => Record<string, unknown>;
+	/** Clear all field values */
+	clearFieldValues: () => void;
 	/** Register a custom action handler */
 	registerCustomAction: (
 		actionId: string,
 		handler: (params?: Record<string, unknown>) => void,
 	) => void;
+	/** Set workflow result (for {{ workflow.result.* }} access) */
+	setWorkflowResult: (result: WorkflowResult | undefined) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -47,11 +57,16 @@ interface AppContextProviderProps {
 	initialVariables?: Record<string, unknown>;
 	/** Initial data from data sources */
 	initialData?: Record<string, unknown>;
-	/** Custom workflow trigger handler */
+	/** Custom workflow trigger handler with onComplete actions */
 	onTriggerWorkflow?: (
 		workflowId: string,
 		params?: Record<string, unknown>,
+		onComplete?: OnCompleteAction[],
 	) => void;
+	/** Handler for refreshing a data table */
+	onRefreshTable?: (dataSourceKey: string) => void;
+	/** Externally controlled workflow result (for injection from parent) */
+	workflowResult?: WorkflowResult;
 }
 
 /**
@@ -73,20 +88,34 @@ export function AppContextProvider({
 	initialVariables = {},
 	initialData = {},
 	onTriggerWorkflow,
+	onRefreshTable,
+	workflowResult: externalWorkflowResult,
 }: AppContextProviderProps) {
 	const navigate = useNavigate();
 	const { user: authUser } = useAuth();
 
-	// State for variables and data
+	// State for variables, data, and field values
 	const [variables, setVariablesState] =
 		useState<Record<string, unknown>>(initialVariables);
 	const [data, setDataState] =
 		useState<Record<string, unknown>>(initialData);
+	const [fieldValues, setFieldValuesState] = useState<Record<string, unknown>>(
+		{},
+	);
 
 	// Custom action handlers registry
 	const [customActions, setCustomActions] = useState<
 		Map<string, (params?: Record<string, unknown>) => void>
 	>(new Map());
+
+	// Workflow result state (for {{ workflow.result.* }} access)
+	// Can be controlled externally via prop or internally via setWorkflowResult
+	const [internalWorkflowResult, setWorkflowResultState] = useState<
+		WorkflowResult | undefined
+	>(undefined);
+
+	// Use external prop if provided, otherwise use internal state
+	const workflowResult = externalWorkflowResult ?? internalWorkflowResult;
 
 	// Convert auth user to expression user format
 	const expressionUser = useMemo((): ExpressionUser | undefined => {
@@ -110,9 +139,9 @@ export function AppContextProvider({
 
 	// Workflow trigger handler
 	const handleTriggerWorkflow = useCallback(
-		(workflowId: string, params?: Record<string, unknown>) => {
+		(workflowId: string, params?: Record<string, unknown>, onComplete?: OnCompleteAction[]) => {
 			if (onTriggerWorkflow) {
-				onTriggerWorkflow(workflowId, params);
+				onTriggerWorkflow(workflowId, params, onComplete);
 			} else {
 				console.warn(
 					`No workflow handler registered. Cannot trigger workflow: ${workflowId}`,
@@ -135,23 +164,98 @@ export function AppContextProvider({
 		[customActions],
 	);
 
+	// Field value setter (used by input components)
+	const setFieldValue = useCallback((fieldId: string, value: unknown) => {
+		setFieldValuesState((prev) => ({ ...prev, [fieldId]: value }));
+	}, []);
+
+	// Get all field values (for form submission)
+	const getFieldValues = useCallback(() => {
+		return { ...fieldValues };
+	}, [fieldValues]);
+
+	// Clear all field values
+	const clearFieldValues = useCallback(() => {
+		setFieldValuesState({});
+	}, []);
+
+	// Submit form handler - collects field values and triggers workflow
+	const handleSubmitForm = useCallback(
+		(workflowId: string, additionalParams?: Record<string, unknown>) => {
+			// Merge field values with any additional params
+			const params = {
+				...fieldValues,
+				...additionalParams,
+			};
+
+			// Trigger the workflow with the form data
+			if (onTriggerWorkflow) {
+				onTriggerWorkflow(workflowId, params);
+			} else {
+				console.warn(
+					`No workflow handler registered. Cannot submit form to workflow: ${workflowId}`,
+				);
+			}
+		},
+		[fieldValues, onTriggerWorkflow],
+	);
+
+	// Refresh table handler
+	const handleRefreshTable = useCallback(
+		(dataSourceKey: string) => {
+			if (onRefreshTable) {
+				onRefreshTable(dataSourceKey);
+			} else {
+				console.warn(
+					`No refresh handler registered. Cannot refresh table: ${dataSourceKey}`,
+				);
+			}
+		},
+		[onRefreshTable],
+	);
+
+	// Variable setter for expression context (delegates to state setter)
+	const handleSetVariable = useCallback((key: string, value: unknown) => {
+		setVariablesState((prev) => ({ ...prev, [key]: value }));
+	}, []);
+
+	// Workflow result setter
+	const setWorkflowResult = useCallback(
+		(result: WorkflowResult | undefined) => {
+			setWorkflowResultState(result);
+		},
+		[],
+	);
+
 	// Build the expression context
 	const context = useMemo(
 		(): ExpressionContext => ({
 			user: expressionUser,
 			variables,
 			data,
+			field: fieldValues,
+			workflow: workflowResult,
 			navigate: handleNavigate,
 			triggerWorkflow: handleTriggerWorkflow,
+			submitForm: handleSubmitForm,
 			onCustomAction: handleCustomAction,
+			setFieldValue,
+			refreshTable: handleRefreshTable,
+			setVariable: handleSetVariable,
 		}),
 		[
 			expressionUser,
 			variables,
 			data,
+			fieldValues,
+			workflowResult,
 			handleNavigate,
 			handleTriggerWorkflow,
+			handleSubmitForm,
 			handleCustomAction,
+			setFieldValue,
+			handleRefreshTable,
+			handleSetVariable,
 		],
 	);
 
@@ -187,9 +291,23 @@ export function AppContextProvider({
 			setVariable,
 			setVariables,
 			setData,
+			setFieldValue,
+			getFieldValues,
+			clearFieldValues,
 			registerCustomAction,
+			setWorkflowResult,
 		}),
-		[context, setVariable, setVariables, setData, registerCustomAction],
+		[
+			context,
+			setVariable,
+			setVariables,
+			setData,
+			setFieldValue,
+			getFieldValues,
+			clearFieldValues,
+			registerCustomAction,
+			setWorkflowResult,
+		],
 	);
 
 	return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
