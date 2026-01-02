@@ -108,6 +108,15 @@ export function usePageData({
 
 	// Track whether initial data load has occurred to prevent infinite loops
 	const hasLoadedRef = useRef(false);
+
+	// Ref to hold current executeWorkflow function - prevents effect re-triggers
+	// when the callback reference changes due to upstream dependency changes
+	const executeWorkflowRef = useRef(executeWorkflow);
+
+	// Keep ref in sync with latest function
+	useEffect(() => {
+		executeWorkflowRef.current = executeWorkflow;
+	}, [executeWorkflow]);
 	const pageId = page?.id;
 
 	// Reset loaded flag when page changes
@@ -128,10 +137,11 @@ export function usePageData({
 	// Load a single data source
 	const loadDataSource = useCallback(
 		async (dataSource: DataSource): Promise<unknown> => {
-			const params = evaluateInputParams(
-				dataSource.inputParams,
-				expressionContext,
-			);
+			// Support both 'inputParams' (canonical) and 'params' (shorthand) for data sources
+			const inputParams =
+				dataSource.inputParams ??
+				(dataSource as unknown as { params?: Record<string, unknown> }).params;
+			const params = evaluateInputParams(inputParams, expressionContext);
 
 			switch (dataSource.type) {
 				case "static":
@@ -331,7 +341,11 @@ export function usePageData({
 					launchWorkflowParams,
 					baseContext,
 				);
-				const result = await executeWorkflow(launchWorkflowId, params);
+				// Use ref.current to avoid effect re-triggers when callback reference changes
+				const result = await executeWorkflowRef.current(
+					launchWorkflowId,
+					params,
+				);
 
 				if (!cancelled) {
 					setState((prev) => ({
@@ -363,10 +377,12 @@ export function usePageData({
 		return () => {
 			cancelled = true;
 		};
-		// Note: baseContext is used inside but not in deps - we use routeParamsKey instead
-		// to avoid infinite loops from baseContext object reference changes
+		// Note: baseContext, launchWorkflowParams, and executeWorkflow are used inside but
+		// excluded from deps to prevent infinite loops. We use:
+		// - routeParamsKey: stable string for route param values
+		// - executeWorkflowRef: ref pattern for stable callback access
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [launchWorkflowId, launchWorkflowParams, routeParamsKey, executeWorkflow]);
+	}, [launchWorkflowId, routeParamsKey]);
 
 	// Load data sources on page mount (after launch workflow completes if present)
 	// Note: refreshAll is intentionally excluded from deps to prevent infinite loops.
