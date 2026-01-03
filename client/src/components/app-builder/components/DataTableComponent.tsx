@@ -5,7 +5,7 @@
  * pagination, search, sorting, row actions, and row selection.
  */
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import {
 	Table,
@@ -39,7 +39,15 @@ import {
 	ArrowUpDown,
 	ArrowUp,
 	ArrowDown,
+	RefreshCw,
 } from "lucide-react";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { getIcon } from "@/lib/icons";
 import type {
 	DataTableComponentProps,
 	TableColumn,
@@ -50,6 +58,7 @@ import {
 	evaluateExpression,
 	evaluateVisibility,
 } from "@/lib/expression-parser";
+import { useAppBuilderStore, useTableCache } from "@/stores/app-builder.store";
 
 interface SortState {
 	column: string | null;
@@ -108,6 +117,12 @@ export function DataTableComponent({
 }: RegisteredComponentProps) {
 	const { props } = component as DataTableComponentProps;
 
+	// Table cache from store
+	const cachedEntry = useTableCache(props.cacheKey);
+	const setTableCache = useAppBuilderStore((state) => state.setTableCache);
+	const clearTableCache = useAppBuilderStore((state) => state.clearTableCache);
+	const [isRefreshing, setIsRefreshing] = useState(false);
+
 	// Get data from context - memoize to prevent dependency changes
 	// Support dot-notation paths like "tickets.tickets" for nested data access
 	const rawData = useMemo(() => {
@@ -125,12 +140,43 @@ export function DataTableComponent({
 		return context.data?.[props.dataSource];
 	}, [props.dataSource, context]);
 
-	const data = useMemo(() => {
+	// Use cached data if available and no fresh data yet
+	const effectiveData = useMemo(() => {
+		// If we have fresh data from context, use it
+		if (Array.isArray(rawData) && rawData.length > 0) {
+			return rawData;
+		}
+		// If we have cached data and context data is empty/undefined, use cache
+		if (cachedEntry?.data && (!rawData || (Array.isArray(rawData) && rawData.length === 0))) {
+			return cachedEntry.data;
+		}
+		// Otherwise use raw data (may be empty)
 		return Array.isArray(rawData) ? rawData : [];
-	}, [rawData]);
+	}, [rawData, cachedEntry]);
+
+	const data = effectiveData;
+
+	// Update cache when fresh data arrives
+	useEffect(() => {
+		if (props.cacheKey && Array.isArray(rawData) && rawData.length > 0) {
+			setTableCache(props.cacheKey, rawData, props.dataSource);
+		}
+	}, [props.cacheKey, rawData, props.dataSource, setTableCache]);
 
 	// Show skeleton if data is undefined AND we're loading
-	const isLoading = rawData === undefined && context.isDataLoading;
+	const isLoading = (rawData === undefined && context.isDataLoading) || isRefreshing;
+
+	// Refresh handler
+	const handleRefresh = useCallback(() => {
+		if (props.cacheKey) {
+			clearTableCache(props.cacheKey);
+		}
+		setIsRefreshing(true);
+		// Trigger data source refresh
+		context.refreshTable?.(props.dataSource);
+		// Reset refreshing state after a delay (data will re-fetch)
+		setTimeout(() => setIsRefreshing(false), 500);
+	}, [props.cacheKey, props.dataSource, context, clearTableCache]);
 
 	// State
 	const [searchQuery, setSearchQuery] = useState("");
@@ -431,9 +477,10 @@ export function DataTableComponent({
 	}
 
 	return (
-		<div className={cn("space-y-4", props.className)}>
-			{/* Header with search and actions */}
-			{(props.searchable || props.headerActions?.length) && (
+		<TooltipProvider>
+			<div className={cn("space-y-4", props.className)}>
+				{/* Header with search, refresh, and actions */}
+			{(props.searchable || props.headerActions?.length || props.cacheKey) && (
 				<div className="flex items-center justify-between gap-4">
 					{props.searchable && (
 						<div className="relative flex-1 max-w-sm">
@@ -449,20 +496,77 @@ export function DataTableComponent({
 							/>
 						</div>
 					)}
-					{props.headerActions && (
-						<div className="flex items-center gap-2">
-							{props.headerActions.map((action, idx) => (
+					<div className="flex items-center gap-2">
+						{/* Refresh Button */}
+						{props.cacheKey && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										variant="outline"
+										size="icon"
+										onClick={handleRefresh}
+										disabled={isLoading}
+										className="h-8 w-8"
+									>
+										<RefreshCw
+											className={cn(
+												"h-4 w-4",
+												isLoading && "animate-spin",
+											)}
+										/>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>
+									<p>Refresh data</p>
+								</TooltipContent>
+							</Tooltip>
+						)}
+						{/* Header Actions */}
+						{props.headerActions?.map((action, idx) => {
+							const IconComponent = action.icon
+								? getIcon(action.icon)
+								: null;
+							const isIconOnly =
+								IconComponent && !action.label.trim();
+
+							const buttonElement = (
 								<Button
 									key={idx}
 									variant={action.variant || "default"}
-									size="sm"
+									size={isIconOnly ? "icon" : "sm"}
 									onClick={() => handleAction(action, {})}
+									className={
+										isIconOnly ? "h-8 w-8" : undefined
+									}
 								>
-									{action.label}
+									{IconComponent && (
+										<IconComponent
+											className={cn(
+												"h-4 w-4",
+												!isIconOnly && "mr-1.5",
+											)}
+										/>
+									)}
+									{!isIconOnly && action.label}
 								</Button>
-							))}
-						</div>
-					)}
+							);
+
+							if (isIconOnly) {
+								return (
+									<Tooltip key={idx}>
+										<TooltipTrigger asChild>
+											{buttonElement}
+										</TooltipTrigger>
+										<TooltipContent>
+											<p>{action.label}</p>
+										</TooltipContent>
+									</Tooltip>
+								);
+							}
+
+							return buttonElement;
+						})}
+					</div>
 				</div>
 			)}
 
@@ -651,27 +755,90 @@ export function DataTableComponent({
 																		)
 																	: action.label;
 
-															return (
-																<Button
-																	key={idx}
-																	variant={
-																		action.variant ||
-																		"ghost"
-																	}
-																	size="sm"
-																	disabled={
-																		isDisabled
-																	}
-																	onClick={() =>
-																		handleAction(
-																			action,
-																			row,
+															// Get icon component if specified
+															const IconComponent =
+																action.icon
+																	? getIcon(
+																			action.icon,
 																		)
-																	}
-																>
-																	{label}
-																</Button>
-															);
+																	: null;
+
+															// Icon-only when there's an icon but no label text
+															const isIconOnly =
+																IconComponent &&
+																!label.trim();
+
+															// For icon-only buttons, default to outline variant to match platform style
+															const buttonVariant = action.variant || (isIconOnly ? "outline" : "ghost");
+
+															const buttonElement =
+																(
+																	<Button
+																		key={
+																			idx
+																		}
+																		variant={buttonVariant}
+																		size={
+																			isIconOnly
+																				? "icon"
+																				: "sm"
+																		}
+																		disabled={
+																			isDisabled
+																		}
+																		onClick={() =>
+																			handleAction(
+																				action,
+																				row,
+																			)
+																		}
+																		className={
+																			isIconOnly
+																				? "h-8 w-8"
+																				: undefined
+																		}
+																	>
+																		{IconComponent && (
+																			<IconComponent
+																				className={cn(
+																					"h-4 w-4",
+																					!isIconOnly &&
+																						"mr-1.5",
+																				)}
+																			/>
+																		)}
+																		{!isIconOnly &&
+																			label}
+																	</Button>
+																);
+
+															// Wrap icon-only buttons in tooltip for accessibility
+															if (isIconOnly) {
+																return (
+																	<Tooltip
+																		key={
+																			idx
+																		}
+																	>
+																		<TooltipTrigger
+																			asChild
+																		>
+																			{
+																				buttonElement
+																			}
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p>
+																				{
+																					action.label
+																				}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																);
+															}
+
+															return buttonElement;
 														},
 													)}
 												</div>
@@ -763,6 +930,7 @@ export function DataTableComponent({
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</div>
+			</div>
+		</TooltipProvider>
 	);
 }

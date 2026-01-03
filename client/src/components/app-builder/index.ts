@@ -8,6 +8,7 @@
 export { AppRenderer, StandalonePageRenderer } from "./AppRenderer";
 export { LayoutRenderer } from "./LayoutRenderer";
 export { AppShell, AppShellMinimal } from "./AppShell";
+export { WorkflowStatusIndicator } from "./WorkflowStatusIndicator";
 
 // Editor
 export {

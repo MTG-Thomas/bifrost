@@ -50,9 +50,9 @@ Example:
     for wf in wf_list:
         print(wf.name, wf.description)
 
-    # Local filesystem operations
-    files.write("data/temp.txt", "content", location="temp")
-    data = files.read("data/customers.csv", location="workspace")
+    # File operations (async)
+    await files.write("data/temp.txt", "content", location="temp")
+    data = await files.read("data/customers.csv", location="workspace")
 
     # List executions
     recent = await executions.list(limit=10)
@@ -60,7 +60,7 @@ Example:
         print(f"{execution.workflow_name}: {execution.status}")
 
     # Create a role
-    role = await roles.create("Manager", permissions=["users.read", "users.write"])
+    role = await roles.create("Manager", description="Can manage team data")
 
     # Manage configuration
     await config.set("api_url", "https://api.example.com")

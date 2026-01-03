@@ -186,6 +186,8 @@ export interface BaseComponentProps {
 	width?: ComponentWidth;
 	/** Visibility expression (e.g., "{{ user.role == 'admin' }}") */
 	visible?: string;
+	/** Workflow IDs/names that trigger loading skeleton when executing */
+	loadingWorkflows?: string[];
 }
 
 /**
@@ -498,6 +500,8 @@ export interface DataTableComponentProps extends BaseComponentProps {
 		emptyMessage?: string;
 		/** Additional CSS classes */
 		className?: string;
+		/** Cache key - if set, data persists across page navigations */
+		cacheKey?: string;
 	};
 }
 

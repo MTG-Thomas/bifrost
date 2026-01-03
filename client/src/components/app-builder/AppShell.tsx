@@ -30,10 +30,12 @@ import type {
 	ApplicationDefinition,
 	NavItem,
 	ExpressionContext,
+	WorkflowResult,
 } from "@/lib/app-builder-types";
 import { evaluateExpression } from "@/lib/expression-parser";
 import { hasPageAccess } from "@/lib/app-builder-permissions";
 import { getIcon } from "@/lib/icons";
+import { WorkflowStatusIndicator } from "./WorkflowStatusIndicator";
 
 interface AppShellProps {
 	/** The application definition */
@@ -48,6 +50,12 @@ interface AppShellProps {
 	showBackButton?: boolean;
 	/** Children to render in the main content area (alternative to Outlet) */
 	children?: React.ReactNode;
+	/** Map of execution ID to workflow name for active workflows */
+	activeWorkflowNames?: Map<string, string>;
+	/** Result of the last completed workflow */
+	lastCompletedResult?: WorkflowResult;
+	/** Callback to clear the workflow result after display */
+	onClearWorkflowResult?: () => void;
 }
 
 /**
@@ -61,6 +69,9 @@ export function AppShell({
 	avatarUrl,
 	showBackButton = true,
 	children,
+	activeWorkflowNames,
+	lastCompletedResult,
+	onClearWorkflowResult,
 }: AppShellProps) {
 	const navigate = useNavigate();
 	// Use slug prop if provided, otherwise fall back to app.id
@@ -395,6 +406,17 @@ export function AppShell({
 							<span className="text-sm text-muted-foreground hidden md:inline">
 								{currentPage.title}
 							</span>
+						)}
+
+						{/* Workflow Status Indicator */}
+						{activeWorkflowNames && (
+							<div className="ml-4 hidden sm:block">
+								<WorkflowStatusIndicator
+									activeWorkflowNames={activeWorkflowNames}
+									lastCompletedResult={lastCompletedResult}
+									onClearResult={onClearWorkflowResult}
+								/>
+							</div>
 						)}
 
 						{/* Spacer */}

@@ -35,6 +35,15 @@ interface DataSourceState {
 }
 
 /**
+ * Table cache entry for persisting data across page navigations
+ */
+interface TableCacheEntry {
+	data: unknown[];
+	dataSourceKey: string;
+	cachedAt: number;
+}
+
+/**
  * App Builder runtime state
  */
 interface AppBuilderState {
@@ -75,6 +84,13 @@ interface AppBuilderState {
 	clearSelectedRows: (tableId: string) => void;
 	clearAllSelectedRows: () => void;
 
+	// Table data cache (persists across page navigations)
+	tableCache: Record<string, TableCacheEntry>;
+	setTableCache: (cacheKey: string, data: unknown[], dataSourceKey: string) => void;
+	getTableCache: (cacheKey: string) => TableCacheEntry | undefined;
+	clearTableCache: (cacheKey: string) => void;
+	clearAllTableCache: () => void;
+
 	// Reset all state
 	reset: () => void;
 }
@@ -88,6 +104,7 @@ const initialState = {
 	executions: {},
 	currentPageId: null,
 	selectedRows: {},
+	tableCache: {},
 };
 
 /**
@@ -277,6 +294,31 @@ export const useAppBuilderStore = create<AppBuilderState>()(
 
 		clearAllSelectedRows: () => set({ selectedRows: {} }),
 
+		// Table data cache management
+		setTableCache: (cacheKey, data, dataSourceKey) =>
+			set((state) => ({
+				tableCache: {
+					...state.tableCache,
+					[cacheKey]: {
+						data,
+						dataSourceKey,
+						cachedAt: Date.now(),
+					},
+				},
+			})),
+
+		getTableCache: (cacheKey) => {
+			return get().tableCache[cacheKey];
+		},
+
+		clearTableCache: (cacheKey) =>
+			set((state) => {
+				const { [cacheKey]: _, ...rest } = state.tableCache;
+				return { tableCache: rest };
+			}),
+
+		clearAllTableCache: () => set({ tableCache: {} }),
+
 		// Reset all state
 		reset: () => set(initialState),
 	})),
@@ -316,5 +358,12 @@ export const useIsAnyWorkflowExecuting = (): boolean => {
 export const useAppSelectedRows = (tableId: string): Set<string> => {
 	return useAppBuilderStore(
 		(state) => state.selectedRows[tableId] ?? new Set(),
+	);
+};
+
+/** Get table cache entry */
+export const useTableCache = (cacheKey: string | undefined): TableCacheEntry | undefined => {
+	return useAppBuilderStore((state) =>
+		cacheKey ? state.tableCache[cacheKey] : undefined,
 	);
 };

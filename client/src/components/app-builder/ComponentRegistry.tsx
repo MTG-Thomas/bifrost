@@ -12,6 +12,7 @@ import type {
 	ExpressionContext,
 } from "@/lib/app-builder-types";
 import { evaluateComponentProps } from "@/lib/expression-parser";
+import { Skeleton } from "@/components/ui/skeleton";
 
 /**
  * Props passed to each registered component
@@ -120,6 +121,72 @@ export function UnknownComponent({ component }: RegisteredComponentProps) {
 }
 
 /**
+ * Component-specific loading skeleton
+ * Returns a skeleton that approximates the shape of the component type
+ */
+function ComponentSkeleton({ type }: { type: ComponentType }): React.ReactElement {
+	switch (type) {
+		case "stat-card":
+			return (
+				<div className="rounded-lg border p-6 space-y-3">
+					<Skeleton className="h-4 w-24" />
+					<Skeleton className="h-8 w-16" />
+					<Skeleton className="h-3 w-20" />
+				</div>
+			);
+		case "card":
+			return (
+				<div className="rounded-lg border p-6 space-y-4">
+					<Skeleton className="h-5 w-1/3" />
+					<Skeleton className="h-4 w-full" />
+					<Skeleton className="h-4 w-2/3" />
+				</div>
+			);
+		case "heading":
+			return <Skeleton className="h-8 w-1/2" />;
+		case "text":
+			return (
+				<div className="space-y-2">
+					<Skeleton className="h-4 w-full" />
+					<Skeleton className="h-4 w-4/5" />
+				</div>
+			);
+		case "button":
+			return <Skeleton className="h-10 w-24 rounded-md" />;
+		case "image":
+			return <Skeleton className="h-48 w-full rounded-lg" />;
+		case "badge":
+			return <Skeleton className="h-6 w-16 rounded-full" />;
+		case "progress":
+			return <Skeleton className="h-2 w-full rounded-full" />;
+		case "data-table":
+			return (
+				<div className="space-y-3">
+					<Skeleton className="h-10 w-full" />
+					<Skeleton className="h-10 w-full" />
+					<Skeleton className="h-10 w-full" />
+					<Skeleton className="h-10 w-full" />
+				</div>
+			);
+		default:
+			return <Skeleton className="h-24 w-full rounded-lg" />;
+	}
+}
+
+/**
+ * Check if any of the specified workflows are currently active
+ */
+function isWorkflowLoading(
+	loadingWorkflows: string[] | undefined,
+	activeWorkflows: Set<string> | undefined,
+): boolean {
+	if (!loadingWorkflows || loadingWorkflows.length === 0 || !activeWorkflows) {
+		return false;
+	}
+	return loadingWorkflows.some((wfId) => activeWorkflows.has(wfId));
+}
+
+/**
  * Render a component from the registry
  *
  * Props are automatically evaluated before being passed to the component,
@@ -131,6 +198,9 @@ export function UnknownComponent({ component }: RegisteredComponentProps) {
  * handlers are evaluated at runtime). See NON_EVALUABLE_PROPS in
  * expression-parser.ts for the full list.
  *
+ * If the component has `loadingWorkflows` specified and any of those
+ * workflows are currently executing, a loading skeleton is shown instead.
+ *
  * @param component - The component definition
  * @param context - The expression context
  * @returns The rendered React element
@@ -139,6 +209,11 @@ export function renderRegisteredComponent(
 	component: AppComponent,
 	context: ExpressionContext,
 ): React.ReactElement {
+	// Check if component should show loading skeleton
+	if (isWorkflowLoading(component.loadingWorkflows, context.activeWorkflows)) {
+		return <ComponentSkeleton key={component.id} type={component.type} />;
+	}
+
 	const Component = getComponent(component.type) || UnknownComponent;
 
 	// Automatically evaluate props before passing to component

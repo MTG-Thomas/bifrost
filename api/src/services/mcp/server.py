@@ -1067,6 +1067,7 @@ Variants: default, secondary, destructive, outline
 {
   "id": "sc1",
   "type": "stat-card",
+  "loadingWorkflows": ["workflow-uuid"],
   "props": {
     "title": "Total Users",
     "value": "{{ data.stats.userCount }}",
@@ -1075,6 +1076,7 @@ Variants: default, secondary, destructive, outline
   }
 }
 ```
+- `loadingWorkflows`: Array of workflow IDs - shows skeleton while any are executing
 
 **image** - Images with sizing
 ```json
@@ -1098,6 +1100,7 @@ Variants: default, secondary, destructive, outline
   "type": "data-table",
   "props": {
     "dataSource": "customers",
+    "cacheKey": "customers-table",
     "columns": [
       {"key": "name", "header": "Name", "sortable": true},
       {"key": "status", "header": "Status", "type": "badge"}
@@ -1106,14 +1109,21 @@ Variants: default, secondary, destructive, outline
     "paginated": true,
     "rowActions": [
       {
+        "label": "",
+        "icon": "Eye",
+        "onClick": {"type": "navigate", "navigateTo": "/customers/{{ row.id }}"}
+      },
+      {
         "label": "Edit",
-        "icon": "pencil",
+        "icon": "Pencil",
         "onClick": {"type": "navigate", "navigateTo": "/customers/{{ row.id }}/edit"}
       }
     ]
   }
 }
 ```
+- `cacheKey`: Persist table data across page navigations (shows refresh button)
+- Row actions: Use empty `label` + `icon` for icon-only buttons with tooltip
 
 **tabs** - Tabbed content sections
 ```json
@@ -1262,6 +1272,19 @@ OnComplete actions (after workflow):
 Any component can have:
 - `visible`: Expression to control visibility `"{{ user.role == 'admin' }}"`
 - `disabled`: Expression for buttons `"{{ !field.name }}"`
+
+## Loading States
+
+Any component can specify `loadingWorkflows` to show a skeleton while workflows execute:
+```json
+{
+  "id": "stats-card",
+  "type": "stat-card",
+  "loadingWorkflows": ["workflow-uuid-1", "workflow-uuid-2"],
+  "props": {...}
+}
+```
+The component shows a type-specific skeleton when any of the specified workflows are running.
 
 ## Complete Example
 

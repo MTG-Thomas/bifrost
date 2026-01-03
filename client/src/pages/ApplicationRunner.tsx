@@ -66,6 +66,10 @@ export function ApplicationRunner({
 	const [workflowResult, setWorkflowResult] = useState<
 		WorkflowResult | undefined
 	>(undefined);
+	// Track last completed result for header status display
+	const [lastCompletedResult, setLastCompletedResult] = useState<
+		WorkflowResult | undefined
+	>(undefined);
 
 	// Extract embed theme customization from URL params
 	const embedTheme = useMemo(() => {
@@ -99,12 +103,9 @@ export function ApplicationRunner({
 	} = useWorkflowExecution({
 		onExecutionComplete: (_executionId, result) => {
 			setWorkflowResult(result);
-			// Only show error toasts - success is silent for background tasks
-			if (result.status === "failed") {
-				toast.error(
-					`Workflow "${result.workflowName}" failed: ${result.error || "Unknown error"}`,
-				);
-			}
+			// Set last completed result for header status display
+			setLastCompletedResult(result);
+			// Note: Errors are now shown in the header indicator, not as toasts
 		},
 	});
 
@@ -657,15 +658,12 @@ export function ApplicationRunner({
 				slug={slugParam}
 				currentPageId={currentPage?.id}
 				showBackButton={!preview}
+				activeWorkflowNames={activeWorkflowNames}
+				lastCompletedResult={lastCompletedResult}
+				onClearWorkflowResult={() => setLastCompletedResult(undefined)}
 			>
 				{appContent}
 			</AppShell>
-
-			{/* Workflow Loading Indicator */}
-			<WorkflowLoadingIndicator
-				activeCount={activeExecutionIds.length}
-				workflowNames={activeWorkflowNames}
-			/>
 
 			{/* Workflow Parameters Modal */}
 			<WorkflowExecutionModal
