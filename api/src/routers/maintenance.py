@@ -21,16 +21,14 @@ from src.core.workspace_sync import WORKSPACE_PATH
 from src.models import (
     DocsIndexResponse,
     MaintenanceStatus,
+    ReindexJobResponse,
     ReindexRequest,
-    ReindexResponse,
 )
 from src.models.contracts.notifications import (
     NotificationCategory,
     NotificationCreate,
     NotificationStatus,
-    NotificationUpdate,
 )
-from src.services.file_storage_service import FileStorageService
 from src.services.notification_service import get_notification_service
 
 logger = logging.getLogger(__name__)
@@ -117,145 +115,50 @@ async def get_maintenance_status(
 
 @router.post(
     "/reindex",
-    response_model=ReindexResponse,
-    summary="Run workspace reindex",
-    description="Reindex workspace files, optionally injecting IDs (Platform admin only)",
+    response_model=ReindexJobResponse,
+    summary="Start workspace reindex (non-blocking)",
+    description="Queue a reindex job with reference validation (Platform admin only)",
 )
 async def run_reindex(
     ctx: Context,
     user: CurrentSuperuser,
     request: ReindexRequest,
-    db: AsyncSession = Depends(get_db),
-) -> ReindexResponse:
+) -> ReindexJobResponse:
     """
-    Run a workspace reindex operation.
+    Start a non-blocking reindex operation.
 
-    Args:
-        request: ReindexRequest with inject_ids flag and optional notification_id
+    The reindex runs in the scheduler container and publishes progress via WebSocket.
+    Connect to `reindex:{job_id}` channel to receive updates.
+
+    Features:
+        - Downloads all workspace files from S3
+        - Validates workflow IDs align with database (by file_path + function_name)
+        - Validates form/agent references point to existing workflows
+        - Silently fixes IDs when exact match found, adds warnings
+        - Reports errors for unresolvable references
 
     Returns:
-        ReindexResponse with operation results
-
-    When inject_ids=True:
-        - Scans all Python files
-        - Injects stable UUIDs into @workflow, @data_provider, @tool decorators
-        - Writes modified files back to S3
-        - Updates database metadata
-
-    When inject_ids=False:
-        - Detection only - reports files that would need IDs
-        - No files are modified
-
-    When notification_id is provided:
-        - Updates the notification to RUNNING status at start
-        - Updates to COMPLETED/FAILED on finish with result details
+        ReindexJobResponse with job_id for tracking via WebSocket
     """
-    notification_service = get_notification_service()
+    from uuid import uuid4
 
-    # Update notification to running if provided
-    if request.notification_id:
-        await notification_service.update_notification(
-            request.notification_id,
-            NotificationUpdate(
-                status=NotificationStatus.RUNNING,
-                description="Indexing workflow files...",
-            ),
-        )
+    from src.core.pubsub import publish_reindex_request
 
-    try:
-        workspace_path = Path(WORKSPACE_PATH)
-        if not workspace_path.exists():
-            # Update notification to completed (no work to do)
-            if request.notification_id:
-                await notification_service.update_notification(
-                    request.notification_id,
-                    NotificationUpdate(
-                        status=NotificationStatus.COMPLETED,
-                        description="Workspace directory does not exist",
-                    ),
-                )
-            return ReindexResponse(
-                status="completed",
-                files_indexed=0,
-                files_needing_ids=[],
-                ids_injected=0,
-                message="Workspace directory does not exist",
-            )
+    job_id = str(uuid4())
 
-        storage = FileStorageService(db)
+    # Publish request to scheduler
+    await publish_reindex_request(
+        job_id=job_id,
+        user_id=str(user.user_id),
+        inject_ids=request.inject_ids,
+    )
 
-        # Run reindex with the inject_ids flag
-        counts = await storage.reindex_workspace_files(
-            workspace_path, inject_ids=request.inject_ids
-        )
+    logger.info(f"Reindex job {job_id} queued by user {user.user_id}")
 
-        await db.commit()
-
-        files_needing_ids = counts.get("files_needing_ids", [])
-        if not isinstance(files_needing_ids, list):
-            files_needing_ids = []
-
-        files_indexed = counts.get("files_indexed", 0)
-        if not isinstance(files_indexed, int):
-            files_indexed = 0
-
-        # Count IDs injected (when inject_ids=True, this is the files that were modified)
-        ids_injected = 0
-        if request.inject_ids:
-            # In inject mode, files_needing_ids will be empty because they were fixed
-            # We need to track this differently - for now use a simple approach
-            ids_injected = counts.get("ids_injected", 0)
-            if not isinstance(ids_injected, int):
-                ids_injected = 0
-
-        if request.inject_ids:
-            message = f"Reindexed {files_indexed} files, injected IDs into {ids_injected} files"
-        else:
-            message = f"Reindexed {files_indexed} files, found {len(files_needing_ids)} files needing IDs"
-
-        logger.info(f"Reindex completed: {message}")
-
-        # Update notification to completed
-        if request.notification_id:
-            logger.info(f"Updating notification {request.notification_id} to COMPLETED")
-            update_result = await notification_service.update_notification(
-                request.notification_id,
-                NotificationUpdate(
-                    status=NotificationStatus.COMPLETED,
-                    description=message,
-                    result={
-                        "files_indexed": files_indexed,
-                        "ids_injected": ids_injected,
-                    },
-                ),
-            )
-            logger.info(f"Notification update result: {update_result}")
-
-        return ReindexResponse(
-            status="completed",
-            files_indexed=files_indexed,
-            files_needing_ids=files_needing_ids,
-            ids_injected=ids_injected,
-            message=message,
-        )
-
-    except Exception as e:
-        logger.error(f"Error running reindex: {e}", exc_info=True)
-
-        # Update notification to failed
-        if request.notification_id:
-            await notification_service.update_notification(
-                request.notification_id,
-                NotificationUpdate(
-                    status=NotificationStatus.FAILED,
-                    error=str(e),
-                ),
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to run reindex: {str(e)}",
-        )
+    return ReindexJobResponse(
+        status="queued",
+        job_id=job_id,
+    )
 
 
 class SDKScanResponse(BaseModel):

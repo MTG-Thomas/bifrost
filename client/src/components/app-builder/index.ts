@@ -13,15 +13,12 @@ export { WorkflowStatusIndicator } from "./WorkflowStatusIndicator";
 // Editor
 export {
 	EditorShell,
-	ComponentPalette,
-	EditorCanvas,
+	StructureTree,
+	ComponentInserter,
 	PropertyEditor,
 	PageTree,
 	type EditorShellProps,
-	type ComponentPaletteProps,
-	type PaletteDragData,
-	type DragData,
-	type DropTarget,
+	type StructureTreeProps,
 	type PropertyEditorProps,
 	type PageTreeProps,
 } from "./editor";

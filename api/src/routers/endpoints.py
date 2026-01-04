@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from src.sdk.context import ExecutionContext
 from src.services.execution.module_loader import get_workflow
 from src.core.database import get_db_context
-from src.core.redis_client import get_redis_client, DEFAULT_TIMEOUT_SECONDS
+from src.core.redis_client import get_redis_client
 from src.routers.workflow_keys import validate_workflow_key
 from src.repositories.workflows import WorkflowRepository
 

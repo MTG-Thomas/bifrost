@@ -1,8 +1,13 @@
 """
-Workflow and Data Provider Decorators
+Workflow, Tool, and Data Provider Decorators
 
-Decorators for attaching metadata to workflows and data providers.
+Decorators for attaching metadata to executable user code.
 No registration - metadata is stored on the function and discovered dynamically.
+
+All executable types are stored in the workflows table with a type discriminator:
+- @workflow: type='workflow' - Standard workflows
+- @tool: type='tool' - AI agent tools
+- @data_provider: type='data_provider' - Data providers for forms/app builder
 
 Parameter information is derived from function signatures - no @param decorator needed.
 """
@@ -11,7 +16,12 @@ import logging
 from collections.abc import Callable
 from typing import Any, Literal
 
-from src.services.execution.module_loader import DataProviderMetadata, WorkflowMetadata, WorkflowParameter
+from src.services.execution.module_loader import (
+    DataProviderMetadata,
+    ExecutableType,
+    WorkflowMetadata,
+    WorkflowParameter,
+)
 from src.services.execution.type_inference import extract_parameters_from_signature
 
 logger = logging.getLogger(__name__)
@@ -142,6 +152,9 @@ def workflow(
         # Tool description: use explicit tool_description, or full docstring, or workflow description
         workflow_tool_description = tool_description if tool_description else (full_docstring or workflow_description)
 
+        # Determine type based on is_tool flag
+        workflow_type: ExecutableType = "tool" if is_tool else "workflow"
+
         # Initialize metadata
         metadata = WorkflowMetadata(
             id=id,
@@ -149,6 +162,7 @@ def workflow(
             description=workflow_description,
             category=category,
             tags=workflow_tags,
+            type=workflow_type,
             execution_mode=workflow_execution_mode,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
@@ -167,7 +181,8 @@ def workflow(
         )
 
         # Store metadata on function for dynamic discovery
-        func._workflow_metadata = metadata
+        # All executable types use the same attribute name for unified loading
+        func._executable_metadata = metadata
 
         tool_info = ", is_tool=True" if is_tool else ""
         logger.debug(
@@ -260,6 +275,10 @@ def data_provider(
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
+    tags: list[str] | None = None,
+
+    # Execution
+    timeout_seconds: int = 300,  # Default 5 minutes (shorter than workflows)
 
     # Caching
     cache_ttl_seconds: int = 300
@@ -267,8 +286,10 @@ def data_provider(
     """
     Decorator for registering data provider functions.
 
-    Data providers return dynamic options for form fields.
+    Data providers return dynamic options for form fields and app builder.
     Parameters are automatically derived from function signatures.
+
+    Data providers are stored in the workflows table with type='data_provider'.
 
     Usage:
         @data_provider
@@ -286,6 +307,8 @@ def data_provider(
         name: Data provider name (defaults to function name)
         description: Human-readable description (defaults to first line of docstring)
         category: Category for organization (default: "General")
+        tags: Optional list of tags for filtering
+        timeout_seconds: Max execution time in seconds (default: 300 = 5 min)
         cache_ttl_seconds: Cache TTL in seconds (default: 300 = 5 minutes)
 
     Returns:
@@ -329,12 +352,18 @@ def data_provider(
             elif '/workspace/' in file_path or '\\workspace\\' in file_path:
                 source = 'workspace'
 
+        # Get tags with default
+        provider_tags = tags if tags is not None else []
+
         # Create metadata
         metadata = DataProviderMetadata(
             id=id,
             name=provider_name,
             description=provider_description,
             category=category,
+            tags=provider_tags,
+            type="data_provider",  # Explicitly set type
+            timeout_seconds=timeout_seconds,
             cache_ttl_seconds=cache_ttl_seconds,
             parameters=parameters,
             function=func,
@@ -343,7 +372,8 @@ def data_provider(
         )
 
         # Store metadata on function for dynamic discovery
-        func._data_provider_metadata = metadata
+        # All executable types use the same attribute name for unified loading
+        func._executable_metadata = metadata
 
         logger.debug(
             f"Data provider decorator applied: {provider_name} "

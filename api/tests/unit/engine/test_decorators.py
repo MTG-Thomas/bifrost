@@ -23,8 +23,8 @@ class TestWorkflowDecorator:
             return "test result"
 
         # Verify function has metadata attached
-        assert hasattr(test_func, '_workflow_metadata')
-        metadata = test_func._workflow_metadata
+        assert hasattr(test_func, '_executable_metadata')
+        metadata = test_func._executable_metadata
 
         # Verify function still works normally
         result = test_func()
@@ -47,8 +47,8 @@ class TestWorkflowDecorator:
             return "test result"
 
         # Verify function has metadata attached
-        assert hasattr(test_func, '_workflow_metadata')
-        metadata = test_func._workflow_metadata
+        assert hasattr(test_func, '_executable_metadata')
+        metadata = test_func._executable_metadata
 
         # Verify function still works normally
         result = test_func()
@@ -72,7 +72,7 @@ class TestWorkflowDecorator:
         def onboard_user(first_name: str, last_name: str):
             return f"Onboarded {first_name} {last_name}"
 
-        metadata = onboard_user._workflow_metadata
+        metadata = onboard_user._executable_metadata
         assert metadata.category == "user_management"
         assert metadata.tags == ["m365", "user"]
         assert metadata.execution_mode == "async"  # Default
@@ -91,7 +91,7 @@ class TestWorkflowDecorator:
         def utility_func():
             return "utility"
 
-        metadata = utility_func._workflow_metadata
+        metadata = utility_func._executable_metadata
         assert metadata.execution_mode == "async"
 
     def test_workflow_endpoint_defaults_to_sync(self):
@@ -104,7 +104,7 @@ class TestWorkflowDecorator:
         def webhook_func():
             return "webhook"
 
-        metadata = webhook_func._workflow_metadata
+        metadata = webhook_func._executable_metadata
         assert metadata.execution_mode == "sync"  # Auto-defaults to sync
         assert metadata.endpoint_enabled is True
 
@@ -119,7 +119,7 @@ class TestWorkflowDecorator:
         def async_webhook_func():
             return "async webhook"
 
-        metadata = async_webhook_func._workflow_metadata
+        metadata = async_webhook_func._executable_metadata
         assert metadata.execution_mode == "async"  # Explicit wins
         assert metadata.endpoint_enabled is True
 
@@ -133,7 +133,7 @@ class TestWorkflowDecorator:
             """Original docstring"""
             pass
 
-        assert hasattr(test_func, '_workflow_metadata')
+        assert hasattr(test_func, '_executable_metadata')
         assert test_func.__name__ == "test_func"
         assert test_func.__doc__ == "Original docstring"
 
@@ -147,7 +147,7 @@ class TestWorkflowDecorator:
         def test_func():
             pass
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
         assert metadata.id == "test-uuid-1234"
 
     def test_workflow_name_auto_derived_from_function(self):
@@ -156,7 +156,7 @@ class TestWorkflowDecorator:
         def my_cool_workflow():
             pass
 
-        metadata = my_cool_workflow._workflow_metadata
+        metadata = my_cool_workflow._executable_metadata
         assert metadata.name == "my_cool_workflow"
 
     def test_workflow_description_auto_derived_from_docstring(self):
@@ -166,7 +166,7 @@ class TestWorkflowDecorator:
             """This is the auto-derived description."""
             pass
 
-        metadata = my_workflow._workflow_metadata
+        metadata = my_workflow._executable_metadata
         assert metadata.description == "This is the auto-derived description."
 
 
@@ -180,7 +180,7 @@ class TestSignatureBasedParameters:
             """Test workflow."""
             pass
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
         assert len(metadata.parameters) == 3
 
         # First param: name (required, no default)
@@ -211,7 +211,7 @@ class TestSignatureBasedParameters:
             """Test."""
             pass
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
         assert metadata.parameters[0].label == "First Name"
         assert metadata.parameters[1].label == "Email Address"
 
@@ -222,7 +222,7 @@ class TestSignatureBasedParameters:
             """Test."""
             pass
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
         assert len(metadata.parameters) == 1
         assert metadata.parameters[0].required is False
 
@@ -233,7 +233,7 @@ class TestSignatureBasedParameters:
             """Test."""
             pass
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
         assert metadata.parameters[0].type == "list"
 
     def test_dict_type_mapping(self):
@@ -243,7 +243,7 @@ class TestSignatureBasedParameters:
             """Test."""
             pass
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
         assert metadata.parameters[0].type == "json"
 
     def test_float_type_mapping(self):
@@ -253,7 +253,7 @@ class TestSignatureBasedParameters:
             """Test."""
             pass
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
         assert metadata.parameters[0].type == "float"
         assert metadata.parameters[0].default_value == 0.5
 
@@ -271,14 +271,14 @@ class TestDataProviderDecorator:
             return [{"label": "E5", "value": "SPE_E5"}]
 
         # Verify provider has metadata attached
-        assert hasattr(get_licenses, '_data_provider_metadata')
+        assert hasattr(get_licenses, '_executable_metadata')
 
         # Verify function still works
         result = get_licenses()
         assert result == [{"label": "E5", "value": "SPE_E5"}]
 
         # Verify metadata
-        metadata = get_licenses._data_provider_metadata
+        metadata = get_licenses._executable_metadata
         assert metadata.name == "get_licenses"
         assert metadata.description == "Returns available licenses"
         assert metadata.category == "General"
@@ -295,7 +295,7 @@ class TestDataProviderDecorator:
         def get_available_licenses():
             return []
 
-        metadata = get_available_licenses._data_provider_metadata
+        metadata = get_available_licenses._executable_metadata
         assert metadata.category == "m365"
         assert metadata.cache_ttl_seconds == 600
 
@@ -309,7 +309,7 @@ class TestDataProviderDecorator:
             """Original docstring"""
             return []
 
-        assert hasattr(test_func, '_data_provider_metadata')
+        assert hasattr(test_func, '_executable_metadata')
         assert test_func.__name__ == "test_func"
         assert test_func.__doc__ == "Original docstring"
 
@@ -322,7 +322,7 @@ class TestDataProviderDecorator:
         def get_filtered_licenses(filter_text: str | None = None, limit: int = 10):
             return []
 
-        metadata = get_filtered_licenses._data_provider_metadata
+        metadata = get_filtered_licenses._executable_metadata
         assert len(metadata.parameters) == 2
 
         # First param: filter_text (optional - has None in union)
@@ -367,11 +367,11 @@ class TestDecoratorIntegration:
             return f"Created {email} with {license}"
 
         # Verify workflow has metadata
-        workflow_meta = onboard_user._workflow_metadata
+        workflow_meta = onboard_user._executable_metadata
         assert len(workflow_meta.parameters) == 4
 
         # Verify data provider has metadata
-        provider_meta = get_licenses._data_provider_metadata
+        provider_meta = get_licenses._executable_metadata
         assert provider_meta is not None
 
         # Verify both functions still work
@@ -394,12 +394,12 @@ class TestDecoratorIntegration:
             pass
 
         # Both functions have metadata
-        assert hasattr(func1, '_workflow_metadata')
-        assert hasattr(func2, '_workflow_metadata')
+        assert hasattr(func1, '_executable_metadata')
+        assert hasattr(func2, '_executable_metadata')
 
         # Verify each has correct params
-        w1 = func1._workflow_metadata
-        w2 = func2._workflow_metadata
+        w1 = func1._executable_metadata
+        w2 = func2._executable_metadata
 
         assert w1.parameters[0].name == "param1"
         assert w2.parameters[0].name == "param2"

@@ -13,6 +13,7 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.workspace_sync import TEMP_PATH, UPLOADS_PATH
 from src.services.file_storage_service import FileStorageService
 
 Location = Literal["workspace", "temp", "uploads"]
@@ -53,8 +54,8 @@ class LocalBackend(FileBackend):
     def __init__(self):
         # Use CWD for workspace - this is where the user's workflow files are
         self.workspace_root = Path.cwd()
-        self.temp_root = Path("/tmp/bifrost-tmp")
-        self.uploads_root = Path("/tmp/bifrost-uploads")
+        self.temp_root = TEMP_PATH
+        self.uploads_root = UPLOADS_PATH
 
         # Ensure temp directories exist
         self.temp_root.mkdir(parents=True, exist_ok=True)

@@ -144,43 +144,34 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             name=caller_data["name"]
         )
 
-        # Load workflow or data provider function if not a script
+        # Load executable function if not a script
+        # All types (workflow, tool, data_provider) use the same unified loader
         workflow_func = None
         is_script = bool(context_data.get("code"))
 
         if not is_script:
             from src.services.execution.module_loader import (
                 get_workflow,
-                get_data_provider,
                 load_workflow_by_file_path,
             )
 
             name = context_data["name"]
-            tags = context_data.get("tags", [])
             file_path = context_data.get("file_path")
 
-            # Check if this is a data provider or workflow
-            if "data_provider" in tags:
-                result = get_data_provider(name)
-                entity_type = "Data provider"
-                error_type = "DataProviderNotFound"
-            elif file_path:
+            # Unified loading: all executable types use _executable_metadata
+            if file_path:
                 # FAST PATH: Use file path for direct loading (skips filesystem scan)
                 result = load_workflow_by_file_path(file_path, name)
-                entity_type = "Workflow"
-                error_type = "WorkflowNotFound"
             else:
                 # SLOW PATH: Full filesystem scan (fallback for older messages)
                 result = get_workflow(name)
-                entity_type = "Workflow"
-                error_type = "WorkflowNotFound"
 
             if not result:
                 metrics = _capture_metrics(start_rss, start_utime, start_stime)
                 return {
                     "status": ExecutionStatus.FAILED.value,
-                    "error_message": f"{entity_type} '{name}' not found",
-                    "error_type": error_type,
+                    "error_message": f"Executable '{name}' not found",
+                    "error_type": "ExecutableNotFound",
                     "duration_ms": int((datetime.utcnow() - start_time).total_seconds() * 1000),
                     "result": None,
                     "logs": [],

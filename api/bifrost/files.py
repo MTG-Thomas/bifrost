@@ -2,13 +2,13 @@
 File management SDK for Bifrost.
 
 Provides async Python API for file operations with two storage modes:
-- local: Local filesystem (CWD, /tmp/bifrost-tmp, /tmp/bifrost-uploads)
+- local: Local filesystem (CWD, /tmp/bifrost/temp, /tmp/bifrost/uploads)
 - cloud: S3 storage (default)
 
 Location Options:
 - "workspace": Persistent workspace files (CWD in local mode, S3 bucket root in cloud mode)
-- "temp": Temporary files (_tmp/ prefix in cloud, /tmp/bifrost-tmp in local)
-- "uploads": Files uploaded via form file fields (uploads/ prefix in cloud, /tmp/bifrost-uploads in local)
+- "temp": Temporary files (_tmp/ prefix in cloud, /tmp/bifrost/temp in local)
+- "uploads": Files uploaded via form file fields (uploads/ prefix in cloud, /tmp/bifrost/uploads in local)
 
 Usage:
     from bifrost import files

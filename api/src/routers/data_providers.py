@@ -3,8 +3,9 @@ Data Providers Router
 
 Returns metadata for all registered data providers and allows invocation.
 
-Note: Data providers are discovered by the Discovery container and synced to
-the database. This router queries the database for fast lookups.
+Note: Data providers are stored in the workflows table with type='data_provider'.
+They are discovered by the Discovery container and synced to the database.
+This router queries the database for fast lookups.
 """
 
 import logging
@@ -17,7 +18,7 @@ from sqlalchemy import exists, select
 
 # Import existing Pydantic models for API compatibility
 from src.models import DataProviderMetadata
-from src.models import DataProvider as DataProviderORM
+from src.models import Workflow as WorkflowORM  # Data providers are in workflows table
 from src.models.orm.forms import FormField as FormFieldORM, FormRole as FormRoleORM
 from src.models.orm.users import UserRole as UserRoleORM
 from src.models.orm.integrations import Integration as IntegrationORM
@@ -50,15 +51,15 @@ class DataProviderInvokeResponse(BaseModel):
     options: list[DataProviderOption] = Field(default_factory=list, description="List of options from the provider")
 
 
-def _convert_provider_orm_to_schema(provider: DataProviderORM) -> DataProviderMetadata:
-    """Convert ORM model to Pydantic schema for API response."""
+def _convert_provider_orm_to_schema(provider: WorkflowORM) -> DataProviderMetadata:
+    """Convert Workflow ORM model (with type='data_provider') to Pydantic schema for API response."""
     return DataProviderMetadata(
         id=str(provider.id),
         name=provider.name,
         description=provider.description or "",
-        category="General",
-        cache_ttl_seconds=300,
-        parameters=[],
+        category=provider.category or "General",
+        cache_ttl_seconds=provider.cache_ttl_seconds or 300,
+        parameters=[],  # TODO: Could parse from parameters_schema if needed
         source_file_path=provider.file_path,
         relative_file_path=None,
     )
@@ -76,12 +77,16 @@ async def list_data_providers(
 ) -> list[DataProviderMetadata]:
     """List all registered data providers from the database.
 
-    Data providers are discovered by the Discovery container and synced to the
-    database. This endpoint queries the database for fast lookups.
+    Data providers are stored in the workflows table with type='data_provider'.
+    They are discovered by the Discovery container and synced to the database.
+    This endpoint queries the database for fast lookups.
     """
     try:
-        # Query active data providers from database
-        query = select(DataProviderORM).where(DataProviderORM.is_active.is_(True))
+        # Query active data providers from workflows table (type='data_provider')
+        query = select(WorkflowORM).where(
+            WorkflowORM.type == "data_provider",
+            WorkflowORM.is_active.is_(True),
+        )
         result = await db.execute(query)
         providers = result.scalars().all()
 
@@ -195,11 +200,12 @@ async def invoke_data_provider(
         DataProviderLoadError,
     )
 
-    # Look up provider by ID
+    # Look up provider by ID from workflows table (type='data_provider')
     result = await db.execute(
-        select(DataProviderORM).where(
-            DataProviderORM.id == provider_id,
-            DataProviderORM.is_active.is_(True),
+        select(WorkflowORM).where(
+            WorkflowORM.id == provider_id,
+            WorkflowORM.type == "data_provider",
+            WorkflowORM.is_active.is_(True),
         )
     )
     provider = result.scalar_one_or_none()

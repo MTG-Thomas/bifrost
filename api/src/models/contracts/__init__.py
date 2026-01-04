@@ -408,9 +408,13 @@ from src.models.contracts.decorators import (
 from src.models.contracts.maintenance import (
     DocsIndexResponse,
     MaintenanceStatus,
+    ReindexCounts,
+    ReindexError,
+    ReindexJobResponse,
     ReindexProgress,
     ReindexRequest,
     ReindexResponse,
+    ReindexResult,
 )
 
 # ROI
@@ -760,9 +764,13 @@ __all__ = [
     # Maintenance
     "DocsIndexResponse",
     "MaintenanceStatus",
-    "ReindexRequest",
+    "ReindexCounts",
+    "ReindexError",
+    "ReindexJobResponse",
     "ReindexProgress",
+    "ReindexRequest",
     "ReindexResponse",
+    "ReindexResult",
     # ROI
     "ROISettingsRequest",
     "ROISettingsResponse",

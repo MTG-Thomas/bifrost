@@ -1,7 +1,9 @@
 """
-Workflow and DataProvider ORM models.
+Workflow ORM model.
 
-Represents workflows and data providers discovered from Python files.
+Represents all executable user code (workflows, tools, data providers)
+discovered from Python files. Data providers were consolidated into this
+table in migration 20260103_000000.
 """
 
 from datetime import datetime
@@ -22,8 +24,14 @@ class Workflow(Base):
     """
     Workflow registry - persisted from file discovery.
 
-    This table stores workflow metadata discovered from Python files in the
-    workspace. The discovery watcher syncs file changes to this table.
+    This table stores metadata for all executable user code discovered from
+    Python files in the workspace. The discovery watcher syncs file changes
+    to this table.
+
+    Types:
+    - workflow: Standard workflows (@workflow decorator)
+    - tool: AI agent tools (@tool decorator)
+    - data_provider: Data providers for forms/app builder (@data_provider decorator)
     """
 
     __tablename__ = "workflows"
@@ -33,6 +41,9 @@ class Workflow(Base):
     function_name: Mapped[str] = mapped_column(String(255))  # Actual Python function name
     description: Mapped[str | None] = mapped_column(Text, default=None)
     category: Mapped[str] = mapped_column(String(100), default="General")
+
+    # Type discriminator: 'workflow', 'tool', or 'data_provider'
+    type: Mapped[str] = mapped_column(String(20), default="workflow", index=True)
 
     # File discovery metadata
     file_path: Mapped[str] = mapped_column(String(1000))
@@ -51,9 +62,11 @@ class Workflow(Base):
     execution_mode: Mapped[str] = mapped_column(String(20), default="async")
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)  # 30 min default
 
-    # Tool configuration (for AI agent tool calling)
-    is_tool: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Tool configuration (for AI agent tool calling when type='tool')
     tool_description: Mapped[str | None] = mapped_column(Text, default=None)
+
+    # Data provider configuration (when type='data_provider')
+    cache_ttl_seconds: Mapped[int] = mapped_column(Integer, default=300)  # 5 min default
 
     # Economics - value metrics for reporting
     time_saved: Mapped[int] = mapped_column(Integer, default=0)  # Minutes saved per execution
@@ -100,22 +113,30 @@ class Workflow(Base):
             "api_key_hash",
             postgresql_where=text("api_key_hash IS NOT NULL"),
         ),
-        Index(
-            "ix_workflows_is_tool",
-            "is_tool",
-            postgresql_where=text("is_tool = true"),
-        ),
+        # Type index is created as a regular index via mapped_column(index=True)
         # Unique constraint on (file_path, function_name) for ON CONFLICT upserts
         UniqueConstraint("file_path", "function_name", name="workflows_file_function_key"),
     )
 
 
+# ============================================================================
+# DEPRECATED: DataProvider ORM model
+# ============================================================================
+# The DataProvider class below is DEPRECATED and will be removed after
+# migration 20260103_000001 is applied. Data providers are now stored in
+# the workflows table with type='data_provider'.
+#
+# During the transition period, this class is kept for backward compatibility
+# with existing code that hasn't been updated yet.
+# ============================================================================
+
+
 class DataProvider(Base):
     """
-    Data provider registry - persisted from file discovery.
+    DEPRECATED: Data providers are now stored in the workflows table.
 
-    This table stores data provider metadata discovered from Python files
-    in the workspace. The discovery watcher syncs file changes to this table.
+    This class is kept temporarily for backward compatibility during migration.
+    Use Workflow with type='data_provider' instead.
     """
 
     __tablename__ = "data_providers"

@@ -2013,7 +2013,7 @@ async def cli_knowledge_get(
     summary="Download CLI package",
     description="Download the Bifrost CLI as a pip-installable tarball",
 )
-async def download_cli() -> StreamingResponse:
+async def download_cli() -> Response:
     """
     Serve CLI as installable package.
 

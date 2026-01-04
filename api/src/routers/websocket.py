@@ -187,6 +187,10 @@ async def websocket_connect(
             # Platform admins can view all, org users can view their org's sources
             # Access is validated on event delivery, so we allow subscription
             allowed_channels.append(channel)
+        elif channel.startswith("reindex:"):
+            # Reindex job progress channels - platform admins only
+            if user.is_superuser:
+                allowed_channels.append(channel)
         elif channel == "system":
             allowed_channels.append(channel)
 

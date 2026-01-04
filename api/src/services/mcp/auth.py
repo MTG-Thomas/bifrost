@@ -17,17 +17,16 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from fastmcp.server.auth.auth import AccessToken
+from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
+from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
+from starlette.middleware import Middleware as StarletteMiddleware
+from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
-
-if TYPE_CHECKING:
-    from typing import TypeAlias
-    # AccessToken is only available when mcp package is installed
-    # We define a placeholder type for static analysis
-    AccessToken: TypeAlias = Any
 
 logger = logging.getLogger(__name__)
 
@@ -588,7 +587,6 @@ class BifrostAuthProvider:
         Returns:
             AccessToken if valid, None otherwise
         """
-        from fastmcp.server.auth.auth import AccessToken
         from src.core.security import decode_token
 
         logger.info(f"MCP auth: verify_token called with token prefix: {token[:20]}...")
@@ -666,21 +664,10 @@ class BifrostAuthProvider:
         requests fail with 401 because the RequireAuthMiddleware can't
         find an authenticated user.
         """
-        from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
-        from starlette.middleware import Middleware
-        from starlette.middleware.authentication import AuthenticationMiddleware
-
-        # Import AuthContextMiddleware from fastmcp if available
-        try:
-            from fastmcp.server.auth.auth import AuthContextMiddleware
-            return [
-                Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(self)),
-                Middleware(AuthContextMiddleware),
-            ]
-        except ImportError:
-            return [
-                Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(self)),
-            ]
+        return [
+            StarletteMiddleware(AuthenticationMiddleware, backend=BearerAuthBackend(self)),
+            StarletteMiddleware(AuthContextMiddleware),
+        ]
 
 
 def create_bifrost_auth_provider(base_url: str | None = None) -> BifrostAuthProvider:

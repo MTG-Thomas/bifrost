@@ -3,6 +3,7 @@ Workflow metadata and validation contract models for Bifrost.
 """
 
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,6 +13,16 @@ from src.models.contracts.base import RetryPolicy
 
 if TYPE_CHECKING:
     pass
+
+
+# ==================== EXECUTABLE TYPE ====================
+
+
+class ExecutableType(str, Enum):
+    """Type discriminator for all executable user code."""
+    WORKFLOW = "workflow"
+    TOOL = "tool"
+    DATA_PROVIDER = "data_provider"
 
 
 # ==================== WORKFLOW PARAMETER & METADATA ====================
@@ -34,13 +45,20 @@ class WorkflowParameter(BaseModel):
 
 
 class WorkflowMetadata(BaseModel):
-    """Workflow metadata for discovery API"""
+    """Workflow metadata for discovery API.
+
+    This model represents all executable types (workflow, tool, data_provider)
+    via the `type` field discriminator.
+    """
     # Unique identifier
     id: str = Field(..., description="Workflow UUID")
 
     # Required fields
     name: str = Field(..., min_length=1, max_length=200, description="Human-readable workflow name")
     description: str | None = Field(default=None, description="Human-readable description")
+
+    # Type discriminator - distinguishes workflow/tool/data_provider
+    type: ExecutableType = Field(default=ExecutableType.WORKFLOW, description="Executable type: workflow, tool, or data_provider")
 
     # Optional fields with defaults
     category: str = Field(default="General", description="Category for organization")
@@ -62,8 +80,12 @@ class WorkflowMetadata(BaseModel):
     public_endpoint: bool = Field(default=False, description="If true, skip authentication for webhooks")
 
     # Tool configuration (for AI agent tool calling)
-    is_tool: bool = Field(default=False, description="Whether workflow is available as an AI tool")
+    # NOTE: is_tool is deprecated - use type == ExecutableType.TOOL instead
+    is_tool: bool = Field(default=False, description="[Deprecated] Use type='tool' instead. Whether workflow is available as an AI tool")
     tool_description: str | None = Field(default=None, description="Description optimized for AI tool selection")
+
+    # Data provider configuration
+    cache_ttl_seconds: int = Field(default=300, description="Cache TTL in seconds (for data providers)")
 
     # Economics - value metrics for reporting
     time_saved: int = Field(default=0, description="Minutes saved per execution")
@@ -75,12 +97,20 @@ class WorkflowMetadata(BaseModel):
 
 
 class DataProviderMetadata(BaseModel):
-    """Data provider metadata from @data_provider decorator (T008)"""
+    """Data provider metadata from @data_provider decorator.
+
+    NOTE: Data providers are being consolidated into the workflows table.
+    This model is kept for backward compatibility with existing code.
+    New code should use WorkflowMetadata with type=ExecutableType.DATA_PROVIDER.
+    """
     id: str | None = Field(default=None, description="Data provider UUID (when loaded from database)")
     name: str
     description: str | None = None
+    type: ExecutableType = Field(default=ExecutableType.DATA_PROVIDER, description="Always 'data_provider' for this model")
     category: str = "General"
-    cache_ttl_seconds: int = 300
+    tags: list[str] = Field(default_factory=list, description="Tags for categorization and search")
+    timeout_seconds: int = Field(default=300, ge=1, le=7200, description="Max execution time in seconds (default 5 min)")
+    cache_ttl_seconds: int = Field(default=300, description="Cache TTL in seconds")
     parameters: list[WorkflowParameter] = Field(default_factory=list, description="Input parameters from @param decorators")
     source_file_path: str | None = Field(default=None, description="Full file path to the data provider source code")
     relative_file_path: str | None = Field(default=None, description="Workspace-relative file path with /workspace/ prefix (e.g., '/workspace/data_providers/my_provider.py')")

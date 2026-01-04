@@ -42,6 +42,7 @@ router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
     """Convert ORM model to Pydantic schema for API response."""
     from typing import Literal
+    from src.models.contracts.workflows import ExecutableType
 
     # Convert parameters from JSONB to WorkflowParameter objects
     parameters = []
@@ -53,23 +54,28 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
     raw_mode = workflow.execution_mode or "sync"
     execution_mode: Literal["sync", "async"] = "async" if raw_mode == "async" else "sync"
 
+    # Convert string type to ExecutableType enum
+    workflow_type = ExecutableType(workflow.type or "workflow")
+
     return WorkflowMetadata(
         id=str(workflow.id),
         name=workflow.name,
         description=workflow.description if workflow.description else None,
         category=workflow.category or "General",
         tags=workflow.tags or [],
+        type=workflow_type,
         parameters=parameters,
         execution_mode=execution_mode,
-        timeout_seconds=1800,  # Default timeout
+        timeout_seconds=workflow.timeout_seconds or 1800,
         retry_policy=None,
         schedule=workflow.schedule,
         endpoint_enabled=workflow.endpoint_enabled or False,
         allowed_methods=workflow.allowed_methods or ["POST"],
         disable_global_key=False,
         public_endpoint=False,
-        is_tool=workflow.is_tool or False,
+        is_tool=workflow.type == "tool",  # Derive from type field
         tool_description=workflow.tool_description,
+        cache_ttl_seconds=workflow.cache_ttl_seconds or 300,
         time_saved=workflow.time_saved or 0,
         value=float(workflow.value or 0.0),
         source_file_path=workflow.file_path,
@@ -91,7 +97,8 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
 async def list_workflows(
     user: CurrentSuperuser,
     db: DbSession,
-    is_tool: bool | None = None,
+    type: str | None = None,
+    is_tool: bool | None = None,  # Deprecated, use type="tool" instead
 ) -> list[WorkflowMetadata]:
     """List all registered workflows from the database.
 
@@ -99,16 +106,22 @@ async def list_workflows(
     database. This endpoint queries the database for fast lookups.
 
     Args:
-        is_tool: Filter by tool-enabled workflows. If True, only return workflows
-                 that can be used as agent tools. If None, return all workflows.
+        type: Filter by workflow type ('workflow', 'tool', 'data_provider').
+        is_tool: [Deprecated] Use type="tool" instead. Filter by tool-enabled workflows.
     """
     try:
         # Query active workflows from database
         query = select(WorkflowORM).where(WorkflowORM.is_active.is_(True))
 
-        # Optional filter for tool-enabled workflows
-        if is_tool is not None:
-            query = query.where(WorkflowORM.is_tool.is_(is_tool))
+        # Filter by type
+        if type is not None:
+            query = query.where(WorkflowORM.type == type)
+        # Legacy support: is_tool=True maps to type="tool"
+        elif is_tool is not None:
+            if is_tool:
+                query = query.where(WorkflowORM.type == "tool")
+            else:
+                query = query.where(WorkflowORM.type != "tool")
 
         result = await db.execute(query)
         workflows = result.scalars().all()

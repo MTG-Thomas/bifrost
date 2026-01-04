@@ -27,8 +27,10 @@ from src.core.workspace_cache import get_workspace_cache
 
 logger = logging.getLogger(__name__)
 
-# Local workspace path
+# Standard local paths - all under /tmp/bifrost/
 WORKSPACE_PATH = Path("/tmp/bifrost/workspace")
+TEMP_PATH = Path("/tmp/bifrost/temp")
+UPLOADS_PATH = Path("/tmp/bifrost/uploads")
 
 
 class WorkspaceSyncService:

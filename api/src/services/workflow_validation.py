@@ -199,14 +199,20 @@ async def validate_workflow_file(path: str, content: str | None = None):
             valid = False
             return WorkflowValidationResponse(valid=valid, issues=issues, metadata=None)
 
-        # Step 3: Check if @workflow decorator was found by scanning module
+        # Step 3: Check if @workflow/@tool decorator was found by scanning module
+        # All decorators use unified _executable_metadata attribute
         discovered_workflows: list[WorkflowMetadata] = []
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
-            if callable(attr) and hasattr(attr, '_workflow_metadata'):
-                metadata_obj = attr._workflow_metadata
+            if callable(attr) and hasattr(attr, '_executable_metadata'):
+                metadata_obj = attr._executable_metadata
+                # Only include workflows and tools, not data providers
                 if isinstance(metadata_obj, WorkflowMetadata):
                     discovered_workflows.append(metadata_obj)
+                elif hasattr(metadata_obj, 'type') and metadata_obj.type in ('workflow', 'tool'):
+                    # Convert to WorkflowMetadata if needed
+                    from src.services.execution.module_loader import _convert_workflow_metadata
+                    discovered_workflows.append(_convert_workflow_metadata(metadata_obj))
 
         if not discovered_workflows:
             issues.append(ValidationIssue(

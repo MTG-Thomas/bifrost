@@ -16,7 +16,6 @@ from src.models import (
     Execution as ExecutionModel,
     Workflow,
     Form,
-    DataProvider,
     Organization,
     User,
     PlatformMetricsSnapshot,
@@ -48,9 +47,11 @@ async def refresh_metrics_snapshot() -> dict[str, Any]:
         session_factory = get_session_factory()
         async with session_factory() as db:
             # Entity counts (single query with subqueries)
+            # Note: Data providers are now in the workflows table with type='data_provider'
             counts_query = select(
                 select(func.count(Workflow.id))
                 .where(Workflow.is_active.is_(True))
+                .where(Workflow.type != "data_provider")  # Exclude data providers
                 .correlate(None)
                 .scalar_subquery()
                 .label("workflow_count"),
@@ -59,8 +60,9 @@ async def refresh_metrics_snapshot() -> dict[str, Any]:
                 .correlate(None)
                 .scalar_subquery()
                 .label("form_count"),
-                select(func.count(DataProvider.id))
-                .where(DataProvider.is_active.is_(True))
+                select(func.count(Workflow.id))
+                .where(Workflow.is_active.is_(True))
+                .where(Workflow.type == "data_provider")  # Count only data providers
                 .correlate(None)
                 .scalar_subquery()
                 .label("provider_count"),

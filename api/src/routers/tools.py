@@ -300,7 +300,7 @@ async def list_tools(
         # Query workflows that are tools
         query = (
             select(Workflow)
-            .where(Workflow.is_tool.is_(True))
+            .where(Workflow.type == "tool")
             .where(Workflow.is_active.is_(True))
         )
 

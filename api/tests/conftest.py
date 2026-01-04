@@ -79,9 +79,11 @@ def setup_test_environment(tmp_path_factory):
     # Set up workspace and temp locations for tests
     # These are now hardcoded paths - create them for test isolation
     test_workspace = Path("/tmp/bifrost/workspace")
-    test_temp = Path("/tmp/bifrost/tmp")
+    test_temp = Path("/tmp/bifrost/temp")
+    test_uploads = Path("/tmp/bifrost/uploads")
     test_workspace.mkdir(parents=True, exist_ok=True)
     test_temp.mkdir(parents=True, exist_ok=True)
+    test_uploads.mkdir(parents=True, exist_ok=True)
     os.environ["BIFROST_TEMP_LOCATION"] = str(test_temp)
 
     # Reset global database state to ensure it uses test settings

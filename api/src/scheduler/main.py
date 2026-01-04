@@ -14,17 +14,18 @@ NOTE: File watching and DB sync has been moved to the Discovery container.
 """
 
 import asyncio
+import json
 import logging
 import signal
 import sys
 from datetime import datetime
-
+import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from src.config import get_settings
-from src.core.database import init_db, close_db
+from src.core.database import init_db, close_db, get_db_context
 from src.jobs.schedulers.cron_scheduler import process_scheduled_workflows
 from src.jobs.schedulers.execution_cleanup import cleanup_stuck_executions
 
@@ -50,6 +51,9 @@ class Scheduler:
     - CRON workflow execution
     - Stuck execution cleanup
     - OAuth token refresh
+
+    Also listens for on-demand requests via Redis pub/sub:
+    - Reindex requests (bifrost:scheduler:reindex)
     """
 
     def __init__(self):
@@ -57,6 +61,9 @@ class Scheduler:
         self.running = False
         self._shutdown_event = asyncio.Event()
         self._scheduler: AsyncIOScheduler | None = None
+        self._redis: redis.Redis | None = None
+        self._pubsub: redis.client.PubSub | None = None
+        self._listener_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         """Start the scheduler."""
@@ -72,6 +79,10 @@ class Scheduler:
         # Start APScheduler
         logger.info("Starting APScheduler...")
         await self._start_scheduler()
+
+        # Start Redis pub/sub listener for on-demand requests
+        logger.info("Starting Redis pub/sub listener...")
+        await self._start_pubsub_listener()
 
         logger.info("Bifrost Scheduler started")
         logger.info("Running... (Ctrl+C to stop)")
@@ -211,10 +222,125 @@ class Scheduler:
         self._scheduler = scheduler
         logger.info("APScheduler started with scheduled jobs")
 
+    async def _start_pubsub_listener(self) -> None:
+        """Start Redis pub/sub listener for on-demand requests."""
+        try:
+            self._redis = redis.from_url(self.settings.redis_url)
+            self._pubsub = self._redis.pubsub()
+
+            # Subscribe to scheduler channels
+            await self._pubsub.subscribe("bifrost:scheduler:reindex")
+
+            # Start listener task
+            self._listener_task = asyncio.create_task(self._pubsub_listener())
+            logger.info("Redis pub/sub listener started")
+        except Exception as e:
+            logger.warning(f"Failed to start Redis pub/sub listener: {e}")
+
+    async def _pubsub_listener(self) -> None:
+        """Listen for messages on scheduler channels."""
+        if not self._pubsub:
+            return
+
+        try:
+            while self.running:
+                message = await self._pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=0.5
+                )
+                if message and message["type"] == "message":
+                    channel = message["channel"].decode()
+                    try:
+                        data = json.loads(message["data"])
+                        await self._handle_pubsub_message(channel, data)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON in message: {message['data']}")
+        except asyncio.CancelledError:
+            logger.debug("Pub/sub listener cancelled")
+        except Exception as e:
+            logger.error(f"Pub/sub listener error: {e}")
+
+    async def _handle_pubsub_message(self, channel: str, data: dict) -> None:
+        """Handle incoming pub/sub message."""
+        if channel == "bifrost:scheduler:reindex":
+            await self._handle_reindex_request(data)
+        else:
+            logger.warning(f"Unknown channel: {channel}")
+
+    async def _handle_reindex_request(self, data: dict) -> None:
+        """
+        Handle reindex request from API.
+
+        Runs the smart_reindex and publishes progress via WebSocket.
+        """
+        from src.core.pubsub import (
+            publish_reindex_completed,
+            publish_reindex_failed,
+            publish_reindex_progress,
+        )
+        from src.core.workspace_sync import WORKSPACE_PATH
+        from src.services.file_storage_service import FileStorageService
+
+        job_id = data.get("job_id", "unknown")
+        user_id = data.get("user_id", "system")
+
+        logger.info(f"Starting reindex job {job_id} for user {user_id}")
+
+        try:
+            # Publish started status
+            await publish_reindex_progress(job_id, "started", 0, 0)
+
+            # Create progress callback
+            async def progress_callback(progress: dict) -> None:
+                await publish_reindex_progress(
+                    job_id,
+                    progress.get("phase", "processing"),
+                    progress.get("current", 0),
+                    progress.get("total", 0),
+                    progress.get("current_file"),
+                )
+
+            # Run smart reindex with database session
+            async with get_db_context() as db:
+                storage = FileStorageService(db)
+                result = await storage.smart_reindex(
+                    local_path=WORKSPACE_PATH,
+                    progress_callback=progress_callback,
+                )
+
+            # Publish completion
+            await publish_reindex_completed(
+                job_id,
+                counts=result.counts.model_dump(),
+                warnings=result.warnings,
+                errors=[e.model_dump() for e in result.errors],
+            )
+
+            logger.info(f"Reindex job {job_id} completed: {result.counts}")
+
+        except Exception as e:
+            logger.error(f"Reindex job {job_id} failed: {e}", exc_info=True)
+            await publish_reindex_failed(job_id, str(e))
+
     async def stop(self) -> None:
         """Stop the scheduler gracefully."""
         logger.info("Stopping Bifrost Scheduler...")
         self.running = False
+
+        # Stop pub/sub listener
+        if self._listener_task:
+            self._listener_task.cancel()
+            try:
+                await self._listener_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("Pub/sub listener stopped")
+
+        if self._pubsub:
+            await self._pubsub.close()
+
+        if self._redis:
+            await self._redis.close()
 
         # Stop scheduler
         if self._scheduler:

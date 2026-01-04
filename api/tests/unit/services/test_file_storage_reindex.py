@@ -133,7 +133,12 @@ class TestReindexWorkspaceFiles:
 
     @pytest.mark.asyncio
     async def test_marks_orphaned_workflows_inactive(self, mock_db, temp_workspace, mock_workspace_cache):
-        """Workflows whose files no longer exist are marked inactive."""
+        """Workflows whose files no longer exist are marked inactive.
+
+        NOTE: Data providers are now stored in the workflows table with type='data_provider'.
+        The workflows_deactivated count includes data providers.
+        data_providers_deactivated is kept for backward compatibility but is always 0.
+        """
         # First execute returns rowcount for files_removed
         # Subsequent calls return workflow deactivation count
         mock_results = [
@@ -146,11 +151,8 @@ class TestReindexWorkspaceFiles:
         # Add results for orphaned endpoint workflows query
         mock_results.append(MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))))
 
-        # Add results for workflow deactivation
-        mock_results.append(MagicMock(rowcount=5))
-
-        # Add results for data provider deactivation
-        mock_results.append(MagicMock(rowcount=2))
+        # Add results for workflow deactivation (includes data providers now)
+        mock_results.append(MagicMock(rowcount=7))  # 5 workflows + 2 data providers
 
         mock_db.execute.side_effect = mock_results
 
@@ -164,8 +166,9 @@ class TestReindexWorkspaceFiles:
 
             counts = await storage.reindex_workspace_files(temp_workspace)
 
-        assert counts["workflows_deactivated"] == 5
-        assert counts["data_providers_deactivated"] == 2
+        # Workflows deactivation includes data providers (consolidated into workflows table)
+        assert counts["workflows_deactivated"] == 7  # All executables in workflows table
+        assert counts["data_providers_deactivated"] == 0  # Always 0 now (kept for compat)
 
     @pytest.mark.asyncio
     async def test_extracts_metadata_from_python_files(self, mock_db, temp_workspace, mock_workspace_cache):
@@ -238,16 +241,20 @@ class TestReindexWorkspaceFiles:
 
     @pytest.mark.asyncio
     async def test_handles_empty_workspace(self, mock_db, tmp_path, mock_workspace_cache):
-        """Empty workspace results in all workflows being deactivated."""
+        """Empty workspace results in all workflows being deactivated.
+
+        NOTE: Data providers are now stored in the workflows table with type='data_provider'.
+        The workflows_deactivated count includes data providers.
+        data_providers_deactivated is kept for backward compatibility but is always 0.
+        """
         empty_workspace = tmp_path / "empty_workspace"
         empty_workspace.mkdir()
 
-        # Mock: 0 files removed, 0 indexed, but 3 workflows and 1 data provider deactivated
+        # Mock: 0 files removed, 0 indexed, but 4 workflows deactivated (includes 1 data provider)
         mock_results = [
             MagicMock(rowcount=0),  # mark missing files
             MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))),  # orphaned endpoints
-            MagicMock(rowcount=3),  # workflows deactivated
-            MagicMock(rowcount=1),  # data providers deactivated
+            MagicMock(rowcount=4),  # workflows deactivated (includes data providers)
         ]
         mock_db.execute.side_effect = mock_results
 
@@ -259,8 +266,8 @@ class TestReindexWorkspaceFiles:
             counts = await storage.reindex_workspace_files(empty_workspace)
 
         assert counts["files_indexed"] == 0
-        assert counts["workflows_deactivated"] == 3
-        assert counts["data_providers_deactivated"] == 1
+        assert counts["workflows_deactivated"] == 4  # Includes data providers now
+        assert counts["data_providers_deactivated"] == 0  # Always 0 now (kept for compat)
 
     @pytest.mark.asyncio
     async def test_cleans_up_orphaned_endpoints(self, mock_db, temp_workspace, mock_workspace_cache):

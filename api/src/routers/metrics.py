@@ -576,12 +576,14 @@ async def _compute_metrics_directly(ctx: Context) -> DashboardMetricsResponse:
     Fallback when snapshot is not available.
     """
     from sqlalchemy import case, literal_column
-    from src.models import Workflow, Form, DataProvider
+    from src.models import Workflow, Form
 
     # Single query for all entity counts using subqueries
+    # Note: Data providers are now in the workflows table with type='data_provider'
     counts_query = select(
         select(func.count(Workflow.id))
         .where(Workflow.is_active.is_(True))
+        .where(Workflow.type != "data_provider")  # Exclude data providers from workflow count
         .correlate(None)
         .scalar_subquery()
         .label("workflow_count"),
@@ -590,8 +592,9 @@ async def _compute_metrics_directly(ctx: Context) -> DashboardMetricsResponse:
         .correlate(None)
         .scalar_subquery()
         .label("form_count"),
-        select(func.count(DataProvider.id))
-        .where(DataProvider.is_active.is_(True))
+        select(func.count(Workflow.id))
+        .where(Workflow.is_active.is_(True))
+        .where(Workflow.type == "data_provider")  # Count only data providers
         .correlate(None)
         .scalar_subquery()
         .label("provider_count"),

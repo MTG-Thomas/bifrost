@@ -79,8 +79,8 @@ class TestWorkflowExecutionEndpoint:
             return {"result": value * 2, "org": context.org_id}
 
         # Verify workflow has metadata attached
-        assert hasattr(simple_workflow, '_workflow_metadata')
-        metadata = simple_workflow._workflow_metadata
+        assert hasattr(simple_workflow, '_executable_metadata')
+        metadata = simple_workflow._executable_metadata
         assert metadata.name == "simple_test_workflow"
 
         # Execute the workflow function directly

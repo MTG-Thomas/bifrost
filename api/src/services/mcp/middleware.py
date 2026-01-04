@@ -7,37 +7,12 @@ agents they have access to via their roles.
 """
 
 import logging
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from fastmcp.server.middleware import MiddlewareContext
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_access_token
+from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 logger = logging.getLogger(__name__)
-
-# Check if FastMCP is available
-try:
-    from fastmcp.exceptions import ToolError
-    from fastmcp.server.dependencies import get_access_token
-    from fastmcp.server.middleware import Middleware
-
-    HAS_FASTMCP = True
-except ImportError:
-    HAS_FASTMCP = False
-
-    # Stub classes for when FastMCP is not installed
-    class Middleware:  # type: ignore[no-redef]
-        """Stub middleware class."""
-
-        pass
-
-    class ToolError(Exception):  # type: ignore[no-redef]
-        """Stub error class."""
-
-        pass
-
-    def get_access_token():  # type: ignore[no-redef]
-        """Stub function."""
-        return None
 
 
 class ToolFilterMiddleware(Middleware):
@@ -53,7 +28,7 @@ class ToolFilterMiddleware(Middleware):
     """
 
     async def on_list_tools(
-        self, context: "MiddlewareContext", call_next
+        self, context: MiddlewareContext, call_next
     ) -> list:
         """
         Filter tools/list response based on user permissions.
@@ -115,7 +90,7 @@ class ToolFilterMiddleware(Middleware):
             return []
 
     async def on_call_tool(
-        self, context: "MiddlewareContext", call_next
+        self, context: MiddlewareContext, call_next
     ):
         """
         Block execution of tools user doesn't have access to.

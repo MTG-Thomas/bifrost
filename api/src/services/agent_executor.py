@@ -807,7 +807,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             result = await self.session.execute(
                 select(Workflow)
                 .where(Workflow.name == tool_call.name)
-                .where(Workflow.is_tool.is_(True))
+                .where(Workflow.type == "tool")
                 .where(Workflow.is_active.is_(True))
             )
             workflow = result.scalar_one_or_none()

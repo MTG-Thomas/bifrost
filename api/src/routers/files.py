@@ -2,7 +2,7 @@
 Unified Files Router
 
 File operations with two storage modes:
-- local: Local filesystem (CWD, /tmp/bifrost-tmp, /tmp/bifrost-uploads)
+- local: Local filesystem (CWD, /tmp/bifrost/temp, /tmp/bifrost/uploads)
 - cloud: S3 storage (default)
 
 Auth: CurrentSuperuser (platform admins and workflow engine)

@@ -40,17 +40,34 @@ function ensureComponentsRegistered(): void {
 interface PageRendererProps {
 	/** The page definition to render */
 	page: PageDefinition;
+	/** Enable preview/editor mode (click-to-select, no interactions) */
+	isPreview?: boolean;
+	/** Currently selected component ID (for preview mode) */
+	selectedComponentId?: string | null;
+	/** Callback when a component is selected (for preview mode) */
+	onSelectComponent?: (componentId: string | null) => void;
 }
 
 /**
  * Internal component that renders a single page
  */
-function PageRenderer({ page }: PageRendererProps) {
+function PageRenderer({
+	page,
+	isPreview,
+	selectedComponentId,
+	onSelectComponent,
+}: PageRendererProps) {
 	const context = useExpressionContext();
 
 	return (
 		<div className="app-builder-page">
-			<LayoutRenderer layout={page.layout} context={context} />
+			<LayoutRenderer
+				layout={page.layout}
+				context={context}
+				isPreview={isPreview}
+				selectedComponentId={selectedComponentId}
+				onSelectComponent={onSelectComponent}
+			/>
 		</div>
 	);
 }
@@ -81,6 +98,12 @@ interface AppRendererProps {
 	routeParams?: Record<string, string>;
 	/** Currently executing workflow IDs/names for loading states */
 	activeWorkflows?: Set<string>;
+	/** Enable preview/editor mode (click-to-select, no interactions) */
+	isPreview?: boolean;
+	/** Currently selected component ID (for preview mode) */
+	selectedComponentId?: string | null;
+	/** Callback when a component is selected (for preview mode) */
+	onSelectComponent?: (componentId: string | null) => void;
 }
 
 /**
@@ -114,6 +137,9 @@ export function AppRenderer({
 	navigate: customNavigate,
 	routeParams = {},
 	activeWorkflows,
+	isPreview,
+	selectedComponentId,
+	onSelectComponent,
 }: AppRendererProps) {
 	const { user: authUser } = useAuth();
 
@@ -283,7 +309,12 @@ export function AppRenderer({
 					Loading data...
 				</div>
 			)}
-			<PageRenderer page={page} />
+			<PageRenderer
+				page={page}
+				isPreview={isPreview}
+				selectedComponentId={selectedComponentId}
+				onSelectComponent={onSelectComponent}
+			/>
 		</AppContextProvider>
 	);
 }

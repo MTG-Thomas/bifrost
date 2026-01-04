@@ -5,7 +5,17 @@
  * Allows reordering, renaming, setting icons, and grouping pages.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import {
+	draggable,
+	dropTargetForElements,
+} from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
+import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
+import {
+	attachClosestEdge,
+	extractClosestEdge,
+	type Edge,
+} from "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge";
 import {
 	Plus,
 	Trash2,
@@ -21,6 +31,7 @@ import {
 	Layout,
 	Inbox,
 	Calendar,
+	GripVertical,
 	type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -122,15 +133,20 @@ function generateSectionId(): string {
 	return `section-${sectionCounter}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/** Drag data for nav item reordering */
+interface NavItemDragData {
+	type: "nav-item";
+	id: string;
+	index: number;
+	[key: string]: unknown;
+}
+
 interface NavItemEditorProps {
 	item: NavItem;
 	index: number;
 	onUpdate: (index: number, item: NavItem) => void;
 	onDelete: (index: number) => void;
-	onMoveUp: (index: number) => void;
-	onMoveDown: (index: number) => void;
-	isFirst: boolean;
-	isLast: boolean;
+	onReorder: (fromIndex: number, toIndex: number) => void;
 	pages: PageDefinition[];
 }
 
@@ -142,75 +158,136 @@ function NavItemEditor({
 	index,
 	onUpdate,
 	onDelete,
-	onMoveUp,
-	onMoveDown,
-	isFirst,
-	isLast,
+	onReorder,
 	pages,
 }: NavItemEditorProps) {
+	const ref = useRef<HTMLDivElement>(null);
+	const dragHandleRef = useRef<HTMLButtonElement>(null);
 	const [isOpen, setIsOpen] = useState(false);
+	const [isDragging, setIsDragging] = useState(false);
+	const [closestEdge, setClosestEdge] = useState<Edge | null>(null);
 
 	const linkedPage = pages.find((p) => p.id === item.id);
 
+	// Set up drag and drop
+	useEffect(() => {
+		const el = ref.current;
+		const handle = dragHandleRef.current;
+		if (!el || !handle) return;
+
+		const dragData: NavItemDragData = {
+			type: "nav-item",
+			id: item.id,
+			index,
+		};
+
+		return combine(
+			draggable({
+				element: el,
+				dragHandle: handle,
+				getInitialData: () => dragData,
+				onDragStart: () => setIsDragging(true),
+				onDrop: () => setIsDragging(false),
+			}),
+			dropTargetForElements({
+				element: el,
+				getData: ({ input, element: targetEl }) => {
+					return attachClosestEdge(
+						{ id: item.id, index },
+						{
+							input,
+							element: targetEl,
+							allowedEdges: ["top", "bottom"],
+						},
+					);
+				},
+				canDrop: ({ source }) => {
+					const data = source.data as NavItemDragData;
+					return data.type === "nav-item" && data.id !== item.id;
+				},
+				onDrag: ({ self }) => {
+					const edge = extractClosestEdge(self.data);
+					setClosestEdge(edge);
+				},
+				onDragLeave: () => {
+					setClosestEdge(null);
+				},
+				onDrop: ({ source, self }) => {
+					setClosestEdge(null);
+					const sourceData = source.data as NavItemDragData;
+					const edge = extractClosestEdge(self.data);
+
+					let targetIndex = index;
+					if (edge === "bottom") {
+						targetIndex = index + 1;
+					}
+					// Adjust for items being removed from earlier in the list
+					if (sourceData.index < targetIndex) {
+						targetIndex -= 1;
+					}
+
+					if (sourceData.index !== targetIndex) {
+						onReorder(sourceData.index, targetIndex);
+					}
+				},
+			}),
+		);
+	}, [item.id, index, onReorder]);
+
 	return (
-		<div className="border rounded-lg bg-background">
+		<div
+			ref={ref}
+			className={cn(
+				"border rounded-lg bg-background relative",
+				isDragging && "opacity-50",
+			)}
+		>
+			{/* Drop indicator */}
+			{closestEdge === "top" && (
+				<div className="absolute -top-0.5 left-0 right-0 h-0.5 bg-primary rounded-full" />
+			)}
+			{closestEdge === "bottom" && (
+				<div className="absolute -bottom-0.5 left-0 right-0 h-0.5 bg-primary rounded-full" />
+			)}
+
 			<Collapsible open={isOpen} onOpenChange={setIsOpen}>
-				<div className="flex items-center gap-2 p-2">
+				<div className="flex items-center gap-1 p-2 group">
 					{/* Drag Handle */}
-					<div className="flex flex-col gap-0.5">
-						<Button
-							variant="ghost"
-							size="icon-sm"
-							className="h-5 w-5"
-							disabled={isFirst}
-							onClick={() => onMoveUp(index)}
-						>
-							<ChevronDown className="h-3 w-3 rotate-180" />
-						</Button>
-						<Button
-							variant="ghost"
-							size="icon-sm"
-							className="h-5 w-5"
-							disabled={isLast}
-							onClick={() => onMoveDown(index)}
-						>
-							<ChevronDown className="h-3 w-3" />
-						</Button>
-					</div>
+					<button
+						ref={dragHandleRef}
+						className="cursor-grab active:cursor-grabbing p-1 text-muted-foreground hover:text-foreground shrink-0"
+					>
+						<GripVertical className="h-4 w-4" />
+					</button>
 
 					{/* Icon and Label */}
 					<CollapsibleTrigger asChild>
 						<Button
 							variant="ghost"
-							className="flex-1 justify-start gap-2 h-auto py-2"
+							className="flex-1 justify-start gap-2 h-auto py-2 min-w-0"
 						>
 							{isOpen ? (
-								<ChevronDown className="h-4 w-4 text-muted-foreground" />
+								<ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
 							) : (
-								<ChevronRight className="h-4 w-4 text-muted-foreground" />
+								<ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
 							)}
 							<NavIcon
 								iconName={item.icon}
-								className="h-4 w-4 text-primary"
+								className="h-4 w-4 text-primary shrink-0"
 							/>
-							<span className="text-sm font-medium">
+							<span className="text-sm font-medium truncate">
 								{item.label}
 							</span>
-							{item.isSection && (
-								<span className="ml-2 text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-									Section
-								</span>
-							)}
 						</Button>
 					</CollapsibleTrigger>
 
-					{/* Delete Button */}
+					{/* Delete Button - appears on hover */}
 					<AlertDialog>
 						<AlertDialogTrigger asChild>
 							<Button
 								variant="ghost"
 								size="icon-sm"
-								className="h-7 w-7"
+								className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
 							>
 								<Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
 							</Button>
@@ -354,11 +431,10 @@ function NavItemEditor({
 
 						{/* Section Toggle */}
 						<div className="flex items-center justify-between">
-							<div className="space-y-0.5">
-								<Label>Section Header</Label>
+							<div className="space-y-0.5 min-w-0 flex-1 mr-2">
+								<Label>Section</Label>
 								<p className="text-xs text-muted-foreground">
-									Make this a group header for organizing
-									items
+									Group header for organizing items
 								</p>
 							</div>
 							<Switch
@@ -407,7 +483,10 @@ export function NavigationEditor({
 		};
 	}, [app.navigation, app.pages]);
 
-	const items = navigation.sidebar || [];
+	const items = useMemo(
+		() => navigation.sidebar || [],
+		[navigation.sidebar],
+	);
 
 	const handleUpdateItem = (index: number, item: NavItem) => {
 		const newItems = [...items];
@@ -418,39 +497,29 @@ export function NavigationEditor({
 		});
 	};
 
-	const handleDeleteItem = (index: number) => {
-		const newItems = items.filter((_, i) => i !== index);
-		onNavigationChange({
-			...navigation,
-			sidebar: newItems,
-		});
-	};
+	const handleDeleteItem = useCallback(
+		(index: number) => {
+			const newItems = items.filter((_, i) => i !== index);
+			onNavigationChange({
+				...navigation,
+				sidebar: newItems,
+			});
+		},
+		[items, navigation, onNavigationChange],
+	);
 
-	const handleMoveUp = (index: number) => {
-		if (index === 0) return;
-		const newItems = [...items];
-		[newItems[index - 1], newItems[index]] = [
-			newItems[index],
-			newItems[index - 1],
-		];
-		onNavigationChange({
-			...navigation,
-			sidebar: newItems,
-		});
-	};
-
-	const handleMoveDown = (index: number) => {
-		if (index === items.length - 1) return;
-		const newItems = [...items];
-		[newItems[index], newItems[index + 1]] = [
-			newItems[index + 1],
-			newItems[index],
-		];
-		onNavigationChange({
-			...navigation,
-			sidebar: newItems,
-		});
-	};
+	const handleReorder = useCallback(
+		(fromIndex: number, toIndex: number) => {
+			const newItems = [...items];
+			const [removed] = newItems.splice(fromIndex, 1);
+			newItems.splice(toIndex, 0, removed);
+			onNavigationChange({
+				...navigation,
+				sidebar: newItems,
+			});
+		},
+		[items, navigation, onNavigationChange],
+	);
 
 	const handleAddItem = () => {
 		// Find pages not in navigation
@@ -512,15 +581,8 @@ export function NavigationEditor({
 
 	return (
 		<div className={cn("flex flex-col h-full", className)}>
-			<div className="flex items-center justify-between px-3 py-2 border-b">
-				<div className="flex items-center gap-2">
-					<Layout className="h-4 w-4 text-muted-foreground" />
-					<h3 className="text-sm font-semibold">Navigation</h3>
-				</div>
-			</div>
-
 			{/* Global Settings */}
-			<div className="px-3 py-3 border-b space-y-3">
+			<div className="px-3 py-2 border-b space-y-2">
 				<div className="flex items-center justify-between">
 					<Label className="text-xs">Show Sidebar</Label>
 					<Switch
@@ -548,50 +610,49 @@ export function NavigationEditor({
 			</div>
 
 			{/* Navigation Items */}
-			<div className="flex-1 overflow-y-auto p-3 space-y-2">
+			<div className="flex-1 overflow-y-auto overflow-x-hidden">
 				{items.length === 0 ? (
-					<p className="text-xs text-muted-foreground text-center py-4 italic">
+					<p className="text-xs text-muted-foreground text-center py-4 px-3 italic">
 						No navigation items. Add pages to the sidebar below.
 					</p>
 				) : (
-					items.map((item, index) => (
-						<NavItemEditor
-							key={item.id}
-							item={item}
-							index={index}
-							onUpdate={handleUpdateItem}
-							onDelete={handleDeleteItem}
-							onMoveUp={handleMoveUp}
-							onMoveDown={handleMoveDown}
-							isFirst={index === 0}
-							isLast={index === items.length - 1}
-							pages={app.pages}
-						/>
-					))
+					<div>
+						{items.map((item, index) => (
+							<NavItemEditor
+								key={item.id}
+								item={item}
+								index={index}
+								onUpdate={handleUpdateItem}
+								onDelete={handleDeleteItem}
+								onReorder={handleReorder}
+								pages={app.pages}
+							/>
+						))}
+					</div>
 				)}
 			</div>
 
 			{/* Add Buttons */}
-			<div className="p-3 border-t space-y-2">
+			<div className="border-t">
 				{unlinkedPages.length > 0 && (
 					<Button
-						variant="outline"
+						variant="ghost"
 						size="sm"
-						className="w-full gap-2"
+						className="w-full gap-2 rounded-none h-9 border-b"
 						onClick={handleAddItem}
 					>
 						<Plus className="h-3.5 w-3.5" />
-						Add Page ({unlinkedPages.length} available)
+						Add Page ({unlinkedPages.length})
 					</Button>
 				)}
 				<Button
 					variant="ghost"
 					size="sm"
-					className="w-full gap-2"
+					className="w-full gap-2 rounded-none h-9"
 					onClick={handleAddSection}
 				>
 					<FolderOpen className="h-3.5 w-3.5" />
-					Add Section Header
+					Add Section
 				</Button>
 			</div>
 		</div>

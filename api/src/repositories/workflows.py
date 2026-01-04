@@ -3,10 +3,15 @@ Workflow Repository
 
 Database operations for workflow registry.
 Replaces scan_all_workflows() with efficient database queries.
+
+The workflows table now stores all executable types:
+- 'workflow': Standard workflows (@workflow decorator)
+- 'tool': AI agent tools (@tool decorator)
+- 'data_provider': Data providers for forms/app builder (@data_provider decorator)
 """
 
 from datetime import datetime
-from typing import Sequence
+from typing import Literal, Sequence
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -14,17 +19,95 @@ from sqlalchemy import func, select
 from src.models import Workflow
 from src.repositories.base import BaseRepository
 
+# Type discriminator values
+WorkflowType = Literal["workflow", "tool", "data_provider"]
+
 
 class WorkflowRepository(BaseRepository[Workflow]):
     """Repository for workflow registry operations."""
 
     model = Workflow
 
+    # ==========================================================================
+    # Type-Based Queries
+    # ==========================================================================
+
+    async def get_by_type(
+        self,
+        type: WorkflowType,
+        active_only: bool = True,
+    ) -> Sequence[Workflow]:
+        """Get workflows filtered by type.
+
+        Args:
+            type: The type to filter by ('workflow', 'tool', 'data_provider')
+            active_only: If True, only return active workflows
+
+        Returns:
+            Sequence of workflows matching the type
+        """
+        stmt = select(Workflow).where(Workflow.type == type)
+        if active_only:
+            stmt = stmt.where(Workflow.is_active.is_(True))
+        stmt = stmt.order_by(Workflow.name)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def get_data_providers(self, active_only: bool = True) -> Sequence[Workflow]:
+        """Get all data providers.
+
+        Convenience method for get_by_type('data_provider').
+        """
+        return await self.get_by_type("data_provider", active_only=active_only)
+
+    async def get_tools(self, active_only: bool = True) -> Sequence[Workflow]:
+        """Get all AI agent tools.
+
+        Convenience method for get_by_type('tool').
+        """
+        return await self.get_by_type("tool", active_only=active_only)
+
+    async def get_workflows_only(self, active_only: bool = True) -> Sequence[Workflow]:
+        """Get only workflows (excludes tools and data providers).
+
+        Convenience method for get_by_type('workflow').
+        """
+        return await self.get_by_type("workflow", active_only=active_only)
+
+    # ==========================================================================
+    # Standard Queries
+    # ==========================================================================
+
     async def get_by_name(self, name: str) -> Workflow | None:
         """Get workflow by name."""
         result = await self.session.execute(
             select(Workflow).where(Workflow.name == name)
         )
+        return result.scalar_one_or_none()
+
+    async def get_by_name_and_type(
+        self,
+        name: str,
+        type: WorkflowType,
+        active_only: bool = True,
+    ) -> Workflow | None:
+        """Get workflow by name and type.
+
+        Args:
+            name: Workflow name to look up
+            type: Type filter ('workflow', 'tool', 'data_provider')
+            active_only: If True, only return active workflows
+
+        Returns:
+            Workflow if found, None otherwise
+        """
+        stmt = select(Workflow).where(
+            Workflow.name == name,
+            Workflow.type == type,
+        )
+        if active_only:
+            stmt = stmt.where(Workflow.is_active.is_(True))
+        result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def get_all_active(self) -> Sequence[Workflow]:
@@ -78,12 +161,26 @@ class WorkflowRepository(BaseRepository[Workflow]):
         self,
         query: str | None = None,
         category: str | None = None,
+        type: WorkflowType | None = None,
         has_schedule: bool | None = None,
         endpoint_enabled: bool | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Sequence[Workflow]:
-        """Search workflows with filters."""
+        """Search workflows with filters.
+
+        Args:
+            query: Text search in name/description
+            category: Filter by category
+            type: Filter by type ('workflow', 'tool', 'data_provider')
+            has_schedule: Filter by whether schedule is set
+            endpoint_enabled: Filter by endpoint_enabled flag
+            limit: Maximum number of results
+            offset: Result offset for pagination
+
+        Returns:
+            Sequence of matching workflows
+        """
         stmt = select(Workflow).where(Workflow.is_active.is_(True))
 
         if query:
@@ -94,6 +191,9 @@ class WorkflowRepository(BaseRepository[Workflow]):
 
         if category:
             stmt = stmt.where(Workflow.category == category)
+
+        if type:
+            stmt = stmt.where(Workflow.type == type)
 
         if has_schedule is not None:
             if has_schedule:

@@ -1,7 +1,7 @@
 """
 Tool Registry Service
 
-Provides AI agent tools from workflows marked with tool=True.
+Provides AI agent tools from workflows with type='tool'.
 Converts workflow metadata to LLM-friendly tool definitions.
 """
 
@@ -46,7 +46,7 @@ class ToolRegistry:
     """
     Registry for AI agent tools.
 
-    Provides tools from workflows marked with is_tool=True.
+    Provides tools from workflows with type='tool'.
     """
 
     def __init__(self, session: AsyncSession):
@@ -62,7 +62,7 @@ class ToolRegistry:
         result = await self.session.execute(
             select(Workflow)
             .where(Workflow.is_active.is_(True))
-            .where(Workflow.is_tool.is_(True))
+            .where(Workflow.type == "tool")
             .order_by(Workflow.name)
         )
         workflows = result.scalars().all()
@@ -95,17 +95,17 @@ class ToolRegistry:
 
         # First, check what workflows exist with these IDs (for debugging)
         all_workflows_result = await self.session.execute(
-            select(Workflow.id, Workflow.name, Workflow.is_active, Workflow.is_tool)
+            select(Workflow.id, Workflow.name, Workflow.is_active, Workflow.type)
             .where(Workflow.id.in_(tool_ids))
         )
         all_workflows = all_workflows_result.fetchall()
         for w in all_workflows:
             logger.debug(
-                f"Workflow '{w.name}' (id={w.id}): is_active={w.is_active}, is_tool={w.is_tool}"
+                f"Workflow '{w.name}' (id={w.id}): is_active={w.is_active}, type={w.type}"
             )
-            if not w.is_tool:
+            if w.type != "tool":
                 logger.warning(
-                    f"Workflow '{w.name}' is assigned to agent but is_tool=False - "
+                    f"Workflow '{w.name}' is assigned to agent but type='{w.type}' - "
                     "it won't be available as a tool!"
                 )
             if not w.is_active:
@@ -118,7 +118,7 @@ class ToolRegistry:
             select(Workflow)
             .where(Workflow.id.in_(tool_ids))
             .where(Workflow.is_active.is_(True))
-            .where(Workflow.is_tool.is_(True))
+            .where(Workflow.type == "tool")
             .order_by(Workflow.name)
         )
         workflows = result.scalars().all()
@@ -238,7 +238,7 @@ class ToolRegistry:
             select(Workflow)
             .where(Workflow.name == name)
             .where(Workflow.is_active.is_(True))
-            .where(Workflow.is_tool.is_(True))
+            .where(Workflow.type == "tool")
         )
         workflow = result.scalar_one_or_none()
 
@@ -269,7 +269,7 @@ class ToolRegistry:
             select(Workflow)
             .where(Workflow.id == tool_id)
             .where(Workflow.is_active.is_(True))
-            .where(Workflow.is_tool.is_(True))
+            .where(Workflow.type == "tool")
         )
         workflow = result.scalar_one_or_none()
 

@@ -83,11 +83,16 @@ class TestMCPProtocol:
         assert "protocolVersion" in result
 
     def test_mcp_list_tools(self):
-        """Should be able to list available tools."""
+        """Should be able to list available tools.
+
+        Note: The MCP server uses stateless_http=True mode, which means each request
+        is independent and no session ID is needed. We can call tools/list directly
+        after initialize without needing to track session state.
+        """
         token = create_test_jwt(is_superuser=True)
         headers = mcp_headers(token)
 
-        # First initialize to get session ID
+        # First initialize (required by MCP protocol before other methods)
         init_response = requests.post(
             f"{TEST_API_URL}/mcp",
             json={
@@ -104,12 +109,8 @@ class TestMCPProtocol:
         )
         assert init_response.status_code == 200
 
-        # Get session ID from response header
-        session_id = init_response.headers.get("mcp-session-id")
-        assert session_id is not None, "MCP session ID should be returned"
-
-        # Then list tools with session ID
-        headers["Mcp-Session-Id"] = session_id
+        # In stateless mode, no session ID is needed - each request is independent
+        # Just call tools/list directly
         response = requests.post(
             f"{TEST_API_URL}/mcp",
             json={

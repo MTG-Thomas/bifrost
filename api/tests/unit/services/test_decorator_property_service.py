@@ -1,6 +1,5 @@
 """Unit tests for DecoratorPropertyService."""
 
-import importlib
 import sys
 from uuid import UUID
 

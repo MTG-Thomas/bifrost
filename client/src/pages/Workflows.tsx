@@ -9,6 +9,7 @@ import {
 	LayoutGrid,
 	Table as TableIcon,
 	Bot,
+	Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,11 +48,18 @@ export function Workflows() {
 	);
 	const [searchTerm, setSearchTerm] = useState("");
 	const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
+	const [typeFilter, setTypeFilter] = useState<string>("all");
 
 	const workflows = useMemo(() => data?.workflows || [], [data]);
 
+	// Apply type filter
+	const typeFilteredWorkflows = useMemo(() => {
+		if (typeFilter === "all") return workflows;
+		return workflows.filter((w) => w.type === typeFilter);
+	}, [workflows, typeFilter]);
+
 	// Apply search filter
-	const filteredWorkflows = useSearch(workflows, searchTerm, [
+	const filteredWorkflows = useSearch(typeFilteredWorkflows, searchTerm, [
 		"name",
 		"description",
 		"category",
@@ -129,13 +137,35 @@ export function Workflows() {
 				</div>
 			</div>
 
-			{/* Search Box */}
-			<SearchBox
-				value={searchTerm}
-				onChange={setSearchTerm}
-				placeholder="Search workflows by name, description, or category..."
-				className="max-w-md"
-			/>
+			{/* Search Box and Type Filter */}
+			<div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+				<SearchBox
+					value={searchTerm}
+					onChange={setSearchTerm}
+					placeholder="Search by name, description, or category..."
+					className="max-w-md"
+				/>
+				<ToggleGroup
+					type="single"
+					value={typeFilter}
+					onValueChange={(value: string) =>
+						value && setTypeFilter(value)
+					}
+				>
+					<ToggleGroupItem value="all" size="sm">
+						All
+					</ToggleGroupItem>
+					<ToggleGroupItem value="workflow" size="sm">
+						Workflows
+					</ToggleGroupItem>
+					<ToggleGroupItem value="tool" size="sm">
+						Tools
+					</ToggleGroupItem>
+					<ToggleGroupItem value="data_provider" size="sm">
+						Data Providers
+					</ToggleGroupItem>
+				</ToggleGroup>
+			</div>
 
 			{isLoading ? (
 				viewMode === "grid" ? (
@@ -173,7 +203,7 @@ export function Workflows() {
 										</div>
 									</div>
 									<div className="flex flex-wrap items-center gap-1 mt-2">
-										{workflow.is_tool && (
+										{workflow.type === "tool" && (
 											<Badge
 												variant="secondary"
 												className="bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
@@ -184,6 +214,16 @@ export function Workflows() {
 											>
 												<Bot className="mr-1 h-3 w-3" />
 												Tool
+											</Badge>
+										)}
+										{workflow.type === "data_provider" && (
+											<Badge
+												variant="secondary"
+												className="bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+												title="Provides data for forms and apps"
+											>
+												<Database className="mr-1 h-3 w-3" />
+												Data Provider
 											</Badge>
 										)}
 										{workflow.endpoint_enabled && (
@@ -258,7 +298,11 @@ export function Workflows() {
 										}
 									>
 										<PlayCircle className="mr-2 h-4 w-4" />
-										Execute Workflow
+										{workflow.type === "tool"
+											? "Test Tool"
+											: workflow.type === "data_provider"
+												? "Preview Data"
+												: "Execute Workflow"}
 									</Button>
 								</CardContent>
 							</Card>
@@ -298,7 +342,7 @@ export function Workflows() {
 										</DataTableCell>
 										<DataTableCell>
 											<div className="flex items-center gap-1">
-												{workflow.is_tool && (
+												{workflow.type === "tool" && (
 													<Badge
 														variant="secondary"
 														className="bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 text-xs"
@@ -309,6 +353,16 @@ export function Workflows() {
 													>
 														<Bot className="mr-1 h-2 w-2" />
 														Tool
+													</Badge>
+												)}
+												{workflow.type === "data_provider" && (
+													<Badge
+														variant="secondary"
+														className="bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 text-xs"
+														title="Provides data for forms and apps"
+													>
+														<Database className="mr-1 h-2 w-2" />
+														Data Provider
 													</Badge>
 												)}
 												{workflow.endpoint_enabled && (

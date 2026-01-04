@@ -476,7 +476,7 @@ def handle_run(args: list[str]) -> int:
     workflows: dict[str, Any] = {}
     for name in dir(module):
         obj = getattr(module, name)
-        if callable(obj) and hasattr(obj, "_workflow_metadata"):
+        if callable(obj) and hasattr(obj, "_executable_metadata"):
             workflows[name] = obj
 
     if not workflows:
@@ -522,7 +522,7 @@ def handle_run(args: list[str]) -> int:
     # Build workflow info for session registration
     workflow_infos = []
     for name, func in workflows.items():
-        metadata = getattr(func, "_workflow_metadata", None)
+        metadata = getattr(func, "_executable_metadata", None)
         description = ""
         if metadata is not None:
             # WorkflowMetadata is a dataclass, access attributes directly

@@ -41,6 +41,7 @@ class FormFieldType(str, Enum):
     CHECKBOX = "checkbox"
     TEXTAREA = "textarea"
     RADIO = "radio"
+    DATE = "date"
     DATETIME = "datetime"
     MARKDOWN = "markdown"
     HTML = "html"

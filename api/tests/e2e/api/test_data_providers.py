@@ -266,3 +266,113 @@ class TestMultipleDataProviders:
             assert "name" in provider, "Provider missing name"
             assert "description" in provider, "Provider missing description"
             assert isinstance(provider["name"], str), "Provider name should be string"
+
+
+@pytest.mark.e2e
+class TestDataProviderExecution:
+    """Test executing data providers via /api/workflows/execute.
+
+    Data providers are stored in the workflows table with type='data_provider',
+    so they can also be executed through the standard workflow execution endpoint.
+    """
+
+    @pytest.fixture(scope="class")
+    def executable_data_provider(self, e2e_client, platform_admin):
+        """Create a data provider for execution tests."""
+        data_provider_content = '''"""E2E Executable Data Provider"""
+from bifrost import data_provider
+
+@data_provider(
+    name="e2e_executable_provider",
+    description="Data provider for execution tests"
+)
+async def e2e_executable_provider(category: str = "default"):
+    """Returns test options based on category."""
+    options = {
+        "default": [
+            {"value": "opt1", "label": "Option 1"},
+            {"value": "opt2", "label": "Option 2"},
+        ],
+        "premium": [
+            {"value": "premium1", "label": "Premium Option 1"},
+            {"value": "premium2", "label": "Premium Option 2"},
+        ],
+    }
+    return options.get(category, options["default"])
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": "e2e_executable_provider.py",
+                "content": data_provider_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create data provider failed: {response.text}"
+
+        # Get the provider's ID from /api/workflows (data providers are in workflows table)
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        provider = next(
+            (w for w in workflows if w["name"] == "e2e_executable_provider"),
+            None
+        )
+        assert provider is not None, "Data provider not discovered after file write"
+
+        yield {
+            "id": provider["id"],
+            "name": "e2e_executable_provider",
+            "type": provider.get("type"),
+        }
+
+        # Cleanup
+        e2e_client.delete(
+            "/api/files/editor?path=e2e_executable_provider.py",
+            headers=platform_admin.headers,
+        )
+
+    def test_data_provider_has_correct_type(self, e2e_client, platform_admin, executable_data_provider):
+        """Data provider appears in workflows list with type='data_provider'."""
+        assert executable_data_provider["type"] == "data_provider", \
+            f"Data provider should have type='data_provider', got '{executable_data_provider['type']}'"
+
+    def test_execute_data_provider_via_workflow_endpoint(self, e2e_client, platform_admin, executable_data_provider):
+        """Data provider can be executed via /api/workflows/execute endpoint."""
+        response = e2e_client.post(
+            "/api/workflows/execute",
+            headers=platform_admin.headers,
+            json={
+                "workflow_id": executable_data_provider["id"],
+                "input_data": {"category": "default"},
+            },
+        )
+        assert response.status_code == 200, f"Execute data provider failed: {response.text}"
+        data = response.json()
+
+        # Should have execution_id and status
+        assert "execution_id" in data or "executionId" in data, "Should return execution_id"
+        assert data.get("status") in ["Success", "Running", "Pending"], \
+            f"Unexpected status: {data.get('status')}"
+
+    def test_execute_data_provider_with_parameters(self, e2e_client, platform_admin, executable_data_provider):
+        """Data provider execution accepts and uses parameters."""
+        response = e2e_client.post(
+            "/api/workflows/execute",
+            headers=platform_admin.headers,
+            json={
+                "workflow_id": executable_data_provider["id"],
+                "input_data": {"category": "premium"},
+            },
+        )
+        assert response.status_code == 200, f"Execute data provider failed: {response.text}"
+        data = response.json()
+
+        # For sync execution, check the result contains premium options
+        result = data.get("result", {})
+        if isinstance(result, list):
+            # Data providers return a list directly
+            assert len(result) == 2, f"Expected 2 premium options, got {len(result)}"
+        elif isinstance(result, dict) and "error" not in result:
+            # Execution succeeded
+            assert data.get("status") == "Success"

@@ -549,6 +549,9 @@ function ButtonPropertiesSection({
 	if (component.type !== "button") return null;
 
 	const props = component.props;
+	// Support both 'label' and 'text' for button text (matches ButtonComponent behavior)
+	const labelValue =
+		props.label ?? (props as Record<string, unknown>).text ?? "";
 
 	return (
 		<AccordionItem value="button">
@@ -556,12 +559,16 @@ function ButtonPropertiesSection({
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Label">
 					<Input
-						value={props.label}
-						onChange={(e) =>
-							onChange({
-								props: { ...props, label: e.target.value },
-							})
-						}
+						value={String(labelValue)}
+						onChange={(e) => {
+							// Normalize to use 'label' and remove 'text' if present
+							const newProps = { ...props, label: e.target.value };
+							if ("text" in newProps) {
+								delete (newProps as Record<string, unknown>).text;
+							}
+							onChange({ props: newProps });
+						}}
+						placeholder="Button text..."
 					/>
 				</FormField>
 
@@ -652,7 +659,7 @@ function ButtonPropertiesSection({
 
 				<FormField label="Action Type">
 					<Select
-						value={props.actionType}
+						value={props.actionType ?? ""}
 						onValueChange={(value) =>
 							onChange({
 								props: {
@@ -663,7 +670,7 @@ function ButtonPropertiesSection({
 						}
 					>
 						<SelectTrigger>
-							<SelectValue />
+							<SelectValue placeholder="Select action..." />
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="navigate">Navigate</SelectItem>

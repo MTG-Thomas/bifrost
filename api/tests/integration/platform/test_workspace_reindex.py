@@ -15,7 +15,7 @@ from uuid import uuid4
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import Workflow, DataProvider, WorkspaceFile, Execution
+from src.models import Workflow, WorkspaceFile, Execution
 from src.models.enums import GitStatus
 
 
@@ -73,7 +73,7 @@ async def clean_tables(db_session: AsyncSession):
     # Clean before test - delete executions first to avoid FK constraint violations
     await db_session.execute(delete(Execution))
     await db_session.execute(delete(Workflow))
-    await db_session.execute(delete(DataProvider))
+    # Note: DataProvider table no longer exists - data providers are in workflows table with type='data_provider'
     await db_session.execute(delete(WorkspaceFile))
     await db_session.commit()
 
@@ -82,7 +82,6 @@ async def clean_tables(db_session: AsyncSession):
     # Clean after test - delete executions first to avoid FK constraint violations
     await db_session.execute(delete(Execution))
     await db_session.execute(delete(Workflow))
-    await db_session.execute(delete(DataProvider))
     await db_session.execute(delete(WorkspaceFile))
     await db_session.commit()
 
@@ -157,6 +156,9 @@ def test_workflow():
     ):
         """
         Data providers whose source files no longer exist are marked inactive.
+
+        NOTE: Data providers are now stored in the workflows table with type='data_provider'.
+        The workflows_deactivated count includes data providers.
         """
         workspace = clean_workspace
 
@@ -171,11 +173,13 @@ def test_provider():
 """)
 
         # 2. Create a data provider record in DB that references a non-existent file
-        orphaned_provider = DataProvider(
+        # Data providers are now stored in workflows table with type='data_provider'
+        orphaned_provider = Workflow(
             id=uuid4(),
             name="Orphaned Provider",
             function_name="orphaned_func",
             file_path="orphaned_provider.py",  # This file doesn't exist
+            type="data_provider",  # Mark as data provider
             is_active=True,
         )
         db_session.add(orphaned_provider)
@@ -189,13 +193,16 @@ def test_provider():
 
         # 4. Verify the orphaned data provider is now inactive
         result = await db_session.execute(
-            select(DataProvider).where(DataProvider.id == orphaned_id)
+            select(Workflow).where(Workflow.id == orphaned_id)
         )
         provider = result.scalar_one()
         assert provider.is_active is False
+        assert provider.type == "data_provider"
 
-        # 5. Verify counts
-        assert counts["data_providers_deactivated"] == 1
+        # 5. Verify counts - data providers are now included in workflows_deactivated
+        # data_providers_deactivated is kept for backward compatibility but is always 0
+        assert counts["workflows_deactivated"] == 1
+        assert counts["data_providers_deactivated"] == 0
 
     async def test_workspace_files_table_updated(
         self,

@@ -39,6 +39,10 @@ if str(WORKSPACE_PATH) not in sys.path:
 # These are the same as in registry.py but defined here to avoid circular imports
 
 
+# Type discriminator for all executable types
+ExecutableType = Literal["workflow", "tool", "data_provider"]
+
+
 @dataclass
 class WorkflowParameter:
     """Workflow parameter metadata - derived from function signature."""
@@ -51,8 +55,13 @@ class WorkflowParameter:
 
 
 @dataclass
-class WorkflowMetadata:
-    """Workflow metadata from @workflow decorator"""
+class ExecutableMetadata:
+    """
+    Base metadata for all executable user code (workflows, tools, data providers).
+
+    This provides common fields that all executable types share.
+    Specific types extend this with their own additional fields.
+    """
     # Identity
     id: str | None = None  # Persistent UUID (written by discovery watcher to Python file)
     name: str = ""
@@ -60,9 +69,30 @@ class WorkflowMetadata:
     category: str = "General"
     tags: list[str] = field(default_factory=list)
 
+    # Type discriminator - determines how this executable is treated
+    type: ExecutableType = "workflow"
+
     # Execution
-    execution_mode: Literal["sync", "async"] = "async"
     timeout_seconds: int = 1800  # Default 30 minutes
+
+    # Source tracking
+    source_file_path: str | None = None
+
+    # Parameters and function
+    parameters: list[WorkflowParameter] = field(default_factory=list)
+    function: Any = None
+
+
+@dataclass
+class WorkflowMetadata(ExecutableMetadata):
+    """
+    Workflow metadata from @workflow decorator.
+
+    Extends ExecutableMetadata with workflow-specific fields for execution mode,
+    scheduling, HTTP endpoints, and tool configuration.
+    """
+    # Execution mode
+    execution_mode: Literal["sync", "async"] = "async"
 
     # Retry (for future use)
     retry_policy: dict[str, Any] | None = None
@@ -77,37 +107,44 @@ class WorkflowMetadata:
     public_endpoint: bool = False
 
     # Tool configuration (for AI agent tool calling)
-    tool: bool = False  # Whether this workflow is available as an agent tool
+    # Note: When type='tool', this workflow is available as an agent tool
     tool_description: str | None = None  # LLM-friendly description for tool calling
 
     # Economics - value metrics for reporting
     time_saved: int = 0  # Minutes saved per execution
     value: float = 0.0  # Flexible value unit (e.g., cost savings, revenue)
 
-    # Source tracking
-    source_file_path: str | None = None
+    # Legacy field - kept for backward compatibility during migration
+    # Will be removed once all code uses 'type' field instead
+    tool: bool = False
 
-    # Parameters and function
-    parameters: list[WorkflowParameter] = field(default_factory=list)
-    function: Any = None
+    def __post_init__(self):
+        """Sync legacy 'tool' field with 'type' field."""
+        # If tool=True was set, update type to 'tool'
+        if self.tool and self.type == "workflow":
+            self.type = "tool"
+        # If type='tool' was set, update tool field for backward compat
+        elif self.type == "tool":
+            self.tool = True
 
 
 @dataclass
-class DataProviderMetadata:
-    """Data provider metadata from @data_provider decorator"""
-    name: str
-    description: str
-    category: str = "General"
-    cache_ttl_seconds: int = 300  # Default 5 minutes
-    function: Any = None  # The actual Python function
-    parameters: list[WorkflowParameter] = field(default_factory=list)
+class DataProviderMetadata(ExecutableMetadata):
+    """
+    Data provider metadata from @data_provider decorator.
 
-    # Identity - persistent UUID (written by discovery watcher)
-    id: str | None = None
+    Extends ExecutableMetadata with data provider-specific fields.
+    Data providers return options for form fields and app builder components.
+    """
+    # Override defaults from base class
+    type: ExecutableType = "data_provider"
+    timeout_seconds: int = 300  # Data providers have shorter default timeout (5 min)
 
-    # Source tracking (home, platform, workspace)
+    # Data provider specific
+    cache_ttl_seconds: int = 300  # Default 5 minutes cache
+
+    # Source tracking (home, platform, workspace) - legacy field
     source: Literal["home", "platform", "workspace"] | None = None
-    source_file_path: str | None = None
 
 
 @dataclass
@@ -224,11 +261,11 @@ def scan_all_workflows() -> list[WorkflowMetadata]:
     """
     Scan all workspace directories and return workflow metadata.
 
-    Imports each Python file and extracts workflows with
-    the _workflow_metadata attribute set by @workflow decorator.
+    Imports each Python file and extracts workflows/tools with
+    the _executable_metadata attribute set by @workflow or @tool decorator.
 
     Returns:
-        List of WorkflowMetadata objects
+        List of WorkflowMetadata objects (including type='workflow' and type='tool')
     """
     workflows: list[WorkflowMetadata] = []
     workspace_paths = get_workspace_paths()
@@ -252,9 +289,12 @@ def scan_all_workflows() -> list[WorkflowMetadata]:
                 # Scan module for decorated functions
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if callable(attr) and hasattr(attr, '_workflow_metadata'):
-                        metadata = getattr(attr, '_workflow_metadata', None)
+                    if callable(attr) and hasattr(attr, '_executable_metadata'):
+                        metadata = getattr(attr, '_executable_metadata', None)
                         if metadata is None:
+                            continue
+                        # Only include workflows and tools, not data providers
+                        if hasattr(metadata, 'type') and metadata.type == 'data_provider':
                             continue
                         if isinstance(metadata, WorkflowMetadata):
                             workflows.append(metadata)
@@ -274,7 +314,7 @@ def load_workflow(name: str) -> tuple[Callable, WorkflowMetadata] | None:
     Find and load a specific workflow by name.
 
     Scans workspace directories, imports, and returns the
-    function and metadata for the named workflow.
+    function and metadata for the named workflow/tool.
 
     Args:
         name: Workflow name to find
@@ -299,8 +339,8 @@ def load_workflow(name: str) -> tuple[Callable, WorkflowMetadata] | None:
 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if callable(attr) and hasattr(attr, '_workflow_metadata'):
-                        metadata = getattr(attr, '_workflow_metadata', None)
+                    if callable(attr) and hasattr(attr, '_executable_metadata'):
+                        metadata = getattr(attr, '_executable_metadata', None)
                         if metadata and hasattr(metadata, 'name') and metadata.name == name:
                             if isinstance(metadata, WorkflowMetadata):
                                 return (attr, metadata)
@@ -341,9 +381,12 @@ def scan_all_data_providers() -> list[DataProviderMetadata]:
 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if callable(attr) and hasattr(attr, '_data_provider_metadata'):
-                        metadata = getattr(attr, '_data_provider_metadata', None)
+                    if callable(attr) and hasattr(attr, '_executable_metadata'):
+                        metadata = getattr(attr, '_executable_metadata', None)
                         if metadata is None:
+                            continue
+                        # Only include data providers
+                        if not hasattr(metadata, 'type') or metadata.type != 'data_provider':
                             continue
                         if isinstance(metadata, DataProviderMetadata):
                             providers.append(metadata)
@@ -384,13 +427,15 @@ def load_data_provider(name: str) -> tuple[Callable, DataProviderMetadata] | Non
 
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if callable(attr) and hasattr(attr, '_data_provider_metadata'):
-                        metadata = getattr(attr, '_data_provider_metadata', None)
-                        if metadata and hasattr(metadata, 'name') and metadata.name == name:
-                            if isinstance(metadata, DataProviderMetadata):
-                                return (attr, metadata)
-                            else:
-                                return (attr, _convert_data_provider_metadata(metadata))
+                    if callable(attr) and hasattr(attr, '_executable_metadata'):
+                        metadata = getattr(attr, '_executable_metadata', None)
+                        # Only match data providers
+                        if metadata and hasattr(metadata, 'type') and metadata.type == 'data_provider':
+                            if hasattr(metadata, 'name') and metadata.name == name:
+                                if isinstance(metadata, DataProviderMetadata):
+                                    return (attr, metadata)
+                                else:
+                                    return (attr, _convert_data_provider_metadata(metadata))
 
             except Exception as e:
                 logger.debug(f"Error scanning {py_file} for data provider '{name}': {e}")
@@ -553,41 +598,50 @@ def get_forms_by_workflow(workflow_id_or_name: str) -> list[FormMetadata]:
 
 def _convert_workflow_metadata(old_metadata: Any) -> WorkflowMetadata:
     """Convert old registry WorkflowMetadata to discovery WorkflowMetadata."""
+    # Determine type from legacy 'tool' field or new 'type' field
+    is_tool = getattr(old_metadata, 'tool', False) or getattr(old_metadata, 'is_tool', False)
+    executable_type = getattr(old_metadata, 'type', 'tool' if is_tool else 'workflow')
+
     return WorkflowMetadata(
         id=getattr(old_metadata, 'id', None),
         name=old_metadata.name,
         description=old_metadata.description,
         category=getattr(old_metadata, 'category', 'General'),
         tags=getattr(old_metadata, 'tags', []),
-        execution_mode=getattr(old_metadata, 'execution_mode', 'sync'),
+        type=executable_type,
         timeout_seconds=getattr(old_metadata, 'timeout_seconds', 1800),
+        source_file_path=getattr(old_metadata, 'source_file_path', None),
+        parameters=_convert_parameters(getattr(old_metadata, 'parameters', [])),
+        function=getattr(old_metadata, 'function', None),
+        execution_mode=getattr(old_metadata, 'execution_mode', 'sync'),
         retry_policy=getattr(old_metadata, 'retry_policy', None),
         schedule=getattr(old_metadata, 'schedule', None),
         endpoint_enabled=getattr(old_metadata, 'endpoint_enabled', False),
         allowed_methods=getattr(old_metadata, 'allowed_methods', ['POST']),
         disable_global_key=getattr(old_metadata, 'disable_global_key', False),
         public_endpoint=getattr(old_metadata, 'public_endpoint', False),
-        tool=getattr(old_metadata, 'tool', False),
+        tool=is_tool,
         tool_description=getattr(old_metadata, 'tool_description', None),
         time_saved=getattr(old_metadata, 'time_saved', 0),
         value=getattr(old_metadata, 'value', 0.0),
-        source_file_path=getattr(old_metadata, 'source_file_path', None),
-        parameters=_convert_parameters(getattr(old_metadata, 'parameters', [])),
-        function=getattr(old_metadata, 'function', None)
     )
 
 
 def _convert_data_provider_metadata(old_metadata: Any) -> DataProviderMetadata:
     """Convert old registry DataProviderMetadata to discovery DataProviderMetadata."""
     return DataProviderMetadata(
+        id=getattr(old_metadata, 'id', None),
         name=old_metadata.name,
         description=old_metadata.description,
         category=getattr(old_metadata, 'category', 'General'),
-        cache_ttl_seconds=getattr(old_metadata, 'cache_ttl_seconds', 300),
-        function=getattr(old_metadata, 'function', None),
+        tags=getattr(old_metadata, 'tags', []),
+        type="data_provider",
+        timeout_seconds=getattr(old_metadata, 'timeout_seconds', 300),
+        source_file_path=getattr(old_metadata, 'source_file_path', None),
         parameters=_convert_parameters(getattr(old_metadata, 'parameters', [])),
+        function=getattr(old_metadata, 'function', None),
+        cache_ttl_seconds=getattr(old_metadata, 'cache_ttl_seconds', 300),
         source=getattr(old_metadata, 'source', None),
-        source_file_path=getattr(old_metadata, 'source_file_path', None)
     )
 
 
@@ -616,14 +670,16 @@ def load_workflow_by_file_path(
     workflow_name: str,
 ) -> tuple[Callable, WorkflowMetadata] | None:
     """
-    Load a specific workflow from a known file path.
+    Load a specific executable (workflow, tool, or data provider) from a known file path.
 
     Use this when you already know the file path (from database or cache)
     to skip the filesystem scan that load_workflow() does.
 
+    All executable types use the unified _executable_metadata attribute.
+
     Args:
-        file_path: Path to the workflow Python file (relative or absolute)
-        workflow_name: Expected workflow name to find
+        file_path: Path to the Python file (relative or absolute)
+        workflow_name: Expected name to find
 
     Returns:
         Tuple of (function, metadata) or None if not found
@@ -643,13 +699,28 @@ def load_workflow_by_file_path(
     try:
         module = import_module(file_path)
 
-        # Find the workflow function by name
+        # Find the decorated function by name
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
-            if callable(attr) and hasattr(attr, '_workflow_metadata'):
-                metadata = getattr(attr, '_workflow_metadata', None)
+            if not callable(attr):
+                continue
+
+            # All decorators (@workflow, @tool, @data_provider) use _executable_metadata
+            if hasattr(attr, '_executable_metadata'):
+                metadata = getattr(attr, '_executable_metadata', None)
                 if metadata and hasattr(metadata, 'name') and metadata.name == workflow_name:
-                    if isinstance(metadata, WorkflowMetadata):
+                    # For data providers, convert to WorkflowMetadata for consistent execution
+                    if hasattr(metadata, 'type') and metadata.type == 'data_provider':
+                        workflow_meta = WorkflowMetadata(
+                            name=metadata.name,
+                            description=metadata.description,
+                            category=getattr(metadata, 'category', 'General'),
+                            parameters=getattr(metadata, 'parameters', []),
+                            timeout_seconds=getattr(metadata, 'timeout_seconds', 300),
+                            type='data_provider',
+                        )
+                        return (attr, workflow_meta)
+                    elif isinstance(metadata, WorkflowMetadata):
                         return (attr, metadata)
                     else:
                         return (attr, _convert_workflow_metadata(metadata))

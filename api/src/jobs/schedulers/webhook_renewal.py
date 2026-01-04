@@ -12,11 +12,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import joinedload
 
 from src.core.database import get_db_context
-from src.models.orm.events import EventSource, WebhookSource
 from src.services.webhooks.registry import get_adapter
 
 logger = logging.getLogger(__name__)

@@ -184,24 +184,46 @@ async def get_workflow_by_id(
     except ImportError as e:
         raise WorkflowLoadError(f"Failed to load workflow module: {e}")
 
-    # Find the decorated function by workflow name
+    # Find the decorated function by name
+    # All decorators (@workflow, @tool, @data_provider) use unified _executable_metadata
     workflow_func = None
     workflow_metadata = None
 
     for name in dir(module):
         obj = getattr(module, name)
-        # Only check callable objects (functions) for workflow metadata
+        # Only check callable objects (functions) for executable metadata
         # This avoids triggering __getattr__ on proxy objects like `context`
-        if callable(obj) and hasattr(obj, "_workflow_metadata"):
-            meta = getattr(obj, "_workflow_metadata", None)
-            if meta and meta.name == workflow_record.name:
+        if not callable(obj):
+            continue
+
+        # All decorators use _executable_metadata
+        if hasattr(obj, "_executable_metadata"):
+            meta = getattr(obj, "_executable_metadata", None)
+            if meta and hasattr(meta, 'name') and meta.name == workflow_record.name:
                 workflow_func = obj
-                workflow_metadata = meta
+                # For data providers, convert to WorkflowMetadata for consistent execution
+                if hasattr(meta, 'type') and meta.type == 'data_provider':
+                    workflow_metadata = WorkflowMetadata(
+                        name=meta.name,
+                        description=meta.description,
+                        category=getattr(meta, 'category', 'General'),
+                        parameters=getattr(meta, 'parameters', []),
+                        timeout_seconds=getattr(meta, 'timeout_seconds', 300),
+                        type='data_provider',
+                    )
+                    workflow_metadata.id = str(workflow_record.id)
+                    workflow_metadata.source_file_path = workflow_record.file_path
+                elif isinstance(meta, WorkflowMetadata):
+                    workflow_metadata = meta
+                else:
+                    # Convert from old type if needed
+                    from src.services.execution.module_loader import _convert_workflow_metadata
+                    workflow_metadata = _convert_workflow_metadata(meta)
                 break
 
     if not workflow_func or not workflow_metadata:
         raise WorkflowLoadError(
-            f"No @workflow function named '{workflow_record.name}' found in {workflow_record.file_path}"
+            f"No decorated function named '{workflow_record.name}' found in {workflow_record.file_path}"
         )
 
     # Enrich metadata from database record

@@ -110,8 +110,6 @@ async def cleanup_stuck_events() -> dict[str, Any]:
                 timeout_minutes=STUCK_DELIVERY_TIMEOUT_MINUTES
             )
 
-            has_stuck_deliveries = bool(stuck_deliveries)
-
             # Track unique events to update
             event_ids: set = set()
 

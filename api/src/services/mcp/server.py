@@ -2203,7 +2203,7 @@ async def _get_sdk_schema_impl(context: MCPContext) -> str:
                 continue
 
             lines.append(f"## {module_name}")
-            lines.append(f"")
+            lines.append("")
             lines.append(f"{description}")
             lines.append("")
             lines.append("```python")

@@ -3,7 +3,7 @@
  * Uses openapi-react-query for type-safe API calls
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { $api, apiClient, withUserContext } from "@/lib/api-client";
 import { useWorkflowsStore } from "@/stores/workflowsStore";
@@ -23,30 +23,29 @@ export function useWorkflows() {
 
 /**
  * Fetch workflows that can be used as agent tools.
- * Uses the is_tool=true query parameter for server-side filtering.
+ * Uses the type="tool" query parameter for server-side filtering.
  */
 export function useToolWorkflows() {
 	return $api.useQuery("get", "/api/workflows", {
-		params: { query: { is_tool: true } },
+		params: { query: { type: "tool" } },
 	});
 }
 
 /**
- * Fetch workflow and data provider metadata.
+ * Fetch workflow metadata (includes all types: workflow, tool, data_provider).
  *
- * Note: Workflows and data providers are platform-wide resources (not org-scoped).
+ * Note: Workflows are platform-wide resources (not org-scoped).
  * They are loaded from the file system and shared across all organizations.
  * The org scope only affects workflow EXECUTIONS (stored per-org), not the
  * workflows themselves.
+ *
+ * Data providers are now stored as workflows with type="data_provider".
  */
 export function useWorkflowsMetadata() {
 	const setWorkflows = useWorkflowsStore((state) => state.setWorkflows);
 
-	// Fetch workflows
+	// Fetch all workflows (includes type: workflow, tool, data_provider)
 	const workflowsQuery = $api.useQuery("get", "/api/workflows", {});
-
-	// Fetch data providers
-	const dataProvidersQuery = $api.useQuery("get", "/api/data-providers", {});
 
 	// Update Zustand store when workflows change
 	// MUST be in useEffect to avoid infinite re-render loop
@@ -57,26 +56,12 @@ export function useWorkflowsMetadata() {
 		}
 	}, [workflowsQuery.data, setWorkflows]);
 
-	// Memoize combined data to prevent infinite re-render loops
-	// (consumers depend on this object reference in useEffect deps)
-	const data = useMemo(
-		() => ({
-			workflows: workflowsQuery.data || [],
-			dataProviders: dataProvidersQuery.data || [],
-		}),
-		[workflowsQuery.data, dataProvidersQuery.data],
-	);
-
-	// Return combined metadata with combined loading/error states
 	return {
-		data,
-		isLoading: workflowsQuery.isLoading || dataProvidersQuery.isLoading,
-		isError: workflowsQuery.isError || dataProvidersQuery.isError,
-		error: workflowsQuery.error || dataProvidersQuery.error,
-		refetch: () => {
-			workflowsQuery.refetch();
-			dataProvidersQuery.refetch();
-		},
+		data: { workflows: workflowsQuery.data || [] },
+		isLoading: workflowsQuery.isLoading,
+		isError: workflowsQuery.isError,
+		error: workflowsQuery.error,
+		refetch: workflowsQuery.refetch,
 	};
 }
 

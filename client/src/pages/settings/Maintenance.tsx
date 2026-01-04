@@ -5,7 +5,7 @@
  * Provides tools for ID injection and SDK reference scanning.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
 	Card,
 	CardContent,
@@ -15,32 +15,39 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import {
 	AlertCircle,
 	CheckCircle2,
 	Loader2,
-	Play,
-	Search,
+	RefreshCw,
 	FileCode,
 	AlertTriangle,
 	Settings2,
 	Link2,
 	Database,
+	Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { authFetch } from "@/lib/api-client";
 import { useEditorStore } from "@/stores/editorStore";
 import { fileService } from "@/services/fileService";
+import {
+	webSocketService,
+	type ReindexMessage,
+	type ReindexProgress,
+	type ReindexCompleted,
+	type ReindexFailed,
+} from "@/services/websocket";
 import type { components } from "@/lib/v1";
 
 type FileMetadata = components["schemas"]["FileMetadata"];
 
-interface ReindexResponse {
-	status: string;
-	files_indexed: number;
-	files_needing_ids: string[];
-	ids_injected: number;
-	message: string | null;
+interface ReindexJobResponse {
+	status: "queued";
+	job_id: string;
 }
 
 interface SDKIssue {
@@ -66,19 +73,44 @@ interface DocsIndexResponse {
 	message: string | null;
 }
 
-type ScanResultType = "none" | "ids" | "sdk" | "docs";
+// Reindex streaming state
+interface ReindexState {
+	jobId: string | null;
+	phase: string;
+	current: number;
+	total: number;
+	currentFile: string | null;
+}
+
+// Completed reindex result (from WebSocket)
+interface ReindexResult {
+	counts: ReindexCompleted["counts"];
+	warnings: string[];
+	errors: ReindexCompleted["errors"];
+}
+
+type ScanResultType = "none" | "reindex" | "sdk" | "docs";
 
 export function Maintenance() {
 	// Scan states
-	const [isIdScanning, setIsIdScanning] = useState(false);
-	const [isIdInjecting, setIsIdInjecting] = useState(false);
+	const [isReindexing, setIsReindexing] = useState(false);
+	const [injectIdsEnabled, setInjectIdsEnabled] = useState(false);
 	const [isSdkScanning, setIsSdkScanning] = useState(false);
-
 	const [isDocsIndexing, setIsDocsIndexing] = useState(false);
+
+	// Reindex streaming state
+	const [reindexState, setReindexState] = useState<ReindexState>({
+		jobId: null,
+		phase: "",
+		current: 0,
+		total: 0,
+		currentFile: null,
+	});
+	const unsubscribeRef = useRef<(() => void) | null>(null);
 
 	// Results
 	const [lastScanType, setLastScanType] = useState<ScanResultType>("none");
-	const [idScanResult, setIdScanResult] = useState<ReindexResponse | null>(
+	const [reindexResult, setReindexResult] = useState<ReindexResult | null>(
 		null,
 	);
 	const [sdkScanResult, setSdkScanResult] = useState<SDKScanResponse | null>(
@@ -87,8 +119,16 @@ export function Maintenance() {
 	const [docsIndexResult, setDocsIndexResult] =
 		useState<DocsIndexResponse | null>(null);
 
-	const isAnyRunning =
-		isIdScanning || isIdInjecting || isSdkScanning || isDocsIndexing;
+	const isAnyRunning = isReindexing || isSdkScanning || isDocsIndexing;
+
+	// Cleanup WebSocket subscription on unmount
+	useEffect(() => {
+		return () => {
+			if (unsubscribeRef.current) {
+				unsubscribeRef.current();
+			}
+		};
+	}, []);
 
 	// Editor store actions
 	const openFileInTab = useEditorStore((state) => state.openFileInTab);
@@ -145,49 +185,135 @@ export function Maintenance() {
 		[openFileInTab, openEditor, revealLine],
 	);
 
-	const handleIdScan = async (injectIds: boolean) => {
-		if (injectIds) {
-			setIsIdInjecting(true);
-		} else {
-			setIsIdScanning(true);
+	const handleReindexMessage = useCallback((message: ReindexMessage) => {
+		switch (message.type) {
+			case "progress": {
+				const progress = message as ReindexProgress;
+				setReindexState((prev) => ({
+					...prev,
+					phase: progress.phase,
+					current: progress.current,
+					total: progress.total,
+					currentFile: progress.current_file ?? null,
+				}));
+				break;
+			}
+			case "completed": {
+				const completed = message as ReindexCompleted;
+				setReindexResult({
+					counts: completed.counts,
+					warnings: completed.warnings,
+					errors: completed.errors,
+				});
+				setLastScanType("reindex");
+				setIsReindexing(false);
+				setReindexState({
+					jobId: null,
+					phase: "",
+					current: 0,
+					total: 0,
+					currentFile: null,
+				});
+
+				// Cleanup subscription
+				if (unsubscribeRef.current) {
+					unsubscribeRef.current();
+					unsubscribeRef.current = null;
+				}
+
+				const hasErrors = completed.errors.length > 0;
+				const hasWarnings = completed.warnings.length > 0;
+
+				if (hasErrors) {
+					toast.warning("Reindex completed with errors", {
+						description: `${completed.errors.length} unresolved reference${completed.errors.length !== 1 ? "s" : ""}`,
+					});
+				} else if (hasWarnings) {
+					toast.success("Reindex complete", {
+						description: `${completed.warnings.length} correction${completed.warnings.length !== 1 ? "s" : ""} made`,
+					});
+				} else {
+					toast.success("Reindex complete", {
+						description: `Indexed ${completed.counts.files_indexed} files`,
+					});
+				}
+				break;
+			}
+			case "failed": {
+				const failed = message as ReindexFailed;
+				setIsReindexing(false);
+				setReindexState({
+					jobId: null,
+					phase: "",
+					current: 0,
+					total: 0,
+					currentFile: null,
+				});
+
+				// Cleanup subscription
+				if (unsubscribeRef.current) {
+					unsubscribeRef.current();
+					unsubscribeRef.current = null;
+				}
+
+				toast.error("Reindex failed", {
+					description: failed.error,
+				});
+				break;
+			}
 		}
+	}, []);
+
+	const handleReindex = async () => {
+		setIsReindexing(true);
+		setReindexResult(null);
 
 		try {
 			const response = await authFetch("/api/maintenance/reindex", {
 				method: "POST",
-				body: JSON.stringify({ inject_ids: injectIds }),
+				body: JSON.stringify({ inject_ids: injectIdsEnabled }),
 			});
 
 			if (!response.ok) {
 				const errorData = await response.json().catch(() => ({}));
-				toast.error(
-					injectIds ? "ID injection failed" : "ID scan failed",
-					{
-						description: errorData.detail || "Unknown error",
-					},
-				);
+				toast.error("Reindex failed", {
+					description: errorData.detail || "Unknown error",
+				});
+				setIsReindexing(false);
 				return;
 			}
 
-			const data: ReindexResponse = await response.json();
-			setIdScanResult(data);
-			setLastScanType("ids");
+			const data: ReindexJobResponse = await response.json();
 
-			toast.success(data.message || "Completed", {
-				description: injectIds
-					? `Injected IDs into ${data.ids_injected} files`
-					: `Found ${data.files_needing_ids?.length || 0} files needing IDs`,
+			// Update state with job ID
+			setReindexState({
+				jobId: data.job_id,
+				phase: "Queued",
+				current: 0,
+				total: 0,
+				currentFile: null,
+			});
+
+			// Connect to WebSocket for progress updates
+			await webSocketService.connectToReindex(data.job_id);
+
+			// Subscribe to progress updates
+			unsubscribeRef.current = webSocketService.onReindexProgress(
+				data.job_id,
+				handleReindexMessage,
+			);
+
+			toast.info("Reindex started", {
+				description: "Processing workspace files...",
 			});
 		} catch (err) {
-			toast.error(injectIds ? "ID injection failed" : "ID scan failed", {
+			toast.error("Reindex failed", {
 				description:
 					err instanceof Error
 						? err.message
 						: "Unknown error occurred",
 			});
-		} finally {
-			setIsIdScanning(false);
-			setIsIdInjecting(false);
+			setIsReindexing(false);
 		}
 	};
 
@@ -291,47 +417,81 @@ export function Maintenance() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-6">
-					{/* ID Injection Section */}
+					{/* Workspace Indexing Section */}
 					<div className="space-y-4">
 						<h3 className="text-sm font-medium">
-							Decorator ID Injection
+							Workspace Indexing
 						</h3>
 						<div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
-							<AlertCircle className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+							<RefreshCw className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
 							<div className="text-sm text-blue-800 dark:text-blue-200">
 								<p className="text-blue-700 dark:text-blue-300">
-									Workflow, tool, and data provider decorators
-									need unique IDs for proper tracking. Scan to
-									find decorators missing IDs, or inject to
-									add them automatically.
+									Re-scan all workspace files to refresh workflow, tool, and data provider metadata
+									(names, descriptions, parameters, categories). Use this after migrations or
+									if metadata appears out of sync.
 								</p>
 							</div>
 						</div>
-						<div className="flex flex-wrap gap-3">
+						<div className="flex flex-wrap items-center gap-4">
 							<Button
-								onClick={() => handleIdScan(false)}
-								disabled={isAnyRunning}
-								variant="outline"
-							>
-								{isIdScanning ? (
-									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-								) : (
-									<Search className="h-4 w-4 mr-2" />
-								)}
-								Scan for Missing IDs
-							</Button>
-							<Button
-								onClick={() => handleIdScan(true)}
+								onClick={handleReindex}
 								disabled={isAnyRunning}
 							>
-								{isIdInjecting ? (
+								{isReindexing ? (
 									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
 								) : (
-									<Play className="h-4 w-4 mr-2" />
+									<RefreshCw className="h-4 w-4 mr-2" />
 								)}
-								Inject IDs
+								Reindex Workspace
 							</Button>
+							<div className="flex items-center gap-2">
+								<Switch
+									id="inject-ids"
+									checked={injectIdsEnabled}
+									onCheckedChange={setInjectIdsEnabled}
+									disabled={isAnyRunning}
+								/>
+								<Label
+									htmlFor="inject-ids"
+									className="text-sm text-muted-foreground cursor-pointer"
+								>
+									Inject missing decorator IDs
+								</Label>
+							</div>
 						</div>
+
+						{/* Progress indicator during reindex */}
+						{isReindexing && reindexState.jobId && (
+							<div className="space-y-2 rounded-lg border bg-muted/50 p-4">
+								<div className="flex items-center justify-between text-sm">
+									<span className="font-medium capitalize">
+										{reindexState.phase.replace(/_/g, " ") ||
+											"Starting..."}
+									</span>
+									{reindexState.total > 0 && (
+										<span className="text-muted-foreground">
+											{reindexState.current} /{" "}
+											{reindexState.total}
+										</span>
+									)}
+								</div>
+								{reindexState.total > 0 && (
+									<Progress
+										value={
+											(reindexState.current /
+												reindexState.total) *
+											100
+										}
+										className="h-2"
+									/>
+								)}
+								{reindexState.currentFile && (
+									<p className="text-xs text-muted-foreground truncate font-mono">
+										{reindexState.currentFile}
+									</p>
+								)}
+							</div>
+						)}
 					</div>
 
 					{/* Divider */}
@@ -421,9 +581,9 @@ export function Maintenance() {
 						<div className="flex items-center justify-center py-8 text-muted-foreground">
 							<p>No scan results yet. Run a scan above.</p>
 						</div>
-					) : lastScanType === "ids" && idScanResult ? (
-						<IdScanResults
-							result={idScanResult}
+					) : lastScanType === "reindex" && reindexResult ? (
+						<ReindexResults
+							result={reindexResult}
 							onOpenFile={openFileInEditor}
 						/>
 					) : lastScanType === "sdk" && sdkScanResult ? (
@@ -440,68 +600,153 @@ export function Maintenance() {
 	);
 }
 
-function IdScanResults({
+function ReindexResults({
 	result,
 	onOpenFile,
 }: {
-	result: ReindexResponse;
+	result: ReindexResult;
 	onOpenFile: (path: string, line?: number) => void;
 }) {
-	const filesNeedingIds = result.files_needing_ids || [];
-	const hasFilesNeedingIds = filesNeedingIds.length > 0;
+	const hasErrors = result.errors.length > 0;
+	const hasWarnings = result.warnings.length > 0;
 
 	return (
 		<div className="space-y-4">
 			{/* Summary */}
-			<div className="flex items-center gap-4">
-				{hasFilesNeedingIds ? (
+			<div className="flex items-center gap-4 flex-wrap">
+				{hasErrors ? (
+					<div className="flex items-center gap-2 text-destructive">
+						<AlertCircle className="h-5 w-5" />
+						<span className="font-medium">
+							{result.errors.length} unresolved reference
+							{result.errors.length !== 1 ? "s" : ""}
+						</span>
+					</div>
+				) : hasWarnings ? (
 					<div className="flex items-center gap-2 text-amber-600">
 						<AlertTriangle className="h-5 w-5" />
 						<span className="font-medium">
-							{filesNeedingIds.length} file
-							{filesNeedingIds.length !== 1 ? "s" : ""} need
-							indexing
+							{result.warnings.length} correction
+							{result.warnings.length !== 1 ? "s" : ""} made
 						</span>
 					</div>
 				) : (
 					<div className="flex items-center gap-2 text-green-600">
 						<CheckCircle2 className="h-5 w-5" />
-						<span className="font-medium">All files indexed</span>
+						<span className="font-medium">
+							All references validated
+						</span>
 					</div>
-				)}
-				<Badge variant="secondary">
-					{result.files_indexed} file
-					{result.files_indexed !== 1 ? "s" : ""} scanned
-				</Badge>
-				{result.ids_injected > 0 && (
-					<Badge variant="default">
-						{result.ids_injected} ID
-						{result.ids_injected !== 1 ? "s" : ""} injected
-					</Badge>
 				)}
 			</div>
 
-			{/* Files needing IDs */}
-			{hasFilesNeedingIds && (
+			{/* Stats grid */}
+			<div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+				<div className="rounded-lg border bg-muted/50 p-3 text-center">
+					<div className="text-xl font-bold">
+						{result.counts.files_indexed}
+					</div>
+					<div className="text-xs text-muted-foreground">
+						Files Indexed
+					</div>
+				</div>
+				<div className="rounded-lg border bg-muted/50 p-3 text-center">
+					<div className="text-xl font-bold">
+						{result.counts.files_skipped}
+					</div>
+					<div className="text-xs text-muted-foreground">
+						Skipped
+					</div>
+				</div>
+				<div className="rounded-lg border bg-muted/50 p-3 text-center">
+					<div className="text-xl font-bold">
+						{result.counts.workflows_active}
+					</div>
+					<div className="text-xs text-muted-foreground">
+						Workflows
+					</div>
+				</div>
+				<div className="rounded-lg border bg-muted/50 p-3 text-center">
+					<div className="text-xl font-bold">
+						{result.counts.forms_active}
+					</div>
+					<div className="text-xs text-muted-foreground">Forms</div>
+				</div>
+				<div className="rounded-lg border bg-muted/50 p-3 text-center">
+					<div className="text-xl font-bold">
+						{result.counts.agents_active}
+					</div>
+					<div className="text-xs text-muted-foreground">Agents</div>
+				</div>
+				<div className="rounded-lg border bg-muted/50 p-3 text-center">
+					<div className="text-xl font-bold">
+						{result.counts.files_deleted}
+					</div>
+					<div className="text-xs text-muted-foreground">
+						Deleted
+					</div>
+				</div>
+			</div>
+
+			{/* Errors */}
+			{hasErrors && (
 				<div className="space-y-2">
-					<h4 className="text-sm font-medium text-muted-foreground">
-						Files needing ID injection:
+					<h4 className="text-sm font-medium text-destructive flex items-center gap-2">
+						<AlertCircle className="h-4 w-4" />
+						Unresolved References (requires action)
 					</h4>
-					<div className="max-h-48 overflow-y-auto rounded-md border bg-muted/50 p-3">
-						<ul className="space-y-1 text-sm font-mono">
-							{filesNeedingIds.map((file) => (
-								<li
-									key={file}
-									className="flex items-center gap-2"
-								>
-									<FileCode className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+					<div className="max-h-64 overflow-y-auto rounded-md border border-destructive/30 bg-destructive/5 p-3 space-y-3">
+						{result.errors.map((error, idx) => (
+							<div
+								key={`${error.file_path}-${error.field}-${idx}`}
+								className="space-y-1"
+							>
+								<div className="flex items-center gap-2 text-sm font-mono">
+									<FileCode className="h-4 w-4 text-destructive flex-shrink-0" />
 									<button
 										type="button"
-										onClick={() => onOpenFile(file)}
+										onClick={() => onOpenFile(error.file_path)}
 										className="truncate text-left hover:text-primary hover:underline"
 									>
-										{file}
+										{error.file_path}
 									</button>
+								</div>
+								<div className="ml-6 text-xs text-muted-foreground space-y-0.5">
+									<p>
+										<span className="font-medium">Field:</span>{" "}
+										{error.field}
+									</p>
+									<p>
+										<span className="font-medium">References:</span>{" "}
+										<code className="bg-muted px-1 py-0.5 rounded">
+											{error.referenced_id}
+										</code>
+									</p>
+									<p className="text-destructive">
+										{error.message}
+									</p>
+								</div>
+							</div>
+						))}
+					</div>
+				</div>
+			)}
+
+			{/* Warnings */}
+			{hasWarnings && (
+				<div className="space-y-2">
+					<h4 className="text-sm font-medium text-amber-600 flex items-center gap-2">
+						<AlertTriangle className="h-4 w-4" />
+						Corrections Made
+					</h4>
+					<div className="max-h-48 overflow-y-auto rounded-md border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/50 p-3">
+						<ul className="space-y-1 text-sm">
+							{result.warnings.map((warning, idx) => (
+								<li
+									key={idx}
+									className="text-amber-800 dark:text-amber-200"
+								>
+									{warning}
 								</li>
 							))}
 						</ul>

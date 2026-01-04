@@ -361,6 +361,20 @@ export function ApplicationEditor() {
 		[],
 	);
 
+	// Navigate handler for preview - prefixes relative paths with app base path
+	const previewNavigate = useCallback(
+		(path: string) => {
+			if (!path.startsWith("/apps/") && !path.startsWith("http")) {
+				const basePath = `/apps/${slugParam}`;
+				const relativePath = path.startsWith("/") ? path.slice(1) : path;
+				navigate(`${basePath}/${relativePath}`);
+			} else {
+				navigate(path);
+			}
+		},
+		[navigate, slugParam],
+	);
+
 	// Loading state
 	if (isEditing && (isLoadingApp || isLoadingDraft)) {
 		return (
@@ -380,9 +394,14 @@ export function ApplicationEditor() {
 	const hasLiveVersion = existingApp?.is_published;
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col">
-			{/* Header */}
-			<div className="flex items-center justify-between pb-6">
+		<Tabs
+			value={activeTab}
+			onValueChange={setActiveTab}
+			className="h-[calc(100vh-8rem)] flex flex-col"
+		>
+			{/* Combined Header with View Switcher */}
+			<div className="flex items-center justify-between pb-4">
+				{/* Left: Back button + App info */}
 				<div className="flex items-center gap-4">
 					<Button
 						variant="ghost"
@@ -391,67 +410,24 @@ export function ApplicationEditor() {
 					>
 						<ArrowLeft className="h-5 w-5" />
 					</Button>
-					<div>
-						<div className="flex items-center gap-2">
-							<h1 className="text-2xl font-bold">
-								{isEditing
-									? existingApp?.name || "Edit Application"
-									: "New Application"}
-							</h1>
-							{existingApp?.has_unpublished_changes && (
-								<Badge variant="outline">Draft</Badge>
-							)}
-							{existingApp?.is_published && (
-								<Badge variant="default">
-									v{existingApp.live_version}
-								</Badge>
-							)}
-						</div>
-						{existingApp?.slug && (
-							<p className="text-sm text-muted-foreground">
-								/apps/{existingApp.slug}
-							</p>
+					<div className="flex items-center gap-3">
+						<h1 className="text-xl font-semibold">
+							{isEditing
+								? existingApp?.name || "Edit Application"
+								: "New Application"}
+						</h1>
+						{existingApp?.has_unpublished_changes && (
+							<Badge variant="outline">Draft</Badge>
+						)}
+						{existingApp?.is_published && (
+							<Badge variant="default">
+								v{existingApp.live_version}
+							</Badge>
 						)}
 					</div>
 				</div>
 
-				<div className="flex items-center gap-2">
-					{hasDraft && hasLiveVersion && (
-						<Button
-							variant="outline"
-							onClick={() => setIsRollbackDialogOpen(true)}
-							disabled={rollbackApplication.isPending}
-						>
-							<RotateCcw className="mr-2 h-4 w-4" />
-							Discard Draft
-						</Button>
-					)}
-					<Button
-						variant="outline"
-						onClick={handleSave}
-						disabled={isSaving || !!jsonError}
-					>
-						<Save className="mr-2 h-4 w-4" />
-						{isSaving ? "Saving..." : "Save Draft"}
-					</Button>
-					{isEditing && hasDraft && (
-						<Button
-							onClick={() => setIsPublishDialogOpen(true)}
-							disabled={isPublishing || !!jsonError}
-						>
-							<Upload className="mr-2 h-4 w-4" />
-							{isPublishing ? "Publishing..." : "Publish"}
-						</Button>
-					)}
-				</div>
-			</div>
-
-			{/* Main Content */}
-			<Tabs
-				value={activeTab}
-				onValueChange={setActiveTab}
-				className="flex-1 flex flex-col min-h-0"
-			>
+				{/* Center: View Switcher Tabs */}
 				<TabsList>
 					<TabsTrigger value="visual">
 						<Layout className="mr-2 h-4 w-4" />
@@ -471,20 +447,52 @@ export function ApplicationEditor() {
 					</TabsTrigger>
 				</TabsList>
 
-				{/* Visual Editor Tab */}
-				<TabsContent
-					value="visual"
-					className="flex-1 mt-4 -mx-6 -mb-6 overflow-hidden"
-				>
+				{/* Right: Actions */}
+				<div className="flex items-center gap-2">
+					{hasDraft && hasLiveVersion && (
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setIsRollbackDialogOpen(true)}
+							disabled={rollbackApplication.isPending}
+						>
+							<RotateCcw className="mr-2 h-4 w-4" />
+							Discard Draft
+						</Button>
+					)}
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={handleSave}
+						disabled={isSaving || !!jsonError}
+					>
+						<Save className="mr-2 h-4 w-4" />
+						{isSaving ? "Saving..." : "Save Draft"}
+					</Button>
+					{isEditing && hasDraft && (
+						<Button
+							size="sm"
+							onClick={() => setIsPublishDialogOpen(true)}
+							disabled={isPublishing || !!jsonError}
+						>
+							<Upload className="mr-2 h-4 w-4" />
+							{isPublishing ? "Publishing..." : "Publish"}
+						</Button>
+					)}
+				</div>
+			</div>
+
+			{/* Visual Editor Tab */}
+			<TabsContent
+				value="visual"
+				className="flex-1 -mx-6 lg:-mx-8 -mb-6 lg:-mb-8 overflow-hidden mt-0"
+			>
 					{parsedDefinition ? (
 						<EditorShell
 							definition={parsedDefinition}
 							onDefinitionChange={handleDefinitionChange}
 							selectedComponentId={selectedComponentId}
 							onSelectComponent={setSelectedComponentId}
-							onSave={handleSave}
-							onPublish={() => setIsPublishDialogOpen(true)}
-							onPreview={() => setActiveTab("preview")}
 						/>
 					) : (
 						<div className="flex h-full items-center justify-center">
@@ -512,16 +520,16 @@ export function ApplicationEditor() {
 				</TabsContent>
 
 				{/* Settings Tab */}
-				<TabsContent
-					value="settings"
-					className="flex-1 overflow-auto mt-4"
-				>
-					<Card className="max-w-2xl">
+			<TabsContent
+				value="settings"
+				className="flex-1 overflow-auto mt-0"
+			>
+				<div className="max-w-2xl mx-auto py-6">
+					<Card>
 						<CardHeader>
 							<CardTitle>Application Settings</CardTitle>
 							<CardDescription>
-								Configure the basic settings for your
-								application.
+								Configure the basic settings for your application.
 							</CardDescription>
 						</CardHeader>
 						<CardContent className="space-y-4">
@@ -580,13 +588,14 @@ export function ApplicationEditor() {
 							)}
 						</CardContent>
 					</Card>
-				</TabsContent>
+				</div>
+			</TabsContent>
 
 				{/* Definition Tab */}
-				<TabsContent
-					value="definition"
-					className="flex-1 flex flex-col min-h-0 mt-4"
-				>
+			<TabsContent
+				value="definition"
+				className="flex-1 flex flex-col min-h-0 mt-0"
+			>
 					<div className="flex items-center justify-between mb-2">
 						<div className="flex items-center gap-2">
 							<Label>Application Definition (JSON)</Label>
@@ -614,13 +623,16 @@ export function ApplicationEditor() {
 				</TabsContent>
 
 				{/* Preview Tab */}
-				<TabsContent
-					value="preview"
-					className="flex-1 overflow-auto mt-4"
-				>
+			<TabsContent
+				value="preview"
+				className="flex-1 overflow-auto mt-0"
+			>
 					{parsedDefinition ? (
 						<div className="border rounded-lg overflow-hidden h-full">
-							<AppRenderer definition={parsedDefinition} />
+							<AppRenderer
+								definition={parsedDefinition}
+								navigate={previewNavigate}
+							/>
 						</div>
 					) : (
 						<Card>
@@ -632,8 +644,7 @@ export function ApplicationEditor() {
 							</CardContent>
 						</Card>
 					)}
-				</TabsContent>
-			</Tabs>
+			</TabsContent>
 
 			{/* Publish Dialog */}
 			<Dialog
@@ -703,6 +714,6 @@ export function ApplicationEditor() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</div>
+		</Tabs>
 	);
 }

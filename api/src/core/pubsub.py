@@ -52,6 +52,12 @@ class ConnectionManager:
         """
         await websocket.accept()
 
+        # Ensure Redis listener is running for cross-container messages
+        # This fixes a race condition where the scheduler publishes progress
+        # before the API's Redis listener is started
+        if not self._redis:
+            await self._init_redis()
+
         for channel in channels:
             if channel not in self.connections:
                 self.connections[channel] = set()
@@ -527,3 +533,105 @@ def publish_workspace_file_delete_sync(path: str) -> None:
         "path": path,
     }
     publish_to_redis_sync("workspace:sync", message)
+
+
+# =============================================================================
+# Reindex Pub/Sub (API -> Scheduler Communication)
+# =============================================================================
+
+
+async def publish_reindex_request(
+    job_id: str,
+    user_id: str,
+    inject_ids: bool = True,
+) -> None:
+    """
+    Request a reindex operation from the scheduler.
+
+    The scheduler listens on `bifrost:scheduler:reindex` and executes
+    the reindex, publishing progress to `reindex:{job_id}`.
+
+    Args:
+        job_id: Unique job ID for tracking
+        user_id: User who initiated the reindex
+        inject_ids: Whether to inject missing IDs
+    """
+    message = {
+        "type": "reindex_request",
+        "job_id": job_id,
+        "user_id": user_id,
+        "inject_ids": inject_ids,
+    }
+    await manager._publish_to_redis("scheduler:reindex", message)
+
+
+async def publish_reindex_progress(
+    job_id: str,
+    phase: str,
+    current: int,
+    total: int,
+    current_file: str | None = None,
+) -> None:
+    """
+    Publish reindex progress update.
+
+    Args:
+        job_id: Unique job ID
+        phase: Current phase (downloading, validating_workflows, etc.)
+        current: Current item number
+        total: Total items to process
+        current_file: Currently processing file path
+    """
+    message = {
+        "type": "progress",
+        "jobId": job_id,
+        "phase": phase,
+        "current": current,
+        "total": total,
+        "current_file": current_file,
+    }
+    await manager.broadcast(f"reindex:{job_id}", message)
+
+
+async def publish_reindex_completed(
+    job_id: str,
+    counts: dict,
+    warnings: list[str],
+    errors: list[dict],
+) -> None:
+    """
+    Publish reindex completion.
+
+    Args:
+        job_id: Unique job ID
+        counts: Summary counts from reindex
+        warnings: List of warning messages
+        errors: List of ReindexError dicts
+    """
+    message = {
+        "type": "completed",
+        "jobId": job_id,
+        "counts": counts,
+        "warnings": warnings,
+        "errors": errors,
+    }
+    await manager.broadcast(f"reindex:{job_id}", message)
+
+
+async def publish_reindex_failed(
+    job_id: str,
+    error: str,
+) -> None:
+    """
+    Publish reindex failure.
+
+    Args:
+        job_id: Unique job ID
+        error: Error message
+    """
+    message = {
+        "type": "failed",
+        "jobId": job_id,
+        "error": error,
+    }
+    await manager.broadcast(f"reindex:{job_id}", message)

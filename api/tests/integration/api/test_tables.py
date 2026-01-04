@@ -9,10 +9,10 @@ import pytest
 import pytest_asyncio
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.orm.tables import Table, Document
+from src.models.orm.tables import Document
 from src.models.orm.organizations import Organization
 from src.routers.tables import TableRepository, DocumentRepository
 

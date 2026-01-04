@@ -43,8 +43,8 @@ class TestWorkflowParameterParsing:
             return {"name": name, "age": age}
 
         # Verify metadata attached
-        assert hasattr(test_func, '_workflow_metadata')
-        metadata = test_func._workflow_metadata
+        assert hasattr(test_func, '_executable_metadata')
+        metadata = test_func._executable_metadata
 
         # Verify parameters were extracted from signature
         assert len(metadata.parameters) == 2
@@ -73,7 +73,7 @@ class TestWorkflowParameterParsing:
         ):
             return {}
 
-        metadata = test_func._workflow_metadata
+        metadata = test_func._executable_metadata
 
         # Verify parameter types were correctly inferred
         types = {p.name: p.type for p in metadata.parameters}

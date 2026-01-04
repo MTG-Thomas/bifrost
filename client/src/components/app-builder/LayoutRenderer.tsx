@@ -12,12 +12,26 @@ import type {
 	AppComponent,
 	ExpressionContext,
 	ComponentWidth,
+	LayoutType,
+	ComponentType,
 } from "@/lib/app-builder-types";
 import { isLayoutContainer } from "@/lib/app-builder-types";
 import { evaluateVisibility } from "@/lib/expression-parser";
 import { renderRegisteredComponent } from "./ComponentRegistry";
 
-interface LayoutRendererProps {
+/**
+ * Preview selection context for editor mode
+ */
+interface PreviewSelectionContext {
+	/** Whether we're in preview/editor mode */
+	isPreview?: boolean;
+	/** Currently selected component ID */
+	selectedComponentId?: string | null;
+	/** Callback when a component is clicked */
+	onSelectComponent?: (componentId: string | null) => void;
+}
+
+interface LayoutRendererProps extends PreviewSelectionContext {
 	/** The layout container or component to render */
 	layout: LayoutContainer | AppComponent;
 	/** Expression context for evaluating expressions and visibility */
@@ -136,6 +150,91 @@ function getGridColumnsClass(columns?: number): string {
 }
 
 /**
+ * Get a display label for a component type
+ */
+function getTypeLabel(type: ComponentType | LayoutType): string {
+	const labels: Record<string, string> = {
+		row: "Row",
+		column: "Column",
+		grid: "Grid",
+		heading: "Heading",
+		text: "Text",
+		html: "HTML",
+		card: "Card",
+		divider: "Divider",
+		spacer: "Spacer",
+		button: "Button",
+		"stat-card": "Stat Card",
+		image: "Image",
+		badge: "Badge",
+		progress: "Progress",
+		"data-table": "Data Table",
+		tabs: "Tabs",
+		"file-viewer": "File Viewer",
+		modal: "Modal",
+		"text-input": "Text Input",
+		"number-input": "Number Input",
+		select: "Select",
+		checkbox: "Checkbox",
+		"form-embed": "Form Embed",
+		"form-group": "Form Group",
+	};
+	return labels[type] || type;
+}
+
+/**
+ * Wrapper component for selectable elements in preview mode
+ */
+function SelectableWrapper({
+	id,
+	type,
+	isSelected,
+	onSelect,
+	children,
+	className,
+}: {
+	id: string;
+	type: ComponentType | LayoutType;
+	isSelected: boolean;
+	onSelect: (id: string) => void;
+	children: React.ReactNode;
+	className?: string;
+}) {
+	return (
+		<div
+			className={cn(
+				"relative transition-all duration-150",
+				isSelected && "ring-2 ring-primary ring-offset-2 rounded-sm",
+				"hover:ring-1 hover:ring-primary/50 hover:ring-offset-1 cursor-pointer",
+				className,
+			)}
+			onClickCapture={(e) => {
+				// Check if click target is within a MORE NESTED SelectableWrapper
+				// If so, let that wrapper handle it instead
+				const target = e.target as HTMLElement;
+				const closestWrapper = target.closest("[data-selectable]");
+				if (closestWrapper && closestWrapper !== e.currentTarget) {
+					// Click is on a nested selectable - let it propagate to that wrapper
+					return;
+				}
+				// This is the innermost selectable - handle selection and stop propagation
+				e.stopPropagation();
+				e.preventDefault();
+				onSelect(id);
+			}}
+			data-selectable={id}
+		>
+			{children}
+			{isSelected && (
+				<div className="absolute -top-5 left-1 z-10 rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground shadow-sm">
+					{getTypeLabel(type)}
+				</div>
+			)}
+		</div>
+	);
+}
+
+/**
  * Generate a stable unique key for a layout child
  * For components, use their id. For layout containers, generate a key from
  * the parent's key/type and child index to ensure uniqueness across the tree.
@@ -162,11 +261,15 @@ function renderLayoutContainer(
 	context: ExpressionContext,
 	className?: string,
 	parentKey = "root",
+	previewContext?: PreviewSelectionContext,
 ): React.ReactElement | null {
 	// Check visibility
 	if (!evaluateVisibility(layout.visible, context)) {
 		return null;
 	}
+
+	const { isPreview, selectedComponentId, onSelectComponent } =
+		previewContext || {};
 
 	const baseClasses = cn(
 		getAlignClasses(layout.align),
@@ -202,17 +305,51 @@ function renderLayoutContainer(
 					key={key}
 					className={hasExplicitWidth ? undefined : "flex-1 min-w-0"}
 				>
-					<LayoutRenderer layout={child} context={context} parentKey={key} />
+					<LayoutRenderer
+						layout={child}
+						context={context}
+						parentKey={key}
+						isPreview={isPreview}
+						selectedComponentId={selectedComponentId}
+						onSelectComponent={onSelectComponent}
+					/>
 				</div>
 			);
 		}
 
-		return <LayoutRenderer key={key} layout={child} context={context} parentKey={key} />;
+		return (
+			<LayoutRenderer
+				key={key}
+				layout={child}
+				context={context}
+				parentKey={key}
+				isPreview={isPreview}
+				selectedComponentId={selectedComponentId}
+				onSelectComponent={onSelectComponent}
+			/>
+		);
+	};
+
+	// Wrap layout container in SelectableWrapper when in preview mode
+	const wrapWithSelectable = (content: React.ReactElement) => {
+		if (isPreview && onSelectComponent) {
+			return (
+				<SelectableWrapper
+					id={containerKey}
+					type={layout.type}
+					isSelected={selectedComponentId === containerKey}
+					onSelect={onSelectComponent}
+				>
+					{content}
+				</SelectableWrapper>
+			);
+		}
+		return content;
 	};
 
 	switch (layout.type) {
 		case "row":
-			return (
+			return wrapWithSelectable(
 				<div
 					className={cn("flex flex-row flex-wrap", baseClasses)}
 					style={layoutStyles}
@@ -220,11 +357,11 @@ function renderLayoutContainer(
 					{layout.children.map((child, index) =>
 						renderChild(child, index, "row", layout.autoSize),
 					)}
-				</div>
+				</div>,
 			);
 
 		case "column":
-			return (
+			return wrapWithSelectable(
 				<div
 					className={cn("flex flex-col", baseClasses)}
 					style={layoutStyles}
@@ -232,11 +369,11 @@ function renderLayoutContainer(
 					{layout.children.map((child, index) =>
 						renderChild(child, index, "column"),
 					)}
-				</div>
+				</div>,
 			);
 
 		case "grid":
-			return (
+			return wrapWithSelectable(
 				<div
 					className={cn(
 						"grid",
@@ -248,7 +385,7 @@ function renderLayoutContainer(
 					{layout.children.map((child, index) =>
 						renderChild(child, index, "grid"),
 					)}
-				</div>
+				</div>,
 			);
 
 		default:
@@ -263,25 +400,47 @@ function renderComponent(
 	component: AppComponent,
 	context: ExpressionContext,
 	className?: string,
+	previewContext?: PreviewSelectionContext,
 ): React.ReactElement | null {
 	// Check visibility
 	if (!evaluateVisibility(component.visible, context)) {
 		return null;
 	}
 
+	const { isPreview, selectedComponentId, onSelectComponent } =
+		previewContext || {};
+
 	const widthClass = getWidthClasses(component.width);
 	const wrappedComponent = renderRegisteredComponent(component, context);
 
+	// Wrap in SelectableWrapper when in preview mode
+	const wrapWithSelectable = (content: React.ReactElement | null) => {
+		if (!content) return null;
+		if (isPreview && onSelectComponent && component.id) {
+			return (
+				<SelectableWrapper
+					id={component.id}
+					type={component.type}
+					isSelected={selectedComponentId === component.id}
+					onSelect={onSelectComponent}
+				>
+					{content}
+				</SelectableWrapper>
+			);
+		}
+		return content;
+	};
+
 	// If the component has a width constraint, wrap it
 	if (component.width && component.width !== "auto") {
-		return (
+		return wrapWithSelectable(
 			<div key={component.id} className={cn(widthClass, className)}>
 				{wrappedComponent}
-			</div>
+			</div>,
 		);
 	}
 
-	return wrappedComponent;
+	return wrapWithSelectable(wrappedComponent);
 }
 
 /**
@@ -308,12 +467,27 @@ export function LayoutRenderer({
 	context,
 	className,
 	parentKey = "root",
+	isPreview,
+	selectedComponentId,
+	onSelectComponent,
 }: LayoutRendererProps): React.ReactElement | null {
+	const previewContext: PreviewSelectionContext = {
+		isPreview,
+		selectedComponentId,
+		onSelectComponent,
+	};
+
 	if (isLayoutContainer(layout)) {
-		return renderLayoutContainer(layout, context, className, parentKey);
+		return renderLayoutContainer(
+			layout,
+			context,
+			className,
+			parentKey,
+			previewContext,
+		);
 	}
 
-	return renderComponent(layout, context, className);
+	return renderComponent(layout, context, className, previewContext);
 }
 
 export default LayoutRenderer;

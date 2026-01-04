@@ -253,7 +253,7 @@ async def create_agent(
                 result = await db.execute(
                     select(Workflow)
                     .where(Workflow.id == workflow_uuid)
-                    .where(Workflow.is_tool.is_(True))
+                    .where(Workflow.type == "tool")
                     .where(Workflow.is_active.is_(True))
                 )
                 workflow = result.scalar_one_or_none()
@@ -416,7 +416,7 @@ async def update_agent(
                 result = await db.execute(
                     select(Workflow)
                     .where(Workflow.id == workflow_uuid)
-                    .where(Workflow.is_tool.is_(True))
+                    .where(Workflow.type == "tool")
                     .where(Workflow.is_active.is_(True))
                 )
                 workflow = result.scalar_one_or_none()
@@ -590,7 +590,7 @@ async def assign_tools_to_agent(
             result = await db.execute(
                 select(Workflow)
                 .where(Workflow.id == workflow_uuid)
-                .where(Workflow.is_tool.is_(True))
+                .where(Workflow.type == "tool")
                 .where(Workflow.is_active.is_(True))
             )
             workflow = result.scalar_one_or_none()
