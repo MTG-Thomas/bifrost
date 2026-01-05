@@ -36,7 +36,7 @@ class TestWorkflowRepository:
         workflow.name = "test-workflow"
         workflow.description = "Test workflow"
         workflow.category = "Testing"
-        workflow.file_path = "/workspace/test.py"
+        workflow.path = "/workspace/test.py"
         workflow.schedule = "*/5 * * * *"
         workflow.is_active = True
         workflow.endpoint_enabled = True

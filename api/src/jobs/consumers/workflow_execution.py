@@ -151,19 +151,23 @@ class WorkflowExecutionConsumer(BaseConsumer):
             timeout_seconds = 1800  # Default 30 minutes
             roi_time_saved = 0
             roi_value = 0.0
+            workflow_code: str | None = None  # Code from DB for exec_from_db()
+            workflow_function_name: str | None = None  # Function name for exec_from_db()
 
             if not is_script and workflow_id:
-                from src.services.execution.service import get_workflow_metadata_only, WorkflowNotFoundError
+                from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
 
                 try:
-                    # Use metadata-only lookup (Redis-first, no module loading)
-                    metadata = await get_workflow_metadata_only(workflow_id)
-                    workflow_name = metadata.name
-                    file_path = metadata.source_file_path  # For fast direct loading
-                    timeout_seconds = metadata.timeout_seconds if metadata else 1800
+                    # Get full workflow data including code for DB-first execution
+                    workflow_data = await get_workflow_for_execution(workflow_id)
+                    workflow_name = workflow_data["name"]
+                    workflow_function_name = workflow_data["function_name"]
+                    file_path = workflow_data["path"]  # Used for __file__ injection
+                    workflow_code = workflow_data["code"]  # Code from DB (may be None for legacy)
+                    timeout_seconds = workflow_data["timeout_seconds"]
                     # Initialize ROI from workflow defaults
-                    roi_time_saved = metadata.time_saved or 0
-                    roi_value = float(metadata.value) if metadata.value else 0.0
+                    roi_time_saved = workflow_data["time_saved"]
+                    roi_value = workflow_data["value"]
                 except WorkflowNotFoundError:
                     logger.error(f"Workflow not found: {workflow_id}")
                     duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
@@ -242,7 +246,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "execution_id": execution_id,
                 "workflow_id": workflow_id,
                 "name": workflow_name,
-                "code": code_base64,
+                "function_name": workflow_function_name,  # For exec_from_db()
+                "workflow_code": workflow_code,  # Python code from DB (for exec_from_db())
+                "code": code_base64,  # Base64-encoded inline script (different from workflow_code)
                 "parameters": parameters,
                 "caller": {
                     "user_id": user_id,
@@ -260,7 +266,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     "time_saved": roi_time_saved,
                     "value": roi_value,
                 },
-                "file_path": file_path,  # For fast direct loading (skips filesystem scan)
+                "file_path": file_path,  # Path for __file__ injection and fallback loading
             }
 
             # Execute in isolated process

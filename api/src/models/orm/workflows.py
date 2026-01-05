@@ -46,8 +46,10 @@ class Workflow(Base):
     type: Mapped[str] = mapped_column(String(20), default="workflow", index=True)
 
     # File discovery metadata
-    file_path: Mapped[str] = mapped_column(String(1000))
+    path: Mapped[str] = mapped_column(String(1000))  # Relative path from workspace root
     module_path: Mapped[str | None] = mapped_column(String(500), default=None)
+    code: Mapped[str | None] = mapped_column(Text, default=None)  # Source code snapshot
+    code_hash: Mapped[str | None] = mapped_column(String(64), default=None)  # SHA-256 of code
     schedule: Mapped[str | None] = mapped_column(
         String(100), default=None
     )  # CRON expression
@@ -114,8 +116,8 @@ class Workflow(Base):
             postgresql_where=text("api_key_hash IS NOT NULL"),
         ),
         # Type index is created as a regular index via mapped_column(index=True)
-        # Unique constraint on (file_path, function_name) for ON CONFLICT upserts
-        UniqueConstraint("file_path", "function_name", name="workflows_file_function_key"),
+        # Unique constraint on (path, function_name) for ON CONFLICT upserts
+        UniqueConstraint("path", "function_name", name="workflows_path_function_key"),
     )
 
 

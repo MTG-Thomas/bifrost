@@ -51,27 +51,21 @@ async def get_maintenance_status(
     Get the current maintenance status of the workspace.
 
     Returns:
-        - files_needing_ids: List of Python files with decorators missing IDs
-        - total_files: Total number of files in workspace
+        - total_files: Total number of Python files in workspace
         - last_reindex: Timestamp of last reindex (not tracked currently)
     """
-    from src.services.decorator_property_service import DecoratorPropertyService
     from src.services.editor.file_filter import is_excluded_path
 
-    files_needing_ids: list[str] = []
     total_files = 0
 
     try:
-        # Scan workspace for Python files with missing IDs
+        # Count Python files in workspace
         workspace_path = Path(WORKSPACE_PATH)
         if not workspace_path.exists():
             return MaintenanceStatus(
-                files_needing_ids=[],
                 total_files=0,
                 last_reindex=None,
             )
-
-        decorator_service = DecoratorPropertyService()
 
         # Get all Python files (rglob is I/O bound, run in thread)
         python_files = await asyncio.to_thread(lambda: list(workspace_path.rglob("*.py")))
@@ -85,22 +79,7 @@ async def get_maintenance_status(
 
             total_files += 1
 
-            try:
-                async with aiofiles.open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = await f.read()
-
-                # Run CPU-bound LibCST parsing in thread pool to avoid blocking event loop
-                inject_result = await asyncio.to_thread(
-                    decorator_service.inject_ids_if_missing, content
-                )
-
-                if inject_result.modified:
-                    files_needing_ids.append(rel_path)
-            except Exception as e:
-                logger.warning(f"Failed to check {rel_path}: {e}")
-
         return MaintenanceStatus(
-            files_needing_ids=files_needing_ids,
             total_files=total_files,
             last_reindex=None,  # Not tracked currently
         )
@@ -132,9 +111,8 @@ async def run_reindex(
 
     Features:
         - Downloads all workspace files from S3
-        - Validates workflow IDs align with database (by file_path + function_name)
+        - Indexes workflows/data_providers to database
         - Validates form/agent references point to existing workflows
-        - Silently fixes IDs when exact match found, adds warnings
         - Reports errors for unresolvable references
 
     Returns:
@@ -146,11 +124,9 @@ async def run_reindex(
 
     job_id = str(uuid4())
 
-    # Publish request to scheduler
     await publish_reindex_request(
         job_id=job_id,
         user_id=str(user.user_id),
-        inject_ids=request.inject_ids,
     )
 
     logger.info(f"Reindex job {job_id} queued by user {user.user_id}")

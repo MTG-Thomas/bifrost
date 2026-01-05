@@ -119,7 +119,6 @@ async function handleNotificationAction(
 			const response = await authFetch("/api/maintenance/reindex", {
 				method: "POST",
 				body: JSON.stringify({
-					inject_ids: true,
 					notification_id: notification.id,
 				}),
 			});

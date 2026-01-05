@@ -2,7 +2,7 @@
  * Workspace Maintenance Settings
  *
  * Platform admin page for managing workspace maintenance operations.
- * Provides tools for ID injection and SDK reference scanning.
+ * Provides tools for reindexing, SDK reference scanning, and docs indexing.
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
@@ -15,8 +15,6 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import {
 	AlertCircle,
@@ -94,7 +92,6 @@ type ScanResultType = "none" | "reindex" | "sdk" | "docs";
 export function Maintenance() {
 	// Scan states
 	const [isReindexing, setIsReindexing] = useState(false);
-	const [injectIdsEnabled, setInjectIdsEnabled] = useState(false);
 	const [isSdkScanning, setIsSdkScanning] = useState(false);
 	const [isDocsIndexing, setIsDocsIndexing] = useState(false);
 
@@ -271,7 +268,7 @@ export function Maintenance() {
 		try {
 			const response = await authFetch("/api/maintenance/reindex", {
 				method: "POST",
-				body: JSON.stringify({ inject_ids: injectIdsEnabled }),
+				body: JSON.stringify({}),
 			});
 
 			if (!response.ok) {
@@ -444,20 +441,6 @@ export function Maintenance() {
 								)}
 								Reindex Workspace
 							</Button>
-							<div className="flex items-center gap-2">
-								<Switch
-									id="inject-ids"
-									checked={injectIdsEnabled}
-									onCheckedChange={setInjectIdsEnabled}
-									disabled={isAnyRunning}
-								/>
-								<Label
-									htmlFor="inject-ids"
-									className="text-sm text-muted-foreground cursor-pointer"
-								>
-									Inject missing decorator IDs
-								</Label>
-							</div>
 						</div>
 
 						{/* Progress indicator during reindex */}

@@ -167,8 +167,8 @@ async def list_schedules(
                 category=workflow.category or "General",
                 tags=workflow.tags or [],
                 schedule=cron_expr,
-                source_file_path=workflow.file_path,
-                relative_file_path=f"/workspace/{workflow.file_path}" if workflow.file_path else None,
+                source_file_path=workflow.path,
+                relative_file_path=f"/workspace/{workflow.path}" if workflow.path else None,
                 # Schedule validation
                 validation_status=validation_status,
                 validation_message=validation_message,

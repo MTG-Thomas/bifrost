@@ -74,7 +74,7 @@ class ToolRegistry:
                 description=w.tool_description or w.description or "",
                 category=w.category,
                 parameters_schema=w.parameters_schema,
-                file_path=w.file_path,
+                file_path=w.path,
                 function_name=w.function_name,
             )
             for w in workflows
@@ -131,7 +131,7 @@ class ToolRegistry:
                 description=w.tool_description or w.description or "",
                 category=w.category,
                 parameters_schema=w.parameters_schema,
-                file_path=w.file_path,
+                file_path=w.path,
                 function_name=w.function_name,
             )
             for w in workflows
@@ -251,7 +251,7 @@ class ToolRegistry:
             description=workflow.tool_description or workflow.description or "",
             category=workflow.category,
             parameters_schema=workflow.parameters_schema,
-            file_path=workflow.file_path,
+            file_path=workflow.path,
             function_name=workflow.function_name,
         )
 
@@ -282,7 +282,7 @@ class ToolRegistry:
             description=workflow.tool_description or workflow.description or "",
             category=workflow.category,
             parameters_schema=workflow.parameters_schema,
-            file_path=workflow.file_path,
+            file_path=workflow.path,
             function_name=workflow.function_name,
         )
 

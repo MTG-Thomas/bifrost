@@ -26,6 +26,7 @@ from src.core.database import DbSession
 from src.core.org_filter import resolve_org_filter
 from src.repositories.forms import FormRepository
 from src.models import Form as FormORM, FormField as FormFieldORM, FormRole as FormRoleORM, UserRole as UserRoleORM
+from src.models import Workflow as WorkflowORM
 from src.models import FormCreate, FormUpdate, FormPublic
 from src.models import WorkflowExecutionResponse
 from src.models import FileUploadRequest, FileUploadResponse, UploadedFileMetadata
@@ -114,6 +115,90 @@ def _form_schema_to_fields(form_schema: dict, form_id: UUID) -> list[FormFieldOR
         fields.append(field_orm)
 
     return fields
+
+
+async def _validate_form_references(
+    db: AsyncSession,
+    workflow_id: str | None,
+    launch_workflow_id: str | None,
+    form_schema: dict | None,
+) -> None:
+    """
+    Validate that all referenced workflows and data providers exist and are active.
+
+    Args:
+        db: Database session
+        workflow_id: Optional workflow ID to validate (must be type='workflow')
+        launch_workflow_id: Optional launch workflow ID to validate (must be type='workflow')
+        form_schema: Optional form schema with fields that may reference data providers
+
+    Raises:
+        HTTPException: 422 if any reference is invalid
+    """
+    errors: list[str] = []
+
+    # Validate workflow_id
+    if workflow_id:
+        result = await db.execute(
+            select(WorkflowORM).where(
+                WorkflowORM.id == workflow_id,
+                WorkflowORM.is_active == True,  # noqa: E712
+            )
+        )
+        workflow = result.scalar_one_or_none()
+        if workflow is None:
+            errors.append(f"workflow_id '{workflow_id}' does not reference an active workflow")
+        elif workflow.type != "workflow":
+            errors.append(
+                f"workflow_id '{workflow_id}' references a {workflow.type}, not a workflow"
+            )
+
+    # Validate launch_workflow_id
+    if launch_workflow_id:
+        result = await db.execute(
+            select(WorkflowORM).where(
+                WorkflowORM.id == launch_workflow_id,
+                WorkflowORM.is_active == True,  # noqa: E712
+            )
+        )
+        launch_workflow = result.scalar_one_or_none()
+        if launch_workflow is None:
+            errors.append(
+                f"launch_workflow_id '{launch_workflow_id}' does not reference an active workflow"
+            )
+        elif launch_workflow.type != "workflow":
+            errors.append(
+                f"launch_workflow_id '{launch_workflow_id}' references a {launch_workflow.type}, not a workflow"
+            )
+
+    # Validate data_provider_id references in form fields
+    if form_schema and "fields" in form_schema:
+        for field in form_schema["fields"]:
+            dp_id = field.get("data_provider_id")
+            if dp_id:
+                result = await db.execute(
+                    select(WorkflowORM).where(
+                        WorkflowORM.id == dp_id,
+                        WorkflowORM.is_active == True,  # noqa: E712
+                    )
+                )
+                data_provider = result.scalar_one_or_none()
+                if data_provider is None:
+                    errors.append(
+                        f"Field '{field.get('name', 'unknown')}' has invalid data_provider_id "
+                        f"'{dp_id}' - no active data provider found"
+                    )
+                elif data_provider.type != "data_provider":
+                    errors.append(
+                        f"Field '{field.get('name', 'unknown')}' has data_provider_id "
+                        f"'{dp_id}' that references a {data_provider.type}, not a data_provider"
+                    )
+
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"errors": errors, "message": "Invalid form references"},
+        )
 
 
 def _fields_to_form_schema(fields: list[FormFieldORM]) -> dict:
@@ -407,6 +492,19 @@ async def create_form(
     - File write enables version control and deployment portability
     - Discovery watcher will sync file to DB on next scan
     """
+    # Prepare form_schema for validation
+    form_schema_data: dict = request.form_schema  # type: ignore[assignment]
+    if hasattr(form_schema_data, 'model_dump'):
+        form_schema_data = form_schema_data.model_dump()  # type: ignore[union-attr]
+
+    # Validate all references before creating the form
+    await _validate_form_references(
+        db=db,
+        workflow_id=request.workflow_id,
+        launch_workflow_id=request.launch_workflow_id,
+        form_schema=form_schema_data,
+    )
+
     now = datetime.utcnow()
 
     # Create form record
@@ -428,11 +526,7 @@ async def create_form(
     db.add(form)
     await db.flush()  # Get the form ID
 
-    # Convert form_schema to FormField records
-    form_schema_data: dict = request.form_schema  # type: ignore[assignment]
-    if hasattr(form_schema_data, 'model_dump'):
-        form_schema_data = form_schema_data.model_dump()  # type: ignore[union-attr]
-
+    # Convert form_schema to FormField records (form_schema_data already prepared above)
     field_records = _form_schema_to_fields(form_schema_data, form.id)
     for field in field_records:
         db.add(field)
@@ -566,6 +660,20 @@ async def update_form(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Form not found",
         )
+
+    # Validate references being updated
+    form_schema_for_validation = None
+    if request.form_schema is not None:
+        form_schema_for_validation = request.form_schema
+        if hasattr(form_schema_for_validation, 'model_dump'):
+            form_schema_for_validation = form_schema_for_validation.model_dump()
+
+    await _validate_form_references(
+        db=db,
+        workflow_id=request.workflow_id,
+        launch_workflow_id=request.launch_workflow_id,
+        form_schema=form_schema_for_validation,
+    )
 
     # Track old file path for cleanup
     old_file_path = form.file_path

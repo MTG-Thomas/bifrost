@@ -3,7 +3,7 @@
  * Uses openapi-react-query for type-safe API calls
  */
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { $api, apiClient, withUserContext } from "@/lib/api-client";
 import { useWorkflowsStore } from "@/stores/workflowsStore";
@@ -56,8 +56,15 @@ export function useWorkflowsMetadata() {
 		}
 	}, [workflowsQuery.data, setWorkflows]);
 
+	// Memoize to prevent infinite re-render loops
+	// (consumers depend on this object reference in useEffect deps)
+	const data = useMemo(
+		() => ({ workflows: workflowsQuery.data || [] }),
+		[workflowsQuery.data],
+	);
+
 	return {
-		data: { workflows: workflowsQuery.data || [] },
+		data,
 		isLoading: workflowsQuery.isLoading,
 		isError: workflowsQuery.isError,
 		error: workflowsQuery.error,

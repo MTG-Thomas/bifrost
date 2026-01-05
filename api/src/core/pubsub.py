@@ -543,7 +543,6 @@ def publish_workspace_file_delete_sync(path: str) -> None:
 async def publish_reindex_request(
     job_id: str,
     user_id: str,
-    inject_ids: bool = True,
 ) -> None:
     """
     Request a reindex operation from the scheduler.
@@ -554,13 +553,11 @@ async def publish_reindex_request(
     Args:
         job_id: Unique job ID for tracking
         user_id: User who initiated the reindex
-        inject_ids: Whether to inject missing IDs
     """
     message = {
         "type": "reindex_request",
         "job_id": job_id,
         "user_id": user_id,
-        "inject_ids": inject_ids,
     }
     await manager._publish_to_redis("scheduler:reindex", message)
 

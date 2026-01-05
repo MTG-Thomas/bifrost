@@ -292,7 +292,7 @@ class WorkflowRepository(BaseRepository[Workflow]):
             return None
 
         if len(workflows) > 1:
-            paths = [w.file_path for w in workflows]
+            paths = [w.path for w in workflows]
             raise ValueError(
                 f"Multiple endpoint-enabled workflows named '{name}' found: {paths}"
             )

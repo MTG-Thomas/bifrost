@@ -339,7 +339,6 @@ async def put_file_content_editor(
     request: FileContentRequest,
     ctx: Context,
     user: CurrentSuperuser,
-    index: bool = Query(default=False, description="If true, inject IDs into decorators"),
     db: AsyncSession = Depends(get_db),
 ) -> FileContentResponse:
     """
@@ -374,9 +373,7 @@ async def put_file_content_editor(
 
         # Write file
         updated_by = user.email if user else "system"
-        write_result = await storage.write_file(
-            request.path, content, updated_by, index=index, force_ids=request.force_ids
-        )
+        write_result = await storage.write_file(request.path, content, updated_by)
 
         etag = hashlib.md5(write_result.final_content).hexdigest()
 

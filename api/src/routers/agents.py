@@ -39,6 +39,75 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["Agents"])
 
 
+async def _validate_agent_references(
+    db: DbSession,
+    tool_ids: list[str] | None,
+    delegated_agent_ids: list[str] | None,
+    agent_id: UUID | None = None,  # For self-delegation check
+) -> None:
+    """
+    Validate that all referenced tools and agents exist and are valid.
+
+    Args:
+        db: Database session
+        tool_ids: List of tool IDs to validate (must be type='tool')
+        delegated_agent_ids: List of agent IDs to delegate to
+        agent_id: The agent being created/updated (for self-delegation check)
+
+    Raises:
+        HTTPException: 422 if any reference is invalid
+    """
+    errors: list[str] = []
+
+    # Validate tool_ids
+    if tool_ids:
+        for tool_id in tool_ids:
+            try:
+                workflow_uuid = UUID(tool_id)
+                result = await db.execute(
+                    select(Workflow).where(Workflow.id == workflow_uuid)
+                )
+                workflow = result.scalar_one_or_none()
+                if workflow is None:
+                    errors.append(f"tool_id '{tool_id}' does not reference an existing workflow")
+                elif not workflow.is_active:
+                    errors.append(f"tool_id '{tool_id}' references an inactive workflow")
+                elif workflow.type != "tool":
+                    errors.append(
+                        f"tool_id '{tool_id}' references a {workflow.type}, not a tool"
+                    )
+            except ValueError:
+                errors.append(f"tool_id '{tool_id}' is not a valid UUID")
+
+    # Validate delegated_agent_ids
+    if delegated_agent_ids:
+        for delegate_id in delegated_agent_ids:
+            try:
+                delegate_uuid = UUID(delegate_id)
+
+                # Check for self-delegation
+                if agent_id and delegate_uuid == agent_id:
+                    errors.append(f"Agent cannot delegate to itself ('{delegate_id}')")
+                    continue
+
+                result = await db.execute(
+                    select(Agent).where(Agent.id == delegate_uuid)
+                )
+                delegate = result.scalar_one_or_none()
+                if delegate is None:
+                    errors.append(f"delegated_agent_id '{delegate_id}' does not reference an existing agent")
+                elif not delegate.is_active:
+                    errors.append(f"delegated_agent_id '{delegate_id}' references an inactive agent")
+            except ValueError:
+                errors.append(f"delegated_agent_id '{delegate_id}' is not a valid UUID")
+
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"errors": errors, "message": "Invalid agent references"},
+        )
+
+
 def _generate_agent_filename(agent_name: str, agent_id: str) -> str:
     """
     Generate filesystem-safe filename from agent name.
@@ -222,6 +291,14 @@ async def create_agent(
 
     Creates both database record and S3 file.
     """
+    # Validate references before creating the agent
+    await _validate_agent_references(
+        db=db,
+        tool_ids=agent_data.tool_ids,
+        delegated_agent_ids=agent_data.delegated_agent_ids,
+        agent_id=None,  # No self-delegation check for new agents
+    )
+
     agent_id = uuid4()
     now = datetime.utcnow()
 
@@ -379,6 +456,14 @@ async def update_agent(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
+
+    # Validate references being updated
+    await _validate_agent_references(
+        db=db,
+        tool_ids=agent_data.tool_ids,
+        delegated_agent_ids=agent_data.delegated_agent_ids,
+        agent_id=agent_id,  # For self-delegation check
+    )
 
     # Update fields
     if agent_data.name is not None:
@@ -583,6 +668,13 @@ async def assign_tools_to_agent(
             detail=f"Agent {agent_id} not found",
         )
 
+    # Validate all tool references before proceeding
+    await _validate_agent_references(
+        db=db,
+        tool_ids=request.workflow_ids,
+        delegated_agent_ids=None,
+    )
+
     added_tools = []
     for workflow_id in request.workflow_ids:
         try:
@@ -686,6 +778,14 @@ async def assign_delegations_to_agent(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
+
+    # Validate all delegation references before proceeding
+    await _validate_agent_references(
+        db=db,
+        tool_ids=None,
+        delegated_agent_ids=request.agent_ids,
+        agent_id=agent_id,  # For self-delegation check
+    )
 
     added_delegations = []
     for delegate_id in request.agent_ids:

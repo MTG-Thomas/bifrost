@@ -118,6 +118,13 @@ class Form(Base):
     module_path: Mapped[str | None] = mapped_column(String(500), default=None)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
+    # Cross-environment portability references
+    # These fields store the path/function identity of the linked workflow,
+    # allowing forms to find their workflow in different environments where
+    # workflow UUIDs may differ but path+function_name remain stable.
+    workflow_path: Mapped[str | None] = mapped_column(String(1000), default=None)
+    workflow_function_name: Mapped[str | None] = mapped_column(String(255), default=None)
+
     # Relationships
     organization: Mapped["Organization | None"] = relationship(back_populates="forms")
     executions: Mapped[list["Execution"]] = relationship(back_populates="form")

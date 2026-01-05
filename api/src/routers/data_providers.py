@@ -60,7 +60,7 @@ def _convert_provider_orm_to_schema(provider: WorkflowORM) -> DataProviderMetada
         category=provider.category or "General",
         cache_ttl_seconds=provider.cache_ttl_seconds or 300,
         parameters=[],  # TODO: Could parse from parameters_schema if needed
-        source_file_path=provider.file_path,
+        source_file_path=provider.path,
         relative_file_path=None,
     )
 

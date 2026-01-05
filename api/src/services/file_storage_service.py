@@ -9,6 +9,7 @@ S3 storage is required - no filesystem fallback.
 
 import ast
 import hashlib
+import json
 import logging
 import mimetypes
 import re
@@ -21,14 +22,15 @@ from typing import Any, Awaitable, Callable, TYPE_CHECKING
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.config import Settings, get_settings
 from src.core.workspace_cache import get_workspace_cache
 from src.models.enums import GitStatus
-from src.models import WorkspaceFile
+from src.models import WorkspaceFile, Workflow, Form, Agent
+from src.models.orm.applications import Application
 
 if TYPE_CHECKING:
-    from src.models import Agent, Workflow
     from src.models.contracts.maintenance import ReindexResult
 
 logger = logging.getLogger(__name__)
@@ -61,10 +63,115 @@ class WriteResult:
 
     file_record: WorkspaceFile
     final_content: bytes
-    content_modified: bool  # True if server modified content (e.g., injected IDs)
-    needs_indexing: bool = False  # True if file has decorators that need ID injection
-    workflow_id_conflicts: list[WorkflowIdConflictInfo] | None = None  # Workflows that would lose IDs
+    content_modified: bool  # True if forms/agents were modified for ID alignment
+    needs_indexing: bool = False  # Legacy field, always False
+    workflow_id_conflicts: list[WorkflowIdConflictInfo] | None = None  # Legacy field, always None
     diagnostics: list[FileDiagnosticInfo] | None = None  # File issues detected during save
+
+
+def _serialize_form_to_json(form: Form) -> bytes:
+    """
+    Serialize a Form (with fields) to JSON bytes.
+
+    Uses the same format as _write_form_to_file in routers/forms.py
+    for consistency with file-based storage.
+
+    Args:
+        form: Form ORM instance with fields relationship loaded
+
+    Returns:
+        JSON serialized as UTF-8 bytes
+    """
+    # Convert fields to form_schema format (matches _fields_to_form_schema in forms.py)
+    fields_data = []
+    for field in form.fields:
+        field_data: dict[str, Any] = {
+            "name": field.name,
+            "type": field.type,
+            "required": field.required,
+        }
+
+        # Add optional fields if they're set
+        if field.label:
+            field_data["label"] = field.label
+        if field.placeholder:
+            field_data["placeholder"] = field.placeholder
+        if field.help_text:
+            field_data["help_text"] = field.help_text
+        if field.default_value is not None:
+            field_data["default_value"] = field.default_value
+        if field.options:
+            field_data["options"] = field.options
+        if field.data_provider_id:
+            field_data["data_provider_id"] = str(field.data_provider_id)
+        if field.data_provider_inputs:
+            field_data["data_provider_inputs"] = field.data_provider_inputs
+        if field.visibility_expression:
+            field_data["visibility_expression"] = field.visibility_expression
+        if field.validation:
+            field_data["validation"] = field.validation
+        if field.allowed_types:
+            field_data["allowed_types"] = field.allowed_types
+        if field.multiple is not None:
+            field_data["multiple"] = field.multiple
+        if field.max_size_mb:
+            field_data["max_size_mb"] = field.max_size_mb
+        if field.content:
+            field_data["content"] = field.content
+
+        fields_data.append(field_data)
+
+    form_schema = {"fields": fields_data}
+
+    # Build form JSON (matches _write_form_to_file format)
+    # Note: org_id, is_global, access_level are NOT written to JSON
+    # These are environment-specific and should only be set in the database
+    form_data = {
+        "id": str(form.id),
+        "name": form.name,
+        "description": form.description,
+        "workflow_id": form.workflow_id,
+        "launch_workflow_id": form.launch_workflow_id,
+        "form_schema": form_schema,
+        "is_active": form.is_active,
+        "created_by": form.created_by,
+        "created_at": form.created_at.isoformat() + "Z",
+        "updated_at": form.updated_at.isoformat() + "Z",
+        "allowed_query_params": form.allowed_query_params,
+        "default_launch_params": form.default_launch_params,
+    }
+
+    return json.dumps(form_data, indent=2).encode("utf-8")
+
+
+def _serialize_agent_to_json(agent: Agent) -> bytes:
+    """
+    Serialize an Agent to JSON bytes.
+
+    Args:
+        agent: Agent ORM instance
+
+    Returns:
+        JSON serialized as UTF-8 bytes
+    """
+    agent_data = {
+        "id": str(agent.id),
+        "name": agent.name,
+        "description": agent.description,
+        "system_prompt": agent.system_prompt,
+        "channels": agent.channels,
+        "access_level": agent.access_level.value if agent.access_level else None,
+        "is_active": agent.is_active,
+        "is_coding_mode": agent.is_coding_mode,
+        "is_system": agent.is_system,
+        "knowledge_sources": agent.knowledge_sources,
+        "system_tools": agent.system_tools,
+        "created_by": agent.created_by,
+        "created_at": agent.created_at.isoformat() + "Z",
+        "updated_at": agent.updated_at.isoformat() + "Z",
+    }
+
+    return json.dumps(agent_data, indent=2).encode("utf-8")
 
 
 class FileStorageService:
@@ -72,7 +179,8 @@ class FileStorageService:
     Storage service for workspace files.
 
     Provides a unified interface for file operations that:
-    - Stores files in S3
+    - Stores platform entity content in PostgreSQL (workflows, forms, apps, agents)
+    - Stores regular file content in S3 (modules, data files, configs)
     - Maintains PostgreSQL index for fast queries
     - Extracts workflow/form metadata at write time
     """
@@ -81,6 +189,85 @@ class FileStorageService:
         self.db = db
         self.settings = settings or get_settings()
         self._s3_client = None
+
+    def _detect_platform_entity_type(self, path: str, content: bytes) -> str | None:
+        """
+        Detect if a file is a platform entity that should be stored in the database.
+
+        Platform entities are stored in the database, not S3:
+        - Workflows (.py with @workflow decorator): stored in workflows.code
+        - Data providers (.py with @data_provider decorator): stored in workflows.code
+        - Forms (.form.json): stored in forms table
+        - Apps (.app.json): stored in applications table
+        - Agents (.agent.json): stored in agents table
+
+        Regular files (modules, data files, configs) go to S3.
+
+        Args:
+            path: File path
+            content: File content
+
+        Returns:
+            Entity type ("workflow", "form", "app", "agent") or None for regular files
+        """
+        # JSON platform entities - always go to DB
+        if path.endswith(".form.json"):
+            return "form"
+        if path.endswith(".app.json"):
+            return "app"
+        if path.endswith(".agent.json"):
+            return "agent"
+
+        # Python files - check for SDK decorators
+        if path.endswith(".py"):
+            return self._detect_python_entity_type(content)
+
+        # Regular file - goes to S3
+        return None
+
+    def _detect_python_entity_type(self, content: bytes) -> str | None:
+        """
+        Check if Python content has SDK decorators (@workflow, @data_provider).
+
+        Uses fast regex check first, then AST verification if needed.
+        Returns "workflow" if decorators are found (includes data_provider since
+        it's stored in the workflows table).
+
+        Args:
+            content: Python file content
+
+        Returns:
+            "workflow" if SDK decorators found, None otherwise
+        """
+        try:
+            content_str = content.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+        # Fast regex check - if no decorator-like patterns, skip AST parsing
+        if "@workflow" not in content_str and "@data_provider" not in content_str:
+            return None
+
+        # AST verification - confirm decorators are actually used
+        try:
+            tree = ast.parse(content_str)
+        except SyntaxError:
+            # Syntax error - can't determine entity type, treat as regular file
+            # The _index_python_file will report the syntax error
+            return None
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+
+            for decorator in node.decorator_list:
+                decorator_info = self._parse_decorator(decorator)
+                if decorator_info:
+                    decorator_name, _ = decorator_info
+                    if decorator_name in ("workflow", "data_provider"):
+                        return "workflow"  # Both are in workflows table
+
+        return None
 
     @asynccontextmanager
     async def _get_s3_client(self):
@@ -168,6 +355,13 @@ class FileStorageService:
         """
         Read file content and metadata.
 
+        Routes reads based on workspace_files.entity_type:
+        - If entity_type='workflow' and entity_id is set: fetch from workflows.code column
+        - If entity_type='form' and entity_id is set: fetch from forms table and serialize
+        - If entity_type='app' and entity_id is set: fetch from applications.draft_definition
+        - If entity_type='agent' and entity_id is set: fetch from agents table and serialize
+        - If entity_type is NULL: fetch from S3 (existing behavior)
+
         Args:
             path: Relative path within workspace
 
@@ -185,6 +379,57 @@ class FileStorageService:
         result = await self.db.execute(stmt)
         file_record = result.scalar_one_or_none()
 
+        # Route based on entity type - platform entities are stored in the database
+        if file_record is not None and file_record.entity_id is not None:
+            entity_type = file_record.entity_type
+            entity_id = file_record.entity_id
+
+            # Workflow: fetch code column
+            if entity_type == "workflow":
+                workflow_stmt = select(Workflow).where(Workflow.id == entity_id)
+                workflow_result = await self.db.execute(workflow_stmt)
+                workflow = workflow_result.scalar_one_or_none()
+
+                if workflow is not None and workflow.code is not None:
+                    return workflow.code.encode("utf-8"), file_record
+                # Fall through to S3 if workflow not found or code is None
+
+            # Form: serialize to JSON
+            elif entity_type == "form":
+                form_stmt = (
+                    select(Form)
+                    .options(selectinload(Form.fields))
+                    .where(Form.id == entity_id)
+                )
+                form_result = await self.db.execute(form_stmt)
+                form = form_result.scalar_one_or_none()
+
+                if form is not None:
+                    return _serialize_form_to_json(form), file_record
+                raise FileNotFoundError(f"Form not found: {entity_id}")
+
+            # App: return draft_definition as JSON
+            elif entity_type == "app":
+                app_stmt = select(Application).where(Application.id == entity_id)
+                app_result = await self.db.execute(app_stmt)
+                app = app_result.scalar_one_or_none()
+
+                if app is not None:
+                    definition = app.draft_definition if app.draft_definition else {}
+                    return json.dumps(definition, indent=2).encode("utf-8"), file_record
+                raise FileNotFoundError(f"Application not found: {entity_id}")
+
+            # Agent: serialize to JSON
+            elif entity_type == "agent":
+                agent_stmt = select(Agent).where(Agent.id == entity_id)
+                agent_result = await self.db.execute(agent_stmt)
+                agent = agent_result.scalar_one_or_none()
+
+                if agent is not None:
+                    return _serialize_agent_to_json(agent), file_record
+                raise FileNotFoundError(f"Agent not found: {entity_id}")
+
+        # Default: fetch from S3 (entity_type is NULL or unknown)
         async with self._get_s3_client() as s3:
             try:
                 response = await s3.get_object(
@@ -201,26 +446,22 @@ class FileStorageService:
         path: str,
         content: bytes,
         updated_by: str = "system",
-        index: bool = True,
-        force_ids: dict[str, str] | None = None,
     ) -> WriteResult:
         """
         Write file content to storage and update index.
 
         Also extracts workflow/form metadata at write time.
+        For platform entities (workflows, forms, apps, agents), content is stored
+        in the database. For regular files, content is stored in S3.
 
         Args:
             path: Relative path within workspace
             content: File content as bytes
             updated_by: User who made the change
-            index: If True (default), inject IDs into decorators when needed.
-                   If False, detect if IDs needed and return needs_indexing=True.
-            force_ids: Map of function_name -> ID to inject (for reusing existing IDs
-                       when user chooses "Use Existing IDs" for workflow conflicts)
 
         Returns:
             WriteResult containing file record, final content, modification flag,
-            and needs_indexing flag (True if IDs needed but index=False)
+            and diagnostics for any issues detected.
 
         Raises:
             ValueError: If path is excluded (system files, caches, etc.)
@@ -234,14 +475,21 @@ class FileStorageService:
         content_type = self._guess_content_type(path)
         size_bytes = len(content)
 
-        # Write to S3
-        async with self._get_s3_client() as s3:
-            await s3.put_object(
-                Bucket=self.settings.s3_bucket,
-                Key=path,
-                Body=content,
-                ContentType=content_type,
-            )
+        # Detect if this is a platform entity (workflow, form, app, agent)
+        # Platform entities are stored in the database, not S3
+        platform_entity_type = self._detect_platform_entity_type(path, content)
+        is_platform_entity = platform_entity_type is not None
+
+        # Only write to S3 for regular files (not platform entities)
+        # Platform entity content is stored in DB tables via _extract_metadata
+        if not is_platform_entity:
+            async with self._get_s3_client() as s3:
+                await s3.put_object(
+                    Bucket=self.settings.s3_bucket,
+                    Key=path,
+                    Body=content,
+                    ContentType=content_type,
+                )
 
         # Upsert index record
         # Use UTC datetime without timezone info to match SQLAlchemy model defaults
@@ -274,17 +522,14 @@ class FileStorageService:
         cache = get_workspace_cache()
         await cache.set_file_state(path, content_hash, is_deleted=False)
 
-        # Extract metadata for workflows/forms (may inject IDs and modify content)
-        # When index=False, skip ID injection and just detect if indexing is needed
+        # Extract metadata for workflows/forms/agents
         (
             final_content,
             content_modified,
             needs_indexing,
             workflow_id_conflicts,
             diagnostics,
-        ) = await self._extract_metadata(
-            path, content, skip_id_injection=not index, force_ids=force_ids
-        )
+        ) = await self._extract_metadata(path, content)
 
         # Publish to Redis pub/sub so other containers sync
         # This notifies workers and other API instances about the file change
@@ -330,86 +575,32 @@ class FileStorageService:
             diagnostics=diagnostics if diagnostics else None,
         )
 
-    async def _write_file_for_id_injection(
-        self,
-        path: str,
-        content: bytes,
-    ) -> None:
-        """
-        Internal method to write file content during ID injection.
-
-        This is a simplified write that:
-        - Updates S3 and the database index
-        - Publishes to Redis for container sync
-        - Does NOT call _extract_metadata to avoid infinite recursion
-        - Does NOT trigger another ID injection cycle
-
-        Args:
-            path: Relative path within workspace
-            content: File content as bytes (with IDs injected)
-        """
-        content_hash = self._compute_hash(content)
-        content_type = self._guess_content_type(path)
-        size_bytes = len(content)
-
-        # Write to S3
-        async with self._get_s3_client() as s3:
-            await s3.put_object(
-                Bucket=self.settings.s3_bucket,
-                Key=path,
-                Body=content,
-                ContentType=content_type,
-            )
-
-        # Upsert index record
-        now = datetime.utcnow()
-        stmt = insert(WorkspaceFile).values(
-            path=path,
-            content_hash=content_hash,
-            size_bytes=size_bytes,
-            content_type=content_type,
-            git_status=GitStatus.MODIFIED,
-            is_deleted=False,
-            created_at=now,
-            updated_at=now,
-        ).on_conflict_do_update(
-            index_elements=[WorkspaceFile.path],
-            set_={
-                "content_hash": content_hash,
-                "size_bytes": size_bytes,
-                "content_type": content_type,
-                "git_status": GitStatus.MODIFIED,
-                "is_deleted": False,
-                "updated_at": now,
-            },
-        )
-        await self.db.execute(stmt)
-
-        # Dual-write: Update Redis cache
-        cache = get_workspace_cache()
-        await cache.set_file_state(path, content_hash, is_deleted=False)
-
-        # Publish to Redis pub/sub so other containers sync
-        try:
-            from src.core.pubsub import publish_workspace_file_write
-            await publish_workspace_file_write(path, content, content_hash)
-        except Exception as e:
-            logger.warning(f"Failed to publish workspace file write event: {e}")
-
-        logger.debug(f"ID injection write complete: {path} ({size_bytes} bytes)")
-
     async def delete_file(self, path: str) -> None:
         """
         Delete a file from storage.
 
+        For platform entities (workflows, forms, apps, agents), only DB cleanup is needed.
+        For regular files, also deletes from S3.
+
         Args:
             path: Relative path within workspace
         """
-        async with self._get_s3_client() as s3:
-            await s3.delete_object(
-                Bucket=self.settings.s3_bucket,
-                Key=path,
-            )
+        # Check if this is a platform entity by looking at entity_type in workspace_files
+        # Platform entities have content in DB, not S3, so we skip S3 delete
+        stmt = select(WorkspaceFile.entity_type).where(
+            WorkspaceFile.path == path,
+            WorkspaceFile.is_deleted == False,  # noqa: E712
+        )
+        result = await self.db.execute(stmt)
+        entity_type = result.scalar_one_or_none()
+
+        # Only delete from S3 if not a platform entity
+        if entity_type is None:
+            async with self._get_s3_client() as s3:
+                await s3.delete_object(
+                    Bucket=self.settings.s3_bucket,
+                    Key=path,
+                )
 
         # Soft delete in index
         stmt = update(WorkspaceFile).where(
@@ -522,11 +713,16 @@ class FileStorageService:
         result = await self.db.execute(stmt)
         children = result.scalars().all()
 
-        # Delete children from S3 and soft-delete in DB
+        # Delete children from S3 (regular files only) and soft-delete in DB
+        # Platform entities (entity_type is not None) have content in DB, not S3
         async with self._get_s3_client() as s3:
             for child in children:
-                # Skip folder records (no S3 object) but delete files
-                if not child.path.endswith("/"):
+                # Skip folder records (no S3 object)
+                if child.path.endswith("/"):
+                    continue
+
+                # Only delete from S3 if not a platform entity
+                if child.entity_type is None:
                     try:
                         await s3.delete_object(
                             Bucket=self.settings.s3_bucket,
@@ -535,9 +731,8 @@ class FileStorageService:
                     except Exception as e:
                         logger.warning(f"Failed to delete S3 object {child.path}: {e}")
 
-                # Clean up metadata for files
-                if not child.path.endswith("/"):
-                    await self._remove_metadata(child.path)
+                # Clean up metadata for all files (platform entities and regular)
+                await self._remove_metadata(child.path)
 
         # Soft delete all children and the folder itself
         now = datetime.utcnow()
@@ -844,7 +1039,7 @@ class FileStorageService:
         return count
 
     async def reindex_workspace_files(
-        self, local_path: Path, inject_ids: bool = False
+        self, local_path: Path
     ) -> dict[str, int | list[str]]:
         """
         Reindex workspace_files table from local filesystem.
@@ -854,12 +1049,10 @@ class FileStorageService:
 
         Args:
             local_path: Local workspace directory (e.g., /tmp/bifrost/workspace)
-            inject_ids: If True, inject IDs into decorators (for maintenance).
-                       If False (default), only detect files needing IDs.
 
         Returns:
             Dict with counts: files_indexed, files_removed, workflows_deactivated,
-            data_providers_deactivated, files_needing_ids (list of paths)
+            data_providers_deactivated
         """
         from src.models import Workflow  # Data providers are in workflows table with type='data_provider'
         from src.services.editor.file_filter import is_excluded_path
@@ -869,7 +1062,6 @@ class FileStorageService:
             "files_removed": 0,
             "workflows_deactivated": 0,
             "data_providers_deactivated": 0,
-            "files_needing_ids": [],  # Python files with decorators missing IDs
         }
 
         # 1. Collect all file paths from local filesystem
@@ -950,25 +1142,7 @@ class FileStorageService:
             await cache.set_file_state(rel_path, content_hash, is_deleted=False)
 
             # Extract metadata (workflows/data_providers)
-            # Use inject_ids parameter to control whether to inject or just detect
-            await self._extract_metadata(rel_path, content, skip_id_injection=not inject_ids)
-
-            # Detect Python files with decorators missing IDs
-            if rel_path.endswith(".py") and not inject_ids:
-                try:
-                    from src.services.decorator_property_service import DecoratorPropertyService
-
-                    content_str = content.decode("utf-8", errors="replace")
-                    decorator_service = DecoratorPropertyService()
-                    inject_result = decorator_service.inject_ids_if_missing(content_str)
-
-                    if inject_result.modified:
-                        # This file has decorators without IDs
-                        files_needing_ids = counts["files_needing_ids"]
-                        if isinstance(files_needing_ids, list):
-                            files_needing_ids.append(rel_path)
-                except Exception as e:
-                    logger.warning(f"Failed to check {rel_path} for missing IDs: {e}")
+            await self._extract_metadata(rel_path, content)
 
             counts["files_indexed"] += 1
 
@@ -977,7 +1151,7 @@ class FileStorageService:
             select(Workflow).where(
                 Workflow.is_active == True,  # noqa: E712
                 Workflow.endpoint_enabled == True,  # noqa: E712
-                ~Workflow.file_path.in_(existing_paths) if existing_paths else True,
+                ~Workflow.path.in_(existing_paths) if existing_paths else True,
             )
         )
         orphaned_endpoint_workflows = result.scalars().all()
@@ -996,7 +1170,7 @@ class FileStorageService:
         # 5. Mark orphaned workflows as inactive
         stmt = update(Workflow).where(
             Workflow.is_active == True,  # noqa: E712
-            ~Workflow.file_path.in_(existing_paths) if existing_paths else True,
+            ~Workflow.path.in_(existing_paths) if existing_paths else True,
         ).values(is_active=False)
         result = await self.db.execute(stmt)
         counts["workflows_deactivated"] = result.rowcount if result.rowcount > 0 else 0
@@ -1022,11 +1196,15 @@ class FileStorageService:
 
         This method:
         1. Downloads workspace files from S3
-        2. Validates and aligns workflow IDs with DB (by file_path + function_name)
-        3. Validates forms use valid workflow/data_provider references
-        4. Validates agents use valid workflow/agent references
-        5. Silently fixes IDs when an exact match is found
+        2. Indexes workflow Python files and validates/aligns IDs with DB
+        3. Validates forms (from DB) use valid workflow/data_provider references
+        4. Validates agents (from DB) use valid workflow/agent references
+        5. Silently fixes invalid references in the database
         6. Produces actionable errors when no match exists
+
+        Note: Forms and agents are DB-first entities - they are queried from the
+        database, not read from files. Only workflow Python files are read from
+        the filesystem.
 
         Args:
             local_path: Local directory for workspace files
@@ -1035,15 +1213,16 @@ class FileStorageService:
         Returns:
             ReindexResult with counts, warnings, and errors
         """
-        import json
-
         from src.models import Workflow, Form, Agent
+        from src.models.orm.agents import AgentTool, AgentDelegation
+        from src.models.orm.forms import FormField
         from src.models.contracts.maintenance import (
             ReindexResult,
             ReindexError,
             ReindexCounts,
         )
         from src.services.editor.file_filter import is_excluded_path
+        from sqlalchemy import delete
 
         warnings: list[str] = []
         errors: list[ReindexError] = []
@@ -1070,16 +1249,13 @@ class FileStorageService:
             await report_progress("Downloading workspace", 1, 1)
 
             # Get known workflow file paths from DB to avoid scanning large non-workflow files
-            from src.models import Workflow
             db_workflow_result = await self.db.execute(
-                select(Workflow.file_path).distinct()
+                select(Workflow.path).distinct()
             )
             db_workflow_paths = {row[0] for row in db_workflow_result.fetchall()}
 
-            # Collect files by type
+            # Collect workflow Python files only (forms/agents are DB-first)
             py_files: list[str] = []
-            form_files: list[str] = []
-            agent_files: list[str] = []
 
             for file_path in local_path.rglob("*"):
                 if not file_path.is_file():
@@ -1092,18 +1268,10 @@ class FileStorageService:
                     # Only process Python files that are known workflows in DB
                     if rel_path in db_workflow_paths:
                         py_files.append(rel_path)
-                elif rel_path.endswith(".form.json"):
-                    form_files.append(rel_path)
-                elif rel_path.endswith(".agent.json"):
-                    agent_files.append(rel_path)
 
             py_files.sort()
-            form_files.sort()
-            agent_files.sort()
 
-            total_files = len(py_files) + len(form_files) + len(agent_files)
-
-            # Phase 2: Validate & align workflows
+            # Phase 2: Validate & align workflows (from files)
             for i, rel_path in enumerate(py_files):
                 await report_progress("Validating workflows", i, len(py_files), rel_path)
 
@@ -1114,26 +1282,9 @@ class FileStorageService:
                     logger.warning(f"Failed to read {rel_path}: {e}")
                     continue
 
-                # Index Python file - this will handle ID alignment automatically
-                # The existing _index_python_file already corrects IDs
+                # Index Python file - IDs are DB-only, no file modifications
                 try:
-                    final_content, content_modified, _, conflicts, diagnostics = (
-                        await self._index_python_file(rel_path, content, skip_id_injection=False)
-                    )
-
-                    if content_modified:
-                        # Write the modified content back to local file
-                        file_path.write_bytes(final_content)
-                        ids_corrected += 1
-                        warnings.append(f"Workflow {rel_path}: IDs injected/corrected")
-
-                    if conflicts:
-                        for conflict in conflicts:
-                            warnings.append(
-                                f"Workflow {rel_path}:{conflict.function_name} "
-                                f"ID corrected: {conflict.existing_id}"
-                            )
-
+                    await self._index_python_file(rel_path, content)
                 except Exception as e:
                     logger.warning(f"Failed to index {rel_path}: {e}")
                     errors.append(ReindexError(
@@ -1145,230 +1296,187 @@ class FileStorageService:
 
                 counts.files_indexed += 1
 
-            # Phase 3: Validate forms
-            for i, rel_path in enumerate(form_files):
-                await report_progress("Validating forms", i, len(form_files), rel_path)
+            # Phase 3: Validate forms (from DB, not files)
+            db_forms_result = await self.db.execute(
+                select(Form).where(Form.is_active == True)  # noqa: E712
+            )
+            db_forms = list(db_forms_result.scalars().all())
 
-                file_path = local_path / rel_path
-                try:
-                    content = file_path.read_bytes()
-                    form_data = json.loads(content.decode("utf-8"))
-                except (OSError, json.JSONDecodeError) as e:
-                    logger.warning(f"Failed to read/parse {rel_path}: {e}")
-                    continue
+            for i, form in enumerate(db_forms):
+                await report_progress("Validating forms", i, len(db_forms), form.name)
 
-                file_modified = False
-                form_id_str = form_data.get("id")
-
-                # Align form ID with DB (by file_path)
-                db_form_result = await self.db.execute(
-                    select(Form).where(Form.file_path == rel_path)
-                )
-                db_form = db_form_result.scalar_one_or_none()
-
-                if db_form and form_id_str and form_id_str != str(db_form.id):
-                    # ID mismatch - use DB's ID
-                    old_id = form_id_str
-                    form_data["id"] = str(db_form.id)
-                    file_modified = True
-                    ids_corrected += 1
-                    warnings.append(
-                        f"Form {rel_path} ID corrected: {old_id} -> {db_form.id}"
-                    )
+                form_modified = False
 
                 # Validate workflow_id reference
-                workflow_id = form_data.get("workflow_id")
-                if workflow_id:
-                    workflow = await self._get_workflow_by_id(workflow_id)
+                if form.workflow_id:
+                    workflow = await self._get_workflow_by_id(form.workflow_id)
                     if not workflow:
                         # Try to find by name
-                        match = await self._find_workflow_match(workflow_id)
+                        match = await self._find_workflow_match(form.workflow_id)
                         if match:
-                            form_data["workflow_id"] = str(match.id)
-                            file_modified = True
+                            old_id = form.workflow_id
+                            form.workflow_id = str(match.id)
+                            form_modified = True
                             ids_corrected += 1
                             warnings.append(
-                                f"Form {rel_path} workflow_id corrected: "
-                                f"{workflow_id} -> {match.id}"
+                                f"Form {form.name} workflow_id corrected: "
+                                f"{old_id} -> {match.id}"
                             )
                         else:
                             errors.append(ReindexError(
-                                file_path=rel_path,
+                                file_path=form.name,
                                 field="workflow_id",
-                                referenced_id=workflow_id,
+                                referenced_id=form.workflow_id,
                                 message="Workflow not found. No exact match in workspace.",
                             ))
                             # Clear invalid reference to prevent FK violation
-                            form_data["workflow_id"] = None
-                            file_modified = True
+                            form.workflow_id = None
+                            form_modified = True
 
                 # Validate launch_workflow_id reference
-                launch_workflow_id = form_data.get("launch_workflow_id")
-                if launch_workflow_id:
-                    workflow = await self._get_workflow_by_id(launch_workflow_id)
+                if form.launch_workflow_id:
+                    workflow = await self._get_workflow_by_id(form.launch_workflow_id)
                     if not workflow:
-                        match = await self._find_workflow_match(launch_workflow_id)
+                        match = await self._find_workflow_match(form.launch_workflow_id)
                         if match:
-                            form_data["launch_workflow_id"] = str(match.id)
-                            file_modified = True
+                            old_id = form.launch_workflow_id
+                            form.launch_workflow_id = str(match.id)
+                            form_modified = True
                             ids_corrected += 1
                             warnings.append(
-                                f"Form {rel_path} launch_workflow_id corrected: "
-                                f"{launch_workflow_id} -> {match.id}"
+                                f"Form {form.name} launch_workflow_id corrected: "
+                                f"{old_id} -> {match.id}"
                             )
                         else:
                             errors.append(ReindexError(
-                                file_path=rel_path,
+                                file_path=form.name,
                                 field="launch_workflow_id",
-                                referenced_id=launch_workflow_id,
+                                referenced_id=form.launch_workflow_id,
                                 message="Launch workflow not found.",
                             ))
                             # Clear invalid reference to prevent FK violation
-                            form_data["launch_workflow_id"] = None
-                            file_modified = True
+                            form.launch_workflow_id = None
+                            form_modified = True
 
                 # Validate data_provider_id in form fields
-                form_schema = form_data.get("form_schema", {})
-                fields = form_schema.get("fields", []) if isinstance(form_schema, dict) else []
-                for idx, field in enumerate(fields):
-                    if not isinstance(field, dict):
-                        continue
-                    dp_id = field.get("data_provider_id")
-                    if dp_id:
-                        dp = await self._get_workflow_by_id(dp_id)
+                fields_result = await self.db.execute(
+                    select(FormField).where(FormField.form_id == form.id)
+                )
+                fields = list(fields_result.scalars().all())
+                for field in fields:
+                    if field.data_provider_id:
+                        dp = await self._get_workflow_by_id(str(field.data_provider_id))
                         if not dp:
-                            match = await self._find_workflow_match(dp_id)
+                            match = await self._find_workflow_match(str(field.data_provider_id))
                             if match:
-                                field["data_provider_id"] = str(match.id)
-                                file_modified = True
+                                old_id = str(field.data_provider_id)
+                                field.data_provider_id = match.id
                                 ids_corrected += 1
-                                field_name = field.get("name", f"field[{idx}]")
                                 warnings.append(
-                                    f"Form {rel_path} field {field_name} "
-                                    f"data_provider_id corrected"
+                                    f"Form {form.name} field {field.name} "
+                                    f"data_provider_id corrected: {old_id} -> {match.id}"
                                 )
                             else:
-                                field_name = field.get("name", f"field[{idx}]")
                                 errors.append(ReindexError(
-                                    file_path=rel_path,
-                                    field=f"form_schema.fields.{field_name}.data_provider_id",
-                                    referenced_id=dp_id,
+                                    file_path=form.name,
+                                    field=f"fields.{field.name}.data_provider_id",
+                                    referenced_id=str(field.data_provider_id),
                                     message="Data provider not found.",
                                 ))
                                 # Clear invalid reference to prevent FK violation
-                                field["data_provider_id"] = None
-                                file_modified = True
+                                field.data_provider_id = None
 
-                # Write back if modified
-                if file_modified:
-                    final_content = json.dumps(form_data, indent=2).encode("utf-8")
-                    file_path.write_bytes(final_content)
-                    # Also update S3 and index
-                    await self._write_file_for_id_injection(rel_path, final_content)
+                if form_modified:
+                    logger.info(f"Updated form {form.name} references in DB")
 
-                # Index the form (whether modified or not)
-                try:
-                    await self._index_form(rel_path, file_path.read_bytes())
-                except Exception as e:
-                    logger.warning(f"Failed to index form {rel_path}: {e}")
+            # Phase 4: Validate agents (from DB, not files)
+            db_agents_result = await self.db.execute(
+                select(Agent).where(Agent.is_active == True)  # noqa: E712
+            )
+            db_agents = list(db_agents_result.scalars().all())
 
-                counts.files_indexed += 1
+            for i, agent in enumerate(db_agents):
+                await report_progress("Validating agents", i, len(db_agents), agent.name)
 
-            # Phase 4: Validate agents (first pass - create entities)
-            for i, rel_path in enumerate(agent_files):
-                await report_progress("Validating agents", i, len(agent_files), rel_path)
-
-                file_path = local_path / rel_path
-                try:
-                    content = file_path.read_bytes()
-                    agent_data = json.loads(content.decode("utf-8"))
-                except (OSError, json.JSONDecodeError) as e:
-                    logger.warning(f"Failed to read/parse {rel_path}: {e}")
-                    continue
-
-                file_modified = False
-                agent_id_str = agent_data.get("id")
-
-                # Align agent ID with DB (by file_path)
-                db_agent_result = await self.db.execute(
-                    select(Agent).where(Agent.file_path == rel_path)
+                # Validate tool_ids (workflow references via AgentTool junction)
+                tools_result = await self.db.execute(
+                    select(AgentTool).where(AgentTool.agent_id == agent.id)
                 )
-                db_agent = db_agent_result.scalar_one_or_none()
+                agent_tools = list(tools_result.scalars().all())
 
-                if db_agent and agent_id_str and agent_id_str != str(db_agent.id):
-                    # ID mismatch - use DB's ID
-                    old_id = agent_id_str
-                    agent_data["id"] = str(db_agent.id)
-                    file_modified = True
-                    ids_corrected += 1
-                    warnings.append(
-                        f"Agent {rel_path} ID corrected: {old_id} -> {db_agent.id}"
-                    )
-
-                # Validate tool_ids (workflow references)
-                valid_tool_ids: list[str] = []
-                for tool_id in agent_data.get("tool_ids", []):
-                    workflow = await self._get_workflow_by_id(tool_id)
-                    if workflow:
-                        valid_tool_ids.append(tool_id)
-                    else:
-                        match = await self._find_workflow_match(tool_id)
+                for agent_tool in agent_tools:
+                    workflow = await self._get_workflow_by_id(str(agent_tool.workflow_id))
+                    if not workflow:
+                        match = await self._find_workflow_match(str(agent_tool.workflow_id))
                         if match:
-                            valid_tool_ids.append(str(match.id))
-                            file_modified = True
+                            old_id = str(agent_tool.workflow_id)
+                            # Delete old association and create new one
+                            await self.db.execute(
+                                delete(AgentTool).where(
+                                    AgentTool.agent_id == agent.id,
+                                    AgentTool.workflow_id == agent_tool.workflow_id,
+                                )
+                            )
+                            self.db.add(AgentTool(agent_id=agent.id, workflow_id=match.id))
                             ids_corrected += 1
                             warnings.append(
-                                f"Agent {rel_path} tool_id corrected: "
-                                f"{tool_id} -> {match.id}"
+                                f"Agent {agent.name} tool_id corrected: "
+                                f"{old_id} -> {match.id}"
                             )
                         else:
                             errors.append(ReindexError(
-                                file_path=rel_path,
+                                file_path=agent.name,
                                 field="tool_ids",
-                                referenced_id=tool_id,
+                                referenced_id=str(agent_tool.workflow_id),
                                 message="Tool workflow not found.",
                             ))
-                agent_data["tool_ids"] = valid_tool_ids
+                            # Remove invalid tool reference
+                            await self.db.execute(
+                                delete(AgentTool).where(
+                                    AgentTool.agent_id == agent.id,
+                                    AgentTool.workflow_id == agent_tool.workflow_id,
+                                )
+                            )
 
-                # Validate delegated_agent_ids (will be fully validated after all agents exist)
-                valid_delegate_ids: list[str] = []
-                for delegate_id in agent_data.get("delegated_agent_ids", []):
-                    agent = await self._get_agent_by_id(delegate_id)
-                    if agent:
-                        valid_delegate_ids.append(delegate_id)
-                    else:
-                        match = await self._find_agent_match(delegate_id)
+                # Validate delegated_agent_ids (via AgentDelegation junction)
+                delegations_result = await self.db.execute(
+                    select(AgentDelegation).where(AgentDelegation.parent_agent_id == agent.id)
+                )
+                delegations = list(delegations_result.scalars().all())
+
+                for delegation in delegations:
+                    delegated_agent = await self._get_agent_by_id(str(delegation.child_agent_id))
+                    if not delegated_agent:
+                        match = await self._find_agent_match(str(delegation.child_agent_id))
                         if match:
-                            valid_delegate_ids.append(str(match.id))
-                            file_modified = True
+                            old_id = str(delegation.child_agent_id)
+                            # Delete old delegation and create new one
+                            await self.db.execute(
+                                delete(AgentDelegation).where(
+                                    AgentDelegation.parent_agent_id == agent.id,
+                                    AgentDelegation.child_agent_id == delegation.child_agent_id,
+                                )
+                            )
+                            self.db.add(AgentDelegation(parent_agent_id=agent.id, child_agent_id=match.id))
                             ids_corrected += 1
                             warnings.append(
-                                f"Agent {rel_path} delegated_agent_id corrected: "
-                                f"{delegate_id} -> {match.id}"
+                                f"Agent {agent.name} delegated_agent_id corrected: "
+                                f"{old_id} -> {match.id}"
                             )
                         else:
                             errors.append(ReindexError(
-                                file_path=rel_path,
+                                file_path=agent.name,
                                 field="delegated_agent_ids",
-                                referenced_id=delegate_id,
+                                referenced_id=str(delegation.child_agent_id),
                                 message="Delegated agent not found.",
                             ))
-                agent_data["delegated_agent_ids"] = valid_delegate_ids
-
-                # Write back if modified
-                if file_modified:
-                    final_content = json.dumps(agent_data, indent=2).encode("utf-8")
-                    file_path.write_bytes(final_content)
-                    # Also update S3 and index
-                    await self._write_file_for_id_injection(rel_path, final_content)
-
-                # Index the agent
-                try:
-                    await self._index_agent(rel_path, file_path.read_bytes())
-                except Exception as e:
-                    logger.warning(f"Failed to index agent {rel_path}: {e}")
-
-                counts.files_indexed += 1
+                            # Remove invalid delegation
+                            await self.db.execute(
+                                delete(AgentDelegation).where(
+                                    AgentDelegation.parent_agent_id == agent.id,
+                                    AgentDelegation.child_agent_id == delegation.child_agent_id,
+                                )
+                            )
 
             # Count active entities
             workflow_count = await self.db.execute(
@@ -1388,7 +1496,8 @@ class FileStorageService:
 
             counts.ids_corrected = ids_corrected
 
-            await report_progress("Complete", total_files, total_files)
+            total_entities = len(py_files) + len(db_forms) + len(db_agents)
+            await report_progress("Complete", total_entities, total_entities)
 
             # Determine status
             if errors:
@@ -1531,50 +1640,10 @@ class FileStorageService:
 
         return None
 
-    def detect_files_needing_ids(self, workspace_path: Path) -> list[str]:
-        """
-        Scan workspace for Python files with decorators missing IDs.
-
-        This is a lightweight read-only operation that can run safely
-        from multiple processes without database writes.
-
-        Args:
-            workspace_path: Path to workspace directory
-
-        Returns:
-            List of relative file paths that need ID injection
-        """
-        from src.services.decorator_property_service import DecoratorPropertyService
-        from src.services.editor.file_filter import is_excluded_path
-
-        files_needing_ids: list[str] = []
-        decorator_service = DecoratorPropertyService()
-
-        for file_path in workspace_path.rglob("*.py"):
-            if not file_path.is_file():
-                continue
-
-            rel_path = str(file_path.relative_to(workspace_path))
-            if is_excluded_path(rel_path):
-                continue
-
-            try:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
-                inject_result = decorator_service.inject_ids_if_missing(content)
-
-                if inject_result.modified:
-                    files_needing_ids.append(rel_path)
-            except Exception as e:
-                logger.warning(f"Failed to check {rel_path} for missing IDs: {e}")
-
-        return files_needing_ids
-
     async def _extract_metadata(
         self,
         path: str,
         content: bytes,
-        skip_id_injection: bool = False,
-        force_ids: dict[str, str] | None = None,
     ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None, list[FileDiagnosticInfo]]:
         """
         Extract workflow/form/agent metadata from file content.
@@ -1584,24 +1653,22 @@ class FileStorageService:
         Args:
             path: Relative file path
             content: File content bytes
-            skip_id_injection: If True, don't inject IDs into decorators (detect only)
-            force_ids: Map of function_name -> ID to inject (for reusing existing IDs)
 
         Returns:
             Tuple of (final_content, content_modified, needs_indexing, conflicts, diagnostics) where:
-            - final_content: The content after any modifications (e.g., ID injection)
-            - content_modified: True if the content was modified by the server
-            - needs_indexing: True if IDs are needed but skip_id_injection was True
-            - conflicts: List of workflows that would lose their IDs (if any)
+            - final_content: The content (unchanged for Python files)
+            - content_modified: True if the content was modified (for forms/agents with ID alignment)
+            - needs_indexing: Always False (legacy field)
+            - conflicts: Always None (legacy field)
             - diagnostics: List of file issues detected during indexing
         """
         try:
             if path.endswith(".py"):
-                return await self._index_python_file(
-                    path, content, skip_id_injection, force_ids
-                )
+                return await self._index_python_file(path, content)
             elif path.endswith(".form.json"):
                 return await self._index_form(path, content)
+            elif path.endswith(".app.json"):
+                return await self._index_app(path, content)
             elif path.endswith(".agent.json"):
                 return await self._index_agent(path, content)
         except Exception as e:
@@ -1614,8 +1681,6 @@ class FileStorageService:
         self,
         path: str,
         content: bytes,
-        skip_id_injection: bool = False,
-        force_ids: dict[str, str] | None = None,
     ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None, list[FileDiagnosticInfo]]:
         """
         Extract and index workflows/providers from Python file.
@@ -1624,21 +1689,19 @@ class FileStorageService:
         @data_provider decorators without importing the module.
         Also updates workspace_files.is_workflow/is_data_provider flags.
 
-        Automatically injects stable UUIDs into decorators that don't have them
-        (unless skip_id_injection is True, in which case it just detects).
+        IDs are DB-only. Workflows without IDs in decorators will have IDs
+        generated in the database using path + function_name as the identity key.
 
         Args:
             path: File path
             content: File content
-            skip_id_injection: If True, don't inject IDs, just detect
-            force_ids: Map of function_name -> ID to inject (for reusing existing IDs)
 
         Returns:
             Tuple of (final_content, content_modified, needs_indexing, conflicts, diagnostics) where:
-            - final_content: The content after any modifications (e.g., ID injection)
-            - content_modified: True if IDs were injected into decorators
-            - needs_indexing: True if IDs are needed but skip_id_injection was True
-            - conflicts: List of workflows that would lose their IDs (if any)
+            - final_content: The content (unchanged)
+            - content_modified: Always False (no file modifications)
+            - needs_indexing: Always False (legacy field)
+            - conflicts: Always None (legacy field)
             - diagnostics: List of file issues detected during indexing
         """
         from src.models import Workflow  # Data providers are in workflows table with type='data_provider'
@@ -1649,84 +1712,6 @@ class FileStorageService:
         needs_indexing = False
         workflow_id_conflicts: list[WorkflowIdConflictInfo] | None = None
         diagnostics: list[FileDiagnosticInfo] = []
-
-        # Check if decorators need IDs
-        try:
-            from src.services.decorator_property_service import DecoratorPropertyService
-
-            decorator_service = DecoratorPropertyService()
-
-            # First, read existing decorators to find ones without IDs
-            existing_decorators = decorator_service.read_decorators(content_str)
-            decorators_without_ids = [
-                d for d in existing_decorators
-                if d.decorator_type == "workflow" and "id" not in d.properties
-            ]
-
-            # Check if any of these would overwrite existing workflows in DB
-            if decorators_without_ids and not force_ids:
-                conflicts = []
-                for dec in decorators_without_ids:
-                    # Query DB for existing workflow at this location
-                    stmt = select(Workflow).where(
-                        Workflow.file_path == path,
-                        Workflow.function_name == dec.function_name
-                    )
-                    result = await self.db.execute(stmt)
-                    existing_workflow = result.scalar_one_or_none()
-
-                    if existing_workflow:
-                        # This workflow already has an ID in DB but new file doesn't have it
-                        conflicts.append(WorkflowIdConflictInfo(
-                            name=dec.properties.get("name", dec.function_name),
-                            function_name=dec.function_name,
-                            existing_id=str(existing_workflow.id),
-                            file_path=path,
-                        ))
-
-                if conflicts:
-                    # Return conflicts without injecting IDs
-                    # Let the client decide whether to use existing IDs
-                    workflow_id_conflicts = conflicts
-                    logger.info(
-                        f"File {path} has {len(conflicts)} workflows that would lose their IDs"
-                    )
-                    # Don't inject new IDs, just proceed with indexing without ID injection
-                    needs_indexing = True
-
-            # If force_ids provided, inject those specific IDs
-            if force_ids:
-                inject_result = decorator_service.inject_specific_ids(content_str, force_ids)
-                if inject_result.modified:
-                    logger.info(f"Injecting specific IDs into decorators in {path}: {inject_result.changes}")
-                    modified_content = inject_result.new_content.encode("utf-8")
-                    await self._write_file_for_id_injection(path, modified_content)
-                    content_str = inject_result.new_content
-                    final_content = modified_content
-                    content_modified = True
-            # Otherwise, if no conflicts, inject new IDs as usual
-            elif not workflow_id_conflicts:
-                inject_result = decorator_service.inject_ids_if_missing(content_str)
-                if inject_result.modified:
-                    if skip_id_injection:
-                        # Just detect - don't actually inject
-                        needs_indexing = True
-                        logger.debug(f"File {path} needs indexing (decorators without IDs)")
-                    else:
-                        # Write back the modified content with IDs injected
-                        logger.info(f"Injecting IDs into decorators in {path}: {inject_result.changes}")
-                        modified_content = inject_result.new_content.encode("utf-8")
-
-                        # Use internal write to avoid infinite recursion
-                        await self._write_file_for_id_injection(path, modified_content)
-
-                        # Continue indexing with the modified content
-                        content_str = inject_result.new_content
-                        final_content = modified_content
-                        content_modified = True
-        except Exception as e:
-            # Log but don't fail indexing if ID injection/detection fails
-            logger.warning(f"Failed to process IDs for {path}: {e}")
 
         try:
             tree = ast.parse(content_str, filename=path)
@@ -1746,6 +1731,10 @@ class FileStorageService:
         # Track what decorators we find to update workspace_files
         found_workflow = False
         found_data_provider = False
+        # Track the primary entity for this file (first workflow or data_provider found)
+        # Used to set entity_type and entity_id in workspace_files
+        primary_entity_type: str | None = None
+        primary_entity_id: str | None = None
 
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1758,34 +1747,61 @@ class FileStorageService:
 
                 decorator_name, kwargs = decorator_info
 
-                if decorator_name == "workflow":
+                if decorator_name in ("workflow", "tool"):
                     found_workflow = True
 
-                    # Extract workflow id from decorator - required for upsert
-                    workflow_id_str = kwargs.get("id")
-                    if not workflow_id_str:
-                        logger.warning(f"Workflow in {path} has no id - skipping indexing")
-                        diagnostics.append(FileDiagnosticInfo(
-                            severity="warning",
-                            message=f"Workflow '{kwargs.get('name') or node.name}' has no id - skipping indexing. Save the file to inject an ID.",
-                            line=node.lineno,
-                            source="indexing",
-                        ))
-                        continue
+                    # @tool decorator is an alias for @workflow(is_tool=True)
+                    # If using @tool, force is_tool=True
+                    if decorator_name == "tool":
+                        kwargs["is_tool"] = True
 
-                    # Convert string UUID to UUID object
-                    from uuid import UUID as UUID_type
-                    try:
-                        workflow_uuid = UUID_type(workflow_id_str)
-                    except ValueError:
-                        logger.warning(f"Invalid workflow id '{workflow_id_str}' in {path} - skipping indexing")
-                        diagnostics.append(FileDiagnosticInfo(
-                            severity="error",
-                            message=f"Invalid workflow id '{workflow_id_str}' - must be a valid UUID",
-                            line=node.lineno,
-                            source="indexing",
-                        ))
-                        continue
+                    # function_name is the actual Python function name (unique per file)
+                    function_name = node.name
+
+                    # Phase 6 (DB-first): IDs are DB-only.
+                    # If ID is in decorator, use it. Otherwise, look up by path + function_name
+                    # or generate a new one.
+                    from uuid import UUID as UUID_type, uuid4
+                    workflow_id_str = kwargs.get("id")
+                    workflow_uuid: UUID_type
+
+                    if workflow_id_str:
+                        # ID in decorator - validate and use it
+                        try:
+                            workflow_uuid = UUID_type(workflow_id_str)
+                        except ValueError:
+                            logger.warning(f"Invalid workflow id '{workflow_id_str}' in {path} - skipping indexing")
+                            diagnostics.append(FileDiagnosticInfo(
+                                severity="error",
+                                message=f"Invalid workflow id '{workflow_id_str}' - must be a valid UUID",
+                                line=node.lineno,
+                                source="indexing",
+                            ))
+                            continue
+                    else:
+                        # No ID in decorator - look up existing workflow by path + function_name
+                        # This is the DB-first approach: identities are in the database
+                        stmt = select(Workflow).where(
+                            Workflow.path == path,
+                            Workflow.function_name == function_name
+                        )
+                        result = await self.db.execute(stmt)
+                        existing_workflow = result.scalar_one_or_none()
+
+                        if existing_workflow:
+                            # Reuse existing ID
+                            workflow_uuid = existing_workflow.id
+                            logger.debug(
+                                f"Workflow {function_name} in {path} has no ID in decorator, "
+                                f"reusing existing DB ID: {workflow_uuid}"
+                            )
+                        else:
+                            # Generate new ID
+                            workflow_uuid = uuid4()
+                            logger.info(
+                                f"Workflow {function_name} in {path} has no ID, "
+                                f"generating new DB ID: {workflow_uuid}"
+                            )
 
                     # Get workflow name from decorator or function name
                     workflow_name = kwargs.get("name") or node.name
@@ -1818,17 +1834,21 @@ class FileStorageService:
                     # Extract parameters from function signature
                     parameters_schema = self._extract_parameters_from_ast(node)
 
-                    # function_name is the actual Python function name (unique per file)
                     # workflow_name is the display name from decorator (can have duplicates)
-                    function_name = node.name
+                    # function_name was set earlier and is the actual Python function name
 
                     # Use workflow ID as the conflict key for upsert
-                    # This ensures we update the correct workflow even if file_path or function_name changes
+                    # workflow_uuid was resolved above (from decorator, existing DB record, or generated)
+                    # Compute code hash for change detection
+                    code_hash = hashlib.sha256(content).hexdigest()
+
                     stmt = insert(Workflow).values(
                         id=workflow_uuid,
                         name=workflow_name,
                         function_name=function_name,
-                        file_path=path,
+                        path=path,
+                        code=content_str,
+                        code_hash=code_hash,
                         description=description,
                         category=category,
                         parameters_schema=parameters_schema,
@@ -1849,7 +1869,9 @@ class FileStorageService:
                         set_={
                             "name": workflow_name,
                             "function_name": function_name,
-                            "file_path": path,
+                            "path": path,
+                            "code": content_str,
+                            "code_hash": code_hash,
                             "description": description,
                             "category": category,
                             "parameters_schema": parameters_schema,
@@ -1871,6 +1893,11 @@ class FileStorageService:
                     result = await self.db.execute(stmt)
                     workflow = result.scalar_one()
                     logger.debug(f"Indexed workflow: {workflow_name} ({function_name}) from {path}")
+
+                    # Set primary entity for workspace_files (first one wins)
+                    if primary_entity_type is None:
+                        primary_entity_type = "workflow"
+                        primary_entity_id = str(workflow.id)
 
                     # Refresh endpoint registration if endpoint_enabled
                     if endpoint_enabled:
@@ -1917,10 +1944,15 @@ class FileStorageService:
                     function_name = node.name
 
                     # Data providers are stored in workflows table with type='data_provider'
+                    # Compute code hash for change detection
+                    dp_code_hash = hashlib.sha256(content).hexdigest()
+
                     stmt = insert(Workflow).values(
                         name=provider_name,
                         function_name=function_name,
-                        file_path=path,
+                        path=path,
+                        code=content_str,
+                        code_hash=dp_code_hash,
                         description=description,
                         category=category,
                         tags=tags,
@@ -1931,9 +1963,11 @@ class FileStorageService:
                         is_active=True,
                         last_seen_at=now,
                     ).on_conflict_do_update(
-                        index_elements=[Workflow.file_path, Workflow.function_name],
+                        index_elements=[Workflow.path, Workflow.function_name],
                         set_={
                             "name": provider_name,
+                            "code": content_str,
+                            "code_hash": dp_code_hash,
                             "description": description,
                             "category": category,
                             "tags": tags,
@@ -1945,15 +1979,33 @@ class FileStorageService:
                             "last_seen_at": now,
                             "updated_at": now,
                         },
-                    )
-                    await self.db.execute(stmt)
+                    ).returning(Workflow)
+                    dp_result = await self.db.execute(stmt)
+                    data_provider = dp_result.scalar_one()
                     logger.debug(f"Indexed data provider: {provider_name} ({function_name}) from {path}")
 
-        # Update workspace_files with detection results
-        stmt = update(WorkspaceFile).where(WorkspaceFile.path == path).values(
-            is_workflow=found_workflow,
-            is_data_provider=found_data_provider,
-        )
+                    # Set primary entity for workspace_files (first one wins)
+                    # Note: data_provider is stored in workflows table with type='data_provider'
+                    if primary_entity_type is None:
+                        primary_entity_type = "workflow"  # Use 'workflow' since it's in workflows table
+                        primary_entity_id = str(data_provider.id)
+
+        # Update workspace_files with detection results and entity routing
+        from uuid import UUID as UUID_type
+        update_values: dict[str, Any] = {
+            "is_workflow": found_workflow,
+            "is_data_provider": found_data_provider,
+        }
+        # Set entity routing for platform entities
+        if primary_entity_type and primary_entity_id:
+            update_values["entity_type"] = primary_entity_type
+            update_values["entity_id"] = UUID_type(primary_entity_id)
+        else:
+            # Clear entity routing if no platform entities found (e.g., file became regular)
+            update_values["entity_type"] = None
+            update_values["entity_id"] = None
+
+        stmt = update(WorkspaceFile).where(WorkspaceFile.path == path).values(**update_values)
         await self.db.execute(stmt)
 
         return final_content, content_modified, needs_indexing, workflow_id_conflicts, diagnostics
@@ -1967,7 +2019,7 @@ class FileStorageService:
         """
         # Handle @workflow (no parentheses)
         if isinstance(decorator, ast.Name):
-            if decorator.id in ("workflow", "data_provider"):
+            if decorator.id in ("workflow", "tool", "data_provider"):
                 return decorator.id, {}
             return None
 
@@ -1981,7 +2033,7 @@ class FileStorageService:
             else:
                 return None
 
-            if decorator_name not in ("workflow", "data_provider"):
+            if decorator_name not in ("workflow", "tool", "data_provider"):
                 return None
 
             # Extract keyword arguments
@@ -2310,17 +2362,16 @@ class FileStorageService:
                 f"File had {old_file_id}, DB has {form_id}. Using DB ID."
             )
             diagnostics.append(FileDiagnosticInfo(
-                file_path=path,
                 severity="warning",
                 message=f"ID corrected: file had {old_file_id}, using DB ID {form_id}",
                 line=None,
                 column=None,
             ))
 
-        # If content was modified, write it back
+        # DB-first: Forms are database entities. We update the DB record but do NOT
+        # write back to S3 or filesystem. The DB is the source of truth.
         if content_modified:
             final_content = json.dumps(form_data, indent=2).encode("utf-8")
-            await self._write_file_for_id_injection(path, final_content)
 
         now = datetime.utcnow()
 
@@ -2414,7 +2465,117 @@ class FileStorageService:
                     )
                     self.db.add(field_orm)
 
+        # Update workspace_files with entity routing
+        from uuid import UUID as UUID_type
+        stmt = update(WorkspaceFile).where(WorkspaceFile.path == path).values(
+            entity_type="form",
+            entity_id=form_id if isinstance(form_id, UUID_type) else UUID_type(form_id),
+        )
+        await self.db.execute(stmt)
+
         logger.debug(f"Indexed form: {name} from {path}")
+        return final_content, content_modified, True, None, diagnostics
+
+    async def _index_app(
+        self, path: str, content: bytes
+    ) -> tuple[bytes, bool, bool, list[WorkflowIdConflictInfo] | None, list[FileDiagnosticInfo]]:
+        """
+        Parse and index application from .app.json file.
+
+        If the JSON contains an 'id' field, uses that ID (for dual-write from API).
+        Otherwise generates a new ID (for files synced from git/editor).
+
+        Updates app draft_definition in the applications table.
+
+        Returns:
+            Tuple of (final_content, content_modified, needs_indexing, conflicts, diagnostics)
+        """
+        import json
+        from uuid import UUID, uuid4
+
+        content_modified = False
+        final_content = content
+        diagnostics: list[FileDiagnosticInfo] = []
+
+        try:
+            app_data = json.loads(content.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.warning(f"Invalid JSON in app file: {path}")
+            return content, False, False, None, []
+
+        name = app_data.get("name")
+        if not name:
+            logger.warning(f"App file missing name: {path}")
+            return content, False, False, None, []
+
+        # Use ID from JSON if present, otherwise generate new
+        app_id_str = app_data.get("id")
+        if app_id_str:
+            try:
+                app_id = UUID(app_id_str)
+            except ValueError:
+                logger.warning(f"Invalid app ID in {path}: {app_id_str}")
+                app_id = uuid4()
+                app_data["id"] = str(app_id)
+                content_modified = True
+        else:
+            app_id = uuid4()
+            app_data["id"] = str(app_id)
+            content_modified = True
+            logger.info(f"Injecting ID {app_id} into app file: {path}")
+
+        from src.models.orm.applications import Application
+
+        now = datetime.utcnow()
+
+        # Generate slug from name if not provided
+        slug = app_data.get("slug")
+        if not slug:
+            slug = name.lower().replace(" ", "-").replace("_", "-")
+            # Remove non-alphanumeric characters except hyphens
+            slug = "".join(c for c in slug if c.isalnum() or c == "-")
+
+        # Build definition from app_data (exclude top-level metadata)
+        definition = {
+            k: v for k, v in app_data.items()
+            if k not in ("id", "name", "slug", "description", "icon", "organization_id",
+                         "created_at", "updated_at", "created_by")
+        }
+
+        if content_modified:
+            final_content = json.dumps(app_data, indent=2).encode("utf-8")
+
+        # Upsert application
+        stmt = insert(Application).values(
+            id=app_id,
+            name=name,
+            slug=slug,
+            description=app_data.get("description"),
+            icon=app_data.get("icon"),
+            draft_definition=definition,
+            created_by="file_sync",
+        ).on_conflict_do_update(
+            index_elements=[Application.id],
+            set_={
+                "name": name,
+                "slug": slug,
+                "description": app_data.get("description"),
+                "icon": app_data.get("icon"),
+                "draft_definition": definition,
+                "updated_at": now,
+            },
+        )
+        await self.db.execute(stmt)
+
+        # Update workspace_files with entity routing
+        from uuid import UUID as UUID_type
+        stmt = update(WorkspaceFile).where(WorkspaceFile.path == path).values(
+            entity_type="app",
+            entity_id=app_id if isinstance(app_id, UUID_type) else UUID_type(str(app_id)),
+        )
+        await self.db.execute(stmt)
+
+        logger.debug(f"Indexed app: {name} from {path}")
         return final_content, content_modified, True, None, diagnostics
 
     async def _index_agent(
@@ -2493,17 +2654,16 @@ class FileStorageService:
                 f"File had {old_file_id}, DB has {agent_id}. Using DB ID."
             )
             diagnostics.append(FileDiagnosticInfo(
-                file_path=path,
                 severity="warning",
                 message=f"ID corrected: file had {old_file_id}, using DB ID {agent_id}",
                 line=None,
                 column=None,
             ))
 
-        # If content was modified, write it back
+        # DB-first: Agents are database entities. We update the DB record but do NOT
+        # write back to S3 or filesystem. The DB is the source of truth.
         if content_modified:
             final_content = json.dumps(agent_data, indent=2).encode("utf-8")
-            await self._write_file_for_id_injection(path, final_content)
 
         # Parse channels
         channels = agent_data.get("channels", ["chat"])
@@ -2567,7 +2727,6 @@ class FileStorageService:
                     else:
                         logger.warning(f"Agent {name} references non-existent workflow {workflow_id}")
                         diagnostics.append(FileDiagnosticInfo(
-                            file_path=path,
                             severity="warning",
                             message=f"Tool workflow {workflow_id} not found - skipping",
                             line=None,
@@ -2596,7 +2755,6 @@ class FileStorageService:
                     else:
                         logger.warning(f"Agent {name} references non-existent agent {child_agent_id}")
                         diagnostics.append(FileDiagnosticInfo(
-                            file_path=path,
                             severity="warning",
                             message=f"Delegated agent {child_agent_id} not found - skipping",
                             line=None,
@@ -2604,6 +2762,13 @@ class FileStorageService:
                         ))
                 except ValueError:
                     logger.warning(f"Invalid delegated_agent_id in agent {name}: {child_id_str}")
+
+        # Update workspace_files with entity routing
+        stmt = update(WorkspaceFile).where(WorkspaceFile.path == path).values(
+            entity_type="agent",
+            entity_id=agent_id,
+        )
+        await self.db.execute(stmt)
 
         logger.debug(f"Indexed agent: {name} from {path}")
         return final_content, content_modified, True, None, diagnostics
@@ -2638,7 +2803,7 @@ class FileStorageService:
 
         # Get workflows being removed (to clean up endpoints)
         result = await self.db.execute(
-            select(Workflow).where(Workflow.file_path == path, Workflow.endpoint_enabled == True)  # noqa: E712
+            select(Workflow).where(Workflow.path == path, Workflow.endpoint_enabled == True)  # noqa: E712
         )
         endpoint_workflows = result.scalars().all()
 
@@ -2665,7 +2830,7 @@ class FileStorageService:
         # Mark workflows and data providers from this file as inactive
         # (Data providers are now in the workflows table with type='data_provider')
         await self.db.execute(
-            update(Workflow).where(Workflow.file_path == path).values(is_active=False)
+            update(Workflow).where(Workflow.path == path).values(is_active=False)
         )
 
         # Mark forms from this file as inactive

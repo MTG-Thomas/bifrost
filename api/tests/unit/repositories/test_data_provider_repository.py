@@ -33,7 +33,7 @@ class TestDataProviderRepository:
         provider.id = uuid4()
         provider.name = "test-provider"
         provider.description = "Test provider"
-        provider.file_path = "/workspace/providers/test.py"
+        provider.path = "/workspace/providers/test.py"
         provider.is_active = True
         return provider
 

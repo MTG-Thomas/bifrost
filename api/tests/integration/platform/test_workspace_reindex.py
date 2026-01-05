@@ -117,16 +117,16 @@ def test_workflow():
             id=uuid4(),
             name="Orphaned Workflow",
             function_name="orphaned_func",
-            file_path="orphaned_workflow.py",  # This file doesn't exist
+            path="orphaned_workflow.py",  # This file doesn't exist
             is_active=True,
         )
         db_session.add(orphaned_workflow)
         await db_session.commit()
         orphaned_id = orphaned_workflow.id
 
-        # 3. Call reindex_workspace_files with inject_ids=True to inject IDs into decorators
+        # 3. Call reindex_workspace_files to index the workspace
         storage = get_file_storage_service(db_session)
-        counts = await storage.reindex_workspace_files(workspace, inject_ids=True)
+        counts = await storage.reindex_workspace_files(workspace)
         await db_session.commit()
 
         # 4. Verify the orphaned workflow is now inactive
@@ -138,7 +138,7 @@ def test_workflow():
 
         # 5. Verify the existing workflow was indexed and is active
         result = await db_session.execute(
-            select(Workflow).where(Workflow.file_path == "my_workflow.py")
+            select(Workflow).where(Workflow.path == "my_workflow.py")
         )
         indexed_workflow = result.scalar_one_or_none()
         assert indexed_workflow is not None
@@ -178,7 +178,7 @@ def test_provider():
             id=uuid4(),
             name="Orphaned Provider",
             function_name="orphaned_func",
-            file_path="orphaned_provider.py",  # This file doesn't exist
+            path="orphaned_provider.py",  # This file doesn't exist
             type="data_provider",  # Mark as data provider
             is_active=True,
         )
@@ -273,7 +273,7 @@ def test_provider():
                 id=uuid4(),
                 name=f"Workflow {i}",
                 function_name=f"workflow_{i}",
-                file_path=f"workflow_{i}.py",
+                path=f"workflow_{i}.py",
                 is_active=True,
             )
             db_session.add(workflow)
@@ -322,14 +322,14 @@ def documented_workflow(message: str, count: int = 5):
     pass
 """)
 
-        # 2. Call reindex_workspace_files with inject_ids=True to inject IDs into decorators
+        # 2. Call reindex_workspace_files to index the workspace
         storage = get_file_storage_service(db_session)
-        await storage.reindex_workspace_files(workspace, inject_ids=True)
+        await storage.reindex_workspace_files(workspace)
         await db_session.commit()
 
         # 3. Verify workflow was created with correct metadata
         result = await db_session.execute(
-            select(Workflow).where(Workflow.file_path == "documented_workflow.py")
+            select(Workflow).where(Workflow.path == "documented_workflow.py")
         )
         workflow = result.scalar_one()
 

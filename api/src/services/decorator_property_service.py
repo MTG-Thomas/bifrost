@@ -279,6 +279,92 @@ class DecoratorPropertyTransformer(cst.CSTTransformer):
         return result
 
 
+class IdStripperTransformer(cst.CSTTransformer):
+    """
+    LibCST transformer that removes 'id' arguments from decorators.
+
+    Used during git push to serialize clean Python code without DB IDs.
+    IDs are DB-only and should not be serialized to files for git.
+    """
+
+    SUPPORTED_DECORATORS = {"workflow", "data_provider", "tool"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.changes_made: list[str] = []
+        self._current_function: str | None = None
+
+    def visit_FunctionDef(self, node: cst.FunctionDef) -> bool:
+        self._current_function = node.name.value
+        return True
+
+    def leave_FunctionDef(
+        self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef
+    ) -> cst.FunctionDef:
+        self._current_function = None
+        return updated_node
+
+    def leave_Decorator(
+        self, original_node: cst.Decorator, updated_node: cst.Decorator
+    ) -> cst.Decorator:
+        decorator = updated_node.decorator
+
+        # Only process Call decorators (ones with parentheses)
+        if not isinstance(decorator, cst.Call):
+            return updated_node
+
+        decorator_name = self._get_decorator_name(decorator)
+        if decorator_name not in self.SUPPORTED_DECORATORS:
+            return updated_node
+
+        # Filter out 'id' argument
+        new_args = [arg for arg in decorator.args if not (arg.keyword and arg.keyword.value == "id")]
+
+        if len(new_args) == len(decorator.args):
+            # No 'id' argument found, no change needed
+            return updated_node
+
+        self.changes_made.append(
+            f"Removed id from @{decorator_name} on {self._current_function}"
+        )
+
+        # If no args left, convert to bare decorator
+        if not new_args:
+            return updated_node.with_changes(decorator=cst.Name(decorator_name))
+
+        # Fix trailing commas
+        new_args = self._fix_trailing_commas(new_args)
+        new_call = decorator.with_changes(args=new_args)
+        return updated_node.with_changes(decorator=new_call)
+
+    def _get_decorator_name(self, decorator: cst.BaseExpression) -> str | None:
+        name = get_full_name_for_node(decorator)
+        if name:
+            return name.split(".")[-1]
+        return None
+
+    def _fix_trailing_commas(self, args: list[cst.Arg]) -> list[cst.Arg]:
+        """Ensure proper comma handling for arg list."""
+        if not args:
+            return args
+
+        result = []
+        for i, arg in enumerate(args):
+            is_last = i == len(args) - 1
+            if is_last:
+                result.append(arg.with_changes(comma=cst.MaybeSentinel.DEFAULT))
+            else:
+                if not isinstance(arg.comma, cst.Comma):
+                    result.append(
+                        arg.with_changes(
+                            comma=cst.Comma(whitespace_after=cst.SimpleWhitespace(" "))
+                        )
+                    )
+                else:
+                    result.append(arg)
+        return result
+
+
 class SpecificIdTransformer(cst.CSTTransformer):
     """
     LibCST transformer that injects specific IDs into decorators.
@@ -561,39 +647,6 @@ class DecoratorPropertyService:
                 changes=[f"Parse error: {e}"],
             )
 
-    def inject_ids_if_missing(self, content: str) -> PropertyWriteResult:
-        """
-        Inject IDs into all decorators that don't have them.
-
-        This is the primary entry point for automatic ID injection
-        during workflow discovery.
-
-        Args:
-            content: Python source code
-
-        Returns:
-            PropertyWriteResult with modified content
-        """
-        try:
-            module = cst.parse_module(content)
-            transformer = DecoratorPropertyTransformer(
-                inject_id_if_missing=True,
-            )
-            new_module = module.visit(transformer)
-
-            return PropertyWriteResult(
-                modified=bool(transformer.changes_made),
-                new_content=new_module.code,
-                changes=transformer.changes_made,
-            )
-        except cst.ParserSyntaxError as e:
-            logger.error(f"Failed to parse Python source: {e}")
-            return PropertyWriteResult(
-                modified=False,
-                new_content=content,
-                changes=[f"Parse error: {e}"],
-            )
-
     def inject_specific_ids(
         self, content: str, function_ids: dict[str, str]
     ) -> PropertyWriteResult:
@@ -614,6 +667,37 @@ class DecoratorPropertyService:
             module = cst.parse_module(content)
             # Use transformer to inject specific IDs
             transformer = SpecificIdTransformer(function_ids)
+            new_module = module.visit(transformer)
+
+            return PropertyWriteResult(
+                modified=bool(transformer.changes_made),
+                new_content=new_module.code,
+                changes=transformer.changes_made,
+            )
+        except cst.ParserSyntaxError as e:
+            logger.error(f"Failed to parse Python source: {e}")
+            return PropertyWriteResult(
+                modified=False,
+                new_content=content,
+                changes=[f"Parse error: {e}"],
+            )
+
+    def strip_ids(self, content: str) -> PropertyWriteResult:
+        """
+        Remove 'id' arguments from all supported decorators.
+
+        Used during git push to serialize clean Python code without DB IDs.
+        IDs are DB-only and should not be serialized to files for git.
+
+        Args:
+            content: Python source code
+
+        Returns:
+            PropertyWriteResult with IDs stripped from decorators
+        """
+        try:
+            module = cst.parse_module(content)
+            transformer = IdStripperTransformer()
             new_module = module.visit(transformer)
 
             return PropertyWriteResult(

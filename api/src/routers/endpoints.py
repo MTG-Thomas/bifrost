@@ -244,7 +244,7 @@ async def execute_endpoint(
             # Build cached metadata
             workflow_metadata = CachedWorkflowMetadata(
                 workflow_id=str(workflow.id),
-                file_path=workflow.file_path,
+                file_path=workflow.path,
                 execution_mode=loaded_metadata.execution_mode,
                 timeout_seconds=loaded_metadata.timeout_seconds,
                 allowed_methods=loaded_metadata.allowed_methods or ["POST"],

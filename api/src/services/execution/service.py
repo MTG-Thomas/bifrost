@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from src.services.execution.module_loader import get_data_provider, WorkflowMetadata, import_module
+from src.services.execution.module_loader import get_data_provider, WorkflowMetadata, import_module, exec_from_db
 from src.models import WorkflowExecutionResponse
 from src.models.enums import ExecutionStatus
 
@@ -120,13 +120,13 @@ async def get_workflow_metadata_only(
         execution_mode=workflow_record.execution_mode or "async",
     )
     metadata.id = str(workflow_record.id)
-    metadata.source_file_path = workflow_record.file_path
+    metadata.source_file_path = workflow_record.path
 
     # Populate cache for next time
     await redis_client.set_workflow_metadata_cache(
         workflow_id=str(workflow_record.id),
         name=workflow_record.name,
-        file_path=workflow_record.file_path,
+        file_path=workflow_record.path,
         timeout_seconds=workflow_record.timeout_seconds or 1800,
         time_saved=workflow_record.time_saved or 0,
         value=float(workflow_record.value) if workflow_record.value else 0.0,
@@ -135,6 +135,65 @@ async def get_workflow_metadata_only(
 
     logger.debug(f"Loaded workflow metadata from DB: {workflow_id} -> {workflow_record.name}")
     return metadata
+
+
+async def get_workflow_for_execution(
+    workflow_id: str,
+) -> dict[str, Any]:
+    """
+    Get workflow data needed for subprocess execution.
+
+    Unlike get_workflow_metadata_only(), this includes the code and function_name
+    so the worker subprocess can execute directly from database without file access.
+
+    This is DB-only (no Redis caching) since code may be updated frequently
+    and we want the latest version for each execution.
+
+    Args:
+        workflow_id: Workflow UUID from database
+
+    Returns:
+        Dict with keys:
+        - name: Workflow display name
+        - function_name: Python function name
+        - path: Relative path (for __file__ injection)
+        - code: Python source code (or None if not stored)
+        - timeout_seconds: Execution timeout
+        - time_saved: ROI time saved value
+        - value: ROI value
+        - execution_mode: sync or async
+
+    Raises:
+        WorkflowNotFoundError: If workflow doesn't exist in database
+    """
+    from sqlalchemy import select
+    from src.core.database import get_session_factory
+    from src.models import Workflow as WorkflowORM
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        stmt = select(WorkflowORM).where(
+            WorkflowORM.id == workflow_id,
+            WorkflowORM.is_active == True,  # noqa: E712
+        )
+        result = await db.execute(stmt)
+        workflow_record = result.scalar_one_or_none()
+
+    if not workflow_record:
+        raise WorkflowNotFoundError(f"Workflow with ID '{workflow_id}' not found")
+
+    logger.debug(f"Loaded workflow for execution: {workflow_id} -> {workflow_record.name}")
+
+    return {
+        "name": workflow_record.name,
+        "function_name": workflow_record.function_name,
+        "path": workflow_record.path,
+        "code": workflow_record.code,  # May be None for legacy workflows
+        "timeout_seconds": workflow_record.timeout_seconds or 1800,
+        "time_saved": workflow_record.time_saved or 0,
+        "value": float(workflow_record.value) if workflow_record.value else 0.0,
+        "execution_mode": workflow_record.execution_mode or "async",
+    }
 
 
 async def get_workflow_by_id(
@@ -170,19 +229,35 @@ async def get_workflow_by_id(
     if not workflow_record:
         raise WorkflowNotFoundError(f"Workflow with ID '{workflow_id}' not found")
 
-    # Load from local workspace
-    file_path = WORKSPACE_PATH / workflow_record.file_path
-    if not file_path.exists():
-        raise WorkflowLoadError(
-            f"Workflow file not found: {workflow_record.file_path}. "
-            "Workspace may be out of sync."
-        )
+    # Load module - prefer DB code, fall back to file
+    module = None
 
-    # Import the module
-    try:
-        module = import_module(file_path)
-    except ImportError as e:
-        raise WorkflowLoadError(f"Failed to load workflow module: {e}")
+    # DB-first: Try to execute code from database
+    if workflow_record.code:
+        try:
+            module = exec_from_db(
+                code=workflow_record.code,
+                path=workflow_record.path,
+                function_name=workflow_record.function_name,
+            )
+            logger.debug(f"Loaded workflow from DB: {workflow_record.name}")
+        except (SyntaxError, ImportError) as e:
+            logger.warning(f"Failed to execute workflow from DB, falling back to file: {e}")
+            module = None
+
+    # Fallback: Load from local workspace (legacy path)
+    if module is None:
+        file_path = WORKSPACE_PATH / workflow_record.path
+        if not file_path.exists():
+            raise WorkflowLoadError(
+                f"Workflow file not found: {workflow_record.path}. "
+                "Workspace may be out of sync and code not in database."
+            )
+
+        try:
+            module = import_module(file_path)
+        except ImportError as e:
+            raise WorkflowLoadError(f"Failed to load workflow module: {e}")
 
     # Find the decorated function by name
     # All decorators (@workflow, @tool, @data_provider) use unified _executable_metadata
@@ -212,7 +287,7 @@ async def get_workflow_by_id(
                         type='data_provider',
                     )
                     workflow_metadata.id = str(workflow_record.id)
-                    workflow_metadata.source_file_path = workflow_record.file_path
+                    workflow_metadata.source_file_path = workflow_record.path
                 elif isinstance(meta, WorkflowMetadata):
                     workflow_metadata = meta
                 else:
@@ -223,12 +298,12 @@ async def get_workflow_by_id(
 
     if not workflow_func or not workflow_metadata:
         raise WorkflowLoadError(
-            f"No decorated function named '{workflow_record.name}' found in {workflow_record.file_path}"
+            f"No decorated function named '{workflow_record.name}' found in {workflow_record.path}"
         )
 
     # Enrich metadata from database record
     workflow_metadata.id = str(workflow_record.id)
-    workflow_metadata.source_file_path = workflow_record.file_path
+    workflow_metadata.source_file_path = workflow_record.path
 
     logger.debug(f"Loaded workflow by ID: {workflow_id} -> {workflow_record.name}")
     return workflow_func, workflow_metadata

@@ -44,10 +44,6 @@ class FileContentRequest(BaseModel):
     content: str = Field(..., description="File content (plain text or base64 encoded)")
     encoding: str = Field(default="utf-8", description="Content encoding (utf-8 or base64)")
     expected_etag: str | None = Field(default=None, description="Expected ETag for conflict detection (optional)")
-    force_ids: dict[str, str] | None = Field(
-        default=None,
-        description="Map of function_name -> ID to inject. Used when user chooses 'Use Existing IDs' for workflow ID conflicts."
-    )
 
     model_config = ConfigDict(from_attributes=True)
 

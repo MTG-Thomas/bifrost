@@ -78,8 +78,8 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
         cache_ttl_seconds=workflow.cache_ttl_seconds or 300,
         time_saved=workflow.time_saved or 0,
         value=float(workflow.value or 0.0),
-        source_file_path=workflow.file_path,
-        relative_file_path=_extract_relative_path(workflow.file_path),
+        source_file_path=workflow.path,
+        relative_file_path=_extract_relative_path(workflow.path),
     )
 
 

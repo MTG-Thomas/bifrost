@@ -254,6 +254,155 @@ import_module_fresh = import_module
 reload_single_module = import_module
 
 
+def exec_from_db(
+    code: str,
+    path: str,
+    function_name: str,
+) -> ModuleType:
+    """
+    Execute workflow code from database and return the module.
+
+    This is the DB-first execution path that replaces file-based imports.
+    The code is compiled and executed in a namespace with proper __file__
+    and __package__ values for tracebacks and relative imports.
+
+    Args:
+        code: The Python source code to execute
+        path: The workspace-relative path (e.g., "workflows/process_order.py")
+              Used for __file__ injection and traceback filenames
+        function_name: The function name to find (for validation)
+
+    Returns:
+        A ModuleType object with all defined functions and metadata
+
+    Raises:
+        ImportError: If code cannot be compiled or executed
+        SyntaxError: If code has syntax errors
+    """
+    # Construct the implicit file path for __file__ injection
+    # This path may not exist on disk but is needed for:
+    # 1. Meaningful stack traces
+    # 2. Relative path resolution in the code
+    implicit_file_path = WORKSPACE_PATH / path
+
+    # Calculate module name from path for proper __package__ and relative imports
+    path_obj = Path(path)
+    module_parts = list(path_obj.parts[:-1]) + [path_obj.stem]
+    module_name = '.'.join(module_parts) if module_parts else path_obj.stem
+
+    # Calculate __package__ for relative imports (parent package)
+    package_name = '.'.join(path_obj.parts[:-1]) if path_obj.parts[:-1] else None
+
+    # Ensure workspace is in sys.path for imports from regular files (modules/, etc.)
+    workspace_str = str(WORKSPACE_PATH)
+    if workspace_str not in sys.path:
+        sys.path.insert(0, workspace_str)
+
+    # Create module object
+    module = ModuleType(module_name)
+    module.__file__ = str(implicit_file_path)
+    module.__loader__ = None  # type: ignore[assignment]
+    module.__package__ = package_name
+    module.__spec__ = None
+
+    # Build execution namespace
+    # The namespace includes __builtins__ and module-level attributes
+    namespace: dict[str, Any] = {
+        "__name__": module_name,
+        "__file__": str(implicit_file_path),
+        "__package__": package_name,
+        "__builtins__": __builtins__,
+        "__doc__": None,
+        "__loader__": None,
+        "__spec__": None,
+    }
+
+    # Compile with filename for meaningful stack traces
+    try:
+        code_obj = compile(code, filename=str(implicit_file_path), mode='exec')
+    except SyntaxError as e:
+        logger.error(f"Syntax error in workflow code at {path}: {e}")
+        raise
+
+    # Execute in the namespace
+    try:
+        exec(code_obj, namespace)
+    except Exception as e:
+        logger.error(f"Error executing workflow code at {path}: {e}")
+        raise ImportError(f"Failed to execute workflow from DB: {e}") from e
+
+    # Copy namespace to module for attribute access
+    for key, value in namespace.items():
+        if not key.startswith('__'):
+            setattr(module, key, value)
+
+    # Also copy the dunder attributes
+    module.__dict__.update(namespace)
+
+    # Register in sys.modules for potential imports
+    sys.modules[module_name] = module
+
+    logger.debug(f"Executed workflow from DB: {path} (module: {module_name})")
+    return module
+
+
+def load_workflow_from_db(
+    code: str,
+    path: str,
+    workflow_name: str,
+    function_name: str,
+) -> tuple[Callable, WorkflowMetadata] | None:
+    """
+    Load a workflow by executing code from the database.
+
+    This is the DB-first loading path. It executes code stored in workflows.code
+    and extracts the decorated function.
+
+    Args:
+        code: Python source code from workflows.code
+        path: Workspace-relative path for __file__ injection
+        workflow_name: Display name to find (from decorator)
+        function_name: Python function name to find
+
+    Returns:
+        Tuple of (function, metadata) or None if not found
+    """
+    try:
+        module = exec_from_db(code=code, path=path, function_name=function_name)
+    except (SyntaxError, ImportError) as e:
+        logger.error(f"Failed to execute workflow from DB: {e}")
+        return None
+
+    # Find the decorated function by name
+    for attr_name in dir(module):
+        attr = getattr(module, attr_name)
+        if not callable(attr):
+            continue
+
+        # All decorators use _executable_metadata
+        if hasattr(attr, '_executable_metadata'):
+            metadata = getattr(attr, '_executable_metadata', None)
+            if metadata and hasattr(metadata, 'name') and metadata.name == workflow_name:
+                # For data providers, convert to WorkflowMetadata for consistent execution
+                if hasattr(metadata, 'type') and metadata.type == 'data_provider':
+                    workflow_meta = WorkflowMetadata(
+                        name=metadata.name,
+                        description=metadata.description,
+                        category=getattr(metadata, 'category', 'General'),
+                        parameters=getattr(metadata, 'parameters', []),
+                        timeout_seconds=getattr(metadata, 'timeout_seconds', 300),
+                        type='data_provider',
+                    )
+                    return (attr, workflow_meta)
+                elif isinstance(metadata, WorkflowMetadata):
+                    return (attr, metadata)
+                else:
+                    return (attr, _convert_workflow_metadata(metadata))
+
+    logger.warning(f"Workflow '{workflow_name}' not found in code from {path}")
+    return None
+
+
 # ==================== WORKFLOW DISCOVERY ====================
 
 
@@ -671,6 +820,9 @@ def load_workflow_by_file_path(
 ) -> tuple[Callable, WorkflowMetadata] | None:
     """
     Load a specific executable (workflow, tool, or data provider) from a known file path.
+
+    This is a fallback path used when workflow code is not available in the database.
+    The primary path is load_workflow_from_db() which loads code directly from the database.
 
     Use this when you already know the file path (from database or cache)
     to skip the filesystem scan that load_workflow() does.

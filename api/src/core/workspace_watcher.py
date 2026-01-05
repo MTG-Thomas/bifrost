@@ -6,14 +6,22 @@ sync events to other containers.
 
 Architecture:
 - All containers run the watcher (API and workers)
-- When a change is detected, check DB state to determine if we originated it
-- If DB already reflects the change → we received it from pub/sub, don't publish
-- If DB doesn't reflect the change → we originated it, sync to S3/DB AND publish
+- When a change is detected, check Redis cache to determine if we originated it
+- If cache hash matches local hash -> we received it from pub/sub, don't publish
+- If cache hash differs -> we originated it, sync to storage AND publish
+
+Storage Model:
+- Platform entities (workflows, forms, apps, agents): Stored in database
+  - Workflows: workflows.code column
+  - Forms: forms.definition column
+  - Apps: applications.draft_definition column
+  - Agents: agents.definition column
+- Regular files (modules/, data/, configs): Stored in S3
 
 This ensures:
 1. SDK writes (which bypass FileStorageService) get synced
 2. API writes get synced (FileStorageService writes locally, watcher detects)
-3. Pub/sub received changes don't get re-published (DB check prevents loops)
+3. Pub/sub received changes don't get re-published (cache check prevents loops)
 """
 
 import asyncio
@@ -225,11 +233,10 @@ class WorkspaceWatcher:
         logger.info(f"Watcher: originating file write {path} ({len(content)} bytes)")
 
         # Sync to S3/DB (this also updates Redis cache via dual-write and publishes to Redis)
+        # Platform entities (workflows, forms, apps, agents) are indexed to DB.
+        # Regular files are stored in S3.
         storage = FileStorageService(db)
-        write_result = await storage.write_file(path, content, updated_by="watcher")
-
-        if write_result.content_modified:
-            logger.info(f"Watcher: IDs injected into {path}")
+        await storage.write_file(path, content, updated_by="watcher")
 
     async def _handle_delete(self, db, path: str) -> None:
         """

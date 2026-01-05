@@ -64,6 +64,12 @@ class WorkspaceFile(Base):
     is_workflow: Mapped[bool] = mapped_column(Boolean, default=False)
     is_data_provider: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Entity routing - links file to its primary entity for efficient lookups
+    # entity_type: 'workflow', 'form', 'app', 'agent' - indicates which table to query
+    # entity_id: polymorphic reference to the entity's primary key
+    entity_type: Mapped[str | None] = mapped_column(String(20), default=None)
+    entity_id: Mapped[UUID | None] = mapped_column(default=None)
+
     __table_args__ = (
         # Unique constraint for ON CONFLICT upsert
         UniqueConstraint("path", name="uq_workspace_files_path"),

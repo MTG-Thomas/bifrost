@@ -210,8 +210,8 @@ async def _list_workflows_impl(
 
                 if meta_parts:
                     lines.append(f"- {' | '.join(meta_parts)}")
-                if workflow.file_path:
-                    lines.append(f"- File: `{workflow.file_path}`")
+                if workflow.path:
+                    lines.append(f"- File: `{workflow.path}`")
                 lines.append("")
 
             return "\n".join(lines)
@@ -2342,7 +2342,7 @@ async def _get_workflow_impl(
 
             lines.append("## Properties\n")
             lines.append(f"- **ID:** `{workflow.id}`")
-            lines.append(f"- **File:** `{workflow.file_path}`")
+            lines.append(f"- **File:** `{workflow.path}`")
             if workflow.category:
                 lines.append(f"- **Category:** {workflow.category}")
             lines.append(f"- **Is Tool:** {'Yes' if workflow.is_tool else 'No'}")

@@ -310,6 +310,12 @@ export function RunPanel() {
 		setDetectedItem({ type: "script" });
 	}, [openFile, metadata]);
 
+	// Create a stable dependency for workflow changes based on IDs, not array reference
+	// This prevents infinite loops from array reference instability
+	const workflowIds = useMemo(() => {
+		return (detectedItem.workflows || []).map((w) => w.id).join(",");
+	}, [detectedItem.workflows]);
+
 	// Auto-select workflow when there's only one, reset when file changes
 	useEffect(() => {
 		const workflows = detectedItem.workflows || [];
@@ -321,7 +327,8 @@ export function RunPanel() {
 			setSelectedWorkflowId(null);
 		}
 		// For multiple workflows: don't auto-select, let user choose
-	}, [detectedItem.workflows]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [workflowIds]);
 
 	// Get the currently selected workflow metadata
 	const selectedWorkflow = useMemo(() => {

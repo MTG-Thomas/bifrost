@@ -1169,6 +1169,17 @@ class GitIntegrationService:
                 )
 
         try:
+            # Serialize platform entities (workflows, forms, apps) from DB to workspace files
+            # This generates clean Python code without IDs for portable git storage
+            await send_log("Serializing platform entities to workspace...")
+            try:
+                serialized_paths = await self._serialize_platform_entities_to_workspace()
+                if serialized_paths:
+                    await send_log(f"Serialized {len(serialized_paths)} platform entities")
+            except Exception as e:
+                logger.warning(f"Failed to serialize platform entities: {e}")
+                await send_log(f"Warning: Some platform entities could not be serialized: {e}", "warning")
+
             # Check for uncommitted changes before pushing
             await send_log("Checking for uncommitted changes...")
             status = porcelain.status(repo)
@@ -1815,6 +1826,15 @@ class GitIntegrationService:
 
                         logger.info(f"Merge staged successfully, {len(updated_files)} file(s) ready to commit")
                         await send_log(f"✓ Merge prepared! {len(updated_files)} file(s) staged. Review and commit to complete the merge.", "success")
+
+                    # Parse and upsert platform entities from updated files to DB
+                    # This syncs file changes (workflows, forms, apps) to the database
+                    try:
+                        await send_log("Syncing platform entities to database...")
+                        await self._parse_and_upsert_platform_entities(updated_files)
+                    except Exception as e:
+                        logger.warning(f"Failed to parse platform entities: {e}")
+                        await send_log(f"Warning: Some platform entities could not be synced: {e}", "warning")
 
                     # Scan updated Python files for missing SDK references
                     await self._scan_updated_files_for_sdk_issues(updated_files)
@@ -2550,3 +2570,520 @@ class GitIntegrationService:
             "requires_confirmation": requires_confirmation,
             "backup_will_be_created": file_count > 0
         }
+
+    # =========================================================================
+    # Platform Entity Serialization (DB -> Files for Git Push)
+    # =========================================================================
+
+    async def _serialize_platform_entities_to_workspace(self) -> list[str]:
+        """
+        Serialize platform entities (workflows, forms, apps) from DB to workspace files.
+
+        Used during git push to generate clean files from DB state.
+        Workflows have their IDs stripped from decorators.
+        Forms and apps are serialized as JSON without environment-specific fields.
+
+        Returns:
+            List of paths that were serialized
+        """
+        import json
+        from sqlalchemy import select
+        from src.core.database import get_session_factory
+        from src.models.orm import Workflow, Form, FormField, Application
+        from src.services.decorator_property_service import DecoratorPropertyService
+
+        session_factory = get_session_factory()
+        serialized_paths: list[str] = []
+        decorator_service = DecoratorPropertyService()
+
+        async with session_factory() as db:
+            # 1. Serialize workflows
+            workflow_stmt = select(Workflow).where(
+                Workflow.is_active == True,  # noqa: E712
+                Workflow.code.isnot(None),
+                Workflow.path.isnot(None),
+            )
+            workflow_result = await db.execute(workflow_stmt)
+            workflows = workflow_result.scalars().all()
+
+            for workflow in workflows:
+                if not workflow.code or not workflow.path:
+                    continue
+
+                # Strip ID from decorator for clean git output
+                result = decorator_service.strip_ids(workflow.code)
+                clean_code = result.new_content
+
+                # Write to workspace
+                file_path = self.workspace_path / workflow.path
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(clean_code, encoding="utf-8")
+                serialized_paths.append(workflow.path)
+                logger.debug(f"Serialized workflow to {workflow.path}")
+
+            # 2. Serialize forms
+            form_stmt = select(Form).where(
+                Form.is_active == True,  # noqa: E712
+                Form.file_path.isnot(None),
+            )
+            form_result = await db.execute(form_stmt)
+            forms = form_result.scalars().all()
+
+            for form in forms:
+                if not form.file_path:
+                    continue
+
+                # Load fields for this form
+                fields_stmt = select(FormField).where(
+                    FormField.form_id == form.id
+                ).order_by(FormField.position)
+                fields_result = await db.execute(fields_stmt)
+                fields = fields_result.scalars().all()
+
+                # Build form JSON (portable fields only, no env-specific data)
+                form_data = {
+                    "name": form.name,
+                    "description": form.description,
+                }
+
+                # Include workflow reference by path+function for portability
+                if form.workflow_path and form.workflow_function_name:
+                    form_data["workflow_path"] = form.workflow_path
+                    form_data["workflow_function_name"] = form.workflow_function_name
+                elif form.workflow_id:
+                    form_data["workflow_id"] = form.workflow_id
+
+                if form.launch_workflow_id:
+                    form_data["launch_workflow_id"] = form.launch_workflow_id
+
+                if form.default_launch_params:
+                    form_data["default_launch_params"] = form.default_launch_params
+
+                if form.allowed_query_params:
+                    form_data["allowed_query_params"] = form.allowed_query_params
+
+                # Serialize form fields
+                if fields:
+                    form_data["form_schema"] = {
+                        "fields": [
+                            self._serialize_form_field(field)
+                            for field in fields
+                        ]
+                    }
+
+                # Write to workspace
+                file_path = self.workspace_path / form.file_path
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(
+                    json.dumps(form_data, indent=2, default=str),
+                    encoding="utf-8"
+                )
+                serialized_paths.append(form.file_path)
+                logger.debug(f"Serialized form to {form.file_path}")
+
+            # 3. Serialize applications
+            app_stmt = select(Application).where(
+                Application.live_definition.isnot(None),
+            )
+            app_result = await db.execute(app_stmt)
+            apps = app_result.scalars().all()
+
+            for app in apps:
+                if not app.live_definition:
+                    continue
+
+                # Derive file path from slug
+                file_path_str = f"apps/{app.slug}.app.json"
+
+                # Build app JSON (portable fields only)
+                app_data = {
+                    "name": app.name,
+                    "slug": app.slug,
+                    "description": app.description,
+                    "icon": app.icon,
+                    "definition": app.live_definition,
+                }
+
+                # Write to workspace
+                file_path = self.workspace_path / file_path_str
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(
+                    json.dumps(app_data, indent=2, default=str),
+                    encoding="utf-8"
+                )
+                serialized_paths.append(file_path_str)
+                logger.debug(f"Serialized app to {file_path_str}")
+
+        logger.info(f"Serialized {len(serialized_paths)} platform entities to workspace")
+        return serialized_paths
+
+    def _serialize_form_field(self, field: Any) -> dict:
+        """Serialize a FormField ORM object to a dictionary."""
+        data: dict[str, Any] = {
+            "name": field.name,
+            "type": field.type,
+            "required": field.required,
+        }
+
+        if field.label:
+            data["label"] = field.label
+        if field.placeholder:
+            data["placeholder"] = field.placeholder
+        if field.help_text:
+            data["help_text"] = field.help_text
+        if field.default_value is not None:
+            data["default_value"] = field.default_value
+        if field.options:
+            data["options"] = field.options
+        if field.data_provider_id:
+            data["data_provider_id"] = str(field.data_provider_id)
+        if field.data_provider_inputs:
+            data["data_provider_inputs"] = field.data_provider_inputs
+        if field.visibility_expression:
+            data["visibility_expression"] = field.visibility_expression
+        if field.validation:
+            data["validation"] = field.validation
+        if field.allowed_types:
+            data["allowed_types"] = field.allowed_types
+        if field.multiple is not None:
+            data["multiple"] = field.multiple
+        if field.max_size_mb:
+            data["max_size_mb"] = field.max_size_mb
+        if field.content:
+            data["content"] = field.content
+
+        return data
+
+    # =========================================================================
+    # Platform Entity Parsing (Files -> DB for Git Pull)
+    # =========================================================================
+
+    async def _parse_and_upsert_platform_entities(
+        self,
+        updated_files: list[str]
+    ) -> None:
+        """
+        Parse platform entity files and upsert to database.
+
+        Used during git pull to sync file changes to DB.
+
+        Args:
+            updated_files: List of file paths that were updated during pull
+        """
+        from src.core.database import get_session_factory
+        from src.services.decorator_property_service import DecoratorPropertyService
+
+        session_factory = get_session_factory()
+        decorator_service = DecoratorPropertyService()
+
+        async with session_factory() as db:
+            for file_path in updated_files:
+                full_path = self.workspace_path / file_path
+
+                if not full_path.exists():
+                    continue
+
+                try:
+                    if file_path.endswith(".py"):
+                        await self._parse_python_file(
+                            db, file_path, full_path, decorator_service
+                        )
+                    elif file_path.endswith(".form.json"):
+                        await self._parse_form_file(db, file_path, full_path)
+                    elif file_path.endswith(".app.json"):
+                        await self._parse_app_file(db, file_path, full_path)
+                except Exception as e:
+                    logger.warning(f"Failed to parse {file_path}: {e}")
+                    continue
+
+            await db.commit()
+        logger.info(f"Parsed and upserted {len(updated_files)} files to database")
+
+    async def _parse_python_file(
+        self,
+        db: Any,
+        file_path: str,
+        full_path: Path,
+        decorator_service: Any,
+    ) -> None:
+        """Parse a Python file and upsert workflows to database."""
+        from datetime import datetime
+        from uuid import uuid4
+        import hashlib
+        from sqlalchemy.dialects.postgresql import insert
+        from src.models.orm import Workflow
+
+        content = full_path.read_text(encoding="utf-8")
+
+        # Read decorators from the file
+        decorators = decorator_service.read_decorators(content)
+
+        for dec in decorators:
+            if dec.decorator_type not in ("workflow", "tool", "data_provider"):
+                continue
+
+            # Map decorator type to workflow type
+            workflow_type = dec.decorator_type
+
+            # Extract properties from decorator
+            name = dec.properties.get("name", dec.function_name)
+            description = dec.properties.get("description")
+            schedule = dec.properties.get("schedule")
+            tags = dec.properties.get("tags", [])
+            category = dec.properties.get("category", "General")
+
+            # For tools
+            tool_description = dec.properties.get("tool_description")
+
+            # For data providers
+            cache_ttl = dec.properties.get("cache_ttl_seconds", 300)
+
+            # Calculate code hash
+            code_hash = hashlib.sha256(content.encode()).hexdigest()
+
+            now = datetime.utcnow()
+
+            # Upsert workflow - match by path + function_name
+            stmt = insert(Workflow).values(
+                id=uuid4(),
+                name=name,
+                function_name=dec.function_name,
+                description=description,
+                category=category,
+                type=workflow_type,
+                path=file_path,
+                module_path=file_path.replace("/", ".").replace(".py", ""),
+                code=content,
+                code_hash=code_hash,
+                schedule=schedule,
+                tags=tags,
+                is_active=True,
+                last_seen_at=now,
+                tool_description=tool_description,
+                cache_ttl_seconds=cache_ttl,
+                created_at=now,
+                updated_at=now,
+            ).on_conflict_do_update(
+                constraint="workflows_path_function_key",
+                set_={
+                    "name": name,
+                    "description": description,
+                    "category": category,
+                    "type": workflow_type,
+                    "code": content,
+                    "code_hash": code_hash,
+                    "schedule": schedule,
+                    "tags": tags,
+                    "is_active": True,
+                    "last_seen_at": now,
+                    "tool_description": tool_description,
+                    "cache_ttl_seconds": cache_ttl,
+                    "updated_at": now,
+                },
+            )
+            await db.execute(stmt)
+            logger.debug(f"Upserted workflow {dec.function_name} from {file_path}")
+
+    async def _parse_form_file(
+        self,
+        db: Any,
+        file_path: str,
+        full_path: Path,
+    ) -> None:
+        """Parse a .form.json file and upsert to database."""
+        import json
+        from datetime import datetime
+        from uuid import uuid4, UUID
+        from sqlalchemy import select, delete
+        from sqlalchemy.dialects.postgresql import insert
+        from src.models.orm import Form, FormField
+
+        content = full_path.read_text(encoding="utf-8")
+        form_data = json.loads(content)
+
+        name = form_data.get("name")
+        if not name:
+            logger.warning(f"Form file missing name: {file_path}")
+            return
+
+        now = datetime.utcnow()
+
+        # Check if form exists at this path
+        existing_stmt = select(Form).where(Form.file_path == file_path)
+        existing_result = await db.execute(existing_stmt)
+        existing_form = existing_result.scalar_one_or_none()
+
+        if existing_form:
+            form_id = existing_form.id
+        else:
+            form_id = uuid4()
+
+        # Resolve workflow reference
+        workflow_id = form_data.get("workflow_id")
+        workflow_path = form_data.get("workflow_path")
+        workflow_function_name = form_data.get("workflow_function_name")
+
+        # If we have path+function but no ID, resolve it
+        if not workflow_id and workflow_path and workflow_function_name:
+            from src.models.orm import Workflow
+            wf_stmt = select(Workflow.id).where(
+                Workflow.path == workflow_path,
+                Workflow.function_name == workflow_function_name,
+            )
+            wf_result = await db.execute(wf_stmt)
+            wf_row = wf_result.scalar_one_or_none()
+            if wf_row:
+                workflow_id = str(wf_row)
+
+        # Upsert form
+        stmt = insert(Form).values(
+            id=form_id,
+            name=name,
+            description=form_data.get("description"),
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            workflow_function_name=workflow_function_name,
+            launch_workflow_id=form_data.get("launch_workflow_id"),
+            default_launch_params=form_data.get("default_launch_params"),
+            allowed_query_params=form_data.get("allowed_query_params"),
+            file_path=file_path,
+            is_active=True,
+            last_seen_at=now,
+            created_by="git_sync",
+            created_at=now,
+            updated_at=now,
+        ).on_conflict_do_update(
+            index_elements=[Form.id],
+            set_={
+                "name": name,
+                "description": form_data.get("description"),
+                "workflow_id": workflow_id,
+                "workflow_path": workflow_path,
+                "workflow_function_name": workflow_function_name,
+                "launch_workflow_id": form_data.get("launch_workflow_id"),
+                "default_launch_params": form_data.get("default_launch_params"),
+                "allowed_query_params": form_data.get("allowed_query_params"),
+                "file_path": file_path,
+                "is_active": True,
+                "last_seen_at": now,
+                "updated_at": now,
+            },
+        )
+        await db.execute(stmt)
+
+        # Sync form fields
+        form_schema = form_data.get("form_schema")
+        if form_schema and isinstance(form_schema, dict):
+            fields_data = form_schema.get("fields", [])
+
+            # Delete existing fields
+            await db.execute(
+                delete(FormField).where(FormField.form_id == form_id)
+            )
+
+            # Create new fields
+            for position, field in enumerate(fields_data):
+                if not isinstance(field, dict) or not field.get("name"):
+                    continue
+
+                # Handle data_provider_id
+                dp_id = field.get("data_provider_id")
+                if dp_id:
+                    try:
+                        dp_id = UUID(dp_id)
+                    except (ValueError, TypeError):
+                        dp_id = None
+
+                field_orm = FormField(
+                    form_id=form_id,
+                    name=field.get("name"),
+                    label=field.get("label"),
+                    type=field.get("type", "text"),
+                    required=field.get("required", False),
+                    position=position,
+                    placeholder=field.get("placeholder"),
+                    help_text=field.get("help_text"),
+                    default_value=field.get("default_value"),
+                    options=field.get("options"),
+                    data_provider_id=dp_id,
+                    data_provider_inputs=field.get("data_provider_inputs"),
+                    visibility_expression=field.get("visibility_expression"),
+                    validation=field.get("validation"),
+                    allowed_types=field.get("allowed_types"),
+                    multiple=field.get("multiple"),
+                    max_size_mb=field.get("max_size_mb"),
+                    content=field.get("content"),
+                )
+                db.add(field_orm)
+
+        logger.debug(f"Upserted form {name} from {file_path}")
+
+    async def _parse_app_file(
+        self,
+        db: Any,
+        file_path: str,
+        full_path: Path,
+    ) -> None:
+        """Parse a .app.json file and upsert to database."""
+        import json
+        from datetime import datetime
+        from uuid import uuid4
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert
+        from src.models.orm import Application
+
+        content = full_path.read_text(encoding="utf-8")
+        app_data = json.loads(content)
+
+        name = app_data.get("name")
+        slug = app_data.get("slug")
+        if not name or not slug:
+            logger.warning(f"App file missing name or slug: {file_path}")
+            return
+
+        definition = app_data.get("definition")
+        if not definition:
+            logger.warning(f"App file missing definition: {file_path}")
+            return
+
+        now = datetime.utcnow()
+
+        # Check if app exists with this slug
+        existing_stmt = select(Application).where(Application.slug == slug)
+        existing_result = await db.execute(existing_stmt)
+        existing_app = existing_result.scalar_one_or_none()
+
+        if existing_app:
+            app_id = existing_app.id
+        else:
+            app_id = uuid4()
+
+        # Upsert application
+        stmt = insert(Application).values(
+            id=app_id,
+            name=name,
+            slug=slug,
+            description=app_data.get("description"),
+            icon=app_data.get("icon"),
+            draft_definition=definition,
+            live_definition=definition,
+            live_version=1,
+            draft_version=1,
+            published_at=now,
+            created_at=now,
+            updated_at=now,
+            created_by="git_sync",
+        ).on_conflict_do_update(
+            index_elements=[Application.id],
+            set_={
+                "name": name,
+                "description": app_data.get("description"),
+                "icon": app_data.get("icon"),
+                "draft_definition": definition,
+                "live_definition": definition,
+                "published_at": now,
+                "updated_at": now,
+            },
+        )
+        await db.execute(stmt)
+        logger.debug(f"Upserted app {name} from {file_path}")

@@ -113,73 +113,8 @@ class WorkspaceSyncService:
 
                 logger.info(f"Downloaded workspace from S3 to {WORKSPACE_PATH}")
 
-                # TODO: Re-enable after confirming not causing startup hang
-                # # Lightweight scan for files needing ID injection (read-only, no DB writes)
-                # files_needing_ids = storage.detect_files_needing_ids(WORKSPACE_PATH)
-                #
-                # if files_needing_ids:
-                #     logger.info(
-                #         f"Found {len(files_needing_ids)} file(s) needing indexing"
-                #     )
-                #     await self._create_maintenance_notification(db, files_needing_ids)
-                #     await db.commit()
-
         except Exception as e:
             logger.warning(f"Failed to download workspace from S3: {e}")
-
-    async def _create_maintenance_notification(
-        self, db, files_needing_ids: list[str]
-    ) -> None:
-        """Create a notification for platform admins about files needing ID injection."""
-        from src.services.notification_service import get_notification_service
-        from src.models.contracts.notifications import (
-            NotificationCreate,
-            NotificationCategory,
-            NotificationStatus,
-        )
-
-        try:
-            notification_service = get_notification_service()
-
-            # Check for existing notification to avoid duplicates
-            # (Both API and Worker call workspace_sync.start())
-            existing = await notification_service.find_admin_notification_by_title(
-                title="Workspace Indexing Required",
-                category=NotificationCategory.SYSTEM,
-            )
-            if existing:
-                logger.debug("Maintenance notification already exists, skipping")
-                return
-
-            count = len(files_needing_ids)
-            # Limit files shown in description to keep it readable
-            preview_files = files_needing_ids[:3]
-            remaining = count - len(preview_files)
-
-            file_list = ", ".join(preview_files)
-            if remaining > 0:
-                file_list += f" (+{remaining} more)"
-
-            # Create notification in awaiting_action state with action button
-            # This shows no spinner and allows user to trigger reindex inline
-            await notification_service.create_notification(
-                user_id="system",
-                request=NotificationCreate(
-                    category=NotificationCategory.SYSTEM,
-                    title="Workspace Indexing Required",
-                    description=f"{count} workflow file(s) need indexing: {file_list}",
-                    metadata={
-                        "action": "run_maintenance",
-                        "action_label": "Run Now",
-                        "files": files_needing_ids,
-                    },
-                ),
-                for_admins=True,
-                initial_status=NotificationStatus.AWAITING_ACTION,
-            )
-            logger.info(f"Created maintenance notification for {count} files needing IDs")
-        except Exception as e:
-            logger.warning(f"Failed to create maintenance notification: {e}")
 
     async def _listen(self) -> None:
         """Listen for workspace sync events."""

@@ -808,3 +808,141 @@ class TestFormValidation:
 
         # Cleanup
         e2e_client.delete(f"/api/forms/{form['id']}", headers=platform_admin.headers)
+
+
+@pytest.mark.e2e
+class TestFormDBStorage:
+    """Tests verifying forms are stored in database (DB-first model)."""
+
+    def test_form_immediately_queryable_after_create(
+        self, e2e_client, platform_admin
+    ):
+        """Form is immediately queryable after creation (DB storage)."""
+        response = e2e_client.post(
+            "/api/forms",
+            headers=platform_admin.headers,
+            json={
+                "name": "Immediate Query Form",
+                "workflow_id": None,
+                "form_schema": {"fields": []},
+                "access_level": "authenticated",
+            },
+        )
+        assert response.status_code == 201
+        form = response.json()
+        form_id = form["id"]
+
+        # Immediately query - should work without delay (DB-first)
+        response = e2e_client.get(
+            f"/api/forms/{form_id}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200, \
+            "Form should be immediately queryable (DB-first storage)"
+        assert response.json()["id"] == form_id
+
+        # Cleanup
+        e2e_client.delete(f"/api/forms/{form_id}", headers=platform_admin.headers)
+
+    def test_form_update_immediately_visible(
+        self, e2e_client, platform_admin
+    ):
+        """Form updates are immediately visible (no sync delay)."""
+        # Create form
+        response = e2e_client.post(
+            "/api/forms",
+            headers=platform_admin.headers,
+            json={
+                "name": "Update Visibility Form",
+                "description": "Original",
+                "workflow_id": None,
+                "form_schema": {"fields": []},
+                "access_level": "authenticated",
+            },
+        )
+        assert response.status_code == 201
+        form_id = response.json()["id"]
+
+        # Update form
+        response = e2e_client.patch(
+            f"/api/forms/{form_id}",
+            headers=platform_admin.headers,
+            json={"description": "Updated immediately"},
+        )
+        assert response.status_code == 200
+
+        # Immediately query - should see update (DB-first)
+        response = e2e_client.get(
+            f"/api/forms/{form_id}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["description"] == "Updated immediately", \
+            "Form update should be immediately visible"
+
+        # Cleanup
+        e2e_client.delete(f"/api/forms/{form_id}", headers=platform_admin.headers)
+
+    def test_form_persists_complex_schema(
+        self, e2e_client, platform_admin
+    ):
+        """Complex form schema is fully persisted in DB."""
+        complex_schema = {
+            "fields": [
+                {
+                    "name": "complex_select",
+                    "type": "select",
+                    "label": "Complex Select",
+                    "options": [
+                        {"value": "opt1", "label": "Option 1"},
+                        {"value": "opt2", "label": "Option 2"},
+                    ],
+                    "required": True,
+                    "help_text": "Select an option",
+                    "placeholder": "Choose...",
+                },
+                {
+                    "name": "conditional_text",
+                    "type": "text",
+                    "label": "Conditional Text",
+                    "visibility_expression": "field.complex_select == 'opt1'",
+                },
+            ]
+        }
+
+        response = e2e_client.post(
+            "/api/forms",
+            headers=platform_admin.headers,
+            json={
+                "name": "Complex Schema Form",
+                "workflow_id": None,
+                "form_schema": complex_schema,
+                "access_level": "authenticated",
+            },
+        )
+        assert response.status_code == 201
+        form_id = response.json()["id"]
+
+        # Re-fetch and verify all attributes persisted
+        response = e2e_client.get(
+            f"/api/forms/{form_id}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        form = response.json()
+        fields = form["form_schema"]["fields"]
+
+        # Check complex select attributes
+        select_field = next((f for f in fields if f["name"] == "complex_select"), None)
+        assert select_field is not None
+        assert len(select_field["options"]) == 2
+        assert select_field.get("help_text") == "Select an option"
+        assert select_field.get("placeholder") == "Choose..."
+
+        # Check conditional field
+        cond_field = next((f for f in fields if f["name"] == "conditional_text"), None)
+        assert cond_field is not None
+        assert cond_field.get("visibility_expression") == "field.complex_select == 'opt1'"
+
+        # Cleanup
+        e2e_client.delete(f"/api/forms/{form_id}", headers=platform_admin.headers)

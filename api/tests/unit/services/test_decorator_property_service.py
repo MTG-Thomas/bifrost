@@ -1,7 +1,6 @@
 """Unit tests for DecoratorPropertyService."""
 
 import sys
-from uuid import UUID
 
 import pytest
 
@@ -236,106 +235,6 @@ async def my_workflow():
 class TestDecoratorPropertyTransformer:
     """Test transforming/modifying decorators."""
 
-    def test_inject_id_into_bare_decorator(self):
-        """Test converting @workflow to @workflow(id="...")."""
-        content = '''@workflow
-async def my_workflow():
-    pass
-'''
-        service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        assert result.modified is True
-        # LibCST adds spaces around = when creating new arguments like id = "..."
-        assert "id" in result.new_content and '"' in result.new_content
-        assert len(result.changes) == 1
-        assert "Added id=" in result.changes[0]
-
-        # Verify the injected ID is a valid UUID
-        decorators = service.read_decorators(result.new_content)
-        assert len(decorators) == 1
-        injected_id = decorators[0].properties.get("id")
-        assert injected_id is not None
-        UUID(injected_id)  # Will raise if not valid UUID
-
-    def test_inject_id_into_decorator_with_properties(self):
-        """Test adding id to @workflow(name="...")."""
-        content = '''@workflow(name="My Workflow", category="Admin")
-async def my_workflow():
-    pass
-'''
-        service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        assert result.modified is True
-        # Check ID was added (LibCST adds spaces around = for new arguments)
-        assert "id" in result.new_content
-        # Original properties preserved
-        assert "My Workflow" in result.new_content
-        assert "Admin" in result.new_content
-
-    def test_skip_injection_when_id_exists(self):
-        """Test that existing IDs are not overwritten."""
-        content = '''@workflow(id="existing-id", name="My Workflow")
-async def my_workflow():
-    pass
-'''
-        service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        assert result.modified is False
-        assert result.new_content == content
-        assert "existing-id" in result.new_content
-
-    def test_inject_ids_into_multiple_decorators(self):
-        """Test injecting IDs into multiple decorators."""
-        content = '''@workflow
-async def workflow_a():
-    pass
-
-@workflow(name="B")
-async def workflow_b():
-    pass
-
-@data_provider
-async def provider_a():
-    pass
-'''
-        service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        assert result.modified is True
-        # Should have 3 changes (one for each decorator)
-        assert len(result.changes) == 3
-
-        # Verify all three have IDs
-        decorators = service.read_decorators(result.new_content)
-        for dec in decorators:
-            assert "id" in dec.properties
-
-    def test_preserve_formatting_and_comments(self):
-        """Test that formatting and comments are preserved."""
-        content = '''# Header comment
-
-@workflow(
-    name="My Workflow",
-    category="Admin",
-    tags=["important", "admin"],
-)
-async def my_workflow():
-    """Docstring preserved."""
-    pass
-'''
-        service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        # Should preserve:
-        # - Header comment
-        # - Multi-line decorator formatting
-        # - Docstring
-        assert "# Header comment" in result.new_content
-        assert '"""Docstring preserved."""' in result.new_content
-
     def test_write_specific_property(self):
         """Test writing a specific property to a decorator."""
         content = '''@workflow(name="Original")
@@ -474,53 +373,6 @@ async def my_workflow():
         assert "Parse error" in result.changes[0]
 
 
-class TestDecoratorIdGeneration:
-    """Test ID generation behavior."""
-
-    def test_generated_ids_are_valid_uuids(self):
-        """Test that generated IDs are valid UUIDs."""
-        content = '''@workflow
-async def wf1():
-    pass
-
-@workflow
-async def wf2():
-    pass
-'''
-        service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        decorators = service.read_decorators(result.new_content)
-        for dec in decorators:
-            id_value = dec.properties.get("id")
-            assert id_value is not None
-            # This will raise ValueError if not a valid UUID
-            UUID(id_value)
-
-    def test_generated_ids_are_unique(self):
-        """Test that each decorator gets a unique ID."""
-        content = '''@workflow
-async def wf1():
-    pass
-
-@workflow
-async def wf2():
-    pass
-
-@workflow
-async def wf3():
-    pass
-'''
-        service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        decorators = service.read_decorators(result.new_content)
-        ids = [dec.properties.get("id") for dec in decorators]
-
-        # All IDs should be unique
-        assert len(ids) == len(set(ids))
-
-
 class TestEdgeCases:
     """Test edge cases and boundary conditions."""
 
@@ -529,10 +381,6 @@ class TestEdgeCases:
         service = get_service()
         decorators = service.read_decorators("")
         assert decorators == []
-
-        result = service.inject_ids_if_missing("")
-        assert result.modified is False
-        assert result.new_content == ""
 
     def test_file_with_no_decorators(self):
         """Test file with no workflow/data_provider decorators."""
@@ -548,11 +396,8 @@ class MyClass:
         decorators = service.read_decorators(content)
         assert decorators == []
 
-        result = service.inject_ids_if_missing(content)
-        assert result.modified is False
-
     def test_nested_function_with_decorator(self):
-        """Test decorator on nested function."""
+        """Test decorator on nested function is detected."""
         content = '''
 def outer():
     @workflow
@@ -560,16 +405,12 @@ def outer():
         pass
 '''
         service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        # Should still find and inject ID
-        assert result.modified is True
-        decorators = service.read_decorators(result.new_content)
+        decorators = service.read_decorators(content)
         assert len(decorators) == 1
         assert decorators[0].function_name == "inner"
 
     def test_class_method_with_decorator(self):
-        """Test decorator on class method."""
+        """Test decorator on class method is detected."""
         content = '''
 class MyWorkflows:
     @workflow
@@ -577,11 +418,7 @@ class MyWorkflows:
         pass
 '''
         service = get_service()
-        result = service.inject_ids_if_missing(content)
-
-        # Should find and inject ID
-        assert result.modified is True
-        decorators = service.read_decorators(result.new_content)
+        decorators = service.read_decorators(content)
         assert len(decorators) == 1
         assert decorators[0].function_name == "my_method"
 

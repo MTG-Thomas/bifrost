@@ -73,7 +73,7 @@ def mock_workflow():
     mock.is_tool = False
     mock.schedule = None
     mock.endpoint_enabled = True
-    mock.file_path = "/tmp/bifrost/workspace/workflows/test_workflow.py"
+    mock.path = "/tmp/bifrost/workspace/workflows/test_workflow.py"
     mock.is_active = True
     return mock
 

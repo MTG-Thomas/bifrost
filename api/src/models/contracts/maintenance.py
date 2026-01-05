@@ -12,10 +12,6 @@ from pydantic import BaseModel, Field
 class MaintenanceStatus(BaseModel):
     """Current maintenance status of the workspace."""
 
-    files_needing_ids: list[str] = Field(
-        default_factory=list,
-        description="List of Python files with decorators missing IDs",
-    )
     total_files: int = Field(
         default=0,
         description="Total number of files in workspace",
@@ -29,10 +25,6 @@ class MaintenanceStatus(BaseModel):
 class ReindexRequest(BaseModel):
     """Request to start a workspace reindex operation."""
 
-    inject_ids: bool = Field(
-        default=True,
-        description="Whether to inject IDs into decorators that don't have them",
-    )
     notification_id: str | None = Field(
         default=None,
         description="Optional notification ID to update with progress",
@@ -53,10 +45,6 @@ class ReindexProgress(BaseModel):
         default=0,
         description="Total number of files to process",
     )
-    ids_injected: int = Field(
-        default=0,
-        description="Number of files that had IDs injected",
-    )
     error: str | None = Field(
         default=None,
         description="Error message if status is failed",
@@ -72,14 +60,6 @@ class ReindexResponse(BaseModel):
     files_indexed: int = Field(
         default=0,
         description="Number of files indexed",
-    )
-    files_needing_ids: list[str] = Field(
-        default_factory=list,
-        description="Files that needed ID injection (for detection mode)",
-    )
-    ids_injected: int = Field(
-        default=0,
-        description="Number of files that had IDs injected (for inject mode)",
     )
     message: str | None = Field(
         default=None,
