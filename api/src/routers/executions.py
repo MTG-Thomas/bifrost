@@ -28,7 +28,7 @@ from src.models.orm.ai_usage import AIUsage
 
 from src.core.auth import Context, UserPrincipal
 from src.core.org_filter import resolve_org_filter, OrgFilterType
-from src.core.pubsub import publish_execution_update
+from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.models import Execution as ExecutionModel
 from src.models import ExecutionLog as ExecutionLogORM
@@ -370,6 +370,15 @@ class ExecutionRepository:
         await publish_execution_update(
             execution_id=execution_id,
             status=ExecutionStatus.CANCELLING.value,
+        )
+        await publish_history_update(
+            execution_id=execution_id,
+            status=ExecutionStatus.CANCELLING.value,
+            executed_by=execution.executed_by,
+            executed_by_name=execution.executed_by_name,
+            workflow_name=execution.workflow_name,
+            org_id=execution.organization_id,
+            started_at=execution.started_at,
         )
 
         return self._to_pydantic(execution, user), None

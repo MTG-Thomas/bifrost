@@ -344,8 +344,8 @@ export function NotificationCenter() {
 					size: response.size,
 					extension,
 					modified: new Date().toISOString(),
-					is_workflow: false,
-					is_data_provider: false,
+					entity_type: null,
+					entity_id: null,
 				};
 				openEditor();
 				openFileInTab(

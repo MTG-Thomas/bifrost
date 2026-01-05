@@ -2170,6 +2170,11 @@ export interface paths {
          * Rename or move file/folder (editor)
          * @description Rename or move a file or folder.
          *
+         *     For platform entities (workflows, forms, apps, agents), this updates the path
+         *     in both workspace_files and the entity table, preserving all metadata.
+         *
+         *     For regular files, copies content in S3 and updates the index.
+         *
          *     Cloud mode only - used by browser editor.
          */
         post: operations["rename_file_editor_api_files_editor_rename_post"];
@@ -4865,8 +4870,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Run workspace reindex
-         * @description Reindex workspace files, optionally injecting IDs (Platform admin only)
+         * Start workspace reindex (non-blocking)
+         * @description Queue a reindex job with reference validation (Platform admin only)
          */
         post: operations["run_reindex_api_maintenance_reindex_post"];
         delete?: never;
@@ -9073,13 +9078,6 @@ export interface components {
              * @description Expected ETag for conflict detection (optional)
              */
             expected_etag?: string | null;
-            /**
-             * Force Ids
-             * @description Map of function_name -> ID to inject. Used when user chooses 'Use Existing IDs' for workflow ID conflicts.
-             */
-            force_ids?: {
-                [key: string]: string;
-            } | null;
         };
         /**
          * FileContentResponse
@@ -9307,17 +9305,15 @@ export interface components {
              */
             modified: string;
             /**
-             * Is Workflow
-             * @description True if file contains a @workflow decorator
-             * @default false
+             * Entity Type
+             * @description Platform entity type if file is a platform entity (workflow, form, app, agent), null for regular files
              */
-            is_workflow: boolean;
+            entity_type?: ("workflow" | "form" | "app" | "agent") | null;
             /**
-             * Is Data Provider
-             * @description True if file contains a @data_provider decorator
-             * @default false
+             * Entity Id
+             * @description Platform entity ID if file is a platform entity, null for regular files
              */
-            is_data_provider: boolean;
+            entity_id?: string | null;
         };
         /**
          * FileReadRequest
@@ -9677,7 +9673,7 @@ export interface components {
          * @description Form field types
          * @enum {string}
          */
-        FormFieldType: "text" | "email" | "number" | "select" | "checkbox" | "textarea" | "radio" | "datetime" | "markdown" | "html" | "file";
+        FormFieldType: "text" | "email" | "number" | "select" | "checkbox" | "textarea" | "radio" | "date" | "datetime" | "markdown" | "html" | "file";
         /**
          * FormPublic
          * @description Form output for API responses.
@@ -11073,11 +11069,6 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
-            /**
-             * Is Existing
-             * @default false
-             */
-            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -11097,11 +11088,20 @@ export interface components {
         };
         /**
          * MFAVerifyRequest
-         * @description Request to verify MFA code.
+         * @description Request to verify MFA code during login.
          */
         MFAVerifyRequest: {
+            /** Mfa Token */
+            mfa_token: string;
             /** Code */
             code: string;
+            /**
+             * Trust Device
+             * @default false
+             */
+            trust_device: boolean;
+            /** Device Name */
+            device_name?: string | null;
         };
         /**
          * MFAVerifyResponse
@@ -11130,11 +11130,6 @@ export interface components {
          * @description Current maintenance status of the workspace.
          */
         MaintenanceStatus: {
-            /**
-             * Files Needing Ids
-             * @description List of Python files with decorators missing IDs
-             */
-            files_needing_ids?: string[];
             /**
              * Total Files
              * @description Total number of files in workspace
@@ -12645,54 +12640,31 @@ export interface components {
             mfa_code: string;
         };
         /**
+         * ReindexJobResponse
+         * @description Response from starting a non-blocking reindex job.
+         */
+        ReindexJobResponse: {
+            /**
+             * Status
+             * @description Job status: queued
+             */
+            status: string;
+            /**
+             * Job Id
+             * @description Unique identifier for tracking the job via websocket
+             */
+            job_id: string;
+        };
+        /**
          * ReindexRequest
          * @description Request to start a workspace reindex operation.
          */
         ReindexRequest: {
             /**
-             * Inject Ids
-             * @description Whether to inject IDs into decorators that don't have them
-             * @default true
-             */
-            inject_ids: boolean;
-            /**
              * Notification Id
              * @description Optional notification ID to update with progress
              */
             notification_id?: string | null;
-        };
-        /**
-         * ReindexResponse
-         * @description Response from starting or completing a reindex operation.
-         */
-        ReindexResponse: {
-            /**
-             * Status
-             * @description Operation status: started, completed, failed
-             */
-            status: string;
-            /**
-             * Files Indexed
-             * @description Number of files indexed
-             * @default 0
-             */
-            files_indexed: number;
-            /**
-             * Files Needing Ids
-             * @description Files that needed ID injection (for detection mode)
-             */
-            files_needing_ids?: string[];
-            /**
-             * Ids Injected
-             * @description Number of files that had IDs injected (for inject mode)
-             * @default 0
-             */
-            ids_injected: number;
-            /**
-             * Message
-             * @description Human-readable status message
-             */
-            message?: string | null;
         };
         /**
          * ResourceMetricsEntry
@@ -14381,7 +14353,7 @@ export interface components {
         };
         /**
          * UserCreate
-         * @description Input for creating a user.
+         * @description User creation request model.
          */
         UserCreate: {
             /**
@@ -14389,24 +14361,10 @@ export interface components {
              * Format: email
              */
             email: string;
+            /** Password */
+            password: string;
             /** Name */
             name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** @default ORG */
-            user_type: components["schemas"]["UserType"];
-            /** Organization Id */
-            organization_id?: string | null;
         };
         /**
          * UserFormsResponse
@@ -15324,42 +15282,39 @@ export interface components {
             backup_will_be_created: boolean;
         };
         /**
-         * MFAVerifyRequest
-         * @description Request to verify MFA code during login.
-         */
-        src__routers__auth__MFAVerifyRequest: {
-            /** Mfa Token */
-            mfa_token: string;
-            /** Code */
-            code: string;
-            /**
-             * Trust Device
-             * @default false
-             */
-            trust_device: boolean;
-            /** Device Name */
-            device_name?: string | null;
-        };
-        /**
          * UserCreate
-         * @description User creation request model.
+         * @description Input for creating a user.
          */
-        src__routers__auth__UserCreate: {
+        src__models__contracts__users__UserCreate: {
             /**
              * Email
              * Format: email
              */
             email: string;
-            /** Password */
-            password: string;
             /** Name */
             name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** @default ORG */
+            user_type: components["schemas"]["UserType"];
+            /** Organization Id */
+            organization_id?: string | null;
         };
         /**
          * MFASetupResponse
          * @description MFA setup response with secret.
          */
-        src__routers__mfa__MFASetupResponse: {
+        src__routers__auth__MFASetupResponse: {
             /** Secret */
             secret: string;
             /** Qr Code Uri */
@@ -15370,6 +15325,19 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
+        };
+        /**
+         * MFAVerifyRequest
+         * @description Request to verify MFA code.
+         */
+        src__routers__mfa__MFAVerifyRequest: {
+            /** Code */
+            code: string;
         };
         /**
          * OAuthCallbackRequest
@@ -15496,7 +15464,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__auth__MFASetupResponse"];
                 };
             };
             /** @description Validation Error */
@@ -15539,7 +15507,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__MFAVerifyRequest"];
+                "application/json": components["schemas"]["MFAVerifyRequest"];
             };
         };
         responses: {
@@ -15711,7 +15679,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__UserCreate"];
+                "application/json": components["schemas"]["UserCreate"];
             };
         };
         responses: {
@@ -15942,7 +15910,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
+                    "application/json": components["schemas"]["MFASetupResponse"];
                 };
             };
         };
@@ -15956,7 +15924,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MFAVerifyRequest"];
+                "application/json": components["schemas"]["src__routers__mfa__MFAVerifyRequest"];
             };
         };
         responses: {
@@ -16657,7 +16625,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
             };
         };
         responses: {
@@ -18547,10 +18515,7 @@ export interface operations {
     };
     put_file_content_editor_api_files_editor_content_put: {
         parameters: {
-            query?: {
-                /** @description If true, inject IDs into decorators */
-                index?: boolean;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -23370,7 +23335,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReindexResponse"];
+                    "application/json": components["schemas"]["ReindexJobResponse"];
                 };
             };
             /** @description Validation Error */

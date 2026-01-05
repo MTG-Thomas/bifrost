@@ -100,8 +100,8 @@ export function SearchPanel() {
 								)
 							: null,
 						modified: response.modified,
-						is_workflow: false,
-						is_data_provider: false,
+						entity_type: null,
+						entity_id: null,
 					},
 					response.content,
 					response.encoding as "utf-8" | "base64",

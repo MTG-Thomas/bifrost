@@ -27,7 +27,7 @@ from src.services.workflow_validation import _extract_relative_path
 
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
 from src.core.database import DbSession
-from src.core.pubsub import publish_execution_update
+from src.core.pubsub import publish_execution_update, publish_history_update
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,17 @@ async def execute_workflow(
                     "error": result.error,
                     "duration_ms": result.duration_ms,
                 },
+            )
+            await publish_history_update(
+                execution_id=result.execution_id,
+                status=result.status.value,
+                executed_by=ctx.user.user_id,
+                executed_by_name=ctx.user.name or ctx.user.email or "Unknown",
+                workflow_name=result.workflow_name or request.script_name or "inline_script",
+                org_id=ctx.org_id,
+                started_at=result.started_at,
+                completed_at=result.completed_at,
+                duration_ms=result.duration_ms,
             )
 
         return result

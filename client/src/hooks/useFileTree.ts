@@ -80,8 +80,8 @@ export function useFileTree() {
 							size: null,
 							extension: null,
 							modified: new Date().toISOString(),
-							is_workflow: false,
-							is_data_provider: false,
+							entity_type: null,
+							entity_id: null,
 						});
 					}
 				}
@@ -212,8 +212,8 @@ export function useFileTree() {
 								size: null,
 								extension: null,
 								modified: new Date().toISOString(),
-								is_workflow: false,
-								is_data_provider: false,
+								entity_type: null,
+								entity_id: null,
 							};
 
 							if (!itemsByParent.has(folderParentPath)) {

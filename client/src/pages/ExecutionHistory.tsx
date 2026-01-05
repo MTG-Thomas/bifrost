@@ -94,7 +94,7 @@ interface StuckExecution {
 
 export function ExecutionHistory() {
 	const navigate = useNavigate();
-	const { isPlatformAdmin } = useAuth();
+	const { isPlatformAdmin, user } = useAuth();
 	const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(
 		undefined,
 	);
@@ -114,8 +114,14 @@ export function ExecutionHistory() {
 	const orgId = useScopeStore((state) => state.scope.orgId);
 
 	// Enable real-time updates for history page
+	// Platform admins subscribe to GLOBAL channel, regular users to their own channel
 	const scope = isGlobalScope ? "GLOBAL" : orgId || "GLOBAL";
-	useExecutionHistory({ scope, enabled: true });
+	useExecutionHistory({
+		scope,
+		enabled: true,
+		isPlatformAdmin,
+		userId: user?.id,
+	});
 	// Pagination state - stack of continuation tokens for "back" navigation
 	const [pageStack, setPageStack] = useState<(string | null)[]>([]);
 	const [currentToken, setCurrentToken] = useState<string | undefined>(
@@ -586,7 +592,7 @@ export function ExecutionHistory() {
 							<Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
 						</div>
 					) : filteredExecutions.length > 0 ? (
-						<DataTable fixedHeight>
+						<DataTable>
 							<DataTableHeader>
 								<DataTableRow>
 									{isPlatformAdmin && (

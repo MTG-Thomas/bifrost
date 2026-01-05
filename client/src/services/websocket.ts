@@ -58,6 +58,7 @@ export interface HistoryUpdate {
 	status: string;
 	executed_by: string;
 	executed_by_name: string;
+	org_id?: string;
 	started_at: string;
 	completed_at?: string;
 	duration_ms?: number;
@@ -243,6 +244,7 @@ type WebSocketMessage =
 	| { type: "pong" }
 	| { type: "execution_update"; executionId: string; [key: string]: unknown }
 	| { type: "execution_log"; executionId: string; [key: string]: unknown }
+	| { type: "history_update"; [key: string]: unknown }
 	| { type: "notification_created"; notification: NotificationPayload }
 	| { type: "notification_updated"; notification: NotificationPayload }
 	| { type: "notification_dismissed"; notification_id: string }
@@ -522,6 +524,10 @@ class WebSocketService {
 				this.dispatchExecutionLog(message);
 				break;
 
+			case "history_update":
+				this.dispatchHistoryUpdate(message);
+				break;
+
 			case "notification_created":
 			case "notification_updated":
 				this.handleNotification(message.notification);
@@ -708,6 +714,24 @@ class WebSocketService {
 			timestamp: update.timestamp,
 			...(completedAt !== undefined ? { completed_at: completedAt } : {}),
 			...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
+		};
+		this.historyUpdateCallbacks.forEach((cb) => cb(historyUpdate));
+	}
+
+	private dispatchHistoryUpdate(
+		message: { type: "history_update" } & Record<string, unknown>,
+	) {
+		const historyUpdate: HistoryUpdate = {
+			execution_id: (message["execution_id"] as string) || "",
+			workflow_name: (message["workflow_name"] as string) || "",
+			status: (message["status"] as string) || "",
+			executed_by: (message["executed_by"] as string) || "",
+			executed_by_name: (message["executed_by_name"] as string) || "",
+			org_id: message["org_id"] as string | undefined,
+			started_at: (message["started_at"] as string) || "",
+			completed_at: message["completed_at"] as string | undefined,
+			duration_ms: message["duration_ms"] as number | undefined,
+			timestamp: (message["timestamp"] as string) || new Date().toISOString(),
 		};
 		this.historyUpdateCallbacks.forEach((cb) => cb(historyUpdate));
 	}

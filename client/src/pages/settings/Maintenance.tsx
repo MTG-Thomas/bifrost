@@ -149,8 +149,8 @@ export function Maintenance() {
 					size: 0,
 					extension,
 					modified: new Date().toISOString(),
-					is_workflow: false,
-					is_data_provider: false,
+					entity_type: null,
+					entity_id: null,
 				};
 
 				// Fetch file content

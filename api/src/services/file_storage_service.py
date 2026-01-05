@@ -628,6 +628,135 @@ class FileStorageService:
 
         logger.info(f"File deleted: {path}")
 
+    async def move_file(self, old_path: str, new_path: str) -> WorkspaceFile:
+        """
+        Move/rename a file, preserving platform entity associations.
+
+        For platform entities (workflows, forms, apps, agents), updates the path
+        columns in both workspace_files and the entity table. No content is
+        re-parsed, so all metadata (org_id, role assignments, etc.) is preserved.
+
+        For regular files, copies content in S3 and updates the index.
+
+        Args:
+            old_path: Current relative path within workspace
+            new_path: New relative path within workspace
+
+        Returns:
+            Updated WorkspaceFile record
+
+        Raises:
+            FileNotFoundError: If old_path doesn't exist
+            FileExistsError: If new_path already exists
+        """
+        now = datetime.utcnow()
+
+        # Get the existing file record
+        stmt = select(WorkspaceFile).where(
+            WorkspaceFile.path == old_path,
+            WorkspaceFile.is_deleted == False,  # noqa: E712
+        )
+        result = await self.db.execute(stmt)
+        file_record = result.scalar_one_or_none()
+
+        if not file_record:
+            raise FileNotFoundError(f"File not found: {old_path}")
+
+        # Check if new_path already exists
+        stmt = select(WorkspaceFile).where(
+            WorkspaceFile.path == new_path,
+            WorkspaceFile.is_deleted == False,  # noqa: E712
+        )
+        result = await self.db.execute(stmt)
+        if result.scalar_one_or_none():
+            raise FileExistsError(f"File already exists: {new_path}")
+
+        entity_type = file_record.entity_type
+        entity_id = file_record.entity_id
+
+        # Handle based on entity type
+        if entity_type == "workflow" and entity_id:
+            # Update workflow.path
+            stmt = update(Workflow).where(
+                Workflow.id == entity_id
+            ).values(
+                path=new_path,
+                updated_at=now,
+            )
+            await self.db.execute(stmt)
+            logger.info(f"Updated workflow {entity_id} path: {old_path} -> {new_path}")
+
+        elif entity_type == "form" and entity_id:
+            # Update form.file_path
+            stmt = update(Form).where(
+                Form.id == entity_id
+            ).values(
+                file_path=new_path,
+                updated_at=now,
+            )
+            await self.db.execute(stmt)
+            logger.info(f"Updated form {entity_id} path: {old_path} -> {new_path}")
+
+        elif entity_type == "app" and entity_id:
+            # Update application (no file_path column, apps are in applications table)
+            # Apps don't have a file_path column - they're stored by ID
+            # Nothing to update in the entity table
+            logger.info(f"App {entity_id} path update: {old_path} -> {new_path}")
+
+        elif entity_type == "agent" and entity_id:
+            # Update agent.file_path
+            stmt = update(Agent).where(
+                Agent.id == entity_id
+            ).values(
+                file_path=new_path,
+                updated_at=now,
+            )
+            await self.db.execute(stmt)
+            logger.info(f"Updated agent {entity_id} path: {old_path} -> {new_path}")
+
+        else:
+            # Regular file: copy in S3
+            async with self._get_s3_client() as s3:
+                # Copy object
+                await s3.copy_object(
+                    Bucket=self.settings.s3_bucket,
+                    CopySource={"Bucket": self.settings.s3_bucket, "Key": old_path},
+                    Key=new_path,
+                )
+                # Delete old object
+                await s3.delete_object(
+                    Bucket=self.settings.s3_bucket,
+                    Key=old_path,
+                )
+            logger.info(f"Moved S3 object: {old_path} -> {new_path}")
+
+        # Update workspace_files record path
+        stmt = update(WorkspaceFile).where(
+            WorkspaceFile.id == file_record.id
+        ).values(
+            path=new_path,
+            updated_at=now,
+        )
+        await self.db.execute(stmt)
+
+        # Update Redis cache
+        cache = get_workspace_cache()
+        await cache.set_file_state(old_path, content_hash=None, is_deleted=True)
+        await cache.set_file_state(new_path, content_hash=file_record.content_hash, is_deleted=False)
+
+        # Publish events
+        try:
+            from src.core.pubsub import publish_workspace_file_delete, publish_workspace_file_change
+            await publish_workspace_file_delete(old_path)
+            await publish_workspace_file_change(new_path)
+        except Exception as e:
+            logger.warning(f"Failed to publish workspace file move events: {e}")
+
+        # Refresh the record to get updated values
+        await self.db.refresh(file_record)
+        logger.info(f"File moved: {old_path} -> {new_path}")
+        return file_record
+
     async def create_folder(
         self,
         path: str,

@@ -382,8 +382,8 @@ export function SourceControlPanel() {
 					? fileName.split(".").pop() || null
 					: null,
 				modified: fileData.modified,
-				is_workflow: false,
-				is_data_provider: false,
+				entity_type: null,
+				entity_id: null,
 			};
 
 			// Open in editor tab

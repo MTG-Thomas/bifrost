@@ -166,7 +166,12 @@ async def websocket_connect(
                 allowed_channels.append(channel)
         elif channel.startswith("history:"):
             # History channels for real-time updates
-            allowed_channels.append(channel)
+            # history:user:{user_id} - Allow only for the user's own channel
+            # history:GLOBAL - Allow only for platform admins
+            if channel == f"history:user:{user.user_id}":
+                allowed_channels.append(channel)
+            elif channel == "history:GLOBAL" and user.is_superuser:
+                allowed_channels.append(channel)
         elif channel.startswith("local-runner:"):
             # Local runner channels - users can subscribe to their own
             if channel == f"local-runner:{user.user_id}":
@@ -253,6 +258,24 @@ async def websocket_connect(
                             "type": "subscribed",
                             "channel": channel
                         })
+                    elif channel.startswith("history:"):
+                        # History channels for real-time execution updates
+                        # history:user:{user_id} - Allow only for the user's own channel
+                        # history:GLOBAL - Allow only for platform admins
+                        if channel == f"history:user:{user.user_id}" or (channel == "history:GLOBAL" and user.is_superuser):
+                            if channel not in manager.connections:
+                                manager.connections[channel] = set()
+                            manager.connections[channel].add(websocket)
+                            await websocket.send_json({
+                                "type": "subscribed",
+                                "channel": channel
+                            })
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "channel": channel,
+                                "message": "Access denied"
+                            })
 
             elif data.get("type") == "unsubscribe":
                 channel = data.get("channel")

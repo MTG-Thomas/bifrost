@@ -3,7 +3,6 @@ import {
 	Play,
 	Loader2,
 	Workflow,
-	Database,
 	FileCode,
 	AlertCircle,
 	ChevronDown,
@@ -32,7 +31,6 @@ import { getErrorMessage } from "@/lib/api-error";
 import type { components } from "@/lib/v1";
 
 type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
-type DataProviderMetadata = components["schemas"]["DataProviderMetadata"];
 type WorkflowExecutionResponse =
 	components["schemas"]["WorkflowExecutionResponse"];
 type WorkflowValidationResponse =
@@ -81,7 +79,6 @@ export function RunPanel() {
 		useWorkflowsMetadata() as {
 			data?: {
 				workflows?: WorkflowMetadata[];
-				dataProviders?: DataProviderMetadata[];
 			};
 			isLoading: boolean;
 		};
@@ -97,11 +94,11 @@ export function RunPanel() {
 	>({});
 
 	const [detectedItem, setDetectedItem] = useState<{
-		type: "workflow" | "data_provider" | "script" | null;
-		// For workflows: can have multiple matching workflows for the same file
+		type: "workflow" | "script" | null;
+		// For executables: can have multiple per file (workflows, tools, data providers)
 		workflows?: WorkflowMetadata[];
-		// For backwards compat with data providers
-		metadata?: WorkflowMetadata | DataProviderMetadata;
+		// First matching executable for convenience
+		metadata?: WorkflowMetadata;
 	}>({ type: null });
 	const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
 		null,
@@ -233,8 +230,8 @@ export function RunPanel() {
 	}, [streamState?.isComplete, currentExecutionId]);
 
 	// Detect file type when file or metadata changes
-	// First check is_workflow/is_data_provider flags from file metadata (fast path)
-	// Then fall back to matching against workflow/data_provider metadata for full details
+	// Check entity_type from file metadata for fast path (workflow files)
+	// Then fall back to matching against workflow metadata for full details
 	// For workflows: find ALL matching workflows (same file can have multiple @workflow functions)
 	useEffect(() => {
 		if (!openFile || !openFile.name.endsWith(".py")) {
@@ -243,9 +240,31 @@ export function RunPanel() {
 			return;
 		}
 
-		// Fast path: Check is_workflow flag from file metadata
-		if (openFile.is_workflow) {
-			// Look up ALL workflow metadata for this file (can have multiple workflows per file)
+		// Fast path: Check entity_type flag from file metadata
+		// entity_type="workflow" covers both workflows and data providers (consolidated)
+		if (openFile.entity_type === "workflow") {
+			// If we have entity_id, we can look up directly
+			if (openFile.entity_id && metadata?.workflows) {
+				const directMatch = metadata.workflows.find(
+					(w: WorkflowMetadata) => w.id === openFile.entity_id,
+				);
+				if (directMatch) {
+					// Also find any other workflows in the same file
+					const matchingWorkflows = metadata.workflows.filter(
+						(w: WorkflowMetadata) =>
+							w.relative_file_path === openFile.path ||
+							w.source_file_path?.endsWith(openFile.path),
+					);
+					setDetectedItem({
+						type: "workflow",
+						workflows: matchingWorkflows,
+						metadata: directMatch,
+					});
+					return;
+				}
+			}
+
+			// Fallback: Look up ALL matching executables for this file
 			const matchingWorkflows =
 				metadata?.workflows?.filter(
 					(w: WorkflowMetadata) =>
@@ -253,30 +272,18 @@ export function RunPanel() {
 						w.source_file_path?.endsWith(openFile.path),
 				) || [];
 
-			// Set as workflow with all matching workflows
+			// Set as workflow (unified execution UI for all executable types)
 			setDetectedItem({
 				type: "workflow",
 				workflows: matchingWorkflows,
-				// Keep metadata for backwards compat (first workflow or undefined)
 				metadata: matchingWorkflows[0],
 			});
 			return;
 		}
 
-		// Fast path: Check is_data_provider flag from file metadata
-		if (openFile.is_data_provider) {
-			const dataProvider = metadata?.dataProviders?.find(
-				(dp: DataProviderMetadata) =>
-					dp.source_file_path?.endsWith(openFile.path),
-			);
-			// Set as data_provider with metadata if found, or without if still loading
-			setDetectedItem({ type: "data_provider", metadata: dataProvider });
-			return;
-		}
-
-		// Slow path: File doesn't have flags set, check metadata (for backwards compat)
+		// Slow path: File doesn't have entity_type set, check metadata (for backwards compat)
 		if (metadata) {
-			// Find ALL matching workflows
+			// Find ALL matching executables (workflows, tools, data providers)
 			const matchingWorkflows =
 				metadata.workflows?.filter(
 					(w: WorkflowMetadata) =>
@@ -289,18 +296,6 @@ export function RunPanel() {
 					type: "workflow",
 					workflows: matchingWorkflows,
 					metadata: matchingWorkflows[0],
-				});
-				return;
-			}
-
-			const dataProvider = metadata.dataProviders?.find(
-				(dp: DataProviderMetadata) =>
-					dp.source_file_path?.endsWith(openFile.path),
-			);
-			if (dataProvider) {
-				setDetectedItem({
-					type: "data_provider",
-					metadata: dataProvider,
 				});
 				return;
 			}
@@ -862,89 +857,6 @@ export function RunPanel() {
 								)}
 							</div>
 						)}
-					</>
-				)}
-
-				{detectedItem.type === "data_provider" && (
-					<>
-						<div className="border-b px-3 py-2">
-							<div className="flex items-center gap-2">
-								<Database className="h-4 w-4 text-primary" />
-								<div className="flex-1">
-									<h3 className="text-sm font-semibold">
-										Data Provider
-									</h3>
-									<p className="text-xs text-muted-foreground">
-										{detectedItem.metadata?.name ||
-											openFile.name}
-									</p>
-								</div>
-							</div>
-							{detectedItem.metadata?.description && (
-								<p className="text-xs text-muted-foreground mt-2">
-									{detectedItem.metadata.description}
-								</p>
-							)}
-						</div>
-						<div className="p-3 space-y-3">
-							<div className="rounded-lg border border-border/50 bg-muted/30 p-3">
-								<div className="flex items-start gap-2">
-									<Database className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-									<div className="flex-1 min-w-0 text-xs text-muted-foreground">
-										<p className="font-medium mb-1">
-											Test via Forms
-										</p>
-										<p>
-											Data providers can be tested through
-											the Forms interface where they're
-											used as dynamic dropdown options.
-										</p>
-									</div>
-								</div>
-							</div>
-
-							{/* Show parameters if any */}
-							{detectedItem.metadata?.parameters &&
-								detectedItem.metadata.parameters.length > 0 && (
-									<div className="space-y-2">
-										<p className="text-xs font-medium text-muted-foreground">
-											Parameters:
-										</p>
-										<div className="space-y-1.5">
-											{detectedItem.metadata.parameters.map(
-												(param) => (
-													<div
-														key={
-															param.name ??
-															"param"
-														}
-														className="text-xs pl-3 border-l-2 border-border"
-													>
-														<span className="font-mono font-medium">
-															{param.name}
-														</span>
-														<span className="text-muted-foreground ml-2">
-															({param.type})
-														</span>
-														{param.required && (
-															<span className="text-destructive ml-1">
-																*
-															</span>
-														)}
-														{param.description && (
-															<p className="text-muted-foreground mt-0.5">
-																{
-																	param.description
-																}
-															</p>
-														)}
-													</div>
-												),
-											)}
-										</div>
-									</div>
-								)}
-						</div>
 					</>
 				)}
 

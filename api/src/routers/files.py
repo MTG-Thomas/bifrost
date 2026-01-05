@@ -273,8 +273,8 @@ async def list_files_editor(
                 size=wf.size_bytes if not is_folder else None,
                 extension=wf.path.split(".")[-1] if "." in wf.path and not is_folder else None,
                 modified=wf.updated_at.isoformat() if wf.updated_at else datetime.now(timezone.utc).isoformat(),
-                is_workflow=wf.is_workflow if not is_folder else False,
-                is_data_provider=wf.is_data_provider if not is_folder else False,
+                entity_type=wf.entity_type if not is_folder else None,
+                entity_id=str(wf.entity_id) if wf.entity_id and not is_folder else None,
             ))
         return files
 
@@ -530,29 +530,29 @@ async def rename_file_editor(
     """
     Rename or move a file or folder.
 
+    For platform entities (workflows, forms, apps, agents), this updates the path
+    in both workspace_files and the entity table, preserving all metadata.
+
+    For regular files, copies content in S3 and updates the index.
+
     Cloud mode only - used by browser editor.
     """
     try:
         storage = FileStorageService(db)
 
-        # Read old file
-        content, _ = await storage.read_file(old_path)
-
-        # Write to new location
-        updated_by = user.email if user else "system"
-        write_result = await storage.write_file(new_path, content, updated_by)
-
-        # Delete old file
-        await storage.delete_file(old_path)
+        # Use move_file which preserves entity associations
+        file_record = await storage.move_file(old_path, new_path)
 
         is_folder = new_path.endswith("/")
         return FileMetadata(
             path=new_path,
             name=new_path.split("/")[-1] if not is_folder else new_path.split("/")[-2],
             type=FileType.FOLDER if is_folder else FileType.FILE,
-            size=write_result.file_record.size_bytes if not is_folder else None,
+            size=file_record.size_bytes if not is_folder else None,
             extension=new_path.split(".")[-1] if "." in new_path and not is_folder else None,
-            modified=write_result.file_record.updated_at.isoformat(),
+            modified=file_record.updated_at.isoformat(),
+            entity_type=file_record.entity_type if not is_folder else None,
+            entity_id=str(file_record.entity_id) if file_record.entity_id and not is_folder else None,
         )
 
     except ValueError as e:

@@ -184,8 +184,8 @@ export function QuickAccess({ isOpen, onClose }: QuickAccessProps) {
 								? fileName.split(".").pop() || null
 								: null,
 							modified: new Date().toISOString(),
-							is_workflow: false,
-							is_data_provider: false,
+							entity_type: null,
+							entity_id: null,
 						},
 						fileResponse.content,
 						fileResponse.encoding as "utf-8" | "base64",

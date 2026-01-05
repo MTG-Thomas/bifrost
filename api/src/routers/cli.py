@@ -78,7 +78,7 @@ from src.models.contracts.cli import (
     SDKDocumentList,
 )
 from src.core.cache import config_hash_key, get_redis
-from src.core.pubsub import publish_cli_session_update, publish_execution_log, publish_execution_update
+from src.core.pubsub import publish_cli_session_update, publish_execution_log, publish_execution_update, publish_history_update
 from src.repositories.cli_sessions import CLISessionRepository
 
 logger = logging.getLogger(__name__)
@@ -1227,6 +1227,15 @@ async def get_pending_execution(
 
     # Broadcast execution status update
     await publish_execution_update(execution_id, "Running")
+    await publish_history_update(
+        execution_id=execution_id,
+        status="Running",
+        executed_by=execution.executed_by,
+        executed_by_name=execution.executed_by_name,
+        workflow_name=workflow_name,
+        org_id=execution.org_id,
+        started_at=execution.started_at,
+    )
 
     logger.info(f"CLI session pending picked up: workflow={workflow_name}, execution_id={execution_id}, session_id={session_id}")
 
@@ -1460,6 +1469,17 @@ async def post_cli_result(
         execution_id,
         status_enum.value,
         update_data,
+    )
+    await publish_history_update(
+        execution_id=execution_id,
+        status=status_enum.value,
+        executed_by=execution.executed_by,
+        executed_by_name=execution.executed_by_name,
+        workflow_name=execution.workflow_name,
+        org_id=execution.org_id,
+        started_at=execution.started_at,
+        completed_at=execution.completed_at,
+        duration_ms=request.duration_ms or 0,
     )
 
     # Broadcast updated session state

@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import select, and_
 
 from src.core.database import get_session_factory
-from src.core.pubsub import publish_execution_update
+from src.core.pubsub import publish_execution_update, publish_history_update
 from src.models import Execution as ExecutionModel, ExecutionLog
 
 logger = logging.getLogger(__name__)
@@ -156,6 +156,16 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         str(execution.id),
                         final_status.value,
                         {"error": timeout_reason},
+                    )
+                    await publish_history_update(
+                        execution_id=str(execution.id),
+                        status=final_status.value,
+                        executed_by=execution.executed_by,
+                        executed_by_name=execution.executed_by_name,
+                        workflow_name=execution.workflow_name,
+                        org_id=execution.organization_id,
+                        started_at=execution.started_at,
+                        completed_at=now,
                     )
 
                 except Exception as e:

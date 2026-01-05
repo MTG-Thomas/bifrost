@@ -32,8 +32,14 @@ class FileMetadata(BaseModel):
     size: int | None = Field(default=None, description="Size in bytes (null for folders)")
     extension: str | None = Field(default=None, description="File extension (null for folders)")
     modified: str = Field(..., description="Last modified timestamp (ISO 8601)")
-    is_workflow: bool = Field(default=False, description="True if file contains a @workflow decorator")
-    is_data_provider: bool = Field(default=False, description="True if file contains a @data_provider decorator")
+    entity_type: Literal["workflow", "form", "app", "agent"] | None = Field(
+        default=None,
+        description="Platform entity type if file is a platform entity (workflow, form, app, agent), null for regular files"
+    )
+    entity_id: str | None = Field(
+        default=None,
+        description="Platform entity ID if file is a platform entity, null for regular files"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

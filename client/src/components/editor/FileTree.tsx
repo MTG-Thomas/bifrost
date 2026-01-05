@@ -100,8 +100,8 @@ function responseToMetadata(
 		size,
 		extension: lastDot > 0 ? name.substring(lastDot + 1) : null,
 		modified,
-		is_workflow: false,
-		is_data_provider: false,
+		entity_type: null,
+		entity_id: null,
 	};
 }
 

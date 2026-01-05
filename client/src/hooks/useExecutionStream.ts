@@ -241,18 +241,42 @@ export function useNewExecutions(options: { enabled?: boolean } = {}) {
 /**
  * React hook for real-time history page updates
  *
- * Subscribes to a scope-specific history channel and updates React Query cache
+ * Subscribes to a user-specific or global history channel and updates React Query cache
  * when new executions are created or existing ones complete.
+ *
+ * Channel logic:
+ * - Platform admins: Subscribe to `history:GLOBAL` (see all executions)
+ * - Regular users: Subscribe to `history:user:{userId}` (see only their own)
+ *
+ * Org filtering: If a platform admin filters to a specific org, updates are filtered
+ * client-side to only show executions from that org.
  */
 export function useExecutionHistory(
-	options: { scope: string; enabled?: boolean } = { scope: "GLOBAL" },
+	options: {
+		scope: string;
+		enabled?: boolean;
+		isPlatformAdmin?: boolean;
+		userId?: string;
+	} = { scope: "GLOBAL" },
 ) {
-	const { scope, enabled = true } = options;
+	const { scope, enabled = true, isPlatformAdmin = false, userId } = options;
 	const [isConnected, setIsConnected] = useState(false);
 	const queryClient = useQueryClient();
 
+	// Determine the channel to subscribe to:
+	// - Platform admins: always history:GLOBAL
+	// - Regular users: history:user:{userId}
+	const channel = isPlatformAdmin
+		? "history:GLOBAL"
+		: userId
+			? `history:user:${userId}`
+			: null;
+
+	// For platform admins with org filter, track which org to filter for
+	const orgFilter = isPlatformAdmin && scope !== "GLOBAL" ? scope : null;
+
 	useEffect(() => {
-		if (!enabled) {
+		if (!enabled || !channel) {
 			return;
 		}
 
@@ -261,7 +285,6 @@ export function useExecutionHistory(
 		const init = async () => {
 			try {
 				// Connect to WebSocket with history channel
-				const channel = `history:${scope}`;
 				await webSocketService.connect([channel]);
 
 				if (!webSocketService.isConnected()) {
@@ -274,29 +297,74 @@ export function useExecutionHistory(
 				// Subscribe to history updates
 				unsubscribe = webSocketService.onHistoryUpdate(
 					(update: HistoryUpdate) => {
+						console.log(
+							"[useExecutionHistory] Received history update:",
+							update,
+						);
+
+						// For platform admins with org filter, skip updates from other orgs
+						if (
+							orgFilter &&
+							update.org_id &&
+							update.org_id !== orgFilter
+						) {
+							console.log(
+								"[useExecutionHistory] Skipping update for different org",
+							);
+							return;
+						}
+
 						// Optimistically update ALL executions queries (handles different filters/pages)
-						// We use setQueriesData to update all matching queries, but only for the first page
+						// Query key is ["get", "/api/executions", { params: ... }]
 						const caches = queryClient.getQueriesData<{
 							executions: Array<Record<string, unknown>>;
-							continuationToken: string | null;
+							continuation_token: string | null;
 						}>({
-							queryKey: ["executions"],
+							queryKey: ["get", "/api/executions"],
 						});
 
+						console.log(
+							"[useExecutionHistory] Found caches:",
+							caches.length,
+							caches.map(([key]) => key),
+						);
+
 						caches.forEach(([queryKey, oldData]) => {
-							// Only update first page queries (no continuation token)
-							const hasContinuationToken = queryKey[3]; // queryKey is ["executions", orgId, filters, continuationToken]
-							if (
-								hasContinuationToken ||
-								!oldData ||
-								!oldData.executions
-							)
+							// Skip if no data or not an executions list response
+							if (!oldData || !oldData.executions) {
+								console.log(
+									"[useExecutionHistory] Skipping cache - no data or executions",
+									{ oldData },
+								);
 								return;
+							}
+
+							// Check if this is a paginated query (has continuationToken in params)
+							const params = queryKey[2] as
+								| { params?: { query?: { continuationToken?: string } } }
+								| undefined;
+							const hasContinuationToken =
+								params?.params?.query?.continuationToken;
+							if (hasContinuationToken) {
+								console.log(
+									"[useExecutionHistory] Skipping paginated cache",
+								);
+								return;
+							}
 
 							const existingIndex = oldData.executions.findIndex(
 								(exec) =>
 									exec["execution_id"] ===
 									update["execution_id"],
+							);
+
+							console.log(
+								"[useExecutionHistory] Processing cache update",
+								{
+									existingIndex,
+									executionId: update.execution_id,
+									executionsCount: oldData.executions.length,
+								},
 							);
 
 							if (existingIndex >= 0) {
@@ -305,9 +373,23 @@ export function useExecutionHistory(
 								newExecutions[existingIndex] = {
 									...newExecutions[existingIndex],
 									status: update.status,
+									// Only update started_at if we have a value (handles Pending -> Running transition)
+									...(update.started_at && {
+										started_at: update.started_at,
+									}),
 									completed_at: update.completed_at,
 									duration_ms: update.duration_ms,
 								};
+
+								console.log(
+									"[useExecutionHistory] Updating existing execution",
+									{
+										executionId: update.execution_id,
+										newStatus: update.status,
+										started_at: update.started_at,
+										duration_ms: update.duration_ms,
+									},
+								);
 
 								queryClient.setQueryData(queryKey, {
 									...oldData,
@@ -315,10 +397,27 @@ export function useExecutionHistory(
 								});
 							} else {
 								// New execution - add to beginning of list (only if no filters active)
+								// Check if query has status/date filters that might exclude this execution
+								const queryParams = params?.params?.query || {};
 								const hasFilters =
-									queryKey[2] &&
-									Object.keys(queryKey[2]).length > 0;
+									queryParams.status ||
+									queryParams.startDate ||
+									queryParams.endDate;
+
+								console.log(
+									"[useExecutionHistory] New execution",
+									{
+										hasFilters,
+										queryParams,
+										willAdd: !hasFilters,
+									},
+								);
+
 								if (!hasFilters) {
+									console.log(
+										"[useExecutionHistory] Adding new execution to cache",
+										{ executionId: update.execution_id },
+									);
 									queryClient.setQueryData(queryKey, {
 										...oldData,
 										executions: [
@@ -329,8 +428,9 @@ export function useExecutionHistory(
 													update.workflow_name,
 												status: update.status,
 												executed_by: update.executed_by,
-												executed_byName:
+												executed_by_name:
 													update.executed_by_name,
+												org_id: update.org_id,
 												started_at: update.started_at,
 												completed_at:
 													update.completed_at,
@@ -360,9 +460,11 @@ export function useExecutionHistory(
 			if (unsubscribe) {
 				unsubscribe();
 			}
-			webSocketService.unsubscribe(`history:${scope}`);
+			if (channel) {
+				webSocketService.unsubscribe(channel);
+			}
 		};
-	}, [scope, enabled, queryClient]);
+	}, [channel, orgFilter, enabled, queryClient]);
 
 	return {
 		/**

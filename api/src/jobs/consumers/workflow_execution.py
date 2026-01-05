@@ -20,7 +20,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from src.core.pubsub import publish_execution_update
+from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import BaseConsumer
 
@@ -136,6 +136,14 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     duration_ms=0,
                 )
                 await publish_execution_update(execution_id, "Cancelled")
+                await publish_history_update(
+                    execution_id=execution_id,
+                    status="Cancelled",
+                    executed_by=user_id,
+                    executed_by_name=user_name,
+                    workflow_name=script_name or "workflow",
+                    org_id=org_id,
+                )
                 await self._redis_client.delete_pending_execution(execution_id)
                 if is_sync:
                     await self._redis_client.push_result(
@@ -190,6 +198,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         duration_ms=duration_ms,
                     )
                     await publish_execution_update(execution_id, "Failed", {"error": error_msg})
+                    await publish_history_update(
+                        execution_id=execution_id,
+                        status="Failed",
+                        executed_by=user_id,
+                        executed_by_name=user_name,
+                        workflow_name="unknown",
+                        org_id=org_id,
+                        duration_ms=duration_ms,
+                    )
                     await self._redis_client.delete_pending_execution(execution_id)
                     if is_sync:
                         await self._redis_client.push_result(
@@ -217,6 +234,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 status=ExecutionStatus.RUNNING,
             )
             await publish_execution_update(execution_id, "Running")
+            await publish_history_update(
+                execution_id=execution_id,
+                status="Running",
+                executed_by=user_id,
+                executed_by_name=user_name,
+                workflow_name=workflow_name,
+                org_id=org_id,
+                started_at=start_time,
+            )
 
             # Load organization and config
             org = None
@@ -282,6 +308,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 )
             except asyncio.CancelledError:
                 duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                completed_at = datetime.utcnow()
                 await update_execution(
                     execution_id=execution_id,
                     status=ExecutionStatus.CANCELLED,
@@ -289,6 +316,17 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     duration_ms=duration_ms,
                 )
                 await publish_execution_update(execution_id, "Cancelled")
+                await publish_history_update(
+                    execution_id=execution_id,
+                    status="Cancelled",
+                    executed_by=user_id,
+                    executed_by_name=user_name,
+                    workflow_name=workflow_name,
+                    org_id=org_id,
+                    started_at=start_time,
+                    completed_at=completed_at,
+                    duration_ms=duration_ms,
+                )
                 await self._redis_client.delete_pending_execution(execution_id)
                 if is_sync:
                     await self._redis_client.push_result(
@@ -300,6 +338,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 return
             except TimeoutError as e:
                 duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                completed_at = datetime.utcnow()
                 error_msg = str(e)
                 await update_execution(
                     execution_id=execution_id,
@@ -309,6 +348,17 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     duration_ms=duration_ms,
                 )
                 await publish_execution_update(execution_id, "Timeout")
+                await publish_history_update(
+                    execution_id=execution_id,
+                    status="Timeout",
+                    executed_by=user_id,
+                    executed_by_name=user_name,
+                    workflow_name=workflow_name,
+                    org_id=org_id,
+                    started_at=start_time,
+                    completed_at=completed_at,
+                    duration_ms=duration_ms,
+                )
                 await self._redis_client.delete_pending_execution(execution_id)
                 if is_sync:
                     await self._redis_client.push_result(
@@ -353,6 +403,18 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     "result": result.get("result"),
                     "durationMs": result.get("duration_ms", 0),
                 },
+            )
+            completed_at = datetime.utcnow()
+            await publish_history_update(
+                execution_id=execution_id,
+                status=status.value,
+                executed_by=user_id,
+                executed_by_name=user_name,
+                workflow_name=workflow_name,
+                org_id=org_id,
+                started_at=start_time,
+                completed_at=completed_at,
+                duration_ms=result.get("duration_ms", 0),
             )
 
             # Delete pending from Redis (successful completion)
@@ -423,6 +485,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         except Exception as e:
             # Unexpected error
             duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            completed_at = datetime.utcnow()
             error_msg = str(e)
             error_type = type(e).__name__
 
@@ -441,6 +504,17 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 execution_id,
                 "Failed",
                 {"error": error_msg, "errorType": error_type},
+            )
+            await publish_history_update(
+                execution_id=execution_id,
+                status="Failed",
+                executed_by=user_id,
+                executed_by_name=user_name,
+                workflow_name=workflow_name,
+                org_id=org_id,
+                started_at=start_time,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
             )
 
             await self._redis_client.delete_pending_execution(execution_id)
