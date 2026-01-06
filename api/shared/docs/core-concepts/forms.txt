@@ -171,6 +171,16 @@ Forms validate as user types:
 
 For example, if you have a global form, you could assign it to no one and then only your Platform Admins would have access. You could also assign it to "Human Resources" and then only your Human Resource users in your tenants.
 
+## Programmatic Creation
+
+Forms can be created programmatically using the `create_form` MCP tool. This tool:
+
+- Validates the form schema automatically
+- Returns detailed error messages for any validation issues
+- Creates the form only if validation passes
+
+This enables AI coding assistants to create forms reliably with immediate feedback on any schema issues.
+
 ## Best Practices
 
 1. **Keep Simple**: Minimize fields, max clarity

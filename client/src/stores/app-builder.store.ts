@@ -47,6 +47,12 @@ interface TableCacheEntry {
  * App Builder runtime state
  */
 interface AppBuilderState {
+	// App context (for navigation URL construction)
+	appSlug: string | null;
+	isPreview: boolean;
+	setAppContext: (slug: string, isPreview: boolean) => void;
+	getBasePath: () => string;
+
 	// Variables
 	variables: Record<string, unknown>;
 	setVariable: (name: string, value: unknown) => void;
@@ -103,6 +109,8 @@ interface AppBuilderState {
  * Initial state values
  */
 const initialState = {
+	appSlug: null as string | null,
+	isPreview: false,
 	variables: {},
 	dataSources: {},
 	executions: {},
@@ -124,6 +132,14 @@ export const useAppBuilderStore = create<AppBuilderState>()(
 	subscribeWithSelector((set, get) => ({
 		// Initial state
 		...initialState,
+
+		// App context management
+		setAppContext: (slug, isPreview) => set({ appSlug: slug, isPreview }),
+		getBasePath: () => {
+			const { appSlug, isPreview } = get();
+			if (!appSlug) return "/apps";
+			return isPreview ? `/apps/${appSlug}/preview` : `/apps/${appSlug}`;
+		},
 
 		// Variable management
 		setVariable: (name, value) =>

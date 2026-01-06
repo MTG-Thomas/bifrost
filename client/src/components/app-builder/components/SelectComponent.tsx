@@ -106,17 +106,40 @@ export function SelectComponent({
 			});
 		}
 
-		// If optionsSource is specified, get from context data
-		if (props.optionsSource && context.data) {
-			const sourceData = context.data[props.optionsSource];
-			if (Array.isArray(sourceData)) {
-				const valueField = props.valueField || "value";
-				const labelField = props.labelField || "label";
+		// If optionsSource is specified, get from workflow results
+		if (props.optionsSource && context.workflow) {
+			// Check if optionsSource references a workflow result (e.g., "get_options.result.items")
+			const parts = props.optionsSource.split(".");
+			const workflowKey = parts[0];
+			const workflowResult = context.workflow[workflowKey];
 
-				return sourceData.map((item) => ({
-					value: String(item[valueField] ?? ""),
-					label: String(item[labelField] ?? item[valueField] ?? ""),
-				}));
+			if (workflowResult?.result) {
+				// Navigate to the nested path if specified (e.g., "result.items")
+				let sourceData: unknown = workflowResult.result;
+				const pathParts = parts.slice(1); // Skip the workflow key
+				for (const part of pathParts) {
+					if (part === "result") continue; // Skip "result" as it's already accessed
+					if (
+						sourceData &&
+						typeof sourceData === "object" &&
+						part in (sourceData as Record<string, unknown>)
+					) {
+						sourceData = (sourceData as Record<string, unknown>)[part];
+					} else {
+						sourceData = undefined;
+						break;
+					}
+				}
+
+				if (Array.isArray(sourceData)) {
+					const valueField = props.valueField || "value";
+					const labelField = props.labelField || "label";
+
+					return sourceData.map((item) => ({
+						value: String(item[valueField] ?? ""),
+						label: String(item[labelField] ?? item[valueField] ?? ""),
+					}));
+				}
 			}
 		}
 
@@ -126,7 +149,7 @@ export function SelectComponent({
 		props.optionsSource,
 		props.valueField,
 		props.labelField,
-		context.data,
+		context.workflow,
 	]);
 
 	// Get setFieldValue from context (stable reference)

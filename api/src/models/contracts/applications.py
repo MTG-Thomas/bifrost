@@ -107,8 +107,14 @@ class ApplicationPublic(ApplicationBase):
     id: UUID
     slug: str
     organization_id: UUID | None
-    live_version: int
-    draft_version: int
+    active_version_id: UUID | None = Field(
+        default=None,
+        description="ID of the currently live version (null if never published)",
+    )
+    draft_version_id: UUID | None = Field(
+        default=None,
+        description="ID of the current draft version",
+    )
     published_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -117,6 +123,10 @@ class ApplicationPublic(ApplicationBase):
     has_unpublished_changes: bool
     access_level: str = Field(default="authenticated")
     role_ids: list[UUID] = Field(default_factory=list)
+    navigation: dict[str, Any] | None = Field(
+        default=None,
+        description="Navigation configuration (sidebar items, etc.)",
+    )
 
     @field_serializer("created_at", "updated_at", "published_at")
     def serialize_dt(self, dt: datetime | None) -> str | None:
@@ -168,10 +178,9 @@ class ApplicationPublishRequest(BaseModel):
 class ApplicationRollbackRequest(BaseModel):
     """Request to rollback to a previous version."""
 
-    version: int = Field(
+    version_id: UUID = Field(
         ...,
-        ge=1,
-        description="Version number to rollback to (from version_history)",
+        description="UUID of the version to rollback to",
     )
 
 
@@ -196,8 +205,14 @@ class VersionHistoryResponse(BaseModel):
     """Response for version history endpoint."""
 
     history: list[VersionHistoryEntry]
-    current_live_version: int
-    current_draft_version: int
+    active_version_id: UUID | None = Field(
+        default=None,
+        description="ID of the currently live version",
+    )
+    draft_version_id: UUID | None = Field(
+        default=None,
+        description="ID of the current draft version",
+    )
 
 
 # ==================== PAGE MODELS ====================
@@ -223,6 +238,7 @@ class AppPageCreate(AppPageBase):
     variables: dict[str, Any] = Field(default_factory=dict, description="Page-level variables")
     launch_workflow_id: UUID | None = Field(default=None, description="Workflow to execute on page mount")
     launch_workflow_params: dict[str, Any] | None = Field(default=None, description="Parameters for launch workflow")
+    launch_workflow_data_source_id: str | None = Field(default=None, description="Data source ID for workflow results (defaults to workflow function name)")
     permission: dict[str, Any] = Field(default_factory=dict, description="Page permission config (allowedRoles, etc.)")
     page_order: int = Field(default=0, ge=0, description="Order in navigation/page list")
     root_layout_type: str = Field(default="column", description="Root layout type (row, column, grid)")
@@ -238,6 +254,7 @@ class AppPageUpdate(BaseModel):
     variables: dict[str, Any] | None = None
     launch_workflow_id: UUID | None = None
     launch_workflow_params: dict[str, Any] | None = None
+    launch_workflow_data_source_id: str | None = None
     permission: dict[str, Any] | None = None
     page_order: int | None = Field(default=None, ge=0)
     root_layout_type: str | None = None
@@ -253,8 +270,7 @@ class AppPageSummary(BaseModel):
     page_id: str
     title: str
     path: str
-    is_draft: bool
-    version: int
+    version_id: UUID = Field(description="ID of the version this page belongs to")
     page_order: int
     permission: dict[str, Any]
     created_at: datetime
@@ -273,6 +289,7 @@ class AppPageResponse(AppPageSummary):
     variables: dict[str, Any]
     launch_workflow_id: UUID | None
     launch_workflow_params: dict[str, Any] | None
+    launch_workflow_data_source_id: str | None
     root_layout_type: str
     root_layout_config: dict[str, Any]
 
@@ -347,7 +364,6 @@ class AppComponentResponse(AppComponentSummary):
     """Full component response with all fields."""
 
     page_id: UUID
-    is_draft: bool
     props: dict[str, Any]
     visible: str | None
     width: str | None
@@ -437,6 +453,7 @@ class LayoutContainer(CamelCaseModel):
     - AppComponentNode (leaf components)
     """
 
+    id: str  # Component ID for API operations (e.g., "layout_abc123")
     type: Literal["row", "column", "grid"]
     gap: int | None = None
     padding: int | None = None
@@ -444,6 +461,7 @@ class LayoutContainer(CamelCaseModel):
     justify: Literal["start", "center", "end", "between", "around"] | None = None
     columns: int | None = None
     auto_size: bool | None = None
+    max_width: Literal["sm", "md", "lg", "xl", "2xl", "full", "none"] | None = None
     visible: str | None = None
     class_name: str | None = None
     children: list[Union["LayoutContainer", AppComponentNode]] = Field(default_factory=list)
@@ -473,6 +491,7 @@ class PageDefinition(CamelCaseModel):
     variables: dict[str, Any] = Field(default_factory=dict)
     launch_workflow_id: str | None = None
     launch_workflow_params: dict[str, Any] | None = None
+    launch_workflow_data_source_id: str | None = None
     permission: PagePermissionConfig | None = None
 
 

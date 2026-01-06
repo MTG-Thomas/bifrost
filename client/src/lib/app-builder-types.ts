@@ -65,35 +65,15 @@ export type LayoutAlign = "start" | "center" | "end" | "stretch";
 export type LayoutJustify = "start" | "center" | "end" | "between" | "around";
 
 /**
+ * Layout max-width options for constraining container width
+ * Useful for forms to prevent them from stretching too wide
+ */
+export type LayoutMaxWidth = "sm" | "md" | "lg" | "xl" | "2xl" | "full" | "none";
+
+/**
  * Layout container types
  */
 export type LayoutType = "row" | "column" | "grid";
-
-/**
- * Data source configuration for dynamic data binding
- */
-export interface DataSource {
-	/** Unique identifier for the data source */
-	id: string;
-	/** Type of data source */
-	type: "api" | "static" | "computed" | "data-provider" | "workflow";
-	/** API endpoint for api type */
-	endpoint?: string;
-	/** Static data for static type */
-	data?: unknown;
-	/** Expression for computed type */
-	expression?: string;
-	/** Data provider ID for data-provider type */
-	dataProviderId?: string;
-	/** Workflow ID for workflow type */
-	workflowId?: string;
-	/** Input parameters (supports expressions like {{ query.id }}) */
-	inputParams?: Record<string, unknown>;
-	/** Whether to auto-refresh the data */
-	autoRefresh?: boolean;
-	/** Refresh interval in milliseconds */
-	refreshInterval?: number;
-}
 
 /**
  * User information for expression context
@@ -131,12 +111,13 @@ export interface ExpressionContext {
 	user?: ExpressionUser;
 	/** Page-level variables */
 	variables: Record<string, unknown>;
-	/** Data from data sources */
-	data?: Record<string, unknown>;
 	/** Field values from form inputs (accessed via {{ field.* }}) */
 	field?: Record<string, unknown>;
-	/** Last workflow execution result (accessed via {{ workflow.result.* }}) */
-	workflow?: WorkflowResult;
+	/**
+	 * Workflow execution results keyed by dataSourceId.
+	 * Access via {{ workflow.<dataSourceId>.result }}
+	 */
+	workflow?: Record<string, WorkflowResult>;
 	/** Current row context for table row click handlers (accessed via {{ row.* }}) */
 	row?: Record<string, unknown>;
 	/** Route parameters from URL (accessed via {{ params.id }}) */
@@ -474,8 +455,10 @@ export interface TableAction {
 export interface DataTableComponentProps extends BaseComponentProps {
 	type: "data-table";
 	props: {
-		/** Data source - table name or expression */
+		/** Data source - ID of a page data source */
 		dataSource: string;
+		/** Path to array within the data source result (e.g., 'clients' if result is { clients: [...] }) */
+		dataPath?: string;
 		/** Column definitions */
 		columns: TableColumn[];
 		/** Enable row selection */
@@ -818,6 +801,8 @@ export type AppComponent =
  * Layout container for organizing components
  */
 export interface LayoutContainer {
+	/** Unique identifier for API operations (e.g., "layout_abc123") */
+	id: string;
 	/** Layout type */
 	type: LayoutType;
 	/** Gap between children (in pixels or Tailwind units) */
@@ -831,11 +816,19 @@ export interface LayoutContainer {
 	/** Grid column count (for grid type) */
 	columns?: number;
 	/**
-	 * When true, children keep their natural size instead of expanding to fill space.
-	 * Useful for button rows where you want to use justify to position buttons.
-	 * Default: false (children expand equally in row layouts)
+	 * Controls how row children are sized.
+	 * Default (true/undefined): Children keep their natural size (standard CSS flexbox).
+	 * When false: Children expand equally to fill available space (flex-1).
+	 * Use false for layouts like two equal-width columns.
 	 */
 	autoSize?: boolean;
+	/**
+	 * Constrains the max-width of the layout container.
+	 * Values: "sm" (384px), "md" (448px), "lg" (512px), "xl" (576px), "2xl" (672px),
+	 * "full"/"none" (no constraint).
+	 * Recommended: Use "lg" for pages containing forms to prevent them from stretching too wide.
+	 */
+	maxWidth?: LayoutMaxWidth;
 	/** Visibility expression */
 	visible?: string;
 	/** Additional CSS classes */
@@ -856,18 +849,19 @@ export interface PageDefinition {
 	path: string;
 	/** Page layout */
 	layout: LayoutContainer;
-	/** Page-level data sources */
-	dataSources?: DataSource[];
 	/** Initial page variables */
 	variables?: Record<string, unknown>;
-	/** Workflow to execute on page mount (results available as {{ workflow.* }}) */
+	/** Workflow to execute on page mount (results available as {{ workflow.<dataSourceId> }}) */
 	launchWorkflowId?: string;
 	/** Parameters to pass to the launch workflow */
 	launchWorkflowParams?: Record<string, unknown>;
+	/** Data source ID for accessing workflow results (defaults to workflow function name) */
+	launchWorkflowDataSourceId?: string;
 	/** Alternative nested format for launch workflow configuration */
 	launchWorkflow?: {
 		workflowId: string;
 		params?: Record<string, unknown>;
+		dataSourceId?: string;
 	};
 	/** Page-level permission configuration */
 	permission?: PagePermission;
@@ -963,8 +957,6 @@ export interface ApplicationDefinition {
 	navigation?: NavigationConfig;
 	/** Permission configuration */
 	permissions?: PermissionConfig;
-	/** Global data sources available to all pages */
-	globalDataSources?: DataSource[];
 	/** Global variables available to all pages */
 	globalVariables?: Record<string, unknown>;
 }
@@ -989,4 +981,40 @@ export function isAppComponent(
 	element: LayoutContainer | AppComponent,
 ): element is AppComponent {
 	return !isLayoutContainer(element);
+}
+
+/**
+ * Types that can contain children (layout containers + components with props.children)
+ */
+export const CONTAINER_TYPES = ["row", "column", "grid", "card"] as const;
+
+/**
+ * Check if an element type can have children
+ */
+export function canHaveChildren(
+	element: LayoutContainer | AppComponent,
+): boolean {
+	return CONTAINER_TYPES.includes(
+		element.type as (typeof CONTAINER_TYPES)[number],
+	);
+}
+
+/**
+ * Get children from an element (handles both direct children and props.children)
+ */
+export function getElementChildren(
+	element: LayoutContainer | AppComponent,
+): (LayoutContainer | AppComponent)[] {
+	// Layout containers have direct children
+	if (isLayoutContainer(element)) {
+		return element.children || [];
+	}
+	// Components may have children in props.children (e.g., Card)
+	if ("props" in element) {
+		const props = element.props as { children?: (LayoutContainer | AppComponent)[] };
+		if (Array.isArray(props?.children)) {
+			return props.children;
+		}
+	}
+	return [];
 }

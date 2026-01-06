@@ -127,8 +127,8 @@ Before declaring any artifact complete, you MUST test it:
 4. Verify the result matches expectations
 
 ### Data Provider Testing
-1. Create via `create_workflow` (validates automatically)
-2. Verify it appears in `list_data_providers`
+1. Create via `create_workflow` with type='data_provider' (validates automatically)
+2. Verify it appears in `list_workflows` with type='data_provider'
 3. Execute via `execute_workflow`
 4. Verify output is `[{"label": "...", "value": "..."}]` format
 
@@ -136,11 +136,28 @@ Before declaring any artifact complete, you MUST test it:
 1. Create via `create_form` (validates automatically)
 2. Verify referenced `workflow_id` exists and works
 
+### App Building (Granular Approach)
+Apps are built in pieces, NOT as a single JSON blob:
+1. `create_app` - Create app metadata (name, description)
+2. `create_page` - Add pages one at a time (validates automatically)
+3. `create_component` - Add components to pages (validates automatically)
+4. `update_component` - Modify individual components
+5. Preview and test in draft mode (apps stay in draft until published)
+6. Only `publish_app` when user explicitly requests it
+
+DO NOT publish automatically - let the user preview and test first.
+
 ### App Testing
-1. Create app and pages using app-level tools (`create_page`)
-2. Add components using `create_component` (validates automatically)
-3. Verify all `loadingWorkflows` exist and work
+1. Verify `launchWorkflowId` is configured and the workflow exists
+2. Check that DataTable `dataSource` props match the workflow's `dataSourceId`
+3. Test workflow execution and data binding
 4. Test component layout (use `width` and `autoSize` for proper alignment)
+5. Test in draft mode via `/apps/{slug}?draft=true`
+
+**Workflow Data Pattern:**
+- Pages load data via `launchWorkflowId` (a workflow that returns data sources)
+- Data is accessed via `{{ workflow.<dataSourceId>.result }}` expressions
+- DataTable components use `dataSource` prop to reference the `dataSourceId`
 
 ### CRUD Testing (when building CRUD functionality)
 1. Test CREATE - execute, verify record created

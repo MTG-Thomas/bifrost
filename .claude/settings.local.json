@@ -150,7 +150,13 @@
       "Bash(tests/unit/services/mcp/test_tool_implementations.py )",
       "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/pip list:*)",
       "Bash(/Users/jack/GitHub/bifrost-api/venv/bin/pip install:*)",
-      "WebFetch(domain:lucide.dev)"
+      "WebFetch(domain:lucide.dev)",
+      "mcp__bifrost__create_component",
+      "mcp__bifrost__create_page",
+      "mcp__bifrost__update_app",
+      "Skill(bifrost_vibecode_debugger)",
+      "mcp__bifrost__get_page",
+      "mcp__bifrost__update_page"
     ],
     "deny": [],
     "ask": [],

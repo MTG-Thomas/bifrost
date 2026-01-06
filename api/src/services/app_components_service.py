@@ -35,7 +35,6 @@ class AppComponentsService:
     async def list_components(
         self,
         page_db_id: UUID,
-        is_draft: bool = True,
     ) -> list[AppComponentSummary]:
         """
         List all components for a page (summaries only).
@@ -44,10 +43,7 @@ class AppComponentsService:
         """
         query = (
             select(AppComponent)
-            .where(
-                AppComponent.page_id == page_db_id,
-                AppComponent.is_draft == is_draft,
-            )
+            .where(AppComponent.page_id == page_db_id)
             .order_by(AppComponent.parent_id.nulls_first(), AppComponent.component_order)
         )
         result = await self.session.execute(query)
@@ -68,13 +64,11 @@ class AppComponentsService:
         self,
         page_db_id: UUID,
         component_id: str,
-        is_draft: bool = True,
     ) -> AppComponent | None:
         """Get a single component by its string ID."""
         query = select(AppComponent).where(
             AppComponent.page_id == page_db_id,
             AppComponent.component_id == component_id,
-            AppComponent.is_draft == is_draft,
         )
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
@@ -88,7 +82,6 @@ class AppComponentsService:
     async def create_component(
         self,
         page_db_id: UUID,
-        is_draft: bool,
         data: AppComponentCreate,
     ) -> AppComponent:
         """Create a new component."""
@@ -105,7 +98,6 @@ class AppComponentsService:
             sibling_query = select(AppComponent.component_order).where(
                 AppComponent.page_id == page_db_id,
                 AppComponent.parent_id == data.parent_id,
-                AppComponent.is_draft == is_draft,
             ).order_by(AppComponent.component_order.desc()).limit(1)
             result = await self.session.execute(sibling_query)
             max_order = result.scalar()
@@ -116,7 +108,6 @@ class AppComponentsService:
             page_id=page_db_id,
             component_id=data.component_id,
             parent_id=data.parent_id,
-            is_draft=is_draft,
             type=data.type,
             props=data.props,
             component_order=order,
@@ -203,7 +194,6 @@ class AppComponentsService:
         if old_parent_id != new_parent_id or old_order != new_order:
             await self._reorder_siblings_after_remove(
                 component.page_id,
-                component.is_draft,
                 old_parent_id,
                 old_order,
                 exclude_id=component.id,
@@ -212,7 +202,6 @@ class AppComponentsService:
         # Reorder siblings at new location (make room)
         await self._reorder_siblings_after_insert(
             component.page_id,
-            component.is_draft,
             new_parent_id,
             new_order,
             exclude_id=component.id,
@@ -250,7 +239,6 @@ class AppComponentsService:
     async def _reorder_siblings_after_remove(
         self,
         page_id: UUID,
-        is_draft: bool,
         parent_id: UUID | None,
         removed_order: int,
         exclude_id: UUID | None = None,
@@ -260,7 +248,6 @@ class AppComponentsService:
             update(AppComponent)
             .where(
                 AppComponent.page_id == page_id,
-                AppComponent.is_draft == is_draft,
                 AppComponent.parent_id == parent_id,
                 AppComponent.component_order > removed_order,
             )
@@ -273,7 +260,6 @@ class AppComponentsService:
     async def _reorder_siblings_after_insert(
         self,
         page_id: UUID,
-        is_draft: bool,
         parent_id: UUID | None,
         insert_order: int,
         exclude_id: UUID | None = None,
@@ -283,7 +269,6 @@ class AppComponentsService:
             update(AppComponent)
             .where(
                 AppComponent.page_id == page_id,
-                AppComponent.is_draft == is_draft,
                 AppComponent.parent_id == parent_id,
                 AppComponent.component_order >= insert_order,
             )
@@ -296,7 +281,6 @@ class AppComponentsService:
     async def batch_update_props(
         self,
         page_db_id: UUID,
-        is_draft: bool,
         updates: list[dict[str, Any]],
     ) -> int:
         """
@@ -316,7 +300,7 @@ class AppComponentsService:
             if not comp_id:
                 continue
 
-            component = await self.get_component(page_db_id, comp_id, is_draft)
+            component = await self.get_component(page_db_id, comp_id)
             if component:
                 # Merge props
                 merged_props = {**(component.props or {}), **new_props}
@@ -336,7 +320,6 @@ class AppComponentsService:
             type=component.type,
             component_order=component.component_order,
             page_id=component.page_id,
-            is_draft=component.is_draft,
             props=component.props or {},
             visible=component.visible,
             width=component.width,

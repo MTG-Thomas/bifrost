@@ -324,12 +324,12 @@ export function Applications() {
 										</div>
 									)}
 
-									{/* Version info */}
-									{app.live_version ? (
+									{/* Published status */}
+									{app.is_published && (
 										<div className="text-xs text-muted-foreground mb-3">
-											Version {app.live_version}
+											Published
 										</div>
-									) : null}
+									)}
 
 									<div className="flex gap-2 mt-auto">
 										<Button
@@ -476,7 +476,7 @@ export function Applications() {
 											</div>
 										</DataTableCell>
 										<DataTableCell>
-											{app.live_version || "-"}
+											{app.is_published ? "Published" : "-"}
 										</DataTableCell>
 										<DataTableCell className="text-right">
 											<div className="flex gap-1 justify-end">

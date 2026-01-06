@@ -34,6 +34,7 @@ import type {
 	HeadingLevel,
 	LayoutAlign,
 	LayoutJustify,
+	LayoutMaxWidth,
 	ButtonActionType,
 	PageDefinition,
 } from "@/lib/app-builder-types";
@@ -172,7 +173,7 @@ function CommonPropertiesSection({
 /** Layout-specific properties */
 /**
  * Page Properties Section
- * Shows page-level settings like title, path, and launch workflow
+ * Shows page-level settings like title, path, data sources, and launch workflow
  */
 function PagePropertiesSection({
 	page,
@@ -204,40 +205,64 @@ function PagePropertiesSection({
 					/>
 				</FormField>
 
-				<FormField
-					label="Launch Workflow"
-					description="Workflow to execute when page loads (results available as {{ workflow.* }})"
-				>
-					<WorkflowPicker
-						value={page.launchWorkflowId}
-						onChange={(workflowId) =>
-							onChange({
-								launchWorkflowId: workflowId || undefined,
-								launchWorkflowParams: workflowId
-									? page.launchWorkflowParams
-									: undefined,
-							})
-						}
-						placeholder="Select launch workflow (optional)"
-						allowClear
-					/>
-				</FormField>
-
-				{page.launchWorkflowId && (
+				{/* Launch Workflow Section */}
+				<div className="pt-2 border-t">
 					<FormField
-						label="Launch Workflow Parameters"
-						description="Parameters to pass to the launch workflow"
+						label="Launch Workflow"
+						description="Workflow when page loads. Access via {{ workflow.<dataSourceId> }}"
 					>
-						<WorkflowParameterEditor
-							workflowId={page.launchWorkflowId}
-							value={page.launchWorkflowParams ?? {}}
-							onChange={(params) =>
-								onChange({ launchWorkflowParams: params })
+						<WorkflowPicker
+							value={page.launchWorkflowId}
+							onChange={(workflowId) =>
+								onChange({
+									launchWorkflowId: workflowId || undefined,
+									launchWorkflowParams: workflowId
+										? page.launchWorkflowParams
+										: undefined,
+									launchWorkflowDataSourceId: workflowId
+										? page.launchWorkflowDataSourceId
+										: undefined,
+								})
 							}
-							isRowAction={false}
+							placeholder="Select launch workflow (optional)"
+							allowClear
 						/>
 					</FormField>
-				)}
+
+					{page.launchWorkflowId && (
+						<>
+							<FormField
+								label="Data Source ID"
+								description="Access workflow result via {{ workflow.<id> }}. Defaults to workflow function name."
+							>
+								<Input
+									value={page.launchWorkflowDataSourceId ?? ""}
+									onChange={(e) =>
+										onChange({
+											launchWorkflowDataSourceId:
+												e.target.value || undefined,
+										})
+									}
+									placeholder="Auto (workflow function name)"
+								/>
+							</FormField>
+
+							<FormField
+								label="Launch Workflow Parameters"
+								description="Parameters to pass to the launch workflow"
+							>
+								<WorkflowParameterEditor
+									workflowId={page.launchWorkflowId}
+									value={page.launchWorkflowParams ?? {}}
+									onChange={(params) =>
+										onChange({ launchWorkflowParams: params })
+									}
+									isRowAction={false}
+								/>
+							</FormField>
+						</>
+					)}
+				</div>
 			</AccordionContent>
 		</AccordionItem>
 	);
@@ -346,6 +371,39 @@ function LayoutPropertiesSection({
 								Space Between
 							</SelectItem>
 							<SelectItem value="around">Space Around</SelectItem>
+						</SelectContent>
+					</Select>
+				</FormField>
+
+				<FormField
+					label="Max Width"
+					description="Constrain layout width (use lg for forms)"
+				>
+					<Select
+						value={component.maxWidth ?? "none"}
+						onValueChange={(value) =>
+							onChange({
+								maxWidth:
+									value === "none"
+										? undefined
+										: (value as LayoutMaxWidth),
+							})
+						}
+					>
+						<SelectTrigger>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="none">
+								None (full width)
+							</SelectItem>
+							<SelectItem value="sm">Small (384px)</SelectItem>
+							<SelectItem value="md">Medium (448px)</SelectItem>
+							<SelectItem value="lg">Large (512px)</SelectItem>
+							<SelectItem value="xl">X-Large (576px)</SelectItem>
+							<SelectItem value="2xl">
+								2X-Large (672px)
+							</SelectItem>
 						</SelectContent>
 					</Select>
 				</FormField>
@@ -1136,7 +1194,7 @@ function DataTablePropertiesSection({
 			<AccordionContent className="space-y-4 px-1">
 				<FormField
 					label="Data Source"
-					description="Table name or expression"
+					description="ID of a page data source (e.g., clientsList)"
 				>
 					<Input
 						value={props.dataSource}
@@ -1145,7 +1203,22 @@ function DataTablePropertiesSection({
 								props: { ...props, dataSource: e.target.value },
 							})
 						}
-						placeholder="tableName or {{ data.items }}"
+						placeholder="dataSourceId"
+					/>
+				</FormField>
+
+				<FormField
+					label="Data Path"
+					description="Path to array in result (e.g., 'clients' if workflow returns { clients: [...] })"
+				>
+					<Input
+						value={props.dataPath ?? ""}
+						onChange={(e) =>
+							onChange({
+								props: { ...props, dataPath: e.target.value || undefined },
+							})
+						}
+						placeholder="Leave empty if result is already an array"
 					/>
 				</FormField>
 

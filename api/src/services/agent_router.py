@@ -75,7 +75,7 @@ class AgentRouter:
         # Get tool names for this agent
         tool_names = []
         for tool in agent.tools:
-            if tool.is_active and tool.is_tool:
+            if tool.is_active and tool.type == "tool":
                 tool_names.append(tool.name)
 
         # Build capability strings

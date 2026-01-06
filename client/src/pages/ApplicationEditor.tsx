@@ -8,7 +8,7 @@
  * Changes are saved per-page via the layout replace API.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
 	ArrowLeft,
@@ -20,6 +20,8 @@ import {
 	Settings,
 	Loader2,
 	Check,
+	Variable,
+	PanelRightClose,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -51,10 +53,14 @@ import {
 	usePublishApplication,
 	getAppPage,
 } from "@/hooks/useApplications";
+import { useWorkflows } from "@/hooks/useWorkflows";
+import { useWorkflowExecution } from "@/hooks/useWorkflowExecution";
 import { apiClient } from "@/lib/api-client";
 import { useAuth } from "@/contexts/AuthContext";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
-import { AppRenderer, EditorShell } from "@/components/app-builder";
+import { AppRenderer, AppShell, EditorShell } from "@/components/app-builder";
+import { VariablePreview } from "@/components/app-builder/editor/VariablePreview";
+import { useAppBuilderStore } from "@/stores/app-builder.store";
 import type { ComponentSaveData } from "@/components/app-builder/editor/EditorShell";
 import { useComponentSaveQueue } from "@/hooks/useComponentSaveQueue";
 import { useAppBuilderEditorStore } from "@/stores/app-builder-editor.store";
@@ -63,13 +69,13 @@ import type {
 	PageDefinition as FrontendPageDefinition,
 	LayoutContainer,
 	AppComponent,
-	DataSource,
+	WorkflowResult,
+	ExpressionContext,
 } from "@/lib/app-builder-types";
 import type { components } from "@/lib/v1";
 
 type ApiLayoutContainer = components["schemas"]["LayoutContainer"];
 type ApiComponentNode = components["schemas"]["AppComponentNode"];
-type ApiDataSource = components["schemas"]["DataSourceConfig"];
 
 /**
  * Convert API LayoutContainer (with null values) to frontend LayoutContainer (with undefined).
@@ -77,6 +83,7 @@ type ApiDataSource = components["schemas"]["DataSourceConfig"];
  */
 function convertApiLayout(apiLayout: ApiLayoutContainer): LayoutContainer {
 	return {
+		id: apiLayout.id,
 		type: apiLayout.type,
 		gap: apiLayout.gap ?? undefined,
 		padding: apiLayout.padding ?? undefined,
@@ -112,24 +119,6 @@ function convertApiLayout(apiLayout: ApiLayoutContainer): LayoutContainer {
 	};
 }
 
-/**
- * Convert API DataSource (with null values) to frontend DataSource (with undefined).
- */
-function convertApiDataSource(apiDs: ApiDataSource): DataSource {
-	return {
-		id: apiDs.id,
-		type: apiDs.type,
-		endpoint: apiDs.endpoint ?? undefined,
-		data: apiDs.data ?? undefined,
-		expression: apiDs.expression ?? undefined,
-		dataProviderId: apiDs.dataProviderId ?? undefined,
-		workflowId: apiDs.workflowId ?? undefined,
-		inputParams: apiDs.inputParams ?? undefined,
-		autoRefresh: apiDs.autoRefresh ?? undefined,
-		refreshInterval: apiDs.refreshInterval ?? undefined,
-	};
-}
-
 // Default empty application template
 const DEFAULT_APP_DEFINITION: AppDefinitionType = {
 	id: "",
@@ -142,6 +131,7 @@ const DEFAULT_APP_DEFINITION: AppDefinitionType = {
 			title: "Home",
 			path: "/",
 			layout: {
+				id: "layout_home_root",
 				type: "column",
 				gap: 16,
 				padding: 24,
@@ -183,10 +173,10 @@ export function ApplicationEditor() {
 		isEditing ? slugParam : undefined,
 	);
 
-	// Fetch pages list (summaries)
+	// Fetch pages list (summaries) - always use draft version for editor
 	const { data: pagesData, isLoading: isLoadingPages } = useAppPages(
 		existingApp?.id,
-		true, // draft
+		existingApp?.draft_version_id,
 	);
 
 	// Mutations
@@ -222,6 +212,13 @@ export function ApplicationEditor() {
 	// Currently active page ID for save operations
 	const [currentPageId, setCurrentPageId] = useState<string | null>(null);
 
+	// Preview tab state
+	const [previewPageId, setPreviewPageId] = useState<string | null>(null);
+	const [isVariablesPanelOpen, setIsVariablesPanelOpen] = useState(false);
+
+	// App runtime store for expression context
+	const appStore = useAppBuilderStore();
+
 	// Editor store for dirty tracking
 	const editorStore = useAppBuilderEditorStore();
 
@@ -245,6 +242,94 @@ export function ApplicationEditor() {
 			saveQueue.hasPendingOperations || editorStore.hasUnsavedChanges()
 		);
 	}, [saveQueue.hasPendingOperations, editorStore]);
+
+	// Build expression context from runtime store for Variables panel
+	const previewContext = useMemo((): Partial<ExpressionContext> => {
+		// Build workflow results from dataSources (which contain workflow execution results)
+		const workflowResults: Record<string, WorkflowResult> = {};
+		for (const [key, ds] of Object.entries(appStore.dataSources)) {
+			if (ds.data !== undefined) {
+				workflowResults[key] = {
+					executionId: key,
+					workflowId: key,
+					workflowName: key,
+					status: ds.error ? "failed" : "completed",
+					result: ds.data,
+					error: ds.error,
+				};
+			}
+		}
+
+		return {
+			user: user
+				? {
+						id: user.id,
+						name: user.name || "",
+						email: user.email || "",
+						role: user.roles?.[0] || "user",
+					}
+				: undefined,
+			variables: appStore.variables,
+			workflow: workflowResults,
+			field: {},
+		};
+	}, [user, appStore.dataSources, appStore.variables]);
+
+	// Current page for preview (tracks separately from editor)
+	const currentPreviewPage = useMemo(() => {
+		if (!definition) return undefined;
+		const pageId = previewPageId || definition.pages[0]?.id;
+		return definition.pages.find((p) => p.id === pageId);
+	}, [definition, previewPageId]);
+
+	// Workflow execution for preview mode data loading
+	const { data: workflows } = useWorkflows();
+	const { executeWorkflow: executeWorkflowWithSubscription } =
+		useWorkflowExecution({});
+
+	// Find a workflow by ID or name
+	const findWorkflow = useCallback(
+		(workflowId: string) => {
+			if (!workflows) return undefined;
+			return workflows.find(
+				(w) => w.id === workflowId || w.name === workflowId,
+			);
+		},
+		[workflows],
+	);
+
+	// Execute workflow handler for preview mode
+	const executeWorkflow = useCallback(
+		async (
+			workflowId: string,
+			params: Record<string, unknown>,
+		): Promise<WorkflowResult | undefined> => {
+			const workflow = findWorkflow(workflowId);
+			try {
+				const result = await executeWorkflowWithSubscription(
+					workflow?.id ?? workflowId,
+					params,
+				);
+				return result;
+			} catch (error) {
+				const errorResult: WorkflowResult = {
+					executionId: "",
+					workflowId: workflow?.id ?? workflowId,
+					workflowName: workflow?.name ?? workflowId,
+					status: "failed",
+					error:
+						error instanceof Error
+							? error.message
+							: "Unknown error",
+				};
+				toast.error(
+					`Failed to execute workflow: ${error instanceof Error ? error.message : "Unknown error"}`,
+				);
+				return errorResult;
+			}
+		},
+		[executeWorkflowWithSubscription, findWorkflow],
+	);
 
 	// Initialize current page when definition loads
 	useEffect(() => {
@@ -278,13 +363,15 @@ export function ApplicationEditor() {
 	// Load full page definitions when we have the pages list
 	useEffect(() => {
 		const loadPages = async () => {
-			if (!existingApp?.id || !pagesData?.pages) return;
+			if (!existingApp?.id || !existingApp?.draft_version_id || !pagesData?.pages) return;
 
 			setIsLoadingDefinition(true);
 			try {
-				// Fetch each page with its full layout
+				// Fetch each page with its full layout (always use draft version for editor)
+				// We've already guarded that draft_version_id is truthy at line 366
+				const draftVersionId = existingApp.draft_version_id!;
 				const pagePromises = pagesData.pages.map((pageSummary) =>
-					getAppPage(existingApp.id, pageSummary.page_id, true),
+					getAppPage(existingApp.id, pageSummary.page_id, draftVersionId),
 				);
 				const loadedPages = await Promise.all(pagePromises);
 
@@ -296,13 +383,12 @@ export function ApplicationEditor() {
 						title: page.title,
 						path: page.path,
 						layout: convertApiLayout(page.layout),
-						dataSources: (page.dataSources ?? []).map(
-							convertApiDataSource,
-						),
 						variables: page.variables ?? {},
 						launchWorkflowId: page.launchWorkflowId ?? undefined,
 						launchWorkflowParams:
 							page.launchWorkflowParams ?? undefined,
+						launchWorkflowDataSourceId:
+							page.launchWorkflowDataSourceId ?? undefined,
 						permission: page.permission
 							? {
 									allowedRoles:
@@ -321,10 +407,9 @@ export function ApplicationEditor() {
 					id: existingApp.id,
 					name: existingApp.name,
 					description: existingApp.description || "",
-					version: `${existingApp.draft_version}`,
+					version: "draft",
 					pages: convertedPages,
 					navigation: undefined, // TODO: Load from app metadata if needed
-					globalDataSources: undefined,
 					globalVariables: undefined,
 				};
 
@@ -364,15 +449,152 @@ export function ApplicationEditor() {
 		}
 	}, [name, slug, isEditing]);
 
+	// Debounced page metadata save
+	const pageMetadataSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const lastSavedPageMetadataRef = useRef<string>("");
+
+	// Save page metadata (launch workflow, variables, etc.) to backend
+	const savePageMetadata = useCallback(
+		async (page: FrontendPageDefinition) => {
+			if (!existingApp?.id || !page.id) return;
+
+			try {
+				await apiClient.PATCH(
+					"/api/applications/{app_id}/pages/{page_id}",
+					{
+						params: {
+							path: { app_id: existingApp.id, page_id: page.id },
+						},
+						body: {
+							title: page.title,
+							path: page.path,
+							variables: page.variables,
+							launch_workflow_id: page.launchWorkflowId ?? null,
+							launch_workflow_params:
+								page.launchWorkflowParams ?? null,
+							launch_workflow_data_source_id:
+								page.launchWorkflowDataSourceId ?? null,
+						},
+					},
+				);
+			} catch (error) {
+				console.error(
+					"[ApplicationEditor] Failed to save page metadata:",
+					error,
+				);
+				toast.error("Failed to save page settings");
+			}
+		},
+		[existingApp?.id],
+	);
+
 	// Handle definition changes from visual editor
 	// Note: This is called for ALL definition changes (including those from granular saves)
-	// The save queue handles actual persistence, this just updates local state
+	// The save queue handles actual persistence for components, page metadata is saved here
 	const handleDefinitionChange = useCallback(
 		(newDefinition: AppDefinitionType) => {
 			setDefinition(newDefinition);
+
+			// Check if page metadata changed and trigger debounced save
+			if (isEditing && currentPageId) {
+				const currentPage = newDefinition.pages.find(
+					(p) => p.id === currentPageId,
+				);
+				if (currentPage) {
+					// Create a hash of the page metadata fields we care about
+					const metadataKey = JSON.stringify({
+						title: currentPage.title,
+						path: currentPage.path,
+						variables: currentPage.variables,
+						launchWorkflowId: currentPage.launchWorkflowId,
+						launchWorkflowParams: currentPage.launchWorkflowParams,
+						launchWorkflowDataSourceId:
+							currentPage.launchWorkflowDataSourceId,
+					});
+
+					// Only save if metadata actually changed
+					if (metadataKey !== lastSavedPageMetadataRef.current) {
+						// Clear any pending save
+						if (pageMetadataSaveTimerRef.current) {
+							clearTimeout(pageMetadataSaveTimerRef.current);
+						}
+
+						// Debounced save (500ms)
+						pageMetadataSaveTimerRef.current = setTimeout(() => {
+							lastSavedPageMetadataRef.current = metadataKey;
+							savePageMetadata(currentPage);
+						}, 500);
+					}
+				}
+			}
 		},
-		[],
+		[isEditing, currentPageId, savePageMetadata],
 	);
+
+	// Initialize the lastSavedPageMetadata when page loads
+	useEffect(() => {
+		if (definition && currentPageId) {
+			const currentPage = definition.pages.find(
+				(p) => p.id === currentPageId,
+			);
+			if (currentPage) {
+				lastSavedPageMetadataRef.current = JSON.stringify({
+					title: currentPage.title,
+					path: currentPage.path,
+					variables: currentPage.variables,
+					launchWorkflowId: currentPage.launchWorkflowId,
+					launchWorkflowParams: currentPage.launchWorkflowParams,
+					launchWorkflowDataSourceId:
+						currentPage.launchWorkflowDataSourceId,
+				});
+			}
+		}
+	}, [definition, currentPageId]);
+
+	// Handle page reordering with immediate save to backend
+	const handleReorderPages = useCallback(
+		async (newPages: FrontendPageDefinition[]) => {
+			if (!existingApp?.id) return;
+
+			// Save each page's new order to backend
+			try {
+				await Promise.all(
+					newPages.map((page, index) =>
+						apiClient.PATCH(
+							"/api/applications/{app_id}/pages/{page_id}",
+							{
+								params: {
+									path: {
+										app_id: existingApp.id,
+										page_id: page.id,
+									},
+								},
+								body: {
+									page_order: index,
+								},
+							},
+						),
+					),
+				);
+			} catch (error) {
+				console.error(
+					"[ApplicationEditor] Failed to save page order:",
+					error,
+				);
+				toast.error("Failed to save page order");
+			}
+		},
+		[existingApp?.id],
+	);
+
+	// Cleanup debounce timer on unmount
+	useEffect(() => {
+		return () => {
+			if (pageMetadataSaveTimerRef.current) {
+				clearTimeout(pageMetadataSaveTimerRef.current);
+			}
+		};
+	}, []);
 
 	// Granular save callbacks - these are called by EditorShell for real-time saves
 	const handleComponentCreate = useCallback(
@@ -436,8 +658,7 @@ export function ApplicationEditor() {
 		[existingApp?.id, currentPageId, saveQueue],
 	);
 
-	// Save changes - flushes pending queue operations
-	// For new apps, still uses bulk layout save
+	// Create a new application (only used when !isEditing)
 	const handleSave = async () => {
 		if (!definition) {
 			toast.error("No definition to save");
@@ -445,70 +666,60 @@ export function ApplicationEditor() {
 		}
 
 		try {
-			if (isEditing && existingApp?.id) {
-				// Flush any pending granular saves first
-				await saveQueue.flushAll();
+			// Create new application
+			const result = await createApplication.mutateAsync({
+				body: {
+					name,
+					description: description || null,
+					slug,
+					access_level: "authenticated",
+				},
+			});
 
-				// Clear dirty tracking
-				editorStore.clearAllDirty();
-
-				toast.success("Changes saved");
-			} else {
-				// Create new application
-				const result = await createApplication.mutateAsync({
+			// Create the initial home page
+			const homePage = definition.pages[0];
+			if (homePage) {
+				await apiClient.POST("/api/applications/{app_id}/pages", {
+					params: {
+						path: { app_id: result.id },
+					},
 					body: {
-						name,
-						description: description || null,
-						slug,
-						access_level: "authenticated",
+						page_id: homePage.id,
+						title: homePage.title,
+						path: homePage.path,
+						page_order: 0,
+						root_layout_type: homePage.layout.type,
+						root_layout_config: {
+							gap: homePage.layout.gap,
+							padding: homePage.layout.padding,
+						},
 					},
 				});
 
-				// Create the initial home page
-				const homePage = definition.pages[0];
-				if (homePage) {
-					await apiClient.POST("/api/applications/{app_id}/pages", {
+				// Set the layout
+				await apiClient.PUT(
+					"/api/applications/{app_id}/pages/{page_id}/layout",
+					{
 						params: {
-							path: { app_id: result.id },
-						},
-						body: {
-							page_id: homePage.id,
-							title: homePage.title,
-							path: homePage.path,
-							page_order: 0,
-							root_layout_type: homePage.layout.type,
-							root_layout_config: {
-								gap: homePage.layout.gap,
-								padding: homePage.layout.padding,
+							path: {
+								app_id: result.id,
+								page_id: homePage.id,
 							},
 						},
-					});
-
-					// Set the layout
-					await apiClient.PUT(
-						"/api/applications/{app_id}/pages/{page_id}/layout",
-						{
-							params: {
-								path: {
-									app_id: result.id,
-									page_id: homePage.id,
-								},
-							},
-							body: homePage.layout as unknown as Record<
-								string,
-								unknown
-							>,
-						},
-					);
-				}
-
-				toast.success("Application created");
-				navigate(`/apps/${result.slug}/edit`);
+						body: homePage.layout as unknown as Record<
+							string,
+							unknown
+						>,
+					},
+				);
 			}
+
+			toast.success("Application created");
+			navigate(`/apps/${result.slug}/edit`);
 		} catch (error) {
-			console.error("[ApplicationEditor] Save error:", error);
+			console.error("[ApplicationEditor] Create error:", error);
 			toast.error(
-				error instanceof Error ? error.message : "Failed to save",
+				error instanceof Error ? error.message : "Failed to create",
 			);
 		}
 	};
@@ -517,8 +728,11 @@ export function ApplicationEditor() {
 		if (!existingApp?.id || !definition) return;
 
 		try {
-			// Save first
-			await handleSave();
+			// Flush any pending auto-saves first
+			await saveQueue.flushAll();
+
+			// Clear dirty tracking
+			editorStore.clearAllDirty();
 
 			// Publish
 			await publishApplication.mutateAsync({
@@ -623,11 +837,6 @@ export function ApplicationEditor() {
 						{existingApp?.has_unpublished_changes && (
 							<Badge variant="outline">Draft</Badge>
 						)}
-						{existingApp?.is_published && (
-							<Badge variant="default">
-								v{existingApp.live_version}
-							</Badge>
-						)}
 					</div>
 				</div>
 
@@ -649,15 +858,16 @@ export function ApplicationEditor() {
 
 				{/* Right: Actions */}
 				<div className="flex items-center gap-2">
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={handleSave}
-						disabled={isSaving || !definition}
-					>
-						<Save className="mr-2 h-4 w-4" />
-						{isSaving ? "Saving..." : "Save"}
-					</Button>
+					{!isEditing && (
+						<Button
+							size="sm"
+							onClick={handleSave}
+							disabled={isSaving || !definition || !name}
+						>
+							<Save className="mr-2 h-4 w-4" />
+							{isSaving ? "Creating..." : "Create Application"}
+						</Button>
+					)}
 					{isEditing && hasDraft && (
 						<Button
 							size="sm"
@@ -683,6 +893,7 @@ export function ApplicationEditor() {
 						selectedComponentId={selectedComponentId}
 						onSelectComponent={setSelectedComponentId}
 						pageId={currentPageId || undefined}
+						onPageIdChange={setCurrentPageId}
 						onComponentCreate={
 							isEditing ? handleComponentCreate : undefined
 						}
@@ -694,6 +905,9 @@ export function ApplicationEditor() {
 						}
 						onComponentMove={
 							isEditing ? handleComponentMove : undefined
+						}
+						onReorderPages={
+							isEditing ? handleReorderPages : undefined
 						}
 					/>
 				) : (
@@ -781,13 +995,63 @@ export function ApplicationEditor() {
 			</TabsContent>
 
 			{/* Preview Tab */}
-			<TabsContent value="preview" className="flex-1 overflow-auto mt-0">
+			<TabsContent value="preview" className="flex-1 overflow-hidden mt-0">
 				{definition ? (
-					<div className="border rounded-lg overflow-hidden h-full">
-						<AppRenderer
-							definition={definition}
-							navigate={previewNavigate}
-						/>
+					<div className="flex h-full">
+						{/* Main Preview Area with AppShell */}
+						<div className="flex-1 border rounded-lg overflow-hidden m-2">
+							<AppShell
+								app={definition}
+								currentPageId={
+									previewPageId || definition.pages[0]?.id
+								}
+								onNavigate={setPreviewPageId}
+								showBackButton={false}
+							>
+								<AppRenderer
+									definition={definition}
+									pageId={
+										previewPageId || definition.pages[0]?.id
+									}
+									navigate={previewNavigate}
+									executeWorkflow={executeWorkflow}
+								/>
+							</AppShell>
+						</div>
+
+						{/* Variables Panel Toggle */}
+						<div className="flex flex-col">
+							<Button
+								variant="ghost"
+								size="icon"
+								className="m-2"
+								onClick={() =>
+									setIsVariablesPanelOpen(!isVariablesPanelOpen)
+								}
+								title={
+									isVariablesPanelOpen
+										? "Hide Variables"
+										: "Show Variables"
+								}
+							>
+								{isVariablesPanelOpen ? (
+									<PanelRightClose className="h-5 w-5" />
+								) : (
+									<Variable className="h-5 w-5" />
+								)}
+							</Button>
+						</div>
+
+						{/* Variables Panel */}
+						{isVariablesPanelOpen && (
+							<div className="w-80 border-l bg-background flex flex-col">
+								<VariablePreview
+									context={previewContext}
+									page={currentPreviewPage}
+									className="flex-1"
+								/>
+							</div>
+						)}
 					</div>
 				) : (
 					<Card>

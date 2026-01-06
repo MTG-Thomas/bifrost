@@ -131,7 +131,7 @@ def extract_app_workflows(
     Args:
         pages: List of AppPage ORM objects (or dicts with same structure)
         components: List of AppComponent ORM objects (or dicts with same structure)
-        live_only: Only extract from published (is_draft=False) pages/components
+        live_only: Deprecated, ignored. Pages/components from a specific version are passed directly.
 
     Returns:
         Set of workflow UUIDs
@@ -139,11 +139,6 @@ def extract_app_workflows(
     workflows: set[UUID] = set()
 
     for page in pages:
-        # Filter to live pages if requested
-        is_draft = getattr(page, "is_draft", page.get("is_draft", True) if isinstance(page, dict) else True)
-        if live_only and is_draft:
-            continue
-
         # Page launch workflow
         launch_wf_id = (
             getattr(page, "launch_workflow_id", None)
@@ -178,11 +173,6 @@ def extract_app_workflows(
                     pass
 
     for comp in components:
-        # Filter to live components if requested
-        is_draft = getattr(comp, "is_draft", comp.get("is_draft", True) if isinstance(comp, dict) else True)
-        if live_only and is_draft:
-            continue
-
         # Component loading_workflows
         loading_wfs = (
             getattr(comp, "loading_workflows", None)
@@ -284,17 +274,17 @@ async def sync_app_workflow_access(
     """
     Convenience function to extract and sync workflow access for an app.
 
-    Only considers live (is_draft=False) pages and components.
+    Pages and components should be from the active (published) version.
 
     Args:
         db: Database session
         app_id: The Application UUID
         access_level: Access level string
         organization_id: Organization UUID or None
-        pages: List of AppPage ORM objects
-        components: List of AppComponent ORM objects
+        pages: List of AppPage ORM objects (from active version)
+        components: List of AppComponent ORM objects (from active version)
     """
-    workflow_ids = extract_app_workflows(pages, components, live_only=True)
+    workflow_ids = extract_app_workflows(pages, components, live_only=False)
     await sync_workflow_access(
         db=db,
         entity_type="app",

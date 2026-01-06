@@ -22,17 +22,25 @@ function adaptContext(context: ExpressionContext): {
 	query: Record<string, string>;
 	field: Record<string, unknown>;
 } {
+	// Flatten workflow results for template access
+	const workflowData: Record<string, unknown> = {};
+	if (context.workflow) {
+		for (const [key, value] of Object.entries(context.workflow)) {
+			workflowData[key] = value.result;
+		}
+	}
+
 	return {
-		// Map variables to workflow for compatibility with existing templates
+		// Map variables and workflow results for template access
 		workflow: {
 			...context.variables,
-			...context.data,
+			...workflowData,
 			user: context.user,
 		},
 		// Empty query params (could be populated from URL if needed)
 		query: {},
 		// Field context for self-referential templates
-		field: {},
+		field: context.field || {},
 	};
 }
 

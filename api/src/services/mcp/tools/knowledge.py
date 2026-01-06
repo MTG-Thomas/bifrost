@@ -4,6 +4,7 @@ Knowledge MCP Tools
 Tools for searching the Bifrost knowledge base.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -62,16 +63,20 @@ async def search_knowledge(
     logger.info(f"MCP search_knowledge called with query={query}, namespace={namespace}")
 
     if not query:
-        return "Error: query is required"
+        return json.dumps({"error": "query is required"})
 
     # Validate namespace access
     accessible = context.accessible_namespaces
     if not accessible:
-        return "No knowledge sources available. No agents with knowledge access configured."
+        return json.dumps({
+            "results": [],
+            "count": 0,
+            "message": "No knowledge sources available. No agents with knowledge access configured.",
+        })
 
     if namespace:
         if namespace not in accessible:
-            return f"Access denied: namespace '{namespace}' is not accessible."
+            return json.dumps({"error": f"Access denied: namespace '{namespace}' is not accessible."})
         namespaces_to_search = [namespace]
     else:
         namespaces_to_search = accessible
@@ -93,19 +98,25 @@ async def search_knowledge(
             )
 
             if not results:
-                return f"No results found for query: '{query}'"
+                return json.dumps({
+                    "results": [],
+                    "count": 0,
+                    "message": f"No results found for query: '{query}'",
+                })
 
-            lines = [f"# Knowledge Search Results for '{query}'\n"]
-            for i, doc in enumerate(results, 1):
-                lines.append(f"## Result {i}")
-                if doc.namespace:
-                    lines.append(f"**Namespace:** {doc.namespace}")
-                if doc.score:
-                    lines.append(f"**Relevance:** {doc.score:.2%}")
-                lines.append(f"\n{doc.content}\n")
+            result_data = []
+            for doc in results:
+                result_data.append({
+                    "namespace": doc.namespace,
+                    "content": doc.content,
+                    "score": doc.score,
+                })
 
-            return "\n".join(lines)
+            return json.dumps({
+                "results": result_data,
+                "count": len(result_data),
+            })
 
     except Exception as e:
         logger.exception(f"Error searching knowledge via MCP: {e}")
-        return f"Error searching knowledge: {str(e)}"
+        return json.dumps({"error": f"Error searching knowledge: {str(e)}"})

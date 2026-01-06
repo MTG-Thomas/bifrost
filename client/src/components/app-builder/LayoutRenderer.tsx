@@ -14,6 +14,7 @@ import type {
 	ComponentWidth,
 	LayoutType,
 	ComponentType,
+	LayoutMaxWidth,
 } from "@/lib/app-builder-types";
 import { isLayoutContainer } from "@/lib/app-builder-types";
 import { evaluateVisibility } from "@/lib/expression-parser";
@@ -104,11 +105,55 @@ function getJustifyClasses(justify?: string): string {
 }
 
 /**
- * Get inline style for gap (Tailwind JIT can't compile dynamic values)
+ * Get Tailwind classes for max-width constraint
+ * Useful for constraining form layouts to readable widths
  */
-function getGapStyle(gap?: number): React.CSSProperties {
-	if (gap === undefined || gap === 0) return {};
-	return { gap: `${gap}px` };
+function getMaxWidthClasses(maxWidth?: LayoutMaxWidth): string {
+	switch (maxWidth) {
+		case "sm":
+			return "max-w-sm mx-auto"; // 384px, centered
+		case "md":
+			return "max-w-md mx-auto"; // 448px, centered
+		case "lg":
+			return "max-w-lg mx-auto"; // 512px, centered
+		case "xl":
+			return "max-w-xl mx-auto"; // 576px, centered
+		case "2xl":
+			return "max-w-2xl mx-auto"; // 672px, centered
+		case "full":
+		case "none":
+		default:
+			return "";
+	}
+}
+
+/**
+ * Get default gap for layout type
+ * Column layouts default to 16px (comfortable spacing between sections)
+ * Row layouts default to 8px (tighter spacing for inline elements)
+ * Grid layouts default to 16px (consistent with column)
+ * Set gap: 0 explicitly to remove spacing
+ */
+function getDefaultGap(layoutType: LayoutType): number {
+	switch (layoutType) {
+		case "row":
+			return 8;
+		case "column":
+		case "grid":
+			return 16;
+		default:
+			return 16;
+	}
+}
+
+/**
+ * Get inline style for gap (Tailwind JIT can't compile dynamic values)
+ * Uses sensible defaults per layout type; set gap: 0 explicitly for no gap
+ */
+function getGapStyle(gap: number | undefined, layoutType: LayoutType): React.CSSProperties {
+	const effectiveGap = gap ?? getDefaultGap(layoutType);
+	if (effectiveGap === 0) return {};
+	return { gap: `${effectiveGap}px` };
 }
 
 /**
@@ -123,11 +168,12 @@ function getPaddingStyle(padding?: number): React.CSSProperties {
  * Get combined layout styles
  */
 function getLayoutStyles(layout: {
+	type: LayoutType;
 	gap?: number;
 	padding?: number;
 }): React.CSSProperties {
 	return {
-		...getGapStyle(layout.gap),
+		...getGapStyle(layout.gap, layout.type),
 		...getPaddingStyle(layout.padding),
 	};
 }
@@ -274,6 +320,7 @@ function renderLayoutContainer(
 	const baseClasses = cn(
 		getAlignClasses(layout.align),
 		getJustifyClasses(layout.justify),
+		getMaxWidthClasses(layout.maxWidth),
 		layout.className,
 		className,
 	);
@@ -283,8 +330,8 @@ function renderLayoutContainer(
 	// Generate a unique key for this container based on parent
 	const containerKey = parentKey;
 
-	// For rows, we want children to flex and share space equally by default
-	// unless they have an explicit width set OR autoSize is enabled
+	// Row children keep their natural size by default (standard CSS flexbox behavior).
+	// Set autoSize: false to make children expand equally to fill available space (flex-1).
 	const renderChild = (
 		child: LayoutContainer | AppComponent,
 		index: number,
@@ -293,9 +340,9 @@ function renderLayoutContainer(
 	) => {
 		const key = generateChildKey(child, index, containerKey);
 
-		// In row layouts, wrap children with flex-1 to distribute space evenly
-		// unless the child has an explicit width OR autoSize is enabled on the parent
-		if (parentType === "row" && !autoSize) {
+		// In row layouts, only wrap with flex-1 if autoSize is explicitly false
+		// Default behavior (autoSize undefined or true) keeps natural sizes
+		if (parentType === "row" && autoSize === false) {
 			const hasExplicitWidth =
 				!isLayoutContainer(child) &&
 				child.width &&

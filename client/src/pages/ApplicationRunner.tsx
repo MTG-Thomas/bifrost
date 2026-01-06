@@ -43,7 +43,7 @@ import type {
 	WorkflowResult,
 	OnCompleteAction,
 	LayoutContainer,
-	DataSource,
+	ExpressionContext,
 } from "@/lib/app-builder-types";
 import { evaluateExpression } from "@/lib/expression-parser";
 import type { components } from "@/lib/v1";
@@ -62,10 +62,10 @@ function convertApiPageToFrontend(apiPage: PageDefinitionAPI): PageDefinition {
 		title: apiPage.title,
 		path: apiPage.path,
 		layout: apiPage.layout as unknown as LayoutContainer,
-		dataSources: (apiPage.dataSources ?? []) as unknown as DataSource[],
 		variables: (apiPage.variables ?? {}) as Record<string, unknown>,
 		launchWorkflowId: apiPage.launchWorkflowId ?? undefined,
 		launchWorkflowParams: apiPage.launchWorkflowParams ?? undefined,
+		launchWorkflowDataSourceId: apiPage.launchWorkflowDataSourceId ?? undefined,
 		permission: apiPage.permission
 			? {
 					allowedRoles: apiPage.permission.allowedRoles ?? undefined,
@@ -92,6 +92,8 @@ export function ApplicationRunner({
 	const [searchParams] = useSearchParams();
 	const navigate = useNavigate();
 	const resetStore = useAppBuilderStore((state) => state.reset);
+	const setAppContext = useAppBuilderStore((state) => state.setAppContext);
+	const getBasePath = useAppBuilderStore((state) => state.getBasePath);
 	const refreshDataSource = useAppBuilderStore(
 		(state) => state.refreshDataSource,
 	);
@@ -145,13 +147,16 @@ export function ApplicationRunner({
 		},
 	});
 
-	// Reset the runtime store when the application changes
+	// Reset the runtime store and set app context when the application changes
 	useEffect(() => {
 		resetStore();
+		if (slugParam) {
+			setAppContext(slugParam, preview);
+		}
 		return () => {
 			resetStore();
 		};
-	}, [slugParam, resetStore]);
+	}, [slugParam, preview, resetStore, setAppContext]);
 
 	// Fetch application metadata
 	const {
@@ -160,13 +165,15 @@ export function ApplicationRunner({
 		error: appError,
 	} = useApplication(slugParam);
 
-	// Fetch pages list (draft for preview, live for published)
-	// isDraft=true for preview mode, isDraft=false for live mode
+	// Fetch pages list - use draft_version_id for preview, active_version_id for live
+	const versionId = preview
+		? application?.draft_version_id
+		: application?.active_version_id;
 	const {
 		data: pagesResponse,
 		isLoading: isLoadingPages,
 		error: pagesError,
-	} = useAppPages(application?.id, preview); // isDraft = preview
+	} = useAppPages(application?.id, versionId);
 
 	// Track loaded page definitions
 	const [loadedPages, setLoadedPages] = useState<PageDefinition[]>([]);
@@ -176,7 +183,7 @@ export function ApplicationRunner({
 
 	// Load full page definitions when page list is available
 	useEffect(() => {
-		if (!application?.id || !pagesResponse?.pages?.length) {
+		if (!application?.id || !versionId || !pagesResponse?.pages?.length) {
 			setLoadedPages([]);
 			return;
 		}
@@ -191,7 +198,7 @@ export function ApplicationRunner({
 						const pageData = await getAppPage(
 							application.id,
 							pageSummary.page_id,
-							preview, // isDraft = preview (draft for preview mode)
+							versionId, // Use version ID from above
 						);
 						// Convert API PageDefinition to frontend PageDefinition
 						return convertApiPageToFrontend(pageData);
@@ -211,7 +218,7 @@ export function ApplicationRunner({
 		};
 
 		loadPageDefinitions();
-	}, [application?.id, pagesResponse?.pages, preview]);
+	}, [application?.id, versionId, pagesResponse?.pages]);
 
 	// Combine loading states
 	const isLoadingDef = isLoadingPages || isLoadingPageDefinitions;
@@ -225,13 +232,12 @@ export function ApplicationRunner({
 			id: application.id,
 			name: application.name,
 			description: application.description ?? undefined,
-			version: String(
-				preview ? application.draft_version : application.live_version,
-			),
+			version: preview ? "preview" : "live",
 			pages: loadedPages,
-			navigation: undefined, // TODO: Load from application metadata if needed
+			navigation: application.navigation as
+				| ApplicationDefinition["navigation"]
+				| undefined,
 			permissions: undefined, // TODO: Load from application metadata if needed
-			globalDataSources: undefined,
 			globalVariables: undefined,
 		};
 	}, [application, loadedPages, preview]);
@@ -282,18 +288,24 @@ export function ApplicationRunner({
 			? `/${pagePath}`.replace(/\/+/g, "/")
 			: "/";
 
-		// Find matching page - try exact match first, then pattern match
+		// First pass: try exact matches on ALL pages
+		// This ensures /clients/new matches before /clients/:id
 		for (const page of appDefinition.pages) {
 			const pagePathNormalized = page.path.startsWith("/")
 				? page.path
 				: `/${page.path}`;
 
-			// Exact match
 			if (pagePathNormalized === normalizedPath) {
 				return { currentPage: page, routeParams: {} };
 			}
+		}
 
-			// Pattern match (for routes like /tickets/:id)
+		// Second pass: try pattern matches (for routes like /tickets/:id)
+		for (const page of appDefinition.pages) {
+			const pagePathNormalized = page.path.startsWith("/")
+				? page.path
+				: `/${page.path}`;
+
 			if (pagePathNormalized.includes(":")) {
 				const { match, params } = matchRoutePath(
 					pagePathNormalized,
@@ -376,11 +388,12 @@ export function ApplicationRunner({
 	);
 
 	// Create a navigate function that handles relative paths within the app
+	// Uses store's getBasePath() to correctly handle preview mode
 	const appNavigate = useCallback(
 		(path: string) => {
 			// If the path is relative (doesn't start with /apps/), make it relative to current app
 			if (!path.startsWith("/apps/") && !path.startsWith("http")) {
-				const basePath = `/apps/${slugParam}`;
+				const basePath = getBasePath();
 				// Normalize path to avoid double slashes
 				const relativePath = path.startsWith("/")
 					? path.slice(1)
@@ -390,17 +403,20 @@ export function ApplicationRunner({
 				navigate(path);
 			}
 		},
-		[navigate, slugParam],
+		[navigate, getBasePath],
 	);
 
 	// Execute onComplete actions after workflow completes
 	const executeOnCompleteActions = useCallback(
 		(actions: OnCompleteAction[], result: WorkflowResult) => {
-			// Build a context with the workflow result for expression evaluation
+			// Build a minimal context with the workflow result for expression evaluation
+			// Use "current" key so expressions like {{ workflow.current.result.id }} work
 			const context = {
 				variables: {} as Record<string, unknown>,
-				workflow: result,
-			};
+				workflow: {
+					current: result,
+				},
+			} as ExpressionContext;
 
 			for (const action of actions) {
 				switch (action.type) {
@@ -753,7 +769,6 @@ export function ApplicationRunner({
 			{/* AppShell with sidebar and header */}
 			<AppShell
 				app={appDefinition}
-				slug={slugParam}
 				currentPageId={currentPage?.id}
 				showBackButton={!preview}
 				activeWorkflowNames={activeWorkflowNames}

@@ -15,6 +15,43 @@ from src.services.mcp.tool_registry import ToolCategory
 logger = logging.getLogger(__name__)
 
 
+async def _get_draft_page(db: Any, context: Any, app_uuid: UUID, page_id: str) -> tuple[Any, Any, str | None]:
+    """
+    Helper to get app and draft page.
+
+    Returns (app, page, error_message). If error_message is set, app/page may be None.
+    """
+    from sqlalchemy import select
+    from src.models.orm.applications import AppPage, Application
+
+    # Verify app access
+    app_query = select(Application).where(Application.id == app_uuid)
+    if not context.is_platform_admin and context.org_id:
+        app_query = app_query.where(
+            (Application.organization_id == context.org_id) |
+            (Application.organization_id.is_(None))
+        )
+    app = (await db.execute(app_query)).scalar_one_or_none()
+    if not app:
+        return None, None, f"Application not found: {app_uuid}"
+
+    # Ensure app has a draft version
+    if not app.draft_version_id:
+        return app, None, "Application has no draft version"
+
+    # Get page from draft version
+    page_query = select(AppPage).where(
+        AppPage.application_id == app_uuid,
+        AppPage.page_id == page_id,
+        AppPage.version_id == app.draft_version_id,
+    )
+    page = (await db.execute(page_query)).scalar_one_or_none()
+    if not page:
+        return app, None, f"Page not found: {page_id}"
+
+    return app, page, None
+
+
 @system_tool(
     id="list_components",
     name="List Components",
@@ -42,10 +79,7 @@ async def list_components(
     page_id: str,
 ) -> str:
     """List components in a page (summaries only - type, parent, order)."""
-    from sqlalchemy import select
-
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppPage, Application
     from src.services.app_components_service import AppComponentsService
 
     logger.info(f"MCP list_components called with app={app_id}, page={page_id}")
@@ -53,52 +87,36 @@ async def list_components(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
-            # Verify app access
-            app_query = select(Application).where(Application.id == app_uuid)
-            if not context.is_platform_admin and context.org_id:
-                app_query = app_query.where(
-                    (Application.organization_id == context.org_id) |
-                    (Application.organization_id.is_(None))
-                )
-            if not (await db.execute(app_query)).scalar_one_or_none():
-                return f"Application not found: {app_id}"
-
-            # Get page
-            page_query = select(AppPage).where(
-                AppPage.application_id == app_uuid,
-                AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
-            )
-            page = (await db.execute(page_query)).scalar_one_or_none()
-            if not page:
-                return f"Page not found: {page_id}"
+            app, page, error = await _get_draft_page(db, context, app_uuid, page_id)
+            if error:
+                return json.dumps({"error": error})
 
             service = AppComponentsService(db)
-            components = await service.list_components(page.id, is_draft=True)
+            components = await service.list_components(page.id)
 
-            if not components:
-                return f"No components in page '{page_id}'."
+            component_list = [
+                {
+                    "component_id": comp.component_id,
+                    "type": comp.type,
+                    "parent_id": str(comp.parent_id) if comp.parent_id else None,
+                    "order": comp.component_order,
+                }
+                for comp in components
+            ]
 
-            lines = [f"# Components in '{page.title}'\n"]
-            lines.append("| Component ID | Type | Parent | Order |")
-            lines.append("|--------------|------|--------|-------|")
-            for comp in components:
-                parent = str(comp.parent_id)[:8] + "..." if comp.parent_id else "root"
-                lines.append(f"| {comp.component_id} | {comp.type} | {parent} | {comp.component_order} |")
-
-            lines.append("")
-            lines.append(f"*Total: {len(components)} components*")
-            lines.append("*Use `get_component` to see full props for a specific component.*")
-
-            return "\n".join(lines)
+            return json.dumps({
+                "components": component_list,
+                "count": len(component_list),
+                "page_title": page.title,
+            })
 
     except Exception as e:
         logger.exception(f"Error listing components via MCP: {e}")
-        return f"Error listing components: {str(e)}"
+        return json.dumps({"error": f"Error listing components: {str(e)}"})
 
 
 @system_tool(
@@ -133,10 +151,7 @@ async def get_component(
     component_id: str,
 ) -> str:
     """Get a single component with full props."""
-    from sqlalchemy import select
-
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppPage, Application
     from src.services.app_components_service import AppComponentsService
 
     logger.info(f"MCP get_component called: app={app_id}, page={page_id}, comp={component_id}")
@@ -144,60 +159,41 @@ async def get_component(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
-            # Verify app access
-            app_query = select(Application).where(Application.id == app_uuid)
-            if not context.is_platform_admin and context.org_id:
-                app_query = app_query.where(
-                    (Application.organization_id == context.org_id) |
-                    (Application.organization_id.is_(None))
-                )
-            if not (await db.execute(app_query)).scalar_one_or_none():
-                return f"Application not found: {app_id}"
-
-            # Get page
-            page_query = select(AppPage).where(
-                AppPage.application_id == app_uuid,
-                AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
-            )
-            page = (await db.execute(page_query)).scalar_one_or_none()
-            if not page:
-                return f"Page not found: {page_id}"
+            app, page, error = await _get_draft_page(db, context, app_uuid, page_id)
+            if error:
+                return json.dumps({"error": error})
 
             service = AppComponentsService(db)
-            component = await service.get_component(page.id, component_id, is_draft=True)
+            component = await service.get_component(page.id, component_id)
 
             if not component:
-                return f"Component not found: {component_id}"
+                return json.dumps({"error": f"Component not found: {component_id}"})
 
-            lines = [f"# Component: {component.component_id}\n"]
-            lines.append(f"**Type:** {component.type}")
-            lines.append(f"**ID (UUID):** {component.id}")
-            lines.append(f"**Parent:** {component.parent_id or 'root'}")
-            lines.append(f"**Order:** {component.component_order}")
+            result = {
+                "component_id": component.component_id,
+                "type": component.type,
+                "id": str(component.id),
+                "parent_id": str(component.parent_id) if component.parent_id else None,
+                "order": component.component_order,
+                "props": component.props,
+            }
 
             if component.visible:
-                lines.append(f"**Visible:** {component.visible}")
+                result["visible"] = component.visible
             if component.width:
-                lines.append(f"**Width:** {component.width}")
+                result["width"] = component.width
             if component.loading_workflows:
-                lines.append(f"**Loading Workflows:** {component.loading_workflows}")
+                result["loading_workflows"] = component.loading_workflows
 
-            lines.append("")
-            lines.append("## Props")
-            lines.append("```json")
-            lines.append(json.dumps(component.props, indent=2))
-            lines.append("```")
-
-            return "\n".join(lines)
+            return json.dumps(result)
 
     except Exception as e:
         logger.exception(f"Error getting component via MCP: {e}")
-        return f"Error getting component: {str(e)}"
+        return json.dumps({"error": f"Error getting component: {str(e)}"})
 
 
 @system_tool(
@@ -231,7 +227,7 @@ async def get_component(
             },
             "parent_id": {
                 "type": "string",
-                "description": "UUID of parent component (optional, omit for root level)",
+                "description": "UUID of parent component from create_component response (NOT the component_id you provided). Omit for root level.",
             },
             "order": {
                 "type": "integer",
@@ -252,11 +248,8 @@ async def create_component(
     order: int = 0,
 ) -> str:
     """Create a new component in a page."""
-    from sqlalchemy import select
-
     from src.core.database import get_db_context
     from src.models.contracts.applications import AppComponentCreate
-    from src.models.orm.applications import AppPage, Application
     from src.services.app_components_service import AppComponentsService
 
     logger.info(f"MCP create_component: app={app_id}, page={page_id}, comp={component_id}")
@@ -264,28 +257,13 @@ async def create_component(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
-            # Verify app access
-            app_query = select(Application).where(Application.id == app_uuid)
-            if not context.is_platform_admin and context.org_id:
-                app_query = app_query.where(Application.organization_id == context.org_id)
-            app_result = await db.execute(app_query)
-            app = app_result.scalar_one_or_none()
-            if not app:
-                return f"Application not found: {app_id}"
-
-            # Get page
-            page_query = select(AppPage).where(
-                AppPage.application_id == app_uuid,
-                AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
-            )
-            page = (await db.execute(page_query)).scalar_one_or_none()
-            if not page:
-                return f"Page not found: {page_id}"
+            app, page, error = await _get_draft_page(db, context, app_uuid, page_id)
+            if error:
+                return json.dumps({"error": error})
 
             # Parse parent UUID if provided
             parent_uuid = None
@@ -293,14 +271,14 @@ async def create_component(
                 try:
                     parent_uuid = UUID(parent_id)
                 except ValueError:
-                    return f"Error: Invalid parent_id format: {parent_id}"
+                    return json.dumps({"error": f"Invalid parent_id format: {parent_id}"})
 
             service = AppComponentsService(db)
 
             # Check for duplicate
-            existing = await service.get_component(page.id, component_id, is_draft=True)
+            existing = await service.get_component(page.id, component_id)
             if existing:
-                return f"Error: Component '{component_id}' already exists"
+                return json.dumps({"error": f"Component '{component_id}' already exists"})
 
             try:
                 data = AppComponentCreate(
@@ -310,24 +288,22 @@ async def create_component(
                     parent_id=parent_uuid,
                     component_order=order,
                 )
-                component = await service.create_component(page.id, is_draft=True, data=data)
+                component = await service.create_component(page.id, data)
             except ValueError as e:
-                return f"Error: {str(e)}"
+                return json.dumps({"error": str(e)})
 
-            page.version += 1
-            app.draft_version += 1
             await db.commit()
 
-            return (
-                f"Component '{component_id}' created!\n\n"
-                f"**Type:** {component_type}\n"
-                f"**ID (UUID):** {component.id}\n"
-                f"**Page Version:** {page.version}"
-            )
+            return json.dumps({
+                "success": True,
+                "component_id": component_id,
+                "type": component_type,
+                "id": str(component.id),
+            })
 
     except Exception as e:
         logger.exception(f"Error creating component via MCP: {e}")
-        return f"Error creating component: {str(e)}"
+        return json.dumps({"error": f"Error creating component: {str(e)}"})
 
 
 @system_tool(
@@ -382,11 +358,8 @@ async def update_component(
     width: str | None = None,
 ) -> str:
     """Update a component's props or settings."""
-    from sqlalchemy import select
-
     from src.core.database import get_db_context
     from src.models.contracts.applications import AppComponentUpdate
-    from src.models.orm.applications import AppPage, Application
     from src.services.app_components_service import AppComponentsService
 
     logger.info(f"MCP update_component: app={app_id}, page={page_id}, comp={component_id}")
@@ -394,34 +367,19 @@ async def update_component(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
-            # Verify app access
-            app_query = select(Application).where(Application.id == app_uuid)
-            if not context.is_platform_admin and context.org_id:
-                app_query = app_query.where(Application.organization_id == context.org_id)
-            app_result = await db.execute(app_query)
-            app = app_result.scalar_one_or_none()
-            if not app:
-                return f"Application not found: {app_id}"
-
-            # Get page
-            page_query = select(AppPage).where(
-                AppPage.application_id == app_uuid,
-                AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
-            )
-            page = (await db.execute(page_query)).scalar_one_or_none()
-            if not page:
-                return f"Page not found: {page_id}"
+            app, page, error = await _get_draft_page(db, context, app_uuid, page_id)
+            if error:
+                return json.dumps({"error": error})
 
             service = AppComponentsService(db)
-            component = await service.get_component(page.id, component_id, is_draft=True)
+            component = await service.get_component(page.id, component_id)
 
             if not component:
-                return f"Component not found: {component_id}"
+                return json.dumps({"error": f"Component not found: {component_id}"})
 
             updates_made = []
 
@@ -440,23 +398,20 @@ async def update_component(
                 updates_made.append("width")
 
             if not updates_made:
-                return "No updates specified"
+                return json.dumps({"error": "No updates specified"})
 
             await service.update_component(component, data)
-
-            page.version += 1
-            app.draft_version += 1
             await db.commit()
 
-            return (
-                f"Component '{component_id}' updated!\n\n"
-                f"**Updates:** {', '.join(updates_made)}\n"
-                f"**Page Version:** {page.version}"
-            )
+            return json.dumps({
+                "success": True,
+                "component_id": component_id,
+                "updates": updates_made,
+            })
 
     except Exception as e:
         logger.exception(f"Error updating component via MCP: {e}")
-        return f"Error updating component: {str(e)}"
+        return json.dumps({"error": f"Error updating component: {str(e)}"})
 
 
 @system_tool(
@@ -491,10 +446,7 @@ async def delete_component(
     component_id: str,
 ) -> str:
     """Delete a component and all its children."""
-    from sqlalchemy import select
-
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppPage, Application
     from src.services.app_components_service import AppComponentsService
 
     logger.info(f"MCP delete_component: app={app_id}, page={page_id}, comp={component_id}")
@@ -502,49 +454,31 @@ async def delete_component(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
-            # Verify app access
-            app_query = select(Application).where(Application.id == app_uuid)
-            if not context.is_platform_admin and context.org_id:
-                app_query = app_query.where(Application.organization_id == context.org_id)
-            app_result = await db.execute(app_query)
-            app = app_result.scalar_one_or_none()
-            if not app:
-                return f"Application not found: {app_id}"
-
-            # Get page
-            page_query = select(AppPage).where(
-                AppPage.application_id == app_uuid,
-                AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
-            )
-            page = (await db.execute(page_query)).scalar_one_or_none()
-            if not page:
-                return f"Page not found: {page_id}"
+            app, page, error = await _get_draft_page(db, context, app_uuid, page_id)
+            if error:
+                return json.dumps({"error": error})
 
             service = AppComponentsService(db)
-            component = await service.get_component(page.id, component_id, is_draft=True)
+            component = await service.get_component(page.id, component_id)
 
             if not component:
-                return f"Component not found: {component_id}"
+                return json.dumps({"error": f"Component not found: {component_id}"})
 
             await service.delete_component(component)
-
-            page.version += 1
-            app.draft_version += 1
             await db.commit()
 
-            return (
-                f"Component '{component_id}' deleted!\n\n"
-                f"**Page Version:** {page.version}"
-            )
+            return json.dumps({
+                "success": True,
+                "component_id": component_id,
+            })
 
     except Exception as e:
         logger.exception(f"Error deleting component via MCP: {e}")
-        return f"Error deleting component: {str(e)}"
+        return json.dumps({"error": f"Error deleting component: {str(e)}"})
 
 
 @system_tool(
@@ -589,11 +523,8 @@ async def move_component(
     new_order: int,
 ) -> str:
     """Move a component to a new parent and/or position."""
-    from sqlalchemy import select
-
     from src.core.database import get_db_context
     from src.models.contracts.applications import AppComponentMove
-    from src.models.orm.applications import AppPage, Application
     from src.services.app_components_service import AppComponentsService
 
     logger.info(f"MCP move_component: app={app_id}, page={page_id}, comp={component_id}")
@@ -601,34 +532,19 @@ async def move_component(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
-            # Verify app access
-            app_query = select(Application).where(Application.id == app_uuid)
-            if not context.is_platform_admin and context.org_id:
-                app_query = app_query.where(Application.organization_id == context.org_id)
-            app_result = await db.execute(app_query)
-            app = app_result.scalar_one_or_none()
-            if not app:
-                return f"Application not found: {app_id}"
-
-            # Get page
-            page_query = select(AppPage).where(
-                AppPage.application_id == app_uuid,
-                AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
-            )
-            page = (await db.execute(page_query)).scalar_one_or_none()
-            if not page:
-                return f"Page not found: {page_id}"
+            app, page, error = await _get_draft_page(db, context, app_uuid, page_id)
+            if error:
+                return json.dumps({"error": error})
 
             service = AppComponentsService(db)
-            component = await service.get_component(page.id, component_id, is_draft=True)
+            component = await service.get_component(page.id, component_id)
 
             if not component:
-                return f"Component not found: {component_id}"
+                return json.dumps({"error": f"Component not found: {component_id}"})
 
             # Parse new parent UUID
             parent_uuid = None
@@ -636,25 +552,23 @@ async def move_component(
                 try:
                     parent_uuid = UUID(new_parent_id)
                 except ValueError:
-                    return f"Error: Invalid new_parent_id format: {new_parent_id}"
+                    return json.dumps({"error": f"Invalid new_parent_id format: {new_parent_id}"})
 
             try:
                 data = AppComponentMove(new_parent_id=parent_uuid, new_order=new_order)
                 await service.move_component(component, data)
             except ValueError as e:
-                return f"Error: {str(e)}"
+                return json.dumps({"error": str(e)})
 
-            page.version += 1
-            app.draft_version += 1
             await db.commit()
 
-            return (
-                f"Component '{component_id}' moved!\n\n"
-                f"**New Parent:** {new_parent_id or 'root'}\n"
-                f"**New Order:** {new_order}\n"
-                f"**Page Version:** {page.version}"
-            )
+            return json.dumps({
+                "success": True,
+                "component_id": component_id,
+                "new_parent_id": new_parent_id,
+                "new_order": new_order,
+            })
 
     except Exception as e:
         logger.exception(f"Error moving component via MCP: {e}")
-        return f"Error moving component: {str(e)}"
+        return json.dumps({"error": f"Error moving component: {str(e)}"})

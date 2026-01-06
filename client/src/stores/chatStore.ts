@@ -136,6 +136,7 @@ interface ChatActions {
 	completeStream: (messageId?: string) => void;
 	setStreamError: (error: string) => void;
 	resetStream: () => void;
+	clearCompletedStreamingMessages: () => void;
 
 	// Studio mode actions
 	toggleStudioMode: () => void;
@@ -609,6 +610,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 			completedStreamingMessages: [],
 			streamingMessage: null,
 		});
+	},
+
+	clearCompletedStreamingMessages: () => {
+		set({ completedStreamingMessages: [] });
 	},
 
 	// Studio mode actions

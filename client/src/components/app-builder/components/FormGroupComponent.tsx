@@ -95,30 +95,24 @@ export function FormGroupComponent({
 
 			{/* Child form fields */}
 			<div style={containerStyles}>
-				{children.map(
-					(child: AppComponent | LayoutContainer, index: number) => {
-						const key = isLayoutContainer(child)
-							? `layout-${index}`
-							: child.id;
-						return (
-							<div
-								key={key}
-								className={
-									direction === "row" ? "flex-1" : undefined
-								}
-							>
-								{isLayoutContainer(child) ? (
-									<LayoutRenderer
-										layout={child}
-										context={context}
-									/>
-								) : (
-									renderRegisteredComponent(child, context)
-								)}
-							</div>
-						);
-					},
-				)}
+				{children.map((child: AppComponent | LayoutContainer) => {
+					// Both layouts and components now have id field
+					return (
+						<div
+							key={child.id}
+							className={direction === "row" ? "flex-1" : undefined}
+						>
+							{isLayoutContainer(child) ? (
+								<LayoutRenderer
+									layout={child}
+									context={context}
+								/>
+							) : (
+								renderRegisteredComponent(child, context)
+							)}
+						</div>
+					);
+				})}
 			</div>
 		</div>
 	);

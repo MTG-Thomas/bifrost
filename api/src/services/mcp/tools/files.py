@@ -4,6 +4,7 @@ File MCP Tools
 Tools for reading, writing, listing, deleting, and searching files in the workspace.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -39,20 +40,22 @@ async def read_file(context: Any, path: str) -> str:
     logger.info(f"MCP read_file called with path={path}")
 
     if not path:
-        return "Error: path is required"
+        return json.dumps({"error": "path is required"})
 
     try:
         result = await file_operations.read_file(path)
-        if result.encoding == "base64":
-            return f"Binary file ({result.size} bytes). Base64 content available but too large to display."
-        return result.content or ""
+        return json.dumps({
+            "content": result.content or "",
+            "encoding": result.encoding,
+            "size": result.size,
+        })
     except FileNotFoundError:
-        return f"Error: File not found: {path}"
+        return json.dumps({"error": f"File not found: {path}"})
     except PermissionError:
-        return f"Error: Permission denied: {path}"
+        return json.dumps({"error": f"Permission denied: {path}"})
     except Exception as e:
         logger.exception(f"Error reading file via MCP: {e}")
-        return f"Error reading file: {str(e)}"
+        return json.dumps({"error": f"Error reading file: {str(e)}"})
 
 
 @system_tool(
@@ -83,18 +86,22 @@ async def write_file(context: Any, path: str, content: str) -> str:
     logger.info(f"MCP write_file called with path={path}")
 
     if not path:
-        return "Error: path is required"
+        return json.dumps({"error": "path is required"})
     if content is None:
-        return "Error: content is required"
+        return json.dumps({"error": "content is required"})
 
     try:
         result = await file_operations.write_file(path, content)
-        return f"File written successfully: {path} ({result.size} bytes)"
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "size": result.size,
+        })
     except PermissionError:
-        return f"Error: Permission denied: {path}"
+        return json.dumps({"error": f"Permission denied: {path}"})
     except Exception as e:
         logger.exception(f"Error writing file via MCP: {e}")
-        return f"Error writing file: {str(e)}"
+        return json.dumps({"error": f"Error writing file: {str(e)}"})
 
 
 @system_tool(
@@ -124,21 +131,25 @@ async def list_files(context: Any, directory: str = "") -> str:
     try:
         items = file_operations.list_directory(directory or "")
 
-        if not items:
-            return f"No files found in: {directory or '/'}"
-
-        lines = [f"# Files in {directory or '/'}\n"]
+        files = []
         for item in items:
-            icon = "folder" if item.type.value == "folder" else "file"
-            size_str = f" ({item.size} bytes)" if item.type.value == "file" and item.size else ""
-            lines.append(f"- [{icon}] `{item.name}`{size_str}")
+            file_info: dict[str, Any] = {
+                "name": item.name,
+                "type": item.type.value,
+            }
+            if item.type.value == "file" and item.size is not None:
+                file_info["size"] = item.size
+            files.append(file_info)
 
-        return "\n".join(lines)
+        return json.dumps({
+            "files": files,
+            "count": len(files),
+        })
     except FileNotFoundError:
-        return f"Error: Directory not found: {directory}"
+        return json.dumps({"error": f"Directory not found: {directory}"})
     except Exception as e:
         logger.exception(f"Error listing files via MCP: {e}")
-        return f"Error listing files: {str(e)}"
+        return json.dumps({"error": f"Error listing files: {str(e)}"})
 
 
 @system_tool(
@@ -165,18 +176,21 @@ async def delete_file(context: Any, path: str) -> str:
     logger.info(f"MCP delete_file called with path={path}")
 
     if not path:
-        return "Error: path is required"
+        return json.dumps({"error": "path is required"})
 
     try:
         file_operations.delete_path(path)
-        return f"Deleted: {path}"
+        return json.dumps({
+            "success": True,
+            "path": path,
+        })
     except FileNotFoundError:
-        return f"Error: Path not found: {path}"
+        return json.dumps({"error": f"Path not found: {path}"})
     except PermissionError:
-        return f"Error: Permission denied: {path}"
+        return json.dumps({"error": f"Permission denied: {path}"})
     except Exception as e:
         logger.exception(f"Error deleting file via MCP: {e}")
-        return f"Error deleting file: {str(e)}"
+        return json.dumps({"error": f"Error deleting file: {str(e)}"})
 
 
 @system_tool(
@@ -219,7 +233,7 @@ async def search_files(
     logger.info(f"MCP search_files called with query={query}, pattern={pattern}")
 
     if not query:
-        return "Error: query is required"
+        return json.dumps({"error": "query is required"})
 
     try:
         request = SearchRequest(
@@ -231,25 +245,22 @@ async def search_files(
         response = search_module.search_files(request)
         results = response.results
 
-        if not results:
-            return f"No matches found for: '{query}'"
-
-        lines = [f"# Search Results for '{query}'\n"]
-        lines.append(f"Found {len(results)} matches\n")
-
+        result_items = []
         for result in results[:20]:  # Limit to 20 results in output
-            lines.append(f"## {result.file_path}:{result.line}")
-            lines.append("```")
-            lines.append(result.match_text.strip())
-            lines.append("```\n")
+            result_items.append({
+                "file_path": result.file_path,
+                "line": result.line,
+                "match_text": result.match_text.strip(),
+            })
 
-        if len(results) > 20:
-            lines.append(f"... and {len(results) - 20} more matches")
-
-        return "\n".join(lines)
+        return json.dumps({
+            "results": result_items,
+            "count": len(result_items),
+            "total_matches": len(results),
+        })
     except Exception as e:
         logger.exception(f"Error searching files via MCP: {e}")
-        return f"Error searching files: {str(e)}"
+        return json.dumps({"error": f"Error searching files: {str(e)}"})
 
 
 @system_tool(
@@ -276,13 +287,16 @@ async def create_folder(context: Any, path: str) -> str:
     logger.info(f"MCP create_folder called with path={path}")
 
     if not path:
-        return "Error: path is required"
+        return json.dumps({"error": "path is required"})
 
     try:
         file_operations.create_folder(path)
-        return f"Folder created: {path}"
+        return json.dumps({
+            "success": True,
+            "path": path,
+        })
     except FileExistsError:
-        return f"Folder already exists: {path}"
+        return json.dumps({"error": f"Folder already exists: {path}"})
     except Exception as e:
         logger.exception(f"Error creating folder via MCP: {e}")
-        return f"Error creating folder: {str(e)}"
+        return json.dumps({"error": f"Error creating folder: {str(e)}"})

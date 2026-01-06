@@ -13,7 +13,6 @@ import {
 	Check,
 	Variable,
 	User,
-	Database,
 	Workflow,
 	FileText,
 } from "lucide-react";
@@ -29,9 +28,11 @@ import {
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { VariablesTreeView } from "@/components/ui/variables-tree-view";
 import type {
 	ExpressionContext,
 	PageDefinition,
+	WorkflowResult,
 } from "@/lib/app-builder-types";
 
 interface VariablePreviewProps {
@@ -47,12 +48,49 @@ interface VariablePreviewProps {
 	className?: string;
 }
 
+interface VariablePath {
+	path: string;
+	type: string;
+	description?: string;
+	value?: unknown;
+}
+
 interface VariableSectionProps {
 	title: string;
 	icon: React.ReactNode;
-	paths: { path: string; type: string; description?: string }[];
+	paths: VariablePath[];
 	defaultOpen?: boolean;
 	onInsertVariable?: (path: string) => void;
+}
+
+/**
+ * Format a value for display in the variable preview
+ */
+function formatValue(value: unknown): string {
+	if (value === undefined) return "";
+	if (value === null) return "null";
+	if (typeof value === "string") {
+		if (value.length > 50) {
+			return `"${value.slice(0, 47)}..."`;
+		}
+		return `"${value}"`;
+	}
+	if (typeof value === "number" || typeof value === "boolean") {
+		return String(value);
+	}
+	if (Array.isArray(value)) {
+		if (value.length === 0) return "[]";
+		return `[${value.length} items]`;
+	}
+	if (typeof value === "object") {
+		const keys = Object.keys(value);
+		if (keys.length === 0) return "{}";
+		if (keys.length <= 3) {
+			return `{${keys.join(", ")}}`;
+		}
+		return `{${keys.length} keys}`;
+	}
+	return String(value);
 }
 
 /**
@@ -122,30 +160,42 @@ function VariableSection({
 			</CollapsibleTrigger>
 			<CollapsibleContent>
 				<div className="px-2 pb-2">
-					{paths.map(({ path, type, description }) => (
-						<div
-							key={path}
-							className="group flex items-center justify-between rounded px-2 py-1 hover:bg-muted/50 cursor-pointer"
-							onClick={() => onInsertVariable?.(path)}
-						>
-							<div className="flex-1 min-w-0">
-								<code className="text-xs font-mono text-primary break-all">
-									{path}
-								</code>
-								<div className="flex items-center gap-2 mt-0.5">
-									<span className="text-[10px] text-muted-foreground font-medium uppercase">
-										{type}
-									</span>
-									{description && (
-										<span className="text-[10px] text-muted-foreground truncate">
-											• {description}
+					{paths.map(({ path, type, description, value }) => {
+						const formattedValue = formatValue(value);
+						const hasValue = value !== undefined;
+
+						return (
+							<div
+								key={path}
+								className="group flex items-center justify-between rounded px-2 py-1 hover:bg-muted/50 cursor-pointer"
+								onClick={() => onInsertVariable?.(path)}
+							>
+								<div className="flex-1 min-w-0">
+									<div className="flex items-center gap-2">
+										<code className="text-xs font-mono text-primary break-all">
+											{path}
+										</code>
+										{hasValue && formattedValue && (
+											<code className="text-xs font-mono text-emerald-600 dark:text-emerald-400 truncate max-w-[150px]">
+												= {formattedValue}
+											</code>
+										)}
+									</div>
+									<div className="flex items-center gap-2 mt-0.5">
+										<span className="text-[10px] text-muted-foreground font-medium uppercase">
+											{type}
 										</span>
-									)}
+										{description && (
+											<span className="text-[10px] text-muted-foreground truncate">
+												• {description}
+											</span>
+										)}
+									</div>
 								</div>
+								<CopyButton value={path} />
 							</div>
-							<CopyButton value={path} />
-						</div>
-					))}
+						);
+					})}
 					{paths.length === 0 && (
 						<p className="text-xs text-muted-foreground px-2 py-2 italic">
 							No variables available
@@ -154,6 +204,174 @@ function VariableSection({
 				</div>
 			</CollapsibleContent>
 		</Collapsible>
+	);
+}
+
+/**
+ * Section for displaying workflow results with expandable tree views
+ */
+interface WorkflowResultsSectionProps {
+	workflowData: Record<string, WorkflowResult> | undefined;
+	defaultOpen?: boolean;
+}
+
+function WorkflowResultsSection({
+	workflowData,
+	defaultOpen = false,
+}: WorkflowResultsSectionProps) {
+	const [isOpen, setIsOpen] = useState(defaultOpen);
+
+	const hasData = workflowData && Object.keys(workflowData).length > 0;
+	const count = hasData ? Object.keys(workflowData).length : 0;
+
+	return (
+		<Collapsible
+			open={isOpen}
+			onOpenChange={setIsOpen}
+			className="border-b last:border-b-0"
+		>
+			<CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors">
+				{isOpen ? (
+					<ChevronDown className="h-4 w-4 text-muted-foreground" />
+				) : (
+					<ChevronRight className="h-4 w-4 text-muted-foreground" />
+				)}
+				<Workflow className="h-4 w-4 text-amber-500" />
+				<span className="text-sm font-medium">Workflow Results</span>
+				<span className="ml-auto text-xs text-muted-foreground">
+					{count}
+				</span>
+			</CollapsibleTrigger>
+			<CollapsibleContent>
+				<div className="px-2 pb-2">
+					{hasData ? (
+						Object.entries(workflowData).map(([key, result]) => (
+							<WorkflowResultItem
+								key={key}
+								dataSourceId={key}
+								result={result}
+							/>
+						))
+					) : (
+						<p className="text-xs text-muted-foreground px-2 py-2 italic">
+							No workflow results yet. Execute a workflow to see
+							data here.
+						</p>
+					)}
+				</div>
+			</CollapsibleContent>
+		</Collapsible>
+	);
+}
+
+/**
+ * Individual workflow result with expandable tree view
+ */
+interface WorkflowResultItemProps {
+	dataSourceId: string;
+	result: WorkflowResult;
+}
+
+function WorkflowResultItem({ dataSourceId, result }: WorkflowResultItemProps) {
+	const [isExpanded, setIsExpanded] = useState(false);
+	const [copied, setCopied] = useState(false);
+
+	const handleCopyPath = async (path: string) => {
+		await navigator.clipboard.writeText(`{{ ${path} }}`);
+		setCopied(true);
+		setTimeout(() => setCopied(false), 1500);
+	};
+
+	const basePath = `workflow.${dataSourceId}`;
+
+	return (
+		<div className="rounded border bg-muted/30 mb-2 last:mb-0">
+			{/* Header with workflow name and status */}
+			<div
+				className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-muted/50"
+				onClick={() => setIsExpanded(!isExpanded)}
+			>
+				{isExpanded ? (
+					<ChevronDown className="h-3 w-3 text-muted-foreground" />
+				) : (
+					<ChevronRight className="h-3 w-3 text-muted-foreground" />
+				)}
+				<code className="text-xs font-mono text-primary">
+					{dataSourceId}
+				</code>
+				<span
+					className={cn(
+						"text-[10px] px-1.5 py-0.5 rounded",
+						result.status === "completed" &&
+							"bg-green-500/20 text-green-600 dark:text-green-400",
+						result.status === "failed" &&
+							"bg-red-500/20 text-red-600 dark:text-red-400",
+						result.status === "running" &&
+							"bg-blue-500/20 text-blue-600 dark:text-blue-400",
+					)}
+				>
+					{result.status}
+				</span>
+			</div>
+
+			{/* Expanded content with tree view */}
+			{isExpanded && (
+				<div className="border-t px-2 py-2 space-y-2">
+					{/* Quick copy paths */}
+					<div className="flex flex-wrap gap-1">
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									variant="outline"
+									size="sm"
+									className="h-6 text-[10px] px-2"
+									onClick={() =>
+										handleCopyPath(`${basePath}.result`)
+									}
+								>
+									{copied ? (
+										<Check className="h-3 w-3 mr-1 text-green-500" />
+									) : (
+										<Copy className="h-3 w-3 mr-1" />
+									)}
+									.result
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>
+								Copy {basePath}.result expression
+							</TooltipContent>
+						</Tooltip>
+					</div>
+
+					{/* Tree view of result data */}
+					{result.result !== undefined && (
+						<div className="bg-background rounded border p-2 max-h-48 overflow-auto">
+							{typeof result.result === "object" &&
+							result.result !== null ? (
+								<VariablesTreeView
+									data={
+										result.result as Record<string, unknown>
+									}
+								/>
+							) : (
+								<code className="text-xs font-mono text-emerald-600 dark:text-emerald-400">
+									{formatValue(result.result)}
+								</code>
+							)}
+						</div>
+					)}
+
+					{/* Error display */}
+					{result.error && (
+						<div className="bg-red-500/10 rounded border border-red-500/20 p-2">
+							<code className="text-xs font-mono text-red-600 dark:text-red-400">
+								{result.error}
+							</code>
+						</div>
+					)}
+				</div>
+			)}
+		</div>
 	);
 }
 
@@ -169,99 +387,66 @@ export function VariablePreview({
 	onInsertVariable,
 	className,
 }: VariablePreviewProps) {
-	// Build user variables
-	const userPaths = useMemo(() => {
-		const paths: { path: string; type: string; description?: string }[] = [
-			{ path: "user.id", type: "string", description: "User ID" },
-			{ path: "user.name", type: "string", description: "Display name" },
+	// Build user variables with actual values from context
+	const userPaths = useMemo((): VariablePath[] => {
+		const user = context?.user;
+		return [
+			{
+				path: "user.id",
+				type: "string",
+				description: "User ID",
+				value: user?.id,
+			},
+			{
+				path: "user.name",
+				type: "string",
+				description: "Display name",
+				value: user?.name,
+			},
 			{
 				path: "user.email",
 				type: "string",
 				description: "Email address",
+				value: user?.email,
 			},
-			{ path: "user.role", type: "string", description: "User role" },
+			{
+				path: "user.role",
+				type: "string",
+				description: "User role",
+				value: user?.role,
+			},
 		];
-		return paths;
-	}, []);
+	}, [context?.user]);
 
-	// Build field variables from page inputs
-	const fieldPaths = useMemo(() => {
-		const paths: { path: string; type: string; description?: string }[] =
-			[];
+	// Build field variables from page inputs with actual values
+	const fieldPaths = useMemo((): VariablePath[] => {
+		const paths: VariablePath[] = [];
 		// If we have context with field values, show them
 		const fieldData = context?.field;
 		if (fieldData) {
-			for (const [key] of Object.entries(fieldData)) {
+			for (const [key, value] of Object.entries(fieldData)) {
 				paths.push({
 					path: `field.${key}`,
-					type: "any",
+					type: typeof value === "object" ? "object" : typeof value,
 					description: "Input value",
+					value,
 				});
 			}
 		}
-		// Add hint for input components
-		paths.push({
-			path: "field.<fieldId>",
-			type: "any",
-			description: "Input field value (use fieldId from input component)",
-		});
-		return paths;
-	}, [context]);
-
-	// Build data source variables
-	const dataPaths = useMemo(() => {
-		const paths: { path: string; type: string; description?: string }[] =
-			[];
-		const dataSources = page?.dataSources;
-		if (dataSources) {
-			for (const ds of dataSources) {
-				paths.push({
-					path: `data.${ds.id}`,
-					type: ds.type === "static" ? "any" : "array|object",
-					description: `Data source (${ds.type})`,
-				});
-			}
-		}
-		// Add hint
+		// Add hint for input components if no fields yet
 		if (paths.length === 0) {
 			paths.push({
-				path: "data.<dataSourceId>",
+				path: "field.<fieldId>",
 				type: "any",
-				description: "Data from configured data sources",
+				description:
+					"Input field value (use fieldId from input component)",
 			});
 		}
 		return paths;
-	}, [page]);
-
-	// Build workflow result variables
-	const workflowPaths = useMemo(() => {
-		const paths: { path: string; type: string; description?: string }[] = [
-			{
-				path: "workflow.executionId",
-				type: "string",
-				description: "Execution ID",
-			},
-			{
-				path: "workflow.status",
-				type: "string",
-				description: "pending|running|completed|failed",
-			},
-			{
-				path: "workflow.result",
-				type: "any",
-				description: "Workflow output data",
-			},
-			{
-				path: "workflow.error",
-				type: "string",
-				description: "Error message (if failed)",
-			},
-		];
-		return paths;
-	}, []);
+	}, [context?.field]);
 
 	// Build row context variables (for table actions)
-	const rowPaths = useMemo(() => {
+	const rowPaths = useMemo((): VariablePath[] => {
 		if (!isRowContext) return [];
 		return [
 			{
@@ -278,44 +463,72 @@ export function VariablePreview({
 		];
 	}, [isRowContext]);
 
-	// Build page variables
-	const pagePaths = useMemo(() => {
-		const paths: { path: string; type: string; description?: string }[] =
-			[];
+	// Build page variables with actual values from context
+	const pagePaths = useMemo((): VariablePath[] => {
+		const paths: VariablePath[] = [];
+		// Use actual runtime values from context if available
+		const runtimeVariables = context?.variables;
 		const pageVariables = page?.variables;
-		if (pageVariables) {
-			for (const [key] of Object.entries(pageVariables)) {
+
+		// First add runtime variables with their actual values
+		if (runtimeVariables && Object.keys(runtimeVariables).length > 0) {
+			for (const [key, value] of Object.entries(runtimeVariables)) {
 				paths.push({
 					path: `variables.${key}`,
-					type: "any",
+					type: typeof value === "object" ? "object" : typeof value,
 					description: "Page variable",
+					value,
 				});
 			}
 		}
-		// Add hint
-		paths.push({
-			path: "variables.<name>",
-			type: "any",
-			description: "Page-level variables set via set-variable action",
-		});
+		// Add page-defined variables that aren't in runtime yet
+		if (pageVariables) {
+			for (const [key, defaultValue] of Object.entries(pageVariables)) {
+				if (!runtimeVariables || !(key in runtimeVariables)) {
+					paths.push({
+						path: `variables.${key}`,
+						type: "any",
+						description: "Page variable (default)",
+						value: defaultValue,
+					});
+				}
+			}
+		}
+		// Add hint if no variables
+		if (paths.length === 0) {
+			paths.push({
+				path: "variables.<name>",
+				type: "any",
+				description: "Page-level variables set via set-variable action",
+			});
+		}
 		return paths;
-	}, [page]);
+	}, [page?.variables, context?.variables]);
 
-	// Build query params
-	const queryPaths = useMemo(() => {
-		return [
-			{
-				path: "query.<param>",
-				type: "string",
-				description: "URL query parameter (e.g., query.id)",
-			},
-			{
+	// Build URL/route params
+	const queryPaths = useMemo((): VariablePath[] => {
+		const paths: VariablePath[] = [];
+		const paramsData = context?.params;
+
+		// Add actual route params if available
+		if (paramsData && Object.keys(paramsData).length > 0) {
+			for (const [key, value] of Object.entries(paramsData)) {
+				paths.push({
+					path: `params.${key}`,
+					type: "string",
+					description: "Route parameter",
+					value,
+				});
+			}
+		} else {
+			paths.push({
 				path: "params.<param>",
 				type: "string",
 				description: "Route parameter (e.g., params.userId)",
-			},
-		];
-	}, []);
+			});
+		}
+		return paths;
+	}, [context?.params]);
 
 	return (
 		<div className={cn("flex flex-col h-full", className)}>
@@ -350,19 +563,9 @@ export function VariablePreview({
 					defaultOpen={false}
 					onInsertVariable={onInsertVariable}
 				/>
-				<VariableSection
-					title="Data Sources"
-					icon={<Database className="h-4 w-4 text-purple-500" />}
-					paths={dataPaths}
+				<WorkflowResultsSection
+					workflowData={context?.workflow}
 					defaultOpen={false}
-					onInsertVariable={onInsertVariable}
-				/>
-				<VariableSection
-					title="Workflow Result"
-					icon={<Workflow className="h-4 w-4 text-amber-500" />}
-					paths={workflowPaths}
-					defaultOpen={false}
-					onInsertVariable={onInsertVariable}
 				/>
 				<VariableSection
 					title="Page Variables"

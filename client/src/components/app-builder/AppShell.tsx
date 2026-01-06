@@ -36,12 +36,11 @@ import { evaluateExpression } from "@/lib/expression-parser";
 import { hasPageAccess } from "@/lib/app-builder-permissions";
 import { getIcon } from "@/lib/icons";
 import { WorkflowStatusIndicator } from "./WorkflowStatusIndicator";
+import { useAppBuilderStore } from "@/stores/app-builder.store";
 
 interface AppShellProps {
 	/** The application definition */
 	app: ApplicationDefinition;
-	/** Application slug for URL routing (uses app.id if not provided) */
-	slug?: string;
 	/** Current page ID */
 	currentPageId?: string;
 	/** Avatar URL for the current user */
@@ -56,6 +55,12 @@ interface AppShellProps {
 	lastCompletedResult?: WorkflowResult;
 	/** Callback to clear the workflow result after display */
 	onClearWorkflowResult?: () => void;
+	/**
+	 * Custom navigation handler for page changes.
+	 * When provided, sidebar links will call this instead of using react-router.
+	 * Useful for editor preview mode where we want to stay on the editor page.
+	 */
+	onNavigate?: (pageId: string) => void;
 }
 
 /**
@@ -64,7 +69,6 @@ interface AppShellProps {
  */
 export function AppShell({
 	app,
-	slug,
 	currentPageId,
 	avatarUrl,
 	showBackButton = true,
@@ -72,10 +76,11 @@ export function AppShell({
 	activeWorkflowNames,
 	lastCompletedResult,
 	onClearWorkflowResult,
+	onNavigate,
 }: AppShellProps) {
 	const navigate = useNavigate();
-	// Use slug prop if provided, otherwise fall back to app.id
-	const appSlug = slug || app.id;
+	// Get base path from store - correctly handles preview mode
+	const basePath = useAppBuilderStore((state) => state.getBasePath());
 	const { user, logout } = useAuth();
 	const [isCollapsed, setIsCollapsed] = useState(false);
 	const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -215,7 +220,12 @@ export function AppShell({
 							const page = app.pages.find(
 								(p) => p.id === item.id,
 							);
-							const path = item.path || page?.path || "";
+							// Normalize path to avoid double slashes
+							const path = (
+								item.path ||
+								page?.path ||
+								""
+							).replace(/^\//, "");
 
 							// Section headers
 							if (item.isSection) {
@@ -235,23 +245,45 @@ export function AppShell({
 								item.id === currentPageId ||
 								(currentPage &&
 									(item.id === currentPage.id ||
-										path === currentPage.path));
+										path === currentPage.path?.replace(/^\//, "")));
+
+							const linkClassName = cn(
+								"flex items-center text-sm font-medium transition-colors rounded-md",
+								"hover:bg-accent hover:text-accent-foreground",
+								isCurrentPage
+									? "bg-accent text-accent-foreground"
+									: "text-muted-foreground",
+								isCollapsed
+									? "justify-center w-10 h-10 mx-auto"
+									: "gap-3 px-3 py-2",
+							);
+
+							// If onNavigate is provided, use button instead of router NavLink
+							if (onNavigate) {
+								return (
+									<button
+										key={item.id}
+										type="button"
+										title={isCollapsed ? item.label : undefined}
+										className={linkClassName}
+										onClick={() => onNavigate(item.id)}
+									>
+										<IconComponent
+											className={cn(
+												isCollapsed ? "h-5 w-5" : "h-4 w-4",
+											)}
+										/>
+										{!isCollapsed && item.label}
+									</button>
+								);
+							}
 
 							return (
 								<NavLink
 									key={item.id}
-									to={`/apps/${appSlug}/${path}`}
+									to={`${basePath}/${path}`}
 									title={isCollapsed ? item.label : undefined}
-									className={cn(
-										"flex items-center rounded-lg text-sm font-medium transition-colors",
-										"hover:bg-accent hover:text-accent-foreground",
-										isCurrentPage
-											? "bg-accent text-accent-foreground"
-											: "text-muted-foreground",
-										isCollapsed
-											? "justify-center w-10 h-10 mx-auto"
-											: "gap-3 px-3 py-2",
-									)}
+									className={linkClassName}
 								>
 									<IconComponent
 										className={cn(
@@ -297,7 +329,12 @@ export function AppShell({
 								const page = app.pages.find(
 									(p) => p.id === item.id,
 								);
-								const path = item.path || page?.path || "";
+								// Normalize path to avoid double slashes
+								const path = (
+									item.path ||
+									page?.path ||
+									""
+								).replace(/^\//, "");
 
 								// Section headers
 								if (item.isSection) {
@@ -316,22 +353,42 @@ export function AppShell({
 									item.id === currentPageId ||
 									(currentPage &&
 										(item.id === currentPage.id ||
-											path === currentPage.path));
+											path === currentPage.path?.replace(/^\//, "")));
+
+								const mobileLinkClassName = cn(
+									"flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors rounded-md",
+									"hover:bg-accent hover:text-accent-foreground",
+									isCurrentPage
+										? "bg-accent text-accent-foreground"
+										: "text-muted-foreground",
+								);
+
+								// If onNavigate is provided, use button instead of router NavLink
+								if (onNavigate) {
+									return (
+										<button
+											key={item.id}
+											type="button"
+											className={mobileLinkClassName}
+											onClick={() => {
+												onNavigate(item.id);
+												setIsMobileMenuOpen(false);
+											}}
+										>
+											<IconComponent className="h-4 w-4" />
+											{item.label}
+										</button>
+									);
+								}
 
 								return (
 									<NavLink
 										key={item.id}
-										to={`/apps/${appSlug}/${path}`}
+										to={`${basePath}/${path}`}
 										onClick={() =>
 											setIsMobileMenuOpen(false)
 										}
-										className={cn(
-											"flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-											"hover:bg-accent hover:text-accent-foreground",
-											isCurrentPage
-												? "bg-accent text-accent-foreground"
-												: "text-muted-foreground",
-										)}
+										className={mobileLinkClassName}
 									>
 										<IconComponent className="h-4 w-4" />
 										{item.label}

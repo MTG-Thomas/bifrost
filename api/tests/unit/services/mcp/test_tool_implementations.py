@@ -47,11 +47,14 @@ class TestReadFileImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_path_empty(self, context):
-        """Should return error message when path is empty."""
+        """Should return JSON error when path is empty."""
+        import json
+
         from src.services.mcp.tools.files import read_file
 
         result = await read_file(context, "")
-        assert "Error: path is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "path is required"
 
 
 class TestWriteFileImpl:
@@ -59,19 +62,25 @@ class TestWriteFileImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_path_empty(self, context):
-        """Should return error message when path is empty."""
+        """Should return JSON error when path is empty."""
+        import json
+
         from src.services.mcp.tools.files import write_file
 
         result = await write_file(context, "", "content")
-        assert "Error: path is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "path is required"
 
     @pytest.mark.asyncio
     async def test_returns_error_when_content_none(self, context):
-        """Should return error message when content is None."""
+        """Should return JSON error when content is None."""
+        import json
+
         from src.services.mcp.tools.files import write_file
 
         result = await write_file(context, "test.txt", None)
-        assert "Error: content is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "content is required"
 
 
 class TestDeleteFileImpl:
@@ -79,11 +88,14 @@ class TestDeleteFileImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_path_empty(self, context):
-        """Should return error message when path is empty."""
+        """Should return JSON error when path is empty."""
+        import json
+
         from src.services.mcp.tools.files import delete_file
 
         result = await delete_file(context, "")
-        assert "Error: path is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "path is required"
 
 
 class TestSearchFilesImpl:
@@ -91,11 +103,14 @@ class TestSearchFilesImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_query_empty(self, context):
-        """Should return error message when query is empty."""
+        """Should return JSON error when query is empty."""
+        import json
+
         from src.services.mcp.tools.files import search_files
 
         result = await search_files(context, "")
-        assert "Error: query is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "query is required"
 
 
 class TestSearchKnowledgeImpl:
@@ -103,30 +118,41 @@ class TestSearchKnowledgeImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_query_empty(self, context):
-        """Should return error message when query is empty."""
+        """Should return JSON error when query is empty."""
+        import json
+
         from src.services.mcp.tools.knowledge import search_knowledge
 
         result = await search_knowledge(context, "")
-        assert "Error: query is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "query is required"
 
     @pytest.mark.asyncio
-    async def test_returns_error_when_no_namespaces_accessible(self, context):
-        """Should return error when user has no accessible namespaces."""
+    async def test_returns_empty_when_no_namespaces_accessible(self, context):
+        """Should return empty results when user has no accessible namespaces."""
+        import json
+
         from src.services.mcp.tools.knowledge import search_knowledge
 
         # Context has empty accessible_namespaces by default
         result = await search_knowledge(context, "test query")
-        assert "No knowledge sources available" in result
+        parsed = json.loads(result)
+        assert parsed["results"] == []
+        assert parsed["count"] == 0
+        assert "No knowledge sources available" in parsed["message"]
 
     @pytest.mark.asyncio
     async def test_returns_access_denied_for_unauthorized_namespace(self, context):
         """Should deny access to namespace not in accessible list."""
+        import json
+
         from src.services.mcp.tools.knowledge import search_knowledge
 
         context.accessible_namespaces = ["allowed-ns"]
         result = await search_knowledge(context, "test query", namespace="forbidden-ns")
-        assert "Access denied" in result
-        assert "forbidden-ns" in result
+        parsed = json.loads(result)
+        assert "Access denied" in parsed["error"]
+        assert "forbidden-ns" in parsed["error"]
 
 
 class TestCreateFolderImpl:
@@ -134,11 +160,14 @@ class TestCreateFolderImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_path_empty(self, context):
-        """Should return error message when path is empty."""
+        """Should return JSON error when path is empty."""
+        import json
+
         from src.services.mcp.tools.files import create_folder
 
         result = await create_folder(context, "")
-        assert "Error: path is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "path is required"
 
 
 # ==================== Workflow Tool Tests ====================
@@ -180,12 +209,15 @@ class TestGetWorkflowImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_no_id_or_name(self, context):
-        """Should return error when neither ID nor name provided."""
+        """Should return JSON error when neither ID nor name provided."""
+        import json
+
         from src.services.mcp.tools.workflow import get_workflow
 
         result = await get_workflow(context, None, None)
-        assert "Error" in result
-        assert "workflow_id or workflow_name" in result
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "workflow_id or workflow_name" in parsed["error"]
 
 
 class TestGetExecutionImpl:
@@ -193,11 +225,14 @@ class TestGetExecutionImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_id_empty(self, context):
-        """Should return error when execution_id is empty."""
+        """Should return JSON error when execution_id is empty."""
+        import json
+
         from src.services.mcp.tools.execution import get_execution
 
         result = await get_execution(context, "")
-        assert "Error: execution_id is required" in result
+        parsed = json.loads(result)
+        assert parsed["error"] == "execution_id is required"
 
 
 # ==================== Integration Test Models ====================
@@ -248,21 +283,27 @@ class TestSystemToolsRegistry:
     """Tests for SYSTEM_TOOLS registry."""
 
     def test_all_tools_registered(self):
-        """All 18 system tools should be registered."""
+        """All 38 system tools should be registered via @system_tool decorator."""
         from src.routers.tools import SYSTEM_TOOLS
 
         tool_ids = {t.id for t in SYSTEM_TOOLS}
 
-        # Original 7
+        # Core workflow tools
         assert "execute_workflow" in tool_ids
         assert "list_workflows" in tool_ids
-        assert "list_integrations" in tool_ids
+        assert "validate_workflow" in tool_ids
+        assert "get_workflow_schema" in tool_ids
+        assert "get_workflow" in tool_ids
+        assert "create_workflow" in tool_ids
+
+        # Form tools
         assert "list_forms" in tool_ids
         assert "get_form_schema" in tool_ids
-        assert "validate_form_schema" in tool_ids
-        assert "search_knowledge" in tool_ids
+        assert "create_form" in tool_ids
+        assert "get_form" in tool_ids
+        assert "update_form" in tool_ids
 
-        # File operations (6)
+        # File operations
         assert "read_file" in tool_ids
         assert "write_file" in tool_ids
         assert "list_files" in tool_ids
@@ -270,12 +311,35 @@ class TestSystemToolsRegistry:
         assert "search_files" in tool_ids
         assert "create_folder" in tool_ids
 
-        # Workflow/execution (5)
-        assert "validate_workflow" in tool_ids
-        assert "get_workflow_schema" in tool_ids
-        assert "get_workflow" in tool_ids
+        # Execution tools
         assert "list_executions" in tool_ids
         assert "get_execution" in tool_ids
+
+        # App builder tools
+        assert "list_apps" in tool_ids
+        assert "create_app" in tool_ids
+        assert "get_app" in tool_ids
+        assert "update_app" in tool_ids
+        assert "publish_app" in tool_ids
+        assert "get_app_schema" in tool_ids
+        assert "get_page" in tool_ids
+        assert "create_page" in tool_ids
+        assert "update_page" in tool_ids
+        assert "delete_page" in tool_ids
+        assert "list_components" in tool_ids
+        assert "get_component" in tool_ids
+        assert "create_component" in tool_ids
+        assert "update_component" in tool_ids
+        assert "delete_component" in tool_ids
+        assert "move_component" in tool_ids
+
+        # Other tools
+        assert "list_integrations" in tool_ids
+        assert "search_knowledge" in tool_ids
+        assert "get_data_provider_schema" in tool_ids
+
+        # Total count (38 tools after removing validate_form_schema and validate_app_schema)
+        assert len(tool_ids) == 38, f"Expected 38 tools, got {len(tool_ids)}: {sorted(tool_ids)}"
 
     def test_file_operations_disabled_for_coding_agent(self):
         """File operation tools should be disabled by default for coding agent."""

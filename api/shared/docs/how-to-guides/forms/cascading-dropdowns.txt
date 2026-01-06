@@ -20,11 +20,14 @@ A form where selecting a department dynamically populates a managers dropdown wi
 **Step 1**: Create department provider (`workspace/data_providers/departments.py`):
 
 ```python
-from bifrost import data_provider
+from bifrost import data_provider, ExecutionContext
 
-@data_provider(cache_ttl_seconds=3600)  # Cache 1 hour
-async def get_departments() -> list[dict]:
-    """List all departments."""
+@data_provider(
+    name="get_departments",
+    description="List all departments",
+    cache_ttl_seconds=3600  # Cache 1 hour
+)
+async def get_departments(context: ExecutionContext):
     return [
         {"label": "Engineering", "value": "eng"},
         {"label": "Sales", "value": "sales"},
@@ -32,37 +35,45 @@ async def get_departments() -> list[dict]:
     ]
 ```
 
-**Step 2**: Create managers provider with department parameter (parameters derived from function signature):
+**Step 2**: Create managers provider with department parameter:
 
 ```python
-from bifrost import data_provider
+from bifrost import data_provider, param, ExecutionContext
 
-@data_provider
-async def get_managers_by_dept(department: str) -> list[dict]:
-    """Get managers filtered by department."""
+@data_provider(name="get_managers_by_dept")
+@param("department", type="string", required=True)
+async def get_managers_by_dept(context: ExecutionContext, department: str):
+    # Fetch managers filtered by department
     managers = await db.query(
         "SELECT id, name FROM users WHERE department = ? AND is_manager = true",
         department
     )
+
     return [
         {"label": mgr["name"], "value": mgr["id"]}
         for mgr in managers
     ]
 ```
 
-    Parameters are automatically derived from the function signature. The
+    The `@param` decorator on the data provider enables parameterization. The
     managers list will update when the department field changes.
 
 ## Configure the Workflow
 
-Create a workflow with the parameters:
+Add both parameters to your workflow:
 
 ```python
-from bifrost import workflow
+from bifrost import workflow, param, ExecutionContext
 
-@workflow
-async def assign_to_manager(department: str, manager: str) -> dict:
-    """Assign work to a manager."""
+@workflow(name="assign_to_manager")
+@param("department", type="string", data_provider="get_departments")
+@param("manager", type="string", data_provider="get_managers_by_dept")
+async def assign_to_manager(
+    context: ExecutionContext,
+    department: str,
+    manager: str
+):
+    # Assign work to selected manager
     return {
         "department": department,
         "manager_id": manager,
@@ -72,33 +83,22 @@ async def assign_to_manager(department: str, manager: str) -> dict:
 
 ## Configure Form Fields
 
-In the form JSON, link fields to data providers using `data_provider_id` and `data_provider_inputs`:
+1. In form builder, drag the **department** field to canvas
 
-```json
-{
-  "form_schema": {
-    "fields": [
-      {
-        "name": "department",
-        "type": "select",
-        "label": "Department",
-        "data_provider_id": "uuid-of-get-departments"
-      },
-      {
-        "name": "manager",
-        "type": "select",
-        "label": "Manager",
-        "data_provider_id": "uuid-of-get-managers-by-dept",
-        "data_provider_inputs": {
-          "department": "{{department}}"
-        }
-      }
-    ]
-  }
-}
-```
+    - Auto-configured with `get_departments` provider
 
-    **Field Reference** with `{{department}}` passes the selected department value to the
+2. Drag the **manager** field to canvas
+
+    - Click to edit field
+    - Under **Data Provider**, select `get_managers_by_dept`
+
+3. Configure Data Provider Inputs:
+    - Click **Data Provider Inputs**
+    - For `department` parameter:
+        - **Mode**: Field Reference
+        - **Field Name**: `department`
+
+    **Field Reference** mode passes the selected department value to the
     managers data provider automatically.
 
 ## Test It
@@ -114,28 +114,25 @@ In the form JSON, link fields to data providers using `data_provider_id` and `da
 ### Three-Level Cascade (Country → State → City)
 
 ```python
-from bifrost import data_provider
-
-@data_provider
-async def get_countries() -> list[dict]:
-    """List countries."""
+@data_provider(name="get_countries")
+async def get_countries(context):
     return [
         {"label": "United States", "value": "us"},
         {"label": "Canada", "value": "ca"}
     ]
 
-@data_provider
-async def get_states(country: str) -> list[dict]:
-    """Get states for a country."""
+@data_provider(name="get_states")
+@param("country", type="string", required=True)
+async def get_states(context, country: str):
     states = await db.query(
         "SELECT * FROM states WHERE country_code = ?",
         country
     )
     return [{"label": s.name, "value": s.code} for s in states]
 
-@data_provider
-async def get_cities(state: str) -> list[dict]:
-    """Get cities for a state."""
+@data_provider(name="get_cities")
+@param("state", type="string", required=True)
+async def get_cities(context, state: str):
     cities = await db.query(
         "SELECT * FROM cities WHERE state_code = ?",
         state
@@ -143,49 +140,28 @@ async def get_cities(state: str) -> list[dict]:
     return [{"label": c.name, "value": c.id} for c in cities]
 ```
 
-Configure in form JSON:
+Configure in workflow:
 
-```json
-{
-  "form_schema": {
-    "fields": [
-      {
-        "name": "country",
-        "type": "select",
-        "label": "Country",
-        "data_provider_id": "uuid-of-get-countries"
-      },
-      {
-        "name": "state",
-        "type": "select",
-        "label": "State",
-        "data_provider_id": "uuid-of-get-states",
-        "data_provider_inputs": {
-          "country": "{{country}}"
-        }
-      },
-      {
-        "name": "city",
-        "type": "select",
-        "label": "City",
-        "data_provider_id": "uuid-of-get-cities",
-        "data_provider_inputs": {
-          "state": "{{state}}"
-        }
-      }
-    ]
-  }
-}
+```python
+@param("country", type="string", data_provider="get_countries")
+@param("state", type="string", data_provider="get_states")
+@param("city", type="string", data_provider="get_cities")
 ```
+
+In form, configure Data Provider Inputs:
+
+-   **state** field → `country` parameter → Field Reference: `country`
+-   **city** field → `state` parameter → Field Reference: `state`
 
 ### Multiple Parameters
 
 Pass multiple field values to a provider:
 
 ```python
-@data_provider
-async def get_filtered_products(category: str, price_range: str) -> list[dict]:
-    """Get products filtered by category and price range."""
+@data_provider(name="get_filtered_products")
+@param("category", type="string", required=True)
+@param("price_range", type="string", required=True)
+async def get_filtered_products(context, category: str, price_range: str):
     products = await db.query(
         "SELECT * FROM products WHERE category = ? AND price_range = ?",
         category, price_range
@@ -195,55 +171,53 @@ async def get_filtered_products(category: str, price_range: str) -> list[dict]:
 
 In form Data Provider Inputs:
 
-```json
-{
-  "data_provider_inputs": {
-    "category": "{{category}}",
-    "price_range": "{{price_range}}"
-  }
-}
-```
+-   `category` parameter → Field Reference: `category`
+-   `price_range` parameter → Field Reference: `price_range`
 
 ### Static + Field Reference
 
 Mix static values with field references:
 
 ```python
-@data_provider
-async def get_regional_managers(department: str, region: str) -> list[dict]:
-    """Get managers for a department in a region."""
+@data_provider(name="get_regional_managers")
+@param("department", type="string", required=True)
+@param("region", type="string", required=True)
+async def get_regional_managers(context, department: str, region: str):
+    # region comes from static value, department from form field
     return await fetch_managers(department, region)
 ```
 
 In form Data Provider Inputs:
 
-```json
-{
-  "data_provider_inputs": {
-    "department": "{{department}}",
-    "region": "west_coast"
-  }
-}
-```
+-   `department` parameter → **Field Reference**: `department`
+-   `region` parameter → **Static**: `"west_coast"`
+
+### Expression Mode
+
+Use JavaScript expressions for computed values:
+
+In form Data Provider Inputs:
+
+-   Mode: **Expression**
+-   Value: `context.field.country + '_' + context.field.state`
+
+## Common Patterns
 
 ### Organization-Scoped Cascading
 
-Use the context proxy to access organization:
+Filter all levels by organization:
 
 ```python
-from bifrost import data_provider, context
-
-@data_provider
-async def get_org_departments() -> list[dict]:
-    """Get departments for current organization."""
+@data_provider(name="get_org_departments")
+async def get_org_departments(context):
     return await db.query(
         "SELECT * FROM departments WHERE org_id = ?",
         context.org_id
     )
 
-@data_provider
-async def get_org_managers(department: str) -> list[dict]:
-    """Get managers for current organization and department."""
+@data_provider(name="get_org_managers")
+@param("department", type="string", required=True)
+async def get_org_managers(context, department: str):
     return await db.query(
         "SELECT * FROM users WHERE org_id = ? AND department = ? AND is_manager = true",
         context.org_id, department
@@ -255,9 +229,9 @@ async def get_org_managers(department: str) -> list[dict]:
 Show helpful message when no options available:
 
 ```python
-@data_provider
-async def get_managers_by_dept(department: str) -> list[dict]:
-    """Get managers filtered by department."""
+@data_provider(name="get_managers_by_dept")
+@param("department", type="string", required=True)
+async def get_managers_by_dept(context, department: str):
     managers = await db.query(
         "SELECT * FROM users WHERE department = ? AND is_manager = true",
         department
@@ -271,7 +245,7 @@ async def get_managers_by_dept(department: str) -> list[dict]:
 
 ## Troubleshooting
 
-**Dropdown not updating**: Verify `data_provider_inputs` configuration. Field references must use `{{field_name}}` syntax.
+**Dropdown not updating**: Verify Data Provider Inputs configuration. Field Name must exactly match the source field name.
 
 **Empty dropdown**: Check provider returns correct format with `label` and `value`. Test provider independently.
 

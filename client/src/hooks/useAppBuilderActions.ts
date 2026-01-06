@@ -240,8 +240,6 @@ interface ExpressionContextOptions {
 	user?: ExpressionContext["user"];
 	/** Page-level variables */
 	variables?: Record<string, unknown>;
-	/** Data from data sources */
-	data?: Record<string, unknown>;
 }
 
 /**
@@ -257,7 +255,6 @@ export function createExpressionContext(
 	return {
 		user: options.user,
 		variables: options.variables ?? {},
-		data: options.data ?? {},
 		navigate: actions.navigate,
 		triggerWorkflow: (workflowId, input) =>
 			actions.executeWorkflow(workflowId, { input }),

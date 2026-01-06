@@ -60,9 +60,8 @@ function getNestedValue(obj: unknown, path: string): unknown {
  * Follows documented expression conventions:
  * - {{ user.name }} - user info
  * - {{ variables.selectedId }} - page variables
- * - {{ data.customers }} - data from data sources
  * - {{ field.customerName }} - form field values
- * - {{ workflow.result.id }} - workflow result
+ * - {{ workflow.<dataSourceId>.result }} - workflow result (e.g., workflow.get_client.result.clients)
  * - {{ row.id }} - current row in table row click handlers
  * - {{ params.id }} - route parameters from URL
  */
@@ -72,7 +71,6 @@ function buildEvaluationContext(
 	return {
 		user: context.user,
 		variables: context.variables,
-		data: context.data,
 		field: context.field,
 		workflow: context.workflow,
 		row: context.row,

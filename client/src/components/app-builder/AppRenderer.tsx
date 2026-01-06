@@ -239,35 +239,39 @@ export function AppRenderer({
 		};
 	}, [executeWorkflow]);
 
-	// Load page data (launch workflow and data sources)
+	// Load page data via launch workflow
 	const {
-		data: pageData,
 		isLoading: isDataLoading,
-		isLaunchWorkflowLoading,
-		launchWorkflowResult,
-		refreshDataSource,
+		workflow: pageWorkflowResults,
+		refresh: refreshPageData,
 	} = usePageData({
 		page,
 		baseContext,
 		executeWorkflow: dummyExecuteWorkflow,
 	});
 
-	// Combine workflow results - prefer launch workflow result, then externally provided
-	const combinedWorkflowResult = launchWorkflowResult ?? workflowResult;
+	// Combine workflow results - page results merged with externally provided
+	// External results (from button clicks, etc.) take precedence
+	const combinedWorkflowResults = useMemo(() => {
+		const results = { ...pageWorkflowResults };
+		// Add externally provided result under "default" key if present
+		if (workflowResult) {
+			results.default = workflowResult;
+		}
+		return results;
+	}, [pageWorkflowResults, workflowResult]);
 
-	// Enhanced refresh handler that checks page data sources first
+	// Refresh handler - re-executes launch workflow to refresh all data
 	const handleRefreshTable = useMemo(() => {
-		return (dataSourceKey: string) => {
-			// Try to refresh from page data sources first
-			if (page?.dataSources?.some((ds) => ds.id === dataSourceKey)) {
-				refreshDataSource(dataSourceKey);
-			}
+		return (_dataSourceKey: string) => {
+			// Re-execute the launch workflow to refresh data
+			refreshPageData();
 			// Also call external handler if provided
 			if (onRefreshTable) {
-				onRefreshTable(dataSourceKey);
+				onRefreshTable(_dataSourceKey);
 			}
 		};
-	}, [page, refreshDataSource, onRefreshTable]);
+	}, [refreshPageData, onRefreshTable]);
 
 	if (!page) {
 		return (
@@ -277,28 +281,13 @@ export function AppRenderer({
 		);
 	}
 
-	// Show loading state while launch workflow is executing
-	if (isLaunchWorkflowLoading) {
-		return (
-			<div className="flex items-center justify-center p-8">
-				<div className="flex flex-col items-center gap-3">
-					<Loader2 className="h-6 w-6 animate-spin text-primary" />
-					<p className="text-sm text-muted-foreground">
-						Initializing page...
-					</p>
-				</div>
-			</div>
-		);
-	}
-
 	return (
 		<AppContextProvider
 			initialVariables={initialVariables}
-			initialData={pageData}
 			isDataLoading={isDataLoading}
 			onTriggerWorkflow={onTriggerWorkflow}
 			onRefreshTable={handleRefreshTable}
-			workflowResult={combinedWorkflowResult}
+			workflowResults={combinedWorkflowResults}
 			customNavigate={customNavigate}
 			routeParams={routeParams}
 			activeWorkflows={activeWorkflows}

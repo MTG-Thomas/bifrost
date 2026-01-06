@@ -340,7 +340,7 @@ class WebSocketService {
 		string,
 		Set<EventSourceUpdateCallback>
 	>();
-	private chatStreamCallbacks = new Map<string, Set<ChatStreamCallback>>();
+	private chatStreamCallbacks = new Map<string, ChatStreamCallback>();
 	private reindexCallbacks = new Map<string, Set<ReindexCallback>>();
 
 	// Track subscribed channels
@@ -660,9 +660,9 @@ class WebSocketService {
 		const conversationId = chunk.conversation_id;
 		if (!conversationId) return;
 
-		// Dispatch to conversation-specific callbacks
-		const callbacks = this.chatStreamCallbacks.get(conversationId);
-		callbacks?.forEach((cb) => cb(chunk));
+		// Dispatch to single conversation callback (no duplicates possible)
+		const callback = this.chatStreamCallbacks.get(conversationId);
+		callback?.(chunk);
 	}
 
 	private dispatchExecutionUpdate(
@@ -969,21 +969,20 @@ class WebSocketService {
 	}
 
 	/**
-	 * Subscribe to chat stream chunks for a specific conversation
+	 * Subscribe to chat stream chunks for a specific conversation.
+	 * Replaces any existing callback - only one callback per conversation.
 	 */
 	onChatStream(
 		conversationId: string,
 		callback: ChatStreamCallback,
 	): () => void {
-		if (!this.chatStreamCallbacks.has(conversationId)) {
-			this.chatStreamCallbacks.set(conversationId, new Set());
-		}
-		this.chatStreamCallbacks.get(conversationId)!.add(callback);
+		// Simply set (replaces any existing - no duplicates possible)
+		this.chatStreamCallbacks.set(conversationId, callback);
 
 		// Return unsubscribe function
 		return () => {
-			this.chatStreamCallbacks.get(conversationId)?.delete(callback);
-			if (this.chatStreamCallbacks.get(conversationId)?.size === 0) {
+			// Only delete if this is still the registered callback
+			if (this.chatStreamCallbacks.get(conversationId) === callback) {
 				this.chatStreamCallbacks.delete(conversationId);
 			}
 		};

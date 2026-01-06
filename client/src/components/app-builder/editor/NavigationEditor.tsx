@@ -238,7 +238,7 @@ function NavItemEditor({
 		<div
 			ref={ref}
 			className={cn(
-				"border rounded-lg bg-background relative",
+				"border bg-background relative",
 				isDragging && "opacity-50",
 			)}
 		>

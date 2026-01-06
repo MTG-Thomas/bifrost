@@ -30,10 +30,11 @@ from src.models.contracts.applications import (
     ApplicationListResponse,
     ApplicationPublic,
     ApplicationPublishRequest,
+    ApplicationRollbackRequest,
     ApplicationUpdate,
 )
 from src.models.orm.app_roles import AppRole
-from src.models.orm.applications import AppComponent, AppPage, Application
+from src.models.orm.applications import AppComponent, AppPage, AppVersion, Application
 from src.repositories.org_scoped import OrgScopedRepository
 from src.services.app_builder_service import AppBuilderService
 from src.services.workflow_access_service import sync_app_workflow_access
@@ -114,8 +115,6 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             icon=data.icon,
             organization_id=self.org_id,
             created_by=created_by,
-            live_version=0,
-            draft_version=1,
             navigation={},
             global_data_sources=[],
             global_variables={},
@@ -124,6 +123,14 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         )
         self.session.add(application)
         await self.session.flush()
+
+        # Create initial draft version
+        draft_version = AppVersion(application_id=application.id)
+        self.session.add(draft_version)
+        await self.session.flush()
+
+        # Link app to draft version
+        application.draft_version_id = draft_version.id
 
         # Add role associations if role_based access
         if data.access_level == "role_based" and data.role_ids:
@@ -205,16 +212,19 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         """
         Publish draft to live.
 
-        Copies all draft pages and components to live versions.
+        Creates a new version from the draft and sets it as the active version.
         """
         application = await self.get_by_id(app_id)
         if not application:
             return None
 
-        # Get all draft pages
+        if not application.draft_version_id:
+            raise ValueError("Application has no draft version to publish")
+
+        # Verify there are pages in the draft version
         pages_query = select(AppPage).where(
             AppPage.application_id == app_id,
-            AppPage.is_draft == True,  # noqa: E712
+            AppPage.version_id == application.draft_version_id,
         )
         result = await self.session.execute(pages_query)
         draft_pages = list(result.scalars().all())
@@ -222,28 +232,14 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         if not draft_pages:
             raise ValueError("No draft pages to publish")
 
-        # Delete existing live pages and components
-        live_pages_query = select(AppPage).where(
-            AppPage.application_id == app_id,
-            AppPage.is_draft == False,  # noqa: E712
-        )
-        live_result = await self.session.execute(live_pages_query)
-        for live_page in live_result.scalars().all():
-            await self.session.delete(live_page)
-
-        # Copy each draft page to live using AppBuilderService
+        # Use versioning-based publish
         service = AppBuilderService(self.session)
-        for draft_page in draft_pages:
-            await service.copy_page_to_live(draft_page)
-
-        # Update application version
-        application.live_version = application.draft_version
-        application.published_at = datetime.utcnow()
+        new_version = await service.publish_with_versioning(application)
 
         await self.session.flush()
         await self.session.refresh(application)
 
-        logger.info(f"Published application {app_id} (v{application.live_version})")
+        logger.info(f"Published application {app_id} with version {new_version.id}")
         return application
 
 
@@ -265,8 +261,8 @@ async def application_to_public(
         description=application.description,
         icon=application.icon,
         organization_id=application.organization_id,
-        live_version=application.live_version,
-        draft_version=application.draft_version,
+        active_version_id=application.active_version_id,
+        draft_version_id=application.draft_version_id,
         published_at=application.published_at,
         created_at=application.created_at,
         updated_at=application.updated_at,
@@ -275,6 +271,7 @@ async def application_to_public(
         has_unpublished_changes=application.has_unpublished_changes,
         access_level=application.access_level,
         role_ids=role_ids,
+        navigation=application.navigation,
     )
 
 
@@ -489,10 +486,10 @@ async def get_draft(
     """
     app = await get_application_by_id_or_404(ctx, app_id, scope)
     service = AppBuilderService(ctx.db)
-    export_data = await service.export_application(app, is_draft=True)
+    export_data = await service.export_application(app, version_id=app.draft_version_id)
     return ApplicationDefinition(
         definition=export_data,
-        version=app.draft_version,
+        version=0,  # Legacy field - deprecated
         is_live=False,
     )
 
@@ -517,12 +514,11 @@ async def save_draft(
     app = await get_application_by_id_or_404(ctx, app_id, scope)
     service = AppBuilderService(ctx.db)
     await service.update_draft_definition(app, data.definition)
-    app.draft_version += 1
     await ctx.db.flush()
     await ctx.db.refresh(app)
     return ApplicationDefinition(
         definition=data.definition,
-        version=app.draft_version,
+        version=0,  # Legacy field - deprecated
         is_live=False,
     )
 
@@ -563,19 +559,25 @@ async def publish_application(
             )
 
         # Sync workflow_access for the newly published live pages/components
+        # Query pages by the active version (set by publish)
+        if not application.active_version_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Publish completed but no active version found",
+            )
+
         live_pages_query = select(AppPage).where(
             AppPage.application_id == app_id,
-            AppPage.is_draft == False,  # noqa: E712
+            AppPage.version_id == application.active_version_id,
         )
         live_pages_result = await ctx.db.execute(live_pages_query)
         live_pages = list(live_pages_result.scalars().all())
 
-        # Get all live components for these pages
+        # Get all components for these live pages (components belong to page by FK)
         live_components: list[AppComponent] = []
         for page in live_pages:
             comp_query = select(AppComponent).where(
                 AppComponent.page_id == page.id,
-                AppComponent.is_draft == False,  # noqa: E712
             )
             comp_result = await ctx.db.execute(comp_query)
             live_components.extend(comp_result.scalars().all())
@@ -611,18 +613,19 @@ async def export_application(
     app_id: UUID,
     ctx: Context,
     user: CurrentUser,
-    is_draft: bool = Query(default=False, description="Export draft or live version"),
+    version_id: UUID | None = Query(default=None, description="Version UUID to export (defaults to draft)"),
     scope: str | None = Query(default=None),
 ) -> ApplicationExport:
     """
     Export full application to JSON for GitHub sync/portability.
 
     Returns the complete application structure including all pages and components.
+    Pass version_id to export a specific version, or omit to export draft.
     """
     application = await get_application_by_id_or_404(ctx, app_id, scope)
 
     service = AppBuilderService(ctx.db)
-    export_data = await service.export_application(application, is_draft)
+    export_data = await service.export_application(application, version_id)
 
     return ApplicationExport(**export_data)
 
@@ -667,3 +670,45 @@ async def import_application(
 
     logger.info(f"Imported application '{data.slug}' with {len(data.pages)} pages")
     return await application_to_public(application, repo)
+
+
+# =============================================================================
+# Rollback Endpoint
+# =============================================================================
+
+
+@router.post(
+    "/{app_id}/rollback",
+    response_model=ApplicationPublic,
+    summary="Rollback to a previous version",
+)
+async def rollback_application(
+    app_id: UUID,
+    data: ApplicationRollbackRequest,
+    ctx: Context,
+    user: CurrentUser,
+    scope: str | None = Query(default=None),
+) -> ApplicationPublic:
+    """
+    Rollback the application's active (live) version to a previous version.
+
+    Sets the specified version as the new active version.
+    The draft version remains unchanged.
+    """
+    target_org_id = parse_scope(scope, ctx.org_id)
+    repo = ApplicationRepository(ctx.db, target_org_id)
+    application = await get_application_by_id_or_404(ctx, app_id, scope)
+
+    service = AppBuilderService(ctx.db)
+
+    try:
+        await service.rollback_to_version(application, data.version_id)
+        await ctx.db.flush()
+        await ctx.db.refresh(application)
+        logger.info(f"Rolled back application {app_id} to version {data.version_id}")
+        return await application_to_public(application, repo)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )

@@ -23,7 +23,7 @@ from src.models.contracts.applications import (
     DataSourceConfig,
     PagePermissionConfig,
 )
-from src.models.orm.applications import AppComponent, AppPage, Application
+from src.models.orm.applications import AppComponent, AppPage, Application, AppVersion
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 def flatten_layout_tree(
     layout: dict[str, Any],
     page_id: UUID,
-    is_draft: bool,
     parent_id: UUID | None = None,
     order: int = 0,
 ) -> list[dict[str, Any]]:
@@ -77,7 +76,6 @@ def flatten_layout_tree(
             "page_id": page_id,
             "component_id": component_id,
             "parent_id": parent_id,
-            "is_draft": is_draft,
             "type": layout_type,
             "props": layout_props,
             "component_order": order,
@@ -89,7 +87,7 @@ def flatten_layout_tree(
         # Recursively flatten children
         for idx, child in enumerate(children):
             child_components = flatten_layout_tree(
-                child, page_id, is_draft, parent_id=component_uuid, order=idx
+                child, page_id, parent_id=component_uuid, order=idx
             )
             components.extend(child_components)
     else:
@@ -105,7 +103,6 @@ def flatten_layout_tree(
             "page_id": page_id,
             "component_id": component_id,
             "parent_id": parent_id,
-            "is_draft": is_draft,
             "type": layout_type,
             "props": props,
             "component_order": order,
@@ -118,7 +115,7 @@ def flatten_layout_tree(
         if "children" in props:
             for idx, child in enumerate(props.get("children", [])):
                 child_components = flatten_layout_tree(
-                    child, page_id, is_draft, parent_id=component_uuid, order=idx
+                    child, page_id, parent_id=component_uuid, order=idx
                 )
                 components.extend(child_components)
             # Remove children from props since they're now separate rows
@@ -128,7 +125,7 @@ def flatten_layout_tree(
         if layout_type == "card" and "content" in props:
             for idx, child in enumerate(props.get("content", [])):
                 child_components = flatten_layout_tree(
-                    child, page_id, is_draft, parent_id=component_uuid, order=idx
+                    child, page_id, parent_id=component_uuid, order=idx
                 )
                 components.extend(child_components)
             props.pop("content", None)
@@ -138,7 +135,7 @@ def flatten_layout_tree(
             content = props.get("content")
             if isinstance(content, dict):
                 child_components = flatten_layout_tree(
-                    content, page_id, is_draft, parent_id=component_uuid, order=0
+                    content, page_id, parent_id=component_uuid, order=0
                 )
                 components.extend(child_components)
             props.pop("content", None)
@@ -154,7 +151,6 @@ def flatten_layout_tree(
                         "page_id": page_id,
                         "component_id": f"tab_content_{tab.get('id', tab_idx)}",
                         "parent_id": component_uuid,
-                        "is_draft": is_draft,
                         "type": "tab_content",
                         "props": {"tab_id": tab.get("id")},
                         "component_order": tab_idx,
@@ -163,7 +159,7 @@ def flatten_layout_tree(
                         "loading_workflows": None,
                     })
                     child_components = flatten_layout_tree(
-                        tab["content"], page_id, is_draft, parent_id=tab_content_id, order=0
+                        tab["content"], page_id, parent_id=tab_content_id, order=0
                     )
                     components.extend(child_components)
                     tab["content"] = None  # Mark as moved to separate rows
@@ -227,6 +223,52 @@ def build_component_tree(components: list[AppComponent]) -> list[ComponentTreeNo
     return root_nodes
 
 
+def _layout_element_to_dict(node: LayoutElement) -> dict[str, Any]:
+    """
+    Convert a LayoutElement back to dict for embedding in props.
+
+    Used to reconstruct card/modal/tabs children that are stored as separate
+    component rows but need to be returned as nested dicts in props.
+    """
+    if isinstance(node, LayoutContainer):
+        result: dict[str, Any] = {"id": node.id, "type": node.type}
+        if node.gap is not None:
+            result["gap"] = node.gap
+        if node.padding is not None:
+            result["padding"] = node.padding
+        if node.align is not None:
+            result["align"] = node.align
+        if node.justify is not None:
+            result["justify"] = node.justify
+        if node.columns is not None:
+            result["columns"] = node.columns
+        if node.auto_size is not None:
+            result["autoSize"] = node.auto_size
+        if node.max_width is not None:
+            result["maxWidth"] = node.max_width
+        if node.visible is not None:
+            result["visible"] = node.visible
+        if node.class_name is not None:
+            result["className"] = node.class_name
+        if node.children:
+            result["children"] = [_layout_element_to_dict(c) for c in node.children]
+        return result
+    else:
+        # AppComponentNode
+        result = {
+            "id": node.id,
+            "type": node.type,
+            "props": node.props.copy() if node.props else {},
+        }
+        if node.visible:
+            result["visible"] = node.visible
+        if node.width:
+            result["width"] = node.width
+        if node.loading_workflows:
+            result["loadingWorkflows"] = node.loading_workflows
+        return result
+
+
 def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
     """
     Build a typed LayoutContainer tree from flat component rows.
@@ -239,7 +281,7 @@ def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
     """
     if not components:
         # Return empty column layout
-        return LayoutContainer(type="column", children=[])
+        return LayoutContainer(id=f"layout_{uuid4().hex[:8]}", type="column", children=[])
 
     # First pass: create all nodes as LayoutElement (either LayoutContainer or AppComponentNode)
     nodes: dict[UUID, tuple[LayoutElement, int, UUID | None]] = {}  # id -> (node, order, parent_id)
@@ -249,6 +291,7 @@ def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
             # Layout container
             props = comp.props or {}
             node: LayoutElement = LayoutContainer(
+                id=comp.component_id,  # Include component_id for API operations
                 type=comp.type,  # type: ignore[arg-type] - validated by ORM
                 gap=props.get("gap"),
                 padding=props.get("padding"),
@@ -256,6 +299,7 @@ def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
                 justify=props.get("justify"),
                 columns=props.get("columns"),
                 auto_size=props.get("autoSize"),
+                max_width=props.get("maxWidth"),
                 visible=comp.visible,
                 class_name=props.get("className"),
                 children=[],
@@ -273,6 +317,8 @@ def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
         nodes[comp.id] = (node, comp.component_order, comp.parent_id)
 
     # Second pass: build tree structure
+    # Track children for container-like leaf components (card, modal, tabs)
+    container_children: dict[UUID, list[tuple[LayoutElement, int]]] = {}
     root_nodes: list[tuple[LayoutElement, int]] = []  # (node, order)
 
     for comp_id, (node, order, parent_id) in nodes.items():
@@ -282,6 +328,11 @@ def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
             parent_node, _, _ = nodes[parent_id]
             if isinstance(parent_node, LayoutContainer):
                 parent_node.children.append(node)
+            elif isinstance(parent_node, AppComponentNode):
+                # Track children for container-like leaf components
+                if parent_id not in container_children:
+                    container_children[parent_id] = []
+                container_children[parent_id].append((node, order))
 
     # Sort children by order for all layout containers
     for node, _, _ in nodes.values():
@@ -302,18 +353,59 @@ def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
     # Sort root nodes by order
     root_nodes.sort(key=lambda x: x[1])
 
+    # Third pass: reconstruct props.children for container-like leaf components
+    # (card, modal, tabs store children in props rather than as layout children)
+    for comp_id, children_list in container_children.items():
+        parent_node, _, _ = nodes[comp_id]
+        if isinstance(parent_node, AppComponentNode):
+            # Sort children by order
+            children_list.sort(key=lambda x: x[1])
+
+            if parent_node.type == "card":
+                # Card stores children in props.children as dicts
+                parent_node.props["children"] = [
+                    _layout_element_to_dict(child) for child, _ in children_list
+                ]
+            elif parent_node.type == "modal":
+                # Modal stores single content layout in props.content
+                if children_list:
+                    parent_node.props["content"] = _layout_element_to_dict(children_list[0][0])
+            elif parent_node.type == "tabs":
+                # Tabs: tab_content children need to be matched to items
+                tab_contents = {
+                    child.props.get("tab_id"): child
+                    for child, _ in children_list
+                    if isinstance(child, AppComponentNode) and child.type == "tab_content"
+                }
+                items = parent_node.props.get("items", [])
+                for item in items:
+                    tab_id = item.get("id")
+                    if tab_id in tab_contents:
+                        tab_content_node = tab_contents[tab_id]
+                        # Get children of the tab_content from container_children
+                        tab_content_id = None
+                        for cid, (n, _, _) in nodes.items():
+                            if n is tab_content_node:
+                                tab_content_id = cid
+                                break
+                        if tab_content_id and tab_content_id in container_children:
+                            tab_children = container_children[tab_content_id]
+                            tab_children.sort(key=lambda x: x[1])
+                            if tab_children:
+                                item["content"] = _layout_element_to_dict(tab_children[0][0])
+
     # Return: if single root layout container, return it; otherwise wrap in column
     if len(root_nodes) == 1:
         root, _ = root_nodes[0]
         if isinstance(root, LayoutContainer):
             return root
         # Single component at root - wrap in column
-        return LayoutContainer(type="column", children=[root])
+        return LayoutContainer(id=f"layout_{uuid4().hex[:8]}", type="column", children=[root])
     elif len(root_nodes) == 0:
-        return LayoutContainer(type="column", children=[])
+        return LayoutContainer(id=f"layout_{uuid4().hex[:8]}", type="column", children=[])
     else:
         # Multiple roots - wrap in column
-        return LayoutContainer(type="column", children=[node for node, _ in root_nodes])
+        return LayoutContainer(id=f"layout_{uuid4().hex[:8]}", type="column", children=[node for node, _ in root_nodes])
 
 
 def build_page_definition(page: AppPage, components: list[AppComponent]) -> PageDefinition:
@@ -345,6 +437,7 @@ def build_page_definition(page: AppPage, components: list[AppComponent]) -> Page
         variables=page.variables or {},
         launch_workflow_id=str(page.launch_workflow_id) if page.launch_workflow_id else None,
         launch_workflow_params=page.launch_workflow_params,
+        launch_workflow_data_source_id=page.launch_workflow_data_source_id,
         permission=permission,
     )
 
@@ -356,7 +449,7 @@ def tree_to_layout_json(nodes: list[ComponentTreeNode]) -> dict[str, Any]:
     This reconstructs the nested layout structure for export/frontend use.
     """
     if not nodes:
-        return {"type": "column", "children": []}
+        return {"id": f"layout_{uuid4().hex[:8]}", "type": "column", "children": []}
 
     def node_to_json(node: ComponentTreeNode) -> dict[str, Any]:
         if node.type in ("row", "column", "grid"):
@@ -409,6 +502,7 @@ def tree_to_layout_json(nodes: list[ComponentTreeNode]) -> dict[str, Any]:
         return node_to_json(nodes[0])
     else:
         return {
+            "id": f"layout_{uuid4().hex[:8]}",
             "type": "column",
             "children": [node_to_json(n) for n in nodes],
         }
@@ -429,18 +523,20 @@ class AppBuilderService:
         self,
         application_id: UUID,
         page_id: str,
-        is_draft: bool = True,
+        version_id: UUID,
     ) -> tuple[AppPage | None, list[ComponentTreeNode]]:
         """
         Get a page with its component tree (legacy format).
 
+        Requires version_id to specify which version of the page to get.
+
         DEPRECATED: Use get_page_definition() instead for typed responses.
         """
-        # Get page
+
         query = select(AppPage).where(
             AppPage.application_id == application_id,
             AppPage.page_id == page_id,
-            AppPage.is_draft == is_draft,
+            AppPage.version_id == version_id,
         )
         result = await self.session.execute(query)
         page = result.scalar_one_or_none()
@@ -448,13 +544,10 @@ class AppBuilderService:
         if not page:
             return None, []
 
-        # Get components
+        # Get components for this page (components belong to page by page_id FK)
         comp_query = (
             select(AppComponent)
-            .where(
-                AppComponent.page_id == page.id,
-                AppComponent.is_draft == is_draft,
-            )
+            .where(AppComponent.page_id == page.id)
             .order_by(AppComponent.parent_id.nulls_first(), AppComponent.component_order)
         )
         comp_result = await self.session.execute(comp_query)
@@ -469,20 +562,24 @@ class AppBuilderService:
         self,
         application_id: UUID,
         page_id: str,
-        is_draft: bool = True,
+        version_id: UUID | None = None,
     ) -> PageDefinition | None:
         """
         Get a page as a fully typed PageDefinition.
+
+        Requires version_id to specify which version of the page to get.
 
         This is the primary method for returning page data to the frontend.
         Returns a PageDefinition that serializes to camelCase JSON matching
         the frontend TypeScript PageDefinition interface.
         """
-        # Get page
+        if version_id is None:
+            raise ValueError("version_id is required")
+
         query = select(AppPage).where(
             AppPage.application_id == application_id,
             AppPage.page_id == page_id,
-            AppPage.is_draft == is_draft,
+            AppPage.version_id == version_id,
         )
         result = await self.session.execute(query)
         page = result.scalar_one_or_none()
@@ -490,13 +587,10 @@ class AppBuilderService:
         if not page:
             return None
 
-        # Get components
+        # Get components for this page (components belong to page by page_id FK)
         comp_query = (
             select(AppComponent)
-            .where(
-                AppComponent.page_id == page.id,
-                AppComponent.is_draft == is_draft,
-            )
+            .where(AppComponent.page_id == page.id)
             .order_by(AppComponent.parent_id.nulls_first(), AppComponent.component_order)
         )
         comp_result = await self.session.execute(comp_query)
@@ -512,17 +606,20 @@ class AppBuilderService:
         title: str,
         path: str,
         layout: dict[str, Any],
-        is_draft: bool = True,
+        version_id: UUID | None = None,
         **page_kwargs: Any,
     ) -> AppPage:
-        """Create a page and flatten its layout into component rows."""
+        """Create a page and flatten its layout into component rows.
+
+        The page will be linked to the specified version_id.
+        """
         # Create page
         page = AppPage(
             application_id=application_id,
             page_id=page_id,
             title=title,
             path=path,
-            is_draft=is_draft,
+            version_id=version_id,
             root_layout_type=layout.get("type", "column"),
             root_layout_config={
                 k: v for k, v in layout.items()
@@ -534,7 +631,7 @@ class AppBuilderService:
         await self.session.flush()
 
         # Flatten layout to components
-        component_dicts = flatten_layout_tree(layout, page.id, is_draft)
+        component_dicts = flatten_layout_tree(layout, page.id)
 
         # Create component rows
         for comp_dict in component_dicts:
@@ -553,15 +650,17 @@ class AppBuilderService:
         layout: dict[str, Any],
     ) -> None:
         """Update a page's layout by replacing all its components."""
-        # Delete existing components
+        # Delete existing components for this page
         comp_query = select(AppComponent).where(
             AppComponent.page_id == page.id,
-            AppComponent.is_draft == page.is_draft,
         )
         result = await self.session.execute(comp_query)
         existing = list(result.scalars().all())
         for comp in existing:
             await self.session.delete(comp)
+
+        # Flush deletes before inserting new components to avoid unique constraint violations
+        await self.session.flush()
 
         # Update root layout config
         page.root_layout_type = layout.get("type", "column")
@@ -569,10 +668,9 @@ class AppBuilderService:
             k: v for k, v in layout.items()
             if k in ("gap", "padding", "align", "justify", "columns", "autoSize", "className")
         }
-        page.version += 1
 
         # Create new components
-        component_dicts = flatten_layout_tree(layout, page.id, page.is_draft)
+        component_dicts = flatten_layout_tree(layout, page.id)
         for comp_dict in component_dicts:
             component = AppComponent(**comp_dict)
             self.session.add(component)
@@ -580,106 +678,131 @@ class AppBuilderService:
         await self.session.flush()
         logger.info(f"Updated page layout with {len(component_dicts)} components")
 
-    async def copy_page_to_live(self, draft_page: AppPage) -> AppPage:
-        """Copy a draft page and its components to live."""
-        # Check if live page exists
-        live_query = select(AppPage).where(
-            AppPage.application_id == draft_page.application_id,
-            AppPage.page_id == draft_page.page_id,
-            AppPage.is_draft == False,  # noqa: E712
-        )
-        result = await self.session.execute(live_query)
-        live_page = result.scalar_one_or_none()
+    async def copy_page_to_version(
+        self,
+        source_page: AppPage,
+        target_version_id: UUID,
+    ) -> AppPage:
+        """Copy a page and its components to a new version.
 
-        if live_page:
-            # Delete existing live components
-            comp_query = select(AppComponent).where(
-                AppComponent.page_id == live_page.id,
-                AppComponent.is_draft == False,  # noqa: E712
-            )
-            comp_result = await self.session.execute(comp_query)
-            for comp in comp_result.scalars().all():
-                await self.session.delete(comp)
-            await self.session.delete(live_page)
-
-        # Create new live page
-        live_page = AppPage(
-            application_id=draft_page.application_id,
-            page_id=draft_page.page_id,
-            title=draft_page.title,
-            path=draft_page.path,
-            is_draft=False,
-            version=draft_page.version,
-            data_sources=draft_page.data_sources,
-            variables=draft_page.variables,
-            launch_workflow_id=draft_page.launch_workflow_id,
-            launch_workflow_params=draft_page.launch_workflow_params,
-            permission=draft_page.permission,
-            page_order=draft_page.page_order,
-            root_layout_type=draft_page.root_layout_type,
-            root_layout_config=draft_page.root_layout_config,
+        Pages are linked to versions via version_id.
+        """
+        # Create new page linked to target version
+        new_page = AppPage(
+            application_id=source_page.application_id,
+            page_id=source_page.page_id,
+            title=source_page.title,
+            path=source_page.path,
+            version_id=target_version_id,
+            data_sources=source_page.data_sources,
+            variables=source_page.variables,
+            launch_workflow_id=source_page.launch_workflow_id,
+            launch_workflow_params=source_page.launch_workflow_params,
+            launch_workflow_data_source_id=source_page.launch_workflow_data_source_id,
+            permission=source_page.permission,
+            page_order=source_page.page_order,
+            root_layout_type=source_page.root_layout_type,
+            root_layout_config=source_page.root_layout_config,
         )
-        self.session.add(live_page)
+        self.session.add(new_page)
         await self.session.flush()
 
         # Copy components
-        draft_comp_query = select(AppComponent).where(
-            AppComponent.page_id == draft_page.id,
-            AppComponent.is_draft == True,  # noqa: E712
+        source_comp_query = select(AppComponent).where(
+            AppComponent.page_id == source_page.id,
         )
-        draft_comp_result = await self.session.execute(draft_comp_query)
-        draft_components = list(draft_comp_result.scalars().all())
+        source_comp_result = await self.session.execute(source_comp_query)
+        source_components = list(source_comp_result.scalars().all())
 
-        # Build mapping from draft IDs to live IDs
+        # Build mapping from source IDs to new IDs
         id_mapping: dict[UUID, UUID] = {}
+        for comp in source_components:
+            id_mapping[comp.id] = uuid4()
 
-        for draft_comp in draft_components:
-            live_comp_id = uuid4()
-            id_mapping[draft_comp.id] = live_comp_id
-
-        # Create live components with updated parent_ids
-        for draft_comp in draft_components:
-            live_parent_id = id_mapping.get(draft_comp.parent_id) if draft_comp.parent_id else None
-            live_comp = AppComponent(
-                id=id_mapping[draft_comp.id],
-                page_id=live_page.id,
-                component_id=draft_comp.component_id,
-                parent_id=live_parent_id,
-                is_draft=False,
-                type=draft_comp.type,
-                props=draft_comp.props,
-                component_order=draft_comp.component_order,
-                visible=draft_comp.visible,
-                width=draft_comp.width,
-                loading_workflows=draft_comp.loading_workflows,
+        # Create new components with updated parent_ids
+        for comp in source_components:
+            new_parent_id = id_mapping.get(comp.parent_id) if comp.parent_id else None
+            new_comp = AppComponent(
+                id=id_mapping[comp.id],
+                page_id=new_page.id,
+                component_id=comp.component_id,
+                parent_id=new_parent_id,
+                type=comp.type,
+                props=comp.props,
+                component_order=comp.component_order,
+                visible=comp.visible,
+                width=comp.width,
+                loading_workflows=comp.loading_workflows,
             )
-            self.session.add(live_comp)
+            self.session.add(new_comp)
 
         await self.session.flush()
-        logger.info(f"Published page '{draft_page.page_id}' with {len(draft_components)} components")
-        return live_page
+        logger.info(f"Copied page '{source_page.page_id}' to version {target_version_id}")
+        return new_page
 
-    async def export_application(self, app: Application, is_draft: bool = False) -> dict[str, Any]:
-        """Export full application to JSON for GitHub sync/portability."""
+    async def copy_version(
+        self,
+        app: Application,
+        source_version_id: UUID,
+    ) -> AppVersion:
+        """Create a new version by copying all pages from a source version.
+
+        This is used during publish to create a new version from the draft.
+        """
+        # Create new version
+        new_version = AppVersion(application_id=app.id)
+        self.session.add(new_version)
+        await self.session.flush()
+
+        # Get all pages from source version
+        pages_query = select(AppPage).where(
+            AppPage.version_id == source_version_id,
+        ).order_by(AppPage.page_order)
+        result = await self.session.execute(pages_query)
+        source_pages = list(result.scalars().all())
+
+        # Copy each page to the new version
+        for page in source_pages:
+            await self.copy_page_to_version(page, new_version.id)
+
+        logger.info(
+            f"Created version {new_version.id} for app {app.id} "
+            f"with {len(source_pages)} pages"
+        )
+        return new_version
+
+    async def export_application(
+        self,
+        app: Application,
+        version_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Export full application to JSON for GitHub sync/portability.
+
+        Args:
+            app: The application to export
+            version_id: Version to export. Defaults to draft_version_id if not specified.
+        """
         from datetime import datetime
 
-        # Get all pages
+        # Use draft version if not specified
+        target_version_id = version_id or app.draft_version_id
+        if not target_version_id:
+            raise ValueError("No version to export. Application has no draft version.")
+
+        # Get all pages for this version
         pages_query = select(AppPage).where(
             AppPage.application_id == app.id,
-            AppPage.is_draft == is_draft,
+            AppPage.version_id == target_version_id,
         ).order_by(AppPage.page_order)
         result = await self.session.execute(pages_query)
         pages = list(result.scalars().all())
 
         exported_pages = []
         for page in pages:
-            # Get components for this page
+            # Get components for this page (components belong to page by page_id)
             comp_query = (
                 select(AppComponent)
-                .where(
-                    AppComponent.page_id == page.id,
-                    AppComponent.is_draft == is_draft,
-                )
+                .where(AppComponent.page_id == page.id)
                 .order_by(AppComponent.parent_id.nulls_first(), AppComponent.component_order)
             )
             comp_result = await self.session.execute(comp_query)
@@ -734,11 +857,17 @@ class AppBuilderService:
             global_data_sources=data.get("globalDataSources", []),
             global_variables=data.get("globalVariables", {}),
             permissions=data.get("permissions", {}),
-            draft_version=1,
-            live_version=0,
         )
         self.session.add(app)
         await self.session.flush()
+
+        # Create initial draft version
+        draft_version = AppVersion(application_id=app.id)
+        self.session.add(draft_version)
+        await self.session.flush()
+
+        # Link app to draft version
+        app.draft_version_id = draft_version.id
 
         # Import pages
         for page_order, page_data in enumerate(data.get("pages", [])):
@@ -758,7 +887,7 @@ class AppBuilderService:
                 title=page_data["title"],
                 path=page_data["path"],
                 layout=layout,
-                is_draft=True,
+                version_id=draft_version.id,
                 data_sources=page_data.get("dataSources", []),
                 variables=page_data.get("variables", {}),
                 launch_workflow_id=launch_workflow_id,
@@ -784,11 +913,14 @@ class AppBuilderService:
         """
         from sqlalchemy import delete
 
+        if not app.draft_version_id:
+            raise ValueError("Application has no draft version")
+
         # Delete existing draft pages (cascade deletes components)
         await self.session.execute(
             delete(AppPage).where(
                 AppPage.application_id == app.id,
-                AppPage.is_draft == True,
+                AppPage.version_id == app.draft_version_id,
             )
         )
         await self.session.flush()
@@ -811,7 +943,7 @@ class AppBuilderService:
                 title=page_data.get("title", f"Page {page_order + 1}"),
                 path=page_data.get("path", f"/page-{page_order}"),
                 layout=layout,
-                is_draft=True,
+                version_id=app.draft_version_id,
                 data_sources=page_data.get("dataSources", []),
                 variables=page_data.get("variables", {}),
                 launch_workflow_id=launch_workflow_id,
@@ -821,3 +953,53 @@ class AppBuilderService:
             )
 
         logger.info(f"Updated draft for application '{app.slug}' with {len(definition.get('pages', []))} pages")
+
+    async def publish_with_versioning(self, app: Application) -> AppVersion:
+        """Publish the application using the new versioning system.
+
+        Creates a new version by copying all pages from the draft version,
+        then sets this new version as the active (live) version.
+
+        Returns the newly created active version.
+        """
+        from datetime import datetime
+
+        if not app.draft_version_id:
+            raise ValueError("Application has no draft version to publish")
+
+        # Create new version from draft
+        new_version = await self.copy_version(app, app.draft_version_id)
+
+        # Set as active version
+        app.active_version_id = new_version.id
+        app.published_at = datetime.utcnow()
+
+        await self.session.flush()
+        logger.info(f"Published app {app.slug} with new active version {new_version.id}")
+        return new_version
+
+    async def rollback_to_version(self, app: Application, version_id: UUID) -> None:
+        """Rollback the application's active version to a previous version.
+
+        Sets the specified version as the new active version.
+        The draft version remains unchanged.
+        """
+        from datetime import datetime
+
+        # Verify the version exists and belongs to this app
+        version_query = select(AppVersion).where(
+            AppVersion.id == version_id,
+            AppVersion.application_id == app.id,
+        )
+        result = await self.session.execute(version_query)
+        version = result.scalar_one_or_none()
+
+        if not version:
+            raise ValueError(f"Version {version_id} not found for application {app.id}")
+
+        # Set as active version
+        app.active_version_id = version_id
+        app.published_at = datetime.utcnow()
+
+        await self.session.flush()
+        logger.info(f"Rolled back app {app.slug} to version {version_id}")

@@ -125,9 +125,10 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 				phase.type === "executing" ? phase.executionId : "";
 			setPhase({ type: "complete", executionId, result });
 
-			// Inject result into expression context
+			// Inject result into expression context using form ID as dataSourceId
 			if (result !== undefined) {
-				setWorkflowResult({
+				const dataSourceId = props.formId || "form";
+				setWorkflowResult(dataSourceId, {
 					executionId,
 					status: "completed",
 					result,
@@ -139,7 +140,7 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 				executeOnCompleteActions(props.onSubmit, result);
 			}
 		},
-		[phase, props.onSubmit, setWorkflowResult, executeOnCompleteActions],
+		[phase, props.formId, props.onSubmit, setWorkflowResult, executeOnCompleteActions],
 	);
 
 	// Handle "Submit Another" - reset to form phase

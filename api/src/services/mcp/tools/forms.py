@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 )
 async def list_forms(context: Any) -> str:
     """List all forms."""
+    import json
+
     from src.core.database import get_db_context
     from src.core.org_filter import OrgFilterType
     from src.repositories.forms import FormRepository
@@ -51,24 +53,23 @@ async def list_forms(context: Any) -> str:
             repo = FormRepository(db, org_id)
             forms = await repo.list_forms(filter_type, active_only=True)
 
-            if not forms:
-                return "No forms found."
-
-            lines = ["# Forms\n"]
-            for form in forms:
-                lines.append(f"## {form.name}")
-                if form.description:
-                    lines.append(f"{form.description}")
-                lines.append(f"- URL: `/forms/{form.id}`")
-                if form.workflow_id:
-                    lines.append(f"- Linked workflow: {form.workflow_id}")
-                lines.append("")
-
-            return "\n".join(lines)
+            return json.dumps({
+                "forms": [
+                    {
+                        "id": str(form.id),
+                        "name": form.name,
+                        "description": form.description,
+                        "workflow_id": form.workflow_id,
+                        "url": f"/forms/{form.id}",
+                    }
+                    for form in forms
+                ],
+                "count": len(forms),
+            })
 
     except Exception as e:
         logger.exception(f"Error listing forms via MCP: {e}")
-        return f"Error listing forms: {str(e)}"
+        return json.dumps({"error": f"Error listing forms: {str(e)}"})
 
 
 @system_tool(
@@ -221,74 +222,6 @@ Forms in Bifrost are defined using a JSON schema with the following structure:
 
 
 @system_tool(
-    id="validate_form_schema",
-    name="Validate Form Schema",
-    description="Validate a form JSON structure before saving.",
-    category=ToolCategory.FORM,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "form_json": {"type": "string", "description": "JSON string of the form to validate"},
-        },
-        "required": ["form_json"],
-    },
-)
-async def validate_form_schema(context: Any, form_json: str) -> str:
-    """Validate a form JSON structure."""
-    import json
-
-    try:
-        form_data = json.loads(form_json)
-    except json.JSONDecodeError as e:
-        return f"Invalid JSON: {str(e)}"
-
-    errors = []
-
-    # Check required top-level fields
-    if "name" not in form_data:
-        errors.append("Missing required field: 'name'")
-
-    # Check for form_schema structure (fields must be nested)
-    form_schema = form_data.get("form_schema")
-    if "fields" in form_data and "form_schema" not in form_data:
-        errors.append(
-            "Fields must be nested inside 'form_schema.fields', not at the top level. "
-            "Use: {\"form_schema\": {\"fields\": [...]}}"
-        )
-    elif not form_schema:
-        errors.append("Missing required field: 'form_schema'")
-    elif not isinstance(form_schema, dict):
-        errors.append("'form_schema' must be an object")
-    elif "fields" not in form_schema:
-        errors.append("Missing required field: 'form_schema.fields'")
-    elif not isinstance(form_schema.get("fields"), list):
-        errors.append("'form_schema.fields' must be an array")
-
-    # Validate each field in form_schema.fields
-    valid_types = {"text", "number", "select", "boolean", "date", "textarea", "email", "password"}
-    fields = []
-    if isinstance(form_schema, dict):
-        fields = form_schema.get("fields", [])
-    if isinstance(fields, list):
-        for i, fld in enumerate(fields):
-            if not isinstance(fld, dict):
-                errors.append(f"Field {i}: must be an object")
-                continue
-            if "name" not in fld:
-                errors.append(f"Field {i}: missing 'name'")
-            if "type" not in fld:
-                errors.append(f"Field {i}: missing 'type'")
-            elif fld["type"] not in valid_types:
-                errors.append(f"Field {i}: invalid type '{fld['type']}'. Valid types: {', '.join(sorted(valid_types))}")
-
-    if errors:
-        return "Validation errors:\n" + "\n".join(f"- {e}" for e in errors)
-
-    return "Form schema is valid!"
-
-
-@system_tool(
     id="create_form",
     name="Create Form",
     description="Create a new form with fields linked to a workflow.",
@@ -341,8 +274,9 @@ async def create_form(
         launch_workflow_id: Optional UUID of workflow to run before form display
 
     Returns:
-        Formatted confirmation with form ID/URL
+        JSON with form details
     """
+    import json
     from datetime import datetime
     from uuid import UUID as UUID_TYPE
 
@@ -359,26 +293,26 @@ async def create_form(
 
     # Validate inputs
     if not name:
-        return "Error: name is required"
+        return json.dumps({"error": "name is required"})
     if not workflow_id:
-        return "Error: workflow_id is required"
+        return json.dumps({"error": "workflow_id is required"})
     if not fields:
-        return "Error: fields array is required"
+        return json.dumps({"error": "fields array is required"})
     if len(name) > 200:
-        return "Error: name must be 200 characters or less"
+        return json.dumps({"error": "name must be 200 characters or less"})
 
     # Validate workflow_id is a valid UUID
     try:
         UUID_TYPE(workflow_id)
     except ValueError:
-        return f"Error: workflow_id '{workflow_id}' is not a valid UUID"
+        return json.dumps({"error": f"workflow_id '{workflow_id}' is not a valid UUID"})
 
     # Validate launch_workflow_id if provided
     if launch_workflow_id:
         try:
             UUID_TYPE(launch_workflow_id)
         except ValueError:
-            return f"Error: launch_workflow_id '{launch_workflow_id}' is not a valid UUID"
+            return json.dumps({"error": f"launch_workflow_id '{launch_workflow_id}' is not a valid UUID"})
 
     try:
         async with get_db_context() as db:
@@ -386,20 +320,20 @@ async def create_form(
             workflow_repo = WorkflowRepository(db)
             workflow = await workflow_repo.get(UUID_TYPE(workflow_id))
             if not workflow:
-                return f"Error: Workflow '{workflow_id}' not found. Use list_workflows to see available workflows."
+                return json.dumps({"error": f"Workflow '{workflow_id}' not found. Use list_workflows to see available workflows."})
 
             # Verify launch workflow if provided
             launch_workflow = None
             if launch_workflow_id:
                 launch_workflow = await workflow_repo.get(UUID_TYPE(launch_workflow_id))
                 if not launch_workflow:
-                    return f"Error: Launch workflow '{launch_workflow_id}' not found."
+                    return json.dumps({"error": f"Launch workflow '{launch_workflow_id}' not found."})
 
             # Validate form schema
             try:
                 FormSchema.model_validate({"fields": fields})
             except Exception as e:
-                return f"Error validating form schema: {str(e)}"
+                return json.dumps({"error": f"Error validating form schema: {str(e)}"})
 
             # Create form record
             now = datetime.utcnow()
@@ -447,19 +381,22 @@ async def create_form(
 
             logger.info(f"Created form {form.id}: {form.name}")
 
-            return (
-                f"Form '{name}' created successfully!\n\n"
-                f"**Form ID:** {form.id}\n"
-                f"**URL:** `/forms/{form.id}`\n"
-                f"**Linked Workflow:** {workflow.name}\n"
-                f"**Fields:** {len(fields)}\n"
-                + (f"**Launch Workflow:** {launch_workflow.name}\n" if launch_workflow_id and launch_workflow else "")
-                + (f"**File Path:** {form.file_path}\n" if form.file_path else "")
-            )
+            return json.dumps({
+                "success": True,
+                "id": str(form.id),
+                "name": form.name,
+                "url": f"/forms/{form.id}",
+                "workflow_id": workflow_id,
+                "workflow_name": workflow.name,
+                "field_count": len(fields),
+                "launch_workflow_id": launch_workflow_id,
+                "launch_workflow_name": launch_workflow.name if launch_workflow else None,
+                "file_path": form.file_path,
+            })
 
     except Exception as e:
         logger.exception(f"Error creating form via MCP: {e}")
-        return f"Error creating form: {str(e)}"
+        return json.dumps({"error": f"Error creating form: {str(e)}"})
 
 
 @system_tool(
@@ -490,8 +427,9 @@ async def get_form(
         form_name: Form name (alternative to ID)
 
     Returns:
-        Formatted markdown with form details
+        JSON with form details
     """
+    import json
     from uuid import UUID as UUID_TYPE
 
     from sqlalchemy import select
@@ -504,7 +442,7 @@ async def get_form(
     logger.info(f"MCP get_form called: form_id={form_id}, form_name={form_name}")
 
     if not form_id and not form_name:
-        return "Error: Either form_id or form_name is required"
+        return json.dumps({"error": "Either form_id or form_name is required"})
 
     try:
         async with get_db_context() as db:
@@ -515,7 +453,7 @@ async def get_form(
                 try:
                     uuid_id = UUID_TYPE(form_id)
                 except ValueError:
-                    return f"Error: '{form_id}' is not a valid UUID"
+                    return json.dumps({"error": f"'{form_id}' is not a valid UUID"})
                 query = query.where(FormORM.id == uuid_id)
             else:
                 query = query.where(FormORM.name == form_name)
@@ -536,7 +474,7 @@ async def get_form(
 
             if not form:
                 identifier = form_id or form_name
-                return f"Error: Form '{identifier}' not found. Use list_forms to see available forms."
+                return json.dumps({"error": f"Form '{identifier}' not found. Use list_forms to see available forms."})
 
             # Get workflow names
             workflow_repo = WorkflowRepository(db)
@@ -557,69 +495,41 @@ async def get_form(
                 except Exception:
                     pass
 
-            # Build output
-            lines = [f"# {form.name}\n"]
+            # Sort fields by position
+            sorted_fields = sorted(form.fields, key=lambda f: f.position) if form.fields else []
 
-            if form.description:
-                lines.append(f"{form.description}\n")
-
-            lines.append("## Details\n")
-            lines.append(f"- **ID:** `{form.id}`")
-            lines.append(f"- **URL:** `/forms/{form.id}`")
-            lines.append(f"- **Active:** {'Yes' if form.is_active else 'No'}")
-            lines.append(f"- **Access Level:** {form.access_level or 'role_based'}")
-
-            if form.organization_id:
-                lines.append(f"- **Organization:** `{form.organization_id}`")
-            else:
-                lines.append("- **Scope:** Global")
-
-            lines.append("")
-            lines.append("## Linked Workflows\n")
-            if workflow_name:
-                lines.append(f"- **Submit Workflow:** {workflow_name} (`{form.workflow_id}`)")
-            else:
-                lines.append(f"- **Submit Workflow ID:** `{form.workflow_id}`")
-
-            if form.launch_workflow_id:
-                if launch_workflow_name:
-                    lines.append(f"- **Launch Workflow:** {launch_workflow_name} (`{form.launch_workflow_id}`)")
-                else:
-                    lines.append(f"- **Launch Workflow ID:** `{form.launch_workflow_id}`")
-
-            # Fields
-            if form.fields:
-                lines.append("")
-                lines.append(f"## Fields ({len(form.fields)})\n")
-
-                # Sort by position
-                sorted_fields = sorted(form.fields, key=lambda f: f.position)
-
-                for field in sorted_fields:
-                    required_marker = " **(required)**" if field.required else ""
-                    lines.append(f"### {field.label or field.name}{required_marker}")
-                    lines.append(f"- **Name:** `{field.name}`")
-                    lines.append(f"- **Type:** `{field.type}`")
-
-                    if field.placeholder:
-                        lines.append(f"- **Placeholder:** {field.placeholder}")
-                    if field.help_text:
-                        lines.append(f"- **Help:** {field.help_text}")
-                    if field.default_value is not None:
-                        lines.append(f"- **Default:** `{field.default_value}`")
-                    if field.options:
-                        import json
-                        lines.append(f"- **Options:** `{json.dumps(field.options)}`")
-                    if field.data_provider_id:
-                        lines.append(f"- **Data Provider:** `{field.data_provider_id}`")
-
-                    lines.append("")
-
-            return "\n".join(lines)
+            return json.dumps({
+                "id": str(form.id),
+                "name": form.name,
+                "description": form.description,
+                "url": f"/forms/{form.id}",
+                "is_active": form.is_active,
+                "access_level": form.access_level or "role_based",
+                "organization_id": str(form.organization_id) if form.organization_id else None,
+                "workflow_id": form.workflow_id,
+                "workflow_name": workflow_name,
+                "launch_workflow_id": form.launch_workflow_id,
+                "launch_workflow_name": launch_workflow_name,
+                "fields": [
+                    {
+                        "name": field.name,
+                        "type": field.type,
+                        "label": field.label,
+                        "required": field.required,
+                        "placeholder": field.placeholder,
+                        "help_text": field.help_text,
+                        "default_value": field.default_value,
+                        "options": field.options,
+                        "data_provider_id": field.data_provider_id,
+                        "position": field.position,
+                    }
+                    for field in sorted_fields
+                ],
+            })
 
     except Exception as e:
         logger.exception(f"Error getting form via MCP: {e}")
-        return f"Error getting form: {str(e)}"
+        return json.dumps({"error": f"Error getting form: {str(e)}"})
 
 
 @system_tool(
@@ -665,8 +575,9 @@ async def update_form(
         is_active: Enable/disable the form
 
     Returns:
-        Formatted confirmation
+        JSON with update confirmation
     """
+    import json
     from datetime import datetime
     from uuid import UUID as UUID_TYPE
 
@@ -682,13 +593,13 @@ async def update_form(
     logger.info(f"MCP update_form called: form_id={form_id}")
 
     if not form_id:
-        return "Error: form_id is required"
+        return json.dumps({"error": "form_id is required"})
 
     # Validate form_id is a valid UUID
     try:
         uuid_id = UUID_TYPE(form_id)
     except ValueError:
-        return f"Error: '{form_id}' is not a valid UUID"
+        return json.dumps({"error": f"'{form_id}' is not a valid UUID"})
 
     try:
         async with get_db_context() as db:
@@ -701,16 +612,16 @@ async def update_form(
             form = result.scalar_one_or_none()
 
             if not form:
-                return f"Error: Form '{form_id}' not found. Use list_forms to see available forms."
+                return json.dumps({"error": f"Form '{form_id}' not found. Use list_forms to see available forms."})
 
             # Check access for non-admins
             if not context.is_platform_admin:
                 if form.organization_id:
                     if context.org_id and str(form.organization_id) != str(context.org_id):
-                        return "Error: You don't have permission to update this form."
+                        return json.dumps({"error": "You don't have permission to update this form."})
                 # Global forms can only be updated by admins
                 if form.organization_id is None:
-                    return "Error: Only platform admins can update global forms."
+                    return json.dumps({"error": "Only platform admins can update global forms."})
 
             old_file_path = form.file_path
             updates_made = []
@@ -718,7 +629,7 @@ async def update_form(
             # Apply updates
             if name is not None:
                 if len(name) > 200:
-                    return "Error: name must be 200 characters or less"
+                    return json.dumps({"error": "name must be 200 characters or less"})
                 form.name = name
                 updates_made.append("name")
 
@@ -730,12 +641,12 @@ async def update_form(
                 try:
                     UUID_TYPE(workflow_id)
                 except ValueError:
-                    return f"Error: workflow_id '{workflow_id}' is not a valid UUID"
+                    return json.dumps({"error": f"workflow_id '{workflow_id}' is not a valid UUID"})
 
                 workflow_repo = WorkflowRepository(db)
                 workflow = await workflow_repo.get(UUID_TYPE(workflow_id))
                 if not workflow:
-                    return f"Error: Workflow '{workflow_id}' not found."
+                    return json.dumps({"error": f"Workflow '{workflow_id}' not found."})
                 form.workflow_id = workflow_id
                 updates_made.append("workflow_id")
 
@@ -743,30 +654,30 @@ async def update_form(
                 if launch_workflow_id == "":
                     # Clear launch workflow
                     form.launch_workflow_id = None
-                    updates_made.append("launch_workflow_id (cleared)")
+                    updates_made.append("launch_workflow_id")
                 else:
                     try:
                         UUID_TYPE(launch_workflow_id)
                     except ValueError:
-                        return f"Error: launch_workflow_id '{launch_workflow_id}' is not a valid UUID"
+                        return json.dumps({"error": f"launch_workflow_id '{launch_workflow_id}' is not a valid UUID"})
 
                     workflow_repo = WorkflowRepository(db)
                     launch_workflow = await workflow_repo.get(UUID_TYPE(launch_workflow_id))
                     if not launch_workflow:
-                        return f"Error: Launch workflow '{launch_workflow_id}' not found."
+                        return json.dumps({"error": f"Launch workflow '{launch_workflow_id}' not found."})
                     form.launch_workflow_id = launch_workflow_id
                     updates_made.append("launch_workflow_id")
 
             if is_active is not None:
                 form.is_active = is_active
-                updates_made.append(f"is_active ({is_active})")
+                updates_made.append("is_active")
 
             if fields is not None:
                 # Validate new fields
                 try:
                     FormSchema.model_validate({"fields": fields})
                 except Exception as e:
-                    return f"Error validating form schema: {str(e)}"
+                    return json.dumps({"error": f"Error validating form schema: {str(e)}"})
 
                 # Delete existing fields
                 await db.execute(
@@ -778,10 +689,10 @@ async def update_form(
                 for field in field_records:
                     db.add(field)
 
-                updates_made.append(f"fields ({len(fields)} fields)")
+                updates_made.append("fields")
 
             if not updates_made:
-                return "No updates provided. Specify at least one field to update."
+                return json.dumps({"error": "No updates provided. Specify at least one field to update."})
 
             form.updated_at = datetime.utcnow()
             await db.flush()
@@ -804,13 +715,14 @@ async def update_form(
 
             logger.info(f"Updated form {form.id}: {', '.join(updates_made)}")
 
-            return (
-                f"Form '{form.name}' updated successfully!\n\n"
-                f"**Form ID:** {form.id}\n"
-                f"**Updates:** {', '.join(updates_made)}\n"
-                + (f"**File Path:** {form.file_path}\n" if form.file_path else "")
-            )
+            return json.dumps({
+                "success": True,
+                "id": str(form.id),
+                "name": form.name,
+                "updates": updates_made,
+                "file_path": form.file_path,
+            })
 
     except Exception as e:
         logger.exception(f"Error updating form via MCP: {e}")
-        return f"Error updating form: {str(e)}"
+        return json.dumps({"error": f"Error updating form: {str(e)}"})

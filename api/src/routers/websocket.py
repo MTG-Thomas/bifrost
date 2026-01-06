@@ -753,6 +753,11 @@ async def _process_coding_mode_message(
                 if content:
                     accumulated_content += content
 
+                # Forward delta to WebSocket for real-time streaming
+                chunk["conversation_id"] = conversation_id
+                await websocket.send_json(chunk)
+                continue
+
             elif chunk_type == "tool_call" and chunk.get("tool_call"):
                 tool_call = chunk["tool_call"]
                 # Generate execution_id for tracking
@@ -823,6 +828,7 @@ async def _process_coding_mode_message(
                             "status": "success",
                         }
                     })
+                continue
 
             elif chunk_type == "ask_user_question":
                 # Forward ask_user_question to client for modal display

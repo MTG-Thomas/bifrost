@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
                 "type": "string",
                 "description": "Page ID (e.g., 'home', 'settings')",
             },
-            "is_draft": {
-                "type": "boolean",
-                "description": "Whether to get the draft version (default: True)",
+            "version_id": {
+                "type": "string",
+                "description": "Version UUID to get pages from. Defaults to draft version if not specified.",
             },
         },
         "required": ["app_id", "page_id"],
@@ -44,11 +44,12 @@ async def get_page(
     context: Any,
     app_id: str,
     page_id: str,
-    is_draft: bool = True,
+    version_id: str | None = None,
 ) -> str:
     """
     Get a page with its full component tree.
 
+    Uses version_id to fetch a specific version, or defaults to draft version.
     This is where the real token savings happen - only fetch the page you need.
     """
     from sqlalchemy import select
@@ -57,12 +58,20 @@ async def get_page(
     from src.models.orm.applications import Application
     from src.services.app_builder_service import AppBuilderService, tree_to_layout_json
 
-    logger.info(f"MCP get_page called with app={app_id}, page={page_id}")
+    logger.info(f"MCP get_page called with app={app_id}, page={page_id}, version_id={version_id}")
 
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
+
+    # Parse version_id if provided
+    version_uuid: UUID | None = None
+    if version_id:
+        try:
+            version_uuid = UUID(version_id)
+        except ValueError:
+            return json.dumps({"error": f"Invalid version_id format: {version_id}"})
 
     try:
         async with get_db_context() as db:
@@ -74,61 +83,42 @@ async def get_page(
                     (Application.organization_id.is_(None))
                 )
             app_result = await db.execute(app_query)
-            if not app_result.scalar_one_or_none():
-                return f"Application not found: {app_id}"
+            app = app_result.scalar_one_or_none()
+            if not app:
+                return json.dumps({"error": f"Application not found: {app_id}"})
+
+            # Use provided version_id or default to draft version
+            effective_version_id = version_uuid or app.draft_version_id
+            if not effective_version_id:
+                return json.dumps({"error": "Application has no draft version"})
 
             # Get page with components
             service = AppBuilderService(db)
-            page, tree = await service.get_page_with_components(app_uuid, page_id, is_draft)
+            page, tree = await service.get_page_with_components(
+                app_uuid, page_id, version_id=effective_version_id
+            )
 
             if not page:
-                return f"Page not found: {page_id}"
+                return json.dumps({"error": f"Page not found: {page_id}"})
 
-            lines = [f"# Page: {page.title}\n"]
-            lines.append(f"**Page ID:** {page.page_id}")
-            lines.append(f"**Path:** {page.path}")
-            lines.append(f"**Version:** {page.version}")
-            lines.append(f"**Mode:** {'Draft' if is_draft else 'Live'}")
-            lines.append("")
+            # Build structured response
+            result = {
+                "page_id": page.page_id,
+                "title": page.title,
+                "path": page.path,
+                "version_id": str(page.version_id) if page.version_id else None,
+                "variables": page.variables or {},
+                "launch_workflow_id": str(page.launch_workflow_id) if page.launch_workflow_id else None,
+                "launch_workflow_params": page.launch_workflow_params,
+                "launch_workflow_data_source_id": page.launch_workflow_data_source_id,
+                "layout": tree_to_layout_json(tree) if tree else {"type": "column", "children": []},
+            }
 
-            if page.data_sources:
-                lines.append("## Data Sources")
-                lines.append("```json")
-                lines.append(json.dumps(page.data_sources, indent=2))
-                lines.append("```")
-                lines.append("")
-
-            if page.variables:
-                lines.append("## Variables")
-                lines.append("```json")
-                lines.append(json.dumps(page.variables, indent=2))
-                lines.append("```")
-                lines.append("")
-
-            if page.launch_workflow_id:
-                lines.append(f"**Launch Workflow:** {page.launch_workflow_id}")
-                if page.launch_workflow_params:
-                    lines.append("**Launch Params:**")
-                    lines.append("```json")
-                    lines.append(json.dumps(page.launch_workflow_params, indent=2))
-                    lines.append("```")
-                lines.append("")
-
-            # Show component tree as JSON layout
-            if tree:
-                layout = tree_to_layout_json(tree)
-                lines.append("## Layout")
-                lines.append("```json")
-                lines.append(json.dumps(layout, indent=2))
-                lines.append("```")
-            else:
-                lines.append("*No components defined yet.*")
-
-            return "\n".join(lines)
+            return json.dumps(result)
 
     except Exception as e:
         logger.exception(f"Error getting page via MCP: {e}")
-        return f"Error getting page: {str(e)}"
+        return json.dumps({"error": f"Error getting page: {str(e)}"})
 
 
 @system_tool(
@@ -160,17 +150,17 @@ async def get_page(
                 "type": "object",
                 "description": "Optional layout structure with components",
             },
-            "data_sources": {
-                "type": "array",
-                "description": "Optional data sources for the page",
-            },
             "variables": {
                 "type": "object",
                 "description": "Optional page variables",
             },
             "launch_workflow_id": {
                 "type": "string",
-                "description": "Optional workflow ID to run on page load",
+                "description": "Workflow ID to run on page load. Data becomes available via {{ workflow.<data_source_id>.result }}",
+            },
+            "launch_workflow_data_source_id": {
+                "type": "string",
+                "description": "Key name for accessing launch workflow results (defaults to workflow function name). Access via {{ workflow.<this_value>.result }}",
             },
         },
         "required": ["app_id", "page_id", "title", "path"],
@@ -183,9 +173,9 @@ async def create_page(
     title: str,
     path: str,
     layout: dict[str, Any] | None = None,
-    data_sources: list[dict[str, Any]] | None = None,
     variables: dict[str, Any] | None = None,
     launch_workflow_id: str | None = None,
+    launch_workflow_data_source_id: str | None = None,
 ) -> str:
     """Create a new page with optional layout."""
     from sqlalchemy import select
@@ -199,7 +189,7 @@ async def create_page(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
@@ -210,17 +200,21 @@ async def create_page(
             app_result = await db.execute(app_query)
             app = app_result.scalar_one_or_none()
             if not app:
-                return f"Application not found: {app_id}"
+                return json.dumps({"error": f"Application not found: {app_id}"})
 
-            # Check for duplicate
+            # Ensure app has a draft version
+            if not app.draft_version_id:
+                return json.dumps({"error": "Application has no draft version. Please recreate the app."})
+
+            # Check for duplicate page in draft version
             existing_query = select(AppPage).where(
                 AppPage.application_id == app_uuid,
                 AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
+                AppPage.version_id == app.draft_version_id,
             )
             existing = await db.execute(existing_query)
             if existing.scalar_one_or_none():
-                return f"Error: Page '{page_id}' already exists"
+                return json.dumps({"error": f"Page '{page_id}' already exists"})
 
             # Build layout
             if layout is None:
@@ -232,7 +226,7 @@ async def create_page(
                 try:
                     wf_id = UUID(launch_workflow_id)
                 except ValueError:
-                    return f"Error: Invalid launch_workflow_id format: {launch_workflow_id}"
+                    return json.dumps({"error": f"Invalid launch_workflow_id format: {launch_workflow_id}"})
 
             service = AppBuilderService(db)
             new_page = await service.create_page_with_layout(
@@ -241,25 +235,25 @@ async def create_page(
                 title=title,
                 path=path,
                 layout=layout,
-                is_draft=True,
-                data_sources=data_sources or [],
+                version_id=app.draft_version_id,
                 variables=variables or {},
                 launch_workflow_id=wf_id,
+                launch_workflow_data_source_id=launch_workflow_data_source_id,
             )
 
-            app.draft_version += 1
             await db.commit()
 
-            return (
-                f"Page '{title}' created!\n\n"
-                f"**Page ID:** {new_page.page_id}\n"
-                f"**Path:** {new_page.path}\n"
-                f"**App Draft Version:** v{app.draft_version}"
-            )
+            return json.dumps({
+                "success": True,
+                "page_id": new_page.page_id,
+                "title": title,
+                "path": new_page.path,
+                "version_id": str(app.draft_version_id),
+            })
 
     except Exception as e:
         logger.exception(f"Error creating page via MCP: {e}")
-        return f"Error creating page: {str(e)}"
+        return json.dumps({"error": f"Error creating page: {str(e)}"})
 
 
 @system_tool(
@@ -291,10 +285,6 @@ async def create_page(
                 "type": "object",
                 "description": "New layout structure (replaces entire layout)",
             },
-            "data_sources": {
-                "type": "array",
-                "description": "New data sources for the page",
-            },
             "variables": {
                 "type": "object",
                 "description": "New page variables",
@@ -302,6 +292,10 @@ async def create_page(
             "launch_workflow_id": {
                 "type": "string",
                 "description": "Workflow ID to run on page load (empty string to clear)",
+            },
+            "launch_workflow_data_source_id": {
+                "type": "string",
+                "description": "Key name for accessing launch workflow results. Access via {{ workflow.<this_value>.result }}",
             },
         },
         "required": ["app_id", "page_id"],
@@ -314,9 +308,9 @@ async def update_page(
     title: str | None = None,
     path: str | None = None,
     layout: dict[str, Any] | None = None,
-    data_sources: list[dict[str, Any]] | None = None,
     variables: dict[str, Any] | None = None,
     launch_workflow_id: str | None = None,
+    launch_workflow_data_source_id: str | None = None,
 ) -> str:
     """Update a page's metadata or replace its layout."""
     from sqlalchemy import select
@@ -330,7 +324,7 @@ async def update_page(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
@@ -341,18 +335,22 @@ async def update_page(
             app_result = await db.execute(app_query)
             app = app_result.scalar_one_or_none()
             if not app:
-                return f"Application not found: {app_id}"
+                return json.dumps({"error": f"Application not found: {app_id}"})
 
-            # Get page
+            # Ensure app has a draft version
+            if not app.draft_version_id:
+                return json.dumps({"error": "Application has no draft version"})
+
+            # Get page from draft version
             page_query = select(AppPage).where(
                 AppPage.application_id == app_uuid,
                 AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
+                AppPage.version_id == app.draft_version_id,
             )
             page_result = await db.execute(page_query)
             page = page_result.scalar_one_or_none()
             if not page:
-                return f"Page not found: {page_id}"
+                return json.dumps({"error": f"Page not found: {page_id}"})
 
             updates_made = []
 
@@ -363,10 +361,6 @@ async def update_page(
             if path is not None:
                 page.path = path
                 updates_made.append("path")
-
-            if data_sources is not None:
-                page.data_sources = data_sources
-                updates_made.append("data_sources")
 
             if variables is not None:
                 page.variables = variables
@@ -379,8 +373,12 @@ async def update_page(
                     try:
                         page.launch_workflow_id = UUID(launch_workflow_id)
                     except ValueError:
-                        return f"Error: Invalid launch_workflow_id: {launch_workflow_id}"
+                        return json.dumps({"error": f"Invalid launch_workflow_id: {launch_workflow_id}"})
                 updates_made.append("launch_workflow_id")
+
+            if launch_workflow_data_source_id is not None:
+                page.launch_workflow_data_source_id = launch_workflow_data_source_id if launch_workflow_data_source_id else None
+                updates_made.append("launch_workflow_data_source_id")
 
             # Replace layout if provided (this is the heavy operation)
             if layout is not None:
@@ -389,22 +387,21 @@ async def update_page(
                 updates_made.append("layout")
 
             if not updates_made:
-                return "No updates specified"
+                return json.dumps({"error": "No updates specified"})
 
-            page.version += 1
-            app.draft_version += 1
             await db.commit()
 
-            return (
-                f"Page '{page.title}' updated!\n\n"
-                f"**Updates:** {', '.join(updates_made)}\n"
-                f"**Page Version:** {page.version}\n"
-                f"**App Draft Version:** v{app.draft_version}"
-            )
+            return json.dumps({
+                "success": True,
+                "page_id": page.page_id,
+                "title": page.title,
+                "updates": updates_made,
+                "version_id": str(app.draft_version_id),
+            })
 
     except Exception as e:
         logger.exception(f"Error updating page via MCP: {e}")
-        return f"Error updating page: {str(e)}"
+        return json.dumps({"error": f"Error updating page: {str(e)}"})
 
 
 @system_tool(
@@ -440,7 +437,7 @@ async def delete_page(context: Any, app_id: str, page_id: str) -> str:
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
@@ -451,26 +448,33 @@ async def delete_page(context: Any, app_id: str, page_id: str) -> str:
             app_result = await db.execute(app_query)
             app = app_result.scalar_one_or_none()
             if not app:
-                return f"Application not found: {app_id}"
+                return json.dumps({"error": f"Application not found: {app_id}"})
 
-            # Get page
+            # Ensure app has a draft version
+            if not app.draft_version_id:
+                return json.dumps({"error": "Application has no draft version"})
+
+            # Get page from draft version
             page_query = select(AppPage).where(
                 AppPage.application_id == app_uuid,
                 AppPage.page_id == page_id,
-                AppPage.is_draft == True,  # noqa: E712
+                AppPage.version_id == app.draft_version_id,
             )
             page_result = await db.execute(page_query)
             page = page_result.scalar_one_or_none()
             if not page:
-                return f"Page not found: {page_id}"
+                return json.dumps({"error": f"Page not found: {page_id}"})
 
             title = page.title
             await db.delete(page)
-            app.draft_version += 1
             await db.commit()
 
-            return f"Page '{title}' deleted!\n\n**App Draft Version:** v{app.draft_version}"
+            return json.dumps({
+                "success": True,
+                "page_id": page_id,
+                "title": title,
+            })
 
     except Exception as e:
         logger.exception(f"Error deleting page via MCP: {e}")
-        return f"Error deleting page: {str(e)}"
+        return json.dumps({"error": f"Error deleting page: {str(e)}"})

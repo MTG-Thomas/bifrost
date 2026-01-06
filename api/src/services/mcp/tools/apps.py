@@ -47,42 +47,39 @@ async def list_apps(context: Any) -> str:
             result = await db.execute(query.order_by(Application.name))
             apps = result.scalars().all()
 
-            if not apps:
-                return "No applications found."
-
-            lines = ["# Applications\n"]
+            apps_data = []
             for app in apps:
-                # Get page count
-                page_count_query = (
-                    select(func.count())
-                    .select_from(AppPage)
-                    .where(
-                        AppPage.application_id == app.id,
-                        AppPage.is_draft == True,  # noqa: E712
+                # Get page count from draft version
+                count = 0
+                if app.draft_version_id:
+                    page_count_query = (
+                        select(func.count())
+                        .select_from(AppPage)
+                        .where(
+                            AppPage.application_id == app.id,
+                            AppPage.version_id == app.draft_version_id,
+                        )
                     )
-                )
-                page_count = await db.execute(page_count_query)
-                count = page_count.scalar() or 0
+                    page_count = await db.execute(page_count_query)
+                    count = page_count.scalar() or 0
 
-                status = "Published" if app.live_version > 0 else "Draft only"
-                lines.append(f"## {app.name}")
-                lines.append(f"- **ID:** {app.id}")
-                lines.append(f"- **Slug:** {app.slug}")
-                lines.append(f"- **Status:** {status}")
-                lines.append(f"- **Pages:** {count}")
-                if app.live_version:
-                    lines.append(f"- **Live Version:** v{app.live_version}")
-                lines.append(f"- **Draft Version:** v{app.draft_version}")
-                if app.description:
-                    lines.append(f"- **Description:** {app.description}")
-                lines.append(f"- **URL:** /apps/{app.slug}")
-                lines.append("")
+                apps_data.append({
+                    "id": str(app.id),
+                    "name": app.name,
+                    "slug": app.slug,
+                    "description": app.description,
+                    "status": "published" if app.is_published else "draft",
+                    "page_count": count,
+                    "active_version_id": str(app.active_version_id) if app.active_version_id else None,
+                    "draft_version_id": str(app.draft_version_id) if app.draft_version_id else None,
+                    "url": f"/apps/{app.slug}",
+                })
 
-            return "\n".join(lines)
+            return json.dumps({"apps": apps_data, "count": len(apps_data)})
 
     except Exception as e:
         logger.exception(f"Error listing apps via MCP: {e}")
-        return f"Error listing apps: {str(e)}"
+        return json.dumps({"error": f"Error listing apps: {str(e)}"})
 
 
 @system_tool(
@@ -136,12 +133,12 @@ async def create_app(
     from sqlalchemy import select
 
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppPage, Application
+    from src.models.orm.applications import AppPage, AppVersion, Application
 
     logger.info(f"MCP create_app called with name={name}")
 
     if not name:
-        return "Error: name is required"
+        return json.dumps({"error": "name is required"})
 
     # Generate slug from name if not provided
     if not slug:
@@ -158,7 +155,7 @@ async def create_app(
 
             existing = await db.execute(query)
             if existing.scalar_one_or_none():
-                return f"Error: Application with slug '{slug}' already exists"
+                return json.dumps({"error": f"Application with slug '{slug}' already exists"})
 
             # Create application
             app = Application(
@@ -167,12 +164,20 @@ async def create_app(
                 slug=slug,
                 description=description,
                 organization_id=context.org_id,
-                draft_version=1,
-                live_version=0,
                 created_by=str(context.user_id),
             )
             db.add(app)
             await db.flush()
+
+            # Create initial draft version
+            draft_version = AppVersion(
+                application_id=app.id,
+            )
+            db.add(draft_version)
+            await db.flush()
+
+            # Link app to draft version
+            app.draft_version_id = draft_version.id
 
             page_count = 0
             if create_home_page:
@@ -183,8 +188,7 @@ async def create_app(
                     page_id="home",
                     title="Home",
                     path="/",
-                    is_draft=True,
-                    version=1,
+                    version_id=draft_version.id,
                     root_layout_type="column",
                     root_layout_config={"gap": 16, "padding": 24},
                     page_order=0,
@@ -194,18 +198,19 @@ async def create_app(
 
             await db.commit()
 
-            return (
-                f"Application '{name}' created!\n\n"
-                f"**ID:** {app.id}\n"
-                f"**Slug:** {app.slug}\n"
-                f"**Pages:** {page_count}\n"
-                f"**URL:** /apps/{app.slug}\n\n"
-                f"Use `create_page` to add pages or `get_page` to view the home page."
-            )
+            return json.dumps({
+                "success": True,
+                "id": str(app.id),
+                "name": app.name,
+                "slug": app.slug,
+                "draft_version_id": str(draft_version.id),
+                "page_count": page_count,
+                "url": f"/apps/{app.slug}",
+            })
 
     except Exception as e:
         logger.exception(f"Error creating app via MCP: {e}")
-        return f"Error creating app: {str(e)}"
+        return json.dumps({"error": f"Error creating app: {str(e)}"})
 
 
 @system_tool(
@@ -247,7 +252,7 @@ async def get_app(
     logger.info(f"MCP get_app called with id={app_id}, slug={app_slug}")
 
     if not app_id and not app_slug:
-        return "Error: Either app_id or app_slug is required"
+        return json.dumps({"error": "Either app_id or app_slug is required"})
 
     try:
         async with get_db_context() as db:
@@ -257,7 +262,7 @@ async def get_app(
                 try:
                     query = query.where(Application.id == UUID(app_id))
                 except ValueError:
-                    return f"Error: Invalid app_id format: {app_id}"
+                    return json.dumps({"error": f"Invalid app_id format: {app_id}"})
             else:
                 query = query.where(Application.slug == app_slug)
 
@@ -272,59 +277,46 @@ async def get_app(
             app = result.scalar_one_or_none()
 
             if not app:
-                return f"Application not found: {app_id or app_slug}"
+                return json.dumps({"error": f"Application not found: {app_id or app_slug}"})
 
-            lines = [f"# {app.name}\n"]
-            lines.append(f"**ID:** {app.id}")
-            lines.append(f"**Slug:** {app.slug}")
-            if app.description:
-                lines.append(f"**Description:** {app.description}")
-            lines.append(f"**Live Version:** v{app.live_version}")
-            lines.append(f"**Draft Version:** v{app.draft_version}")
-            lines.append(f"**URL:** /apps/{app.slug}")
-            lines.append("")
-
-            # Show navigation config if present
-            if app.navigation:
-                lines.append("## Navigation Config")
-                lines.append("```json")
-                lines.append(json.dumps(app.navigation, indent=2))
-                lines.append("```")
-                lines.append("")
-
-            # List pages (summaries only)
-            pages_query = (
-                select(AppPage)
-                .where(
-                    AppPage.application_id == app.id,
-                    AppPage.is_draft == True,  # noqa: E712
-                )
-                .order_by(AppPage.page_order)
-            )
-            pages_result = await db.execute(pages_query)
-            pages = pages_result.scalars().all()
-
-            if pages:
-                lines.append("## Pages\n")
-                lines.append("| Page ID | Title | Path | Has Workflow |")
-                lines.append("|---------|-------|------|--------------|")
-                for page in pages:
-                    has_wf = "Y" if page.launch_workflow_id else ""
-                    lines.append(
-                        f"| {page.page_id} | {page.title} | {page.path} | {has_wf} |"
+            # List pages from draft version (summaries only)
+            pages = []
+            if app.draft_version_id:
+                pages_query = (
+                    select(AppPage)
+                    .where(
+                        AppPage.application_id == app.id,
+                        AppPage.version_id == app.draft_version_id,
                     )
-                lines.append("")
-                lines.append(
-                    "*Use `get_page` to see component details for a specific page.*"
+                    .order_by(AppPage.page_order)
                 )
-            else:
-                lines.append("No pages defined yet.")
+                pages_result = await db.execute(pages_query)
+                pages = list(pages_result.scalars().all())
 
-            return "\n".join(lines)
+            return json.dumps({
+                "id": str(app.id),
+                "name": app.name,
+                "slug": app.slug,
+                "description": app.description,
+                "active_version_id": str(app.active_version_id) if app.active_version_id else None,
+                "draft_version_id": str(app.draft_version_id) if app.draft_version_id else None,
+                "url": f"/apps/{app.slug}",
+                "navigation": app.navigation,
+                "pages": [
+                    {
+                        "page_id": page.page_id,
+                        "title": page.title,
+                        "path": page.path,
+                        "has_launch_workflow": page.launch_workflow_id is not None,
+                        "version_id": str(page.version_id) if page.version_id else None,
+                    }
+                    for page in pages
+                ],
+            })
 
     except Exception as e:
         logger.exception(f"Error getting app via MCP: {e}")
-        return f"Error getting app: {str(e)}"
+        return json.dumps({"error": f"Error getting app: {str(e)}"})
 
 
 @system_tool(
@@ -371,12 +363,12 @@ async def update_app(
     logger.info(f"MCP update_app called with id={app_id}")
 
     if not app_id:
-        return "Error: app_id is required"
+        return json.dumps({"error": "app_id is required"})
 
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
@@ -390,7 +382,7 @@ async def update_app(
             app = result.scalar_one_or_none()
 
             if not app:
-                return f"Application not found: {app_id}"
+                return json.dumps({"error": f"Application not found: {app_id}"})
 
             updates_made = []
 
@@ -415,20 +407,20 @@ async def update_app(
                 updates_made.append("global_variables")
 
             if not updates_made:
-                return "No updates specified"
+                return json.dumps({"error": "No updates specified"})
 
-            app.draft_version += 1
             await db.commit()
 
-            return (
-                f"Application '{app.name}' updated!\n\n"
-                f"**Updates:** {', '.join(updates_made)}\n"
-                f"**Draft Version:** v{app.draft_version}"
-            )
+            return json.dumps({
+                "success": True,
+                "id": str(app.id),
+                "name": app.name,
+                "updates": updates_made,
+            })
 
     except Exception as e:
         logger.exception(f"Error updating app via MCP: {e}")
-        return f"Error updating app: {str(e)}"
+        return json.dumps({"error": f"Error updating app: {str(e)}"})
 
 
 @system_tool(
@@ -446,8 +438,11 @@ async def update_app(
     },
 )
 async def publish_app(context: Any, app_id: str) -> str:
-    """Publish all draft pages and components to live."""
-    from datetime import datetime
+    """Publish all draft pages and components to live.
+
+    Creates a new version by copying all pages from the draft version,
+    then sets this new version as the active (live) version.
+    """
     from uuid import UUID
 
     from sqlalchemy import select
@@ -461,7 +456,7 @@ async def publish_app(context: Any, app_id: str) -> str:
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return f"Error: Invalid app_id format: {app_id}"
+        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
 
     try:
         async with get_db_context() as db:
@@ -474,48 +469,40 @@ async def publish_app(context: Any, app_id: str) -> str:
             app = result.scalar_one_or_none()
 
             if not app:
-                return f"Application not found: {app_id}"
+                return json.dumps({"error": f"Application not found: {app_id}"})
 
-            # Get draft pages
+            if not app.draft_version_id:
+                return json.dumps({"error": "Application has no draft version to publish"})
+
+            # Count draft pages for reporting
             pages_query = select(AppPage).where(
                 AppPage.application_id == app_uuid,
-                AppPage.is_draft == True,  # noqa: E712
+                AppPage.version_id == app.draft_version_id,
             )
             pages_result = await db.execute(pages_query)
             draft_pages = list(pages_result.scalars().all())
 
             if not draft_pages:
-                return "Error: No draft pages to publish"
+                return json.dumps({"error": "No draft pages to publish"})
 
-            # Delete existing live pages
-            live_query = select(AppPage).where(
-                AppPage.application_id == app_uuid,
-                AppPage.is_draft == False,  # noqa: E712
-            )
-            live_result = await db.execute(live_query)
-            for live_page in live_result.scalars().all():
-                await db.delete(live_page)
-
-            # Copy each draft page to live
+            # Use versioning-based publish (copies draft to new version)
             service = AppBuilderService(db)
-            for draft_page in draft_pages:
-                await service.copy_page_to_live(draft_page)
-
-            # Update app version
-            app.live_version = app.draft_version
-            app.published_at = datetime.utcnow()
+            new_version = await service.publish_with_versioning(app)
 
             await db.commit()
 
-            return (
-                f"Application '{app.name}' published!\n\n"
-                f"**Live Version:** v{app.live_version}\n"
-                f"**Pages Published:** {len(draft_pages)}"
-            )
+            return json.dumps({
+                "success": True,
+                "id": str(app.id),
+                "name": app.name,
+                "active_version_id": str(new_version.id),
+                "draft_version_id": str(app.draft_version_id),
+                "pages_published": len(draft_pages),
+            })
 
     except Exception as e:
         logger.exception(f"Error publishing app via MCP: {e}")
-        return f"Error publishing app: {str(e)}"
+        return json.dumps({"error": f"Error publishing app: {str(e)}"})
 
 
 @system_tool(
@@ -559,37 +546,21 @@ Apps are managed at three levels with granular MCP tools for 99% token savings o
 **Workflow**: Use `get_app` to see pages, then `get_page` for the page you need,
 then component tools for granular edits. Avoid fetching full app definitions.
 
+**Note:** Each create/update operation validates automatically. There is no separate validate tool.
+
 ---
 
-## Application Definition
+## Page Structure
 
-```json
-{
-  "name": "My Application",
-  "description": "Application description",
-  "version": "1.0.0",
-  "pages": [...],
-  "navigation": {...},
-  "permissions": {...}
-}
-```
-
-## Page Definition
-
-Each page has a path, title, layout, and optional data sources:
+Each page has a path, title, layout, and optional launch workflow for data loading:
 
 ```json
 {
   "id": "dashboard",
   "title": "Dashboard",
   "path": "/",
-  "dataSources": [
-    {
-      "id": "stats",
-      "type": "workflow",
-      "workflowId": "get_dashboard_stats"
-    }
-  ],
+  "launchWorkflowId": "get_dashboard_stats",
+  "launchWorkflowDataSourceId": "stats",
   "layout": {
     "type": "column",
     "gap": 16,
@@ -598,6 +569,25 @@ Each page has a path, title, layout, and optional data sources:
 }
 ```
 
+## Data Loading with Launch Workflows
+
+Pages load data through launch workflows, not data sources. This is the standard pattern:
+
+1. Set `launchWorkflowId` to a workflow UUID - executes when the page mounts
+2. Set `launchWorkflowDataSourceId` to a key name (e.g., "stats", "customers")
+3. Access results via `{{ workflow.<dataSourceId>.result }}`
+
+**Example:**
+```json
+{
+  "launchWorkflowId": "abc-123-workflow-uuid",
+  "launchWorkflowDataSourceId": "customers"
+}
+```
+Then use `{{ workflow.customers.result }}` to access the data.
+
+**Important:** All data loading now goes through workflows, accessed via `{{ workflow.<key>.result }}`
+
 ## Layout Types
 
 - **column**: Vertical flex container (children stack vertically)
@@ -605,28 +595,41 @@ Each page has a path, title, layout, and optional data sources:
 - **grid**: CSS grid with configurable columns
 
 Layout properties:
-- `gap`: Space between children (pixels)
-- `padding`: Internal padding (pixels)
+- `gap`: Space between children (pixels). Defaults: column=16, row=8, grid=16. Set to 0 for no gap.
+- `padding`: Internal padding (pixels). Default: 0.
 - `align`: Cross-axis alignment (start, center, end, stretch)
 - `justify`: Main-axis alignment (start, center, end, between, around)
 - `columns`: Number of grid columns (grid type only)
-- `autoSize`: When true, children keep natural size (see below)
+- `autoSize`: Row child sizing (see below)
+- `maxWidth`: Constrains layout width - sm (384px), md (448px), lg (512px), xl (576px), 2xl (672px), full/none (no limit)
 
-## Layout autoSize Property
+## Row Layout Behavior
 
-Row layouts have an `autoSize` property that controls how children are sized:
-- `false` (default) - Children expand equally to fill available space (flex-1)
-- `true` - Children keep their natural size
+Row children keep their natural size by default (standard CSS flexbox). This means:
+- Buttons align properly with `justify: "between"` or `justify: "end"`
+- Elements don't stretch unexpectedly
+- Standard CSS patterns work as expected
 
-Use `autoSize: true` when you need precise control over button/element positioning.
+Set `autoSize: false` when you want children to expand equally to fill space (flex-1 behavior).
+
+**Example: Page header with action button**
+```json
+{
+  "type": "row",
+  "justify": "between",
+  "align": "center",
+  "children": [
+    {"id": "title", "type": "heading", "props": {"text": "Customers", "level": 1}},
+    {"id": "add-btn", "type": "button", "props": {"label": "Add Customer"}}
+  ]
+}
+```
 
 **Example: Right-aligned button group**
 ```json
 {
   "type": "row",
   "justify": "end",
-  "autoSize": true,
-  "gap": 8,
   "children": [
     {"id": "cancel", "type": "button", "props": {"label": "Cancel", "variant": "outline"}},
     {"id": "save", "type": "button", "props": {"label": "Save"}}
@@ -634,24 +637,48 @@ Use `autoSize: true` when you need precise control over button/element positioni
 }
 ```
 
-**Example: Left and right button groups**
+**Example: Equal-width columns (use autoSize: false)**
 ```json
 {
   "type": "row",
-  "justify": "between",
-  "autoSize": true,
+  "autoSize": false,
   "children": [
-    {"id": "back", "type": "button", "props": {"label": "Back", "variant": "ghost"}},
-    {
-      "type": "row",
-      "autoSize": true,
-      "gap": 8,
-      "children": [
-        {"id": "cancel", "type": "button", "props": {"label": "Cancel", "variant": "outline"}},
-        {"id": "next", "type": "button", "props": {"label": "Next"}}
-      ]
-    }
+    {"id": "col1", "type": "card", "props": {"title": "Column 1", "children": []}},
+    {"id": "col2", "type": "card", "props": {"title": "Column 2", "children": []}}
   ]
+}
+```
+
+## Form Page Layouts (IMPORTANT)
+
+For pages containing forms (create/edit pages), ALWAYS use `maxWidth: "lg"` on the root column layout.
+This prevents forms from stretching uncomfortably wide on large screens.
+
+**Example: Create/Edit page layout**
+```json
+{
+  "id": "create",
+  "title": "New Customer",
+  "path": "/new",
+  "layout": {
+    "type": "column",
+    "maxWidth": "lg",
+    "gap": 16,
+    "padding": 24,
+    "children": [
+      {"id": "h1", "type": "heading", "props": {"text": "New Customer", "level": 1}},
+      {"id": "form-card", "type": "card", "props": {
+        "children": [
+          {"id": "name", "type": "text-input", "props": {"fieldId": "name", "label": "Company Name", "required": true}},
+          {"id": "email", "type": "text-input", "props": {"fieldId": "email", "label": "Email"}},
+          {"id": "actions", "type": "row", "props": {"justify": "end", "gap": 8, "children": [
+            {"id": "cancel", "type": "button", "props": {"label": "Cancel", "variant": "outline", "actionType": "navigate", "navigateTo": "/"}},
+            {"id": "save", "type": "button", "props": {"label": "Save", "actionType": "submit", "workflowId": "create_customer"}}
+          ]}}
+        ]
+      }}
+    ]
+  }
 }
 ```
 
@@ -721,7 +748,7 @@ Variants: default, secondary, destructive, outline
   "loadingWorkflows": ["workflow-uuid"],
   "props": {
     "title": "Total Users",
-    "value": "{{ data.stats.userCount }}",
+    "value": "{{ workflow.stats.result.userCount }}",
     "icon": "users",
     "trend": {"value": "+12%", "direction": "up"}
   }
@@ -731,7 +758,7 @@ Variants: default, secondary, destructive, outline
 
 **image** - Images with sizing
 ```json
-{"id": "img1", "type": "image", "props": {"src": "{{ data.user.avatar }}", "alt": "Avatar", "maxWidth": 100}}
+{"id": "img1", "type": "image", "props": {"src": "{{ workflow.profile.result.avatar }}", "alt": "Avatar", "maxWidth": 100}}
 ```
 
 **card** - Container with optional header
@@ -865,26 +892,28 @@ Use `{{ }}` syntax for dynamic values:
 - `{{ user.role }}` - Current user's role
 - `{{ variables.selectedId }}` - Page variable
 - `{{ field.customerName }}` - Form field value
-- `{{ data.customers }}` - Data from data source
-- `{{ workflow.result.id }}` - Last workflow result
+- `{{ workflow.<dataSourceId>.result }}` - Workflow result data (primary data access pattern)
+- `{{ workflow.<dataSourceId>.result.id }}` - Access nested properties from workflow result
+- `{{ workflow.lastResult }}` - Result from most recently executed workflow
 - `{{ row.id }}` - Current row in table actions
 
 Comparisons: `{{ user.role == 'admin' }}`
 Logic: `{{ isActive && hasPermission }}`
 
-## Data Sources
+## Data Sources (Legacy)
+
+**Note:** The `dataSources` array is deprecated. Use launch workflows instead:
 
 ```json
 {
-  "dataSources": [
-    {"id": "customers", "type": "workflow", "workflowId": "get_customers"},
-    {"id": "categories", "type": "data-provider", "dataProviderId": "get_categories"},
-    {"id": "config", "type": "static", "data": {"theme": "dark"}}
-  ]
+  "launchWorkflowId": "workflow-uuid",
+  "launchWorkflowDataSourceId": "customers"
 }
 ```
 
-Types: workflow, data-provider, api, static, computed
+Access data via `{{ workflow.customers.result }}` instead of `{{ data.customers }}`.
+
+For backwards compatibility, the old pattern still works but should not be used for new pages.
 
 ## Navigation
 
@@ -948,9 +977,8 @@ The component shows a type-specific skeleton when any of the specified workflows
       "id": "list",
       "title": "Customers",
       "path": "/",
-      "dataSources": [
-        {"id": "customers", "type": "workflow", "workflowId": "list_customers"}
-      ],
+      "launchWorkflowId": "list_customers_workflow_uuid",
+      "launchWorkflowDataSourceId": "customers",
       "layout": {
         "type": "column",
         "gap": 16,
@@ -983,144 +1011,9 @@ The component shows a type-specific skeleton when any of the specified workflows
   }
 }
 ```
+
+**Key points:**
+- Use `launchWorkflowId` + `launchWorkflowDataSourceId` instead of `dataSources`
+- Access workflow results via `{{ workflow.customers.result }}`
+- The `dataSource` prop in data-table references the `launchWorkflowDataSourceId`
 """
-
-
-@system_tool(
-    id="validate_app_schema",
-    name="Validate App Schema",
-    description="Validate an App Builder application JSON structure before saving.",
-    category=ToolCategory.APP_BUILDER,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "app_definition": {
-                "type": "string",
-                "description": "JSON string of the application definition to validate",
-            },
-        },
-        "required": ["app_definition"],
-    },
-)
-async def validate_app_schema(context: Any, app_definition: str) -> str:
-    """Validate an application JSON structure."""
-    try:
-        app_data = json.loads(app_definition)
-    except json.JSONDecodeError as e:
-        return f"Invalid JSON: {str(e)}"
-
-    errors: list[str] = []
-
-    # Check required top-level fields
-    if "name" not in app_data:
-        errors.append("Missing required field: 'name'")
-
-    if "pages" not in app_data:
-        errors.append("Missing required field: 'pages'")
-    elif not isinstance(app_data.get("pages"), list):
-        errors.append("'pages' must be an array")
-    elif len(app_data.get("pages", [])) == 0:
-        errors.append("'pages' must have at least one page")
-
-    # Validate each page
-    valid_layout_types = {"row", "column", "grid"}
-    valid_component_types = {
-        "heading",
-        "text",
-        "html",
-        "card",
-        "divider",
-        "spacer",
-        "button",
-        "stat-card",
-        "image",
-        "badge",
-        "progress",
-        "data-table",
-        "tabs",
-        "file-viewer",
-        "modal",
-        "text-input",
-        "number-input",
-        "select",
-        "checkbox",
-        "form-embed",
-        "form-group",
-    }
-
-    def validate_layout(layout: dict[str, Any], path: str) -> None:
-        """Recursively validate layout structure."""
-        if not isinstance(layout, dict):
-            errors.append(f"{path}: layout must be an object")
-            return
-
-        layout_type = layout.get("type")
-        if (
-            layout_type not in valid_layout_types
-            and layout_type not in valid_component_types
-        ):
-            errors.append(f"{path}: invalid type '{layout_type}'")
-            return
-
-        if layout_type in valid_layout_types:
-            # It's a layout container
-            children = layout.get("children", [])
-            if not isinstance(children, list):
-                errors.append(f"{path}: 'children' must be an array")
-            else:
-                for i, child in enumerate(children):
-                    validate_layout(child, f"{path}.children[{i}]")
-        else:
-            # It's a component
-            if "props" not in layout and layout_type not in {"divider", "spacer"}:
-                errors.append(f"{path}: component missing 'props'")
-
-    pages = app_data.get("pages", [])
-    if isinstance(pages, list):
-        for i, page in enumerate(pages):
-            if not isinstance(page, dict):
-                errors.append(f"pages[{i}]: must be an object")
-                continue
-
-            if "id" not in page:
-                errors.append(f"pages[{i}]: missing 'id'")
-            if "title" not in page:
-                errors.append(f"pages[{i}]: missing 'title'")
-            if "path" not in page:
-                errors.append(f"pages[{i}]: missing 'path'")
-            if "layout" not in page:
-                errors.append(f"pages[{i}]: missing 'layout'")
-            elif isinstance(page.get("layout"), dict):
-                validate_layout(page["layout"], f"pages[{i}].layout")
-
-            # Validate data sources if present
-            data_sources = page.get("dataSources", [])
-            if not isinstance(data_sources, list):
-                errors.append(f"pages[{i}].dataSources: must be an array")
-            else:
-                valid_ds_types = {
-                    "workflow",
-                    "data-provider",
-                    "api",
-                    "static",
-                    "computed",
-                }
-                for j, ds in enumerate(data_sources):
-                    if not isinstance(ds, dict):
-                        errors.append(f"pages[{i}].dataSources[{j}]: must be an object")
-                        continue
-                    if "id" not in ds:
-                        errors.append(f"pages[{i}].dataSources[{j}]: missing 'id'")
-                    if "type" not in ds:
-                        errors.append(f"pages[{i}].dataSources[{j}]: missing 'type'")
-                    elif ds["type"] not in valid_ds_types:
-                        errors.append(
-                            f"pages[{i}].dataSources[{j}]: invalid type '{ds['type']}'. "
-                            f"Valid: {', '.join(sorted(valid_ds_types))}"
-                        )
-
-    if errors:
-        return "Validation errors:\n" + "\n".join(f"- {e}" for e in errors)
-
-    return "Application schema is valid!"

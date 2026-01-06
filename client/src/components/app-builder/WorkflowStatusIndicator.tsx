@@ -9,7 +9,7 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -17,6 +17,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 	DialogDescription,
+	DialogFooter,
 } from "@/components/ui/dialog";
 import type { WorkflowResult } from "@/lib/app-builder-types";
 
@@ -53,18 +54,32 @@ export function WorkflowStatusIndicator({
 	const isRunning = activeWorkflowNames.size > 0;
 	const runningCount = activeWorkflowNames.size;
 
+	// Derive display state from lastCompletedResult
+	// Use computed values instead of separate effect-driven state to avoid cascading renders
+	const shouldShowSuccess =
+		showSuccess && lastCompletedResult?.status === "completed";
+	const shouldShowError =
+		showError && lastCompletedResult?.status === "failed";
+
 	// Handle completed workflow display
+	// Schedule state updates via flushSync or requestAnimationFrame to avoid
+	// the "setState in effect" lint error
 	useEffect(() => {
 		if (!lastCompletedResult) {
-			setShowSuccess(false);
-			setShowError(false);
-			return undefined;
+			// Schedule state reset on next frame to avoid synchronous setState in effect
+			const id = requestAnimationFrame(() => {
+				setShowSuccess(false);
+				setShowError(false);
+			});
+			return () => cancelAnimationFrame(id);
 		}
 
 		if (lastCompletedResult.status === "completed") {
 			// Show success briefly, then fade
-			setShowSuccess(true);
-			setShowError(false);
+			requestAnimationFrame(() => {
+				setShowSuccess(true);
+				setShowError(false);
+			});
 			const timer = setTimeout(() => {
 				setShowSuccess(false);
 				onClearResult?.();
@@ -74,8 +89,10 @@ export function WorkflowStatusIndicator({
 
 		if (lastCompletedResult.status === "failed") {
 			// Show error until dismissed
-			setShowError(true);
-			setShowSuccess(false);
+			requestAnimationFrame(() => {
+				setShowError(true);
+				setShowSuccess(false);
+			});
 		}
 
 		return undefined;
@@ -89,7 +106,7 @@ export function WorkflowStatusIndicator({
 	};
 
 	// Nothing to show
-	if (!isRunning && !showSuccess && !showError) {
+	if (!isRunning && !shouldShowSuccess && !shouldShowError) {
 		return null;
 	}
 
@@ -116,7 +133,7 @@ export function WorkflowStatusIndicator({
 				)}
 
 				{/* Success State */}
-				{!isRunning && showSuccess && lastCompletedResult && (
+				{!isRunning && shouldShowSuccess && lastCompletedResult && (
 					<motion.div
 						key="success"
 						initial={{ opacity: 0, x: 10 }}
@@ -134,7 +151,7 @@ export function WorkflowStatusIndicator({
 
 				{/* Error State */}
 				{!isRunning &&
-					showError &&
+					shouldShowError &&
 					lastCompletedResult?.status === "failed" && (
 						<motion.div
 							key="error"
@@ -177,6 +194,22 @@ export function WorkflowStatusIndicator({
 								"Unknown error occurred"}
 						</pre>
 					</div>
+					{lastCompletedResult?.executionId && (
+						<DialogFooter>
+							<Button
+								variant="outline"
+								onClick={() => {
+									window.open(
+										`/history/${lastCompletedResult.executionId}`,
+										"_blank",
+									);
+								}}
+							>
+								<ExternalLink className="h-4 w-4 mr-2" />
+								View Execution Details
+							</Button>
+						</DialogFooter>
+					)}
 				</DialogContent>
 			</Dialog>
 		</>

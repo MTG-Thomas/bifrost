@@ -66,7 +66,11 @@ import type {
 	ComponentType,
 	LayoutType,
 } from "@/lib/app-builder-types";
-import { isLayoutContainer } from "@/lib/app-builder-types";
+import {
+	isLayoutContainer,
+	canHaveChildren,
+	getElementChildren,
+} from "@/lib/app-builder-types";
 import {
 	getComponentLabel,
 	getComponentInfo,
@@ -241,6 +245,8 @@ function TreeItem({
 	>(null);
 
 	const isContainer = isLayoutContainer(element);
+	const hasChildElements = canHaveChildren(element);
+	const children = getElementChildren(element);
 	const isSelected = elementId === selectedId;
 	const isExpanded = expandedIds.has(elementId);
 	const elementType = isContainer
@@ -378,8 +384,8 @@ function TreeItem({
 						{/* Drag handle */}
 						<GripVertical className="h-3 w-3 opacity-0 group-hover:opacity-50 cursor-grab flex-shrink-0" />
 
-						{/* Expand/collapse for containers */}
-						{isContainer ? (
+						{/* Expand/collapse for elements with children */}
+						{hasChildElements ? (
 							<button
 								onClick={handleExpandClick}
 								className="flex-shrink-0 p-0.5 hover:bg-black/10 dark:hover:bg-white/10"
@@ -555,10 +561,10 @@ function TreeItem({
 			</ContextMenu>
 
 			{/* Render children if expanded */}
-			{isContainer && isExpanded && (
+			{hasChildElements && isExpanded && (
 				<div>
-					{(element as LayoutContainer).children.map((child, i) => {
-						const childId = getChildId(child, elementId, i);
+					{children.map((child, i) => {
+						const childId = getChildId(child);
 						return (
 							<TreeItem
 								key={childId}
@@ -580,7 +586,7 @@ function TreeItem({
 					})}
 
 					{/* Empty container message */}
-					{(element as LayoutContainer).children.length === 0 && (
+					{children.length === 0 && (
 						<div
 							className="text-xs text-muted-foreground italic py-2"
 							style={{
@@ -614,12 +620,16 @@ export function StructureTree({
 }: StructureTreeProps) {
 	// onSelectPage is reserved for future page-switching in the tree
 	void _onSelectPage;
-	// Track which nodes are expanded
-	const [expandedIds, setExpandedIds] = useState<Set<string>>(
-		new Set(["root"]),
-	);
 
 	const currentPage = pages.find((p) => p.id === selectedPageId);
+
+	// Track which nodes are expanded - initialize with root layout ID
+	const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
+		if (currentPage?.layout?.id) {
+			return new Set([currentPage.layout.id]);
+		}
+		return new Set();
+	});
 
 	const handleToggleExpand = useCallback((id: string) => {
 		setExpandedIds((prev) => {
@@ -653,17 +663,20 @@ export function StructureTree({
 		);
 	}
 
+	// Get the root layout ID
+	const rootLayoutId = currentPage.layout.id;
+
 	return (
 		<div className={cn("overflow-auto", className)}>
 			{/* Page header */}
 			<div
 				className={cn(
 					"flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors border-b",
-					selectedComponentId === "root"
+					selectedComponentId === rootLayoutId
 						? "bg-primary text-primary-foreground"
 						: "hover:bg-muted",
 				)}
-				onClick={() => onSelectComponent("root")}
+				onClick={() => onSelectComponent(rootLayoutId)}
 			>
 				<FileText className="h-4 w-4 shrink-0" />
 				<span className="text-sm font-medium truncate">
@@ -672,7 +685,7 @@ export function StructureTree({
 				<span
 					className={cn(
 						"text-xs ml-auto truncate",
-						selectedComponentId === "root"
+						selectedComponentId === rootLayoutId
 							? "text-primary-foreground/70"
 							: "text-muted-foreground",
 					)}
@@ -685,7 +698,7 @@ export function StructureTree({
 			<div>
 				<TreeItem
 					element={currentPage.layout}
-					elementId="root"
+					elementId={rootLayoutId}
 					parentId=""
 					index={0}
 					depth={0}

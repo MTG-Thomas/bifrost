@@ -48,18 +48,19 @@ This distinction matters because end users can't fix system bugs, but they WILL 
 ## MCP Tools Reference
 
 ### Discovery Tools
-- `list_workflows` - List all registered workflows
+- `list_workflows` - List all registered workflows (filter by query, category, or type)
 - `get_workflow` - Get detailed metadata for a specific workflow
 - `get_workflow_schema` - Documentation about workflow decorators and structure
 - `list_integrations` - Show available integrations and auth status
 - `list_forms` - List all forms with URLs
 - `get_form_schema` - Documentation about form structure and field types
-- `get_data_provider_schema` - Documentation about data provider decorators
-- `list_data_providers` - List available data providers
+- `get_data_provider_schema` - Documentation about data provider patterns
 - `list_apps` - List App Builder applications
-- `get_app` - Get detailed app definition
+- `get_app` - Get app metadata and page list (NOT full components)
 - `get_app_schema` - Documentation about app structure and components
 - `search_knowledge` - Search the Bifrost knowledge base
+
+**Note:** Data providers are workflows with `type='data_provider'`. Use `list_workflows` to find them.
 
 ### Creation Tools (Auto-Validating)
 - `create_workflow` - Create workflow, tool, or data provider (validates automatically)
@@ -94,36 +95,44 @@ See **App Builder Tool Hierarchy** section below for granular app management too
 ## Development Process
 
 1. **Read the schema** - Use appropriate schema tool to understand structure
-2. **Explore patterns** - Use `list_files` and `read_file` to see existing examples
+2. **Explore patterns** - Use `list_workflows` + `get_workflow` for workflow metadata, or `execute_workflow` to test behavior. File tools (`list_files`, `read_file`) are for YOUR workspace files, not for reading existing platform workflows.
 3. **Check dependencies** - Use `list_integrations` to verify integrations exist
 4. **Create the artifact** - Use `create_workflow`, `create_form`, or app tools (auto-validates)
 5. **Test** - Use `execute_workflow` for workflows/tools, verify apps render correctly
+
+**Important:** The `path` field in workflow metadata (e.g., `features/crm/workflows/clients.py`) is informational only - it shows where the workflow was registered from. Workflow source code is NOT accessible via MCP file tools.
 
 **Creation tools auto-validate. Always test execution before declaring something ready.**
 
 ## App Builder Tool Hierarchy
 
-Apps are managed at three levels:
+Apps are built in pieces, NOT as a single JSON blob. This enables precise, targeted changes.
 
 ### App Level
-- `list_apps` - List all apps
-- `get_app` - Get app metadata and structure
-- `update_app` - Update app settings
-- `publish_app` - Publish app for users
+- `list_apps` - List all apps with page counts
+- `create_app` - Create app metadata (name, description)
+- `get_app` - Get app metadata and page list (NOT full components)
+- `update_app` - Update app settings (name, description, navigation)
+- `publish_app` - Publish all draft pages to live (only when user requests)
 
 ### Page Level
 - `create_page` - Add a new page to an app
-- `get_page` - Get page definition
+- `get_page` - Get page with full component tree
 - `update_page` - Update page settings/layout
 - `delete_page` - Remove a page
 
 ### Component Level
-- `list_components` - List components on a page
+- `list_components` - List components on a page (summaries only)
 - `create_component` - Add component to a page
-- `get_component` - Get component details
+- `get_component` - Get component with full props
 - `update_component` - Update component props/settings
 - `delete_component` - Remove component
 - `move_component` - Reposition component
+
+### Draft Mode
+Apps stay in draft until explicitly published. Preview at `/apps/{slug}?draft=true`.
+
+**DO NOT publish automatically** - let users preview and test first.
 
 ## App Layout Properties
 
@@ -133,21 +142,50 @@ All components support a `width` property:
 - `"full"` - Full width of container
 - `"1/2"`, `"1/3"`, `"1/4"`, `"2/3"`, `"3/4"` - Fractional widths
 
-### Layout autoSize
-Row layouts have an `autoSize` property:
-- `false` (default) - Children expand equally to fill space (flex-1)
-- `true` - Children keep their natural size
+### Layout Gap Defaults
+Layouts have sensible gap defaults (set `gap: 0` explicitly for no gap):
+- `column`: 16px default
+- `row`: 8px default
+- `grid`: 16px default
 
-Example for right-aligned button group:
+### Layout maxWidth
+Constrains the max-width of layout containers. Use for form pages to prevent stretching:
+- `"sm"` - 384px
+- `"md"` - 448px
+- `"lg"` - 512px (recommended for forms)
+- `"xl"` - 576px
+- `"2xl"` - 672px
+- `"full"` / `"none"` - no constraint (default)
+
+**IMPORTANT:** For pages with forms (create/edit pages), ALWAYS use `maxWidth: "lg"` on the root column layout.
+
+### Row Layout Behavior
+Row children keep their natural size by default (standard CSS flexbox). This means buttons align properly with `justify: "between"` or `justify: "end"`.
+
+Set `autoSize: false` when you want children to expand equally (flex-1 behavior).
+
+Example for page header with action button:
 ```json
 {
   "type": "row",
-  "justify": "end",
-  "autoSize": true,
-  "gap": 8,
+  "justify": "between",
+  "align": "center",
   "children": [
-    {"type": "button", "props": {"label": "Cancel", "variant": "outline"}},
-    {"type": "button", "props": {"label": "Save"}}
+    {"type": "heading", "props": {"text": "Customers", "level": 1}},
+    {"type": "button", "props": {"label": "Add Customer"}}
+  ]
+}
+```
+
+Example for form page layout:
+```json
+{
+  "type": "column",
+  "maxWidth": "lg",
+  "gap": 16,
+  "children": [
+    {"type": "heading", "props": {"text": "New Customer", "level": 1}},
+    {"type": "card", "props": {"children": [/* form fields */]}}
   ]
 }
 ```
@@ -156,22 +194,73 @@ Example for right-aligned button group:
 
 Before declaring any artifact complete, you MUST test it:
 
-### Workflow/Tool/Data Provider Testing
+### Workflow/Tool Testing
 1. Create via `create_workflow` (auto-validates)
-2. Verify it appears in list tools (`list_workflows` or `list_data_providers`)
+2. Verify it appears in `list_workflows`
 3. Execute with sample data via `execute_workflow`
 4. Verify the result matches expectations
+
+### Data Provider Testing
+1. Create via `create_workflow` with type='data_provider' (auto-validates)
+2. Verify it appears in `list_workflows` with type='data_provider'
+3. Execute via `execute_workflow`
+4. Verify output is `[{"label": "...", "value": "..."}]` format
 
 ### Form Testing
 1. Create via `create_form` (auto-validates)
 2. Verify referenced `workflow_id` exists and works
 
+### App Building (Granular Approach)
+Apps are built in pieces, NOT as a single JSON blob:
+1. `create_app` - Create app metadata (name, description)
+2. `create_page` - Add pages one at a time (auto-validates)
+3. `create_component` - Add components to pages (auto-validates)
+4. `update_component` - Modify individual components
+5. Preview and test in draft mode at `/apps/{slug}?draft=true`
+6. Only `publish_app` when user explicitly requests it
+
+**DO NOT publish automatically** - let users preview and test first.
+
 ### App Testing
-1. Use granular tools (`create_page`, `create_component`)
-2. Verify all `loadingWorkflows` exist and work
-3. Test component layout (use `width` and `autoSize` for proper alignment)
+1. Verify all `launchWorkflowId` workflows exist and execute correctly
+2. Test component layout (defaults should work for most cases)
+3. Test in draft mode before publishing
 
 DO NOT report success until all applicable tests pass.
+
+## App Builder Data Loading
+
+Pages load data via workflows, accessed through expressions:
+
+- **`launchWorkflowId`**: Workflow to execute on page mount
+- **`launchWorkflowDataSourceId`**: Key name for the result (defaults to workflow name)
+- **Access data**: `{{ workflow.<dataSourceId>.result }}` in expressions
+- **DataTable**: Use `dataSource` prop matching the `launchWorkflowDataSourceId`
+
+### Example: List Page with DataTable
+
+```json
+{
+  "launchWorkflowId": "list_clients",
+  "launchWorkflowDataSourceId": "clientsList",
+  "layout": {
+    "type": "column",
+    "children": [{
+      "type": "data-table",
+      "props": {
+        "dataSource": "clientsList",
+        "dataPath": "clients",
+        "columns": [
+          {"key": "name", "label": "Name"},
+          {"key": "email", "label": "Email"}
+        ]
+      }
+    }]
+  }
+}
+```
+
+The workflow result is stored under `workflow.clientsList.result`, and the DataTable reads from `workflow.clientsList.result.clients`.
 
 ## Decorators and IDs
 

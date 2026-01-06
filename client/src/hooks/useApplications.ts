@@ -189,7 +189,7 @@ export function usePublishApplication() {
 	const queryClient = useQueryClient();
 
 	return $api.useMutation("post", "/api/applications/{app_id}/publish", {
-		onSuccess: (data) => {
+		onSuccess: () => {
 			queryClient.invalidateQueries({
 				queryKey: ["get", "/api/applications"],
 			});
@@ -200,9 +200,7 @@ export function usePublishApplication() {
 			queryClient.invalidateQueries({
 				queryKey: ["get", "/api/applications/{app_id}/pages"],
 			});
-			toast.success("Application published", {
-				description: `Application is now live at version ${data.live_version}`,
-			});
+			toast.success("Application published");
 		},
 		onError: (error) => {
 			toast.error("Failed to publish application", {
@@ -218,10 +216,13 @@ export function usePublishApplication() {
 
 /**
  * Hook to fetch all pages for an application
+ * @param appId - Application ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export function useAppPages(
 	appId: string | undefined,
-	isDraft = true,
+	versionId: string | null | undefined,
 	scope?: string,
 ) {
 	return $api.useQuery(
@@ -231,22 +232,26 @@ export function useAppPages(
 			params: {
 				path: { app_id: appId ?? "" },
 				query: {
-					is_draft: isDraft,
+					version_id: versionId ?? undefined,
 					...(scope ? { scope } : {}),
 				},
 			},
 		},
-		{ enabled: !!appId },
+		{ enabled: !!appId && !!versionId },
 	);
 }
 
 /**
  * Hook to fetch a single page with its component tree
+ * @param appId - Application ID
+ * @param pageId - Page ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export function useAppPage(
 	appId: string | undefined,
 	pageId: string | undefined,
-	isDraft = true,
+	versionId: string | null | undefined,
 	scope?: string,
 ) {
 	return $api.useQuery(
@@ -259,12 +264,12 @@ export function useAppPage(
 					page_id: pageId ?? "",
 				},
 				query: {
-					is_draft: isDraft,
+					version_id: versionId ?? undefined,
 					...(scope ? { scope } : {}),
 				},
 			},
 		},
-		{ enabled: !!appId && !!pageId },
+		{ enabled: !!appId && !!pageId && !!versionId },
 	);
 }
 
@@ -367,11 +372,15 @@ export function useDeleteAppPage() {
 
 /**
  * Hook to fetch all components for a page (summary list)
+ * @param appId - Application ID
+ * @param pageId - Page ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export function useAppComponents(
 	appId: string | undefined,
 	pageId: string | undefined,
-	isDraft = true,
+	versionId: string | null | undefined,
 	scope?: string,
 ) {
 	return $api.useQuery(
@@ -384,23 +393,28 @@ export function useAppComponents(
 					page_id: pageId ?? "",
 				},
 				query: {
-					is_draft: isDraft,
+					version_id: versionId ?? undefined,
 					...(scope ? { scope } : {}),
 				},
 			},
 		},
-		{ enabled: !!appId && !!pageId },
+		{ enabled: !!appId && !!pageId && !!versionId },
 	);
 }
 
 /**
  * Hook to fetch a single component
+ * @param appId - Application ID
+ * @param pageId - Page ID
+ * @param componentId - Component ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export function useAppComponent(
 	appId: string | undefined,
 	pageId: string | undefined,
 	componentId: string | undefined,
-	isDraft = true,
+	versionId: string | null | undefined,
 	scope?: string,
 ) {
 	return $api.useQuery(
@@ -414,12 +428,12 @@ export function useAppComponent(
 					component_id: componentId ?? "",
 				},
 				query: {
-					is_draft: isDraft,
+					version_id: versionId ?? undefined,
 					...(scope ? { scope } : {}),
 				},
 			},
 		},
-		{ enabled: !!appId && !!pageId && !!componentId },
+		{ enabled: !!appId && !!pageId && !!componentId && !!versionId },
 	);
 }
 
@@ -569,10 +583,13 @@ export function useMoveAppComponent() {
 
 /**
  * Hook to export an application to JSON
+ * @param appId - Application ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export function useExportApplication(
 	appId: string | undefined,
-	isDraft = false,
+	versionId: string | undefined,
 	scope?: string,
 ) {
 	return $api.useQuery(
@@ -582,12 +599,12 @@ export function useExportApplication(
 			params: {
 				path: { app_id: appId ?? "" },
 				query: {
-					is_draft: isDraft,
+					version_id: versionId,
 					...(scope ? { scope } : {}),
 				},
 			},
 		},
-		{ enabled: !!appId },
+		{ enabled: !!appId && !!versionId },
 	);
 }
 
@@ -734,10 +751,13 @@ export async function publishApplication(
 
 /**
  * Export application (imperative)
+ * @param appId - Application ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export async function exportApplication(
 	appId: string,
-	isDraft = false,
+	versionId: string,
 	scope?: string,
 ): Promise<ApplicationExport> {
 	const { data, error } = await apiClient.GET(
@@ -746,7 +766,7 @@ export async function exportApplication(
 			params: {
 				path: { app_id: appId },
 				query: {
-					is_draft: isDraft,
+					version_id: versionId,
 					...(scope ? { scope } : {}),
 				},
 			},
@@ -781,10 +801,13 @@ export async function importApplication(
 
 /**
  * List pages for an application (imperative)
+ * @param appId - Application ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export async function listAppPages(
 	appId: string,
-	isDraft = true,
+	versionId: string,
 	scope?: string,
 ): Promise<AppPageListResponse> {
 	const { data, error } = await apiClient.GET(
@@ -793,7 +816,7 @@ export async function listAppPages(
 			params: {
 				path: { app_id: appId },
 				query: {
-					is_draft: isDraft,
+					version_id: versionId,
 					...(scope ? { scope } : {}),
 				},
 			},
@@ -806,11 +829,15 @@ export async function listAppPages(
 /**
  * Get a page with its full layout tree (imperative)
  * Returns PageDefinition with nested LayoutContainer structure
+ * @param appId - Application ID
+ * @param pageId - Page ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export async function getAppPage(
 	appId: string,
 	pageId: string,
-	isDraft = true,
+	versionId: string,
 	scope?: string,
 ): Promise<PageDefinition> {
 	const { data, error } = await apiClient.GET(
@@ -819,7 +846,7 @@ export async function getAppPage(
 			params: {
 				path: { app_id: appId, page_id: pageId },
 				query: {
-					is_draft: isDraft,
+					version_id: versionId,
 					...(scope ? { scope } : {}),
 				},
 			},
@@ -894,11 +921,15 @@ export async function deleteAppPage(
 
 /**
  * List components for a page (imperative)
+ * @param appId - Application ID
+ * @param pageId - Page ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export async function listAppComponents(
 	appId: string,
 	pageId: string,
-	isDraft = true,
+	versionId: string,
 	scope?: string,
 ): Promise<AppComponentListResponse> {
 	const { data, error } = await apiClient.GET(
@@ -907,7 +938,7 @@ export async function listAppComponents(
 			params: {
 				path: { app_id: appId, page_id: pageId },
 				query: {
-					is_draft: isDraft,
+					version_id: versionId,
 					...(scope ? { scope } : {}),
 				},
 			},
@@ -920,12 +951,17 @@ export async function listAppComponents(
 
 /**
  * Get a single component (imperative)
+ * @param appId - Application ID
+ * @param pageId - Page ID
+ * @param componentId - Component ID
+ * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param scope - Optional scope parameter
  */
 export async function getAppComponent(
 	appId: string,
 	pageId: string,
 	componentId: string,
-	isDraft = true,
+	versionId: string,
 	scope?: string,
 ): Promise<AppComponentResponse> {
 	const { data, error } = await apiClient.GET(
@@ -938,7 +974,7 @@ export async function getAppComponent(
 					component_id: componentId,
 				},
 				query: {
-					is_draft: isDraft,
+					version_id: versionId,
 					...(scope ? { scope } : {}),
 				},
 			},

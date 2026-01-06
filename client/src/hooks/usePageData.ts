@@ -1,15 +1,13 @@
 /**
  * Page Data Loading Hook
  *
- * Manages data sources and launch workflow execution for App Builder pages.
- * Handles loading data on page mount and provides refresh functionality.
+ * Manages launch workflow execution for App Builder pages.
+ * Access data via {{ workflow.<dataSourceId>.result }}
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { apiClient } from "@/lib/api-client";
 import type {
-	DataSource,
 	PageDefinition,
 	WorkflowResult,
 	ExpressionContext,
@@ -17,20 +15,19 @@ import type {
 import { evaluateExpression } from "@/lib/expression-parser";
 
 interface PageDataState {
-	/** Data loaded from data sources, keyed by data source ID */
-	data: Record<string, unknown>;
-	/** Whether data is currently loading */
+	/** Whether the launch workflow is executing */
 	isLoading: boolean;
-	/** Whether launch workflow is executing */
-	isLaunchWorkflowLoading: boolean;
 	/** Any error that occurred during loading */
 	error: Error | null;
-	/** Result from launch workflow (available as {{ workflow.* }}) */
-	launchWorkflowResult: WorkflowResult | undefined;
+	/**
+	 * Workflow results keyed by dataSourceId.
+	 * Access via {{ workflow.<dataSourceId>.result }}
+	 */
+	workflow: Record<string, WorkflowResult>;
 }
 
 interface UsePageDataOptions {
-	/** The page definition with data sources and launch workflow */
+	/** The page definition with launch workflow configuration */
 	page: PageDefinition | null;
 	/** Base expression context for evaluating input params */
 	baseContext: Partial<ExpressionContext>;
@@ -39,18 +36,11 @@ interface UsePageDataOptions {
 		workflowId: string,
 		params: Record<string, unknown>,
 	) => Promise<WorkflowResult | undefined>;
-	/** Callback to execute a data provider */
-	executeDataProvider?: (
-		providerId: string,
-		params: Record<string, unknown>,
-	) => Promise<unknown>;
 }
 
 interface UsePageDataResult extends PageDataState {
-	/** Refresh a specific data source by ID */
-	refreshDataSource: (dataSourceId: string) => Promise<void>;
-	/** Refresh all data sources */
-	refreshAll: () => Promise<void>;
+	/** Re-execute the launch workflow to refresh data */
+	refresh: () => Promise<void>;
 }
 
 /**
@@ -77,293 +67,160 @@ function evaluateInputParams(
 }
 
 /**
- * Hook for loading and managing page data
+ * Hook for loading page data via launch workflow
  *
- * Handles:
- * - Launch workflow execution on page mount
- * - Data source loading (data providers, workflows, static, API)
- * - Expression evaluation for input parameters
- * - Data refresh functionality
+ * Pages configure data loading with:
+ * - launchWorkflowId: The workflow to execute on page mount
+ * - launchWorkflowParams: Parameters to pass (supports expressions like {{ params.id }})
+ * - launchWorkflowDataSourceId: Key name for accessing results (defaults to workflow name)
  *
  * @example
- * const { data, isLoading, launchWorkflowResult, refreshDataSource } = usePageData({
+ * const { isLoading, workflow, refresh } = usePageData({
  *   page: currentPage,
- *   baseContext: { user, variables, query },
+ *   baseContext: { user, variables, params },
  *   executeWorkflow: handleExecuteWorkflow,
  * });
+ *
+ * // Access data: workflow.clientsList.result.clients
  */
 export function usePageData({
 	page,
 	baseContext,
 	executeWorkflow,
-	executeDataProvider,
 }: UsePageDataOptions): UsePageDataResult {
 	const [state, setState] = useState<PageDataState>({
-		data: {},
 		isLoading: false,
-		isLaunchWorkflowLoading: false,
 		error: null,
-		launchWorkflowResult: undefined,
+		workflow: {},
 	});
 
-	// Track whether initial data load has occurred to prevent infinite loops
-	const hasLoadedRef = useRef(false);
-
 	// Ref to hold current executeWorkflow function - prevents effect re-triggers
-	// when the callback reference changes due to upstream dependency changes
 	const executeWorkflowRef = useRef(executeWorkflow);
 
 	// Keep ref in sync with latest function
 	useEffect(() => {
 		executeWorkflowRef.current = executeWorkflow;
 	}, [executeWorkflow]);
+
 	const pageId = page?.id;
 
-	// Reset loaded flag when page changes
-	useEffect(() => {
-		hasLoadedRef.current = false;
-	}, [pageId]);
+	// Get launch workflow config (flat or nested format)
+	const launchWorkflowId =
+		page?.launchWorkflowId ?? page?.launchWorkflow?.workflowId;
+	const launchWorkflowParams =
+		page?.launchWorkflowParams ?? page?.launchWorkflow?.params;
+	const launchWorkflowDataSourceId =
+		page?.launchWorkflowDataSourceId ?? page?.launchWorkflow?.dataSourceId;
 
-	// Build expression context including loaded data
-	const expressionContext = useMemo(
-		(): Partial<ExpressionContext> => ({
-			...baseContext,
-			data: state.data,
-			workflow: state.launchWorkflowResult,
-		}),
-		[baseContext, state.data, state.launchWorkflowResult],
-	);
+	// Create stable key for route params to avoid infinite loops
+	const routeParamsKey = JSON.stringify(baseContext.params || {});
 
-	// Load a single data source
-	const loadDataSource = useCallback(
-		async (dataSource: DataSource): Promise<unknown> => {
-			// Support both 'inputParams' (canonical) and 'params' (shorthand) for data sources
-			const inputParams =
-				dataSource.inputParams ??
-				(dataSource as unknown as { params?: Record<string, unknown> })
-					.params;
-			const params = evaluateInputParams(inputParams, expressionContext);
-
-			switch (dataSource.type) {
-				case "static":
-					return dataSource.data;
-
-				case "data-provider":
-					if (!dataSource.dataProviderId) {
-						console.warn(
-							`Data source "${dataSource.id}" has no dataProviderId`,
-						);
-						return null;
-					}
-					if (executeDataProvider) {
-						return executeDataProvider(
-							dataSource.dataProviderId,
-							params,
-						);
-					}
-					// Fall back to API call via /execute endpoint
-					try {
-						const response = await apiClient.POST(
-							"/api/workflows/execute",
-							{
-								body: {
-									workflow_id: dataSource.dataProviderId,
-									input_data: params,
-									transient: true, // Data providers are transient
-								},
-							},
-						);
-						// Data providers return options in result field
-						return response.data?.result ?? null;
-					} catch (error) {
-						console.error(
-							`Failed to load data provider "${dataSource.dataProviderId}":`,
-							error,
-						);
-						toast.error(
-							`Failed to load data: ${error instanceof Error ? error.message : "Unknown error"}`,
-						);
-						return null;
-					}
-
-				case "workflow":
-					if (!dataSource.workflowId) {
-						console.warn(
-							`Data source "${dataSource.id}" has no workflowId`,
-						);
-						return null;
-					}
-					try {
-						const result = await executeWorkflow(
-							dataSource.workflowId,
-							params,
-						);
-						return result?.result ?? null;
-					} catch (error) {
-						console.error(
-							`Failed to execute workflow "${dataSource.workflowId}":`,
-							error,
-						);
-						toast.error(
-							`Failed to load data: ${error instanceof Error ? error.message : "Unknown error"}`,
-						);
-						return null;
-					}
-
-				case "api":
-					if (!dataSource.endpoint) {
-						console.warn(
-							`Data source "${dataSource.id}" has no endpoint`,
-						);
-						return null;
-					}
-					try {
-						const response = await fetch(dataSource.endpoint);
-						return response.json();
-					} catch (error) {
-						console.error(
-							`Failed to fetch "${dataSource.endpoint}":`,
-							error,
-						);
-						toast.error(
-							`Failed to load data: ${error instanceof Error ? error.message : "Unknown error"}`,
-						);
-						return null;
-					}
-
-				case "computed":
-					if (!dataSource.expression) {
-						console.warn(
-							`Data source "${dataSource.id}" has no expression`,
-						);
-						return null;
-					}
-					return evaluateExpression(
-						dataSource.expression,
-						expressionContext as ExpressionContext,
-					);
-
-				default:
-					console.warn(
-						`Unknown data source type: ${dataSource.type}`,
-					);
-					return null;
-			}
-		},
-		[expressionContext, executeDataProvider, executeWorkflow],
-	);
-
-	// Refresh a specific data source
-	const refreshDataSource = useCallback(
-		async (dataSourceId: string) => {
-			if (!page?.dataSources) return;
-
-			const dataSource = page.dataSources.find(
-				(ds) => ds.id === dataSourceId,
-			);
-			if (!dataSource) {
-				console.warn(`Data source "${dataSourceId}" not found`);
-				return;
-			}
-
-			try {
-				const result = await loadDataSource(dataSource);
-				setState((prev) => ({
-					...prev,
-					data: { ...prev.data, [dataSourceId]: result },
-				}));
-			} catch (error) {
-				console.error(
-					`Failed to refresh data source "${dataSourceId}":`,
-					error,
-				);
-				toast.error(
-					`Failed to refresh data: ${error instanceof Error ? error.message : "Unknown error"}`,
-				);
-			}
-		},
-		[page, loadDataSource],
-	);
-
-	// Refresh all data sources
-	const refreshAll = useCallback(async () => {
-		if (!page?.dataSources?.length) return;
+	// Execute the launch workflow
+	const executeLaunchWorkflow = useCallback(async () => {
+		if (!launchWorkflowId) return;
 
 		setState((prev) => ({ ...prev, isLoading: true }));
 
 		try {
-			const results = await Promise.all(
-				page.dataSources.map(async (ds) => ({
-					id: ds.id,
-					data: await loadDataSource(ds),
-				})),
+			const params = evaluateInputParams(launchWorkflowParams, baseContext);
+			const result = await executeWorkflowRef.current(
+				launchWorkflowId,
+				params,
 			);
 
-			const data: Record<string, unknown> = {};
-			for (const { id, data: result } of results) {
-				data[id] = result;
-			}
+			if (result) {
+				// Use dataSourceId if provided, otherwise fall back to workflow name
+				const dataSourceKey =
+					launchWorkflowDataSourceId ||
+					result.workflowName ||
+					"default";
 
-			setState((prev) => ({ ...prev, data, isLoading: false }));
+				setState((prev) => ({
+					...prev,
+					isLoading: false,
+					workflow: {
+						...prev.workflow,
+						[dataSourceKey]: result,
+					},
+				}));
+			} else {
+				setState((prev) => ({ ...prev, isLoading: false }));
+			}
 		} catch (error) {
+			console.error("Launch workflow failed:", error);
+			toast.error(
+				`Failed to load page data: ${error instanceof Error ? error.message : "Unknown error"}`,
+			);
 			setState((prev) => ({
 				...prev,
 				isLoading: false,
 				error:
 					error instanceof Error
 						? error
-						: new Error("Failed to load data"),
+						: new Error("Launch workflow failed"),
 			}));
 		}
-	}, [page, loadDataSource]);
+	}, [launchWorkflowId, launchWorkflowParams, launchWorkflowDataSourceId, baseContext]);
 
-	// Execute launch workflow on page mount
-	// Support both flat format (launchWorkflowId) and nested format (launchWorkflow.workflowId)
-	const launchWorkflowId =
-		page?.launchWorkflowId ?? page?.launchWorkflow?.workflowId;
-	const launchWorkflowParams =
-		page?.launchWorkflowParams ?? page?.launchWorkflow?.params;
-
-	// Create stable key for route params to avoid infinite loops
-	// baseContext is an object that changes reference on each render,
-	// so we extract just the params as a stable string for dependency tracking
-	const routeParamsKey = JSON.stringify(baseContext.params || {});
-
+	// Execute on mount and when route params change
 	useEffect(() => {
-		if (!launchWorkflowId) return;
+		if (!launchWorkflowId) {
+			console.log("[usePageData] No launchWorkflowId, skipping execution");
+			return;
+		}
 
 		let cancelled = false;
 
-		const executeLaunchWorkflow = async () => {
-			setState((prev) => ({ ...prev, isLaunchWorkflowLoading: true }));
+		const run = async () => {
+			console.log("[usePageData] Executing launch workflow:", {
+				launchWorkflowId,
+				launchWorkflowParams,
+				launchWorkflowDataSourceId,
+				pageId,
+				routeParams: baseContext.params,
+			});
+
+			setState((prev) => ({ ...prev, isLoading: true }));
 
 			try {
 				const params = evaluateInputParams(
 					launchWorkflowParams,
 					baseContext,
 				);
-				// Use ref.current to avoid effect re-triggers when callback reference changes
+				console.log("[usePageData] Evaluated params:", params);
+
 				const result = await executeWorkflowRef.current(
 					launchWorkflowId,
 					params,
 				);
+				console.log("[usePageData] Workflow result:", result);
 
-				if (!cancelled) {
+				if (!cancelled && result) {
+					const dataSourceKey =
+						launchWorkflowDataSourceId ||
+						result.workflowName ||
+						"default";
+
 					setState((prev) => ({
 						...prev,
-						isLaunchWorkflowLoading: false,
-						launchWorkflowResult: result,
+						isLoading: false,
+						workflow: {
+							...prev.workflow,
+							[dataSourceKey]: result,
+						},
 					}));
+				} else if (!cancelled) {
+					setState((prev) => ({ ...prev, isLoading: false }));
 				}
 			} catch (error) {
 				if (!cancelled) {
 					console.error("Launch workflow failed:", error);
 					toast.error(
-						`Failed to initialize page: ${error instanceof Error ? error.message : "Unknown error"}`,
+						`Failed to load page data: ${error instanceof Error ? error.message : "Unknown error"}`,
 					);
 					setState((prev) => ({
 						...prev,
-						isLaunchWorkflowLoading: false,
+						isLoading: false,
 						error:
 							error instanceof Error
 								? error
@@ -373,37 +230,22 @@ export function usePageData({
 			}
 		};
 
-		executeLaunchWorkflow();
+		run();
 
 		return () => {
 			cancelled = true;
 		};
-		// Note: baseContext, launchWorkflowParams, and executeWorkflow are used inside but
-		// excluded from deps to prevent infinite loops. We use:
-		// - routeParamsKey: stable string for route param values
-		// - executeWorkflowRef: ref pattern for stable callback access
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [launchWorkflowId, routeParamsKey]);
+	}, [launchWorkflowId, routeParamsKey, pageId]);
 
-	// Load data sources on page mount (after launch workflow completes if present)
-	// Note: refreshAll is intentionally excluded from deps to prevent infinite loops.
-	// The hasLoadedRef ensures this only runs once per page.
-	useEffect(() => {
-		if (!page?.dataSources?.length) return;
-		// Wait for launch workflow to complete if present
-		if (launchWorkflowId && state.isLaunchWorkflowLoading) return;
-		// Prevent re-runs after initial load (breaks dependency cycle)
-		if (hasLoadedRef.current) return;
-
-		hasLoadedRef.current = true;
-		refreshAll();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [page, state.isLaunchWorkflowLoading]);
+	// Refresh handler - re-executes launch workflow
+	const refresh = useCallback(async () => {
+		await executeLaunchWorkflow();
+	}, [executeLaunchWorkflow]);
 
 	return {
 		...state,
-		refreshDataSource,
-		refreshAll,
+		refresh,
 	};
 }
 

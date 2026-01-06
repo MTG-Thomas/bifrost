@@ -67,7 +67,6 @@ export type {
 	LayoutAlign,
 	LayoutJustify,
 	LayoutType,
-	DataSource,
 	ExpressionUser,
 	ExpressionContext,
 	BaseComponentProps,

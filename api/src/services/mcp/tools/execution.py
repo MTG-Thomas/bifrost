@@ -4,6 +4,7 @@ Execution MCP Tools
 Tools for listing and viewing workflow execution history.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -72,27 +73,25 @@ async def list_executions(
             )
 
             if not executions:
-                return "No executions found."
+                return json.dumps({"executions": [], "count": 0})
 
-            lines = ["# Recent Executions\n"]
+            execution_list = []
             for ex in executions:
-                status_icon = "✓" if ex.status.value == "Success" else "✗" if ex.status.value == "Failed" else "⏳"
-                lines.append(f"## {status_icon} {ex.workflow_name or 'Unknown'}")
-                lines.append(f"- **ID:** `{ex.id}`")
-                lines.append(f"- **Status:** {ex.status.value}")
-                if ex.duration_ms:
-                    lines.append(f"- **Duration:** {ex.duration_ms}ms")
-                if ex.created_at:
-                    lines.append(f"- **Started:** {ex.created_at.isoformat()}")
-                if ex.error:
-                    lines.append(f"- **Error:** {ex.error[:100]}...")
-                lines.append("")
+                execution_data = {
+                    "id": str(ex.id),
+                    "workflow_name": ex.workflow_name or "Unknown",
+                    "status": ex.status.value,
+                    "duration_ms": ex.duration_ms,
+                    "created_at": ex.created_at.isoformat() if ex.created_at else None,
+                    "error": ex.error[:100] + "..." if ex.error and len(ex.error) > 100 else ex.error,
+                }
+                execution_list.append(execution_data)
 
-            return "\n".join(lines)
+            return json.dumps({"executions": execution_list, "count": len(execution_list)})
 
     except Exception as e:
         logger.exception(f"Error listing executions via MCP: {e}")
-        return f"Error listing executions: {str(e)}"
+        return json.dumps({"error": f"Error listing executions: {str(e)}"})
 
 
 @system_tool(
@@ -114,15 +113,13 @@ async def list_executions(
 )
 async def get_execution(context: Any, execution_id: str) -> str:
     """Get details and logs for a specific workflow execution."""
-    import json as json_module
-
     from src.core.database import get_db_context
     from src.repositories.executions import ExecutionRepository
 
     logger.info(f"MCP get_execution called with id={execution_id}")
 
     if not execution_id:
-        return "Error: execution_id is required"
+        return json.dumps({"error": "execution_id is required"})
 
     try:
         async with get_db_context() as db:
@@ -130,42 +127,36 @@ async def get_execution(context: Any, execution_id: str) -> str:
             execution = await repo.get_execution(execution_id)
 
             if not execution:
-                return f"Error: Execution not found: {execution_id}"
+                return json.dumps({"error": f"Execution not found: {execution_id}"})
 
             # Check access
             if not context.is_platform_admin and str(execution.user_id) != str(context.user_id):
-                return "Error: Access denied"
+                return json.dumps({"error": "Access denied"})
 
-            lines = [f"# Execution: {execution.workflow_name or 'Unknown'}\n"]
-
-            status_icon = "✓" if execution.status.value == "Success" else "✗" if execution.status.value == "Failed" else "⏳"
-            lines.append(f"## Status: {status_icon} {execution.status.value}\n")
-
-            lines.append("## Details\n")
-            lines.append(f"- **ID:** `{execution.id}`")
-            if execution.duration_ms:
-                lines.append(f"- **Duration:** {execution.duration_ms}ms")
-            if execution.created_at:
-                lines.append(f"- **Started:** {execution.created_at.isoformat()}")
-            if execution.completed_at:
-                lines.append(f"- **Completed:** {execution.completed_at.isoformat()}")
-
-            if execution.error:
-                lines.append(f"\n## Error\n```\n{execution.error}\n```")
-
-            if execution.result:
-                result_str = json_module.dumps(execution.result, indent=2, default=str)
-                lines.append(f"\n## Result\n```json\n{result_str}\n```")
+            # Build execution data
+            execution_data: dict[str, Any] = {
+                "id": str(execution.id),
+                "workflow_name": execution.workflow_name or "Unknown",
+                "status": execution.status.value,
+                "duration_ms": execution.duration_ms,
+                "created_at": execution.created_at.isoformat() if execution.created_at else None,
+                "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+                "error": execution.error,
+                "result": execution.result,
+            }
 
             # Get logs
             logs = await repo.get_execution_logs(execution_id)
             if logs:
-                lines.append("\n## Logs\n")
-                for log in logs[-20:]:  # Last 20 logs
-                    lines.append(f"[{log.level}] {log.message}")
+                execution_data["logs"] = [
+                    {"level": log.level, "message": log.message}
+                    for log in logs[-20:]  # Last 20 logs
+                ]
+            else:
+                execution_data["logs"] = []
 
-            return "\n".join(lines)
+            return json.dumps(execution_data, default=str)
 
     except Exception as e:
         logger.exception(f"Error getting execution via MCP: {e}")
-        return f"Error getting execution: {str(e)}"
+        return json.dumps({"error": f"Error getting execution: {str(e)}"})

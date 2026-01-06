@@ -27,7 +27,7 @@ import type {
 	AppComponent,
 	NavigationConfig,
 } from "@/lib/app-builder-types";
-import { isLayoutContainer } from "@/lib/app-builder-types";
+import { isLayoutContainer, getElementChildren } from "@/lib/app-builder-types";
 import {
 	createDefaultComponent,
 	insertIntoTree,
@@ -35,6 +35,7 @@ import {
 	moveInTree,
 	updateInTree,
 	generatePageId,
+	generateComponentId,
 	findElementInTree,
 } from "@/lib/app-builder-tree";
 import { AppRenderer } from "../AppRenderer";
@@ -81,6 +82,10 @@ export interface EditorShellProps {
 		newParentId: string | null,
 		newOrder: number,
 	) => void;
+	/** Callback when the current page changes */
+	onPageIdChange?: (pageId: string) => void;
+	/** Callback when pages are reordered (for immediate save to backend) */
+	onReorderPages?: (pages: PageDefinition[]) => void;
 }
 
 /**
@@ -99,6 +104,8 @@ export function EditorShell({
 	onComponentUpdate,
 	onComponentDelete,
 	onComponentMove,
+	onPageIdChange,
+	onReorderPages,
 }: EditorShellProps) {
 	// Panel collapse state
 	const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false);
@@ -124,9 +131,10 @@ export function EditorShell({
 			if (!externalPageId) {
 				setInternalPageId(pageId);
 			}
-			// In controlled mode, the parent handles page changes
+			// Notify parent of page change (works in both modes)
+			onPageIdChange?.(pageId);
 		},
-		[externalPageId],
+		[externalPageId, onPageIdChange],
 	);
 
 	// Left panel tab - now "structure" (tree view), "pages", or "navigation"
@@ -144,36 +152,19 @@ export function EditorShell({
 	const selectedComponent = useMemo(() => {
 		if (!selectedComponentId || !currentPage) return null;
 
-		// Special case for root layout
-		if (selectedComponentId === "root") {
-			return currentPage.layout;
-		}
-
 		function findComponent(
 			element: LayoutContainer | AppComponent,
-			parentId?: string,
-			index?: number,
 		): AppComponent | LayoutContainer | null {
-			if (isLayoutContainer(element)) {
-				// Check if this layout matches
-				const layoutId = parentId
-					? `${parentId}-layout-${index}`
-					: "root";
-				if (layoutId === selectedComponentId) {
-					return element;
-				}
+			// Both layouts and components now have id field
+			if (element.id === selectedComponentId) {
+				return element;
+			}
 
-				// Search children
-				for (let i = 0; i < element.children.length; i++) {
-					const child = element.children[i];
-					const found = findComponent(child, layoutId, i);
-					if (found) return found;
-				}
-			} else {
-				// It's a component
-				if (element.id === selectedComponentId) {
-					return element;
-				}
+			// Search children (handles both layout containers and components with props.children)
+			const children = getElementChildren(element);
+			for (const child of children) {
+				const found = findComponent(child);
+				if (found) return found;
 			}
 			return null;
 		}
@@ -234,7 +225,7 @@ export function EditorShell({
 							props:
 								(elementToInsert as AppComponent).props || {},
 							parentId:
-								insertedInfo.parentPath === "root"
+								insertedInfo.parentPath === ""
 									? null
 									: insertedInfo.parentPath,
 							order: insertedInfo.index,
@@ -275,7 +266,7 @@ export function EditorShell({
 					if (movedInfo) {
 						onComponentMove(
 							sourceId,
-							movedInfo.parentPath === "root"
+							movedInfo.parentPath === ""
 								? null
 								: movedInfo.parentPath,
 							movedInfo.index,
@@ -342,7 +333,7 @@ export function EditorShell({
 							type: (cloned as AppComponent).type,
 							props: (cloned as AppComponent).props || {},
 							parentId:
-								insertedInfo.parentPath === "root"
+								insertedInfo.parentPath === ""
 									? null
 									: insertedInfo.parentPath,
 							order: insertedInfo.index,
@@ -392,11 +383,11 @@ export function EditorShell({
 				return;
 			}
 
-			// Delete/Backspace to delete selected component
+			// Delete/Backspace to delete selected component (but not the root layout)
 			if (
 				(e.key === "Delete" || e.key === "Backspace") &&
 				selectedComponentId &&
-				selectedComponentId !== "root"
+				selectedComponentId !== currentPage?.layout?.id
 			) {
 				e.preventDefault();
 				handleDelete(selectedComponentId);
@@ -413,13 +404,18 @@ export function EditorShell({
 		return () => document.removeEventListener("keydown", handleKeyDown);
 	}, [selectedComponentId, handleDelete, onSelectComponent]);
 
+	// Check if selected component is the root layout
+	const isRootLayout =
+		currentPage?.layout?.id != null &&
+		selectedComponentId === currentPage.layout.id;
+
 	// Handle property changes from PropertyEditor
 	const handlePropertyChange = useCallback(
 		(updates: Partial<AppComponent | LayoutContainer>) => {
 			if (!selectedComponentId || !currentPage) return;
 
 			// Handle root layout updates
-			if (selectedComponentId === "root") {
+			if (selectedComponentId === currentPage.layout.id) {
 				const updatedLayout = {
 					...currentPage.layout,
 					...updates,
@@ -446,10 +442,10 @@ export function EditorShell({
 
 	// Handle component deletion from PropertyEditor
 	const handlePropertyEditorDelete = useCallback(() => {
-		if (selectedComponentId && selectedComponentId !== "root") {
+		if (selectedComponentId && !isRootLayout) {
 			handleDelete(selectedComponentId);
 		}
-	}, [selectedComponentId, handleDelete]);
+	}, [selectedComponentId, handleDelete, isRootLayout]);
 
 	// Handle page property changes from PropertyEditor
 	const handlePageChange = useCallback(
@@ -473,6 +469,7 @@ export function EditorShell({
 			title: `Page ${pageNumber}`,
 			path: `/page-${pageNumber}`,
 			layout: {
+				id: generateComponentId(),
 				type: "column",
 				children: [],
 				gap: 16,
@@ -509,9 +506,12 @@ export function EditorShell({
 
 	const handleReorderPages = useCallback(
 		(newPages: PageDefinition[]) => {
+			// Update local definition state
 			onDefinitionChange({ ...definition, pages: newPages });
+			// If external reorder handler provided, call it to save to backend
+			onReorderPages?.(newPages);
 		},
-		[definition, onDefinitionChange],
+		[definition, onDefinitionChange, onReorderPages],
 	);
 
 	// Handle navigation config changes
@@ -645,13 +645,16 @@ export function EditorShell({
 				<div className="flex flex-1 flex-col overflow-hidden bg-muted/50">
 					{currentPage ? (
 						<div className="flex-1 overflow-auto p-4">
-							<div className="mx-auto max-w-5xl rounded-lg border bg-background shadow-sm p-4 min-h-full">
-								<AppRenderer
-									definition={currentPage}
-									isPreview={true}
-									selectedComponentId={selectedComponentId}
-									onSelectComponent={onSelectComponent}
-								/>
+							<div className="h-full rounded-lg border bg-background shadow-sm overflow-hidden">
+								<div className="h-full overflow-auto p-6">
+									<AppRenderer
+										definition={definition}
+										pageId={currentPageId}
+										isPreview={true}
+										selectedComponentId={selectedComponentId}
+										onSelectComponent={onSelectComponent}
+									/>
+								</div>
 							</div>
 						</div>
 					) : (
@@ -731,20 +734,13 @@ export function EditorShell({
 									component={selectedComponent}
 									onChange={handlePropertyChange}
 									onDelete={
-										selectedComponentId &&
-										selectedComponentId !== "root"
+										selectedComponentId && !isRootLayout
 											? handlePropertyEditorDelete
 											: undefined
 									}
-									page={
-										selectedComponentId === "root"
-											? currentPage
-											: undefined
-									}
+									page={isRootLayout ? currentPage : undefined}
 									onPageChange={
-										selectedComponentId === "root"
-											? handlePageChange
-											: undefined
+										isRootLayout ? handlePageChange : undefined
 									}
 									className="h-full"
 								/>

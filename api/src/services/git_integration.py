@@ -3024,13 +3024,11 @@ class GitIntegrationService:
         file_path: str,
         full_path: Path,
     ) -> None:
-        """Parse a .app.json file and upsert to database."""
+        """Parse a .app.json file and upsert to database using new versioning system."""
         import json
-        from datetime import datetime
-        from uuid import uuid4
         from sqlalchemy import select
-        from sqlalchemy.dialects.postgresql import insert
         from src.models.orm import Application
+        from src.services.app_builder_service import AppBuilderService
 
         content = full_path.read_text(encoding="utf-8")
         app_data = json.loads(content)
@@ -3041,12 +3039,18 @@ class GitIntegrationService:
             logger.warning(f"App file missing name or slug: {file_path}")
             return
 
-        definition = app_data.get("definition")
-        if not definition:
-            logger.warning(f"App file missing definition: {file_path}")
-            return
+        # App files can have either 'definition' (legacy) or 'pages' (new format)
+        pages = app_data.get("pages", [])
+        if not pages:
+            # Try legacy format
+            definition = app_data.get("definition")
+            if definition:
+                # Convert legacy definition to pages format
+                pages = definition.get("pages", [])
 
-        now = datetime.utcnow()
+        if not pages:
+            logger.warning(f"App file missing pages: {file_path}")
+            return
 
         # Check if app exists with this slug
         existing_stmt = select(Application).where(Application.slug == slug)
@@ -3054,36 +3058,40 @@ class GitIntegrationService:
         existing_app = existing_result.scalar_one_or_none()
 
         if existing_app:
-            app_id = existing_app.id
+            # Update existing app using import (which recreates pages)
+            service = AppBuilderService(db)
+            await service.import_application(
+                data={
+                    "name": name,
+                    "slug": slug,
+                    "description": app_data.get("description"),
+                    "icon": app_data.get("icon"),
+                    "navigation": app_data.get("navigation", {}),
+                    "globalDataSources": app_data.get("globalDataSources", []),
+                    "globalVariables": app_data.get("globalVariables", {}),
+                    "permissions": app_data.get("permissions", {}),
+                    "pages": pages,
+                },
+                organization_id=None,  # Global apps
+                created_by="git_sync",
+            )
+            logger.debug(f"Updated app {name} from {file_path}")
         else:
-            app_id = uuid4()
-
-        # Upsert application
-        stmt = insert(Application).values(
-            id=app_id,
-            name=name,
-            slug=slug,
-            description=app_data.get("description"),
-            icon=app_data.get("icon"),
-            draft_definition=definition,
-            live_definition=definition,
-            live_version=1,
-            draft_version=1,
-            published_at=now,
-            created_at=now,
-            updated_at=now,
-            created_by="git_sync",
-        ).on_conflict_do_update(
-            index_elements=[Application.id],
-            set_={
-                "name": name,
-                "description": app_data.get("description"),
-                "icon": app_data.get("icon"),
-                "draft_definition": definition,
-                "live_definition": definition,
-                "published_at": now,
-                "updated_at": now,
-            },
-        )
-        await db.execute(stmt)
-        logger.debug(f"Upserted app {name} from {file_path}")
+            # Create new app using import
+            service = AppBuilderService(db)
+            await service.import_application(
+                data={
+                    "name": name,
+                    "slug": slug,
+                    "description": app_data.get("description"),
+                    "icon": app_data.get("icon"),
+                    "navigation": app_data.get("navigation", {}),
+                    "globalDataSources": app_data.get("globalDataSources", []),
+                    "globalVariables": app_data.get("globalVariables", {}),
+                    "permissions": app_data.get("permissions", {}),
+                    "pages": pages,
+                },
+                organization_id=None,  # Global apps
+                created_by="git_sync",
+            )
+            logger.debug(f"Created app {name} from {file_path}")

@@ -4,6 +4,7 @@ Integration MCP Tools
 Tools for listing available integrations.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -51,33 +52,19 @@ async def list_integrations(context: Any) -> str:
                 )
                 integrations = result.scalars().all()
 
-            if not integrations:
-                return (
-                    "No integrations are currently configured.\n\n"
-                    "To use integrations in workflows, they must first be set up "
-                    "in the Bifrost admin panel."
-                )
+            integration_list = [
+                {
+                    "name": integration.name,
+                    "has_oauth": integration.has_oauth_config,
+                    "entity_id_name": integration.entity_id_name,
+                }
+                for integration in integrations
+            ]
 
-            lines = ["# Available Integrations\n"]
-            for integration in integrations:
-                lines.append(f"## {integration.name}")
-                if integration.has_oauth_config:
-                    lines.append("- **Auth:** OAuth configured")
-                if integration.entity_id_name:
-                    lines.append(f"- **Entity:** {integration.entity_id_name}")
-                lines.append("")
-
-            lines.append("\n## Usage in Workflows\n")
-            lines.append("```python")
-            lines.append("from bifrost import integrations")
-            lines.append("")
-            lines.append('integration = await integrations.get("IntegrationName")')
-            lines.append("if integration and integration.oauth:")
-            lines.append("    access_token = integration.oauth.access_token")
-            lines.append("```")
-
-            return "\n".join(lines)
+            return json.dumps(
+                {"integrations": integration_list, "count": len(integration_list)}
+            )
 
     except Exception as e:
         logger.exception(f"Error listing integrations via MCP: {e}")
-        return f"Error listing integrations: {str(e)}"
+        return json.dumps({"error": f"Error listing integrations: {str(e)}"})

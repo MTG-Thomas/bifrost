@@ -1,9 +1,10 @@
 """
-Application, AppPage, and AppComponent ORM models.
+Application, AppVersion, AppPage, and AppComponent ORM models.
 
 Represents applications for the App Builder with:
 - applications: metadata, navigation, permissions
-- app_pages: one row per page (draft and live as separate rows)
+- app_versions: version snapshots (active = live, draft = current work)
+- app_pages: one row per page, linked to a version
 - app_components: one row per component with parent_id for tree structure
 """
 
@@ -11,7 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +24,37 @@ if TYPE_CHECKING:
     from src.models.orm.organizations import Organization
     from src.models.orm.tables import Table
     from src.models.orm.workflows import Workflow
+
+
+class AppVersion(Base):
+    """Version snapshot for an application.
+
+    Each version represents a point-in-time snapshot of the application.
+    - active_version: The currently published/live version
+    - draft_version: The current work-in-progress version
+    """
+
+    __tablename__ = "app_versions"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    application_id: Mapped[UUID] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+    )
+
+    # Relationships
+    pages: Mapped[list["AppPage"]] = relationship(
+        "AppPage",
+        back_populates="version_ref",
+        cascade="all, delete-orphan",
+        foreign_keys="AppPage.version_id",
+    )
+
+    __table_args__ = (
+        Index("ix_app_versions_application_id", "application_id"),
+    )
 
 
 class Application(Base):
@@ -42,9 +74,17 @@ class Application(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"), default=None
     )
 
-    # Versioning
-    live_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    draft_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # Version pointers
+    active_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("app_versions.id", ondelete="SET NULL", use_alter=True),
+        default=None,
+    )
+    draft_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("app_versions.id", ondelete="SET NULL", use_alter=True),
+        default=None,
+    )
+
+    # Publish history
     published_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     # App-level config (small JSONB)
@@ -91,6 +131,21 @@ class Application(Base):
     roles: Mapped[list["AppRole"]] = relationship(
         "AppRole", cascade="all, delete-orphan", passive_deletes=True
     )
+    versions: Mapped[list["AppVersion"]] = relationship(
+        "AppVersion",
+        cascade="all, delete-orphan",
+        foreign_keys="AppVersion.application_id",
+    )
+    active_version: Mapped["AppVersion | None"] = relationship(
+        "AppVersion",
+        foreign_keys=[active_version_id],
+        post_update=True,
+    )
+    draft_version_ref: Mapped["AppVersion | None"] = relationship(
+        "AppVersion",
+        foreign_keys=[draft_version_id],
+        post_update=True,
+    )
 
     __table_args__ = (
         Index("ix_applications_organization_id", "organization_id"),
@@ -100,18 +155,22 @@ class Application(Base):
     @property
     def is_published(self) -> bool:
         """Check if the application has been published at least once."""
-        return self.live_version > 0
+        return self.active_version_id is not None
 
     @property
     def has_unpublished_changes(self) -> bool:
         """Check if there are unpublished changes in the draft."""
-        return self.draft_version > self.live_version
+        if self.draft_version_id is None:
+            return False
+        if self.active_version_id is None:
+            return True  # Never published, so draft has changes
+        return self.draft_version_id != self.active_version_id
 
 
 class AppPage(Base):
     """Page entity for App Builder.
 
-    Each page has its own row for draft and live versions (is_draft flag).
+    Each page belongs to a version (via version_id).
     Components are stored in the app_components table with parent_id references.
     """
 
@@ -124,8 +183,11 @@ class AppPage(Base):
     page_id: Mapped[str] = mapped_column(String(255), nullable=False)  # e.g., "dashboard"
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     path: Mapped[str] = mapped_column(String(255), nullable=False)  # e.g., "/"
-    is_draft: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+
+    # Version link: each page belongs to a specific version
+    version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("app_versions.id", ondelete="CASCADE"), nullable=False
+    )
 
     # Page-level config
     data_sources: Mapped[list[dict[str, Any]]] = mapped_column(
@@ -139,6 +201,9 @@ class AppPage(Base):
     )
     launch_workflow_params: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB, default=dict, server_default="{}"
+    )
+    launch_workflow_data_source_id: Mapped[str | None] = mapped_column(
+        String(255), default=None
     )
     permission: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default="{}"
@@ -170,11 +235,14 @@ class AppPage(Base):
     components: Mapped[list["AppComponent"]] = relationship(
         "AppComponent", back_populates="page", cascade="all, delete-orphan"
     )
+    version_ref: Mapped["AppVersion | None"] = relationship(
+        "AppVersion", back_populates="pages", foreign_keys=[version_id]
+    )
 
     __table_args__ = (
         Index("ix_app_pages_application_id", "application_id"),
-        Index("ix_app_pages_application_draft", "application_id", "is_draft"),
-        Index("ix_app_pages_unique", "application_id", "page_id", "is_draft", unique=True),
+        Index("ix_app_pages_version_id", "version_id"),
+        Index("ix_app_pages_app_page_version", "application_id", "page_id", "version_id", unique=True),
     )
 
 
@@ -195,7 +263,6 @@ class AppComponent(Base):
     parent_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("app_components.id", ondelete="CASCADE"), default=None
     )
-    is_draft: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     type: Mapped[str] = mapped_column(String(50), nullable=False)  # "button", "row", etc.
     props: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     component_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -226,9 +293,8 @@ class AppComponent(Base):
 
     __table_args__ = (
         Index("ix_app_components_page_id", "page_id"),
-        Index("ix_app_components_page_draft", "page_id", "is_draft"),
         Index("ix_app_components_parent_order", "parent_id", "component_order"),
-        Index("ix_app_components_unique", "page_id", "component_id", "is_draft", unique=True),
+        Index("ix_app_components_page_component_unique", "page_id", "component_id", unique=True),
     )
 
     @property

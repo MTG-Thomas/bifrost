@@ -11,7 +11,11 @@ import type {
 	ComponentType,
 	LayoutType,
 } from "./app-builder-types";
-import { isLayoutContainer } from "./app-builder-types";
+import {
+	isLayoutContainer,
+	canHaveChildren,
+	getElementChildren,
+} from "./app-builder-types";
 
 // ============================================================================
 // ID Generation
@@ -46,6 +50,7 @@ export function createDefaultComponent(
 	// Check if it's a layout type
 	if (type === "row" || type === "column" || type === "grid") {
 		return {
+			id,
 			type,
 			children: [],
 			gap: 16,
@@ -175,12 +180,12 @@ export function createDefaultComponent(
 						{
 							id: "tab1",
 							label: "Tab 1",
-							content: { type: "column", children: [], gap: 8 },
+							content: { id: `${id}_tab1_content`, type: "column", children: [], gap: 8 },
 						},
 						{
 							id: "tab2",
 							label: "Tab 2",
-							content: { type: "column", children: [], gap: 8 },
+							content: { id: `${id}_tab2_content`, type: "column", children: [], gap: 8 },
 						},
 					],
 					orientation: "horizontal",
@@ -247,6 +252,7 @@ export function createDefaultComponent(
 					description: "Modal description",
 					triggerLabel: "Open Modal",
 					content: {
+						id: `${id}_modal_content`,
 						type: "column",
 						children: [],
 						gap: 16,
@@ -299,81 +305,81 @@ export function createDefaultComponent(
 export function findElementInTree(
 	layout: LayoutContainer,
 	targetId: string,
-	parentId?: string,
 ): {
 	element: LayoutContainer | AppComponent;
 	parentPath: string;
 	index: number;
 } | null {
-	const currentId = parentId || "root";
-
-	for (let i = 0; i < layout.children.length; i++) {
-		const child = layout.children[i];
-		const childId = isLayoutContainer(child)
-			? `${currentId}-layout-${i}`
-			: child.id;
-
-		if (childId === targetId) {
-			return { element: child, parentPath: currentId, index: i };
-		}
-
-		if (isLayoutContainer(child)) {
-			const result = findElementInTree(child, targetId, childId);
-			if (result) return result;
-		}
+	// Check if the layout itself is the target
+	if (layout.id === targetId) {
+		return { element: layout, parentPath: "", index: 0 };
 	}
 
-	return null;
+	// Helper to search any element with children
+	function searchElement(
+		element: LayoutContainer | AppComponent,
+	): { element: LayoutContainer | AppComponent; parentPath: string; index: number } | null {
+		const children = getElementChildren(element);
+		for (let i = 0; i < children.length; i++) {
+			const child = children[i];
+
+			if (child.id === targetId) {
+				return { element: child, parentPath: element.id, index: i };
+			}
+
+			// Recurse into children if this element can have them
+			if (canHaveChildren(child)) {
+				const result = searchElement(child);
+				if (result) return result;
+			}
+		}
+		return null;
+	}
+
+	return searchElement(layout);
 }
 
 /**
  * Find an element's ID by its object reference in the tree.
- * This is used after tree modifications when index-based IDs may have changed.
+ * All elements now have persistent IDs, so this just returns the element's id.
  */
 export function findElementId(
 	layout: LayoutContainer,
 	targetElement: LayoutContainer | AppComponent,
-	parentId?: string,
 ): string | null {
-	const currentId = parentId || "root";
-
-	for (let i = 0; i < layout.children.length; i++) {
-		const child = layout.children[i];
-		const childId = isLayoutContainer(child)
-			? `${currentId}-layout-${i}`
-			: child.id;
-
-		// Compare by reference for layouts, by id for components
-		if (child === targetElement) {
-			return childId;
-		}
-		if (!isLayoutContainer(child) && !isLayoutContainer(targetElement)) {
-			if (
-				(child as AppComponent).id ===
-				(targetElement as AppComponent).id
-			) {
-				return childId;
-			}
-		}
-
-		if (isLayoutContainer(child)) {
-			const result = findElementId(child, targetElement, childId);
-			if (result) return result;
-		}
+	// Check if the layout itself is the target
+	if (layout === targetElement || layout.id === targetElement.id) {
+		return layout.id;
 	}
 
-	return null;
+	// Helper to search any element with children
+	function searchElement(
+		element: LayoutContainer | AppComponent,
+	): string | null {
+		const children = getElementChildren(element);
+		for (const child of children) {
+			// Compare by reference or by ID
+			if (child === targetElement || child.id === targetElement.id) {
+				return child.id;
+			}
+
+			if (canHaveChildren(child)) {
+				const result = searchElement(child);
+				if (result) return result;
+			}
+		}
+		return null;
+	}
+
+	return searchElement(layout);
 }
 
 /**
- * Get the element ID for a child element at a specific index
+ * Get the element ID for a child element.
+ * All elements (layouts and components) now have an `id` field.
  */
-export function getChildId(
-	child: LayoutContainer | AppComponent,
-	parentId: string,
-	index: number,
-): string {
-	return isLayoutContainer(child) ? `${parentId}-layout-${index}` : child.id;
+export function getChildId(child: LayoutContainer | AppComponent): string {
+	return child.id;
 }
 
 // ============================================================================
@@ -388,12 +394,9 @@ export function insertIntoTree(
 	newElement: LayoutContainer | AppComponent,
 	targetId: string,
 	position: "before" | "after" | "inside",
-	parentId?: string,
 ): LayoutContainer {
-	const currentId = parentId || "root";
-
 	// If target is this container itself, add to its children
-	if (targetId === currentId) {
+	if (targetId === layout.id) {
 		if (position === "before") {
 			return {
 				...layout,
@@ -407,44 +410,61 @@ export function insertIntoTree(
 		};
 	}
 
-	// Clone layout and process children
-	const newChildren: (LayoutContainer | AppComponent)[] = [];
+	// Helper to recursively insert into any element with children
+	function insertIntoElement(
+		element: LayoutContainer | AppComponent,
+	): LayoutContainer | AppComponent {
+		const children = getElementChildren(element);
+		const newChildren: (LayoutContainer | AppComponent)[] = [];
 
-	for (let i = 0; i < layout.children.length; i++) {
-		const child = layout.children[i];
-		const childId = getChildId(child, currentId, i);
-
-		if (childId === targetId) {
-			if (position === "before") {
-				newChildren.push(newElement);
-				newChildren.push(child);
-			} else if (position === "after") {
-				newChildren.push(child);
-				newChildren.push(newElement);
-			} else if (position === "inside" && isLayoutContainer(child)) {
-				newChildren.push({
-					...child,
-					children: [...child.children, newElement],
-				});
+		for (const child of children) {
+			if (child.id === targetId) {
+				if (position === "before") {
+					newChildren.push(newElement);
+					newChildren.push(child);
+				} else if (position === "after") {
+					newChildren.push(child);
+					newChildren.push(newElement);
+				} else if (position === "inside" && canHaveChildren(child)) {
+					// Add inside this child's children
+					const childChildren = getElementChildren(child);
+					if (isLayoutContainer(child)) {
+						newChildren.push({
+							...child,
+							children: [...childChildren, newElement],
+						});
+					} else {
+						// Component like Card - add to props.children
+						newChildren.push({
+							...child,
+							props: { ...child.props, children: [...childChildren, newElement] },
+						} as AppComponent);
+					}
+				} else {
+					// Can't add inside non-container, add after instead
+					newChildren.push(child);
+					newChildren.push(newElement);
+				}
+			} else if (canHaveChildren(child)) {
+				// Recursively process children
+				newChildren.push(insertIntoElement(child));
 			} else {
-				// Can't add inside non-container, add after instead
 				newChildren.push(child);
-				newChildren.push(newElement);
 			}
-		} else if (isLayoutContainer(child)) {
-			// Recursively process container children
-			newChildren.push(
-				insertIntoTree(child, newElement, targetId, position, childId),
-			);
-		} else {
-			newChildren.push(child);
 		}
+
+		// Return updated element with new children in the right place
+		if (isLayoutContainer(element)) {
+			return { ...element, children: newChildren };
+		}
+		// For components like Card, children are in props.children
+		return {
+			...element,
+			props: { ...element.props, children: newChildren },
+		} as AppComponent;
 	}
 
-	return {
-		...layout,
-		children: newChildren,
-	};
+	return insertIntoElement(layout) as LayoutContainer;
 }
 
 /**
@@ -453,31 +473,50 @@ export function insertIntoTree(
 export function removeFromTree(
 	layout: LayoutContainer,
 	targetId: string,
-	parentId?: string,
 ): { layout: LayoutContainer; removed: LayoutContainer | AppComponent | null } {
 	let removed: LayoutContainer | AppComponent | null = null;
-	const currentId = parentId || "root";
 
-	const newChildren: (LayoutContainer | AppComponent)[] = [];
+	// Helper to recursively remove from any element with children
+	function removeFromElement(
+		element: LayoutContainer | AppComponent,
+	): { element: LayoutContainer | AppComponent; removed: LayoutContainer | AppComponent | null } {
+		const children = getElementChildren(element);
+		const newChildren: (LayoutContainer | AppComponent)[] = [];
+		let localRemoved: LayoutContainer | AppComponent | null = null;
 
-	for (let i = 0; i < layout.children.length; i++) {
-		const child = layout.children[i];
-		const childId = getChildId(child, currentId, i);
-
-		if (childId === targetId) {
-			removed = child;
-			// Don't add to newChildren - this removes it
-		} else if (isLayoutContainer(child)) {
-			const result = removeFromTree(child, targetId, childId);
-			newChildren.push(result.layout);
-			if (result.removed) removed = result.removed;
-		} else {
-			newChildren.push(child);
+		for (const child of children) {
+			if (child.id === targetId) {
+				localRemoved = child;
+				// Don't add to newChildren - this removes it
+			} else if (canHaveChildren(child)) {
+				const result = removeFromElement(child);
+				newChildren.push(result.element);
+				if (result.removed) localRemoved = result.removed;
+			} else {
+				newChildren.push(child);
+			}
 		}
+
+		// Return updated element with new children in the right place
+		let updatedElement: LayoutContainer | AppComponent;
+		if (isLayoutContainer(element)) {
+			updatedElement = { ...element, children: newChildren };
+		} else {
+			// For components like Card, children are in props.children
+			updatedElement = {
+				...element,
+				props: { ...element.props, children: newChildren },
+			} as AppComponent;
+		}
+
+		return { element: updatedElement, removed: localRemoved };
 	}
 
+	const result = removeFromElement(layout);
+	removed = result.removed;
+
 	return {
-		layout: { ...layout, children: newChildren },
+		layout: result.element as LayoutContainer,
 		removed,
 	};
 }
@@ -544,29 +583,51 @@ export function updateInTree(
 	layout: LayoutContainer,
 	targetId: string,
 	updates: Partial<AppComponent | LayoutContainer>,
-	parentId?: string,
 ): LayoutContainer {
-	const currentId = parentId || "root";
-	const newChildren: (LayoutContainer | AppComponent)[] = [];
-
-	for (let i = 0; i < layout.children.length; i++) {
-		const child = layout.children[i];
-		const childId = getChildId(child, currentId, i);
-
-		if (childId === targetId) {
-			// Apply updates to this element
-			newChildren.push({ ...child, ...updates } as
-				| LayoutContainer
-				| AppComponent);
-		} else if (isLayoutContainer(child)) {
-			// Recursively update container children
-			newChildren.push(updateInTree(child, targetId, updates, childId));
-		} else {
-			newChildren.push(child);
-		}
+	// Check if we're updating the layout itself
+	if (layout.id === targetId) {
+		return { ...layout, ...updates } as LayoutContainer;
 	}
 
-	return { ...layout, children: newChildren };
+	// Helper to recursively update any element with children
+	function updateElement(
+		element: LayoutContainer | AppComponent,
+	): LayoutContainer | AppComponent {
+		const children = getElementChildren(element);
+		let childrenUpdated = false;
+		const newChildren: (LayoutContainer | AppComponent)[] = [];
+
+		for (const child of children) {
+			if (child.id === targetId) {
+				// Apply updates to this element
+				newChildren.push({ ...child, ...updates } as LayoutContainer | AppComponent);
+				childrenUpdated = true;
+			} else if (canHaveChildren(child)) {
+				// Recursively update
+				const updated = updateElement(child);
+				newChildren.push(updated);
+				if (updated !== child) childrenUpdated = true;
+			} else {
+				newChildren.push(child);
+			}
+		}
+
+		if (!childrenUpdated) {
+			return element;
+		}
+
+		// Return updated element with new children in the right place
+		if (isLayoutContainer(element)) {
+			return { ...element, children: newChildren };
+		}
+		// For components like Card, children are in props.children
+		return {
+			...element,
+			props: { ...element.props, children: newChildren },
+		} as AppComponent;
+	}
+
+	return updateElement(layout) as LayoutContainer;
 }
 
 /**
@@ -633,6 +694,7 @@ export function wrapInContainer(
 
 	// Create the wrapper container
 	const wrapper: LayoutContainer = {
+		id: generateComponentId(),
 		type: containerType,
 		children: [elementInfo.element],
 		gap: 16,

@@ -11,7 +11,6 @@ import {
 	useMemo,
 	useCallback,
 	useState,
-	useEffect,
 	type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -33,8 +32,6 @@ interface AppContextValue {
 	setVariable: (key: string, value: unknown) => void;
 	/** Update multiple page variables */
 	setVariables: (updates: Record<string, unknown>) => void;
-	/** Set data from a data source */
-	setData: (key: string, data: unknown) => void;
 	/** Set a field value (for form inputs) */
 	setFieldValue: (fieldId: string, value: unknown) => void;
 	/** Get all field values (for form submission) */
@@ -46,8 +43,10 @@ interface AppContextValue {
 		actionId: string,
 		handler: (params?: Record<string, unknown>) => void,
 	) => void;
-	/** Set workflow result (for {{ workflow.result.* }} access) */
-	setWorkflowResult: (result: WorkflowResult | undefined) => void;
+	/** Set workflow result (for {{ workflow.<dataSourceId>.result }} access) */
+	setWorkflowResult: (dataSourceId: string, result: WorkflowResult) => void;
+	/** Clear workflow results */
+	clearWorkflowResults: () => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -56,8 +55,6 @@ interface AppContextProviderProps {
 	children: ReactNode;
 	/** Initial page variables */
 	initialVariables?: Record<string, unknown>;
-	/** Initial data from data sources */
-	initialData?: Record<string, unknown>;
 	/** Whether any data source is currently loading */
 	isDataLoading?: boolean;
 	/** Custom workflow trigger handler with onComplete actions */
@@ -69,7 +66,9 @@ interface AppContextProviderProps {
 	) => void;
 	/** Handler for refreshing a data table */
 	onRefreshTable?: (dataSourceKey: string) => void;
-	/** Externally controlled workflow result (for injection from parent) */
+	/** Externally controlled workflow results keyed by dataSourceId (for injection from parent) */
+	workflowResults?: Record<string, WorkflowResult>;
+	/** @deprecated Use workflowResults instead */
 	workflowResult?: WorkflowResult;
 	/** Custom navigate function (defaults to react-router navigate) */
 	customNavigate?: (path: string) => void;
@@ -96,11 +95,11 @@ interface AppContextProviderProps {
 export function AppContextProvider({
 	children,
 	initialVariables = {},
-	initialData = {},
 	isDataLoading = false,
 	onTriggerWorkflow,
 	onRefreshTable,
-	workflowResult: externalWorkflowResult,
+	workflowResults: externalWorkflowResults,
+	workflowResult: legacyWorkflowResult,
 	customNavigate,
 	routeParams = {},
 	activeWorkflows,
@@ -108,33 +107,38 @@ export function AppContextProvider({
 	const navigate = useNavigate();
 	const { user: authUser } = useAuth();
 
-	// State for variables, data, and field values
+	// State for variables and field values
 	const [variables, setVariablesState] =
 		useState<Record<string, unknown>>(initialVariables);
-	const [data, setDataState] = useState<Record<string, unknown>>(initialData);
 	const [fieldValues, setFieldValuesState] = useState<
 		Record<string, unknown>
 	>({});
-
-	// Sync initialData prop changes to internal data state
-	// This is needed because useState only uses initialData on first mount
-	useEffect(() => {
-		setDataState(initialData);
-	}, [initialData]);
 
 	// Custom action handlers registry
 	const [customActions, setCustomActions] = useState<
 		Map<string, (params?: Record<string, unknown>) => void>
 	>(new Map());
 
-	// Workflow result state (for {{ workflow.result.* }} access)
+	// Workflow results state keyed by dataSourceId (for {{ workflow.<dataSourceId>.result }} access)
 	// Can be controlled externally via prop or internally via setWorkflowResult
-	const [internalWorkflowResult, setWorkflowResultState] = useState<
-		WorkflowResult | undefined
-	>(undefined);
+	const [internalWorkflowResults, setWorkflowResultsState] = useState<
+		Record<string, WorkflowResult>
+	>({});
 
-	// Use external prop if provided, otherwise use internal state
-	const workflowResult = externalWorkflowResult ?? internalWorkflowResult;
+	// Merge external and internal workflow results (external takes precedence)
+	// Also support legacy single workflowResult prop for backwards compatibility
+	const workflowResults = useMemo(() => {
+		const results = { ...internalWorkflowResults };
+		// Merge external results
+		if (externalWorkflowResults) {
+			Object.assign(results, externalWorkflowResults);
+		}
+		// Support legacy single result (store under "default" key)
+		if (legacyWorkflowResult && !results.default) {
+			results.default = legacyWorkflowResult;
+		}
+		return results;
+	}, [internalWorkflowResults, externalWorkflowResults, legacyWorkflowResult]);
 
 	// Convert auth user to expression user format
 	const expressionUser = useMemo((): ExpressionUser | undefined => {
@@ -254,22 +258,29 @@ export function AppContextProvider({
 		setVariablesState((prev) => ({ ...prev, [key]: value }));
 	}, []);
 
-	// Workflow result setter
+	// Workflow result setter (by dataSourceId)
 	const setWorkflowResult = useCallback(
-		(result: WorkflowResult | undefined) => {
-			setWorkflowResultState(result);
+		(dataSourceId: string, result: WorkflowResult) => {
+			setWorkflowResultsState((prev) => ({
+				...prev,
+				[dataSourceId]: result,
+			}));
 		},
 		[],
 	);
+
+	// Clear all workflow results
+	const clearWorkflowResults = useCallback(() => {
+		setWorkflowResultsState({});
+	}, []);
 
 	// Build the expression context
 	const context = useMemo(
 		(): ExpressionContext => ({
 			user: expressionUser,
 			variables,
-			data,
 			field: fieldValues,
-			workflow: workflowResult,
+			workflow: workflowResults,
 			params: routeParams,
 			isDataLoading,
 			navigate: handleNavigate,
@@ -284,9 +295,8 @@ export function AppContextProvider({
 		[
 			expressionUser,
 			variables,
-			data,
 			fieldValues,
-			workflowResult,
+			workflowResults,
 			routeParams,
 			isDataLoading,
 			handleNavigate,
@@ -309,11 +319,6 @@ export function AppContextProvider({
 		setVariablesState((prev) => ({ ...prev, ...updates }));
 	}, []);
 
-	// Data setter
-	const setData = useCallback((key: string, value: unknown) => {
-		setDataState((prev) => ({ ...prev, [key]: value }));
-	}, []);
-
 	// Register custom action handler
 	const registerCustomAction = useCallback(
 		(
@@ -334,23 +339,23 @@ export function AppContextProvider({
 			context,
 			setVariable,
 			setVariables,
-			setData,
 			setFieldValue,
 			getFieldValues,
 			clearFieldValues,
 			registerCustomAction,
 			setWorkflowResult,
+			clearWorkflowResults,
 		}),
 		[
 			context,
 			setVariable,
 			setVariables,
-			setData,
 			setFieldValue,
 			getFieldValues,
 			clearFieldValues,
 			registerCustomAction,
 			setWorkflowResult,
+			clearWorkflowResults,
 		],
 	);
 

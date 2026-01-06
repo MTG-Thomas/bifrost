@@ -126,21 +126,43 @@ export function DataTableComponent({
 	const [isRefreshing, setIsRefreshing] = useState(false);
 
 	// Get data from context - memoize to prevent dependency changes
-	// Support dot-notation paths like "tickets.tickets" for nested data access
+	// Primary: workflow namespace from launchWorkflow ({{ workflow.<dataSourceId>.result }})
+	// Fallback: expression evaluation for explicit expressions
 	const rawData = useMemo(() => {
+		let data: unknown;
+
 		if (props.dataSource.startsWith("{{")) {
-			return evaluateExpression(props.dataSource, context);
+			// Explicit expression - evaluate directly
+			data = evaluateExpression(props.dataSource, context);
+		} else if (context.workflow) {
+			// Check workflow namespace first (from launchWorkflow with dataSourceId)
+			// e.g., dataSource="clients" → workflow.clients.result
+			const workflowResult = context.workflow[props.dataSource];
+			if (workflowResult?.result !== undefined) {
+				data = workflowResult.result;
+			} else if (props.dataSource.includes(".")) {
+				// Dot-notation path within workflow namespace (e.g., "clients.items")
+				const parts = props.dataSource.split(".");
+				const workflowKey = parts[0];
+				const nestedPath = parts.slice(1).join(".");
+				const result = context.workflow[workflowKey]?.result;
+				if (result && typeof result === "object") {
+					data = getNestedValue(
+						result as Record<string, unknown>,
+						nestedPath,
+					);
+				}
+			}
 		}
-		// Use getNestedValue for dot-notation paths (e.g., "tickets.tickets")
-		if (context.data && props.dataSource.includes(".")) {
-			return getNestedValue(
-				context.data as Record<string, unknown>,
-				props.dataSource,
-			);
+
+		// Apply dataPath if specified to extract array from result object
+		// e.g., dataPath="clients" extracts the array from { clients: [...], total: 2 }
+		if (data && props.dataPath) {
+			data = getNestedValue(data as Record<string, unknown>, props.dataPath);
 		}
-		// Simple key lookup for single-level paths
-		return context.data?.[props.dataSource];
-	}, [props.dataSource, context]);
+
+		return data;
+	}, [props.dataSource, props.dataPath, context]);
 
 	// Use cached data if available and no fresh data yet
 	const effectiveData = useMemo(() => {

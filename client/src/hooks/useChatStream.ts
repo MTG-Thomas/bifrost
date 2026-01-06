@@ -34,8 +34,6 @@ export interface UseChatStreamReturn {
 	sendMessage: (message: string) => void;
 	isConnected: boolean;
 	isStreaming: boolean;
-	connect: () => void;
-	disconnect: () => void;
 	// AskUserQuestion support
 	pendingQuestion: PendingQuestion | null;
 	answerQuestion: (answers: Record<string, string>) => void;
@@ -56,9 +54,6 @@ export function useChatStream({
 	// Track current conversation for closure safety
 	const currentConversationIdRef = useRef<string | undefined>(conversationId);
 
-	// Track unsubscribe function
-	const unsubscribeRef = useRef<(() => void) | null>(null);
-
 	// Ref for handleChunk to avoid effect dependency issues
 	const handleChunkRef = useRef<((chunk: ChatStreamChunk) => void) | null>(
 		null,
@@ -77,6 +72,7 @@ export function useChatStream({
 		completeStream,
 		setStreamError,
 		resetStream,
+		clearCompletedStreamingMessages,
 		addSystemEvent,
 		saveToolExecutions,
 		addMessage,
@@ -221,11 +217,10 @@ export function useChatStream({
 						}
 					}
 
-					// Mark streaming complete - this keeps the streaming message visible
-					// with isComplete=true until the API returns the authoritative message.
-					// We intentionally don't add a local "completed-*" message to avoid
-					// duplication issues during the race between local and API state.
-					completeStream(chunk.message_id ?? undefined);
+					// Clear completed messages (fixes coding agent duplicate)
+					// but keep streamingMessage visible with isComplete=true
+					clearCompletedStreamingMessages();
+					completeStream();
 
 					// Refresh messages from API - this is the source of truth
 					if (convId) {
@@ -321,6 +316,7 @@ export function useChatStream({
 			completeStream,
 			setStreamError,
 			resetStream,
+			clearCompletedStreamingMessages,
 			onError,
 			onAgentSwitch,
 			addSystemEvent,
@@ -334,37 +330,6 @@ export function useChatStream({
 		handleChunkRef.current = handleChunk;
 	}, [handleChunk]);
 
-	// Connect to WebSocket and subscribe to chat channel
-	const connect = useCallback(async () => {
-		if (!conversationId) return;
-
-		try {
-			// Connect to chat channel via shared WebSocket service
-			await webSocketService.connectToChat(conversationId);
-
-			// Subscribe to chat stream events
-			unsubscribeRef.current = webSocketService.onChatStream(
-				conversationId,
-				handleChunk,
-			);
-
-			setIsConnected(true);
-		} catch (error) {
-			console.error("[useChatStream] Failed to connect:", error);
-			setIsConnected(false);
-		}
-	}, [conversationId, handleChunk]);
-
-	// Disconnect and unsubscribe
-	const disconnect = useCallback(() => {
-		if (unsubscribeRef.current) {
-			unsubscribeRef.current();
-			unsubscribeRef.current = null;
-		}
-		setIsConnected(false);
-		resetStream();
-	}, [resetStream]);
-
 	// Send message via WebSocket
 	const sendMessage = useCallback(
 		async (message: string) => {
@@ -373,17 +338,9 @@ export function useChatStream({
 				return;
 			}
 
-			// Ensure connected first
+			// Ensure connected (subscription is handled by the useEffect below)
 			if (!webSocketService.isConnected()) {
-				await connect();
-			}
-
-			// Make sure we're subscribed to this conversation's chat stream
-			if (!unsubscribeRef.current) {
-				unsubscribeRef.current = webSocketService.onChatStream(
-					conversationId,
-					handleChunk,
-				);
+				await webSocketService.connectToChat(conversationId);
 			}
 
 			// Add optimistic user message for immediate display
@@ -420,53 +377,39 @@ export function useChatStream({
 				}
 			}
 		},
-		[
-			conversationId,
-			connect,
-			handleChunk,
-			addMessage,
-			startStreaming,
-			setStreamError,
-			resetStream,
-		],
+		[conversationId, addMessage, startStreaming, setStreamError, resetStream],
 	);
 
-	// Auto-connect when conversation changes
+	// Auto-connect when conversation changes - single subscription path
 	useEffect(() => {
-		if (conversationId) {
-			// Disconnect from previous conversation
-			if (unsubscribeRef.current) {
-				unsubscribeRef.current();
-				unsubscribeRef.current = null;
-			}
-			// Reset stream state directly from store (avoid dependency on resetStream)
-			useChatStore.getState().resetStream();
+		if (!conversationId) return;
 
-			// Connect to new conversation
-			const connectAsync = async () => {
-				try {
-					await webSocketService.connectToChat(conversationId);
-					// Use ref for callback to avoid dependency issues
-					unsubscribeRef.current = webSocketService.onChatStream(
-						conversationId,
-						(chunk) => handleChunkRef.current?.(chunk),
-					);
-					setIsConnected(true);
-				} catch (error) {
-					console.error("[useChatStream] Failed to connect:", error);
-					setIsConnected(false);
-				}
-			};
-			connectAsync();
-		}
+		let unsubscribe: (() => void) | null = null;
 
-		return () => {
-			if (unsubscribeRef.current) {
-				unsubscribeRef.current();
-				unsubscribeRef.current = null;
+		// Reset stream state directly from store
+		useChatStore.getState().resetStream();
+
+		// Connect and subscribe
+		const setup = async () => {
+			try {
+				await webSocketService.connectToChat(conversationId);
+				// Subscribe to chat stream (replaces any existing callback)
+				unsubscribe = webSocketService.onChatStream(
+					conversationId,
+					(chunk) => handleChunkRef.current?.(chunk),
+				);
+				setIsConnected(true);
+			} catch (error) {
+				console.error("[useChatStream] Failed to connect:", error);
+				setIsConnected(false);
 			}
 		};
-	}, [conversationId]); // Only depend on conversationId
+		setup();
+
+		return () => {
+			unsubscribe?.();
+		};
+	}, [conversationId]);
 
 	// Track connection status from service
 	useEffect(() => {
@@ -513,8 +456,6 @@ export function useChatStream({
 		sendMessage,
 		isConnected,
 		isStreaming,
-		connect,
-		disconnect,
 		pendingQuestion,
 		answerQuestion,
 		stopStreaming,

@@ -483,7 +483,6 @@ class TestSystemToolMetadata:
             "list_integrations",
             "list_forms",
             "get_form_schema",
-            "validate_form_schema",
             "search_knowledge",
             # File operation tools
             "read_file",

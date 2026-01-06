@@ -58,17 +58,58 @@ async def get_application_or_404(ctx: Context, app_id: UUID) -> Application:
     return application
 
 
+async def get_draft_page_or_404(
+    ctx: Context,
+    app: Application,
+    page_id: str,
+) -> AppPage:
+    """Get draft page by app and page_id or raise 404.
+
+    Uses app's draft_version_id for version-based queries.
+    """
+    if not app.draft_version_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Application has no draft version",
+        )
+
+    query = select(AppPage).where(
+        AppPage.application_id == app.id,
+        AppPage.page_id == page_id,
+        AppPage.version_id == app.draft_version_id,
+    )
+    result = await ctx.db.execute(query)
+    page = result.scalar_one_or_none()
+
+    if not page:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Page '{page_id}' not found",
+        )
+
+    return page
+
+
 async def get_page_or_404(
     ctx: Context,
     app_id: UUID,
     page_id: str,
-    is_draft: bool = True,
+    version_id: UUID | None = None,
 ) -> AppPage:
-    """Get page by app_id and page_id or raise 404."""
+    """Get page by app_id, page_id and version_id or raise 404.
+
+    version_id is required for querying pages.
+    """
+    if version_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="version_id is required",
+        )
+
     query = select(AppPage).where(
         AppPage.application_id == app_id,
         AppPage.page_id == page_id,
-        AppPage.is_draft == is_draft,
+        AppPage.version_id == version_id,
     )
     result = await ctx.db.execute(query)
     page = result.scalar_one_or_none()
@@ -89,8 +130,7 @@ def page_to_summary(page: AppPage) -> AppPageSummary:
         page_id=page.page_id,
         title=page.title,
         path=page.path,
-        is_draft=page.is_draft,
-        version=page.version,
+        version_id=page.version_id,
         page_order=page.page_order,
         permission=page.permission,
         created_at=page.created_at,
@@ -105,8 +145,7 @@ def page_to_response(page: AppPage) -> AppPageResponse:
         page_id=page.page_id,
         title=page.title,
         path=page.path,
-        is_draft=page.is_draft,
-        version=page.version,
+        version_id=page.version_id,
         page_order=page.page_order,
         permission=page.permission,
         created_at=page.created_at,
@@ -116,6 +155,7 @@ def page_to_response(page: AppPage) -> AppPageResponse:
         variables=page.variables,
         launch_workflow_id=page.launch_workflow_id,
         launch_workflow_params=page.launch_workflow_params,
+        launch_workflow_data_source_id=page.launch_workflow_data_source_id,
         root_layout_type=page.root_layout_type,
         root_layout_config=page.root_layout_config,
     )
@@ -135,17 +175,24 @@ async def list_pages(
     app_id: UUID = Path(..., description="Application UUID"),
     ctx: Context = None,
     user: CurrentUser = None,
-    is_draft: bool = Query(default=True, description="Get draft or live pages"),
+    version_id: UUID | None = Query(default=None, description="Version UUID (defaults to draft)"),
 ) -> AppPageListResponse:
-    """List all pages for an application (summaries only)."""
+    """List all pages for an application (summaries only).
+
+    Requires version_id to specify which version of pages to list.
+    Defaults to app's draft_version_id if not provided.
+    """
     # Verify app access
-    await get_application_or_404(ctx, app_id)
+    app = await get_application_or_404(ctx, app_id)
+
+    # Use draft_version_id if version_id not specified
+    effective_version_id = version_id or app.draft_version_id
 
     query = (
         select(AppPage)
         .where(
             AppPage.application_id == app_id,
-            AppPage.is_draft == is_draft,
+            AppPage.version_id == effective_version_id,
         )
         .order_by(AppPage.page_order)
     )
@@ -168,20 +215,26 @@ async def get_page(
     page_id: str = Path(..., description="Page ID (string identifier)"),
     ctx: Context = None,
     user: CurrentUser = None,
-    is_draft: bool = Query(default=True, description="Get draft or live version"),
+    version_id: UUID | None = Query(default=None, description="Version UUID (defaults to draft)"),
 ) -> PageDefinition:
     """
     Get a page with its full layout tree.
+
+    Requires version_id to specify which version of the page to get.
+    Defaults to app's draft_version_id if not provided.
 
     Returns a PageDefinition with nested layout structure that matches
     the frontend TypeScript PageDefinition interface exactly.
     The response is serialized to camelCase JSON.
     """
     # Verify app access
-    await get_application_or_404(ctx, app_id)
+    app = await get_application_or_404(ctx, app_id)
+
+    # Use draft_version_id if version_id not specified
+    effective_version_id = version_id or app.draft_version_id
 
     service = AppBuilderService(ctx.db)
-    page_def = await service.get_page_definition(app_id, page_id, is_draft)
+    page_def = await service.get_page_definition(app_id, page_id, version_id=effective_version_id)
 
     if not page_def:
         raise HTTPException(
@@ -208,11 +261,17 @@ async def create_page(
     # Verify app access
     app = await get_application_or_404(ctx, app_id)
 
-    # Check for duplicate page_id
+    if not app.draft_version_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Application has no draft version",
+        )
+
+    # Check for duplicate page_id in draft version
     existing_query = select(AppPage).where(
         AppPage.application_id == app_id,
         AppPage.page_id == data.page_id,
-        AppPage.is_draft == True,  # noqa: E712
+        AppPage.version_id == app.draft_version_id,
     )
     existing = await ctx.db.execute(existing_query)
     if existing.scalar_one_or_none():
@@ -235,7 +294,7 @@ async def create_page(
         title=data.title,
         path=data.path,
         layout=layout,
-        is_draft=True,
+        version_id=app.draft_version_id,
         data_sources=data.data_sources,
         variables=data.variables,
         launch_workflow_id=data.launch_workflow_id,
@@ -244,8 +303,6 @@ async def create_page(
         page_order=data.page_order,
     )
 
-    # Increment app draft version
-    app.draft_version += 1
     await ctx.db.flush()
 
     logger.info(f"Created page '{data.page_id}' in app {app_id}")
@@ -267,7 +324,7 @@ async def update_page(
     """Update page metadata (not components)."""
     # Verify app access
     app = await get_application_or_404(ctx, app_id)
-    page = await get_page_or_404(ctx, app_id, page_id, is_draft=True)
+    page = await get_draft_page_or_404(ctx, app, page_id)
 
     # Apply updates
     if data.title is not None:
@@ -282,6 +339,8 @@ async def update_page(
         page.launch_workflow_id = data.launch_workflow_id
     if data.launch_workflow_params is not None:
         page.launch_workflow_params = data.launch_workflow_params
+    if data.launch_workflow_data_source_id is not None:
+        page.launch_workflow_data_source_id = data.launch_workflow_data_source_id
     if data.permission is not None:
         page.permission = data.permission
     if data.page_order is not None:
@@ -290,9 +349,6 @@ async def update_page(
         page.root_layout_type = data.root_layout_type
     if data.root_layout_config is not None:
         page.root_layout_config = data.root_layout_config
-
-    page.version += 1
-    app.draft_version += 1
 
     await ctx.db.flush()
     await ctx.db.refresh(page)
@@ -315,11 +371,10 @@ async def delete_page(
     """Delete a page and all its components."""
     # Verify app access
     app = await get_application_or_404(ctx, app_id)
-    page = await get_page_or_404(ctx, app_id, page_id, is_draft=True)
+    page = await get_draft_page_or_404(ctx, app, page_id)
 
     # Delete page (cascade deletes components)
     await ctx.db.delete(page)
-    app.draft_version += 1
 
     await ctx.db.flush()
 
@@ -346,12 +401,11 @@ async def replace_page_layout(
     """Replace the entire layout of a page (all components)."""
     # Verify app access
     app = await get_application_or_404(ctx, app_id)
-    page = await get_page_or_404(ctx, app_id, page_id, is_draft=True)
+    page = await get_draft_page_or_404(ctx, app, page_id)
 
     service = AppBuilderService(ctx.db)
     await service.update_page_layout(page, layout)
 
-    app.draft_version += 1
     await ctx.db.flush()
     await ctx.db.refresh(page)
 
