@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
     description="List recent workflow executions.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -100,6 +101,7 @@ async def list_executions(
     description="Get details and logs for a specific workflow execution.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {

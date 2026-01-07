@@ -20,6 +20,7 @@ class ToolCategory(str, Enum):
     DATA_PROVIDER = "data_provider"
     KNOWLEDGE = "knowledge"
     INTEGRATION = "integration"
+    ORGANIZATION = "organization"
 
 
 @dataclass
@@ -41,6 +42,9 @@ class SystemToolMetadata:
 
     # Configuration
     default_enabled_for_coding_agent: bool = True
+
+    # Access control
+    is_restricted: bool = False  # Platform-admin only regardless of agent assignment
 
     # Schema for tool parameters
     input_schema: dict[str, Any] = field(

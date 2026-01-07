@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
     description="Read a file from the Bifrost workspace.",
     category=ToolCategory.FILE,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -64,6 +65,7 @@ async def read_file(context: Any, path: str) -> str:
     description="Write content to a file in the Bifrost workspace.",
     category=ToolCategory.FILE,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -110,6 +112,7 @@ async def write_file(context: Any, path: str, content: str) -> str:
     description="List files and directories in the Bifrost workspace.",
     category=ToolCategory.FILE,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -158,6 +161,7 @@ async def list_files(context: Any, directory: str = "") -> str:
     description="Delete a file or directory from the Bifrost workspace.",
     category=ToolCategory.FILE,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -199,6 +203,7 @@ async def delete_file(context: Any, path: str) -> str:
     description="Search for text patterns across files in the Bifrost workspace.",
     category=ToolCategory.FILE,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -269,6 +274,7 @@ async def search_files(
     description="Create a new folder in the Bifrost workspace.",
     category=ToolCategory.FILE,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {

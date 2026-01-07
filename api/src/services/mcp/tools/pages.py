@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
     description="Get a page with its full component tree. This is where the real token savings happen - only fetch the page you need.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -128,6 +129,7 @@ async def get_page(
     description="Create a new page in an application with optional layout.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -272,6 +274,7 @@ async def create_page(
     description="Update a page's metadata or replace its layout.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -429,6 +432,7 @@ async def update_page(
     description="Delete a page and all its components from an application.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {

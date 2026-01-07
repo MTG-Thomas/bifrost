@@ -5627,13 +5627,13 @@ export interface paths {
         };
         /**
          * List tables
-         * @description List all tables in the current scope.
+         * @description List all tables in the current scope (platform admin only).
          */
         get: operations["list_tables_api_tables_get"];
         put?: never;
         /**
          * Create a table
-         * @description Create a new table for storing documents.
+         * @description Create a new table for storing documents (platform admin only).
          */
         post: operations["create_table_api_tables_post"];
         delete?: never;
@@ -5651,21 +5651,21 @@ export interface paths {
         };
         /**
          * Get table metadata
-         * @description Get table metadata by name.
+         * @description Get table metadata by name (platform admin only).
          */
         get: operations["get_table_api_tables__name__get"];
         put?: never;
         post?: never;
         /**
          * Delete table
-         * @description Delete a table and all its documents.
+         * @description Delete a table and all its documents (platform admin only).
          */
         delete: operations["delete_table_api_tables__name__delete"];
         options?: never;
         head?: never;
         /**
          * Update table
-         * @description Update table metadata.
+         * @description Update table metadata (platform admin only).
          */
         patch: operations["update_table_api_tables__name__patch"];
         trace?: never;
@@ -5681,7 +5681,7 @@ export interface paths {
         put?: never;
         /**
          * Insert a document
-         * @description Insert a new document into the table.
+         * @description Insert a new document into the table (platform admin only).
          *
          *     Auto-creates the table if it doesn't exist.
          */
@@ -5701,21 +5701,21 @@ export interface paths {
         };
         /**
          * Get a document
-         * @description Get a document by ID.
+         * @description Get a document by ID (platform admin only).
          */
         get: operations["get_document_api_tables__name__documents__doc_id__get"];
         put?: never;
         post?: never;
         /**
          * Delete a document
-         * @description Delete a document.
+         * @description Delete a document (platform admin only).
          */
         delete: operations["delete_document_api_tables__name__documents__doc_id__delete"];
         options?: never;
         head?: never;
         /**
          * Update a document
-         * @description Update a document (partial update, merges with existing).
+         * @description Update a document (platform admin only, partial update, merges with existing).
          */
         patch: operations["update_document_api_tables__name__documents__doc_id__patch"];
         trace?: never;
@@ -5731,7 +5731,7 @@ export interface paths {
         put?: never;
         /**
          * Query documents
-         * @description Query documents with filtering and pagination.
+         * @description Query documents with filtering and pagination (platform admin only).
          *
          *     Auto-creates the table if it doesn't exist (returns empty results).
          */
@@ -5751,7 +5751,7 @@ export interface paths {
         };
         /**
          * Count documents
-         * @description Count documents in a table.
+         * @description Count documents in a table (platform admin only).
          *
          *     Auto-creates the table if it doesn't exist (returns 0).
          */
@@ -7266,7 +7266,7 @@ export interface components {
             /** Mfa Required For Password */
             mfa_required_for_password: boolean;
             /** Oauth Providers */
-            oauth_providers: components["schemas"]["OAuthProviderInfo"][];
+            oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
         };
         /**
          * AuthorizeResponse
@@ -11792,20 +11792,11 @@ export interface components {
         };
         /**
          * MFAVerifyRequest
-         * @description Request to verify MFA code during login.
+         * @description Request to verify MFA code.
          */
         MFAVerifyRequest: {
-            /** Mfa Token */
-            mfa_token: string;
             /** Code */
             code: string;
-            /**
-             * Trust Device
-             * @default false
-             */
-            trust_device: boolean;
-            /** Device Name */
-            device_name?: string | null;
         };
         /**
          * MFAVerifyResponse
@@ -12460,7 +12451,7 @@ export interface components {
         };
         /**
          * OAuthProviderInfo
-         * @description OAuth provider information for login page
+         * @description OAuth provider information.
          */
         OAuthProviderInfo: {
             /** Name */
@@ -12476,7 +12467,7 @@ export interface components {
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
+            providers: components["schemas"]["OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -14885,6 +14876,12 @@ export interface components {
              * @default false
              */
             default_enabled_for_coding_agent: boolean;
+            /**
+             * Is Restricted
+             * @description Platform-admin only tool regardless of agent assignment
+             * @default false
+             */
+            is_restricted: boolean;
         };
         /**
          * ToolsResponse
@@ -15155,7 +15152,7 @@ export interface components {
         };
         /**
          * UserCreate
-         * @description User creation request model.
+         * @description Input for creating a user.
          */
         UserCreate: {
             /**
@@ -15163,10 +15160,24 @@ export interface components {
              * Format: email
              */
             email: string;
-            /** Password */
-            password: string;
             /** Name */
             name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** @default ORG */
+            user_type: components["schemas"]["UserType"];
+            /** Organization Id */
+            organization_id?: string | null;
         };
         /**
          * UserFormsResponse
@@ -16054,6 +16065,18 @@ export interface components {
             backup_will_be_created: boolean;
         };
         /**
+         * OAuthProviderInfo
+         * @description OAuth provider information for login page
+         */
+        src__models__contracts__auth__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
+        };
+        /**
          * OAuthCallbackRequest
          * @description Request model for OAuth callback endpoint
          */
@@ -16080,33 +16103,36 @@ export interface components {
             organization_id?: string | null;
         };
         /**
-         * UserCreate
-         * @description Input for creating a user.
+         * MFAVerifyRequest
+         * @description Request to verify MFA code during login.
          */
-        src__models__contracts__users__UserCreate: {
+        src__routers__auth__MFAVerifyRequest: {
+            /** Mfa Token */
+            mfa_token: string;
+            /** Code */
+            code: string;
+            /**
+             * Trust Device
+             * @default false
+             */
+            trust_device: boolean;
+            /** Device Name */
+            device_name?: string | null;
+        };
+        /**
+         * UserCreate
+         * @description User creation request model.
+         */
+        src__routers__auth__UserCreate: {
             /**
              * Email
              * Format: email
              */
             email: string;
+            /** Password */
+            password: string;
             /** Name */
             name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** @default ORG */
-            user_type: components["schemas"]["UserType"];
-            /** Organization Id */
-            organization_id?: string | null;
         };
         /**
          * MFASetupResponse
@@ -16123,26 +16149,6 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
-        };
-        /**
-         * MFAVerifyRequest
-         * @description Request to verify MFA code.
-         */
-        src__routers__mfa__MFAVerifyRequest: {
-            /** Code */
-            code: string;
-        };
-        /**
-         * OAuthProviderInfo
-         * @description OAuth provider information.
-         */
-        src__routers__oauth_sso__OAuthProviderInfo: {
-            /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
         };
     };
     responses: never;
@@ -16288,7 +16294,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MFAVerifyRequest"];
+                "application/json": components["schemas"]["src__routers__auth__MFAVerifyRequest"];
             };
         };
         responses: {
@@ -16460,7 +16466,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__routers__auth__UserCreate"];
             };
         };
         responses: {
@@ -16705,7 +16711,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__mfa__MFAVerifyRequest"];
+                "application/json": components["schemas"]["MFAVerifyRequest"];
             };
         };
         responses: {
@@ -17406,7 +17412,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
+                "application/json": components["schemas"]["UserCreate"];
             };
         };
         responses: {

@@ -24,6 +24,7 @@ def system_tool(
     *,
     category: ToolCategory = ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent: bool = True,
+    is_restricted: bool = False,
     input_schema: dict[str, Any] | None = None,
 ) -> Callable[[F], F]:
     """
@@ -60,6 +61,7 @@ def system_tool(
         description: Description shown to LLM
         category: Tool category for grouping
         default_enabled_for_coding_agent: Whether enabled by default for coding agents
+        is_restricted: If True, tool is only available to platform admins regardless of agent assignment
         input_schema: JSON Schema for tool parameters
     """
 
@@ -71,6 +73,7 @@ def system_tool(
             description=description,
             category=category,
             default_enabled_for_coding_agent=default_enabled_for_coding_agent,
+            is_restricted=is_restricted,
             input_schema=input_schema
             or {"type": "object", "properties": {}, "required": []},
             implementation=func,

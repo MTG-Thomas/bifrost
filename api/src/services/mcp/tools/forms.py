@@ -78,6 +78,7 @@ async def list_forms(context: Any) -> str:
     description="Get documentation about form structure and field types.",
     category=ToolCategory.FORM,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
 async def get_form_schema(context: Any) -> str:
@@ -227,6 +228,7 @@ Forms in Bifrost are defined using a JSON schema with the following structure:
     description="Create a new form with fields linked to a workflow.",
     category=ToolCategory.FORM,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -250,7 +252,16 @@ Forms in Bifrost are defined using a JSON schema with the following structure:
                 }
             },
             "description": {"type": "string", "description": "Optional form description"},
-            "launch_workflow_id": {"type": "string", "description": "Optional UUID of workflow to run before form display"}
+            "launch_workflow_id": {"type": "string", "description": "Optional UUID of workflow to run before form display"},
+            "scope": {
+                "type": "string",
+                "enum": ["global", "organization"],
+                "description": "Resource scope: 'global' (visible to all orgs) or 'organization' (default)",
+            },
+            "organization_id": {
+                "type": "string",
+                "description": "Organization UUID (overrides context.org_id when scope='organization')",
+            },
         },
         "required": ["name", "workflow_id", "fields"],
     },
@@ -262,6 +273,8 @@ async def create_form(
     fields: list[dict[str, Any]],
     description: str | None = None,
     launch_workflow_id: str | None = None,
+    scope: str = "organization",
+    organization_id: str | None = None,
 ) -> str:
     """Create a new form with fields linked to a workflow.
 
@@ -272,6 +285,8 @@ async def create_form(
         fields: Array of field definitions
         description: Optional form description
         launch_workflow_id: Optional UUID of workflow to run before form display
+        scope: 'global' (visible to all orgs) or 'organization' (default)
+        organization_id: Override context.org_id when scope='organization'
 
     Returns:
         JSON with form details
@@ -289,7 +304,7 @@ async def create_form(
     from src.repositories.workflows import WorkflowRepository
     from src.routers.forms import _form_schema_to_fields, _write_form_to_file
 
-    logger.info(f"MCP create_form called: name={name}, workflow_id={workflow_id}")
+    logger.info(f"MCP create_form called: name={name}, workflow_id={workflow_id}, scope={scope}")
 
     # Validate inputs
     if not name:
@@ -300,6 +315,27 @@ async def create_form(
         return json.dumps({"error": "fields array is required"})
     if len(name) > 200:
         return json.dumps({"error": "name must be 200 characters or less"})
+
+    # Validate scope parameter
+    if scope not in ("global", "organization"):
+        return json.dumps({"error": "scope must be 'global' or 'organization'"})
+
+    # Determine effective organization_id based on scope
+    effective_org_id: UUID_TYPE | None = None
+    if scope == "global":
+        # Global resources have no organization_id
+        effective_org_id = None
+    else:
+        # Organization scope: use provided organization_id or fall back to context.org_id
+        if organization_id:
+            try:
+                effective_org_id = UUID_TYPE(organization_id)
+            except ValueError:
+                return json.dumps({"error": f"organization_id '{organization_id}' is not a valid UUID"})
+        elif context.org_id:
+            effective_org_id = UUID_TYPE(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
+        else:
+            return json.dumps({"error": "organization_id is required when scope='organization' and no context org_id is set"})
 
     # Validate workflow_id is a valid UUID
     try:
@@ -337,7 +373,6 @@ async def create_form(
 
             # Create form record
             now = datetime.utcnow()
-            org_id = UUID_TYPE(str(context.org_id)) if context.org_id else None
 
             form = FormORM(
                 name=name,
@@ -345,7 +380,7 @@ async def create_form(
                 workflow_id=workflow_id,
                 launch_workflow_id=launch_workflow_id,
                 access_level="role_based",
-                organization_id=org_id,
+                organization_id=effective_org_id,
                 is_active=True,
                 created_by=context.user_email or "mcp@bifrost.local",
                 created_at=now,
@@ -538,6 +573,7 @@ async def get_form(
     description="Update an existing form's properties or fields.",
     category=ToolCategory.FORM,
     default_enabled_for_coding_agent=False,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {

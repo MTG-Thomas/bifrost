@@ -86,7 +86,14 @@ class MCPToolAccessService:
 
                 # Get metadata from SYSTEM_TOOLS registry
                 if system_tool_id in self._SYSTEM_TOOL_MAP:
-                    tools.append(self._SYSTEM_TOOL_MAP[system_tool_id])
+                    tool_info = self._SYSTEM_TOOL_MAP[system_tool_id]
+                    # Skip restricted tools for non-platform-admins
+                    if tool_info.is_restricted and not is_superuser:
+                        logger.debug(
+                            f"Skipping restricted tool '{system_tool_id}' for non-admin user"
+                        )
+                        continue
+                    tools.append(tool_info)
                 else:
                     # Unknown system tool - create basic info
                     logger.warning(f"Unknown system tool '{system_tool_id}' in agent '{agent.name}'")

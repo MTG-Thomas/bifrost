@@ -12,6 +12,8 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
+from src.services.mcp.tool_registry import get_system_tool
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,7 +121,20 @@ class ToolFilterMiddleware(Middleware):
         is_superuser = token.claims.get("is_superuser", False)
         user_email = token.claims.get("email", "unknown")
 
-        # Check if user has access to this tool
+        # Early check: Block restricted tools for non-platform-admins
+        # This provides a fast-path security check before querying the database
+        tool_metadata = get_system_tool(tool_name)
+        if tool_metadata and tool_metadata.is_restricted and not is_superuser:
+            logger.warning(
+                f"MCP tools/call: Restricted tool '{tool_name}' blocked for "
+                f"non-admin user {user_email}"
+            )
+            raise ToolError(
+                f"Access denied: '{tool_name}' is a restricted tool that requires "
+                f"platform administrator privileges"
+            )
+
+        # Check if user has access to this tool via agent assignments
         try:
             from src.core.database import get_db_context
             from src.services.mcp.tool_access import MCPToolAccessService

@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
     description="Execute a Bifrost workflow by ID and return the results. Use list_workflows to get workflow IDs.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -99,6 +100,7 @@ async def execute_workflow(
     description="List workflows registered in Bifrost.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -160,6 +162,7 @@ async def list_workflows(
     description="Validate a workflow Python file for syntax and decorator issues.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -253,6 +256,7 @@ async def validate_workflow(context: Any, file_path: str) -> str:
     description="Create a new workflow by validating Python code and writing to workspace.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -340,6 +344,7 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
     description="Get documentation about workflow structure, decorators, and SDK features.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
 async def get_workflow_schema(context: Any) -> str:
@@ -470,6 +475,7 @@ Workflows should return JSON-serializable data:
     description="Get detailed metadata for a specific workflow by ID or name.",
     category=ToolCategory.WORKFLOW,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {

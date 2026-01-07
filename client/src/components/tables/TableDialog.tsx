@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
+import { AlertTriangle } from "lucide-react";
 import {
 	Dialog,
 	DialogContent,
@@ -19,6 +20,7 @@ import {
 	FormLabel,
 	FormMessage,
 } from "@/components/ui/form";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -57,6 +59,9 @@ export function TableDialog({ table, open, onClose }: TableDialogProps) {
 	const { isPlatformAdmin, user } = useAuth();
 	const isEditing = !!table;
 
+	// Track original organization_id to detect scope changes
+	const [originalOrgId, setOriginalOrgId] = useState<string | null>(null);
+
 	// Default organization_id for org users is their org, for platform admins it's null (global)
 	const defaultOrgId = isPlatformAdmin
 		? null
@@ -72,17 +77,24 @@ export function TableDialog({ table, open, onClose }: TableDialogProps) {
 		},
 	});
 
+	// Watch organization_id to detect scope changes
+	const watchedOrgId = form.watch("organization_id");
+	const scopeChanged = isEditing && watchedOrgId !== originalOrgId;
+
 	useEffect(() => {
 		if (table) {
+			const orgId = table.organization_id ?? null;
+			setOriginalOrgId(orgId);
 			form.reset({
 				name: table.name,
 				description: table.description || "",
 				schema: table.schema
 					? JSON.stringify(table.schema, null, 2)
 					: "",
-				organization_id: table.organization_id ?? null,
+				organization_id: orgId,
 			});
 		} else {
+			setOriginalOrgId(null);
 			form.reset({
 				name: "",
 				description: "",
@@ -170,7 +182,6 @@ export function TableDialog({ table, open, onClose }: TableDialogProps) {
 												value={field.value}
 												onChange={field.onChange}
 												showGlobal={true}
-												disabled={isEditing}
 											/>
 										</FormControl>
 										<FormDescription>
@@ -178,6 +189,19 @@ export function TableDialog({ table, open, onClose }: TableDialogProps) {
 											organizations
 										</FormDescription>
 										<FormMessage />
+										{scopeChanged && (
+											<Alert className="mt-2 bg-amber-50 border-amber-200 dark:bg-amber-950 dark:border-amber-800">
+												<AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+												<AlertDescription className="text-amber-800 dark:text-amber-200">
+													Changing table scope affects
+													which users can access this
+													data. Existing records will
+													remain but may become
+													visible/hidden to different
+													users.
+												</AlertDescription>
+											</Alert>
+										)}
 									</FormItem>
 								)}
 							/>

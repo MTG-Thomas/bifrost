@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
     description="Get documentation about data provider structure, decorators, and examples.",
     category=ToolCategory.DATA_PROVIDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
 async def get_data_provider_schema(context: Any) -> str:

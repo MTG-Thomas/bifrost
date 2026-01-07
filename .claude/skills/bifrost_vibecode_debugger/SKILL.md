@@ -62,9 +62,22 @@ This distinction matters because end users can't fix system bugs, but they WILL 
 
 **Note:** Data providers are workflows with `type='data_provider'`. Use `list_workflows` to find them.
 
+### Organization Tools (Platform Admin Only)
+- `list_organizations` - List all organizations in the platform
+- `get_organization` - Get organization details by ID or slug
+- `create_organization` - Create a new organization
+
+### Table Tools
+- `list_tables` - View tables (filtered by org for non-admins)
+- `get_table` - Get table details and schema
+- `create_table` - Create tables with explicit scope (platform admin only)
+- `update_table` - Update table properties including scope (platform admin only)
+- `get_table_schema` - Documentation about table structure and column types
+
 ### Creation Tools (Auto-Validating)
 - `create_workflow` - Create workflow, tool, or data provider (validates automatically)
-- `create_form` - Create a form (validates automatically)
+- `create_form` - Create a form (validates automatically, supports scope param)
+- `create_app` - Create an app (validates automatically, supports scope param)
 
 ### App Builder Tools
 See **App Builder Tool Hierarchy** section below for granular app management tools.
@@ -302,6 +315,47 @@ workspace/
 │   └── services/
 └── modules/                # Auto-generated SDKs (DO NOT EDIT)
 ```
+
+## Multi-tenancy Awareness
+
+Before creating any resource (tables, apps, forms), ask the user:
+1. **Which organization?** Use `list_organizations` to show available options
+2. **Global or org-specific?** Clarify scope requirements
+
+If user says "global", explain this makes the resource visible to all organizations.
+
+### Scope Options
+- `global` - Visible to all organizations
+- `organization` - Visible only to the specified organization (requires `organization_id`)
+- `application` - Scoped to a specific app (for tables only, requires `application_id`)
+
+### Multi-tenancy Patterns
+
+**When creating apps or forms:**
+```python
+# Organization-scoped (default)
+create_app(name="My App", scope="organization", organization_id="org-123")
+
+# Global (visible to all orgs)
+create_app(name="Shared App", scope="global")
+```
+
+**When creating tables:**
+```python
+# Organization-scoped
+create_table(name="Customers", scope="organization", organization_id="org-123")
+
+# Global table
+create_table(name="Reference Data", scope="global")
+
+# App-scoped table
+create_table(name="App Data", scope="application", application_id="app-456")
+```
+
+### Access Control Notes
+- **Restricted tools** (org tools, create_table, update_table) are platform-admin only
+- **Regular tools** (list_tables, get_table) respect org filtering for non-admins
+- Non-admins only see resources in their organization
 
 ## Session Summary Template
 

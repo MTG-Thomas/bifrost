@@ -59,6 +59,7 @@ async def _get_draft_page(db: Any, context: Any, app_uuid: UUID, page_id: str) -
     description="List components in a page (summaries only - type, parent, order).",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -126,6 +127,7 @@ async def list_components(
     description="Get a single component with full props.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -203,6 +205,7 @@ async def get_component(
     description="Create a new component in a page.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -323,6 +326,7 @@ async def create_component(
     description="Update a component's props or settings.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -441,6 +445,7 @@ async def update_component(
     description="Delete a component and all its children.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -518,6 +523,7 @@ async def delete_component(
     description="Move a component to a new parent and/or position.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
     description="List available integrations that can be used in workflows.",
     category=ToolCategory.INTEGRATION,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
 async def list_integrations(context: Any) -> str:

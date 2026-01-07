@@ -89,6 +89,7 @@ async def list_apps(context: Any) -> str:
     description="Create a new App Builder application. Creates app metadata and optional home page. Use create_page and create_component for content.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -105,6 +106,15 @@ async def list_apps(context: Any) -> str:
                 "type": "boolean",
                 "description": "Create blank home page (default: true)",
             },
+            "scope": {
+                "type": "string",
+                "enum": ["global", "organization"],
+                "description": "Resource scope: 'global' (visible to all orgs) or 'organization' (default)",
+            },
+            "organization_id": {
+                "type": "string",
+                "description": "Organization UUID (overrides context.org_id when scope='organization')",
+            },
         },
         "required": ["name"],
     },
@@ -115,6 +125,8 @@ async def create_app(
     description: str | None = None,
     slug: str | None = None,
     create_home_page: bool = True,
+    scope: str = "organization",
+    organization_id: str | None = None,
 ) -> str:
     """
     Create a new application with optional home page.
@@ -124,22 +136,45 @@ async def create_app(
         description: Application description
         slug: URL slug (auto-generated from name if not provided)
         create_home_page: Create a blank home page (default: True)
+        scope: 'global' (visible to all orgs) or 'organization' (default)
+        organization_id: Override context.org_id when scope='organization'
 
     Returns:
         Success message with app details, or error message
     """
     import re
-    from uuid import uuid4
+    from uuid import UUID, uuid4
 
     from sqlalchemy import select
 
     from src.core.database import get_db_context
     from src.models.orm.applications import AppPage, AppVersion, Application
 
-    logger.info(f"MCP create_app called with name={name}")
+    logger.info(f"MCP create_app called with name={name}, scope={scope}")
 
     if not name:
         return json.dumps({"error": "name is required"})
+
+    # Validate scope parameter
+    if scope not in ("global", "organization"):
+        return json.dumps({"error": "scope must be 'global' or 'organization'"})
+
+    # Determine effective organization_id based on scope
+    effective_org_id: UUID | None = None
+    if scope == "global":
+        # Global resources have no organization_id
+        effective_org_id = None
+    else:
+        # Organization scope: use provided organization_id or fall back to context.org_id
+        if organization_id:
+            try:
+                effective_org_id = UUID(organization_id)
+            except ValueError:
+                return json.dumps({"error": f"organization_id '{organization_id}' is not a valid UUID"})
+        elif context.org_id:
+            effective_org_id = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
+        else:
+            return json.dumps({"error": "organization_id is required when scope='organization' and no context org_id is set"})
 
     # Generate slug from name if not provided
     if not slug:
@@ -147,10 +182,10 @@ async def create_app(
 
     try:
         async with get_db_context() as db:
-            # Check for duplicate slug within same org
+            # Check for duplicate slug within same org scope
             query = select(Application).where(Application.slug == slug)
-            if context.org_id:
-                query = query.where(Application.organization_id == context.org_id)
+            if effective_org_id:
+                query = query.where(Application.organization_id == effective_org_id)
             else:
                 query = query.where(Application.organization_id.is_(None))
 
@@ -164,7 +199,7 @@ async def create_app(
                 name=name,
                 slug=slug,
                 description=description,
-                organization_id=context.org_id,
+                organization_id=effective_org_id,
                 created_by=str(context.user_id),
             )
             db.add(app)
@@ -326,6 +361,7 @@ async def get_app(
     description="Update application metadata (name, description, navigation). Does NOT update pages - use page tools for that.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -439,6 +475,7 @@ async def update_app(
     description="Publish all draft pages and components to live.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={
         "type": "object",
         "properties": {
@@ -529,6 +566,7 @@ async def publish_app(context: Any, app_id: str) -> str:
     description="Get documentation about App Builder application structure, components, expressions, and actions.",
     category=ToolCategory.APP_BUILDER,
     default_enabled_for_coding_agent=True,
+    is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
 async def get_app_schema(context: Any) -> str:

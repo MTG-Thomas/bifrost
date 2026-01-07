@@ -21,6 +21,8 @@ Structure:
 - apps.py         - application CRUD
 - pages.py        - page CRUD
 - components.py   - component CRUD
+- tables.py       - table CRUD and schema
+- organizations.py - organization CRUD (restricted)
 """
 
 # Import all tool modules to trigger registration
@@ -35,3 +37,5 @@ from src.services.mcp.tools import data_providers  # noqa: F401
 from src.services.mcp.tools import apps  # noqa: F401
 from src.services.mcp.tools import pages  # noqa: F401
 from src.services.mcp.tools import components  # noqa: F401
+from src.services.mcp.tools import tables  # noqa: F401
+from src.services.mcp.tools import organizations  # noqa: F401

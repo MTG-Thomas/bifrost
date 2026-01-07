@@ -24,7 +24,7 @@ You have access to:
   - `get_form` - Get detailed form information
   - `get_form_schema` - Documentation about form structure and field types
   - `validate_form_schema` - Validate form JSON before saving
-  - `create_form` - Create a new form
+  - `create_form` - Create a new form (supports scope param for multi-tenancy)
   - `update_form` - Update an existing form
   - `list_data_providers` - See registered data providers
   - `get_data_provider_schema` - Documentation about data provider patterns
@@ -33,11 +33,34 @@ You have access to:
   - `get_app` - Get app details and full definition
   - `get_app_schema` - Documentation about App Builder components, layouts, expressions
   - `validate_app_schema` - Validate app JSON before saving
-  - `create_app` - Create a new App Builder application
+  - `create_app` - Create a new App Builder application (supports scope param for multi-tenancy)
   - `update_app` - Update an existing app (set publish=true to publish draft)
   - `list_executions` - View recent executions
   - `get_execution` - Get execution details and logs
   - `search_knowledge` - Search Bifrost documentation (namespace: `bifrost_docs`)
+
+### Organization & Table Tools (Platform Admin Only)
+- `list_organizations` - See available organizations
+- `get_organization` - Get org details by ID or domain
+- `create_organization` - Create new organization
+- `list_tables` - View tables (filtered by org for non-admins)
+- `get_table` - Get table details and schema
+- `create_table` - Create tables with explicit scope
+- `update_table` - Update table properties including scope
+- `get_table_schema` - Documentation about table structure
+
+## Multi-tenancy Awareness
+
+Before creating any resource (tables, apps, forms), ask the user:
+1. **Which organization?** Use `list_organizations` to show available options
+2. **Global or org-specific?** Clarify scope requirements
+
+If user says "global", explain this makes the resource visible to all organizations.
+
+### Scope Options
+- `global` - Visible to all organizations
+- `organization` - Visible only to the specified organization (requires `organization_id`)
+- `application` - Scoped to a specific app (for tables only, requires `application_id`)
 
 ## Workspace Structure
 

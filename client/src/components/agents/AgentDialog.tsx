@@ -620,16 +620,28 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 															field.onChange(
 																checked,
 															);
-															// Auto-select all system tools when enabling coding mode
+															// Auto-select all system tools (including restricted) when enabling coding mode
 															if (
 																checked &&
-																toolsGrouped?.system
+																toolsGrouped
 															) {
 																const allSystemToolIds =
-																	toolsGrouped.system.map(
-																		(t) =>
-																			t.id,
-																	);
+																	[
+																		...(toolsGrouped.system?.map(
+																			(
+																				t,
+																			) =>
+																				t.id,
+																		) ||
+																			[]),
+																		...(toolsGrouped.restricted?.map(
+																			(
+																				t,
+																			) =>
+																				t.id,
+																		) ||
+																			[]),
+																	];
 																form.setValue(
 																	"system_tools",
 																	allSystemToolIds,
@@ -876,11 +888,18 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 														(toolIds?.length || 0) >
 													0 ? (
 														<div className="flex flex-wrap gap-1">
-															{/* System tool badges */}
+															{/* System tool badges (includes restricted) */}
 															{systemTools?.map(
 																(toolId) => {
 																	const tool =
 																		toolsGrouped?.system.find(
+																			(
+																				t,
+																			) =>
+																				t.id ===
+																				toolId,
+																		) ||
+																		toolsGrouped?.restricted.find(
 																			(
 																				t,
 																			) =>
@@ -983,6 +1002,85 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 														<CommandEmpty>
 															No tools found.
 														</CommandEmpty>
+
+														{/* Restricted System Tools Group */}
+														{toolsGrouped?.restricted &&
+															toolsGrouped
+																.restricted
+																.length > 0 && (
+																<CommandGroup heading="Restricted System Tools">
+																	<p className="text-xs text-muted-foreground px-2 pb-2">
+																		Never
+																		available
+																		to
+																		non-admins
+																	</p>
+																	{toolsGrouped.restricted.map(
+																		(
+																			tool,
+																		) => (
+																			<CommandItem
+																				key={
+																					tool.id
+																				}
+																				value={`restricted-${tool.name}`}
+																				onSelect={() => {
+																					const current =
+																						systemTools ||
+																						[];
+																					if (
+																						current.includes(
+																							tool.id,
+																						)
+																					) {
+																						form.setValue(
+																							"system_tools",
+																							current.filter(
+																								(
+																									id,
+																								) =>
+																									id !==
+																									tool.id,
+																							),
+																						);
+																					} else {
+																						form.setValue(
+																							"system_tools",
+																							[
+																								...current,
+																								tool.id,
+																							],
+																						);
+																					}
+																				}}
+																			>
+																				<Check
+																					className={cn(
+																						"mr-2 h-4 w-4",
+																						systemTools?.includes(
+																							tool.id,
+																						)
+																							? "opacity-100"
+																							: "opacity-0",
+																					)}
+																				/>
+																				<div className="flex flex-col">
+																					<span className="font-mono text-sm">
+																						{
+																							tool.id
+																						}
+																					</span>
+																					<span className="text-xs text-muted-foreground">
+																						{
+																							tool.description
+																						}
+																					</span>
+																				</div>
+																			</CommandItem>
+																		),
+																	)}
+																</CommandGroup>
+															)}
 
 														{/* System Tools Group */}
 														{toolsGrouped?.system &&

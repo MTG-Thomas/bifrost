@@ -45,6 +45,7 @@ def get_system_tools() -> list[ToolInfo]:
             type="system",
             category=meta.category.value if meta.category else None,
             default_enabled_for_coding_agent=meta.default_enabled_for_coding_agent,
+            is_restricted=meta.is_restricted,
         )
         for meta in get_all_system_tools()
     ]
