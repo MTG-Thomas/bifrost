@@ -32,8 +32,8 @@ class TestApplicationCRUD:
         assert app["description"] == "Test application for E2E tests"
         assert app["icon"] == "box"
         assert app.get("id"), "App should have an ID"
-        assert app["live_version"] == 0, "New app should have live_version 0"
-        assert app["draft_version"] == 1, "New app should have draft_version 1"
+        assert app["active_version_id"] is None, "New app should not have active version"
+        assert app["draft_version_id"] is not None, "New app should have a draft version"
 
         # Cleanup
         e2e_client.delete(
@@ -228,7 +228,7 @@ class TestApplicationVersioning:
         assert response.status_code == 200, f"Get draft failed: {response.text}"
         data = response.json()
 
-        assert data["version"] == 1
+        # version is a legacy deprecated field (always 0)
         assert data["is_live"] is False
         # Definition may be empty or null for new app
 
@@ -280,10 +280,10 @@ class TestApplicationVersioning:
         data = response.json()
         assert data["definition"]["pages"][0]["id"] == "page1"
 
-    def test_multiple_publishes_increment_version(
+    def test_multiple_publishes_create_new_versions(
         self, e2e_client, platform_admin, test_app
     ):
-        """Multiple publishes increment live version."""
+        """Multiple publishes create new version IDs."""
         # Publish first version
         e2e_client.put(
             f"/api/applications/{test_app['id']}/draft",
@@ -296,6 +296,8 @@ class TestApplicationVersioning:
         )
         assert response.status_code == 200
         v1 = response.json()
+        v1_active_id = v1["active_version_id"]
+        assert v1_active_id is not None, "First publish should set active_version_id"
 
         # Publish second version
         e2e_client.put(
@@ -309,9 +311,10 @@ class TestApplicationVersioning:
         )
         assert response.status_code == 200
         v2 = response.json()
+        v2_active_id = v2["active_version_id"]
 
-        assert v2["live_version"] > v1["live_version"], \
-            "Live version should increment on each publish"
+        assert v2_active_id != v1_active_id, \
+            "Each publish should create a new active_version_id"
 
 
 @pytest.mark.e2e

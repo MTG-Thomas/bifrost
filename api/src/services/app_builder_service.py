@@ -881,6 +881,7 @@ class AppBuilderService:
 
         # Link app to draft version
         app.draft_version_id = draft_version.id
+        await self.session.flush()  # Ensure draft_version_id is persisted
 
         # Import pages
         for page_order, page_data in enumerate(data.get("pages", [])):

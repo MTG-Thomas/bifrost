@@ -180,7 +180,7 @@ async def validate_workflow(context: Any, file_path: str) -> str:
     import json
 
     from src.core.database import get_db_context
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP validate_workflow called with file_path={file_path}")
 
@@ -280,7 +280,7 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
     import json
 
     from src.core.database import get_db_context
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP create_workflow called with file_path={file_path}")
 

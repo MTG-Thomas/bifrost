@@ -525,14 +525,10 @@ async def execute_workflow(
     from src.services.execution.service import (
         run_workflow,
         run_code,
-        run_data_provider,
         WorkflowNotFoundError,
         WorkflowLoadError,
-        DataProviderNotFoundError,
-        DataProviderLoadError,
     )
     from src.services.execution_auth import ExecutionAuthService
-    from src.models.contracts.executions import ExecutionStatus
 
     # Look up workflow metadata for type checking (needed for data provider handling)
     workflow = None
@@ -610,29 +606,38 @@ async def execute_workflow(
                 transient=request.transient,
             )
         elif workflow and workflow.type == "data_provider":
-            # Execute data provider - returns list of options directly
-            options = await run_data_provider(
+            # Execute data provider through normal workflow path
+            # Data providers are transient (no execution tracking) and always sync
+            result = await run_workflow(
                 context=shared_ctx,
-                provider_name=workflow.name,
-                params=request.input_data,
+                workflow_id=str(workflow.id),
+                input_data=request.input_data,
+                transient=True,
+                sync=True,
             )
-            # Data providers are transient by default (no execution tracking)
+            # Return with is_transient flag for consistency
             return WorkflowExecutionResponse(
-                execution_id=str(uuid4()),
-                workflow_id=request.workflow_id,
+                execution_id=result.execution_id,
+                workflow_id=str(workflow.id),
                 workflow_name=workflow.name,
-                status=ExecutionStatus.SUCCESS,
-                result=options,  # list[dict] with value, label, description
+                status=result.status,
+                result=result.result,  # list[dict] with value, label, description
                 is_transient=True,
             )
-        else:
+        elif workflow:
             # Execute workflow by ID
             result = await run_workflow(
                 context=shared_ctx,
-                workflow_id=request.workflow_id,
+                workflow_id=str(workflow.id),
                 input_data=request.input_data,
                 form_id=request.form_id,
                 transient=request.transient,
+            )
+        else:
+            # This shouldn't happen due to earlier validation
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either workflow_id or code must be provided",
             )
 
         # Publish execution update via WebSocket
@@ -660,12 +665,12 @@ async def execute_workflow(
 
         return result
 
-    except (WorkflowNotFoundError, DataProviderNotFoundError) as e:
+    except WorkflowNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
-    except (WorkflowLoadError, DataProviderLoadError) as e:
+    except WorkflowLoadError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),

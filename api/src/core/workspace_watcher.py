@@ -205,7 +205,7 @@ class WorkspaceWatcher:
         - If cached hash matches local hash → change came from pub/sub, skip
         - If cached hash differs → we originated this change, sync AND publish
         """
-        from src.services.file_storage_service import FileStorageService
+        from src.services.file_storage import FileStorageService
 
         local_file = WORKSPACE_PATH / path
         if not local_file.exists() or not local_file.is_file():
@@ -246,7 +246,7 @@ class WorkspaceWatcher:
         - If cache shows file already deleted → change came from pub/sub, skip
         - If cache shows file exists → we originated this change, sync AND publish
         """
-        from src.services.file_storage_service import FileStorageService
+        from src.services.file_storage import FileStorageService
         from src.core.pubsub import publish_workspace_file_delete
 
         # Check Redis cache for file state (fast lookup)
@@ -287,7 +287,7 @@ class WorkspaceWatcher:
         - If cache shows folder exists → change came from pub/sub, skip
         - If cache shows no folder → we originated this change, sync AND publish
         """
-        from src.services.file_storage_service import FileStorageService
+        from src.services.file_storage import FileStorageService
         from src.core.pubsub import publish_workspace_folder_create
 
         folder_path = path.rstrip("/") + "/"
@@ -322,7 +322,7 @@ class WorkspaceWatcher:
         - If cache shows folder already deleted → change came from pub/sub, skip
         - If cache shows folder exists → we originated this change, sync AND publish
         """
-        from src.services.file_storage_service import FileStorageService
+        from src.services.file_storage import FileStorageService
         from src.core.pubsub import publish_workspace_folder_delete
 
         folder_path = path.rstrip("/") + "/"

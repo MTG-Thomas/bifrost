@@ -83,7 +83,7 @@ async def e2e_creation_test():
     def test_data_provider_discovered(self, e2e_client, platform_admin, test_data_provider_file):
         """Verify data provider is discovered after file creation (discovery is synchronous)."""
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List data providers failed: {response.text}"
@@ -94,9 +94,9 @@ async def e2e_creation_test():
             f"Data provider {test_data_provider_file['name']} not discovered after file write"
 
     def test_data_provider_in_list(self, e2e_client, platform_admin, test_data_provider_file):
-        """Verify data provider appears in /api/data-providers list."""
+        """Verify data provider appears in /api/workflows?type=data_provider list."""
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List data providers failed: {response.text}"
@@ -114,7 +114,7 @@ async def e2e_creation_test():
         """Verify data provider metadata is correctly extracted."""
         # Discovery happens synchronously during file write - no sleep needed
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List data providers failed: {response.text}"
@@ -146,16 +146,15 @@ async def e2e_creation_test():
 class TestDataProviderAccess:
     """Test data provider access control."""
 
-    def test_org_user_can_list_data_providers(self, e2e_client, org1_user):
-        """Org user can list data providers."""
+    def test_org_user_cannot_list_all_data_providers(self, e2e_client, org1_user):
+        """Org user cannot list all data providers (requires platform admin)."""
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=org1_user.headers,
         )
-        assert response.status_code == 200, \
-            f"Org user should list data providers: {response.status_code}"
-        providers = response.json()
-        assert isinstance(providers, list), "Response should be a list of providers"
+        # Workflows endpoint requires platform admin access
+        assert response.status_code == 403, \
+            f"Org user should not be able to list all data providers: {response.status_code}"
 
 
 @pytest.mark.e2e
@@ -212,7 +211,7 @@ async def e2e_parametrized_provider(category: str = "default"):
     def test_parametrized_provider_discovered(self, e2e_client, platform_admin, parametrized_provider_file):
         """Parametrized data provider is discovered (discovery is synchronous)."""
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200
@@ -226,7 +225,7 @@ async def e2e_parametrized_provider(category: str = "default"):
         """Parametrized data provider includes parameter metadata."""
         # Discovery happens synchronously during file write - no sleep needed
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200
@@ -252,7 +251,7 @@ class TestMultipleDataProviders:
     def test_list_returns_multiple_providers(self, e2e_client, platform_admin):
         """Listing data providers returns multiple providers."""
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List data providers failed: {response.text}"

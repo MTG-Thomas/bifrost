@@ -36,7 +36,7 @@ from src.models import (
 )
 from src.services.editor.search import search_files
 from src.services.file_backend import get_backend
-from src.services.file_storage_service import FileStorageService
+from src.services.file_storage import FileStorageService
 
 logger = logging.getLogger(__name__)
 

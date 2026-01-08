@@ -24,7 +24,7 @@ class TestWorkflowListing:
     def test_list_data_providers(self, e2e_client, platform_admin):
         """Platform admin can list data providers."""
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List data providers failed: {response.text}"

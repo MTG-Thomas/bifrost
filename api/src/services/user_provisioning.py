@@ -118,7 +118,7 @@ async def ensure_user_provisioned(
             user=user,
             user_type=UserType.PLATFORM,
             is_platform_admin=True,
-            organization_id=None,
+            organization_id=user.organization_id,  # PROVIDER_ORG_ID assigned by create_user
             was_created=True,
         )
 

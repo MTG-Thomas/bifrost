@@ -131,6 +131,7 @@ class ApplicationRepository(OrgScopedRepository[Application]):
 
         # Link app to draft version
         application.draft_version_id = draft_version.id
+        await self.session.flush()  # Ensure draft_version_id is persisted
 
         # Add role associations if role_based access
         if data.access_level == "role_based" and data.role_ids:

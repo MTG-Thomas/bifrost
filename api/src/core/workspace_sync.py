@@ -100,7 +100,7 @@ class WorkspaceSyncService:
 
     async def _download_initial_workspace(self) -> None:
         """Download workspace from S3 on startup and check for files needing indexing."""
-        from src.services.file_storage_service import FileStorageService
+        from src.services.file_storage import FileStorageService
         from src.core.database import get_session_factory
 
         try:

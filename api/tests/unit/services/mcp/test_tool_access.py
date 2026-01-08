@@ -234,7 +234,7 @@ class TestGetAccessibleTools:
 
                 result = await service.get_accessible_tools(
                     user_roles=[],
-                    is_superuser=False,
+                    is_superuser=True,
                 )
 
         system_tools = [t for t in result.tools if t.type == "system"]
@@ -293,7 +293,7 @@ class TestGetAccessibleTools:
 
             result = await service.get_accessible_tools(
                 user_roles=[],
-                is_superuser=False,
+                is_superuser=True,
             )
 
         # Should have 2 unique system tools, not 3

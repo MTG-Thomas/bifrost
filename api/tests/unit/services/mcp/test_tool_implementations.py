@@ -78,7 +78,7 @@ class TestWriteFileImpl:
 
         from src.services.mcp.tools.files import write_file
 
-        result = await write_file(context, "test.txt", None)
+        result = await write_file(context, "test.txt", None)  # type: ignore[arg-type]
         parsed = json.loads(result)
         assert parsed["error"] == "content is required"
 
@@ -338,8 +338,8 @@ class TestSystemToolsRegistry:
         assert "search_knowledge" in tool_ids
         assert "get_data_provider_schema" in tool_ids
 
-        # Total count (38 tools after removing validate_form_schema and validate_app_schema)
-        assert len(tool_ids) == 38, f"Expected 38 tools, got {len(tool_ids)}: {sorted(tool_ids)}"
+        # Total count (46 tools including app builder, component, page, table, and organization tools)
+        assert len(tool_ids) == 46, f"Expected 46 tools, got {len(tool_ids)}: {sorted(tool_ids)}"
 
     def test_file_operations_disabled_for_coding_agent(self):
         """File operation tools should be disabled by default for coding agent."""

@@ -128,7 +128,7 @@ async def get_options():
 
         # Verify not in data providers
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         providers = response.json()
@@ -158,7 +158,7 @@ async def get_options():
 
         # Verify appears in data providers
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         providers = response.json()
@@ -353,7 +353,7 @@ async def workflow_to_dp_test() -> list:
 
         # Check data providers - should now appear there
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         providers = response.json()

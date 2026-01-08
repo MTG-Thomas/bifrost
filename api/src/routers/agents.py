@@ -156,7 +156,7 @@ async def _write_agent_to_file(
 
     Returns the file path.
     """
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     filename = _generate_agent_filename(agent.name, str(agent.id))
     file_path = f"workspace/agents/{filename}"

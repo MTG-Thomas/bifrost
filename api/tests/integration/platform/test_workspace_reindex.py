@@ -12,10 +12,10 @@ import pytest_asyncio
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import Workflow, WorkspaceFile, Execution
+from src.models import Workflow, WorkspaceFile
 from src.models.enums import GitStatus
 
 
@@ -36,13 +36,13 @@ def get_file_storage_service(db_session):
     if service_key in sys.modules:
         del sys.modules[service_key]
 
-    # Remove file_storage_service to force reimport with fresh decorator_property_service
-    storage_key = 'src.services.file_storage_service'
+    # Remove file_storage to force reimport with fresh decorator_property_service
+    storage_key = 'src.services.file_storage'
     if storage_key in sys.modules:
         del sys.modules[storage_key]
 
     # Now import FileStorageService fresh
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
     return FileStorageService(db_session)
 
 

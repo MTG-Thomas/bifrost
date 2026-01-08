@@ -5,7 +5,7 @@ Provides JWT token generation and HTTP header helpers for testing
 authenticated endpoints with real HTTP requests to the FastAPI server.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 
@@ -26,6 +26,7 @@ def create_test_jwt(
     email: str = "test@example.com",
     name: str = "Test User",
     is_superuser: bool = False,
+    organization_id: str | None = None,
 ) -> str:
     """
     Create test JWT token for authentication.
@@ -38,6 +39,7 @@ def create_test_jwt(
         email: User email address
         name: User display name
         is_superuser: Whether user should have superuser/platform admin privileges
+        organization_id: Organization ID for ORG users (auto-generated if not provided for non-superusers)
 
     Returns:
         str: JWT token signed with test secret
@@ -51,14 +53,22 @@ def create_test_jwt(
     if user_id is None:
         user_id = DEFAULT_ADMIN_ID if is_superuser else DEFAULT_USER_ID
 
+    # For non-superusers, org_id is required by auth middleware
+    # Generate a default org_id if not provided
+    if not is_superuser and organization_id is None:
+        organization_id = "00000000-0000-4000-8000-000000000100"  # Default test org ID
+
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
         "email": email,
         "name": name,
         "user_type": "PLATFORM" if is_superuser else "ORG",
         "is_superuser": is_superuser,
-        "exp": datetime.utcnow() + timedelta(hours=2),
-        "iat": datetime.utcnow(),
+        "org_id": None if is_superuser else organization_id,
+        "roles": ["authenticated", "PlatformAdmin"] if is_superuser else ["authenticated", "OrgUser"],
+        "exp": now + timedelta(hours=2),
+        "iat": now,
         "iss": TEST_JWT_ISSUER,
         "aud": TEST_JWT_AUDIENCE,
         "type": "access",

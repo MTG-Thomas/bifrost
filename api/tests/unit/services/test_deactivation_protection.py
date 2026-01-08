@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from src.services.file_storage_service import (
+from src.services.file_storage import (
     FileStorageService,
     PendingDeactivationInfo,
     AvailableReplacementInfo,

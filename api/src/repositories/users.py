@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.constants import PROVIDER_ORG_ID
 from src.models import User
 from src.repositories.base import BaseRepository
 
@@ -119,6 +120,12 @@ class UserRepository(BaseRepository[User]):  # type: ignore[type-var]
             Created user
         """
         from src.models.enums import UserType
+
+        # Auto-assign PROVIDER_ORG for platform admins (superusers)
+        # Database requires organization_id NOT NULL, so PLATFORM users
+        # belong to the PROVIDER organization rather than NULL
+        if is_superuser and organization_id is None:
+            organization_id = PROVIDER_ORG_ID
 
         user = User(
             email=email,

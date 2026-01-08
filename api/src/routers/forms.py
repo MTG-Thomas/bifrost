@@ -274,7 +274,7 @@ async def _write_form_to_file(form: FormORM, db: AsyncSession) -> str:
     Raises:
         Exception: If file write fails
     """
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     # Generate filename
     filename = _generate_form_filename(form.name, str(form.id))
@@ -328,7 +328,7 @@ async def _update_form_file(form: FormORM, old_file_path: str | None, db: AsyncS
     Returns:
         New workspace-relative file path
     """
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     # Generate new filename
     new_filename = _generate_form_filename(form.name, str(form.id))
@@ -357,7 +357,7 @@ async def _deactivate_form_file(form: FormORM, db: AsyncSession) -> None:
         form: Form ORM instance with updated is_active=False
         db: Database session for FileStorageService
     """
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     # Use the form's file_path if available, otherwise generate it
     file_path = form.file_path
@@ -579,14 +579,13 @@ async def get_form(
     db: DbSession,
 ) -> FormPublic:
     """Get a specific form by ID."""
-    result = await db.execute(
-        select(FormORM)
-        .options(selectinload(FormORM.fields))
-        .where(FormORM.id == form_id)
-    )
-    form = result.scalar_one_or_none()
+    # Use FormRepository for consistent query logic
+    # Note: We don't filter by org here - access control is done after fetch
+    repo = FormRepository(db, org_id=None)  # No org filtering for initial fetch
+    form = await repo.get_form(form_id)
 
     if not form:
+        logger.warning(f"Form {form_id} not found in database")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Form not found",
@@ -1156,7 +1155,7 @@ async def generate_upload_url(
     Returns:
         FileUploadResponse with presigned URL and file metadata
     """
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     # Verify form exists and user has access
     result = await db.execute(select(FormORM).where(FormORM.id == form_id))

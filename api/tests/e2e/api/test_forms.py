@@ -476,18 +476,18 @@ async def e2e_form_test_dp(org_id: str | None = None):
         )
         assert response.status_code == 200, f"Create data provider failed: {response.text}"
 
-        # Get the data provider ID
+        # Get the data provider ID (data providers are now in workflows with type=data_provider)
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, f"List data providers failed: {response.text}"
         providers = response.json()
         provider = next(
             (p for p in providers if p["name"] == "e2e_form_test_dp"),
             None
         )
-        assert provider is not None, "Data provider not discovered"
+        assert provider is not None, f"Data provider not discovered. Found: {[p['name'] for p in providers]}"
         assert provider.get("id"), "Data provider has no ID"
 
         yield {

@@ -42,7 +42,7 @@ async def read_file(context: Any, path: str) -> str:
     - Regular files are read from S3
     """
     from src.core.database import get_db_context
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP read_file called with path={path}")
 
@@ -98,7 +98,7 @@ async def write_file(context: Any, path: str, content: str) -> str:
     - Regular files are stored in S3
     """
     from src.core.database import get_db_context
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP write_file called with path={path}")
 
@@ -149,7 +149,7 @@ async def list_files(context: Any, directory: str = "") -> str:
     both regular files (in S3) and platform entities (in database).
     """
     from src.core.database import get_db_context
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP list_files called with directory={directory}")
 
@@ -209,7 +209,7 @@ async def delete_file(context: Any, path: str) -> str:
     - Regular files are deleted from S3
     """
     from src.core.database import get_db_context
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP delete_file called with path={path}")
 
@@ -328,7 +328,7 @@ async def create_folder(context: Any, path: str) -> str:
     Uses FileStorageService to create folder record in database index.
     """
     from src.core.database import get_db_context
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP create_folder called with path={path}")
 

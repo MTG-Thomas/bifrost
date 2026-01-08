@@ -23,7 +23,7 @@ from src.models import (
     UpdatePropertiesResponse,
 )
 from src.services.decorator_property_service import DecoratorPropertyService
-from src.services.file_storage_service import FileStorageService
+from src.services.file_storage import FileStorageService
 
 logger = logging.getLogger(__name__)
 

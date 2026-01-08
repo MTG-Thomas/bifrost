@@ -214,6 +214,7 @@ async def create_app(
 
             # Link app to draft version
             app.draft_version_id = draft_version.id
+            await db.flush()  # Ensure draft_version_id is persisted
 
             page_count = 0
             if create_home_page:

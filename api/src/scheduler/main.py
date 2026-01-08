@@ -279,7 +279,7 @@ class Scheduler:
             publish_reindex_progress,
         )
         from src.core.workspace_sync import WORKSPACE_PATH
-        from src.services.file_storage_service import FileStorageService
+        from src.services.file_storage import FileStorageService
 
         job_id = data.get("job_id", "unknown")
         user_id = data.get("user_id", "system")

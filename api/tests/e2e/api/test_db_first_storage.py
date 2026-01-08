@@ -377,7 +377,7 @@ async def db_first_test_provider(filter_value: str = None):
 
         # Verify data provider appears in list
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200

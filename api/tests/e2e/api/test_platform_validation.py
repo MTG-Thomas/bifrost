@@ -429,7 +429,7 @@ async def validation_test_dp() -> list:
 
         # Find the data provider we just created
         dp_response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         assert dp_response.status_code == 200

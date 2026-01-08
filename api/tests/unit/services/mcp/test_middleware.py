@@ -48,7 +48,7 @@ def mock_access_token():
 @pytest.fixture
 def mock_tool_info():
     """Create a mock ToolInfo from MCPToolAccessService."""
-    def _create_tool_info(tool_id: str, name: str = None):
+    def _create_tool_info(tool_id: str, name: str | None = None):
         info = MagicMock()
         info.id = tool_id
         info.name = name or tool_id
@@ -227,7 +227,7 @@ class TestOnCallTool:
         mock_context.message.name = "execute_workflow"
         expected_result = {"success": True}
         call_next = AsyncMock(return_value=expected_result)
-        token = mock_access_token(roles=["admin"])
+        token = mock_access_token(roles=["admin"], is_superuser=True)
 
         mock_service_instance = MagicMock()
         mock_result = MagicMock()
@@ -290,7 +290,7 @@ class TestOnCallTool:
 
         mock_context.message.name = "execute_workflow"
         call_next = AsyncMock()
-        token = mock_access_token()
+        token = mock_access_token(is_superuser=True)
 
         with patch("src.services.mcp.middleware.get_access_token", return_value=token), \
              patch("src.core.database.get_db_context") as mock_db_context:

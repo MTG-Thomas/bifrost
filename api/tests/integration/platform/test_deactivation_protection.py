@@ -12,11 +12,12 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import Workflow, WorkspaceFile, Execution
+from src.models import Workflow, Execution
 from src.models.orm.users import User
+from src.core.constants import PROVIDER_ORG_ID
 
 
 def get_file_storage_service(db_session):
@@ -37,31 +38,50 @@ def get_file_storage_service(db_session):
         del sys.modules[service_key]
 
     # Remove file_storage_service to force reimport with fresh decorator_property_service
-    storage_key = 'src.services.file_storage_service'
+    storage_key = 'src.services.file_storage'
     if storage_key in sys.modules:
         del sys.modules[storage_key]
 
     # Now import FileStorageService fresh
-    from src.services.file_storage_service import FileStorageService
+    from src.services.file_storage import FileStorageService
     return FileStorageService(db_session)
+
+
+async def _truncate_tables_with_retry(db_session: AsyncSession, max_retries: int = 3):
+    """Truncate tables with retry logic for handling deadlocks."""
+    import asyncio
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    for attempt in range(max_retries):
+        try:
+            await db_session.execute(text("TRUNCATE TABLE executions CASCADE"))
+            await db_session.execute(text("TRUNCATE TABLE workflows CASCADE"))
+            await db_session.execute(text("TRUNCATE TABLE workspace_files CASCADE"))
+            await db_session.commit()
+            return
+        except DBAPIError as e:
+            if "deadlock" in str(e).lower() and attempt < max_retries - 1:
+                await db_session.rollback()
+                await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                continue
+            raise
 
 
 @pytest_asyncio.fixture
 async def clean_tables(db_session: AsyncSession):
-    """Clean up test data from tables before and after test."""
-    # Clean before test - delete executions first to avoid FK constraint violations
-    await db_session.execute(delete(Execution))
-    await db_session.execute(delete(Workflow))
-    await db_session.execute(delete(WorkspaceFile))
-    await db_session.commit()
+    """Clean up test data from tables before and after test.
+
+    Uses TRUNCATE CASCADE for reliable cleanup that handles FK constraints.
+    Includes retry logic for transient deadlocks.
+    """
+    # Clean before test
+    await _truncate_tables_with_retry(db_session)
 
     yield
 
-    # Clean after test - delete executions first to avoid FK constraint violations
-    await db_session.execute(delete(Execution))
-    await db_session.execute(delete(Workflow))
-    await db_session.execute(delete(WorkspaceFile))
-    await db_session.commit()
+    # Clean after test
+    await _truncate_tables_with_retry(db_session)
 
 
 # Sample workflow code templates
@@ -383,21 +403,23 @@ class TestDeactivationProtection:
             id=uuid4(),
             email=f"test_{uuid4().hex[:8]}@example.com",
             name="Test User",
+            organization_id=PROVIDER_ORG_ID,
         )
         db_session.add(test_user)
         await db_session.flush()
 
         # Create an execution record
         # Execution uses workflow_name, not workflow_id
-        # Use timezone-naive datetime as the database column expects
-        from datetime import datetime
+        # Database expects timezone-naive datetimes (TIMESTAMP WITHOUT TIME ZONE)
+        from datetime import datetime, timezone
         from src.models.enums import ExecutionStatus
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         execution = Execution(
             id=uuid4(),
             workflow_name=workflow.function_name,
             status=ExecutionStatus.SUCCESS,
-            started_at=datetime.utcnow(),
-            completed_at=datetime.utcnow(),
+            started_at=now,
+            completed_at=now,
             executed_by=test_user.id,
             executed_by_name="Test User",
         )

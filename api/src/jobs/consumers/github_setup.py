@@ -179,7 +179,7 @@ class GitHubSetupConsumer(BaseConsumer):
                 percent=40,
             )
 
-            from src.services.file_storage_service import FileStorageService
+            from src.services.file_storage import FileStorageService
 
             async with get_db_context() as db:
                 storage = FileStorageService(db)

@@ -30,10 +30,15 @@ def clear_libcst_modules():
     if service_key in sys.modules:
         del sys.modules[service_key]
 
-    # Remove file_storage_service to force reimport with fresh decorator_property_service
-    storage_key = 'src.services.file_storage_service'
+    # Remove file_storage to force reimport with fresh decorator_property_service
+    storage_key = 'src.services.file_storage'
     if storage_key in sys.modules:
         del sys.modules[storage_key]
+
+    # Also clear sub-modules
+    for key in list(sys.modules.keys()):
+        if key.startswith('src.services.file_storage'):
+            del sys.modules[key]
 
 
 @pytest.fixture
@@ -103,9 +108,11 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage_service import FileStorageService
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
+            from src.services.file_storage import FileStorageService
             storage = FileStorageService(mock_db)
+            # Mock _extract_metadata on the reindex service (it holds the function reference)
+            storage._reindex_service._extract_metadata = AsyncMock()
             counts = await storage.reindex_workspace_files(temp_workspace)
 
         # Should have indexed the files
@@ -123,9 +130,11 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage_service import FileStorageService
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
+            from src.services.file_storage import FileStorageService
             storage = FileStorageService(mock_db)
+            # Mock _extract_metadata to avoid complex indexer logic in unit test
+            storage._reindex_service._extract_metadata = AsyncMock()
             counts = await storage.reindex_workspace_files(temp_workspace)
 
         # files_removed should reflect the rowcount from the update
@@ -158,11 +167,11 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage_service import FileStorageService
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
+            from src.services.file_storage import FileStorageService
             storage = FileStorageService(mock_db)
             # Mock _extract_metadata to avoid complex AST parsing in unit test
-            storage._extract_metadata = AsyncMock()
+            storage._reindex_service._extract_metadata = AsyncMock()
 
             counts = await storage.reindex_workspace_files(temp_workspace)
 
@@ -180,15 +189,16 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage_service import FileStorageService
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
+            from src.services.file_storage import FileStorageService
             storage = FileStorageService(mock_db)
-            storage._extract_metadata = AsyncMock()
+            mock_extract = AsyncMock()
+            storage._reindex_service._extract_metadata = mock_extract
 
             await storage.reindex_workspace_files(temp_workspace)
 
         # Should have called _extract_metadata for each Python file
-        assert storage._extract_metadata.call_count == 3
+        assert mock_extract.call_count == 3
 
     @pytest.mark.asyncio
     async def test_updates_redis_cache(self, mock_db, temp_workspace, mock_workspace_cache):
@@ -200,10 +210,10 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage_service import FileStorageService
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
+            from src.services.file_storage import FileStorageService
             storage = FileStorageService(mock_db)
-            storage._extract_metadata = AsyncMock()
+            storage._reindex_service._extract_metadata = AsyncMock()
 
             await storage.reindex_workspace_files(temp_workspace)
 
@@ -229,10 +239,10 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage_service import FileStorageService
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
+            from src.services.file_storage import FileStorageService
             storage = FileStorageService(mock_db)
-            storage._extract_metadata = AsyncMock()
+            storage._reindex_service._extract_metadata = AsyncMock()
 
             counts = await storage.reindex_workspace_files(temp_workspace)
 
@@ -260,9 +270,11 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage_service import FileStorageService
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
+            from src.services.file_storage import FileStorageService
             storage = FileStorageService(mock_db)
+            # Mock _extract_metadata to avoid complex indexer logic in unit test
+            storage._reindex_service._extract_metadata = AsyncMock()
             counts = await storage.reindex_workspace_files(empty_workspace)
 
         assert counts["files_indexed"] == 0
@@ -297,12 +309,12 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
             with patch("src.services.openapi_endpoints.remove_workflow_endpoint") as mock_remove:
                 with patch("src.main.app"):  # Mock the FastAPI app
-                    from src.services.file_storage_service import FileStorageService
+                    from src.services.file_storage import FileStorageService
                     storage = FileStorageService(mock_db)
-                    storage._extract_metadata = AsyncMock()
+                    storage._reindex_service._extract_metadata = AsyncMock()
 
                     await storage.reindex_workspace_files(temp_workspace)
 
@@ -331,11 +343,11 @@ class TestReindexWorkspaceFiles:
 
         # Clear modules first, THEN apply patch, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage_service.get_workspace_cache", return_value=mock_workspace_cache):
+        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
             with patch.object(Path, "read_bytes", mock_read_bytes):
-                from src.services.file_storage_service import FileStorageService
+                from src.services.file_storage import FileStorageService
                 storage = FileStorageService(mock_db)
-                storage._extract_metadata = AsyncMock()
+                storage._reindex_service._extract_metadata = AsyncMock()
 
                 counts = await storage.reindex_workspace_files(temp_workspace)
 

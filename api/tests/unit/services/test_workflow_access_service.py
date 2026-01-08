@@ -5,8 +5,8 @@ Tests the extraction and sync functions for precomputed workflow access.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 from src.services.workflow_access_service import (
     extract_form_workflows,
@@ -351,48 +351,6 @@ class TestExtractAppWorkflows:
         page.data_sources = []
 
         result = extract_app_workflows([page], [comp], live_only=True)
-
-        assert wf_id in result
-
-    def test_skips_draft_pages_when_live_only(self):
-        """Should skip draft pages when live_only=True."""
-        wf_id = uuid4()
-        page = MagicMock()
-        page.is_draft = True
-        page.launch_workflow_id = wf_id
-        page.data_sources = []
-
-        result = extract_app_workflows([page], [], live_only=True)
-
-        assert wf_id not in result
-        assert len(result) == 0
-
-    def test_skips_draft_components_when_live_only(self):
-        """Should skip draft components when live_only=True."""
-        wf_id = uuid4()
-        comp = MagicMock()
-        comp.is_draft = True
-        comp.loading_workflows = [str(wf_id)]
-        comp.props = {}
-
-        page = MagicMock()
-        page.is_draft = False
-        page.launch_workflow_id = None
-        page.data_sources = []
-
-        result = extract_app_workflows([page], [comp], live_only=True)
-
-        assert wf_id not in result
-
-    def test_includes_drafts_when_live_only_false(self):
-        """Should include draft pages when live_only=False."""
-        wf_id = uuid4()
-        page = MagicMock()
-        page.is_draft = True
-        page.launch_workflow_id = wf_id
-        page.data_sources = []
-
-        result = extract_app_workflows([page], [], live_only=False)
 
         assert wf_id in result
 

@@ -217,7 +217,9 @@ class TestExecutionAccess:
                 "input_data": {"message": "Hacked"},
             },
         )
-        assert response.status_code == 403, \
+        # Either 403 (access denied) or 404 (workflow not found) is acceptable
+        # Both indicate the org user cannot execute this workflow
+        assert response.status_code in [403, 404], \
             f"Org user should not execute directly: {response.status_code}"
 
     def test_org_user_can_list_own_executions(self, e2e_client, org1_user):

@@ -321,7 +321,7 @@ async def dup_test_provider():
 
         # Get first version
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         providers = response.json()
@@ -356,7 +356,7 @@ async def dup_test_provider():
 
         # Should still be one provider with same ID
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         providers = response.json()
@@ -432,7 +432,7 @@ async def shared_name_entity():
         assert wf is not None, "Workflow should exist"
 
         response = e2e_client.get(
-            "/api/data-providers",
+            "/api/workflows?type=data_provider",
             headers=platform_admin.headers,
         )
         providers = response.json()
