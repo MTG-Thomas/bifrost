@@ -47,7 +47,7 @@ export type ComponentWidth =
 /**
  * Button action types
  */
-export type ButtonActionType = "navigate" | "workflow" | "custom" | "submit";
+export type ButtonActionType = "navigate" | "workflow" | "custom" | "submit" | "open-modal";
 
 /**
  * Heading levels
@@ -153,6 +153,22 @@ export interface ExpressionContext {
 	setVariable?: (key: string, value: unknown) => void;
 	/** Currently executing workflow IDs/names for loading states */
 	activeWorkflows?: Set<string>;
+	/** Open a modal by its component ID */
+	openModal?: (modalId: string) => void;
+	/** Close a modal by its component ID */
+	closeModal?: (modalId: string) => void;
+}
+
+/**
+ * Repeat component for each item in an array
+ */
+export interface RepeatFor {
+	/** Expression that evaluates to an array (e.g., "{{ workflow.clients }}") */
+	items: string;
+	/** Property name to use for React key (must be unique, e.g., "id") */
+	itemKey: string;
+	/** Variable name to access current item in expressions (e.g., "client") */
+	as: string;
 }
 
 /**
@@ -169,6 +185,14 @@ export interface BaseComponentProps {
 	visible?: string;
 	/** Workflow IDs/names that trigger loading skeleton when executing */
 	loadingWorkflows?: string[];
+	/** Grid column span (for components inside grid layouts) */
+	gridSpan?: number;
+	/** Repeat this component for each item in an array */
+	repeatFor?: RepeatFor;
+	/** Additional CSS classes */
+	className?: string;
+	/** Inline CSS styles (camelCase properties) */
+	style?: React.CSSProperties;
 }
 
 /**
@@ -292,6 +316,8 @@ export interface ButtonComponentProps extends BaseComponentProps {
 		workflowId?: string;
 		/** Custom action ID */
 		customActionId?: string;
+		/** Modal ID to open (for open-modal action) */
+		modalId?: string;
 		/** Parameters to pass to action */
 		actionParams?: Record<string, unknown>;
 		/** Action(s) to execute after workflow completes successfully */
@@ -685,8 +711,8 @@ export interface ModalComponentProps extends BaseComponentProps {
 		title: string;
 		/** Modal description */
 		description?: string;
-		/** Trigger button label */
-		triggerLabel: string;
+		/** Trigger button label (optional - if not provided, modal must be opened via button action) */
+		triggerLabel?: string;
 		/** Trigger button variant */
 		triggerVariant?:
 			| "default"
@@ -798,6 +824,21 @@ export type AppComponent =
 	| FormGroupComponentProps;
 
 /**
+ * How container children fill available space
+ */
+export type LayoutDistribute = "natural" | "equal" | "fit";
+
+/**
+ * Overflow behavior for scrollable containers
+ */
+export type LayoutOverflow = "auto" | "scroll" | "hidden" | "visible";
+
+/**
+ * Sticky positioning options
+ */
+export type LayoutSticky = "top" | "bottom";
+
+/**
  * Layout container for organizing components
  */
 export interface LayoutContainer {
@@ -816,12 +857,12 @@ export interface LayoutContainer {
 	/** Grid column count (for grid type) */
 	columns?: number;
 	/**
-	 * Controls how row children are sized.
-	 * Default (true/undefined): Children keep their natural size (standard CSS flexbox).
-	 * When false: Children expand equally to fill available space (flex-1).
-	 * Use false for layouts like two equal-width columns.
+	 * Controls how children fill available space (primarily for row layouts).
+	 * - "natural" (default): Children keep their natural size (standard CSS flexbox)
+	 * - "equal": Children expand equally to fill space (flex-1)
+	 * - "fit": Children fit content, no stretch
 	 */
-	autoSize?: boolean;
+	distribute?: LayoutDistribute;
 	/**
 	 * Constrains the max-width of the layout container.
 	 * Values: "sm" (384px), "md" (448px), "lg" (512px), "xl" (576px), "2xl" (672px),
@@ -829,10 +870,31 @@ export interface LayoutContainer {
 	 * Recommended: Use "lg" for pages containing forms to prevent them from stretching too wide.
 	 */
 	maxWidth?: LayoutMaxWidth;
-	/** Visibility expression */
-	visible?: string;
+	/**
+	 * Maximum height of the container (in pixels).
+	 * Used with overflow to create scrollable containers.
+	 */
+	maxHeight?: number;
+	/**
+	 * How content outside bounds behaves.
+	 * Use with maxHeight to create scrollable containers.
+	 */
+	overflow?: LayoutOverflow;
+	/**
+	 * Sticky positioning - pins container to top or bottom when scrolling.
+	 * Useful for headers, sidebars, or action bars.
+	 */
+	sticky?: LayoutSticky;
+	/**
+	 * Offset from edge when sticky (in pixels). Default: 0
+	 */
+	stickyOffset?: number;
 	/** Additional CSS classes */
 	className?: string;
+	/** Inline CSS styles (camelCase properties) */
+	style?: React.CSSProperties;
+	/** Visibility expression */
+	visible?: string;
 	/** Child elements */
 	children: (LayoutContainer | AppComponent)[];
 }
@@ -863,6 +925,8 @@ export interface PageDefinition {
 		params?: Record<string, unknown>;
 		dataSourceId?: string;
 	};
+	/** Page-level CSS styles (scoped to this page) */
+	styles?: string;
 	/** Page-level permission configuration */
 	permission?: PagePermission;
 }
@@ -959,6 +1023,8 @@ export interface ApplicationDefinition {
 	permissions?: PermissionConfig;
 	/** Global variables available to all pages */
 	globalVariables?: Record<string, unknown>;
+	/** App-level CSS styles (global for entire application) */
+	styles?: string;
 }
 
 /**
@@ -986,7 +1052,7 @@ export function isAppComponent(
 /**
  * Types that can contain children (layout containers + components with props.children)
  */
-export const CONTAINER_TYPES = ["row", "column", "grid", "card"] as const;
+export const CONTAINER_TYPES = ["row", "column", "grid", "card", "modal"] as const;
 
 /**
  * Check if an element type can have children
@@ -1011,9 +1077,18 @@ export function getElementChildren(
 	}
 	// Components may have children in props.children (e.g., Card)
 	if ("props" in element) {
-		const props = element.props as { children?: (LayoutContainer | AppComponent)[] };
+		const props = element.props as {
+			children?: (LayoutContainer | AppComponent)[];
+			content?: LayoutContainer;
+		};
+		// Check for props.children first (cards)
 		if (Array.isArray(props?.children)) {
 			return props.children;
+		}
+		// Check for props.content (modals)
+		if (props?.content) {
+			// Modal content is a single LayoutContainer, return it as an array
+			return [props.content];
 		}
 	}
 	return [];

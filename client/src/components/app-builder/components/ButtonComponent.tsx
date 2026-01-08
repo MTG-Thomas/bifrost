@@ -118,6 +118,7 @@ export function ButtonComponent({
 		const actionType = props?.actionType || onClick?.type;
 		const navigateTo = props?.navigateTo || onClick?.navigateTo;
 		const workflowId = props?.workflowId || onClick?.workflowId;
+		const modalId = props?.modalId;
 		const actionParams = props?.actionParams || onClick?.actionParams;
 		const onComplete = (props?.onComplete || onClick?.onComplete) as
 			| OnCompleteAction[]
@@ -168,6 +169,13 @@ export function ButtonComponent({
 						onComplete,
 						onError,
 					);
+				}
+				break;
+
+			case "open-modal":
+				// Open a modal by its component ID
+				if (modalId && context.openModal) {
+					context.openModal(modalId);
 				}
 				break;
 

@@ -17,7 +17,7 @@ import type {
 	LayoutMaxWidth,
 } from "@/lib/app-builder-types";
 import { isLayoutContainer } from "@/lib/app-builder-types";
-import { evaluateVisibility } from "@/lib/expression-parser";
+import { evaluateVisibility, evaluateExpression } from "@/lib/expression-parser";
 import { renderRegisteredComponent } from "./ComponentRegistry";
 
 /**
@@ -165,17 +165,48 @@ function getPaddingStyle(padding?: number): React.CSSProperties {
 }
 
 /**
- * Get combined layout styles
+ * Get combined layout styles including scrolling, sticky, and inline styles
  */
 function getLayoutStyles(layout: {
 	type: LayoutType;
 	gap?: number;
 	padding?: number;
+	maxHeight?: number;
+	overflow?: string;
+	sticky?: string;
+	stickyOffset?: number;
+	style?: React.CSSProperties;
 }): React.CSSProperties {
-	return {
+	const styles: React.CSSProperties = {
 		...getGapStyle(layout.gap, layout.type),
 		...getPaddingStyle(layout.padding),
 	};
+
+	// Scrollable container support
+	if (layout.maxHeight) {
+		styles.maxHeight = `${layout.maxHeight}px`;
+	}
+	if (layout.overflow) {
+		styles.overflow = layout.overflow;
+	}
+
+	// Sticky positioning support
+	if (layout.sticky) {
+		styles.position = "sticky";
+		if (layout.sticky === "top") {
+			styles.top = `${layout.stickyOffset ?? 0}px`;
+		} else if (layout.sticky === "bottom") {
+			styles.bottom = `${layout.stickyOffset ?? 0}px`;
+		}
+		styles.zIndex = 10; // Ensure sticky elements stay on top
+	}
+
+	// Merge inline styles (user-provided styles take precedence)
+	if (layout.style) {
+		Object.assign(styles, layout.style);
+	}
+
+	return styles;
 }
 
 /**
@@ -330,19 +361,37 @@ function renderLayoutContainer(
 	// Generate a unique key for this container based on parent
 	const containerKey = parentKey;
 
-	// Row children keep their natural size by default (standard CSS flexbox behavior).
-	// Set autoSize: false to make children expand equally to fill available space (flex-1).
+	// Handle child distribution based on the distribute prop.
+	// - "natural" (default): Children keep their natural size (standard CSS flexbox behavior)
+	// - "equal": Children expand equally to fill available space (flex-1)
+	// - "fit": Children fit content, no stretch (fit-content)
 	const renderChild = (
 		child: LayoutContainer | AppComponent,
 		index: number,
 		parentType: "row" | "column" | "grid",
-		autoSize?: boolean,
+		distribute?: "natural" | "equal" | "fit",
 	) => {
 		const key = generateChildKey(child, index, containerKey);
 
-		// In row layouts, only wrap with flex-1 if autoSize is explicitly false
-		// Default behavior (autoSize undefined or true) keeps natural sizes
-		if (parentType === "row" && autoSize === false) {
+		// Grid spanning support
+		if (parentType === "grid" && !isLayoutContainer(child) && child.gridSpan && child.gridSpan > 1) {
+			return (
+				<div key={key} style={{ gridColumn: `span ${child.gridSpan}` }}>
+					<LayoutRenderer
+						layout={child}
+						context={context}
+						parentKey={key}
+						isPreview={isPreview}
+						selectedComponentId={selectedComponentId}
+						onSelectComponent={onSelectComponent}
+					/>
+				</div>
+			);
+		}
+
+		// Apply distribute behavior
+		if (distribute === "equal") {
+			// Equal distribution: Children expand equally (flex-1)
 			const hasExplicitWidth =
 				!isLayoutContainer(child) &&
 				child.width &&
@@ -362,8 +411,23 @@ function renderLayoutContainer(
 					/>
 				</div>
 			);
+		} else if (distribute === "fit") {
+			// Fit content: Children fit their content, no stretch
+			return (
+				<div key={key} className="w-fit">
+					<LayoutRenderer
+						layout={child}
+						context={context}
+						parentKey={key}
+						isPreview={isPreview}
+						selectedComponentId={selectedComponentId}
+						onSelectComponent={onSelectComponent}
+					/>
+				</div>
+			);
 		}
 
+		// Default "natural" behavior: No wrapping, children keep natural size
 		return (
 			<LayoutRenderer
 				key={key}
@@ -398,11 +462,11 @@ function renderLayoutContainer(
 		case "row":
 			return wrapWithSelectable(
 				<div
-					className={cn("flex flex-row flex-wrap", baseClasses)}
+					className={cn("flex flex-row flex-wrap", baseClasses, layout.className)}
 					style={layoutStyles}
 				>
 					{layout.children.map((child, index) =>
-						renderChild(child, index, "row", layout.autoSize),
+						renderChild(child, index, "row", layout.distribute),
 					)}
 				</div>,
 			);
@@ -410,11 +474,11 @@ function renderLayoutContainer(
 		case "column":
 			return wrapWithSelectable(
 				<div
-					className={cn("flex flex-col", baseClasses)}
+					className={cn("flex flex-col", baseClasses, layout.className)}
 					style={layoutStyles}
 				>
 					{layout.children.map((child, index) =>
-						renderChild(child, index, "column"),
+						renderChild(child, index, "column", layout.distribute),
 					)}
 				</div>,
 			);
@@ -426,11 +490,12 @@ function renderLayoutContainer(
 						"grid",
 						getGridColumnsClass(layout.columns),
 						baseClasses,
+						layout.className,
 					)}
 					style={layoutStyles}
 				>
 					{layout.children.map((child, index) =>
-						renderChild(child, index, "grid"),
+						renderChild(child, index, "grid", layout.distribute),
 					)}
 				</div>,
 			);
@@ -449,6 +514,47 @@ function renderComponent(
 	className?: string,
 	previewContext?: PreviewSelectionContext,
 ): React.ReactElement | null {
+	// Handle component repetition
+	if (component.repeatFor) {
+		const items = evaluateExpression(component.repeatFor.items, context);
+
+		if (!Array.isArray(items)) {
+			console.error(
+				`repeatFor items must evaluate to an array. Got: ${typeof items}`,
+				{ component: component.id, expression: component.repeatFor.items }
+			);
+			return null;
+		}
+
+		return (
+			<>
+				{items.map((item, index) => {
+					// Get unique key from item
+					const key = item[component.repeatFor!.itemKey] ?? index;
+
+					// Extend context with loop variable
+					const extendedContext: ExpressionContext = {
+						...context,
+						[component.repeatFor!.as]: item,
+					};
+
+					// Render component for this item (without repeatFor to prevent infinite loop)
+					return (
+						<LayoutRenderer
+							key={key}
+							layout={{ ...component, repeatFor: undefined }}
+							context={extendedContext}
+							className={className}
+							isPreview={previewContext?.isPreview}
+							selectedComponentId={previewContext?.selectedComponentId}
+							onSelectComponent={previewContext?.onSelectComponent}
+						/>
+					);
+				})}
+			</>
+		);
+	}
+
 	// Check visibility
 	if (!evaluateVisibility(component.visible, context)) {
 		return null;
@@ -478,10 +584,14 @@ function renderComponent(
 		return content;
 	};
 
-	// If the component has a width constraint, wrap it
-	if (component.width && component.width !== "auto") {
+	// Wrap component if it has width, className, or style
+	if (component.width || component.className || component.style) {
 		return wrapWithSelectable(
-			<div key={component.id} className={cn(widthClass, className)}>
+			<div
+				key={component.id}
+				className={cn(widthClass, component.className, className)}
+				style={component.style}
+			>
 				{wrappedComponent}
 			</div>,
 		);

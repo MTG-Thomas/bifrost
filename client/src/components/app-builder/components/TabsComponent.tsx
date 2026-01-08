@@ -17,7 +17,8 @@ export function TabsComponent({
 	const { props } = component as TabsComponentProps;
 
 	// Guard against undefined props or items
-	const items = props?.items ?? [];
+	// Support both 'items' and 'tabs' for backward compatibility
+	const items = props?.items ?? (props as any)?.tabs ?? [];
 	if (items.length === 0) {
 		return null;
 	}
@@ -32,7 +33,9 @@ export function TabsComponent({
 			orientation={props?.orientation}
 		>
 			<TabsList
-				className={cn(isVertical && "flex-col h-auto items-stretch")}
+				className={cn(
+					isVertical && "flex-col h-auto items-stretch"
+				)}
 			>
 				{items.map((item) => (
 					<TabsTrigger
@@ -44,9 +47,9 @@ export function TabsComponent({
 					</TabsTrigger>
 				))}
 			</TabsList>
-			<div className={cn(isVertical ? "flex-1" : "mt-4")}>
+			<div className={cn(isVertical ? "flex-1" : "")}>
 				{items.map((item) => (
-					<TabsContent key={item.id} value={item.id} className="mt-0">
+					<TabsContent key={item.id} value={item.id} className="mt-0 pt-4">
 						<LayoutRenderer
 							layout={item.content}
 							context={context}

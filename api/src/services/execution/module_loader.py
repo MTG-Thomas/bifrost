@@ -349,7 +349,6 @@ def exec_from_db(
 def load_workflow_from_db(
     code: str,
     path: str,
-    workflow_name: str,
     function_name: str,
 ) -> tuple[Callable, WorkflowMetadata] | None:
     """
@@ -361,8 +360,7 @@ def load_workflow_from_db(
     Args:
         code: Python source code from workflows.code
         path: Workspace-relative path for __file__ injection
-        workflow_name: Display name to find (from decorator)
-        function_name: Python function name to find
+        function_name: Python function name to find (e.g., "get_client_detail")
 
     Returns:
         Tuple of (function, metadata) or None if not found
@@ -380,9 +378,10 @@ def load_workflow_from_db(
             continue
 
         # All decorators use _executable_metadata
-        if hasattr(attr, '_executable_metadata'):
+        # Match by Python function name (attr_name), not display name (metadata.name)
+        if hasattr(attr, '_executable_metadata') and attr_name == function_name:
             metadata = getattr(attr, '_executable_metadata', None)
-            if metadata and hasattr(metadata, 'name') and metadata.name == workflow_name:
+            if metadata:
                 # For data providers, convert to WorkflowMetadata for consistent execution
                 if hasattr(metadata, 'type') and metadata.type == 'data_provider':
                     workflow_meta = WorkflowMetadata(
@@ -399,7 +398,7 @@ def load_workflow_from_db(
                 else:
                     return (attr, _convert_workflow_metadata(metadata))
 
-    logger.warning(f"Workflow '{workflow_name}' not found in code from {path}")
+    logger.warning(f"Workflow function '{function_name}' not found in code from {path}")
     return None
 
 
@@ -816,7 +815,7 @@ def _convert_parameters(params: list) -> list[WorkflowParameter]:
 
 def load_workflow_by_file_path(
     file_path: str | Path,
-    workflow_name: str,
+    function_name: str,
 ) -> tuple[Callable, WorkflowMetadata] | None:
     """
     Load a specific executable (workflow, tool, or data provider) from a known file path.
@@ -831,7 +830,7 @@ def load_workflow_by_file_path(
 
     Args:
         file_path: Path to the Python file (relative or absolute)
-        workflow_name: Expected name to find
+        function_name: Python function name to find (e.g., "get_client_detail")
 
     Returns:
         Tuple of (function, metadata) or None if not found
@@ -858,9 +857,10 @@ def load_workflow_by_file_path(
                 continue
 
             # All decorators (@workflow, @tool, @data_provider) use _executable_metadata
-            if hasattr(attr, '_executable_metadata'):
+            # Match by Python function name (attr_name), not display name (metadata.name)
+            if hasattr(attr, '_executable_metadata') and attr_name == function_name:
                 metadata = getattr(attr, '_executable_metadata', None)
-                if metadata and hasattr(metadata, 'name') and metadata.name == workflow_name:
+                if metadata:
                     # For data providers, convert to WorkflowMetadata for consistent execution
                     if hasattr(metadata, 'type') and metadata.type == 'data_provider':
                         workflow_meta = WorkflowMetadata(
@@ -877,11 +877,11 @@ def load_workflow_by_file_path(
                     else:
                         return (attr, _convert_workflow_metadata(metadata))
 
-        logger.warning(f"Workflow '{workflow_name}' not found in {file_path}")
+        logger.warning(f"Workflow function '{function_name}' not found in {file_path}")
         return None
 
     except Exception as e:
-        logger.error(f"Error loading workflow '{workflow_name}' from {file_path}: {e}")
+        logger.error(f"Error loading workflow function '{function_name}' from {file_path}: {e}")
         return None
 
 

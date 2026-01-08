@@ -69,6 +69,8 @@ interface AppShellProps {
 	newVersionAvailable?: boolean;
 	/** Callback to refresh the app when new version is clicked */
 	onRefresh?: () => void;
+	/** Whether we're in preview mode (affects header sticky positioning) */
+	isPreview?: boolean;
 }
 
 /**
@@ -88,6 +90,7 @@ export function AppShell({
 	lastUpdate,
 	newVersionAvailable,
 	onRefresh,
+	isPreview = false,
 }: AppShellProps) {
 	const navigate = useNavigate();
 	// Get base path from store - correctly handles preview mode
@@ -188,22 +191,22 @@ export function AppShell({
 	const hasMultiplePages = app.pages.length > 1 && showSidebar;
 
 	return (
-		<div className="flex h-screen bg-background">
+		<div className="flex flex-1 bg-background overflow-hidden">
 			{/* Desktop Sidebar - Only show if multiple pages */}
 			{hasMultiplePages && (
 				<aside
 					className={cn(
-						"hidden md:flex flex-col h-screen border-r bg-background transition-all duration-300",
+						"hidden md:flex flex-col h-full bg-background transition-all duration-300",
 						isCollapsed ? "w-16" : "w-64",
 					)}
 				>
 					{/* App Title */}
 					<div
 						className={cn(
-							"h-16 flex items-center border-b",
+							"flex items-center flex-shrink-0",
 							isCollapsed
-								? "justify-center px-4"
-								: "justify-start px-4",
+								? "justify-center px-4 h-16"
+								: "justify-start px-4 lg:px-6 h-16",
 						)}
 					>
 						{isCollapsed ? (
@@ -412,9 +415,9 @@ export function AppShell({
 			)}
 
 			{/* Main Content Area */}
-			<div className="flex-1 flex flex-col min-w-0">
+			<div className="flex-1 flex flex-col min-w-0 h-full border-l">
 				{/* Header */}
-				<header className="sticky top-0 z-40 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+				<header className="flex-shrink-0 z-40 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
 					<div className="flex h-16 items-center px-4 lg:px-6">
 						{/* Mobile Menu Button */}
 						{hasMultiplePages && (

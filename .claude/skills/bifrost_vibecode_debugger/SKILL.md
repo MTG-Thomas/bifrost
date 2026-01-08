@@ -172,10 +172,60 @@ Constrains the max-width of layout containers. Use for form pages to prevent str
 
 **IMPORTANT:** For pages with forms (create/edit pages), ALWAYS use `maxWidth: "lg"` on the root column layout.
 
-### Row Layout Behavior
-Row children keep their natural size by default (standard CSS flexbox). This means buttons align properly with `justify: "between"` or `justify: "end"`.
+### Advanced Layout Features (NEW)
 
-Set `autoSize: false` when you want children to expand equally (flex-1 behavior).
+**Scrollable Containers:**
+```json
+{
+  "type": "column",
+  "maxHeight": 400,
+  "overflow": "auto",
+  "children": [...]
+}
+```
+
+**Sticky Positioning:**
+```json
+{
+  "type": "row",
+  "sticky": "top",
+  "stickyOffset": 0,
+  "children": [...]
+}
+```
+
+**Custom Styling:**
+```json
+{
+  "type": "card",
+  "className": "bg-blue-50 rounded-lg shadow-md",
+  "style": {"maxHeight": "300px", "overflowY": "auto"}
+}
+```
+
+**Repeating Components:**
+```json
+{
+  "type": "card",
+  "repeatFor": {
+    "items": "{{ workflow.clients }}",
+    "itemKey": "id",
+    "as": "client"
+  },
+  "props": {
+    "title": "{{ client.name }}",
+    "description": "{{ client.email }}"
+  }
+}
+```
+
+### Layout Distribution (NEW)
+Controls how children fill available space:
+- `distribute: "natural"` (default) - Children keep natural size (standard CSS flexbox)
+- `distribute: "equal"` - Children expand equally (flex-1 behavior)
+- `distribute: "fit"` - Children fit content, no stretch
+
+**IMPORTANT:** `autoSize` is deprecated - use `distribute` instead.
 
 Example for page header with action button:
 ```json
@@ -247,7 +297,7 @@ Pages load data via workflows, accessed through expressions:
 
 - **`launchWorkflowId`**: Workflow to execute on page mount
 - **`launchWorkflowDataSourceId`**: Key name for the result (defaults to workflow name)
-- **Access data**: `{{ workflow.<dataSourceId>.result }}` in expressions
+- **Access data**: `{{ workflow.<dataSourceId> }}` (direct access - NO `.result` wrapper)
 - **DataTable**: Use `dataSource` prop matching the `launchWorkflowDataSourceId`
 
 ### Example: List Page with DataTable
@@ -273,7 +323,7 @@ Pages load data via workflows, accessed through expressions:
 }
 ```
 
-The workflow result is stored under `workflow.clientsList.result`, and the DataTable reads from `workflow.clientsList.result.clients`.
+The workflow result is stored under `workflow.clientsList`, and the DataTable reads from `workflow.clientsList.clients`.
 
 ## Decorators and IDs
 

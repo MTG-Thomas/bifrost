@@ -126,7 +126,7 @@ export function DataTableComponent({
 	const [isRefreshing, setIsRefreshing] = useState(false);
 
 	// Get data from context - memoize to prevent dependency changes
-	// Primary: workflow namespace from launchWorkflow ({{ workflow.<dataSourceId>.result }})
+	// Primary: workflow namespace from launchWorkflow ({{ workflow.<dataSourceId> }})
 	// Fallback: expression evaluation for explicit expressions
 	const rawData = useMemo(() => {
 		let data: unknown;
@@ -136,16 +136,16 @@ export function DataTableComponent({
 			data = evaluateExpression(props.dataSource, context);
 		} else if (context.workflow) {
 			// Check workflow namespace first (from launchWorkflow with dataSourceId)
-			// e.g., dataSource="clients" → workflow.clients.result
+			// e.g., dataSource="clientsList" → workflow.clientsList
 			const workflowResult = context.workflow[props.dataSource];
-			if (workflowResult?.result !== undefined) {
-				data = workflowResult.result;
+			if (workflowResult !== undefined) {
+				data = workflowResult;
 			} else if (props.dataSource.includes(".")) {
-				// Dot-notation path within workflow namespace (e.g., "clients.items")
+				// Dot-notation path within workflow namespace (e.g., "clientsList.items")
 				const parts = props.dataSource.split(".");
 				const workflowKey = parts[0];
 				const nestedPath = parts.slice(1).join(".");
-				const result = context.workflow[workflowKey]?.result;
+				const result = context.workflow[workflowKey];
 				if (result && typeof result === "object") {
 					data = getNestedValue(
 						result as Record<string, unknown>,
@@ -853,8 +853,10 @@ export function DataTableComponent({
 																	);
 
 																// Wrap icon-only buttons in tooltip for accessibility
+																// Only show tooltip if there's a label
 																if (
-																	isIconOnly
+																	isIconOnly &&
+																	action.label.trim()
 																) {
 																	return (
 																		<Tooltip

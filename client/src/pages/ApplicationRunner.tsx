@@ -761,10 +761,10 @@ export function ApplicationRunner({
 
 	// Use AppShell for full application experience
 	return (
-		<div className="min-h-screen bg-background" style={embedThemeStyles}>
+		<div className="h-screen flex flex-col bg-background" style={embedThemeStyles}>
 			{/* Preview Banner */}
 			{preview && (
-				<div className="bg-amber-500 text-amber-950 px-4 py-2 text-center text-sm font-medium">
+				<div className="sticky top-0 z-50 bg-amber-500 text-amber-950 px-4 py-2 text-center text-sm font-medium flex-shrink-0">
 					Preview Mode - This is the draft version
 					<Button
 						variant="link"
@@ -788,6 +788,7 @@ export function ApplicationRunner({
 				lastUpdate={lastUpdate}
 				newVersionAvailable={newVersionAvailable}
 				onRefresh={refreshApp}
+				isPreview={preview}
 			>
 				{appContent}
 			</AppShell>

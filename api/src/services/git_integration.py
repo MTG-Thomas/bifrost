@@ -2606,20 +2606,27 @@ class GitIntegrationService:
             workflow_result = await db.execute(workflow_stmt)
             workflows = workflow_result.scalars().all()
 
+            # Group workflows by path - since all workflows in the same file have
+            # the same code blob stored, we only need to write each file once
+            workflows_by_path: dict[str, Workflow] = {}
             for workflow in workflows:
-                if not workflow.code or not workflow.path:
-                    continue
+                if workflow.code and workflow.path:
+                    # Use first workflow found for each path (they all have same code)
+                    if workflow.path not in workflows_by_path:
+                        workflows_by_path[workflow.path] = workflow
 
+            for path, workflow in workflows_by_path.items():
                 # Strip ID from decorator for clean git output
-                result = decorator_service.strip_ids(workflow.code)
+                # workflow.code is guaranteed to be non-None due to check on line 2613
+                result = decorator_service.strip_ids(workflow.code)  # type: ignore[arg-type]
                 clean_code = result.new_content
 
                 # Write to workspace
-                file_path = self.workspace_path / workflow.path
+                file_path = self.workspace_path / path
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(clean_code, encoding="utf-8")
-                serialized_paths.append(workflow.path)
-                logger.debug(f"Serialized workflow to {workflow.path}")
+                serialized_paths.append(path)
+                logger.debug(f"Serialized workflow to {path}")
 
             # 2. Serialize forms
             form_stmt = select(Form).where(

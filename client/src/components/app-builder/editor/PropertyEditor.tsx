@@ -147,6 +147,7 @@ function CommonPropertiesSection({
 }) {
 	const isLayout = isLayoutContainer(component);
 	const id = isLayout ? undefined : (component as AppComponent).id;
+	const appComponent = !isLayout ? (component as AppComponent) : null;
 
 	return (
 		<AccordionItem value="common">
@@ -172,6 +173,128 @@ function CommonPropertiesSection({
 						placeholder="Always visible"
 					/>
 				</FormField>
+
+				{appComponent && (
+					<>
+						<FormField
+							label="Grid Span"
+							description="Columns to span (for components in grid layouts)"
+						>
+							<Input
+								type="number"
+								value={appComponent.gridSpan ?? 1}
+								onChange={(e) =>
+									onChange({
+										gridSpan: Number(e.target.value),
+									})
+								}
+								min={1}
+								max={12}
+							/>
+						</FormField>
+
+						<FormField
+							label="CSS Classes"
+							description="Custom Tailwind or CSS classes"
+						>
+							<Input
+								value={appComponent.className ?? ""}
+								onChange={(e) =>
+									onChange({
+										className: e.target.value || undefined,
+									})
+								}
+								placeholder="text-blue-500 font-bold"
+							/>
+						</FormField>
+
+						<Accordion type="single" collapsible>
+							<AccordionItem value="inline-styles">
+								<AccordionTrigger>Inline Styles</AccordionTrigger>
+								<AccordionContent>
+									<JsonEditor
+										value={appComponent.style ?? {}}
+										onChange={(value) =>
+											onChange({ style: value as React.CSSProperties })
+										}
+										rows={4}
+									/>
+									<p className="text-xs text-muted-foreground mt-2">
+										Use camelCase: maxHeight, backgroundColor
+									</p>
+								</AccordionContent>
+							</AccordionItem>
+
+							<AccordionItem value="repeat">
+								<AccordionTrigger>Repeat Component</AccordionTrigger>
+								<AccordionContent className="space-y-4">
+									<FormField
+										label="Items Expression"
+										description="Array to iterate over"
+									>
+										<Input
+											value={appComponent.repeatFor?.items ?? ""}
+											onChange={(e) =>
+												onChange({
+													repeatFor: e.target.value
+														? {
+																items: e.target.value,
+																as: appComponent.repeatFor?.as || "item",
+																itemKey: appComponent.repeatFor?.itemKey || "id",
+														  }
+														: undefined,
+												})
+											}
+											placeholder="{{ workflow.clients }}"
+										/>
+									</FormField>
+
+									{appComponent.repeatFor && (
+										<>
+											<FormField
+												label="Loop Variable"
+												description="Name to access each item"
+											>
+												<Input
+													value={appComponent.repeatFor.as}
+													onChange={(e) =>
+														onChange({
+															repeatFor: {
+																items: appComponent.repeatFor!.items,
+																as: e.target.value,
+																itemKey: appComponent.repeatFor!.itemKey,
+															},
+														})
+													}
+													placeholder="client"
+												/>
+											</FormField>
+
+											<FormField
+												label="Item Key Property"
+												description="Unique property for React keys"
+											>
+												<Input
+													value={appComponent.repeatFor.itemKey}
+													onChange={(e) =>
+														onChange({
+															repeatFor: {
+																items: appComponent.repeatFor!.items,
+																as: appComponent.repeatFor!.as,
+																itemKey: e.target.value,
+															},
+														})
+													}
+													placeholder="id"
+												/>
+											</FormField>
+										</>
+									)}
+								</AccordionContent>
+							</AccordionItem>
+						</Accordion>
+					</>
+				)}
 			</AccordionContent>
 		</AccordionItem>
 	);
@@ -374,6 +497,26 @@ function PagePropertiesSection({
 						</FormField>
 					</div>
 				)}
+
+				{/* Page CSS Section */}
+				<div className="pt-2 border-t">
+					<FormField
+						label="Custom CSS"
+						description="CSS rules scoped to this page"
+					>
+						<Textarea
+							value={page.styles ?? ""}
+							onChange={(e) =>
+								onChange({
+									styles: e.target.value || undefined,
+								})
+							}
+							rows={10}
+							placeholder=".custom-sidebar { position: sticky; top: 0; }"
+							className="font-mono text-sm"
+						/>
+					</FormField>
+				</div>
 			</AccordionContent>
 		</AccordionItem>
 	);
@@ -518,6 +661,155 @@ function LayoutPropertiesSection({
 						</SelectContent>
 					</Select>
 				</FormField>
+
+				<FormField
+					label="Distribute"
+					description="How children fill available space"
+				>
+					<Select
+						value={component.distribute ?? "natural"}
+						onValueChange={(value) =>
+							onChange({
+								distribute:
+									value === "natural"
+										? undefined
+										: (value as "natural" | "equal" | "fit"),
+							})
+						}
+					>
+						<SelectTrigger>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="natural">Natural (default)</SelectItem>
+							<SelectItem value="equal">Equal (flex-1)</SelectItem>
+							<SelectItem value="fit">Fit Content</SelectItem>
+						</SelectContent>
+					</Select>
+				</FormField>
+
+				<FormField
+					label="Max Height"
+					description="Container height limit (pixels, enables scrolling)"
+				>
+					<Input
+						type="number"
+						value={component.maxHeight ?? ""}
+						onChange={(e) =>
+							onChange({
+								maxHeight: e.target.value
+									? Number(e.target.value)
+									: undefined,
+							})
+						}
+						placeholder="None"
+						min={0}
+					/>
+				</FormField>
+
+				<FormField
+					label="Overflow"
+					description="Behavior when content exceeds bounds"
+				>
+					<Select
+						value={component.overflow ?? "visible"}
+						onValueChange={(value) =>
+							onChange({
+								overflow:
+									value === "visible"
+										? undefined
+										: (value as "auto" | "scroll" | "hidden" | "visible"),
+							})
+						}
+					>
+						<SelectTrigger>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="visible">Visible (default)</SelectItem>
+							<SelectItem value="auto">Auto (scroll when needed)</SelectItem>
+							<SelectItem value="scroll">Always Scroll</SelectItem>
+							<SelectItem value="hidden">Hidden (clip)</SelectItem>
+						</SelectContent>
+					</Select>
+				</FormField>
+
+				<FormField
+					label="Sticky Position"
+					description="Pin container to edge when scrolling"
+				>
+					<Select
+						value={component.sticky ?? "none"}
+						onValueChange={(value) =>
+							onChange({
+								sticky:
+									value === "none"
+										? undefined
+										: (value as "top" | "bottom"),
+							})
+						}
+					>
+						<SelectTrigger>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="none">None (default)</SelectItem>
+							<SelectItem value="top">Sticky Top</SelectItem>
+							<SelectItem value="bottom">Sticky Bottom</SelectItem>
+						</SelectContent>
+					</Select>
+				</FormField>
+
+				{component.sticky && (
+					<FormField
+						label="Sticky Offset"
+						description="Distance from edge (pixels)"
+					>
+						<Input
+							type="number"
+							value={component.stickyOffset ?? 0}
+							onChange={(e) =>
+								onChange({
+									stickyOffset: Number(e.target.value),
+								})
+							}
+							min={0}
+						/>
+					</FormField>
+				)}
+
+				<FormField
+					label="CSS Classes"
+					description="Custom Tailwind or CSS classes"
+				>
+					<Input
+						value={component.className ?? ""}
+						onChange={(e) =>
+							onChange({
+								className: e.target.value || undefined,
+							})
+						}
+						placeholder="bg-blue-500 rounded-lg"
+					/>
+				</FormField>
+
+				<Accordion type="single" collapsible>
+					<AccordionItem value="inline-styles">
+						<AccordionTrigger>Inline Styles (Advanced)</AccordionTrigger>
+						<AccordionContent>
+							<JsonEditor
+								value={component.style ?? {}}
+								onChange={(value) =>
+									onChange({ style: value as React.CSSProperties })
+								}
+								rows={4}
+							/>
+							<p className="text-xs text-muted-foreground mt-2">
+								Use camelCase: maxHeight, backgroundColor, etc.
+							</p>
+						</AccordionContent>
+					</AccordionItem>
+				</Accordion>
 
 				{isGrid && (
 					<FormField

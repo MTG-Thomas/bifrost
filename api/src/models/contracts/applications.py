@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, ForwardRef, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 import re
 
@@ -333,6 +333,34 @@ class AppComponentCreate(AppComponentBase):
     width: str | None = Field(default=None, max_length=20, description="Component width (auto, full, 1/2, etc.)")
     loading_workflows: list[str] | None = Field(default=None, description="Workflow IDs that show loading skeleton")
 
+    @model_validator(mode="after")
+    def validate_layout_props(self) -> "AppComponentCreate":
+        """Validate layout container props match expected types."""
+        if self.type in ("row", "column", "grid"):
+            # Validate layout-specific props
+            props = self.props or {}
+            if "padding" in props and not isinstance(props["padding"], int | type(None)):
+                raise ValueError(f"padding must be an integer, got {type(props['padding']).__name__}")
+            if "gap" in props and not isinstance(props["gap"], int | type(None)):
+                raise ValueError(f"gap must be an integer, got {type(props['gap']).__name__}")
+            if "columns" in props and not isinstance(props["columns"], int | type(None)):
+                raise ValueError(f"columns must be an integer, got {type(props['columns']).__name__}")
+            if "maxHeight" in props and not isinstance(props["maxHeight"], int | type(None)):
+                raise ValueError(f"maxHeight must be an integer, got {type(props['maxHeight']).__name__}")
+            if "stickyOffset" in props and not isinstance(props["stickyOffset"], int | type(None)):
+                raise ValueError(f"stickyOffset must be an integer, got {type(props['stickyOffset']).__name__}")
+            if "distribute" in props and props["distribute"] not in (None, "natural", "equal", "fit"):
+                raise ValueError(f"distribute must be one of: natural, equal, fit, got {props['distribute']}")
+            if "overflow" in props and props["overflow"] not in (None, "auto", "scroll", "hidden", "visible"):
+                raise ValueError(f"overflow must be one of: auto, scroll, hidden, visible, got {props['overflow']}")
+            if "sticky" in props and props["sticky"] not in (None, "top", "bottom"):
+                raise ValueError(f"sticky must be one of: top, bottom, got {props['sticky']}")
+            if "align" in props and props["align"] not in (None, "start", "center", "end", "stretch"):
+                raise ValueError(f"align must be one of: start, center, end, stretch, got {props['align']}")
+            if "justify" in props and props["justify"] not in (None, "start", "center", "end", "between", "around"):
+                raise ValueError(f"justify must be one of: start, center, end, between, around, got {props['justify']}")
+        return self
+
 
 class AppComponentUpdate(BaseModel):
     """Input for updating a component."""
@@ -343,6 +371,35 @@ class AppComponentUpdate(BaseModel):
     visible: str | None = None
     width: str | None = Field(default=None, max_length=20)
     loading_workflows: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_layout_props(self) -> "AppComponentUpdate":
+        """Validate layout container props match expected types."""
+        # Only validate if type is a layout container
+        # (type can be None in updates, so check if props look like layout props)
+        if self.type in ("row", "column", "grid") and self.props:
+            props = self.props
+            if "padding" in props and not isinstance(props["padding"], int | type(None)):
+                raise ValueError(f"padding must be an integer, got {type(props['padding']).__name__}")
+            if "gap" in props and not isinstance(props["gap"], int | type(None)):
+                raise ValueError(f"gap must be an integer, got {type(props['gap']).__name__}")
+            if "columns" in props and not isinstance(props["columns"], int | type(None)):
+                raise ValueError(f"columns must be an integer, got {type(props['columns']).__name__}")
+            if "maxHeight" in props and not isinstance(props["maxHeight"], int | type(None)):
+                raise ValueError(f"maxHeight must be an integer, got {type(props['maxHeight']).__name__}")
+            if "stickyOffset" in props and not isinstance(props["stickyOffset"], int | type(None)):
+                raise ValueError(f"stickyOffset must be an integer, got {type(props['stickyOffset']).__name__}")
+            if "distribute" in props and props["distribute"] not in (None, "natural", "equal", "fit"):
+                raise ValueError(f"distribute must be one of: natural, equal, fit, got {props['distribute']}")
+            if "overflow" in props and props["overflow"] not in (None, "auto", "scroll", "hidden", "visible"):
+                raise ValueError(f"overflow must be one of: auto, scroll, hidden, visible, got {props['overflow']}")
+            if "sticky" in props and props["sticky"] not in (None, "top", "bottom"):
+                raise ValueError(f"sticky must be one of: top, bottom, got {props['sticky']}")
+            if "align" in props and props["align"] not in (None, "start", "center", "end", "stretch"):
+                raise ValueError(f"align must be one of: start, center, end, stretch, got {props['align']}")
+            if "justify" in props and props["justify"] not in (None, "start", "center", "end", "between", "around"):
+                raise ValueError(f"justify must be one of: start, center, end, between, around, got {props['justify']}")
+        return self
 
 
 class AppComponentMove(BaseModel):
@@ -427,6 +484,14 @@ class PagePermissionConfig(CamelCaseModel):
     redirect_to: str | None = None
 
 
+class RepeatFor(CamelCaseModel):
+    """Repeat component for each item in an array."""
+
+    items: str  # Expression that evaluates to an array (e.g., "{{ workflow.clients }}")
+    item_key: str  # Property name to use for React key (must be unique, e.g., "id")
+    as_: str = Field(alias="as")  # Variable name to access current item (e.g., "client")
+
+
 class AppComponentNode(CamelCaseModel):
     """
     Leaf component in the layout tree.
@@ -441,6 +506,10 @@ class AppComponentNode(CamelCaseModel):
     visible: str | None = None
     width: str | None = None
     loading_workflows: list[str] | None = None
+    grid_span: int | None = None  # For grid layout children - how many columns to span
+    repeat_for: RepeatFor | None = None  # Repeat component for each item in array
+    class_name: str | None = None  # Additional CSS classes
+    style: dict[str, Any] | None = None  # Inline CSS styles (camelCase properties)
 
 
 # Forward reference for recursive type
@@ -464,10 +533,15 @@ class LayoutContainer(CamelCaseModel):
     align: Literal["start", "center", "end", "stretch"] | None = None
     justify: Literal["start", "center", "end", "between", "around"] | None = None
     columns: int | None = None
-    auto_size: bool | None = None
+    distribute: Literal["natural", "equal", "fit"] | None = None  # How children fill space
     max_width: Literal["sm", "md", "lg", "xl", "2xl", "full", "none"] | None = None
+    max_height: int | None = None  # Maximum height in pixels (for scrollable containers)
+    overflow: Literal["auto", "scroll", "hidden", "visible"] | None = None  # Overflow behavior
+    sticky: Literal["top", "bottom"] | None = None  # Sticky positioning
+    sticky_offset: int | None = None  # Offset from edge when sticky (pixels)
     visible: str | None = None
-    class_name: str | None = None
+    class_name: str | None = None  # Additional CSS classes
+    style: dict[str, Any] | None = None  # Inline CSS styles (camelCase properties)
     children: list[Union["LayoutContainer", AppComponentNode]] = Field(default_factory=list)
 
 
@@ -496,6 +570,7 @@ class PageDefinition(CamelCaseModel):
     launch_workflow_id: str | None = None
     launch_workflow_params: dict[str, Any] | None = None
     launch_workflow_data_source_id: str | None = None
+    styles: str | None = None  # Page-level CSS styles (scoped to this page)
     permission: PagePermissionConfig | None = None
 
 
@@ -559,6 +634,7 @@ class ApplicationExport(BaseModel):
     global_data_sources: list[dict[str, Any]]
     global_variables: dict[str, Any]
     permissions: dict[str, Any]
+    styles: str | None = None  # App-level CSS styles (global for entire application)
 
     # Pages with their component trees
     pages: list[dict[str, Any]] = Field(

@@ -197,13 +197,11 @@ export function Tables() {
 					<DataTable className="max-h-full">
 						<DataTableHeader>
 							<DataTableRow>
+								<DataTableHead>Scope</DataTableHead>
 								<DataTableHead>Name</DataTableHead>
 								<DataTableHead>Description</DataTableHead>
-								<DataTableHead>Scope</DataTableHead>
 								<DataTableHead>Created</DataTableHead>
-								<DataTableHead className="text-right">
-									Actions
-								</DataTableHead>
+								<DataTableHead className="text-right" />
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
@@ -213,12 +211,6 @@ export function Tables() {
 									className="cursor-pointer hover:bg-muted/50"
 									onClick={() => handleViewDocuments(table)}
 								>
-									<DataTableCell className="font-medium font-mono">
-										{table.name}
-									</DataTableCell>
-									<DataTableCell className="max-w-xs truncate text-muted-foreground">
-										{table.description || "-"}
-									</DataTableCell>
 									<DataTableCell>
 										{table.organization_id ? (
 											<Badge
@@ -241,6 +233,12 @@ export function Tables() {
 												Global
 											</Badge>
 										)}
+									</DataTableCell>
+									<DataTableCell className="font-medium font-mono">
+										{table.name}
+									</DataTableCell>
+									<DataTableCell className="max-w-xs truncate text-muted-foreground">
+										{table.description || "-"}
 									</DataTableCell>
 									<DataTableCell className="text-sm text-muted-foreground">
 										{formatDate(table.created_at)}

@@ -11,6 +11,7 @@ import {
 	Trash2,
 	Copy,
 	Check,
+	PanelLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -48,7 +49,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useTable, useDocuments, useDeleteDocument } from "@/services/tables";
 import { DocumentDialog } from "@/components/tables/DocumentDialog";
-import { DocumentQueryPanel } from "@/components/tables/DocumentQueryPanel";
+import { TableFilterSidebar } from "@/components/tables/TableFilterSidebar";
+import { SearchBox } from "@/components/search/SearchBox";
+import { useSearch } from "@/hooks/useSearch";
 import type { DocumentPublic } from "@/services/tables";
 
 const PAGE_SIZES = [10, 25, 50, 100];
@@ -71,6 +74,8 @@ export function TableDetail() {
 
 	// Filter state
 	const [whereClause, setWhereClause] = useState<Record<string, unknown>>({});
+	const [searchTerm, setSearchTerm] = useState("");
+	const [sidebarOpen, setSidebarOpen] = useState(true);
 
 	const query = useMemo(
 		() => ({
@@ -95,6 +100,13 @@ export function TableDetail() {
 		() => documentsData?.documents ?? [],
 		[documentsData?.documents],
 	);
+
+	// Apply client-side search filtering
+	const filteredDocuments = useSearch(documents, searchTerm, [
+		"id",
+		(doc) => JSON.stringify(doc.data),
+	]);
+
 	const totalDocuments = documentsData?.total ?? 0;
 	const totalPages = Math.ceil(totalDocuments / pageSize);
 	const hasActiveFilters = Object.keys(whereClause).length > 0;
@@ -168,7 +180,7 @@ export function TableDetail() {
 		return str.substring(0, maxLength) + "...";
 	};
 
-	// Extract common data fields to show as columns
+	// Extract common data fields to show as columns (use all documents for consistent columns)
 	const dataColumns = useMemo(() => {
 		if (documents.length === 0) return [];
 		const allKeys = new Set<string>();
@@ -178,6 +190,9 @@ export function TableDetail() {
 		// Return first 3 unique keys
 		return Array.from(allKeys).slice(0, 3);
 	}, [documents]);
+
+	// Display documents (filtered by search)
+	const displayDocuments = searchTerm ? filteredDocuments : documents;
 
 	if (tableLoading) {
 		return (
@@ -208,7 +223,7 @@ export function TableDetail() {
 	}
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-4">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -248,248 +263,304 @@ export function TableDetail() {
 				</div>
 			</div>
 
-			{/* Query Panel */}
-			<DocumentQueryPanel
-				onApplyFilters={handleApplyFilters}
-				onClearFilters={handleClearFilters}
-				hasActiveFilters={hasActiveFilters}
-			/>
+			{/* Search Box */}
+			<div className="flex items-center gap-4">
+				<SearchBox
+					value={searchTerm}
+					onChange={setSearchTerm}
+					placeholder="Search by ID or data content..."
+					className="w-64"
+				/>
+			</div>
 
-			{/* Content */}
-			{documentsLoading ? (
-				<div className="space-y-2">
-					{[...Array(5)].map((_, i) => (
-						<Skeleton key={i} className="h-12 w-full" />
-					))}
-				</div>
-			) : documents.length > 0 ? (
-				<div className="flex-1 min-h-0 flex flex-col">
-					<div className="flex-1 min-h-0">
-						<DataTable className="max-h-full">
-							<DataTableHeader>
-								<DataTableRow>
-									<DataTableHead className="w-[200px]">
-										ID
-									</DataTableHead>
-									{dataColumns.map((col) => (
-										<DataTableHead key={col}>
-											{col}
-										</DataTableHead>
-									))}
-									<DataTableHead>Data Preview</DataTableHead>
-									<DataTableHead>Created</DataTableHead>
-									<DataTableHead className="text-right">
-										Actions
-									</DataTableHead>
-								</DataTableRow>
-							</DataTableHeader>
-							<DataTableBody>
-								{documents.map((doc) => (
-									<DataTableRow key={doc.id}>
-										<DataTableCell className="font-mono text-xs">
-											<TooltipProvider>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<button
+			{/* Main Content with Sidebar */}
+			<div className="flex-1 flex gap-6 min-h-0">
+				{/* Sidebar */}
+				{sidebarOpen ? (
+					<TableFilterSidebar
+						onApplyFilters={handleApplyFilters}
+						onClearFilters={handleClearFilters}
+						hasActiveFilters={hasActiveFilters}
+						onClose={() => setSidebarOpen(false)}
+						className="w-64 shrink-0"
+					/>
+				) : (
+					<Button
+						variant="outline"
+						size="icon"
+						onClick={() => setSidebarOpen(true)}
+						className="shrink-0 h-9 w-9"
+						title="Show filters"
+					>
+						<PanelLeft className="h-4 w-4" />
+					</Button>
+				)}
+
+				{/* Content Area */}
+				<div className="flex-1 min-w-0 flex flex-col">
+					{documentsLoading ? (
+						<div className="space-y-2">
+							{[...Array(5)].map((_, i) => (
+								<Skeleton key={i} className="h-12 w-full" />
+							))}
+						</div>
+					) : displayDocuments.length > 0 ? (
+						<div className="flex-1 min-h-0 flex flex-col">
+							<div className="flex-1 min-h-0 overflow-auto">
+								<DataTable className="max-h-full">
+									<DataTableHeader>
+										<DataTableRow>
+											<DataTableHead className="w-[200px]">
+												ID
+											</DataTableHead>
+											{dataColumns.map((col) => (
+												<DataTableHead key={col}>
+													{col}
+												</DataTableHead>
+											))}
+											<DataTableHead>
+												Data Preview
+											</DataTableHead>
+											<DataTableHead>
+												Created
+											</DataTableHead>
+											<DataTableHead className="text-right">
+												Actions
+											</DataTableHead>
+										</DataTableRow>
+									</DataTableHeader>
+									<DataTableBody>
+										{displayDocuments.map((doc) => (
+											<DataTableRow key={doc.id}>
+												<DataTableCell className="font-mono text-xs">
+													<TooltipProvider>
+														<Tooltip>
+															<TooltipTrigger
+																asChild
+															>
+																<button
+																	onClick={() =>
+																		copyToClipboard(
+																			doc.id,
+																		)
+																	}
+																	className="flex items-center gap-1 hover:text-foreground text-muted-foreground"
+																>
+																	{doc.id.substring(
+																		0,
+																		8,
+																	)}
+																	...
+																	{copiedId ===
+																	doc.id ? (
+																		<Check className="h-3 w-3 text-green-500" />
+																	) : (
+																		<Copy className="h-3 w-3" />
+																	)}
+																</button>
+															</TooltipTrigger>
+															<TooltipContent>
+																{copiedId ===
+																doc.id
+																	? "Copied!"
+																	: "Click to copy full ID"}
+															</TooltipContent>
+														</Tooltip>
+													</TooltipProvider>
+												</DataTableCell>
+												{dataColumns.map((col) => (
+													<DataTableCell
+														key={col}
+														className="max-w-[150px] truncate text-sm"
+													>
+														{doc.data[col] !==
+														undefined
+															? typeof doc.data[
+																	col
+																] === "object"
+																? JSON.stringify(
+																		doc
+																			.data[
+																			col
+																		],
+																	)
+																: String(
+																		doc
+																			.data[
+																			col
+																		],
+																	)
+															: "-"}
+													</DataTableCell>
+												))}
+												<DataTableCell className="max-w-[200px] font-mono text-xs text-muted-foreground">
+													<TooltipProvider>
+														<Tooltip>
+															<TooltipTrigger
+																asChild
+															>
+																<span className="block truncate cursor-help">
+																	{truncateJson(
+																		doc.data,
+																	)}
+																</span>
+															</TooltipTrigger>
+															<TooltipContent
+																side="bottom"
+																className="max-w-md"
+															>
+																<pre className="text-xs whitespace-pre-wrap break-all">
+																	{JSON.stringify(
+																		doc.data,
+																		null,
+																		2,
+																	)}
+																</pre>
+															</TooltipContent>
+														</Tooltip>
+													</TooltipProvider>
+												</DataTableCell>
+												<DataTableCell className="text-sm text-muted-foreground whitespace-nowrap">
+													{formatDate(doc.created_at)}
+												</DataTableCell>
+												<DataTableCell className="text-right">
+													<div className="flex justify-end gap-2">
+														<Button
+															variant="ghost"
+															size="icon"
 															onClick={() =>
-																copyToClipboard(
-																	doc.id,
+																handleEdit(doc)
+															}
+															title="Edit document"
+														>
+															<Pencil className="h-4 w-4" />
+														</Button>
+														<Button
+															variant="ghost"
+															size="icon"
+															onClick={() =>
+																handleDelete(
+																	doc,
 																)
 															}
-															className="flex items-center gap-1 hover:text-foreground text-muted-foreground"
+															title="Delete document"
 														>
-															{doc.id.substring(
-																0,
-																8,
-															)}
-															...
-															{copiedId ===
-															doc.id ? (
-																<Check className="h-3 w-3 text-green-500" />
-															) : (
-																<Copy className="h-3 w-3" />
-															)}
-														</button>
-													</TooltipTrigger>
-													<TooltipContent>
-														{copiedId === doc.id
-															? "Copied!"
-															: "Click to copy full ID"}
-													</TooltipContent>
-												</Tooltip>
-											</TooltipProvider>
-										</DataTableCell>
-										{dataColumns.map((col) => (
-											<DataTableCell
-												key={col}
-												className="max-w-[150px] truncate text-sm"
-											>
-												{doc.data[col] !== undefined
-													? typeof doc.data[col] ===
-														"object"
-														? JSON.stringify(
-																doc.data[col],
-															)
-														: String(doc.data[col])
-													: "-"}
-											</DataTableCell>
+															<Trash2 className="h-4 w-4" />
+														</Button>
+													</div>
+												</DataTableCell>
+											</DataTableRow>
 										))}
-										<DataTableCell className="max-w-[200px] font-mono text-xs text-muted-foreground">
-											<TooltipProvider>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<span className="block truncate cursor-help">
-															{truncateJson(
-																doc.data,
-															)}
-														</span>
-													</TooltipTrigger>
-													<TooltipContent
-														side="bottom"
-														className="max-w-md"
-													>
-														<pre className="text-xs whitespace-pre-wrap break-all">
-															{JSON.stringify(
-																doc.data,
-																null,
-																2,
-															)}
-														</pre>
-													</TooltipContent>
-												</Tooltip>
-											</TooltipProvider>
-										</DataTableCell>
-										<DataTableCell className="text-sm text-muted-foreground whitespace-nowrap">
-											{formatDate(doc.created_at)}
-										</DataTableCell>
-										<DataTableCell className="text-right">
-											<div className="flex justify-end gap-2">
-												<Button
-													variant="ghost"
-													size="icon"
-													onClick={() =>
-														handleEdit(doc)
-													}
-													title="Edit document"
-												>
-													<Pencil className="h-4 w-4" />
-												</Button>
-												<Button
-													variant="ghost"
-													size="icon"
-													onClick={() =>
-														handleDelete(doc)
-													}
-													title="Delete document"
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
-											</div>
-										</DataTableCell>
-									</DataTableRow>
-								))}
-							</DataTableBody>
-						</DataTable>
-					</div>
+									</DataTableBody>
+								</DataTable>
+							</div>
 
-					{/* Pagination */}
-					<div className="flex items-center justify-between py-4 border-t">
-						<div className="flex items-center gap-2 text-sm text-muted-foreground">
-							<span>
-								Showing {currentPage * pageSize + 1} to{" "}
-								{Math.min(
-									(currentPage + 1) * pageSize,
-									totalDocuments,
-								)}{" "}
-								of {totalDocuments} documents
-							</span>
-							<Select
-								value={pageSize.toString()}
-								onValueChange={handlePageSizeChange}
-							>
-								<SelectTrigger className="w-[80px] h-8">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{PAGE_SIZES.map((size) => (
-										<SelectItem
-											key={size}
-											value={size.toString()}
-										>
-											{size}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-							<span>per page</span>
+							{/* Pagination */}
+							<div className="flex items-center justify-between py-4 border-t">
+								<div className="flex items-center gap-2 text-sm text-muted-foreground">
+									<span>
+										Showing{" "}
+										{currentPage * pageSize + 1} to{" "}
+										{Math.min(
+											(currentPage + 1) * pageSize,
+											totalDocuments,
+										)}{" "}
+										of {totalDocuments} documents
+									</span>
+									<Select
+										value={pageSize.toString()}
+										onValueChange={handlePageSizeChange}
+									>
+										<SelectTrigger className="w-[80px] h-8">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											{PAGE_SIZES.map((size) => (
+												<SelectItem
+													key={size}
+													value={size.toString()}
+												>
+													{size}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+									<span>per page</span>
+								</div>
+								<div className="flex items-center gap-2">
+									<Button
+										variant="outline"
+										size="icon"
+										onClick={() =>
+											setCurrentPage((p) =>
+												Math.max(0, p - 1),
+											)
+										}
+										disabled={currentPage === 0}
+									>
+										<ChevronLeft className="h-4 w-4" />
+									</Button>
+									<span className="text-sm">
+										Page {currentPage + 1} of{" "}
+										{Math.max(1, totalPages)}
+									</span>
+									<Button
+										variant="outline"
+										size="icon"
+										onClick={() =>
+											setCurrentPage((p) =>
+												Math.min(totalPages - 1, p + 1),
+											)
+										}
+										disabled={currentPage >= totalPages - 1}
+									>
+										<ChevronRight className="h-4 w-4" />
+									</Button>
+								</div>
+							</div>
 						</div>
-						<div className="flex items-center gap-2">
-							<Button
-								variant="outline"
-								size="icon"
-								onClick={() =>
-									setCurrentPage((p) => Math.max(0, p - 1))
-								}
-								disabled={currentPage === 0}
-							>
-								<ChevronLeft className="h-4 w-4" />
-							</Button>
-							<span className="text-sm">
-								Page {currentPage + 1} of{" "}
-								{Math.max(1, totalPages)}
-							</span>
-							<Button
-								variant="outline"
-								size="icon"
-								onClick={() =>
-									setCurrentPage((p) =>
-										Math.min(totalPages - 1, p + 1),
-									)
-								}
-								disabled={currentPage >= totalPages - 1}
-							>
-								<ChevronRight className="h-4 w-4" />
-							</Button>
-						</div>
-					</div>
+					) : (
+						// Empty State
+						<Card>
+							<CardContent className="flex flex-col items-center justify-center py-12 text-center">
+								<FileJson2 className="h-12 w-12 text-muted-foreground" />
+								<h3 className="mt-4 text-lg font-semibold">
+									{hasActiveFilters || searchTerm
+										? "No documents match your filters"
+										: "No documents yet"}
+								</h3>
+								<p className="mt-2 text-sm text-muted-foreground">
+									{hasActiveFilters || searchTerm
+										? "Try adjusting your filter conditions or search term"
+										: "Add your first document to this table"}
+								</p>
+								{hasActiveFilters || searchTerm ? (
+									<Button
+										variant="outline"
+										onClick={() => {
+											handleClearFilters();
+											setSearchTerm("");
+										}}
+										className="mt-4"
+									>
+										Clear Filters
+									</Button>
+								) : (
+									<Button
+										variant="outline"
+										size="icon"
+										onClick={handleAdd}
+										title="Add Document"
+										className="mt-4"
+									>
+										<Plus className="h-4 w-4" />
+									</Button>
+								)}
+							</CardContent>
+						</Card>
+					)}
 				</div>
-			) : (
-				// Empty State
-				<Card>
-					<CardContent className="flex flex-col items-center justify-center py-12 text-center">
-						<FileJson2 className="h-12 w-12 text-muted-foreground" />
-						<h3 className="mt-4 text-lg font-semibold">
-							{hasActiveFilters
-								? "No documents match your filters"
-								: "No documents yet"}
-						</h3>
-						<p className="mt-2 text-sm text-muted-foreground">
-							{hasActiveFilters
-								? "Try adjusting your filter conditions"
-								: "Add your first document to this table"}
-						</p>
-						{hasActiveFilters ? (
-							<Button
-								variant="outline"
-								onClick={handleClearFilters}
-								className="mt-4"
-							>
-								Clear Filters
-							</Button>
-						) : (
-							<Button
-								variant="outline"
-								size="icon"
-								onClick={handleAdd}
-								title="Add Document"
-								className="mt-4"
-							>
-								<Plus className="h-4 w-4" />
-							</Button>
-						)}
-					</CardContent>
-				</Card>
-			)}
+			</div>
 
 			{tableName && (
 				<DocumentDialog

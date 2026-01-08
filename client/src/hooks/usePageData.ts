@@ -2,7 +2,7 @@
  * Page Data Loading Hook
  *
  * Manages launch workflow execution for App Builder pages.
- * Access data via {{ workflow.<dataSourceId>.result }}
+ * Access data via {{ workflow.<dataSourceId> }}
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -21,9 +21,9 @@ interface PageDataState {
 	error: Error | null;
 	/**
 	 * Workflow results keyed by dataSourceId.
-	 * Access via {{ workflow.<dataSourceId>.result }}
+	 * Access via {{ workflow.<dataSourceId> }}
 	 */
-	workflow: Record<string, WorkflowResult>;
+	workflow: Record<string, unknown>;
 }
 
 interface UsePageDataOptions {
@@ -81,7 +81,7 @@ function evaluateInputParams(
  *   executeWorkflow: handleExecuteWorkflow,
  * });
  *
- * // Access data: workflow.clientsList.result.clients
+ * // Access data: workflow.clientsList.clients
  */
 export function usePageData({
 	page,
@@ -140,7 +140,7 @@ export function usePageData({
 					isLoading: false,
 					workflow: {
 						...prev.workflow,
-						[dataSourceKey]: result,
+						[dataSourceKey]: result.result,
 					},
 				}));
 			} else {
@@ -206,7 +206,7 @@ export function usePageData({
 						isLoading: false,
 						workflow: {
 							...prev.workflow,
-							[dataSourceKey]: result,
+							[dataSourceKey]: result.result,
 						},
 					}));
 				} else if (!cancelled) {

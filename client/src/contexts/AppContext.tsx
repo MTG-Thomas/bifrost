@@ -47,6 +47,8 @@ interface AppContextValue {
 	setWorkflowResult: (dataSourceId: string, result: WorkflowResult) => void;
 	/** Clear workflow results */
 	clearWorkflowResults: () => void;
+	/** Check if a modal is open */
+	isModalOpen: (modalId: string) => boolean;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -67,7 +69,7 @@ interface AppContextProviderProps {
 	/** Handler for refreshing a data table */
 	onRefreshTable?: (dataSourceKey: string) => void;
 	/** Externally controlled workflow results keyed by dataSourceId (for injection from parent) */
-	workflowResults?: Record<string, WorkflowResult>;
+	workflowResults?: Record<string, unknown>;
 	/** @deprecated Use workflowResults instead */
 	workflowResult?: WorkflowResult;
 	/** Custom navigate function (defaults to react-router navigate) */
@@ -118,6 +120,11 @@ export function AppContextProvider({
 	const [customActions, setCustomActions] = useState<
 		Map<string, (params?: Record<string, unknown>) => void>
 	>(new Map());
+
+	// Modal open state registry (keyed by modal component ID)
+	const [openModals, setOpenModals] = useState<Map<string, boolean>>(
+		new Map(),
+	);
 
 	// Workflow results state keyed by dataSourceId (for {{ workflow.<dataSourceId>.result }} access)
 	// Can be controlled externally via prop or internally via setWorkflowResult
@@ -274,6 +281,30 @@ export function AppContextProvider({
 		setWorkflowResultsState({});
 	}, []);
 
+	// Modal control functions
+	const openModal = useCallback((modalId: string) => {
+		setOpenModals((prev) => {
+			const next = new Map(prev);
+			next.set(modalId, true);
+			return next;
+		});
+	}, []);
+
+	const closeModal = useCallback((modalId: string) => {
+		setOpenModals((prev) => {
+			const next = new Map(prev);
+			next.set(modalId, false);
+			return next;
+		});
+	}, []);
+
+	const isModalOpen = useCallback(
+		(modalId: string): boolean => {
+			return openModals.get(modalId) ?? false;
+		},
+		[openModals],
+	);
+
 	// Build the expression context
 	const context = useMemo(
 		(): ExpressionContext => ({
@@ -291,6 +322,8 @@ export function AppContextProvider({
 			refreshTable: handleRefreshTable,
 			setVariable: handleSetVariable,
 			activeWorkflows,
+			openModal,
+			closeModal,
 		}),
 		[
 			expressionUser,
@@ -307,6 +340,8 @@ export function AppContextProvider({
 			handleRefreshTable,
 			handleSetVariable,
 			activeWorkflows,
+			openModal,
+			closeModal,
 		],
 	);
 
@@ -345,6 +380,7 @@ export function AppContextProvider({
 			registerCustomAction,
 			setWorkflowResult,
 			clearWorkflowResults,
+			isModalOpen,
 		}),
 		[
 			context,
@@ -356,6 +392,7 @@ export function AppContextProvider({
 			registerCustomAction,
 			setWorkflowResult,
 			clearWorkflowResults,
+			isModalOpen,
 		],
 	);
 

@@ -97,7 +97,6 @@ function convertApiLayout(apiLayout: ApiLayoutContainer): LayoutContainer {
 		align: apiLayout.align ?? undefined,
 		justify: apiLayout.justify ?? undefined,
 		columns: apiLayout.columns ?? undefined,
-		autoSize: apiLayout.autoSize ?? undefined,
 		visible: apiLayout.visible ?? undefined,
 		className: apiLayout.className ?? undefined,
 		children: (apiLayout.children ?? []).map(

@@ -631,7 +631,7 @@ Pages load data through launch workflows, not data sources. This is the standard
 
 1. Set `launchWorkflowId` to a workflow UUID - executes when the page mounts
 2. Set `launchWorkflowDataSourceId` to a key name (e.g., "stats", "customers")
-3. Access results via `{{ workflow.<dataSourceId>.result }}`
+3. Access results via `{{ workflow.<dataSourceId> }}`
 
 **Example:**
 ```json
@@ -640,9 +640,9 @@ Pages load data through launch workflows, not data sources. This is the standard
   "launchWorkflowDataSourceId": "customers"
 }
 ```
-Then use `{{ workflow.customers.result }}` to access the data.
+Then use `{{ workflow.customers }}` to access the data directly.
 
-**Important:** All data loading now goes through workflows, accessed via `{{ workflow.<key>.result }}`
+**Important:** All data loading now goes through workflows, accessed via `{{ workflow.<key> }}`
 
 ## Layout Types
 
@@ -651,24 +651,31 @@ Then use `{{ workflow.customers.result }}` to access the data.
 - **grid**: CSS grid with configurable columns
 
 Layout properties:
-- `gap`: Space between children (pixels). Defaults: column=16, row=8, grid=16. Set to 0 for no gap.
-- `padding`: Internal padding (pixels). Default: 0.
-- `align`: Cross-axis alignment (start, center, end, stretch)
-- `justify`: Main-axis alignment (start, center, end, between, around)
-- `columns`: Number of grid columns (grid type only)
-- `autoSize`: Row child sizing (see below)
-- `maxWidth`: Constrains layout width - sm (384px), md (448px), lg (512px), xl (576px), 2xl (672px), full/none (no limit)
+- `gap`: INTEGER - Space between children in pixels (e.g., 16, not "16px"). Defaults: column=16, row=8, grid=16. Set to 0 for no gap.
+- `padding`: INTEGER - Internal padding in pixels (e.g., 24, not "24px"). Default: 0. Single value only (not CSS multi-value).
+- `align`: ENUM - Cross-axis alignment: "start", "center", "end", "stretch"
+- `justify`: ENUM - Main-axis alignment: "start", "center", "end", "between", "around"
+- `columns`: INTEGER - Number of grid columns (grid type only)
+- `distribute`: ENUM - How children fill available space: "natural" (default), "equal", "fit"
+- `maxWidth`: ENUM - Constrains layout width: "sm" (384px), "md" (448px), "lg" (512px), "xl" (576px), "2xl" (672px), "full"/"none" (no limit)
+- `maxHeight`: INTEGER - Container height limit in pixels (enables scrolling when content overflows)
+- `overflow`: ENUM - Behavior when content exceeds bounds: "visible", "auto", "scroll", "hidden"
+- `sticky`: ENUM - Pin container to edge when scrolling: "top", "bottom"
+- `stickyOffset`: INTEGER - Distance from edge in pixels when sticky is set
+- `className`: STRING - Custom Tailwind or CSS classes
+- `style`: OBJECT - Inline CSS styles as object (use camelCase: backgroundColor, maxHeight)
 
-## Row Layout Behavior
+**IMPORTANT**: Integer properties (gap, padding, columns, maxHeight, stickyOffset) must be numbers, NOT strings with "px" suffix.
 
-Row children keep their natural size by default (standard CSS flexbox). This means:
-- Buttons align properly with `justify: "between"` or `justify: "end"`
-- Elements don't stretch unexpectedly
-- Standard CSS patterns work as expected
+## Layout Distribution
 
-Set `autoSize: false` when you want children to expand equally to fill space (flex-1 behavior).
+Control how children fill available space with the `distribute` property:
 
-**Example: Page header with action button**
+- `"natural"` (default): Children keep their natural size
+- `"equal"`: Children expand equally (flex-1 behavior)
+- `"fit"`: Children fit their content
+
+**Example: Page header with action button (natural)**
 ```json
 {
   "type": "row",
@@ -693,15 +700,44 @@ Set `autoSize: false` when you want children to expand equally to fill space (fl
 }
 ```
 
-**Example: Equal-width columns (use autoSize: false)**
+**Example: Equal-width columns (use distribute: "equal")**
 ```json
 {
   "type": "row",
-  "autoSize": false,
+  "distribute": "equal",
   "children": [
-    {"id": "col1", "type": "card", "props": {"title": "Column 1", "children": []}},
-    {"id": "col2", "type": "card", "props": {"title": "Column 2", "children": []}}
+    {"id": "firstName", "type": "text-input", "props": {"fieldId": "firstName", "label": "First Name"}},
+    {"id": "lastName", "type": "text-input", "props": {"fieldId": "lastName", "label": "Last Name"}}
   ]
+}
+```
+
+## Scrollable Containers
+
+Create scrollable areas by setting `maxHeight` and `overflow`:
+
+**Example: Scrollable sidebar**
+```json
+{
+  "type": "column",
+  "maxHeight": 400,
+  "overflow": "auto",
+  "gap": 16,
+  "children": [...]
+}
+```
+
+## Custom Styling
+
+Apply custom classes and inline styles to layouts:
+
+**Example: Custom styled container**
+```json
+{
+  "type": "column",
+  "className": "bg-blue-50 rounded-lg shadow-lg",
+  "style": {"maxHeight": "500px", "overflowY": "auto"},
+  "children": [...]
 }
 ```
 
@@ -773,6 +809,84 @@ All components support a `width` property for responsive layouts:
     {"id": "main", "type": "card", "width": "2/3", "props": {"title": "Main Content", "children": [...]}},
     {"id": "sidebar", "type": "card", "width": "1/3", "props": {"title": "Sidebar", "children": [...]}}
   ]
+}
+```
+
+## Repeating Components
+
+Render a component multiple times by iterating over an array using the `repeatFor` property:
+
+**Example: Render a card for each client**
+```json
+{
+  "id": "client-cards",
+  "type": "card",
+  "repeatFor": {
+    "items": "{{ workflow.clients }}",
+    "itemKey": "id",
+    "as": "client"
+  },
+  "props": {
+    "title": "{{ client.name }}",
+    "children": [
+      {"id": "email", "type": "text", "props": {"text": "{{ client.email }}", "label": "Email"}},
+      {"id": "status", "type": "badge", "props": {"text": "{{ client.status }}"}}
+    ]
+  }
+}
+```
+
+Properties:
+- `items`: Expression that evaluates to an array
+- `itemKey`: Property name used for React keys (must be unique per item)
+- `as`: Variable name to access each item in child expressions
+
+## Component Grid Spanning
+
+Components can span multiple columns in grid layouts using the `gridSpan` property:
+
+**Example: Component spanning 2 columns**
+```json
+{
+  "type": "grid",
+  "columns": 3,
+  "gap": 16,
+  "children": [
+    {"id": "item1", "type": "card", "props": {"title": "Item 1"}},
+    {"id": "item2", "type": "card", "props": {"title": "Item 2"}},
+    {"id": "item3", "type": "card", "gridSpan": 2, "props": {"title": "Wide Item - Spans 2 Columns"}},
+    {"id": "item4", "type": "card", "props": {"title": "Item 4"}}
+  ]
+}
+```
+
+## Component Styling
+
+All components support custom styling through `className` and `style` properties:
+
+**Example: Styled component**
+```json
+{
+  "id": "custom-text",
+  "type": "text",
+  "className": "text-blue-500 font-bold",
+  "style": {"padding": "20px", "backgroundColor": "#f0f0f0"},
+  "props": {"text": "Custom styled text"}
+}
+```
+
+## Page-Level CSS
+
+Add custom CSS to pages using the `styles` property:
+
+**Example: Page with custom styles**
+```json
+{
+  "page_id": "dashboard",
+  "title": "Dashboard",
+  "path": "/",
+  "styles": ".custom-sidebar { position: sticky; top: 0; height: 100vh; overflow-y: auto; }",
+  "layout": {...}
 }
 ```
 

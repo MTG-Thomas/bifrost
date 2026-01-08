@@ -151,11 +151,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         is_script = bool(context_data.get("code"))
 
         if not is_script:
-            from src.services.execution.module_loader import (
-                get_workflow,
-                load_workflow_by_file_path,
-                load_workflow_from_db,
-            )
+            from src.services.execution.module_loader import load_workflow_from_db
 
             name = context_data["name"]
             function_name = context_data.get("function_name")
@@ -163,24 +159,23 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             file_path = context_data.get("file_path")
             result = None
 
-            # DB-first: Execute code from database if available
-            # This is the primary path - code comes from the consumer which has DB access
+            # Platform entities (workflows, tools, data providers) are stored in database
+            # The code is passed from the consumer which has DB access
+            # No filesystem fallback - platform entities must have code in database
             if workflow_code and function_name and file_path:
                 result = load_workflow_from_db(
                     code=workflow_code,
                     path=file_path,
-                    workflow_name=name,
                     function_name=function_name,
                 )
-
-            # Fallback: File-based loading (for legacy workflows without code in DB)
-            if not result:
-                if file_path:
-                    # FAST PATH: Use file path for direct loading (skips filesystem scan)
-                    result = load_workflow_by_file_path(file_path, name)
-                else:
-                    # SLOW PATH: Full filesystem scan (fallback for older messages)
-                    result = get_workflow(name)
+            else:
+                # Missing required fields for execution
+                logger.error(
+                    f"Missing required fields for workflow execution: "
+                    f"workflow_code={bool(workflow_code)}, "
+                    f"function_name={function_name}, "
+                    f"file_path={file_path}"
+                )
 
             if not result:
                 metrics = _capture_metrics(start_rss, start_utime, start_stime)

@@ -156,7 +156,11 @@
       "mcp__bifrost__update_app",
       "Skill(bifrost_vibecode_debugger)",
       "mcp__bifrost__get_page",
-      "mcp__bifrost__update_page"
+      "mcp__bifrost__update_page",
+      "mcp__bifrost__list_components",
+      "mcp__bifrost__update_component",
+      "mcp__bifrost__get_component",
+      "mcp__bifrost__get_table"
     ],
     "deny": [],
     "ask": [],

@@ -61,6 +61,13 @@ function PageRenderer({
 
 	return (
 		<div className="app-builder-page">
+			{/* Inject page-level CSS styles */}
+			{page.styles && (
+				<style
+					dangerouslySetInnerHTML={{ __html: page.styles }}
+					data-page-id={page.id}
+				/>
+			)}
 			<LayoutRenderer
 				layout={page.layout}
 				context={context}
@@ -256,7 +263,7 @@ export function AppRenderer({
 		const results = { ...pageWorkflowResults };
 		// Add externally provided result under "default" key if present
 		if (workflowResult) {
-			results.default = workflowResult;
+			results.default = workflowResult.result;
 		}
 		return results;
 	}, [pageWorkflowResults, workflowResult]);
@@ -281,6 +288,9 @@ export function AppRenderer({
 		);
 	}
 
+	// Get app-level styles if this is a full application
+	const appStyles = isApplication ? (definition as ApplicationDefinition).styles : undefined;
+
 	return (
 		<AppContextProvider
 			initialVariables={initialVariables}
@@ -292,18 +302,25 @@ export function AppRenderer({
 			routeParams={routeParams}
 			activeWorkflows={activeWorkflows}
 		>
-			{isDataLoading && (
-				<div className="absolute top-2 right-2 flex items-center gap-2 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-					<Loader2 className="h-3 w-3 animate-spin" />
-					Loading data...
-				</div>
+			{/* Inject app-level CSS styles */}
+			{appStyles && (
+				<style
+					dangerouslySetInnerHTML={{ __html: appStyles }}
+					data-app-id={isApplication ? (definition as ApplicationDefinition).id : undefined}
+				/>
 			)}
-			<PageRenderer
-				page={page}
-				isPreview={isPreview}
-				selectedComponentId={selectedComponentId}
-				onSelectComponent={onSelectComponent}
-			/>
+			{isDataLoading ? (
+				<div className="flex items-center justify-center min-h-[400px]">
+					<Loader2 className="h-8 w-8 animate-spin text-primary" />
+				</div>
+			) : (
+				<PageRenderer
+					page={page}
+					isPreview={isPreview}
+					selectedComponentId={selectedComponentId}
+					onSelectComponent={onSelectComponent}
+				/>
+			)}
 		</AppContextProvider>
 	);
 }

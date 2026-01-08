@@ -179,69 +179,71 @@ async def validate_workflow(context: Any, file_path: str) -> str:
     import ast
     import json
 
+    from src.core.database import get_db_context
     from src.services.file_storage_service import FileStorageService
 
     logger.info(f"MCP validate_workflow called with file_path={file_path}")
 
     try:
-        service = FileStorageService()
-        content = await service.read_file(file_path)
+        async with get_db_context() as db:
+            service = FileStorageService(db)
+            content = await service.read_file(file_path)
 
-        errors: list[str] = []
-        warnings: list[str] = []
+            errors: list[str] = []
+            warnings: list[str] = []
 
-        # Check Python syntax
-        try:
-            tree = ast.parse(content)
-        except SyntaxError as e:
+            # Check Python syntax
+            try:
+                tree = ast.parse(content)
+            except SyntaxError as e:
+                return json.dumps({
+                    "valid": False,
+                    "errors": [{"type": "syntax", "line": e.lineno, "message": e.msg}],
+                    "warnings": [],
+                    "workflow_functions": [],
+                })
+
+            # Check for @workflow decorator
+            has_workflow_decorator = False
+            workflow_funcs: list[str] = []
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
+                    for decorator in node.decorator_list:
+                        decorator_name = ""
+                        if isinstance(decorator, ast.Name):
+                            decorator_name = decorator.id
+                        elif isinstance(decorator, ast.Call):
+                            if isinstance(decorator.func, ast.Name):
+                                decorator_name = decorator.func.id
+                            elif isinstance(decorator.func, ast.Attribute):
+                                decorator_name = decorator.func.attr
+
+                        if decorator_name == "workflow":
+                            has_workflow_decorator = True
+                            workflow_funcs.append(node.name)
+
+            if not has_workflow_decorator:
+                errors.append("No @workflow decorator found. Add @workflow to your main function.")
+
+            # Check for bifrost import
+            has_bifrost_import = "from bifrost" in content or "import bifrost" in content
+            if not has_bifrost_import:
+                warnings.append("No bifrost import found. You may need `from bifrost import workflow`.")
+
+            # Check file extension
+            if not file_path.endswith(".workflow.py"):
+                warnings.append(
+                    f"File should end with .workflow.py for auto-discovery. "
+                    f"Current: {file_path.split('/')[-1]}"
+                )
+
             return json.dumps({
-                "valid": False,
-                "errors": [{"type": "syntax", "line": e.lineno, "message": e.msg}],
-                "warnings": [],
-                "workflow_functions": [],
+                "valid": len(errors) == 0,
+                "errors": errors,
+                "warnings": warnings,
+                "workflow_functions": workflow_funcs,
             })
-
-        # Check for @workflow decorator
-        has_workflow_decorator = False
-        workflow_funcs: list[str] = []
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
-                for decorator in node.decorator_list:
-                    decorator_name = ""
-                    if isinstance(decorator, ast.Name):
-                        decorator_name = decorator.id
-                    elif isinstance(decorator, ast.Call):
-                        if isinstance(decorator.func, ast.Name):
-                            decorator_name = decorator.func.id
-                        elif isinstance(decorator.func, ast.Attribute):
-                            decorator_name = decorator.func.attr
-
-                    if decorator_name == "workflow":
-                        has_workflow_decorator = True
-                        workflow_funcs.append(node.name)
-
-        if not has_workflow_decorator:
-            errors.append("No @workflow decorator found. Add @workflow to your main function.")
-
-        # Check for bifrost import
-        has_bifrost_import = "from bifrost" in content or "import bifrost" in content
-        if not has_bifrost_import:
-            warnings.append("No bifrost import found. You may need `from bifrost import workflow`.")
-
-        # Check file extension
-        if not file_path.endswith(".workflow.py"):
-            warnings.append(
-                f"File should end with .workflow.py for auto-discovery. "
-                f"Current: {file_path.split('/')[-1]}"
-            )
-
-        return json.dumps({
-            "valid": len(errors) == 0,
-            "errors": errors,
-            "warnings": warnings,
-            "workflow_functions": workflow_funcs,
-        })
 
     except FileNotFoundError:
         return json.dumps({"error": f"File not found: {file_path}"})
@@ -277,6 +279,7 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
     import ast
     import json
 
+    from src.core.database import get_db_context
     from src.services.file_storage_service import FileStorageService
 
     logger.info(f"MCP create_workflow called with file_path={file_path}")
@@ -312,26 +315,27 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
         })
 
     try:
-        service = FileStorageService()
+        async with get_db_context() as db:
+            service = FileStorageService(db)
 
-        # Check if file exists
-        try:
-            existing = await service.read_file(file_path)
-            if existing:
-                return json.dumps({
-                    "error": f"File already exists: {file_path}. Use file tools to update it or choose a different path."
-                })
-        except FileNotFoundError:
-            pass  # Good - file doesn't exist
+            # Check if file exists
+            try:
+                existing = await service.read_file(file_path)
+                if existing:
+                    return json.dumps({
+                        "error": f"File already exists: {file_path}. Use file tools to update it or choose a different path."
+                    })
+            except FileNotFoundError:
+                pass  # Good - file doesn't exist
 
-        # Write the file
-        await service.write_file(file_path, code)
+            # Write the file (encode string to bytes)
+            await service.write_file(file_path, code.encode('utf-8'))
 
-        return json.dumps({
-            "success": True,
-            "file_path": file_path,
-            "message": "Workflow created. The file watcher will detect and register it shortly.",
-        })
+            return json.dumps({
+                "success": True,
+                "file_path": file_path,
+                "message": "Workflow created and registered.",
+            })
 
     except Exception as e:
         logger.exception(f"Error creating workflow via MCP: {e}")

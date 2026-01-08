@@ -5,7 +5,7 @@
  * Supports custom footer actions with workflow integration.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import type {
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { evaluateExpression } from "@/lib/expression-parser";
 import { LayoutRenderer } from "../LayoutRenderer";
+import { useAppContext } from "@/contexts/AppContext";
 
 /**
  * Get modal size classes
@@ -52,7 +53,29 @@ export function ModalComponent({
 	context,
 }: RegisteredComponentProps) {
 	const { props } = component as ModalComponentProps;
-	const [isOpen, setIsOpen] = useState(false);
+	const { isModalOpen } = useAppContext();
+
+	// Determine if this modal has its own trigger button or is controlled externally
+	const hasTrigger = props.triggerLabel !== undefined;
+
+	// Local state for modals with trigger buttons
+	const [localIsOpen, setLocalIsOpen] = useState(false);
+
+	// For externally controlled modals, sync with context
+	const externalIsOpen = isModalOpen(component.id);
+
+	// Use local state if has trigger, otherwise use external state
+	const isOpen = hasTrigger ? localIsOpen : externalIsOpen;
+	const setIsOpen = hasTrigger
+		? setLocalIsOpen
+		: (open: boolean) => {
+				if (open) {
+					context.openModal?.(component.id);
+				} else {
+					context.closeModal?.(component.id);
+				}
+			};
+
 	const [loadingAction, setLoadingAction] = useState<number | null>(null);
 
 	// Evaluate expressions
@@ -65,9 +88,12 @@ export function ModalComponent({
 					props.description,
 			)
 		: undefined;
-	const triggerLabel = String(
-		evaluateExpression(props.triggerLabel, context) ?? props.triggerLabel,
-	);
+	const triggerLabel = props.triggerLabel
+		? String(
+				evaluateExpression(props.triggerLabel, context) ??
+					props.triggerLabel,
+			)
+		: undefined;
 
 	// Handle footer action click
 	const handleActionClick = useCallback(
@@ -147,6 +173,8 @@ export function ModalComponent({
 							context.submitForm(
 								action.workflowId,
 								additionalParams,
+								action.onComplete,
+								action.onError,
 							);
 						}
 						break;
@@ -175,14 +203,16 @@ export function ModalComponent({
 
 	return (
 		<Dialog open={isOpen} onOpenChange={setIsOpen}>
-			<DialogTrigger asChild>
-				<Button
-					variant={props.triggerVariant || "default"}
-					size={props.triggerSize || "default"}
-				>
-					{triggerLabel}
-				</Button>
-			</DialogTrigger>
+			{hasTrigger && triggerLabel && (
+				<DialogTrigger asChild>
+					<Button
+						variant={props.triggerVariant || "default"}
+						size={props.triggerSize || "default"}
+					>
+						{triggerLabel}
+					</Button>
+				</DialogTrigger>
+			)}
 			<DialogContent
 				className={cn(sizeClass, props.className)}
 				// Hide the default close button if not wanted

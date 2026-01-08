@@ -35,8 +35,14 @@ logger = logging.getLogger(__name__)
     },
 )
 async def read_file(context: Any, path: str) -> str:
-    """Read a file from the workspace."""
-    from src.services.editor import file_operations
+    """Read a file from the workspace.
+
+    Uses FileStorageService to properly route reads:
+    - Platform entities (workflows, forms, apps, agents) are read from database
+    - Regular files are read from S3
+    """
+    from src.core.database import get_db_context
+    from src.services.file_storage_service import FileStorageService
 
     logger.info(f"MCP read_file called with path={path}")
 
@@ -44,12 +50,15 @@ async def read_file(context: Any, path: str) -> str:
         return json.dumps({"error": "path is required"})
 
     try:
-        result = await file_operations.read_file(path)
-        return json.dumps({
-            "content": result.content or "",
-            "encoding": result.encoding,
-            "size": result.size,
-        })
+        async with get_db_context() as db:
+            service = FileStorageService(db)
+            content_bytes, _ = await service.read_file(path)
+            content = content_bytes.decode("utf-8")
+            return json.dumps({
+                "content": content,
+                "encoding": "utf-8",
+                "size": len(content_bytes),
+            })
     except FileNotFoundError:
         return json.dumps({"error": f"File not found: {path}"})
     except PermissionError:
@@ -82,8 +91,14 @@ async def read_file(context: Any, path: str) -> str:
     },
 )
 async def write_file(context: Any, path: str, content: str) -> str:
-    """Write content to a file in the workspace."""
-    from src.services.editor import file_operations
+    """Write content to a file in the workspace.
+
+    Uses FileStorageService to properly route writes:
+    - Platform entities (workflows, forms, apps, agents) are stored in database only
+    - Regular files are stored in S3
+    """
+    from src.core.database import get_db_context
+    from src.services.file_storage_service import FileStorageService
 
     logger.info(f"MCP write_file called with path={path}")
 
@@ -93,12 +108,14 @@ async def write_file(context: Any, path: str, content: str) -> str:
         return json.dumps({"error": "content is required"})
 
     try:
-        result = await file_operations.write_file(path, content)
-        return json.dumps({
-            "success": True,
-            "path": path,
-            "size": result.size,
-        })
+        async with get_db_context() as db:
+            service = FileStorageService(db)
+            write_result = await service.write_file(path, content.encode("utf-8"))
+            return json.dumps({
+                "success": True,
+                "path": path,
+                "size": write_result.file_record.size_bytes,
+            })
     except PermissionError:
         return json.dumps({"error": f"Permission denied: {path}"})
     except Exception as e:
@@ -126,28 +143,39 @@ async def write_file(context: Any, path: str, content: str) -> str:
     },
 )
 async def list_files(context: Any, directory: str = "") -> str:
-    """List files and directories in the workspace."""
-    from src.services.editor import file_operations
+    """List files and directories in the workspace.
+
+    Uses FileStorageService to list from database index, which includes
+    both regular files (in S3) and platform entities (in database).
+    """
+    from src.core.database import get_db_context
+    from src.services.file_storage_service import FileStorageService
 
     logger.info(f"MCP list_files called with directory={directory}")
 
     try:
-        items = file_operations.list_directory(directory or "")
+        async with get_db_context() as db:
+            service = FileStorageService(db)
+            items = await service.list_files(directory or "")
 
-        files = []
-        for item in items:
-            file_info: dict[str, Any] = {
-                "name": item.name,
-                "type": item.type.value,
-            }
-            if item.type.value == "file" and item.size is not None:
-                file_info["size"] = item.size
-            files.append(file_info)
+            files = []
+            for item in items:
+                # Determine if it's a file or folder based on path ending
+                is_folder = item.path.endswith("/")
+                name = item.path.rstrip("/").split("/")[-1]
 
-        return json.dumps({
-            "files": files,
-            "count": len(files),
-        })
+                file_info: dict[str, Any] = {
+                    "name": name,
+                    "type": "folder" if is_folder else "file",
+                }
+                if not is_folder and item.size_bytes is not None:
+                    file_info["size"] = item.size_bytes
+                files.append(file_info)
+
+            return json.dumps({
+                "files": files,
+                "count": len(files),
+            })
     except FileNotFoundError:
         return json.dumps({"error": f"Directory not found: {directory}"})
     except Exception as e:
@@ -174,8 +202,14 @@ async def list_files(context: Any, directory: str = "") -> str:
     },
 )
 async def delete_file(context: Any, path: str) -> str:
-    """Delete a file or directory from the workspace."""
-    from src.services.editor import file_operations
+    """Delete a file or directory from the workspace.
+
+    Uses FileStorageService to properly handle deletion:
+    - Platform entities (workflows, forms, apps, agents) are deleted from database only
+    - Regular files are deleted from S3
+    """
+    from src.core.database import get_db_context
+    from src.services.file_storage_service import FileStorageService
 
     logger.info(f"MCP delete_file called with path={path}")
 
@@ -183,11 +217,13 @@ async def delete_file(context: Any, path: str) -> str:
         return json.dumps({"error": "path is required"})
 
     try:
-        file_operations.delete_path(path)
-        return json.dumps({
-            "success": True,
-            "path": path,
-        })
+        async with get_db_context() as db:
+            service = FileStorageService(db)
+            await service.delete_file(path)
+            return json.dumps({
+                "success": True,
+                "path": path,
+            })
     except FileNotFoundError:
         return json.dumps({"error": f"Path not found: {path}"})
     except PermissionError:
@@ -287,8 +323,12 @@ async def search_files(
     },
 )
 async def create_folder(context: Any, path: str) -> str:
-    """Create a new folder in the workspace."""
-    from src.services.editor import file_operations
+    """Create a new folder in the workspace.
+
+    Uses FileStorageService to create folder record in database index.
+    """
+    from src.core.database import get_db_context
+    from src.services.file_storage_service import FileStorageService
 
     logger.info(f"MCP create_folder called with path={path}")
 
@@ -296,11 +336,13 @@ async def create_folder(context: Any, path: str) -> str:
         return json.dumps({"error": "path is required"})
 
     try:
-        file_operations.create_folder(path)
-        return json.dumps({
-            "success": True,
-            "path": path,
-        })
+        async with get_db_context() as db:
+            service = FileStorageService(db)
+            await service.create_folder(path)
+            return json.dumps({
+                "success": True,
+                "path": path,
+            })
     except FileExistsError:
         return json.dumps({"error": f"Folder already exists: {path}"})
     except Exception as e:

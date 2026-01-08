@@ -67,7 +67,7 @@ def flatten_layout_tree(
 
         # Extract layout-specific props
         layout_props = {}
-        for key in ("gap", "padding", "align", "justify", "columns", "autoSize", "className"):
+        for key in ("gap", "padding", "align", "justify", "columns", "distribute", "maxHeight", "overflow", "sticky", "stickyOffset", "className", "style"):
             if key in layout:
                 layout_props[key] = layout[key]
 
@@ -242,8 +242,16 @@ def _layout_element_to_dict(node: LayoutElement) -> dict[str, Any]:
             result["justify"] = node.justify
         if node.columns is not None:
             result["columns"] = node.columns
-        if node.auto_size is not None:
-            result["autoSize"] = node.auto_size
+        if node.distribute is not None:
+            result["distribute"] = node.distribute
+        if node.max_height is not None:
+            result["maxHeight"] = node.max_height
+        if node.overflow is not None:
+            result["overflow"] = node.overflow
+        if node.sticky is not None:
+            result["sticky"] = node.sticky
+        if node.sticky_offset is not None:
+            result["stickyOffset"] = node.sticky_offset
         if node.max_width is not None:
             result["maxWidth"] = node.max_width
         if node.visible is not None:
@@ -298,10 +306,15 @@ def build_layout_tree(components: list[AppComponent]) -> LayoutContainer:
                 align=props.get("align"),
                 justify=props.get("justify"),
                 columns=props.get("columns"),
-                auto_size=props.get("autoSize"),
+                distribute=props.get("distribute"),
+                max_height=props.get("maxHeight"),
+                overflow=props.get("overflow"),
+                sticky=props.get("sticky"),
+                sticky_offset=props.get("stickyOffset"),
                 max_width=props.get("maxWidth"),
                 visible=comp.visible,
                 class_name=props.get("className"),
+                style=props.get("style"),
                 children=[],
             )
         else:
@@ -623,7 +636,7 @@ class AppBuilderService:
             root_layout_type=layout.get("type", "column"),
             root_layout_config={
                 k: v for k, v in layout.items()
-                if k in ("gap", "padding", "align", "justify", "columns", "autoSize", "className")
+                if k in ("gap", "padding", "align", "justify", "columns", "distribute", "maxHeight", "overflow", "sticky", "stickyOffset", "className", "style")
             },
             **page_kwargs,
         )
@@ -666,7 +679,7 @@ class AppBuilderService:
         page.root_layout_type = layout.get("type", "column")
         page.root_layout_config = {
             k: v for k, v in layout.items()
-            if k in ("gap", "padding", "align", "justify", "columns", "autoSize", "className")
+            if k in ("gap", "padding", "align", "justify", "columns", "distribute", "maxHeight", "overflow", "sticky", "stickyOffset", "className", "style")
         }
 
         # Create new components
