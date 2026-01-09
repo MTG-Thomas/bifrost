@@ -198,9 +198,11 @@ async def websocket_connect(
             if channel == f"package:{user.user_id}":
                 allowed_channels.append(channel)
         elif channel.startswith("git:"):
-            # Git operation channels - users can subscribe to their own
-            if channel == f"git:{user.user_id}":
-                allowed_channels.append(channel)
+            # Git job channels - ephemeral, job-specific UUIDs
+            # Authorization: any authenticated user can subscribe
+            # The job_id is a one-time UUID that only the requester knows
+            # (returned by the API after queueing the job)
+            allowed_channels.append(channel)
         elif channel.startswith("notification:"):
             # Notification channels - users can subscribe to their own
             if channel == f"notification:{user.user_id}":
@@ -353,6 +355,16 @@ async def websocket_connect(
                                 "channel": channel,
                                 "message": "Access denied"
                             })
+                    elif channel.startswith("git:"):
+                        # Git sync job channels - ephemeral, job-specific UUIDs
+                        # Any authenticated user can subscribe (job ID is a secret token)
+                        if channel not in manager.connections:
+                            manager.connections[channel] = set()
+                        manager.connections[channel].add(websocket)
+                        await websocket.send_json({
+                            "type": "subscribed",
+                            "channel": channel
+                        })
 
             elif data.get("type") == "unsubscribe":
                 channel = data.get("channel")

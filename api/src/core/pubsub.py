@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 from uuid import UUID
 
 import redis.asyncio as redis
@@ -671,3 +671,123 @@ async def publish_app_published(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     await manager.broadcast(channel, message)
+
+
+# =============================================================================
+# Git Sync Pub/Sub (API -> Scheduler Communication)
+# =============================================================================
+
+
+async def publish_git_sync_request(
+    job_id: str,
+    org_id: str,
+    user_id: str,
+    user_email: str,
+    conflict_resolutions: Mapping[str, str],
+    confirm_orphans: bool,
+) -> None:
+    """
+    Request a git sync operation from the scheduler.
+
+    The scheduler listens on `bifrost:scheduler:git-sync` and executes
+    the sync, publishing progress to `git:{job_id}`.
+
+    Args:
+        job_id: Unique job ID for tracking
+        org_id: Organization ID to sync
+        user_id: User who initiated the sync
+        user_email: Email of the user (for git commit author)
+        conflict_resolutions: Dict mapping file paths to resolution strategy
+        confirm_orphans: Whether to proceed with orphan cleanup
+    """
+    message = {
+        "type": "git_sync_request",
+        "jobId": job_id,
+        "orgId": org_id,
+        "userId": user_id,
+        "userEmail": user_email,
+        "conflictResolutions": conflict_resolutions,
+        "confirmOrphans": confirm_orphans,
+    }
+    await manager._publish_to_redis("scheduler:git-sync", message)
+
+
+async def publish_git_sync_progress(
+    job_id: str,
+    phase: str,
+    current: int,
+    total: int,
+    path: str | None = None,
+) -> None:
+    """
+    Publish git sync progress update.
+
+    Broadcasts to git:{job_id} channel for real-time UI updates.
+
+    Args:
+        job_id: Unique job ID
+        phase: Current phase (pulling, analyzing, pushing, etc.)
+        current: Current item number
+        total: Total items to process
+        path: Current file path being processed
+    """
+    message = {
+        "type": "git_progress",
+        "jobId": job_id,
+        "phase": phase,
+        "current": current,
+        "total": total,
+        "path": path,
+    }
+    await manager.broadcast(f"git:{job_id}", message)
+
+
+async def publish_git_sync_log(
+    job_id: str,
+    level: str,
+    message: str,
+) -> None:
+    """
+    Publish git sync log message.
+
+    Broadcasts to git:{job_id} channel for real-time log streaming.
+
+    Args:
+        job_id: Unique job ID
+        level: Log level (debug, info, warning, error)
+        message: Log message text
+    """
+    log_message = {
+        "type": "git_log",
+        "jobId": job_id,
+        "level": level,
+        "message": message,
+    }
+    await manager.broadcast(f"git:{job_id}", log_message)
+
+
+async def publish_git_sync_completed(
+    job_id: str,
+    status: str,
+    message: str,
+    **kwargs: Any,
+) -> None:
+    """
+    Publish git sync completion.
+
+    Broadcasts to git:{job_id} channel to notify the UI that sync is complete.
+
+    Args:
+        job_id: Unique job ID
+        status: Completion status (success, failed, conflict, orphans_detected)
+        message: Human-readable completion message
+        **kwargs: Additional data (conflicts, orphans, counts, etc.)
+    """
+    completion_message = {
+        "type": "git_complete",
+        "jobId": job_id,
+        "status": status,
+        "message": message,
+        **kwargs,
+    }
+    await manager.broadcast(f"git:{job_id}", completion_message)

@@ -160,7 +160,7 @@ def workflow(
             ...
 
     Args:
-        id: Persistent UUID (written by discovery watcher)
+        id: Persistent UUID (auto-assigned on first save)
         name: Workflow name (defaults to function name)
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -255,7 +255,7 @@ def tool(
             ...
 
     Args:
-        id: Persistent UUID (written by discovery watcher)
+        id: Persistent UUID (auto-assigned on first save)
         name: Tool name (defaults to function name)
         description: LLM-friendly description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -314,7 +314,7 @@ def data_provider(
             ...
 
     Args:
-        id: Persistent UUID (written by discovery watcher)
+        id: Persistent UUID (auto-assigned on first save)
         name: Provider name (defaults to function name)
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")

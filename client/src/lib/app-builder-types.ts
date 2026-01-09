@@ -741,6 +741,8 @@ export interface ModalComponentProps extends BaseComponentProps {
 			workflowId?: string;
 			actionParams?: Record<string, unknown>;
 			onComplete?: OnCompleteAction[];
+			/** Action(s) to execute if workflow fails (for submit actionType) */
+			onError?: OnCompleteAction[];
 			/** Whether clicking this action should close the modal */
 			closeOnClick?: boolean;
 		}[];

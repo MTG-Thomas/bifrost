@@ -202,8 +202,8 @@ def github_configured(e2e_client, platform_admin, github_test_branch):
 
     This fixture:
     1. Validates and saves the GitHub token
-    2. Dispatches async repository configuration job
-    3. Waits for the job to complete via notification polling
+    2. Configures the repository (saves config to DB)
+    3. Pulls from GitHub to clone/sync the repository
     4. Yields the config for test use
     5. Disconnects GitHub after the test
 
@@ -225,37 +225,21 @@ def github_configured(e2e_client, platform_admin, github_test_branch):
     )
     assert response.status_code == 200, f"Token validation failed: {response.text}"
 
-    # Step 2: Configure repository (now async - dispatches job)
+    # Step 2: Configure repository (saves config to DB)
     repo_url = f"https://github.com/{config['repo']}.git"
     response = e2e_client.post(
         "/api/github/configure",
         json={
             "repo_url": repo_url,
             "branch": config["branch"],
-            "auth_token": config["pat"],
         },
         headers=platform_admin.headers,
     )
     assert response.status_code == 200, f"Repository configuration failed: {response.text}"
 
     data = response.json()
-
-    # Check if response is async (new flow) or sync (old flow for backwards compat)
-    if "notification_id" in data:
-        # New async flow - wait for job completion
-        notification_id = data["notification_id"]
-        logger.info(f"GitHub setup job dispatched: {data.get('job_id')}, notification: {notification_id}")
-
-        _wait_for_notification_completion(
-            e2e_client,
-            platform_admin.headers,
-            notification_id,
-            timeout_seconds=120,
-        )
-        logger.info(f"GitHub setup completed: {repo_url} @ {config['branch']}")
-    else:
-        # Old sync flow (backwards compatibility)
-        logger.info(f"Configured GitHub (sync): {repo_url} @ {config['branch']}")
+    assert data.get("status") == "configured", f"Unexpected status: {data}"
+    logger.info(f"GitHub configuration saved: {repo_url} @ {config['branch']}")
 
     yield config
 

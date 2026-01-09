@@ -44,7 +44,7 @@ class WorkspaceFile(Base):
         ),
         default=GitStatus.UNTRACKED,
     )
-    last_git_commit_hash: Mapped[str | None] = mapped_column(String(40), default=None)
+    github_sha: Mapped[str | None] = mapped_column(String(40), default=None)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

@@ -16,9 +16,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings
-from src.core.workspace_cache import get_workspace_cache
 from src.models import WorkspaceFile
 from src.models.enums import GitStatus
+from .file_ops import compute_git_blob_sha
 
 if TYPE_CHECKING:
     from src.models.contracts.maintenance import ReindexResult
@@ -92,6 +92,7 @@ class WorkspaceReindexService:
                     )
                     content = await response["Body"].read()
                     content_hash = self._compute_hash(content)
+                    git_sha = compute_git_blob_sha(content)
                     content_type = self._guess_content_type(key)
 
                     # Upsert index
@@ -99,6 +100,7 @@ class WorkspaceReindexService:
                     stmt = insert(WorkspaceFile).values(
                         path=key,
                         content_hash=content_hash,
+                        github_sha=git_sha,
                         size_bytes=size,
                         content_type=content_type,
                         git_status=GitStatus.UNTRACKED,
@@ -109,6 +111,7 @@ class WorkspaceReindexService:
                         index_elements=[WorkspaceFile.path],
                         set_={
                             "content_hash": content_hash,
+                            "github_sha": git_sha,
                             "size_bytes": size,
                             "content_type": content_type,
                             "is_deleted": False,
@@ -188,7 +191,6 @@ class WorkspaceReindexService:
         ordered_paths = py_files + form_files + agent_files + other_files
 
         now = datetime.utcnow()
-        cache = get_workspace_cache()
 
         for rel_path in ordered_paths:
             file_path = local_path / rel_path
@@ -223,9 +225,6 @@ class WorkspaceReindexService:
                 },
             )
             await self.db.execute(stmt)
-
-            # Update Redis cache so watcher has correct state
-            await cache.set_file_state(rel_path, content_hash, is_deleted=False)
 
             # Extract metadata (workflows/data_providers)
             await self._extract_metadata(rel_path, content)

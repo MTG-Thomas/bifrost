@@ -347,7 +347,6 @@ class Settings(BaseSettings):
 
         NOTE: We no longer pre-create /tmp/bifrost/workspace. Purpose-specific
         paths are created on-demand by the services that need them:
-        - /tmp/bifrost/git - Created by git_integration.py
         - /tmp/bifrost/coding-agent - Created by coding_mode/client.py
         - /tmp/bifrost/temp - Created here for SDK temp operations
         """

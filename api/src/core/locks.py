@@ -317,4 +317,3 @@ async def close_lock_service() -> None:
 
 # Convenience constants for well-known lock names
 UPLOAD_LOCK_NAME = "upload"
-GITHUB_SETUP_LOCK_NAME = "github_setup"

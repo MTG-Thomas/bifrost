@@ -26,6 +26,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.config import get_settings
 from src.core.database import init_db, close_db, get_db_context
+from src.core.pubsub import (
+    publish_git_sync_log,
+    publish_git_sync_progress,
+    publish_git_sync_completed,
+)
 from src.jobs.schedulers.cron_scheduler import process_scheduled_workflows
 from src.jobs.schedulers.execution_cleanup import cleanup_stuck_executions
 
@@ -54,6 +59,7 @@ class Scheduler:
 
     Also listens for on-demand requests via Redis pub/sub:
     - Reindex requests (bifrost:scheduler:reindex)
+    - Git sync requests (bifrost:scheduler:git-sync)
     """
 
     def __init__(self):
@@ -230,6 +236,7 @@ class Scheduler:
 
             # Subscribe to scheduler channels
             await self._pubsub.subscribe("bifrost:scheduler:reindex")
+            await self._pubsub.subscribe("bifrost:scheduler:git-sync")
 
             # Start listener task
             self._listener_task = asyncio.create_task(self._pubsub_listener())
@@ -264,6 +271,8 @@ class Scheduler:
         """Handle incoming pub/sub message."""
         if channel == "bifrost:scheduler:reindex":
             await self._handle_reindex_request(data)
+        elif channel == "bifrost:scheduler:git-sync":
+            await self._handle_git_sync_request(data)
         else:
             logger.warning(f"Unknown channel: {channel}")
 
@@ -321,6 +330,191 @@ class Scheduler:
         except Exception as e:
             logger.error(f"Reindex job {job_id} failed: {e}", exc_info=True)
             await publish_reindex_failed(job_id, str(e))
+
+    async def _handle_git_sync_request(self, data: dict) -> None:
+        """
+        Handle git sync request from API.
+
+        Runs the GitHub sync and publishes progress via WebSocket.
+        """
+        from src.models import SystemConfig
+        from src.services.github_sync import (  # type: ignore[import-not-found]
+            GitHubSyncService,
+            ConflictError,
+            OrphanError,
+        )
+
+        job_id = data.get("jobId", "unknown")
+        org_id = data.get("orgId")
+        conflict_resolutions = data.get("conflictResolutions", {})
+        confirm_orphans = data.get("confirmOrphans", False)
+
+        logger.info(f"Starting git sync job {job_id} for org {org_id}")
+
+        try:
+            # Publish started status
+            await publish_git_sync_log(job_id, "info", "Starting GitHub sync...")
+
+            async with get_db_context() as db:
+                # Get GitHub config from database
+                from uuid import UUID
+                from sqlalchemy import select
+
+                # Parse org_id to UUID
+                org_uuid = None
+                if org_id:
+                    try:
+                        org_uuid = UUID(org_id)
+                    except ValueError:
+                        pass
+
+                # Look for github integration config in system_configs table
+                stmt = select(SystemConfig).where(
+                    SystemConfig.category == "github",
+                    SystemConfig.key == "integration",
+                    SystemConfig.organization_id == org_uuid
+                )
+                result = await db.execute(stmt)
+                config = result.scalars().first()
+
+                if not config:
+                    # Try GLOBAL fallback (organization_id = NULL)
+                    stmt = select(SystemConfig).where(
+                        SystemConfig.category == "github",
+                        SystemConfig.key == "integration",
+                        SystemConfig.organization_id.is_(None)
+                    )
+                    result = await db.execute(stmt)
+                    config = result.scalars().first()
+
+                if not config or not config.value_json:
+                    await publish_git_sync_completed(
+                        job_id,
+                        status="failed",
+                        message="GitHub not configured for this organization",
+                    )
+                    return
+
+                github_config = config.value_json or {}
+                encrypted_token = github_config.get("encrypted_token")
+                repo_url = github_config.get("repo_url")
+                branch = github_config.get("branch", "main")
+
+                # Decrypt token if present
+                token = None
+                if encrypted_token:
+                    try:
+                        import base64
+                        from cryptography.fernet import Fernet
+                        from src.config import get_settings
+                        settings = get_settings()
+                        # Use secret_key (same as github.py pattern)
+                        key_bytes = settings.secret_key.encode()[:32].ljust(32, b'0')
+                        fernet = Fernet(base64.urlsafe_b64encode(key_bytes))
+                        token = fernet.decrypt(encrypted_token.encode()).decode()
+                    except Exception as e:
+                        logger.warning(f"Failed to decrypt GitHub token: {e}")
+
+                if not token or not repo_url:
+                    await publish_git_sync_completed(
+                        job_id,
+                        status="failed",
+                        message="GitHub token or repository not configured",
+                    )
+                    return
+
+                # Extract repo from URL (https://github.com/owner/repo -> owner/repo)
+                if repo_url.startswith("https://github.com/"):
+                    repo = repo_url.replace("https://github.com/", "").rstrip(".git")
+                else:
+                    repo = repo_url
+
+                await publish_git_sync_log(
+                    job_id, "info", f"Syncing with repository: {repo}"
+                )
+
+                # Create sync service
+                sync_service = GitHubSyncService(
+                    db=db,
+                    github_token=token,
+                    repo=repo,
+                    branch=branch,
+                )
+
+                # Define progress callback
+                async def progress_callback(progress: dict) -> None:
+                    await publish_git_sync_progress(
+                        job_id,
+                        progress.get("phase", "syncing"),
+                        progress.get("current", 0),
+                        progress.get("total", 0),
+                        progress.get("path"),
+                    )
+
+                # Define log callback for milestone/error logging
+                async def log_callback(level: str, message: str) -> None:
+                    await publish_git_sync_log(job_id, level, message)
+
+                # Execute the sync
+                sync_result = await sync_service.execute_sync(
+                    conflict_resolutions=conflict_resolutions,
+                    confirm_orphans=confirm_orphans,
+                    progress_callback=progress_callback,
+                    log_callback=log_callback,
+                )
+
+                # Publish completion
+                if sync_result.success:
+                    await publish_git_sync_log(
+                        job_id, "success",
+                        f"Sync complete: {sync_result.pulled} pulled, {sync_result.pushed} pushed"
+                    )
+                    await publish_git_sync_completed(
+                        job_id,
+                        status="success",
+                        message=f"Sync completed: {sync_result.pulled} pulled, {sync_result.pushed} pushed",
+                        pulled=sync_result.pulled,
+                        pushed=sync_result.pushed,
+                        orphaned_workflows=sync_result.orphaned_workflows,
+                        commit_sha=sync_result.commit_sha,
+                    )
+                    logger.info(
+                        f"Git sync job {job_id} completed: "
+                        f"pulled={sync_result.pulled}, pushed={sync_result.pushed}"
+                    )
+                else:
+                    await publish_git_sync_completed(
+                        job_id,
+                        status="failed",
+                        message=sync_result.error or "Sync failed",
+                    )
+                    logger.error(f"Git sync job {job_id} failed: {sync_result.error}")
+
+        except ConflictError as e:
+            logger.warning(f"Git sync job {job_id} has conflicts: {e.conflicts}")
+            await publish_git_sync_completed(
+                job_id,
+                status="conflict",
+                message="Unresolved conflicts exist",
+                conflicts=e.conflicts,
+            )
+
+        except OrphanError as e:
+            logger.warning(f"Git sync job {job_id} requires orphan confirmation: {e.orphans}")
+            await publish_git_sync_completed(
+                job_id,
+                status="orphans_detected",
+                message="Must confirm orphan workflows before proceeding",
+                orphans=e.orphans,
+            )
+
+        except Exception as e:
+            logger.error(f"Git sync job {job_id} failed: {e}", exc_info=True)
+            await publish_git_sync_completed(
+                job_id,
+                status="failed",
+                message=str(e),
+            )
 
     async def stop(self) -> None:
         """Stop the scheduler gracefully."""

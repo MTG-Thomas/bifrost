@@ -22,11 +22,20 @@ from sqlalchemy import distinct, func, or_, select
 
 # Import existing Pydantic models for API compatibility
 from src.models import (
+    CompatibleReplacement,
+    CompatibleReplacementsResponse,
+    DeactivateWorkflowResponse,
     EntityUsage,
+    OrphanedWorkflowInfo,
+    OrphanedWorkflowsResponse,
+    RecreateFileResponse,
+    ReplaceWorkflowRequest,
+    ReplaceWorkflowResponse,
     WorkflowExecutionRequest,
     WorkflowExecutionResponse,
     WorkflowMetadata,
     WorkflowParameter,
+    WorkflowReference,
     WorkflowUpdateRequest,
     WorkflowUsageStats,
     WorkflowValidationRequest,
@@ -792,3 +801,295 @@ async def update_workflow(
         )
 
 
+# =============================================================================
+# Orphan Management Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/orphaned",
+    response_model=OrphanedWorkflowsResponse,
+    summary="List orphaned workflows",
+    description="Get all orphaned workflows with their references",
+)
+async def list_orphaned_workflows(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> OrphanedWorkflowsResponse:
+    """
+    List all orphaned workflows.
+
+    Orphaned workflows are workflows whose backing file has been deleted or
+    modified to no longer contain the workflow function.
+
+    Returns:
+        OrphanedWorkflowsResponse with list of orphaned workflows
+    """
+    from src.services.workflow_orphan import WorkflowOrphanService
+
+    try:
+        orphan_service = WorkflowOrphanService(db)
+        orphans = await orphan_service.get_orphaned_workflows()
+
+        return OrphanedWorkflowsResponse(
+            workflows=[
+                OrphanedWorkflowInfo(
+                    id=o.id,
+                    name=o.name,
+                    function_name=o.function_name,
+                    last_path=o.last_path,
+                    code=o.code,
+                    used_by=[
+                        WorkflowReference(
+                            type=r.type,
+                            id=r.id,
+                            name=r.name,
+                        )
+                        for r in o.used_by
+                    ],
+                    orphaned_at=o.orphaned_at,
+                )
+                for o in orphans
+            ]
+        )
+
+    except Exception as e:
+        logger.error(f"Error listing orphaned workflows: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list orphaned workflows",
+        )
+
+
+@router.get(
+    "/{workflow_id}/compatible-replacements",
+    response_model=CompatibleReplacementsResponse,
+    summary="Get compatible replacements",
+    description="Get list of files/functions that could replace an orphaned workflow",
+)
+async def get_compatible_replacements(
+    workflow_id: UUID,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> CompatibleReplacementsResponse:
+    """
+    Get compatible replacements for an orphaned workflow.
+
+    Finds functions with compatible signatures that could replace
+    the orphaned workflow.
+
+    Args:
+        workflow_id: UUID of the orphaned workflow
+
+    Returns:
+        CompatibleReplacementsResponse with list of replacements
+    """
+    from src.services.workflow_orphan import WorkflowOrphanService
+
+    try:
+        orphan_service = WorkflowOrphanService(db)
+        replacements = await orphan_service.get_compatible_replacements(workflow_id)
+
+        return CompatibleReplacementsResponse(
+            replacements=[
+                CompatibleReplacement(
+                    path=r.path,
+                    function_name=r.function_name,
+                    signature=r.signature,
+                    compatibility=r.compatibility,
+                )
+                for r in replacements
+                if r.compatibility != "incompatible"
+            ]
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error getting compatible replacements: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get compatible replacements",
+        )
+
+
+@router.post(
+    "/{workflow_id}/replace",
+    response_model=ReplaceWorkflowResponse,
+    summary="Replace orphaned workflow",
+    description="Replace an orphaned workflow with content from an existing file",
+)
+async def replace_workflow(
+    workflow_id: UUID,
+    request: ReplaceWorkflowRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> ReplaceWorkflowResponse:
+    """
+    Replace an orphaned workflow with content from an existing file.
+
+    Links the orphaned workflow to an existing function in another file,
+    updating its path, code, and clearing the orphaned flag.
+
+    Args:
+        workflow_id: UUID of the orphaned workflow
+        request: Source file and function details
+
+    Returns:
+        ReplaceWorkflowResponse with result
+    """
+    from src.services.workflow_orphan import WorkflowOrphanService
+
+    try:
+        orphan_service = WorkflowOrphanService(db)
+        workflow = await orphan_service.replace_workflow(
+            workflow_id=workflow_id,
+            source_path=request.source_path,
+            function_name=request.function_name,
+        )
+
+        logger.info(
+            f"Replaced orphaned workflow {workflow_id} with "
+            f"{request.source_path}::{request.function_name}"
+        )
+
+        return ReplaceWorkflowResponse(
+            success=True,
+            workflow_id=str(workflow.id),
+            new_path=workflow.path,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error replacing workflow: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to replace workflow",
+        )
+
+
+@router.post(
+    "/{workflow_id}/recreate",
+    response_model=RecreateFileResponse,
+    summary="Recreate file from orphaned workflow",
+    description="Recreate the file from the orphaned workflow's stored code",
+)
+async def recreate_workflow_file(
+    workflow_id: UUID,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> RecreateFileResponse:
+    """
+    Recreate the file from orphaned workflow's stored code.
+
+    Writes the workflow's code snapshot back to the filesystem at its
+    last known path, then clears the orphaned flag.
+
+    Args:
+        workflow_id: UUID of the orphaned workflow
+
+    Returns:
+        RecreateFileResponse with result
+    """
+    from src.services.workflow_orphan import WorkflowOrphanService
+    from src.services.file_storage import FileStorageService
+
+    try:
+        orphan_service = WorkflowOrphanService(db)
+
+        # Get the workflow and mark as not orphaned
+        workflow = await orphan_service.recreate_file(workflow_id)
+
+        # Write the file to storage
+        file_storage = FileStorageService(db)
+        await file_storage.write_file(
+            path=workflow.path,
+            content=workflow.code.encode("utf-8"),
+            updated_by=user.email,
+        )
+
+        logger.info(f"Recreated file for workflow {workflow_id} at {workflow.path}")
+
+        return RecreateFileResponse(
+            success=True,
+            workflow_id=str(workflow.id),
+            path=workflow.path,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error recreating workflow file: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to recreate workflow file",
+        )
+
+
+@router.post(
+    "/{workflow_id}/deactivate",
+    response_model=DeactivateWorkflowResponse,
+    summary="Deactivate orphaned workflow",
+    description="Deactivate an orphaned workflow",
+)
+async def deactivate_workflow(
+    workflow_id: UUID,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> DeactivateWorkflowResponse:
+    """
+    Deactivate an orphaned workflow.
+
+    Marks the workflow as inactive. Forms and apps using it will need
+    to be updated to use a different workflow.
+
+    Args:
+        workflow_id: UUID of the workflow
+
+    Returns:
+        DeactivateWorkflowResponse with result
+    """
+    from src.services.workflow_orphan import WorkflowOrphanService
+
+    try:
+        orphan_service = WorkflowOrphanService(db)
+        workflow, ref_count = await orphan_service.deactivate_workflow(workflow_id)
+
+        warning = None
+        if ref_count > 0:
+            warning = f"{ref_count} {'form/app still references' if ref_count == 1 else 'forms/apps still reference'} this workflow"
+
+        logger.info(f"Deactivated workflow {workflow_id} (refs: {ref_count})")
+
+        return DeactivateWorkflowResponse(
+            success=True,
+            workflow_id=str(workflow.id),
+            warning=warning,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error deactivating workflow: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deactivate workflow",
+        )

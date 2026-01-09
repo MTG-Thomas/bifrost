@@ -113,7 +113,7 @@ class Form(Base):
         onupdate=datetime.utcnow,
     )
 
-    # Discovery metadata (synced from file watcher)
+    # File location metadata (for version control)
     file_path: Mapped[str | None] = mapped_column(String(1000), default=None)
     module_path: Mapped[str | None] = mapped_column(String(500), default=None)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)

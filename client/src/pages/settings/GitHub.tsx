@@ -24,20 +24,38 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { Loader2, Github, CheckCircle2, AlertCircle, Plus } from "lucide-react";
+import {
+	Loader2,
+	Github,
+	CheckCircle2,
+	AlertCircle,
+	Plus,
+	RefreshCw,
+	ArrowDownToLine,
+	ArrowUpFromLine,
+	AlertTriangle,
+} from "lucide-react";
 import {
 	useGitHubConfig,
+	useGitHubRepositories,
 	useConfigureGitHub,
 	useAnalyzeWorkspace,
 	useCreateGitHubRepository,
 	useDisconnectGitHub,
+	useSyncPreview,
+	useSyncExecute,
 	validateGitHubToken,
 	listGitHubBranches,
 	type GitHubRepoInfo,
 	type GitHubBranchInfo,
 	type GitHubConfigResponse,
 	type WorkspaceAnalysisResponse,
+	type SyncPreviewResponse,
+	type SyncAction,
 } from "@/hooks/useGitHub";
 
 export function GitHub() {
@@ -70,14 +88,27 @@ export function GitHub() {
 	// Disconnect confirmation state
 	const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
 
+	// Sync preview dialog state
+	const [showSyncPreview, setShowSyncPreview] = useState(false);
+	const [syncPreviewData, setSyncPreviewData] =
+		useState<SyncPreviewResponse | null>(null);
+	const [loadingSyncPreview, setLoadingSyncPreview] = useState(false);
+	const [executingSync, setExecutingSync] = useState(false);
+
 	// Load current GitHub configuration
 	const { data: configData, isLoading: configLoading } = useGitHubConfig();
+
+	// Load repositories when token is saved but not configured
+	const shouldLoadRepos = configData?.token_saved && !configData?.configured;
+	const { data: reposData } = useGitHubRepositories(shouldLoadRepos ?? false);
 
 	// Mutations
 	const configureMutation = useConfigureGitHub();
 	const analyzeMutation = useAnalyzeWorkspace();
 	const createRepoMutation = useCreateGitHubRepository();
 	const disconnectMutation = useDisconnectGitHub();
+	const syncPreviewMutation = useSyncPreview();
+	const syncExecuteMutation = useSyncExecute();
 
 	// Track the saved token for use in configuration
 	const [savedToken, setSavedToken] = useState<string | null>(null);
@@ -87,13 +118,19 @@ export function GitHub() {
 		if (configData) {
 			setConfig(configData);
 
-			// If token is saved, load repositories automatically
+			// If token is saved but not configured, set token as valid
 			if (configData.token_saved && !configData.configured) {
 				setTokenValid(true);
-				// Repositories will be loaded via validateToken if needed
 			}
 		}
 	}, [configData]);
+
+	// Load repositories when they're available from the saved token
+	useEffect(() => {
+		if (reposData?.repositories && config?.token_saved && !config?.configured) {
+			setRepositories(reposData.repositories);
+		}
+	}, [reposData, config?.token_saved, config?.configured]);
 
 	// Validate token and load repositories
 	const handleTokenValidation = async () => {
@@ -331,6 +368,62 @@ export function GitHub() {
 		}
 	};
 
+	// Open sync preview dialog
+	const handleOpenSyncPreview = async () => {
+		setLoadingSyncPreview(true);
+		setShowSyncPreview(true);
+		setSyncPreviewData(null);
+
+		try {
+			const preview = await syncPreviewMutation.mutateAsync();
+			setSyncPreviewData(preview as SyncPreviewResponse);
+		} catch (error) {
+			toast.error("Failed to get sync preview", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+			setShowSyncPreview(false);
+		} finally {
+			setLoadingSyncPreview(false);
+		}
+	};
+
+	// Execute sync with resolutions
+	const handleExecuteSync = async (
+		resolutions: Record<string, "keep_local" | "keep_remote">,
+		confirmOrphans: boolean,
+	) => {
+		setExecutingSync(true);
+
+		try {
+			const result = await syncExecuteMutation.mutateAsync({
+				body: {
+					conflict_resolutions: resolutions,
+					confirm_orphans: confirmOrphans,
+				},
+			});
+
+			if (result.success) {
+				toast.success("Sync completed successfully", {
+					description: `Pulled ${result.pulled} files, pushed ${result.pushed} files`,
+				});
+				setShowSyncPreview(false);
+				setSyncPreviewData(null);
+			} else {
+				toast.error("Sync failed", {
+					description: result.error || "Unknown error",
+				});
+			}
+		} catch (error) {
+			toast.error("Failed to execute sync", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setExecutingSync(false);
+		}
+	};
+
 	if (configLoading) {
 		return (
 			<div className="flex items-center justify-center py-12">
@@ -364,20 +457,43 @@ export function GitHub() {
 											Currently Connected
 										</span>
 									</div>
-									<Button
-										variant="destructive"
-										size="sm"
-										onClick={() =>
-											setShowDisconnectConfirm(true)
-										}
-										disabled={saving}
-									>
-										{saving ? (
-											<Loader2 className="h-4 w-4 animate-spin" />
-										) : (
-											"Disconnect"
-										)}
-									</Button>
+									<div className="flex items-center gap-2">
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={handleOpenSyncPreview}
+											disabled={
+												loadingSyncPreview ||
+												executingSync
+											}
+										>
+											{loadingSyncPreview ? (
+												<>
+													<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+													Loading...
+												</>
+											) : (
+												<>
+													<RefreshCw className="h-4 w-4 mr-2" />
+													Sync
+												</>
+											)}
+										</Button>
+										<Button
+											variant="destructive"
+											size="sm"
+											onClick={() =>
+												setShowDisconnectConfirm(true)
+											}
+											disabled={saving}
+										>
+											{saving ? (
+												<Loader2 className="h-4 w-4 animate-spin" />
+											) : (
+												"Disconnect"
+											)}
+										</Button>
+									</div>
 								</div>
 								<div className="space-y-1 text-sm text-muted-foreground">
 									<div>
@@ -824,6 +940,333 @@ export function GitHub() {
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
+
+			{/* Sync Preview Dialog - key forces remount when preview changes to reset internal state */}
+			<SyncPreviewDialog
+				key={syncPreviewData ? "loaded" : "empty"}
+				open={showSyncPreview}
+				onClose={() => {
+					setShowSyncPreview(false);
+					setSyncPreviewData(null);
+				}}
+				onConfirm={handleExecuteSync}
+				preview={syncPreviewData}
+				loading={loadingSyncPreview}
+				executing={executingSync}
+			/>
 		</div>
+	);
+}
+
+// =============================================================================
+// SyncPreviewDialog Component
+// =============================================================================
+
+interface SyncPreviewDialogProps {
+	open: boolean;
+	onClose: () => void;
+	onConfirm: (
+		resolutions: Record<string, "keep_local" | "keep_remote">,
+		confirmOrphans: boolean,
+	) => void;
+	preview: SyncPreviewResponse | null;
+	loading: boolean;
+	executing: boolean;
+}
+
+function SyncPreviewDialog({
+	open,
+	onClose,
+	onConfirm,
+	preview,
+	loading,
+	executing,
+}: SyncPreviewDialogProps) {
+	// State is reset via key prop on parent component when preview data changes
+	const [resolutions, setResolutions] = useState<
+		Record<string, "keep_local" | "keep_remote">
+	>({});
+	const [orphansConfirmed, setOrphansConfirmed] = useState(false);
+
+	// Helper to render action badge
+	const renderActionBadge = (action: SyncAction["action"]) => {
+		switch (action) {
+			case "add":
+				return (
+					<Badge variant="default" className="text-xs px-1.5">
+						A
+					</Badge>
+				);
+			case "modify":
+				return (
+					<Badge variant="secondary" className="text-xs px-1.5">
+						M
+					</Badge>
+				);
+			case "delete":
+				return (
+					<Badge variant="destructive" className="text-xs px-1.5">
+						D
+					</Badge>
+				);
+		}
+	};
+
+	// Check if all conflicts are resolved and orphans confirmed (if needed)
+	const canSync =
+		preview &&
+		!preview.is_empty &&
+		preview.conflicts.every((c) => resolutions[c.path]) &&
+		(preview.will_orphan.length === 0 || orphansConfirmed);
+
+	// Check if sync is empty (nothing to do)
+	const isEmpty = preview?.is_empty;
+
+	return (
+		<Dialog open={open} onOpenChange={onClose}>
+			<DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+				<DialogHeader>
+					<DialogTitle className="flex items-center gap-2">
+						<RefreshCw className="h-5 w-5" />
+						Sync Preview
+					</DialogTitle>
+					<DialogDescription>
+						Review the changes that will be synced with GitHub
+					</DialogDescription>
+				</DialogHeader>
+
+				{loading ? (
+					<div className="flex items-center justify-center py-12">
+						<Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+					</div>
+				) : isEmpty ? (
+					<div className="flex flex-col items-center justify-center py-12 text-center">
+						<CheckCircle2 className="h-12 w-12 text-green-500 mb-4" />
+						<p className="text-lg font-medium">
+							Everything is in sync
+						</p>
+						<p className="text-sm text-muted-foreground">
+							No changes to pull or push
+						</p>
+					</div>
+				) : preview ? (
+					<div className="flex-1 overflow-y-auto space-y-6 pr-2">
+						{/* Files to Pull */}
+						{preview.to_pull.length > 0 && (
+							<div>
+								<h3 className="flex items-center gap-2 font-medium mb-3">
+									<ArrowDownToLine className="h-4 w-4 text-blue-500" />
+									<span>Pull from GitHub</span>
+									<Badge variant="outline" className="ml-2">
+										{preview.to_pull.length}
+									</Badge>
+								</h3>
+								<ul className="text-sm space-y-1.5 max-h-40 overflow-y-auto rounded-md border p-3 bg-muted/30">
+									{preview.to_pull.map((item) => (
+										<li
+											key={item.path}
+											className="flex items-center gap-2"
+										>
+											{renderActionBadge(item.action)}
+											<span className="font-mono text-xs truncate">
+												{item.path}
+											</span>
+										</li>
+									))}
+								</ul>
+							</div>
+						)}
+
+						{/* Files to Push */}
+						{preview.to_push.length > 0 && (
+							<div>
+								<h3 className="flex items-center gap-2 font-medium mb-3">
+									<ArrowUpFromLine className="h-4 w-4 text-green-500" />
+									<span>Push to GitHub</span>
+									<Badge variant="outline" className="ml-2">
+										{preview.to_push.length}
+									</Badge>
+								</h3>
+								<ul className="text-sm space-y-1.5 max-h-40 overflow-y-auto rounded-md border p-3 bg-muted/30">
+									{preview.to_push.map((item) => (
+										<li
+											key={item.path}
+											className="flex items-center gap-2"
+										>
+											{renderActionBadge(item.action)}
+											<span className="font-mono text-xs truncate">
+												{item.path}
+											</span>
+										</li>
+									))}
+								</ul>
+							</div>
+						)}
+
+						{/* Conflicts Section */}
+						{preview.conflicts.length > 0 && (
+							<div>
+								<h3 className="flex items-center gap-2 font-medium mb-3 text-yellow-600">
+									<AlertCircle className="h-4 w-4" />
+									<span>Conflicts</span>
+									<Badge variant="warning" className="ml-2">
+										{preview.conflicts.length}
+									</Badge>
+								</h3>
+								<p className="text-sm text-muted-foreground mb-3">
+									These files have been modified both locally
+									and remotely. Choose which version to keep:
+								</p>
+								<div className="space-y-4">
+									{preview.conflicts.map((conflict) => (
+										<div
+											key={conflict.path}
+											className="rounded-md border p-4 bg-yellow-50/50 dark:bg-yellow-950/20"
+										>
+											<p className="font-mono text-sm mb-3">
+												{conflict.path}
+											</p>
+											<RadioGroup
+												value={
+													resolutions[conflict.path]
+												}
+												onValueChange={(
+													value:
+														| "keep_local"
+														| "keep_remote",
+												) =>
+													setResolutions((r) => ({
+														...r,
+														[conflict.path]: value,
+													}))
+												}
+												className="gap-3"
+											>
+												<div className="flex items-center space-x-2">
+													<RadioGroupItem
+														value="keep_local"
+														id={`${conflict.path}-local`}
+													/>
+													<Label
+														htmlFor={`${conflict.path}-local`}
+														className="cursor-pointer"
+													>
+														Keep mine (push to
+														GitHub)
+													</Label>
+												</div>
+												<div className="flex items-center space-x-2">
+													<RadioGroupItem
+														value="keep_remote"
+														id={`${conflict.path}-remote`}
+													/>
+													<Label
+														htmlFor={`${conflict.path}-remote`}
+														className="cursor-pointer"
+													>
+														Keep theirs (pull from
+														GitHub)
+													</Label>
+												</div>
+											</RadioGroup>
+										</div>
+									))}
+								</div>
+							</div>
+						)}
+
+						{/* Orphaned Workflows Warning */}
+						{preview.will_orphan.length > 0 && (
+							<div className="rounded-md border border-yellow-300 bg-yellow-50 dark:bg-yellow-950/30 p-4">
+								<h3 className="flex items-center gap-2 font-medium mb-3 text-yellow-800 dark:text-yellow-200">
+									<AlertTriangle className="h-4 w-4" />
+									<span>Workflows Will Become Orphaned</span>
+								</h3>
+								<p className="text-sm text-yellow-700 dark:text-yellow-300 mb-3">
+									The following workflows will no longer have
+									backing files after this sync. They will
+									continue to work but cannot be edited via
+									files:
+								</p>
+								<ul className="text-sm space-y-2 mb-4">
+									{preview.will_orphan.map((orphan) => (
+										<li
+											key={orphan.workflow_id}
+											className="rounded bg-white/50 dark:bg-black/20 p-2"
+										>
+											<div className="font-medium">
+												{orphan.workflow_name}
+											</div>
+											<div className="text-xs text-muted-foreground">
+												<span className="font-mono">
+													{orphan.function_name}
+												</span>
+												{" in "}
+												<span className="font-mono">
+													{orphan.last_path}
+												</span>
+											</div>
+											{orphan.used_by.length > 0 && (
+												<div className="text-xs text-yellow-700 dark:text-yellow-300 mt-1">
+													Used by:{" "}
+													{orphan.used_by
+														.map((ref) => ref.name)
+														.join(", ")}
+												</div>
+											)}
+										</li>
+									))}
+								</ul>
+								<div className="flex items-start space-x-2">
+									<Checkbox
+										id="confirm-orphans"
+										checked={orphansConfirmed}
+										onCheckedChange={(checked) =>
+											setOrphansConfirmed(checked === true)
+										}
+									/>
+									<Label
+										htmlFor="confirm-orphans"
+										className="text-sm text-yellow-800 dark:text-yellow-200 cursor-pointer leading-tight"
+									>
+										I understand these workflows will be
+										orphaned and can be managed later in
+										Settings
+									</Label>
+								</div>
+							</div>
+						)}
+					</div>
+				) : null}
+
+				<DialogFooter className="mt-4">
+					<Button variant="outline" onClick={onClose}>
+						Cancel
+					</Button>
+					{isEmpty ? (
+						<Button onClick={onClose}>Close</Button>
+					) : (
+						<Button
+							onClick={() =>
+								onConfirm(resolutions, orphansConfirmed)
+							}
+							disabled={!canSync || executing}
+						>
+							{executing ? (
+								<>
+									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+									Syncing...
+								</>
+							) : (
+								<>
+									<RefreshCw className="h-4 w-4 mr-2" />
+									Sync
+								</>
+							)}
+						</Button>
+					)}
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
 	);
 }

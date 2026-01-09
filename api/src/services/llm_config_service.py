@@ -2,7 +2,7 @@
 LLM Configuration Service
 
 Manages LLM provider configuration in system_configs table.
-Follows the same pattern as GitIntegrationService for SystemConfig storage.
+Follows the same pattern as GitHubConfigService for SystemConfig storage.
 """
 
 import base64

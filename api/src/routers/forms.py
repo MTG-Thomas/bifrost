@@ -493,7 +493,6 @@ async def create_form(
     Forms are persisted to BOTH database AND file system:
     - Database write provides immediate availability
     - File write enables version control and deployment portability
-    - Discovery watcher will sync file to DB on next scan
     """
     # Prepare form_schema for validation
     form_schema_data: dict = request.form_schema  # type: ignore[assignment]

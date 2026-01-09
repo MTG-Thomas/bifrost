@@ -2,13 +2,12 @@
 Bifrost Worker - Background Worker Service
 
 Main entry point for the background job worker.
-Handles RabbitMQ message consumption for workflow execution, git sync, and package installation.
+Handles RabbitMQ message consumption for workflow execution and package installation.
 
 This container is responsible for:
 - Consuming workflow execution messages from RabbitMQ
 - Executing workflow code (with thread pool for blocking code)
 - Pushing results to Redis for sync execution requests
-- Git sync operations
 - Package installation
 
 Can be scaled horizontally (replicas: N) for increased throughput.
@@ -23,8 +22,6 @@ from src.config import get_settings
 from src.core.database import init_db, close_db
 from src.jobs.rabbitmq import rabbitmq
 from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
-from src.jobs.consumers.git_sync import GitSyncConsumer
-from src.jobs.consumers.github_setup import GitHubSetupConsumer
 from src.jobs.consumers.package_install import PackageInstallConsumer
 
 # Configure logging
@@ -51,7 +48,6 @@ class Worker:
 
     Manages RabbitMQ consumers for:
     - Workflow execution (with Redis result push for sync requests)
-    - Git sync operations
     - Package installation
     """
 
@@ -87,8 +83,6 @@ class Worker:
         # Create consumer instances
         self._consumers = [
             WorkflowExecutionConsumer(),
-            GitSyncConsumer(),
-            GitHubSetupConsumer(),
             PackageInstallConsumer(),
         ]
 

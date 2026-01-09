@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { webSocketService, type GitProgress } from "@/services/websocket";
 import {
 	GitBranch,
 	Check,
@@ -6,33 +8,55 @@ import {
 	Download,
 	Upload,
 	RefreshCw,
+	ArrowDownToLine,
+	Plus,
+	Minus,
+	Edit3,
+	AlertCircle,
+	FileWarning,
+	ChevronDown,
+	ChevronRight,
+	History,
+	Trash2,
+	Circle,
+	CheckCircle2,
+	X,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
 	useGitStatus,
 	useRefreshGitStatus,
 	useGitCommits,
-	useCommitChanges,
-	usePullFromGitHub,
-	usePushToGitHub,
 	useDiscardUnpushedCommits,
 	useDiscardCommit,
-	type FileChange,
+	useSyncPreview,
+	useSyncExecute,
+	type SyncPreviewResponse,
+	type SyncAction,
+	type SyncConflictInfo,
+	type OrphanInfo,
 } from "@/hooks/useGitHub";
 import { useEditorStore } from "@/stores/editorStore";
-import { fileService } from "@/services/fileService";
-import { ChangesList } from "./ChangesList";
-import { CommitsList } from "./CommitsList";
 
 /**
  * Source Control panel for Git/GitHub integration
  * Shows changed files, allows commit/push, pull from GitHub, and conflict resolution
  */
 export function SourceControlPanel() {
-	const [commitMessage, setCommitMessage] = useState("");
 	const [commits, setCommits] = useState<
 		Array<{
 			sha: string;
@@ -45,10 +69,18 @@ export function SourceControlPanel() {
 	const [totalCommits, setTotalCommits] = useState(0);
 	const [hasMoreCommits, setHasMoreCommits] = useState(false);
 
+	// Sync preview state
+	const [syncPreview, setSyncPreview] = useState<SyncPreviewResponse | null>(null);
+	const [isSyncLoading, setIsSyncLoading] = useState(false);
+	const [syncProgress, setSyncProgress] = useState<GitProgress | null>(null);
+	const [conflictResolutions, setConflictResolutions] = useState<
+		Record<string, "keep_local" | "keep_remote">
+	>({});
+	const [orphansConfirmed, setOrphansConfirmed] = useState(false);
+
 	// Use ref to track refresh loading state synchronously (prevents React 18 double-call race condition)
 	const isLoadingRef = useRef(false);
 
-	const openFileInTab = useEditorStore((state) => state.openFileInTab);
 	const sidebarPanel = useEditorStore((state) => state.sidebarPanel);
 	const appendTerminalOutput = useEditorStore(
 		(state) => state.appendTerminalOutput,
@@ -67,11 +99,13 @@ export function SourceControlPanel() {
 	// Use ref to hold the mutation to avoid callback dependency on mutation object
 	const refreshStatusRef = useRef(refreshStatus);
 	refreshStatusRef.current = refreshStatus;
-	const commitMutation = useCommitChanges();
-	const pullMutation = usePullFromGitHub();
-	const pushMutation = usePushToGitHub();
 	const discardAllMutation = useDiscardUnpushedCommits();
 	const discardCommitMutation = useDiscardCommit();
+
+	// New API-only sync hooks
+	const syncPreviewMutation = useSyncPreview();
+	const syncExecuteMutation = useSyncExecute();
+	const queryClient = useQueryClient();
 
 	// Update commits state when data loads
 	useEffect(() => {
@@ -101,15 +135,29 @@ export function SourceControlPanel() {
 		}
 	}, []); // Empty deps - uses ref instead
 
-	// Load status when this tab becomes active, on visibility change, or when git status changes
+	// Refresh that also re-fetches sync preview if one exists
+	const handleRefreshWithPreview = useCallback(async () => {
+		await handleRefreshStatus();
+		// If we have a sync preview loaded, re-fetch it to get updated state
+		if (syncPreview && !syncPreview.is_empty) {
+			try {
+				const preview = await syncPreviewMutation.mutateAsync();
+				setSyncPreview(preview);
+				setConflictResolutions({});
+				setOrphansConfirmed(false);
+			} catch (error) {
+				console.error("Failed to refresh sync preview:", error);
+			}
+		}
+	}, [handleRefreshStatus, syncPreview, syncPreviewMutation]);
+
+	// Set up event listeners for visibility changes and git status events
+	// Note: useGitStatus() already fetches data on mount, so we don't call handleRefreshStatus() here
 	useEffect(() => {
-		// Only refresh if source control panel is active
+		// Only set up listeners if source control panel is active
 		if (sidebarPanel !== "sourceControl") {
 			return;
 		}
-
-		// Initial load when panel becomes active
-		handleRefreshStatus();
 
 		// Set up event listeners for visibility and git status changes
 		const handleVisibilityChange = () => {
@@ -139,61 +187,19 @@ export function SourceControlPanel() {
 		};
 	}, [sidebarPanel, handleRefreshStatus]);
 
-	const handleCommit = async () => {
-		if (!commitMessage.trim()) {
-			toast.error("Please enter a commit message");
-			return;
-		}
+	// Fetch sync preview (shows what will be pulled/pushed)
+	const handleFetchSyncPreview = async () => {
+		setIsSyncLoading(true);
+		setSyncPreview(null);
+		setConflictResolutions({});
+		setOrphansConfirmed(false);
 
 		try {
-			await commitMutation.mutateAsync({
-				body: { message: commitMessage },
-			});
-
-			appendTerminalOutput({
-				loggerOutput: [
-					{
-						level: "SUCCESS",
-						message: `Git commit: "${commitMessage}"`,
-						source: "git",
-					},
-				],
-				variables: {},
-				status: "success",
-				error: undefined,
-			});
-			toast.success("Changes committed");
-			setCommitMessage("");
-			await handleRefreshStatus();
-		} catch (error) {
-			console.error("Failed to commit:", error);
-			toast.error("Failed to commit", {
-				description:
-					error instanceof Error ? error.message : String(error),
-			});
-			appendTerminalOutput({
-				loggerOutput: [
-					{
-						level: "ERROR",
-						message: `Git commit error: ${error instanceof Error ? error.message : String(error)}`,
-						source: "git",
-					},
-				],
-				variables: {},
-				status: "error",
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	};
-
-	const handleSync = async () => {
-		try {
-			// First pull changes from remote
 			appendTerminalOutput({
 				loggerOutput: [
 					{
 						level: "INFO",
-						message: "Pulling changes from GitHub...",
+						message: "Checking for changes to sync...",
 						source: "git",
 					},
 				],
@@ -202,28 +208,40 @@ export function SourceControlPanel() {
 				error: undefined,
 			});
 
-			await pullMutation.mutateAsync({});
+			const preview = await syncPreviewMutation.mutateAsync();
+			setSyncPreview(preview);
 
-			appendTerminalOutput({
-				loggerOutput: [
-					{
-						level: "SUCCESS",
-						message: "Successfully pulled changes from GitHub",
-						source: "git",
-					},
-				],
-				variables: {},
-				status: "success",
-				error: undefined,
-			});
-
-			// Then push local commits if any
-			if (status && status.commits_ahead > 0) {
+			if (preview.is_empty) {
 				appendTerminalOutput({
 					loggerOutput: [
 						{
-							level: "INFO",
-							message: "Pushing local commits to GitHub...",
+							level: "SUCCESS",
+							message: "Already up to date with GitHub",
+							source: "git",
+						},
+					],
+					variables: {},
+					status: "success",
+					error: undefined,
+				});
+				toast.success("Already up to date");
+			} else {
+				const pullCount = preview.to_pull.length;
+				const pushCount = preview.to_push.length;
+				const conflictCount = preview.conflicts.length;
+				const orphanCount = preview.will_orphan.length;
+
+				let message = "";
+				if (pullCount > 0) message += `${pullCount} to pull`;
+				if (pushCount > 0) message += `${message ? ", " : ""}${pushCount} to push`;
+				if (conflictCount > 0) message += `${message ? ", " : ""}${conflictCount} conflict(s)`;
+				if (orphanCount > 0) message += `${message ? ", " : ""}${orphanCount} will be orphaned`;
+
+				appendTerminalOutput({
+					loggerOutput: [
+						{
+							level: conflictCount > 0 ? "WARNING" : "INFO",
+							message: `Sync preview: ${message}`,
 							source: "git",
 						},
 					],
@@ -232,40 +250,162 @@ export function SourceControlPanel() {
 					error: undefined,
 				});
 
-				await pushMutation.mutateAsync({ body: {} });
-
-				appendTerminalOutput({
-					loggerOutput: [
-						{
-							level: "SUCCESS",
-							message: "Successfully pushed commits to GitHub",
-							source: "git",
-						},
-					],
-					variables: {},
-					status: "success",
-					error: undefined,
-				});
+				if (conflictCount > 0) {
+					toast.warning(`${conflictCount} conflict(s) need resolution`);
+				}
 			}
-
-			toast.success("Synced with GitHub");
-			await handleRefreshStatus();
 		} catch (error) {
-			console.error("Failed to sync:", error);
-			toast.error("Failed to sync with GitHub");
+			console.error("Failed to get sync preview:", error);
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			toast.error("Failed to check sync status");
 			appendTerminalOutput({
 				loggerOutput: [
 					{
 						level: "ERROR",
-						message: `Git sync error: ${error instanceof Error ? error.message : String(error)}`,
+						message: `Sync preview error: ${errorMessage}`,
 						source: "git",
 					},
 				],
 				variables: {},
 				status: "error",
-				error: error instanceof Error ? error.message : String(error),
+				error: errorMessage,
 			});
+		} finally {
+			setIsSyncLoading(false);
 		}
+	};
+
+	// Execute the sync with conflict resolutions
+	const handleExecuteSync = async () => {
+		if (!syncPreview) return;
+
+		// Check that all conflicts are resolved
+		const unresolvedConflicts = syncPreview.conflicts.filter(
+			(c) => !conflictResolutions[c.path]
+		);
+		if (unresolvedConflicts.length > 0) {
+			toast.error("Please resolve all conflicts before syncing");
+			return;
+		}
+
+		// Check that orphans are confirmed if any
+		if (syncPreview.will_orphan.length > 0 && !orphansConfirmed) {
+			toast.error("Please confirm orphaned workflows before syncing");
+			return;
+		}
+
+		setIsSyncLoading(true);
+		setSyncProgress(null);
+
+		try {
+			appendTerminalOutput({
+				loggerOutput: [
+					{
+						level: "INFO",
+						message: "Executing sync...",
+						source: "git",
+					},
+				],
+				variables: {},
+				status: "running",
+				error: undefined,
+			});
+
+			// 1. Queue the sync job - returns job_id
+			const result = await syncExecuteMutation.mutateAsync({
+				body: {
+					conflict_resolutions: conflictResolutions,
+					confirm_orphans: orphansConfirmed,
+				},
+			});
+
+			if (!result.success || !result.job_id) {
+				throw new Error(result.error || "Failed to queue sync");
+			}
+
+			const jobId = result.job_id;
+
+			// 2. Connect to WebSocket channel with the job_id from response
+			await webSocketService.connectToGitSync(jobId);
+
+			// 3. Subscribe to log messages
+			const unsubscribeLog = webSocketService.onGitSyncLog(jobId, (log) => {
+				appendTerminalOutput({
+					loggerOutput: [
+						{
+							level: log.level.toUpperCase() as "INFO" | "SUCCESS" | "WARNING" | "ERROR",
+							message: log.message,
+							source: "git",
+						},
+					],
+					variables: {},
+					status: "running",
+					error: undefined,
+				});
+			});
+
+			// 4. Subscribe to progress messages
+			const unsubscribeProgress = webSocketService.onGitSyncProgress(jobId, (progress) => {
+				setSyncProgress(progress);
+			});
+
+			// 5. Subscribe to completion message
+			const unsubscribeComplete = webSocketService.onGitSyncComplete(jobId, (complete) => {
+				// Unsubscribe from further messages
+				unsubscribeLog();
+				unsubscribeProgress();
+				unsubscribeComplete();
+
+				if (complete.status === "success") {
+					toast.success("Synced with GitHub");
+
+					// Clear sync preview state
+					setSyncPreview(null);
+					setConflictResolutions({});
+					setOrphansConfirmed(false);
+
+					// Invalidate queries to refresh data
+					queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
+					queryClient.invalidateQueries({ queryKey: ["get", "/api/github/changes"] });
+					queryClient.invalidateQueries({ queryKey: ["get", "/api/github/commits"] });
+				} else {
+					toast.error(complete.message || "Sync failed");
+				}
+
+				setSyncProgress(null);
+				setIsSyncLoading(false);
+			});
+
+			// Job is queued and WebSocket is connected - results will stream in
+			// Don't setIsSyncLoading(false) here - wait for WebSocket completion
+
+		} catch (error) {
+			console.error("Failed to queue sync:", error);
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			toast.error("Failed to sync with GitHub");
+			appendTerminalOutput({
+				loggerOutput: [
+					{
+						level: "ERROR",
+						message: `Sync error: ${errorMessage}`,
+						source: "git",
+					},
+				],
+				variables: {},
+				status: "error",
+				error: errorMessage,
+			});
+			setSyncProgress(null);
+			setIsSyncLoading(false);
+		}
+	};
+
+	// Handle conflict resolution
+	const handleResolveConflict = (path: string, resolution: "keep_local" | "keep_remote") => {
+		setConflictResolutions((prev) => ({
+			...prev,
+			[path]: resolution,
+		}));
 	};
 
 	const handleDiscardAll = async () => {
@@ -366,39 +506,6 @@ export function SourceControlPanel() {
 		}
 	};
 
-	const handleFileClick = async (file: FileChange) => {
-		try {
-			// Load file content from workspace
-			const fileData = await fileService.readFile(file.path);
-
-			// Construct FileMetadata from response
-			const fileName = fileData.path.split("/").pop() || "";
-			const fileMetadata = {
-				path: fileData.path,
-				name: fileName,
-				size: fileData.size,
-				type: "file" as const,
-				extension: fileName.includes(".")
-					? fileName.split(".").pop() || null
-					: null,
-				modified: fileData.modified,
-				entity_type: null,
-				entity_id: null,
-			};
-
-			// Open in editor tab
-			openFileInTab(
-				fileMetadata,
-				fileData.content,
-				fileData.encoding as "utf-8" | "base64",
-				fileData.etag,
-			);
-		} catch (error) {
-			console.error("Failed to open file:", error);
-			toast.error(`Failed to open ${file.path}`);
-		}
-	};
-
 	// Show loading state while fetching initial status
 	if (isLoading || !status) {
 		return (
@@ -419,6 +526,46 @@ export function SourceControlPanel() {
 	}
 
 	if (!status?.initialized) {
+		// Check if GitHub is configured but just needs first pull
+		if (status?.configured) {
+			return (
+				<div className="flex h-full flex-col p-4">
+					<div className="flex items-center gap-2 mb-4">
+						<GitBranch className="h-5 w-5" />
+						<h3 className="text-sm font-semibold">Source Control</h3>
+					</div>
+
+					<div className="flex flex-col items-center justify-center flex-1 text-center">
+						<GitBranch className="h-12 w-12 text-muted-foreground mb-4" />
+						<p className="text-sm text-muted-foreground mb-2">
+							GitHub connected
+						</p>
+						<p className="text-xs text-muted-foreground mb-4">
+							Pull to initialize your local repository
+						</p>
+						<Button
+							onClick={handleFetchSyncPreview}
+							disabled={isSyncLoading}
+							className="gap-2"
+						>
+							{isSyncLoading ? (
+								<>
+									<Loader2 className="h-4 w-4 animate-spin" />
+									Checking...
+								</>
+							) : (
+								<>
+									<ArrowDownToLine className="h-4 w-4" />
+									Pull from GitHub
+								</>
+							)}
+						</Button>
+					</div>
+				</div>
+			);
+		}
+
+		// Not configured at all
 		return (
 			<div className="flex h-full flex-col p-4">
 				<div className="flex items-center gap-2 mb-4">
@@ -439,8 +586,6 @@ export function SourceControlPanel() {
 		);
 	}
 
-	const hasChanges = (status.changed_files?.length || 0) > 0;
-
 	return (
 		<div className="flex h-full flex-col">
 			{/* Header */}
@@ -459,12 +604,12 @@ export function SourceControlPanel() {
 					</div>
 				</div>
 				<button
-					onClick={handleRefreshStatus}
-					disabled={refreshStatus.isPending}
+					onClick={handleRefreshWithPreview}
+					disabled={refreshStatus.isPending || isSyncLoading}
 					className="p-1.5 rounded hover:bg-muted/50 transition-colors disabled:opacity-50"
 					title="Refresh status"
 				>
-					{refreshStatus.isPending ? (
+					{refreshStatus.isPending || isSyncLoading ? (
 						<Loader2 className="h-4 w-4 animate-spin" />
 					) : (
 						<RefreshCw className="h-4 w-4" />
@@ -472,123 +617,633 @@ export function SourceControlPanel() {
 				</button>
 			</div>
 
-			{/* Sync controls - only show when configured and there's something to sync */}
-			{status.configured &&
-				(status.commits_ahead > 0 || status.commits_behind > 0) && (
-					<div className="border-b">
-						<button
-							onClick={handleSync}
-							disabled={
-								pullMutation.isPending ||
-								pushMutation.isPending ||
-								isLoading
-							}
-							className="w-full px-4 py-3 flex flex-col items-start gap-1 hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-left"
-						>
-							<div className="flex items-center justify-between w-full">
-								<div className="flex items-center gap-2">
-									{pullMutation.isPending ||
-									pushMutation.isPending ? (
-										<Loader2 className="h-4 w-4 animate-spin" />
-									) : (
-										<RefreshCw className="h-4 w-4" />
-									)}
-									<span className="text-sm font-medium">
-										Sync with GitHub
-									</span>
-								</div>
-								<div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-muted text-xs">
-									{status.commits_ahead > 0 && (
-										<>
-											<Upload className="h-3 w-3" />
-											<span>{status.commits_ahead}</span>
-										</>
-									)}
-									{status.commits_behind > 0 && (
-										<>
-											<Download className="h-3 w-3" />
-											<span>{status.commits_behind}</span>
-										</>
-									)}
-								</div>
-							</div>
-							{status.last_synced && (
-								<span className="text-xs text-muted-foreground ml-6">
-									Last synced{" "}
-									{formatDistanceToNow(
-										new Date(status.last_synced),
-										{ addSuffix: true },
-									)}
-								</span>
-							)}
-						</button>
-					</div>
-				)}
+			{/* Sync controls - show when configured */}
+			{status.configured && (
+				<div className="border-b">
+					{(() => {
+						// Determine button state
+						const hasPreview = syncPreview && !syncPreview.is_empty;
+						const hasUnresolvedConflicts = hasPreview &&
+							syncPreview.conflicts.length > 0 &&
+							Object.keys(conflictResolutions).length < syncPreview.conflicts.length;
+						const hasUnconfirmedOrphans = hasPreview &&
+							syncPreview.will_orphan.length > 0 && !orphansConfirmed;
+						const canApply = hasPreview && !hasUnresolvedConflicts && !hasUnconfirmedOrphans;
 
-			{/* Commit section */}
-			{hasChanges && (
-				<div className="px-4 py-3 border-b space-y-2">
-					<Input
-						id="commit-message"
-						placeholder={`Message (#Enter to commit on "${status.current_branch || "main"}")`}
-						value={commitMessage}
-						onChange={(e) => setCommitMessage(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) {
-								e.preventDefault();
-								handleCommit();
-							}
-						}}
-						className="text-sm"
-					/>
-					<Button
-						size="sm"
-						className="w-full"
-						onClick={handleCommit}
-						disabled={
-							!commitMessage.trim() ||
-							commitMutation.isPending ||
-							isLoading
-						}
-					>
-						{commitMutation.isPending ? (
-							<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-						) : (
-							<Check className="h-4 w-4 mr-2" />
-						)}
-						Commit
-					</Button>
+						// Format progress display
+						const progressText = syncProgress
+							? `${syncProgress.phase} ${syncProgress.current}/${syncProgress.total}${syncProgress.path ? `: ${syncProgress.path}` : ""}`
+							: null;
+
+						return (
+							<button
+								onClick={hasPreview ? handleExecuteSync : handleFetchSyncPreview}
+								disabled={isSyncLoading || isLoading || !!(hasPreview && !canApply)}
+								className="w-full px-4 py-3 flex flex-col items-start gap-1 hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-left"
+							>
+								<div className="flex items-center justify-between w-full">
+									<div className="flex items-center gap-2">
+										{isSyncLoading ? (
+											<Loader2 className="h-4 w-4 animate-spin" />
+										) : hasPreview ? (
+											<Check className="h-4 w-4" />
+										) : (
+											<RefreshCw className="h-4 w-4" />
+										)}
+										<span className="text-sm font-medium">
+											{isSyncLoading
+												? "Syncing..."
+												: hasPreview
+													? "Apply Changes"
+													: "Sync with GitHub"}
+										</span>
+									</div>
+									{/* Show counts from preview or status */}
+									{hasPreview ? (
+										<div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-muted text-xs">
+											{syncPreview.to_pull.length > 0 && (
+												<>
+													<Download className="h-3 w-3" />
+													<span>{syncPreview.to_pull.length}</span>
+												</>
+											)}
+											{syncPreview.to_push.length > 0 && (
+												<>
+													<Upload className="h-3 w-3" />
+													<span>{syncPreview.to_push.length}</span>
+												</>
+											)}
+										</div>
+									) : (status.commits_ahead > 0 || status.commits_behind > 0) && (
+										<div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-muted text-xs">
+											{status.commits_ahead > 0 && (
+												<>
+													<Upload className="h-3 w-3" />
+													<span>{status.commits_ahead}</span>
+												</>
+											)}
+											{status.commits_behind > 0 && (
+												<>
+													<Download className="h-3 w-3" />
+													<span>{status.commits_behind}</span>
+												</>
+											)}
+										</div>
+									)}
+								</div>
+								{/* Progress indicator during sync */}
+								{isSyncLoading && progressText ? (
+									<span className="text-xs text-muted-foreground ml-6 truncate max-w-full" title={progressText}>
+										{progressText}
+									</span>
+								) : hasPreview ? (
+									hasUnresolvedConflicts ? (
+										<span className="text-xs text-orange-500 ml-6">
+											Resolve conflicts to continue
+										</span>
+									) : hasUnconfirmedOrphans ? (
+										<span className="text-xs text-yellow-500 ml-6">
+											Confirm orphaned workflows to continue
+										</span>
+									) : null
+								) : status.last_synced && (
+									<span className="text-xs text-muted-foreground ml-6">
+										Last synced{" "}
+										{formatDistanceToNow(
+											new Date(status.last_synced),
+											{ addSuffix: true },
+										)}
+									</span>
+								)}
+							</button>
+						);
+					})()}
 				</div>
 			)}
 
-			{/* Split pane container: Changes and Commits */}
-			<div className="flex-1 flex flex-col min-h-0">
-				{/* Changes section - takes half the space */}
-				<div className="flex-1 flex flex-col min-h-0 border-b">
-					<ChangesList
-						changes={status.changed_files || []}
-						hasConflicts={false}
-						onFileClick={handleFileClick}
-						isLoading={false}
-					/>
-				</div>
+			{/* Collapsible sections container - all sections share space */}
+			<div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+				{/* Sync sections when preview is available */}
+				{syncPreview && !syncPreview.is_empty && (
+					<>
+						{/* Incoming changes (to pull) */}
+						{syncPreview.to_pull.length > 0 && (
+							<SyncActionList
+								title="Incoming"
+								icon={<Download className="h-4 w-4 text-blue-500 flex-shrink-0" />}
+								actions={syncPreview.to_pull}
+							/>
+						)}
 
-				{/* Commits section - takes half the space */}
-				<div className="flex-1 flex flex-col min-h-0">
-					<CommitsList
-						commits={commits}
-						totalCommits={totalCommits}
-						hasMore={hasMoreCommits}
-						isLoading={
-							isLoadingCommits ||
-							discardAllMutation.isPending ||
-							discardCommitMutation.isPending
-						}
-						onDiscardAll={handleDiscardAll}
-						onDiscardCommit={handleDiscardCommit}
-					/>
-				</div>
+						{/* Outgoing changes (to push) */}
+						{syncPreview.to_push.length > 0 && (
+							<SyncActionList
+								title="Outgoing"
+								icon={<Upload className="h-4 w-4 text-green-500 flex-shrink-0" />}
+								actions={syncPreview.to_push}
+							/>
+						)}
+
+						{/* Conflicts */}
+						{syncPreview.conflicts.length > 0 && (
+							<ConflictList
+								conflicts={syncPreview.conflicts}
+								resolutions={conflictResolutions}
+								onResolve={handleResolveConflict}
+							/>
+						)}
+
+						{/* Orphaned workflows warning */}
+						{syncPreview.will_orphan.length > 0 && (
+							<OrphanWarning
+								orphans={syncPreview.will_orphan}
+								confirmed={orphansConfirmed}
+								onConfirmChange={setOrphansConfirmed}
+							/>
+						)}
+					</>
+				)}
+
+				{/* Commits section - always visible */}
+				<CommitsSection
+					commits={commits}
+					totalCommits={totalCommits}
+					hasMore={hasMoreCommits}
+					isLoading={
+						isLoadingCommits ||
+						discardAllMutation.isPending ||
+						discardCommitMutation.isPending
+					}
+					onDiscardAll={handleDiscardAll}
+					onDiscardCommit={handleDiscardCommit}
+				/>
 			</div>
+		</div>
+	);
+}
+
+// =============================================================================
+// Helper Components for Sync Preview
+// =============================================================================
+
+/**
+ * Get the appropriate icon for a sync action type
+ */
+function getActionIcon(action: "add" | "modify" | "delete") {
+	switch (action) {
+		case "add":
+			return <Plus className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />;
+		case "modify":
+			return <Edit3 className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />;
+		case "delete":
+			return <Minus className="h-3.5 w-3.5 text-red-500 flex-shrink-0" />;
+	}
+}
+
+/**
+ * List of sync actions (files to pull or push)
+ */
+function SyncActionList({
+	title,
+	icon,
+	actions,
+}: {
+	title: string;
+	icon: React.ReactNode;
+	actions: SyncAction[];
+}) {
+	const [expanded, setExpanded] = useState(true);
+
+	return (
+		<div className={cn("border-t flex flex-col min-h-0", expanded && "flex-1")}>
+			<button
+				onClick={() => setExpanded(!expanded)}
+				className="w-full px-4 py-2 flex items-center gap-2 hover:bg-muted/30 transition-colors text-left flex-shrink-0"
+			>
+				{expanded ? (
+					<ChevronDown className="h-4 w-4 flex-shrink-0" />
+				) : (
+					<ChevronRight className="h-4 w-4 flex-shrink-0" />
+				)}
+				{icon}
+				<span className="text-sm font-medium flex-1 truncate">{title}</span>
+				<span className="text-xs text-muted-foreground bg-muted w-10 text-center py-0.5 rounded-full flex-shrink-0">
+					{actions.length > 999 ? "999+" : actions.length}
+				</span>
+			</button>
+			{expanded && (
+				<div className="flex-1 overflow-y-auto px-4 pb-2 space-y-0.5 min-h-0">
+					{actions.map((action) => (
+						<div
+							key={action.path}
+							className="flex items-center gap-2 text-xs py-1 px-2 rounded hover:bg-muted/30"
+						>
+							{getActionIcon(action.action)}
+							<span className="truncate font-mono" title={action.path}>
+								{action.path}
+							</span>
+						</div>
+					))}
+				</div>
+			)}
+		</div>
+	);
+}
+
+/**
+ * List of conflicts with resolution buttons
+ */
+function ConflictList({
+	conflicts,
+	resolutions,
+	onResolve,
+}: {
+	conflicts: SyncConflictInfo[];
+	resolutions: Record<string, "keep_local" | "keep_remote">;
+	onResolve: (path: string, resolution: "keep_local" | "keep_remote") => void;
+}) {
+	const [expanded, setExpanded] = useState(true);
+	const resolvedCount = Object.keys(resolutions).length;
+
+	return (
+		<div className={cn("border-t flex flex-col min-h-0", expanded && "flex-1")}>
+			<button
+				onClick={() => setExpanded(!expanded)}
+				className="w-full px-4 py-2 flex items-center gap-2 hover:bg-muted/30 transition-colors text-left flex-shrink-0"
+			>
+				{expanded ? (
+					<ChevronDown className="h-4 w-4 flex-shrink-0" />
+				) : (
+					<ChevronRight className="h-4 w-4 flex-shrink-0" />
+				)}
+				<AlertCircle className="h-4 w-4 text-orange-500 flex-shrink-0" />
+				<span className="text-sm font-medium flex-1 truncate">Conflicts</span>
+				<span
+					className={cn(
+						"text-xs w-10 text-center py-0.5 rounded-full flex-shrink-0",
+						resolvedCount === conflicts.length
+							? "bg-green-500/20 text-green-700"
+							: "bg-orange-500/20 text-orange-700"
+					)}
+				>
+					{resolvedCount}/{conflicts.length}
+				</span>
+			</button>
+			{expanded && (
+				<div className="flex-1 overflow-y-auto px-4 pb-2 space-y-2 min-h-0">
+					{conflicts.map((conflict) => {
+						const resolution = resolutions[conflict.path];
+						return (
+							<div
+								key={conflict.path}
+								className="py-1"
+							>
+								<div className="flex items-center gap-2">
+									<AlertCircle className="h-3.5 w-3.5 text-orange-500 flex-shrink-0" />
+									<span
+										className="text-xs font-mono truncate"
+										title={conflict.path}
+									>
+										{conflict.path}
+									</span>
+								</div>
+								<div className="flex mt-1">
+									<button
+										onClick={() => onResolve(conflict.path, "keep_local")}
+										className={cn(
+											"flex-1 py-1 text-xs transition-colors",
+											resolution === "keep_local"
+												? "bg-primary text-primary-foreground"
+												: "bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted"
+										)}
+									>
+										Keep Local
+									</button>
+									<button
+										onClick={() => onResolve(conflict.path, "keep_remote")}
+										className={cn(
+											"flex-1 py-1 text-xs transition-colors",
+											resolution === "keep_remote"
+												? "bg-primary text-primary-foreground"
+												: "bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted"
+										)}
+									>
+										Keep Remote
+									</button>
+								</div>
+							</div>
+						);
+					})}
+				</div>
+			)}
+		</div>
+	);
+}
+
+/**
+ * Warning about workflows that will be orphaned
+ */
+function OrphanWarning({
+	orphans,
+	confirmed,
+	onConfirmChange,
+}: {
+	orphans: OrphanInfo[];
+	confirmed: boolean;
+	onConfirmChange: (confirmed: boolean) => void;
+}) {
+	const [expanded, setExpanded] = useState(true);
+
+	return (
+		<div className={cn("border-t flex flex-col min-h-0", expanded && "flex-1")}>
+			<button
+				onClick={() => setExpanded(!expanded)}
+				className="w-full px-4 py-2 flex items-center gap-2 hover:bg-muted/30 transition-colors text-left flex-shrink-0"
+			>
+				{expanded ? (
+					<ChevronDown className="h-4 w-4 flex-shrink-0" />
+				) : (
+					<ChevronRight className="h-4 w-4 flex-shrink-0" />
+				)}
+				<FileWarning className="h-4 w-4 text-yellow-500 flex-shrink-0" />
+				<span className="text-sm font-medium flex-1 truncate">Orphans</span>
+				<span className="text-xs bg-yellow-500/20 text-yellow-700 w-10 text-center py-0.5 rounded-full flex-shrink-0">
+					{orphans.length > 999 ? "999+" : orphans.length}
+				</span>
+			</button>
+			{expanded && (
+				<div className="flex-1 overflow-y-auto px-4 pb-2 min-h-0">
+					<p className="text-xs text-muted-foreground mb-2">
+						These workflows will be orphaned. They may still be referenced by forms or apps.
+					</p>
+					<div className="space-y-1">
+						{orphans.map((orphan) => (
+							<div
+								key={orphan.workflow_id}
+								className="flex items-center gap-2 py-1"
+							>
+								<FileWarning className="h-3.5 w-3.5 text-yellow-500 flex-shrink-0" />
+								<span className="text-xs truncate" title={`${orphan.workflow_name} (${orphan.function_name})`}>
+									{orphan.workflow_name}
+								</span>
+							</div>
+						))}
+					</div>
+					<div className="flex items-center gap-2 mt-2 pt-2 border-t">
+						<Checkbox
+							id="confirm-orphans"
+							checked={confirmed}
+							onCheckedChange={(checked) =>
+								onConfirmChange(checked === true)
+							}
+						/>
+						<label
+							htmlFor="confirm-orphans"
+							className="text-xs cursor-pointer"
+						>
+							I understand
+						</label>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+/**
+ * Commits section with flex-sharing
+ */
+function CommitsSection({
+	commits,
+	totalCommits,
+	hasMore,
+	isLoading,
+	onDiscardAll,
+	onDiscardCommit,
+	onLoadMore,
+}: {
+	commits: Array<{
+		sha: string;
+		message: string;
+		author: string;
+		timestamp: string;
+		is_pushed: boolean;
+	}>;
+	totalCommits?: number;
+	hasMore?: boolean;
+	isLoading?: boolean;
+	onDiscardAll?: () => Promise<void>;
+	onDiscardCommit?: (commitSha: string) => Promise<void>;
+	onLoadMore?: () => void;
+}) {
+	const [expanded, setExpanded] = useState(true);
+	const [hoveredCommit, setHoveredCommit] = useState<string | null>(null);
+	const [isDiscarding, setIsDiscarding] = useState(false);
+	const [showDiscardAllDialog, setShowDiscardAllDialog] = useState(false);
+	const [commitToDiscard, setCommitToDiscard] = useState<{
+		sha: string;
+		message: string;
+	} | null>(null);
+
+	const unpushedCommits = commits.filter((c) => !c.is_pushed);
+	const hasUnpushedCommits = unpushedCommits.length > 0;
+
+	const handleDiscardAll = async () => {
+		if (!onDiscardAll) return;
+		setIsDiscarding(true);
+		setShowDiscardAllDialog(false);
+		try {
+			await onDiscardAll();
+		} finally {
+			setIsDiscarding(false);
+		}
+	};
+
+	const handleDiscardCommit = async (commitSha: string) => {
+		if (!onDiscardCommit) return;
+		setIsDiscarding(true);
+		setCommitToDiscard(null);
+		try {
+			await onDiscardCommit(commitSha);
+		} finally {
+			setIsDiscarding(false);
+		}
+	};
+
+	return (
+		<div className={cn("border-t flex flex-col min-h-0", expanded && "flex-1")}>
+			<button
+				onClick={() => setExpanded(!expanded)}
+				className="w-full px-4 py-2 flex items-center gap-2 hover:bg-muted/30 transition-colors text-left flex-shrink-0"
+			>
+				{expanded ? (
+					<ChevronDown className="h-4 w-4 flex-shrink-0" />
+				) : (
+					<ChevronRight className="h-4 w-4 flex-shrink-0" />
+				)}
+				<History className="h-4 w-4 flex-shrink-0" />
+				<span className="text-sm font-medium flex-1 truncate">Commits</span>
+				<span className="text-xs text-muted-foreground bg-muted w-10 text-center py-0.5 rounded-full flex-shrink-0">
+					{totalCommits ?? commits.length}
+				</span>
+			</button>
+			{expanded && (
+				<div className="flex-1 flex flex-col overflow-hidden min-h-0">
+					{/* Discard All button */}
+					{hasUnpushedCommits && onDiscardAll && (
+						<div className="px-4 pt-2 pb-1 flex-shrink-0">
+							<Button
+								variant="outline"
+								size="sm"
+								className="w-full text-xs"
+								onClick={() => setShowDiscardAllDialog(true)}
+								disabled={isDiscarding || isLoading}
+							>
+								{isDiscarding ? (
+									<Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+								) : (
+									<Trash2 className="h-3 w-3 mr-1.5" />
+								)}
+								Discard All Unpushed ({unpushedCommits.length})
+							</Button>
+						</div>
+					)}
+
+					<div className="flex-1 overflow-y-auto px-4 py-2 min-h-0">
+						{/* Loading state on initial load */}
+						{isLoading && commits.length === 0 ? (
+							<div className="flex flex-col items-center justify-center py-8 text-center">
+								<Loader2 className="h-6 w-6 text-muted-foreground mb-2 animate-spin" />
+								<p className="text-xs text-muted-foreground">
+									Loading commits...
+								</p>
+							</div>
+						) : commits.length === 0 ? (
+							<div className="flex flex-col items-center justify-center py-8 text-center">
+								<History className="h-6 w-6 text-muted-foreground mb-2" />
+								<p className="text-xs text-muted-foreground">
+									No commits
+								</p>
+							</div>
+						) : (
+							<div className="space-y-1">
+								{commits.map((commit) => (
+									<div
+										key={commit.sha}
+										className="group flex items-start gap-2 px-2 py-2 rounded hover:bg-muted/30 transition-colors relative"
+										onMouseEnter={() => setHoveredCommit(commit.sha)}
+										onMouseLeave={() => setHoveredCommit(null)}
+									>
+										{commit.is_pushed ? (
+											<CheckCircle2 className="h-3.5 w-3.5 text-green-500 flex-shrink-0 mt-0.5" />
+										) : (
+											<Circle className="h-3.5 w-3.5 text-yellow-500 flex-shrink-0 mt-0.5" />
+										)}
+										<div className="flex-1 min-w-0">
+											<p className="text-xs font-medium truncate">
+												{commit.message}
+											</p>
+											<p className="text-xs text-muted-foreground">
+												{commit.author} ·{" "}
+												{new Date(commit.timestamp).toLocaleDateString()}
+											</p>
+										</div>
+										{/* Individual discard button - only for unpushed commits */}
+										{!commit.is_pushed &&
+											onDiscardCommit &&
+											hoveredCommit === commit.sha && (
+												<button
+													onClick={(e) => {
+														e.stopPropagation();
+														setCommitToDiscard({
+															sha: commit.sha,
+															message: commit.message,
+														});
+													}}
+													disabled={isDiscarding}
+													className="p-1 rounded hover:bg-destructive/10 transition-colors disabled:opacity-50"
+													title="Discard this commit and all newer commits"
+												>
+													<X className="h-3.5 w-3.5 text-destructive" />
+												</button>
+											)}
+									</div>
+								))}
+
+								{/* Load More button */}
+								{hasMore && onLoadMore && (
+									<button
+										onClick={onLoadMore}
+										disabled={isLoading}
+										className="w-full px-2 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+									>
+										{isLoading && (
+											<Loader2 className="h-3 w-3 animate-spin" />
+										)}
+										{isLoading ? "Loading..." : "Load More"}
+									</button>
+								)}
+							</div>
+						)}
+					</div>
+				</div>
+			)}
+
+			{/* Discard All Confirmation Dialog */}
+			<AlertDialog
+				open={showDiscardAllDialog}
+				onOpenChange={setShowDiscardAllDialog}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>
+							Discard all unpushed commits?
+						</AlertDialogTitle>
+						<AlertDialogDescription>
+							This will permanently discard {unpushedCommits.length} unpushed
+							commit{unpushedCommits.length !== 1 ? "s" : ""} and reset your
+							local branch to match the remote. This action cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={handleDiscardAll}
+							className="bg-destructive hover:bg-destructive/90"
+						>
+							Discard All
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+
+			{/* Discard Commit Confirmation Dialog */}
+			<AlertDialog
+				open={commitToDiscard !== null}
+				onOpenChange={(open) => !open && setCommitToDiscard(null)}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Discard this commit?</AlertDialogTitle>
+						<AlertDialogDescription>
+							This will permanently discard "{commitToDiscard?.message}" and
+							all newer commits by resetting to its parent. This action cannot
+							be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() =>
+								commitToDiscard && handleDiscardCommit(commitToDiscard.sha)
+							}
+							className="bg-destructive hover:bg-destructive/90"
+						>
+							Discard Commit
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }

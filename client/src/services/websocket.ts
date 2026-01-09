@@ -281,6 +281,9 @@ type WebSocketMessage =
 	| { type: "notification_dismissed"; notification_id: string }
 	| { type: "log"; level: string; message: string }
 	| { type: "complete"; status: "success" | "error"; message: string }
+	| { type: "git_log"; jobId: string; level: string; message: string }
+	| { type: "git_progress"; jobId: string; phase: string; current: number; total: number; path?: string | null }
+	| { type: "git_complete"; jobId: string; status: "success" | "error"; message: string; [key: string]: unknown }
 	| {
 			type: "devrun_state_update";
 			state: LocalRunnerStateUpdate | null;
@@ -325,6 +328,17 @@ type NewExecutionCallback = (execution: NewExecution) => void;
 type HistoryUpdateCallback = (update: HistoryUpdate) => void;
 type PackageLogCallback = (log: PackageLog) => void;
 type PackageCompleteCallback = (complete: PackageComplete) => void;
+// Git sync progress type
+export interface GitProgress {
+	phase: string;
+	current: number;
+	total: number;
+	path?: string | null;
+}
+
+type GitLogCallback = (log: PackageLog) => void;
+type GitProgressCallback = (progress: GitProgress) => void;
+type GitCompleteCallback = (complete: PackageComplete & Record<string, unknown>) => void;
 type LocalRunnerStateCallback = (state: LocalRunnerStateUpdate | null) => void;
 type ReindexCallback = (message: ReindexMessage) => void;
 type CLISessionUpdateCallback = (update: CLISessionUpdate) => void;
@@ -356,6 +370,9 @@ class WebSocketService {
 	private historyUpdateCallbacks = new Set<HistoryUpdateCallback>();
 	private packageLogCallbacks = new Set<PackageLogCallback>();
 	private packageCompleteCallbacks = new Set<PackageCompleteCallback>();
+	private gitLogCallbacks = new Map<string, Set<GitLogCallback>>();
+	private gitProgressCallbacks = new Map<string, Set<GitProgressCallback>>();
+	private gitCompleteCallbacks = new Map<string, Set<GitCompleteCallback>>();
 	private localRunnerStateCallbacks = new Set<LocalRunnerStateCallback>();
 	private cliSessionUpdateCallbacks = new Map<
 		string,
@@ -595,6 +612,46 @@ class WebSocketService {
 					cb({ status: message.status, message: message.message }),
 				);
 				break;
+
+			case "git_log": {
+				// Git sync log message - dispatch to job-specific subscribers
+				const gitLogJobId = message.jobId;
+				if (gitLogJobId) {
+					const callbacks = this.gitLogCallbacks.get(gitLogJobId);
+					callbacks?.forEach((cb) =>
+						cb({ level: message.level, message: message.message }),
+					);
+				}
+				break;
+			}
+
+			case "git_progress": {
+				// Git sync progress message - dispatch to job-specific subscribers
+				const gitProgressJobId = message.jobId;
+				if (gitProgressJobId) {
+					const callbacks = this.gitProgressCallbacks.get(gitProgressJobId);
+					callbacks?.forEach((cb) =>
+						cb({
+							phase: message.phase,
+							current: message.current,
+							total: message.total,
+							path: message.path,
+						}),
+					);
+				}
+				break;
+			}
+
+			case "git_complete": {
+				// Git sync complete message - dispatch to job-specific subscribers
+				const gitCompleteJobId = message.jobId;
+				if (gitCompleteJobId) {
+					const { type: _type, jobId: _jobId, ...gitCompleteData } = message;
+					const callbacks = this.gitCompleteCallbacks.get(gitCompleteJobId);
+					callbacks?.forEach((cb) => cb(gitCompleteData as Parameters<GitCompleteCallback>[0]));
+				}
+				break;
+			}
 
 			case "devrun_state_update":
 				// Dev run state update from CLI (legacy)
@@ -967,6 +1024,77 @@ class WebSocketService {
 		this.packageCompleteCallbacks.add(callback);
 		return () => {
 			this.packageCompleteCallbacks.delete(callback);
+		};
+	}
+
+	/**
+	 * Connect to a git sync channel for progress updates
+	 */
+	async connectToGitSync(connectionId: string): Promise<void> {
+		const channel = `git:${connectionId}`;
+		if (this.subscribedChannels.has(channel)) {
+			return;
+		}
+
+		if (this.ws?.readyState === WebSocket.OPEN) {
+			await this.subscribe(channel);
+			return;
+		}
+
+		await this.connect([channel]);
+	}
+
+	/**
+	 * Subscribe to git sync log messages for a specific connection
+	 */
+	onGitSyncLog(connectionId: string, callback: GitLogCallback): () => void {
+		if (!this.gitLogCallbacks.has(connectionId)) {
+			this.gitLogCallbacks.set(connectionId, new Set());
+		}
+		this.gitLogCallbacks.get(connectionId)!.add(callback);
+
+		// Return unsubscribe function
+		return () => {
+			this.gitLogCallbacks.get(connectionId)?.delete(callback);
+			if (this.gitLogCallbacks.get(connectionId)?.size === 0) {
+				this.gitLogCallbacks.delete(connectionId);
+			}
+		};
+	}
+
+	/**
+	 * Subscribe to git sync progress updates for a specific connection
+	 */
+	onGitSyncProgress(connectionId: string, callback: GitProgressCallback): () => void {
+		if (!this.gitProgressCallbacks.has(connectionId)) {
+			this.gitProgressCallbacks.set(connectionId, new Set());
+		}
+		this.gitProgressCallbacks.get(connectionId)!.add(callback);
+
+		// Return unsubscribe function
+		return () => {
+			this.gitProgressCallbacks.get(connectionId)?.delete(callback);
+			if (this.gitProgressCallbacks.get(connectionId)?.size === 0) {
+				this.gitProgressCallbacks.delete(connectionId);
+			}
+		};
+	}
+
+	/**
+	 * Subscribe to git sync completion for a specific connection
+	 */
+	onGitSyncComplete(connectionId: string, callback: GitCompleteCallback): () => void {
+		if (!this.gitCompleteCallbacks.has(connectionId)) {
+			this.gitCompleteCallbacks.set(connectionId, new Set());
+		}
+		this.gitCompleteCallbacks.get(connectionId)!.add(callback);
+
+		// Return unsubscribe function
+		return () => {
+			this.gitCompleteCallbacks.get(connectionId)?.delete(callback);
+			if (this.gitCompleteCallbacks.get(connectionId)?.size === 0) {
+				this.gitCompleteCallbacks.delete(connectionId);
+			}
 		};
 	}
 

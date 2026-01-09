@@ -90,7 +90,7 @@ export function AppShell({
 	lastUpdate,
 	newVersionAvailable,
 	onRefresh,
-	isPreview = false,
+	isPreview: _isPreview = false,
 }: AppShellProps) {
 	const navigate = useNavigate();
 	// Get base path from store - correctly handles preview mode

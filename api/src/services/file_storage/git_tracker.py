@@ -30,7 +30,7 @@ class GitStatusTracker:
         self,
         path: str,
         status: GitStatus,
-        commit_hash: str | None = None,
+        github_sha: str | None = None,
     ) -> None:
         """
         Update git status for a file.
@@ -38,14 +38,14 @@ class GitStatusTracker:
         Args:
             path: File path
             status: New git status
-            commit_hash: Git commit hash (for synced files)
+            github_sha: GitHub blob SHA (for synced files)
         """
         values = {
             "git_status": status,
             "updated_at": datetime.utcnow(),
         }
-        if commit_hash:
-            values["last_git_commit_hash"] = commit_hash
+        if github_sha:
+            values["github_sha"] = github_sha
 
         stmt = update(WorkspaceFile).where(
             WorkspaceFile.path == path,
@@ -56,7 +56,7 @@ class GitStatusTracker:
     async def bulk_update_git_status(
         self,
         status: GitStatus,
-        commit_hash: str | None = None,
+        github_sha: str | None = None,
         paths: list[str] | None = None,
     ) -> int:
         """
@@ -64,7 +64,7 @@ class GitStatusTracker:
 
         Args:
             status: New git status
-            commit_hash: Git commit hash
+            github_sha: GitHub blob SHA
             paths: List of paths to update (all if None)
 
         Returns:
@@ -74,8 +74,8 @@ class GitStatusTracker:
             "git_status": status,
             "updated_at": datetime.utcnow(),
         }
-        if commit_hash:
-            values["last_git_commit_hash"] = commit_hash
+        if github_sha:
+            values["github_sha"] = github_sha
 
         stmt = update(WorkspaceFile).values(**values)
 

@@ -51,14 +51,6 @@ def mock_db():
 
 
 @pytest.fixture
-def mock_workspace_cache():
-    """Mock workspace cache."""
-    cache = MagicMock()
-    cache.set_file_state = AsyncMock()
-    return cache
-
-
-@pytest.fixture
 def temp_workspace(tmp_path):
     """Create a temporary workspace with test files."""
     # Create test directory structure
@@ -101,26 +93,24 @@ class TestReindexWorkspaceFiles:
     """Tests for reindex_workspace_files method."""
 
     @pytest.mark.asyncio
-    async def test_indexes_existing_files(self, mock_db, temp_workspace, mock_workspace_cache):
+    async def test_indexes_existing_files(self, mock_db, temp_workspace):
         """Files in the local workspace are indexed in workspace_files."""
         # Setup mock responses
         mock_db.execute.return_value = MagicMock(rowcount=0, scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))))
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage import FileStorageService
-            storage = FileStorageService(mock_db)
-            # Mock _extract_metadata on the reindex service (it holds the function reference)
-            storage._reindex_service._extract_metadata = AsyncMock()
-            counts = await storage.reindex_workspace_files(temp_workspace)
+        from src.services.file_storage import FileStorageService
+        storage = FileStorageService(mock_db)
+        # Mock _extract_metadata on the reindex service (it holds the function reference)
+        storage._reindex_service._extract_metadata = AsyncMock()
+        counts = await storage.reindex_workspace_files(temp_workspace)
 
         # Should have indexed the files
         assert counts["files_indexed"] == 3  # workflow, provider, utils
-        assert mock_workspace_cache.set_file_state.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_marks_missing_files_as_deleted(self, mock_db, temp_workspace, mock_workspace_cache):
+    async def test_marks_missing_files_as_deleted(self, mock_db, temp_workspace):
         """Files in DB but not on filesystem are marked as deleted."""
         # Mock that the update statement affects 2 rows
         mock_result = MagicMock()
@@ -128,20 +118,19 @@ class TestReindexWorkspaceFiles:
         mock_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         mock_db.execute.return_value = mock_result
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage import FileStorageService
-            storage = FileStorageService(mock_db)
-            # Mock _extract_metadata to avoid complex indexer logic in unit test
-            storage._reindex_service._extract_metadata = AsyncMock()
-            counts = await storage.reindex_workspace_files(temp_workspace)
+        from src.services.file_storage import FileStorageService
+        storage = FileStorageService(mock_db)
+        # Mock _extract_metadata to avoid complex indexer logic in unit test
+        storage._reindex_service._extract_metadata = AsyncMock()
+        counts = await storage.reindex_workspace_files(temp_workspace)
 
         # files_removed should reflect the rowcount from the update
         assert counts["files_removed"] == 2
 
     @pytest.mark.asyncio
-    async def test_marks_orphaned_workflows_inactive(self, mock_db, temp_workspace, mock_workspace_cache):
+    async def test_marks_orphaned_workflows_inactive(self, mock_db, temp_workspace):
         """Workflows whose files no longer exist are marked inactive.
 
         NOTE: Data providers are now stored in the workflows table with type='data_provider'.
@@ -165,67 +154,41 @@ class TestReindexWorkspaceFiles:
 
         mock_db.execute.side_effect = mock_results
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage import FileStorageService
-            storage = FileStorageService(mock_db)
-            # Mock _extract_metadata to avoid complex AST parsing in unit test
-            storage._reindex_service._extract_metadata = AsyncMock()
+        from src.services.file_storage import FileStorageService
+        storage = FileStorageService(mock_db)
+        # Mock _extract_metadata to avoid complex AST parsing in unit test
+        storage._reindex_service._extract_metadata = AsyncMock()
 
-            counts = await storage.reindex_workspace_files(temp_workspace)
+        counts = await storage.reindex_workspace_files(temp_workspace)
 
         # Workflows deactivation includes data providers (consolidated into workflows table)
         assert counts["workflows_deactivated"] == 7  # All executables in workflows table
         assert counts["data_providers_deactivated"] == 0  # Always 0 now (kept for compat)
 
     @pytest.mark.asyncio
-    async def test_extracts_metadata_from_python_files(self, mock_db, temp_workspace, mock_workspace_cache):
+    async def test_extracts_metadata_from_python_files(self, mock_db, temp_workspace):
         """Python files are parsed for workflow/data_provider decorators."""
         mock_db.execute.return_value = MagicMock(
             rowcount=0,
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage import FileStorageService
-            storage = FileStorageService(mock_db)
-            mock_extract = AsyncMock()
-            storage._reindex_service._extract_metadata = mock_extract
+        from src.services.file_storage import FileStorageService
+        storage = FileStorageService(mock_db)
+        mock_extract = AsyncMock()
+        storage._reindex_service._extract_metadata = mock_extract
 
-            await storage.reindex_workspace_files(temp_workspace)
+        await storage.reindex_workspace_files(temp_workspace)
 
         # Should have called _extract_metadata for each Python file
         assert mock_extract.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_updates_redis_cache(self, mock_db, temp_workspace, mock_workspace_cache):
-        """Each file's hash is stored in Redis cache."""
-        mock_db.execute.return_value = MagicMock(
-            rowcount=0,
-            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-        )
-
-        # Clear modules first, THEN apply patch, THEN import
-        clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage import FileStorageService
-            storage = FileStorageService(mock_db)
-            storage._reindex_service._extract_metadata = AsyncMock()
-
-            await storage.reindex_workspace_files(temp_workspace)
-
-        # Should have set state for each file
-        assert mock_workspace_cache.set_file_state.call_count == 3
-
-        # All calls should have is_deleted=False
-        for call in mock_workspace_cache.set_file_state.call_args_list:
-            assert call.kwargs.get("is_deleted") is False or call.args[2] is False
-
-    @pytest.mark.asyncio
-    async def test_skips_excluded_paths(self, mock_db, temp_workspace, mock_workspace_cache):
+    async def test_skips_excluded_paths(self, mock_db, temp_workspace):
         """Excluded paths (like __pycache__) are not indexed."""
         # Create an excluded directory
         pycache = temp_workspace / "__pycache__"
@@ -237,20 +200,19 @@ class TestReindexWorkspaceFiles:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage import FileStorageService
-            storage = FileStorageService(mock_db)
-            storage._reindex_service._extract_metadata = AsyncMock()
+        from src.services.file_storage import FileStorageService
+        storage = FileStorageService(mock_db)
+        storage._reindex_service._extract_metadata = AsyncMock()
 
-            counts = await storage.reindex_workspace_files(temp_workspace)
+        counts = await storage.reindex_workspace_files(temp_workspace)
 
         # Should only index the 3 real files, not the pycache file
         assert counts["files_indexed"] == 3
 
     @pytest.mark.asyncio
-    async def test_handles_empty_workspace(self, mock_db, tmp_path, mock_workspace_cache):
+    async def test_handles_empty_workspace(self, mock_db, tmp_path):
         """Empty workspace results in all workflows being deactivated.
 
         NOTE: Data providers are now stored in the workflows table with type='data_provider'.
@@ -268,21 +230,20 @@ class TestReindexWorkspaceFiles:
         ]
         mock_db.execute.side_effect = mock_results
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            from src.services.file_storage import FileStorageService
-            storage = FileStorageService(mock_db)
-            # Mock _extract_metadata to avoid complex indexer logic in unit test
-            storage._reindex_service._extract_metadata = AsyncMock()
-            counts = await storage.reindex_workspace_files(empty_workspace)
+        from src.services.file_storage import FileStorageService
+        storage = FileStorageService(mock_db)
+        # Mock _extract_metadata to avoid complex indexer logic in unit test
+        storage._reindex_service._extract_metadata = AsyncMock()
+        counts = await storage.reindex_workspace_files(empty_workspace)
 
         assert counts["files_indexed"] == 0
         assert counts["workflows_deactivated"] == 4  # Includes data providers now
         assert counts["data_providers_deactivated"] == 0  # Always 0 now (kept for compat)
 
     @pytest.mark.asyncio
-    async def test_cleans_up_orphaned_endpoints(self, mock_db, temp_workspace, mock_workspace_cache):
+    async def test_cleans_up_orphaned_endpoints(self, mock_db, temp_workspace):
         """Endpoint-enabled workflows have their endpoints removed before deactivation."""
         # Create a mock orphaned workflow with endpoint_enabled
         mock_workflow = MagicMock()
@@ -307,25 +268,24 @@ class TestReindexWorkspaceFiles:
 
         mock_db.execute.side_effect = mock_results
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            with patch("src.services.openapi_endpoints.remove_workflow_endpoint") as mock_remove:
-                with patch("src.main.app"):  # Mock the FastAPI app
-                    from src.services.file_storage import FileStorageService
-                    storage = FileStorageService(mock_db)
-                    storage._reindex_service._extract_metadata = AsyncMock()
+        with patch("src.services.openapi_endpoints.remove_workflow_endpoint") as mock_remove:
+            with patch("src.main.app"):  # Mock the FastAPI app
+                from src.services.file_storage import FileStorageService
+                storage = FileStorageService(mock_db)
+                storage._reindex_service._extract_metadata = AsyncMock()
 
-                    await storage.reindex_workspace_files(temp_workspace)
+                await storage.reindex_workspace_files(temp_workspace)
 
-                    # Should have called remove_workflow_endpoint
-                    mock_remove.assert_called_once_with(
-                        pytest.importorskip("src.main").app,
-                        "orphaned_endpoint_workflow"
-                    )
+                # Should have called remove_workflow_endpoint
+                mock_remove.assert_called_once_with(
+                    pytest.importorskip("src.main").app,
+                    "orphaned_endpoint_workflow"
+                )
 
     @pytest.mark.asyncio
-    async def test_handles_file_read_errors(self, mock_db, temp_workspace, mock_workspace_cache):
+    async def test_handles_file_read_errors(self, mock_db, temp_workspace):
         """Files that can't be read are skipped without failing."""
         # Create a file we can't read by making it a directory with the same name
         # Actually, let's just patch read_bytes to fail for one file
@@ -341,15 +301,14 @@ class TestReindexWorkspaceFiles:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
 
-        # Clear modules first, THEN apply patch, THEN import
+        # Clear modules first, THEN import
         clear_libcst_modules()
-        with patch("src.services.file_storage.reindex.get_workspace_cache", return_value=mock_workspace_cache):
-            with patch.object(Path, "read_bytes", mock_read_bytes):
-                from src.services.file_storage import FileStorageService
-                storage = FileStorageService(mock_db)
-                storage._reindex_service._extract_metadata = AsyncMock()
+        with patch.object(Path, "read_bytes", mock_read_bytes):
+            from src.services.file_storage import FileStorageService
+            storage = FileStorageService(mock_db)
+            storage._reindex_service._extract_metadata = AsyncMock()
 
-                counts = await storage.reindex_workspace_files(temp_workspace)
+            counts = await storage.reindex_workspace_files(temp_workspace)
 
         # Should have only indexed 2 files (skipped the one with error)
         assert counts["files_indexed"] == 2

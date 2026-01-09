@@ -60,7 +60,7 @@ class ExecutableMetadata:
     Specific types extend this with their own additional fields.
     """
     # Identity
-    id: str | None = None  # Persistent UUID (written by discovery watcher to Python file)
+    id: str | None = None  # Persistent UUID (stored in database)
     name: str = ""
     description: str = ""
     category: str = "General"

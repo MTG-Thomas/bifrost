@@ -23,11 +23,11 @@ if TYPE_CHECKING:
 
 class Workflow(Base):
     """
-    Workflow registry - persisted from file discovery.
+    Workflow registry - stores metadata for all executable user code.
 
     This table stores metadata for all executable user code discovered from
-    Python files in the workspace. The discovery watcher syncs file changes
-    to this table.
+    Python files in the workspace. File changes are synced to this table
+    when files are written via the API or git sync.
 
     Types:
     - workflow: Standard workflows (@workflow decorator)
@@ -65,6 +65,7 @@ class Workflow(Base):
     parameters_schema: Mapped[list] = mapped_column(JSONB, default=[])
     tags: Mapped[list] = mapped_column(JSONB, default=[])
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_orphaned: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     # Endpoint configuration

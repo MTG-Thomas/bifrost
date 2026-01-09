@@ -4,8 +4,7 @@ Schedules Router
 Lists scheduled workflows from the database with enriched schedule metadata.
 
 Note: Schedules are read from the workflows database table (schedule column)
-which is populated by the discovery watcher. This avoids expensive file system
-scans on every request.
+which is populated when workflow files are written via the API or git sync.
 
 Manual triggering of scheduled workflows should use POST /api/workflows/execute.
 Automatic scheduled execution is handled by the cron_scheduler job via RabbitMQ.

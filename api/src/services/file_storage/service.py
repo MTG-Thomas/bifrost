@@ -228,21 +228,21 @@ class FileStorageService:
         self,
         path: str,
         status: GitStatus,
-        commit_hash: str | None = None,
+        github_sha: str | None = None,
     ) -> None:
         """Update git status for a file."""
-        await self._git_tracker.update_git_status(path, status, commit_hash)
+        await self._git_tracker.update_git_status(path, status, github_sha)
 
     async def bulk_update_git_status(
         self,
         status: GitStatus,
-        commit_hash: str | None = None,
+        github_sha: str | None = None,
         paths: list[str] | None = None,
     ) -> int:
         """Bulk update git status for files."""
         return await self._git_tracker.bulk_update_git_status(
             status=status,
-            commit_hash=commit_hash,
+            github_sha=github_sha,
             paths=paths,
         )
 

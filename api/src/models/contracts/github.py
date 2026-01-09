@@ -52,9 +52,8 @@ class ValidateTokenRequest(BaseModel):
 
 
 class GitHubConfigRequest(BaseModel):
-    """Request to configure GitHub integration - will always replace workspace with remote"""
+    """Request to configure GitHub integration - token must already be saved via /validate"""
     repo_url: str = Field(..., min_length=1, description="GitHub repository URL (e.g., https://github.com/user/repo)")
-    auth_token: str = Field(..., description="GitHub personal access token")
     branch: str = Field(default="main", description="Branch to sync with")
 
     model_config = ConfigDict(from_attributes=True)
@@ -213,10 +212,13 @@ class PullFromGitHubRequest(BaseModel):
 
 
 class PullFromGitHubResponse(BaseModel):
-    """Response after pulling from GitHub"""
-    success: bool = Field(..., description="Whether pull succeeded")
+    """Response after queueing a pull from GitHub"""
+    success: bool = Field(..., description="Whether job was queued successfully")
+    job_id: str | None = Field(default=None, description="Job ID for tracking (when queued)")
+    status: str | None = Field(default=None, description="Status: 'queued', 'success', 'error'")
     updated_files: list[str] = Field(default_factory=list, description="List of updated file paths")
     conflicts: list[ConflictInfo] = Field(default_factory=list, description="List of conflicts (if any)")
+    unresolved_refs: list["UnresolvedRefInfo"] = Field(default_factory=list, description="Workflow refs that couldn't be resolved")
     error: str | None = Field(default=None, description="Error message if pull failed")
 
     model_config = ConfigDict(from_attributes=True)
@@ -238,10 +240,45 @@ class GitHubSyncResponse(BaseModel):
 
 
 class GitHubSetupResponse(BaseModel):
-    """Response after queueing GitHub setup job"""
-    job_id: str = Field(..., description="Job ID for tracking the setup operation")
-    notification_id: str = Field(..., description="Notification ID for watching progress via WebSocket")
-    status: str = Field(default="queued", description="Job status (queued)")
+    """Response after configuring GitHub integration"""
+    job_id: str | None = Field(default=None, description="Job ID for tracking the setup operation (deprecated)")
+    notification_id: str | None = Field(default=None, description="Notification ID for watching progress via WebSocket (deprecated)")
+    status: str = Field(default="configured", description="Configuration status")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UnresolvedRefInfo(BaseModel):
+    """Information about an unresolved workflow reference"""
+    file: str = Field(..., description="File containing the unresolved reference")
+    field: str = Field(..., description="Field path containing the reference")
+    ref: str = Field(..., description="The path::function_name reference that couldn't be resolved")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RefResolution(BaseModel):
+    """Resolution for a single unresolved reference"""
+    file: str = Field(..., description="File containing the unresolved reference")
+    field: str = Field(..., description="Field path containing the reference")
+    ref: str = Field(..., description="The original path::function_name reference")
+    resolved_workflow_id: str = Field(..., description="UUID of the workflow to resolve to")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ResolveRefsRequest(BaseModel):
+    """Request to resolve unresolved workflow references"""
+    resolutions: list[RefResolution] = Field(..., description="List of reference resolutions")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ResolveRefsResponse(BaseModel):
+    """Response after resolving workflow references"""
+    success: bool = Field(..., description="Whether all resolutions were applied successfully")
+    files_updated: int = Field(default=0, description="Number of files updated")
+    errors: list[str] = Field(default_factory=list, description="Any errors encountered")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -350,5 +387,222 @@ class CommitHistoryResponse(BaseModel):
     commits: list[CommitInfo] = Field(default_factory=list, description="List of commits (newest first)")
     total_commits: int = Field(..., description="Total number of commits in the entire history")
     has_more: bool = Field(..., description="Whether there are more commits to load")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ==================== API-BASED SYNC MODELS ====================
+
+
+class SyncActionType(str, Enum):
+    """Type of sync action."""
+    ADD = "add"
+    MODIFY = "modify"
+    DELETE = "delete"
+
+
+class SyncAction(BaseModel):
+    """A single sync action (pull or push)."""
+    path: str = Field(..., description="File path relative to workspace root")
+    action: SyncActionType = Field(..., description="Type of action")
+    sha: str | None = Field(default=None, description="Git blob SHA (for pull actions)")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SyncConflictInfo(BaseModel):
+    """Information about a conflict between local and remote."""
+    path: str = Field(..., description="File path with conflict")
+    local_content: str | None = Field(default=None, description="Local content")
+    remote_content: str | None = Field(default=None, description="Remote content")
+    local_sha: str = Field(..., description="SHA of local content")
+    remote_sha: str = Field(..., description="SHA of remote content")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkflowReference(BaseModel):
+    """A reference to an entity that uses a workflow."""
+    type: str = Field(..., description="Entity type (form, app, agent)")
+    id: str = Field(..., description="Entity ID")
+    name: str = Field(..., description="Entity name")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrphanInfo(BaseModel):
+    """Information about a workflow that will become orphaned."""
+    workflow_id: str = Field(..., description="Workflow UUID")
+    workflow_name: str = Field(..., description="Workflow display name")
+    function_name: str = Field(..., description="Python function name")
+    last_path: str = Field(..., description="Last known file path")
+    used_by: list[WorkflowReference] = Field(
+        default_factory=list,
+        description="Entities using this workflow"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SyncPreviewResponse(BaseModel):
+    """Preview of sync operations before execution."""
+    to_pull: list[SyncAction] = Field(
+        default_factory=list,
+        description="Files to pull from GitHub"
+    )
+    to_push: list[SyncAction] = Field(
+        default_factory=list,
+        description="Files to push to GitHub"
+    )
+    conflicts: list[SyncConflictInfo] = Field(
+        default_factory=list,
+        description="Files with conflicts"
+    )
+    will_orphan: list[OrphanInfo] = Field(
+        default_factory=list,
+        description="Workflows that will become orphaned"
+    )
+    is_empty: bool = Field(
+        default=False,
+        description="True if no changes to sync"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SyncExecuteRequest(BaseModel):
+    """Request to execute sync with conflict resolutions.
+
+    Note: The API returns a job_id in the response. The client should subscribe
+    to WebSocket channel git:{job_id} AFTER receiving the response to receive
+    streaming progress and completion messages.
+    """
+    conflict_resolutions: dict[str, Literal["keep_local", "keep_remote"]] = Field(
+        default_factory=dict,
+        description="Resolution for each conflicted file path"
+    )
+    confirm_orphans: bool = Field(
+        default=False,
+        description="User acknowledges orphan workflows"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SyncExecuteResponse(BaseModel):
+    """Result of sync execution (queued job)."""
+    success: bool = Field(..., description="Whether job was queued successfully")
+    job_id: str | None = Field(default=None, description="Job ID for tracking (when queued)")
+    status: str = Field(default="queued", description="Status: 'queued', 'success', 'error'")
+    # These fields are populated via WebSocket completion message, not initial response
+    pulled: int = Field(default=0, description="Number of files pulled")
+    pushed: int = Field(default=0, description="Number of files pushed")
+    orphaned_workflows: list[str] = Field(
+        default_factory=list,
+        description="IDs of workflows marked as orphaned"
+    )
+    commit_sha: str | None = Field(
+        default=None,
+        description="SHA of created commit (if any)"
+    )
+    error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ==================== ORPHAN MANAGEMENT MODELS ====================
+
+
+class OrphanedWorkflowInfo(BaseModel):
+    """Orphaned workflow with metadata and references."""
+
+    id: str = Field(..., description="Workflow UUID")
+    name: str = Field(..., description="Workflow display name")
+    function_name: str = Field(..., description="Python function name")
+    last_path: str = Field(..., description="Last known file path")
+    code: str | None = Field(default=None, description="Stored code snapshot")
+    used_by: list[WorkflowReference] = Field(
+        default_factory=list,
+        description="Entities using this workflow"
+    )
+    orphaned_at: datetime | None = Field(default=None, description="When workflow became orphaned")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrphanedWorkflowsResponse(BaseModel):
+    """Response containing list of orphaned workflows."""
+
+    workflows: list[OrphanedWorkflowInfo] = Field(
+        default_factory=list,
+        description="List of orphaned workflows"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CompatibleReplacement(BaseModel):
+    """Potential replacement for an orphaned workflow."""
+
+    path: str = Field(..., description="File path containing the replacement function")
+    function_name: str = Field(..., description="Function name")
+    signature: str = Field(..., description="Human-readable function signature")
+    compatibility: Literal["exact", "compatible"] = Field(
+        ...,
+        description="Compatibility level: exact (perfect match) or compatible (can be used)"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CompatibleReplacementsResponse(BaseModel):
+    """Response containing compatible replacements for an orphaned workflow."""
+
+    replacements: list[CompatibleReplacement] = Field(
+        default_factory=list,
+        description="List of compatible replacement functions"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReplaceWorkflowRequest(BaseModel):
+    """Request to replace an orphaned workflow with content from existing file."""
+
+    source_path: str = Field(..., min_length=1, description="Path to file containing replacement function")
+    function_name: str = Field(..., min_length=1, description="Name of function to use as replacement")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReplaceWorkflowResponse(BaseModel):
+    """Response after replacing an orphaned workflow."""
+
+    success: bool = Field(..., description="Whether replacement succeeded")
+    workflow_id: str = Field(..., description="UUID of the updated workflow")
+    new_path: str = Field(..., description="New file path for the workflow")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RecreateFileResponse(BaseModel):
+    """Response after recreating file from orphaned workflow's code."""
+
+    success: bool = Field(..., description="Whether file recreation succeeded")
+    workflow_id: str = Field(..., description="UUID of the workflow")
+    path: str = Field(..., description="Path where file was recreated")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DeactivateWorkflowResponse(BaseModel):
+    """Response after deactivating an orphaned workflow."""
+
+    success: bool = Field(..., description="Whether deactivation succeeded")
+    workflow_id: str = Field(..., description="UUID of the deactivated workflow")
+    warning: str | None = Field(
+        default=None,
+        description="Warning message if workflow is still referenced by other entities"
+    )
 
     model_config = ConfigDict(from_attributes=True)

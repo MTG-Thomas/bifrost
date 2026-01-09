@@ -148,7 +148,7 @@ export function DataTableComponent({
 				const result = context.workflow[workflowKey];
 				if (result && typeof result === "object") {
 					data = getNestedValue(
-						result as Record<string, unknown>,
+						result as unknown as Record<string, unknown>,
 						nestedPath,
 					);
 				}

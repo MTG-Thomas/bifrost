@@ -2,43 +2,41 @@
 GitHub Integration Router
 
 Git/GitHub integration for workspace sync.
-Provides endpoints for connecting to repos, pulling, pushing, and syncing.
+Provides endpoints for connecting to repos, syncing, and configuration management.
 """
 
 import logging
-
-from uuid import uuid4
+import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
 
 from src.core.auth import Context, CurrentSuperuser
-from src.jobs.rabbitmq import publish_message
+from src.core.database import DbSession
+from src.core.pubsub import publish_git_sync_request
 from src.models import (
     CommitHistoryResponse,
+    CommitInfo,
     CreateRepoRequest,
     CreateRepoResponse,
-    DetectedRepoInfo,
-    DiscardCommitRequest,
-    DiscardUnpushedCommitsResponse,
     GitHubBranchesResponse,
+    GitHubBranchInfo,
     GitHubConfigRequest,
     GitHubConfigResponse,
+    GitHubRepoInfo,
     GitHubReposResponse,
     GitHubSetupResponse,
     GitRefreshStatusResponse,
-    PullFromGitHubRequest,
-    PullFromGitHubResponse,
-    PushToGitHubRequest,
-    PushToGitHubResponse,
+    SyncExecuteRequest,
+    SyncExecuteResponse,
+    SyncPreviewResponse,
     ValidateTokenRequest,
-    WorkspaceAnalysisResponse,
 )
-from src.models.contracts.notifications import (
-    NotificationCategory,
-    NotificationCreate,
+from src.services.github_api import GitHubAPIClient, GitHubAPIError
+from src.services.github_config import (
+    delete_github_config,
+    get_github_config,
+    save_github_config,
 )
-from src.services.git_integration import GitIntegrationService
-from src.services.notification_service import get_notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -50,469 +48,11 @@ router = APIRouter(prefix="/api/github", tags=["GitHub"])
 # =============================================================================
 
 
-def get_git_service() -> GitIntegrationService:
-    """Get or create git integration service."""
-    return GitIntegrationService()
-
-
-# =============================================================================
-# HTTP Endpoints
-# =============================================================================
-
-
-@router.get(
-    "/status",
-    response_model=GitRefreshStatusResponse,
-    summary="Get GitHub sync status",
-    description="Get current GitHub repository connection and sync status",
-)
-async def get_github_status(
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> GitRefreshStatusResponse:
-    """
-    Get GitHub sync status.
-
-    Returns:
-        Current sync status and repository information
-    """
-    try:
-        git_service = get_git_service()
-
-        # Use get_repo_info to get repository status
-        status_dict = await git_service.get_repo_info(ctx, fetch=False)
-
-        logger.info("GitHub status retrieved")
-
-        return GitRefreshStatusResponse(**status_dict)
-
-    except Exception as e:
-        logger.error(f"Error getting GitHub status: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get GitHub status",
-        )
-
-
-@router.post(
-    "/refresh",
-    response_model=GitRefreshStatusResponse,
-    summary="Refresh Git status",
-    description="Get complete Git status including local changes, conflicts, and commit history",
-)
-async def refresh_github_status(
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> GitRefreshStatusResponse:
-    """
-    Refresh Git status.
-
-    Returns complete status including changed files, conflicts, ahead/behind counts,
-    and commit history. Does not fetch from remote by default (fast operation).
-
-    Returns:
-        Complete Git status response
-    """
-    try:
-        git_service = get_git_service()
-
-        # Call refresh_status directly to get complete status including changed files
-        status_dict = await git_service.refresh_status(ctx, fetch=False)
-
-        logger.info("GitHub status refreshed")
-
-        return GitRefreshStatusResponse(**status_dict)
-
-    except Exception as e:
-        logger.error(f"Error refreshing GitHub status: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to refresh GitHub status",
-        )
-
-
-@router.post(
-    "/pull",
-    response_model=PullFromGitHubResponse,
-    summary="Pull from GitHub",
-    description="Pull latest changes from the connected GitHub repository",
-)
-async def pull_from_github(
-    ctx: Context,
-    user: CurrentSuperuser,
-    request: PullFromGitHubRequest | None = None,
-) -> PullFromGitHubResponse:
-    """
-    Pull latest changes from GitHub.
-
-    Returns:
-        Pull response with pull status and any conflicts
-    """
-    try:
-        git_service = get_git_service()
-
-        # Pull from repository - pull() returns a dict with result info
-        connection_id = request.connection_id if request else None
-        result = await git_service.pull(ctx, connection_id)
-
-        logger.info("Pulled from GitHub")
-
-        return PullFromGitHubResponse(**result)
-
-    except Exception as e:
-        logger.error(f"Error pulling from GitHub: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to pull from GitHub",
-        )
-
-
-@router.post(
-    "/push",
-    response_model=PushToGitHubResponse,
-    summary="Push to GitHub",
-    description="Push local changes to the connected GitHub repository",
-)
-async def push_to_github(
-    ctx: Context,
-    user: CurrentSuperuser,
-    request: PushToGitHubRequest,
-) -> PushToGitHubResponse:
-    """
-    Push local changes to GitHub.
-
-    Args:
-        request: Commit message and author information
-
-    Returns:
-        Push response with confirmation
-    """
-    try:
-        git_service = get_git_service()
-
-        # Commit and push in one operation
-        result = await git_service.commit_and_push(
-            ctx,
-            message=request.message or "Updated from Bifrost",
-            connection_id=None
-        )
-
-        return PushToGitHubResponse(
-            success=result.get("success", True),
-            error=result.get("error")
-        )
-
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-    except Exception as e:
-        logger.error(f"Error pushing to GitHub: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to push to GitHub",
-        )
-
-
-@router.get(
-    "/changes",
-    response_model=GitRefreshStatusResponse,
-    summary="Get local changes",
-    description="List local changes not yet pushed to GitHub",
-)
-async def get_changes(
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> GitRefreshStatusResponse:
-    """
-    Get list of local changes.
-
-    Returns:
-        Local file changes not yet pushed
-    """
-    try:
-        git_service = get_git_service()
-
-        # Use get_repo_info to get complete status including changes
-        status_dict = await git_service.get_repo_info(ctx, fetch=False)
-
-        logger.info("Retrieved local changes")
-
-        return GitRefreshStatusResponse(**status_dict)
-
-    except Exception as e:
-        logger.error(f"Error getting changes: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get changes",
-        )
-
-
-@router.post(
-    "/init",
-    response_model=GitRefreshStatusResponse,
-    summary="Initialize Git repository",
-    description="Initialize workspace as a Git repository with remote (stub)",
-)
-async def init_repo(
-    request: GitHubConfigRequest,
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> GitRefreshStatusResponse:
-    """
-    Initialize the workspace as a Git repository.
-
-    This is a stub endpoint for API compatibility.
-    """
-    try:
-        git_service = get_git_service()
-
-        # Get token from request (should be provided)
-        if not request.auth_token:
-            raise ValueError("auth_token is required to initialize repository")
-
-        # Initialize repository with the provided config
-        await git_service.initialize_repo(
-            token=request.auth_token,
-            repo_url=request.repo_url,
-            branch=request.branch or "main",
-        )
-
-        logger.info(f"Initialized git repository: {request.repo_url}")
-
-        # Get current status after initialization
-        status_dict = await git_service.get_repo_info(ctx, fetch=False)
-        return GitRefreshStatusResponse(**status_dict)
-
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-    except Exception as e:
-        logger.error(f"Error initializing repo: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to initialize repository",
-        )
-
-
-@router.post(
-    "/commit",
-    summary="Commit local changes",
-    description="Commit staged changes with a message (stub)",
-)
-async def commit_changes(
-    request: PushToGitHubRequest,
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> dict:
-    """
-    Commit local changes.
-
-    This is a stub endpoint for API compatibility.
-    The push endpoint handles commit + push together.
-    """
-    try:
-        git_service = get_git_service()
-
-        # Get changes
-        changes = await git_service.get_changes()
-
-        if not changes:
-            return {
-                "message": "No changes to commit",
-                "commit_hash": None,
-            }
-
-        # Commit the changes
-        result = await git_service.commit(message=request.message or "Update from Bifrost")
-
-        logger.info(f"Committed {len(changes)} changes")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error committing changes: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to commit changes",
-        )
-
-
-@router.get(
-    "/commits",
-    response_model=CommitHistoryResponse,
-    summary="Get commit history",
-    description="Get commit history with pagination",
-)
-async def get_commits(
-    ctx: Context,
-    user: CurrentSuperuser,
-    limit: int = Query(20, description="Number of commits to return"),
-    offset: int = Query(0, description="Offset for pagination"),
-) -> CommitHistoryResponse:
-    """
-    Get commit history with pagination support.
-
-    Returns commit history with pushed/unpushed status and pagination info.
-    """
-    try:
-        git_service = get_git_service()
-
-        result = await git_service.get_commit_history(
-            limit=limit,
-            offset=offset
-        )
-
-        return CommitHistoryResponse(**result)
-
-    except Exception as e:
-        logger.error(f"Error getting commits: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get commit history",
-        )
-
-
-@router.get(
-    "/conflicts",
-    summary="Get merge conflicts",
-    description="List files with merge conflicts (stub)",
-)
-async def get_conflicts(
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> dict:
-    """
-    Get files with merge conflicts.
-
-    This is a stub endpoint for API compatibility.
-    """
-    try:
-        git_service = get_git_service()
-
-        conflicts = await git_service.get_conflicts()
-
-        return {
-            "conflicts": conflicts,
-            "count": len(conflicts),
-        }
-
-    except Exception as e:
-        logger.error(f"Error getting conflicts: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get conflicts",
-        )
-
-
-@router.post(
-    "/abort-merge",
-    summary="Abort merge",
-    description="Abort current merge operation (stub)",
-)
-async def abort_merge(
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> dict:
-    """
-    Abort a merge operation.
-
-    This is a stub endpoint for API compatibility.
-    """
-    try:
-        git_service = get_git_service()
-
-        await git_service.abort_merge()
-
-        logger.info("Aborted merge operation")
-
-        return {
-            "message": "Merge aborted successfully",
-            "status": "success",
-        }
-
-    except Exception as e:
-        logger.error(f"Error aborting merge: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to abort merge",
-        )
-
-
-@router.post(
-    "/discard-unpushed",
-    response_model=DiscardUnpushedCommitsResponse,
-    summary="Discard unpushed commits",
-    description="Discard all unpushed commits and reset to remote",
-)
-async def discard_unpushed_commits(
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> DiscardUnpushedCommitsResponse:
-    """
-    Discard all unpushed commits.
-
-    Resets the local branch to match the remote tracking branch,
-    discarding any local commits that haven't been pushed.
-
-    Returns:
-        Response with list of discarded commits
-    """
-    try:
-        git_service = get_git_service()
-
-        result = await git_service.discard_unpushed_commits(ctx)
-
-        logger.info(f"Discarded {len(result.get('discarded_commits', []))} unpushed commits")
-
-        return DiscardUnpushedCommitsResponse(**result)
-
-    except Exception as e:
-        logger.error(f"Error discarding unpushed commits: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to discard unpushed commits",
-        )
-
-
-@router.post(
-    "/discard-commit",
-    response_model=DiscardUnpushedCommitsResponse,
-    summary="Discard specific commit",
-    description="Discard a specific commit and all newer commits",
-)
-async def discard_commit(
-    ctx: Context,
-    user: CurrentSuperuser,
-    request: DiscardCommitRequest,
-) -> DiscardUnpushedCommitsResponse:
-    """
-    Discard a specific commit and all newer commits.
-
-    Resets the branch to the parent of the specified commit,
-    effectively removing the commit and all commits after it.
-
-    Returns:
-        Response with list of discarded commits
-    """
-    try:
-        git_service = get_git_service()
-
-        result = await git_service.discard_commit(request.commit_sha, ctx)
-
-        logger.info(f"Discarded commit {request.commit_sha} and {len(result.get('discarded_commits', []))} commits")
-
-        return DiscardUnpushedCommitsResponse(**result)
-
-    except Exception as e:
-        logger.error(f"Error discarding commit: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to discard commit",
-        )
+def _extract_repo_from_url(repo_url: str) -> str:
+    """Extract owner/repo from GitHub URL."""
+    if repo_url.startswith("https://github.com/"):
+        return repo_url.replace("https://github.com/", "").rstrip(".git")
+    return repo_url
 
 
 # =============================================================================
@@ -526,34 +66,30 @@ async def discard_commit(
     summary="Get GitHub configuration",
     description="Retrieve current GitHub integration configuration",
 )
-async def get_github_config(
+async def get_config_endpoint(
     ctx: Context,
     user: CurrentSuperuser,
+    db: DbSession,
 ) -> GitHubConfigResponse:
     """Get current GitHub configuration."""
     try:
-        git_service = get_git_service()
+        config = await get_github_config(db, ctx.org_id)
 
-        # Check if configured by trying to get config
-        github_config = await git_service._get_github_config(ctx)
-
-        if not github_config:
-            # No configuration exists yet
+        if not config:
             return GitHubConfigResponse(
                 configured=False,
                 token_saved=False,
                 repo_url=None,
                 branch=None,
-                backup_path=None
+                backup_path=None,
             )
 
-        # Return configuration
         return GitHubConfigResponse(
-            configured=True,
-            token_saved=True,
-            repo_url=github_config.get("repo_url"),
-            branch=github_config.get("branch"),
-            backup_path=None
+            configured=bool(config.repo_url),
+            token_saved=bool(config.token),
+            repo_url=config.repo_url,
+            branch=config.branch,
+            backup_path=None,
         )
 
     except Exception as e:
@@ -561,6 +97,96 @@ async def get_github_config(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get GitHub configuration",
+        )
+
+
+@router.get(
+    "/status",
+    response_model=GitRefreshStatusResponse,
+    summary="Get GitHub sync status",
+    description="Get current GitHub repository connection and sync status",
+)
+async def get_github_status(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> GitRefreshStatusResponse:
+    """
+    Get current GitHub status for the Source Control panel.
+
+    Returns basic status information about GitHub configuration.
+    For detailed sync preview (files to pull/push), use GET /api/github/sync.
+    """
+    from datetime import datetime
+
+    try:
+        config = await get_github_config(db, ctx.org_id)
+
+        if not config or not config.token:
+            # Not configured
+            return GitRefreshStatusResponse(
+                success=True,
+                initialized=False,
+                configured=False,
+                current_branch=None,
+                changed_files=[],
+                conflicts=[],
+                merging=False,
+                commits_ahead=0,
+                commits_behind=0,
+                commit_history=[],
+                last_synced=datetime.utcnow().isoformat(),
+                error=None,
+            )
+
+        if not config.repo_url:
+            # Token saved but repo not configured
+            return GitRefreshStatusResponse(
+                success=True,
+                initialized=False,
+                configured=False,
+                current_branch=None,
+                changed_files=[],
+                conflicts=[],
+                merging=False,
+                commits_ahead=0,
+                commits_behind=0,
+                commit_history=[],
+                last_synced=datetime.utcnow().isoformat(),
+                error=None,
+            )
+
+        # Fully configured
+        return GitRefreshStatusResponse(
+            success=True,
+            initialized=True,
+            configured=True,
+            current_branch=config.branch,
+            changed_files=[],
+            conflicts=[],
+            merging=False,
+            commits_ahead=0,
+            commits_behind=0,
+            commit_history=[],
+            last_synced=datetime.utcnow().isoformat(),
+            error=None,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get GitHub status: {e}", exc_info=True)
+        return GitRefreshStatusResponse(
+            success=False,
+            initialized=False,
+            configured=False,
+            current_branch=None,
+            changed_files=[],
+            conflicts=[],
+            merging=False,
+            commits_ahead=0,
+            commits_behind=0,
+            commit_history=[],
+            last_synced=datetime.utcnow().isoformat(),
+            error=str(e),
         )
 
 
@@ -574,72 +200,59 @@ async def validate_github_token(
     request: ValidateTokenRequest,
     ctx: Context,
     user: CurrentSuperuser,
+    db: DbSession,
 ) -> GitHubReposResponse:
     """Validate GitHub token, save to database, and list repositories."""
     try:
         if not request.token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub token required"
+                detail="GitHub token required",
             )
 
         logger.info("Validating GitHub token")
 
         # Test the token by listing repositories
-        git_service = get_git_service()
-        repositories = git_service.list_repositories(request.token)
+        client = GitHubAPIClient(request.token)
+        repo_list = await client.list_repositories()
 
-        # Detect existing Git repository configuration
-        detected_repo = None
-        detected_info = git_service.get_detected_repo_info()
-
-        if detected_info:
-            # Verify token has access to the detected repo
-            repo_full_name = detected_info["repo_full_name"]
-            has_access = any(r.full_name == repo_full_name for r in repositories)
-
-            if has_access:
-                detected_repo = DetectedRepoInfo(
-                    full_name=repo_full_name,
-                    branch=detected_info["branch"]
-                )
-                logger.info(f"Detected existing repo: {repo_full_name} (branch: {detected_info['branch']})")
-
-                # Save token with detected repo info
-                await git_service._save_github_config(
-                    context=ctx,
-                    repo_url=detected_info["repo_url"],
-                    token=request.token,
-                    branch=detected_info["branch"],
-                    updated_by=user.email
-                )
-            else:
-                logger.warning(f"Detected repo {repo_full_name} but token doesn't have access")
-                # Save token without repo info (repo_url=None indicates not configured)
-                await git_service._save_github_config(
-                    context=ctx,
-                    repo_url=None,
-                    token=request.token,
-                    branch="main",
-                    updated_by=user.email
-                )
-        else:
-            # No existing repo detected, save token only (repo_url=None indicates not configured)
-            await git_service._save_github_config(
-                context=ctx,
-                repo_url=None,
-                token=request.token,
-                branch="main",
-                updated_by=user.email
+        # Convert to GitHubRepoInfo models
+        repositories = [
+            GitHubRepoInfo(
+                name=r["name"],
+                full_name=r["full_name"],
+                description=r["description"],
+                url=r["url"],
+                private=r["private"],
             )
+            for r in repo_list
+        ]
+
+        # Save token to database (repo_url=None indicates not configured yet)
+        await save_github_config(
+            db=db,
+            org_id=ctx.org_id,
+            token=request.token,
+            repo_url=None,
+            branch="main",
+            updated_by=user.email,
+        )
 
         logger.info("GitHub token validated and saved successfully")
 
         return GitHubReposResponse(
             repositories=repositories,
-            detected_repo=detected_repo
+            detected_repo=None,
         )
 
+    except GitHubAPIError as e:
+        logger.error(f"GitHub API error validating token: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid GitHub token: {e.message}",
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to validate GitHub token: {e}", exc_info=True)
         raise HTTPException(
@@ -652,90 +265,62 @@ async def validate_github_token(
     "/configure",
     response_model=GitHubSetupResponse,
     summary="Configure GitHub integration",
-    description="Queue GitHub repository setup job. Watch notification channel for progress.",
+    description="Save GitHub repository configuration. Syncing happens via /sync endpoints.",
 )
 async def configure_github(
     request: GitHubConfigRequest,
     ctx: Context,
     user: CurrentSuperuser,
+    db: DbSession,
 ) -> GitHubSetupResponse:
     """
-    Configure GitHub integration (async).
+    Configure GitHub integration.
 
-    This queues a background job to:
-    1. Clone the repository from GitHub
-    2. Upload workspace files to S3
-    3. Index files in the database
-
-    Returns a job_id and notification_id for tracking progress via WebSocket.
-    Subscribe to notification:{user_id} channel to receive updates.
+    Saves the GitHub repository configuration (repo URL, branch) to the database.
+    Use the /sync endpoints to pull/push changes.
     """
     try:
-        logger.info(f"Queueing GitHub setup for repo: {request.repo_url}")
+        # Normalize repo_url - accept both full URL and owner/repo format
+        repo_url = request.repo_url.strip()
+        if not repo_url.startswith("http"):
+            repo_url = f"https://github.com/{repo_url}"
+
+        logger.info(f"Configuring GitHub for repo: {repo_url}")
 
         # Get existing config to retrieve token
-        git_service = get_git_service()
-        existing_config = await git_service._get_github_config(ctx)
+        existing_config = await get_github_config(db, ctx.org_id)
 
-        if not existing_config or not existing_config.get("token"):
+        if not existing_config or not existing_config.token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub token not found. Please validate your token first."
+                detail="GitHub token not found. Please validate your token first.",
             )
 
-        token = existing_config["token"]
-
-        # Create progress notification
-        notification_service = get_notification_service()
-        notification = await notification_service.create_notification(
-            user_id=str(user.user_id),
-            request=NotificationCreate(
-                category=NotificationCategory.GITHUB_SETUP,
-                title="Setting up GitHub",
-                description="Preparing to clone repository...",
-                percent=0,
-                metadata={
-                    "repo_url": request.repo_url,
-                    "branch": request.branch or "main",
-                },
-            ),
-            for_admins=True,  # Also notify platform admins
+        # Save the updated configuration
+        await save_github_config(
+            db=db,
+            org_id=ctx.org_id,
+            token=existing_config.token,
+            repo_url=repo_url,
+            branch=request.branch or "main",
+            updated_by=user.email,
         )
 
-        # Generate job ID
-        job_id = str(uuid4())
-
-        # Publish job to queue (use scope which is "GLOBAL" for platform-level)
-        await publish_message(
-            queue_name="github-setup-jobs",
-            message={
-                "type": "github_setup",
-                "job_id": job_id,
-                "notification_id": notification.id,
-                "org_id": ctx.scope,  # "GLOBAL" for platform admins, org_id for org users
-                "user_id": str(user.user_id),
-                "user_email": user.email,
-                "repo_url": request.repo_url,
-                "branch": request.branch or "main",
-                "token": token,
-            },
-        )
-
-        logger.info(f"GitHub setup job queued: {job_id}")
+        logger.info(f"GitHub configuration saved for repo: {repo_url}")
 
         return GitHubSetupResponse(
-            job_id=job_id,
-            notification_id=notification.id,
-            status="queued",
+            job_id=None,
+            notification_id=None,
+            status="configured",
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to queue GitHub setup: {e}", exc_info=True)
+        logger.error(f"Failed to configure GitHub: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to queue GitHub setup: {str(e)}",
+            detail=f"Failed to configure GitHub: {str(e)}",
         )
 
 
@@ -748,23 +333,40 @@ async def configure_github(
 async def list_github_repos(
     ctx: Context,
     user: CurrentSuperuser,
+    db: DbSession,
 ) -> GitHubReposResponse:
     """List user's GitHub repositories using saved token."""
     try:
-        # Get token from database
-        git_service = get_git_service()
-        github_config = await git_service._get_github_config(ctx)
+        config = await get_github_config(db, ctx.org_id)
 
-        if not github_config or not github_config.get("token"):
+        if not config or not config.token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub token not found. Please validate your token first."
+                detail="GitHub token not found. Please validate your token first.",
             )
 
-        repositories = git_service.list_repositories(github_config["token"])
+        client = GitHubAPIClient(config.token)
+        repo_list = await client.list_repositories()
+
+        repositories = [
+            GitHubRepoInfo(
+                name=r["name"],
+                full_name=r["full_name"],
+                description=r["description"],
+                url=r["url"],
+                private=r["private"],
+            )
+            for r in repo_list
+        ]
 
         return GitHubReposResponse(repositories=repositories, detected_repo=None)
 
+    except GitHubAPIError as e:
+        logger.error(f"GitHub API error listing repositories: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub API error: {e.message}",
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -784,6 +386,7 @@ async def list_github_repos(
 async def list_github_branches(
     ctx: Context,
     user: CurrentSuperuser,
+    db: DbSession,
     repo: str = Query(..., description="Repository full name (owner/repo)"),
 ) -> GitHubBranchesResponse:
     """List branches in a repository using saved token."""
@@ -791,23 +394,37 @@ async def list_github_branches(
         if not repo:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Repository name required"
+                detail="Repository name required",
             )
 
-        # Get token from database
-        git_service = get_git_service()
-        github_config = await git_service._get_github_config(ctx)
+        config = await get_github_config(db, ctx.org_id)
 
-        if not github_config or not github_config.get("token"):
+        if not config or not config.token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub token not found. Please validate your token first."
+                detail="GitHub token not found. Please validate your token first.",
             )
 
-        branches = git_service.list_branches(github_config["token"], repo)
+        client = GitHubAPIClient(config.token)
+        branch_list = await client.list_branches(repo)
+
+        branches = [
+            GitHubBranchInfo(
+                name=b["name"],
+                protected=b["protected"],
+                commit_sha=b["commit_sha"],
+            )
+            for b in branch_list
+        ]
 
         return GitHubBranchesResponse(branches=branches)
 
+    except GitHubAPIError as e:
+        logger.error(f"GitHub API error listing branches: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub API error: {e.message}",
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -815,36 +432,6 @@ async def list_github_branches(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to list branches",
-        )
-
-
-@router.post(
-    "/analyze-workspace",
-    response_model=WorkspaceAnalysisResponse,
-    summary="Analyze workspace",
-    description="Analyze workspace for potential conflicts before configuring GitHub",
-)
-async def analyze_workspace(
-    request: GitHubConfigRequest,
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> WorkspaceAnalysisResponse:
-    """Analyze workspace before configuring GitHub."""
-    try:
-        git_service = get_git_service()
-        result = await git_service.analyze_workspace(
-            token=request.auth_token,
-            repo_url=request.repo_url,
-            branch=request.branch
-        )
-
-        return WorkspaceAnalysisResponse(**result)
-
-    except Exception as e:
-        logger.error(f"Failed to analyze workspace: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to analyze workspace",
         )
 
 
@@ -858,29 +445,34 @@ async def create_github_repository(
     request: CreateRepoRequest,
     ctx: Context,
     user: CurrentSuperuser,
+    db: DbSession,
 ) -> CreateRepoResponse:
     """Create new GitHub repository."""
     try:
-        # Get token from database
-        git_service = get_git_service()
-        github_config = await git_service._get_github_config(ctx)
+        config = await get_github_config(db, ctx.org_id)
 
-        if not github_config or not github_config.get("token"):
+        if not config or not config.token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub token not found. Please validate your token first."
+                detail="GitHub token not found. Please validate your token first.",
             )
 
-        result = git_service.create_repository(
-            token=github_config["token"],
+        client = GitHubAPIClient(config.token)
+        result = await client.create_repository(
             name=request.name,
             description=request.description,
             private=request.private,
-            organization=request.organization
+            organization=request.organization,
         )
 
         return CreateRepoResponse(**result)
 
+    except GitHubAPIError as e:
+        logger.error(f"GitHub API error creating repository: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create repository: {e.message}",
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -899,11 +491,11 @@ async def create_github_repository(
 async def disconnect_github(
     ctx: Context,
     user: CurrentSuperuser,
+    db: DbSession,
 ) -> dict:
     """Disconnect GitHub integration."""
     try:
-        git_service = get_git_service()
-        await git_service._delete_github_config(ctx)
+        await delete_github_config(db, ctx.org_id)
 
         logger.info("GitHub integration disconnected")
 
@@ -914,4 +506,283 @@ async def disconnect_github(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to disconnect GitHub",
+        )
+
+
+# =============================================================================
+# Commit History Endpoint
+# =============================================================================
+
+
+@router.get(
+    "/commits",
+    response_model=CommitHistoryResponse,
+    summary="Get commit history",
+    description="Get commit history with pagination",
+)
+async def get_commits(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+    limit: int = Query(20, description="Number of commits to return"),
+    offset: int = Query(0, description="Offset for pagination"),
+) -> CommitHistoryResponse:
+    """
+    Get commit history with pagination support.
+
+    Uses GitHub API directly to fetch commits from the configured repository.
+    """
+    try:
+        config = await get_github_config(db, ctx.org_id)
+
+        if not config or not config.token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GitHub token not found. Please validate your token first.",
+            )
+
+        if not config.repo_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GitHub repository not configured.",
+            )
+
+        repo = _extract_repo_from_url(config.repo_url)
+        client = GitHubAPIClient(config.token)
+
+        # Calculate pagination - GitHub uses page-based, we expose offset-based
+        page = (offset // limit) + 1 if limit > 0 else 1
+        per_page = min(limit, 100)  # GitHub max is 100
+
+        github_commits = await client.list_commits(
+            repo=repo,
+            sha=config.branch,
+            per_page=per_page,
+            page=page,
+        )
+
+        # Map GitHub API response to our CommitInfo model
+        commits = [
+            CommitInfo(
+                sha=c.sha,
+                message=c.commit.message.split("\n")[0],  # First line only
+                author=c.commit.author.name,
+                timestamp=c.commit.author.date,
+                is_pushed=True,
+            )
+            for c in github_commits
+        ]
+
+        has_more = len(github_commits) == per_page
+
+        return CommitHistoryResponse(
+            commits=commits,
+            total_commits=offset + len(commits) + (1 if has_more else 0),
+            has_more=has_more,
+        )
+
+    except GitHubAPIError as e:
+        logger.error(f"GitHub API error getting commits: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub API error: {e.message}",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting commits: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get commit history",
+        )
+
+
+# =============================================================================
+# API-Based Sync Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/sync",
+    response_model=SyncPreviewResponse,
+    summary="Preview sync changes",
+    description="Get a preview of what sync will do without executing",
+)
+async def get_sync_preview(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> SyncPreviewResponse:
+    """
+    Get a preview of sync changes.
+
+    Compares local DB state with remote GitHub state and returns:
+    - Files to pull from GitHub
+    - Files to push to GitHub
+    - Files with conflicts requiring resolution
+    - Workflows that will become orphaned
+    """
+    from src.models.contracts.github import (
+        OrphanInfo,
+        SyncAction,
+        SyncActionType,
+        SyncConflictInfo,
+        WorkflowReference,
+    )
+    from src.services.github_sync import GitHubSyncService, SyncError
+
+    try:
+        config = await get_github_config(db, ctx.org_id)
+
+        if not config or not config.token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GitHub token not found. Please validate your token first.",
+            )
+
+        if not config.repo_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GitHub repository not configured.",
+            )
+
+        repo = _extract_repo_from_url(config.repo_url)
+
+        sync_service = GitHubSyncService(
+            db=db,
+            github_token=config.token,
+            repo=repo,
+            branch=config.branch,
+        )
+
+        preview = await sync_service.get_sync_preview()
+
+        return SyncPreviewResponse(
+            to_pull=[
+                SyncAction(
+                    path=a.path,
+                    action=SyncActionType(a.action.value),
+                    sha=a.sha,
+                )
+                for a in preview.to_pull
+            ],
+            to_push=[
+                SyncAction(
+                    path=a.path,
+                    action=SyncActionType(a.action.value),
+                    sha=a.sha,
+                )
+                for a in preview.to_push
+            ],
+            conflicts=[
+                SyncConflictInfo(
+                    path=c.path,
+                    local_content=c.local_content,
+                    remote_content=c.remote_content,
+                    local_sha=c.local_sha,
+                    remote_sha=c.remote_sha,
+                )
+                for c in preview.conflicts
+            ],
+            will_orphan=[
+                OrphanInfo(
+                    workflow_id=o.workflow_id,
+                    workflow_name=o.workflow_name,
+                    function_name=o.function_name,
+                    last_path=o.last_path,
+                    used_by=[
+                        WorkflowReference(
+                            type=r.type,
+                            id=r.id,
+                            name=r.name,
+                        )
+                        for r in o.used_by
+                    ],
+                )
+                for o in preview.will_orphan
+            ],
+            is_empty=preview.is_empty,
+        )
+
+    except SyncError as e:
+        logger.error(f"Sync preview failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting sync preview: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get sync preview",
+        )
+
+
+@router.post(
+    "/sync",
+    response_model=SyncExecuteResponse,
+    summary="Execute sync",
+    description="Queue sync execution with user's conflict resolutions",
+)
+async def execute_sync(
+    request: SyncExecuteRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> SyncExecuteResponse:
+    """
+    Queue the sync execution with user's conflict resolutions.
+
+    Publishes a request to Redis pubsub for the scheduler to process.
+    Progress is streamed via WebSocket to the git:{job_id} channel.
+
+    Requires:
+    - Conflict resolutions for all conflicted files
+    - Confirmation if workflows will be orphaned
+    """
+    try:
+        config = await get_github_config(db, ctx.org_id)
+
+        if not config or not config.token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GitHub token not found. Please validate your token first.",
+            )
+
+        if not config.repo_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GitHub repository not configured.",
+            )
+
+        job_id = str(uuid.uuid4())
+
+        logger.info(f"Queueing git sync execute job: {job_id}")
+
+        await publish_git_sync_request(
+            job_id=job_id,
+            org_id=str(ctx.org_id) if ctx.org_id else "",
+            user_id=str(user.user_id),
+            user_email=user.email,
+            conflict_resolutions=request.conflict_resolutions,
+            confirm_orphans=request.confirm_orphans,
+        )
+
+        logger.info(f"Git sync execute job queued via Redis pubsub: {job_id}")
+
+        return SyncExecuteResponse(
+            success=True,
+            job_id=job_id,
+            status="queued",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error queueing sync execute: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue sync execute: {str(e)}",
         )

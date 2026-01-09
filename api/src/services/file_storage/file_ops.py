@@ -4,10 +4,24 @@ File Operations Service for File Storage.
 Handles read, write, delete, and move operations for individual files.
 """
 
+import hashlib
 import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
+
+
+def compute_git_blob_sha(content: bytes) -> str:
+    """
+    Compute Git blob SHA (how Git identifies file content).
+
+    Git blob SHA = SHA1("blob <size>\\0<content>")
+
+    This is stored in github_sha to enable fast sync comparison
+    without reading file content from S3.
+    """
+    header = f"blob {len(content)}\0".encode()
+    return hashlib.sha1(header + content).hexdigest()
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -15,7 +29,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.config import Settings
-from src.core.workspace_cache import get_workspace_cache
 from src.models import WorkspaceFile, Workflow, Form, Agent
 from src.models.orm.applications import Application
 from src.models.enums import GitStatus
@@ -206,6 +219,7 @@ class FileOperationsService:
             raise ValueError(f"Path is excluded from workspace: {path}")
 
         content_hash = self._compute_hash(content)
+        git_sha = compute_git_blob_sha(content)
         content_type = self._guess_content_type(path)
         size_bytes = len(content)
 
@@ -239,6 +253,7 @@ class FileOperationsService:
         stmt = insert(WorkspaceFile).values(
             path=path,
             content_hash=content_hash,
+            github_sha=git_sha,
             size_bytes=size_bytes,
             content_type=content_type,
             git_status=GitStatus.MODIFIED,
@@ -251,6 +266,7 @@ class FileOperationsService:
             index_elements=[WorkspaceFile.path],
             set_={
                 "content_hash": content_hash,
+                "github_sha": git_sha,
                 "size_bytes": size_bytes,
                 "content_type": content_type,
                 "git_status": GitStatus.MODIFIED,
@@ -265,10 +281,6 @@ class FileOperationsService:
         file_record = result.scalar_one()
         await self.db.flush()  # Ensure changes are flushed before continuing
         logger.info(f"write_file({path}): upserted record entity_type={file_record.entity_type}, content_len={len(file_record.content) if file_record.content else None}")
-
-        # Dual-write: Update Redis cache with same state as DB
-        cache = get_workspace_cache()
-        await cache.set_file_state(path, content_hash, is_deleted=False)
 
         # Extract metadata for workflows/forms/agents
         (
@@ -364,10 +376,6 @@ class FileOperationsService:
             content=None,  # Clear module content on delete
         )
         await self.db.execute(stmt)
-
-        # Dual-write: Update Redis cache to mark as deleted
-        cache = get_workspace_cache()
-        await cache.set_file_state(path, content_hash=None, is_deleted=True)
 
         # Clean up related metadata
         await self._remove_metadata(path)
@@ -489,11 +497,6 @@ class FileOperationsService:
             updated_at=now,
         )
         await self.db.execute(stmt)
-
-        # Update Redis cache
-        cache = get_workspace_cache()
-        await cache.set_file_state(old_path, content_hash=None, is_deleted=True)
-        await cache.set_file_state(new_path, content_hash=file_record.content_hash, is_deleted=False)
 
         # Refresh the record to get updated values
         await self.db.refresh(file_record)

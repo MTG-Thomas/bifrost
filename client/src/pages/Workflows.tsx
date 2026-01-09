@@ -14,6 +14,7 @@ import {
 	Globe,
 	Building2,
 	Pencil,
+	Unlink,
 } from "lucide-react";
 import type { CategoryCount } from "@/components/workflows/WorkflowSidebar";
 import { Button } from "@/components/ui/button";
@@ -49,13 +50,17 @@ import { useOrgScope } from "@/contexts/OrgScopeContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { HttpTriggerDialog } from "@/components/workflows/HttpTriggerDialog";
+import { OrphanedWorkflowDialog } from "@/components/workflows/OrphanedWorkflowDialog";
 import { WorkflowSidebar } from "@/components/workflows/WorkflowSidebar";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { toast } from "sonner";
 import type { components } from "@/lib/v1";
-type Workflow = components["schemas"]["WorkflowMetadata"];
+
+// Extend WorkflowMetadata with is_orphaned field (may not be in generated types yet)
+type BaseWorkflow = components["schemas"]["WorkflowMetadata"];
+type Workflow = BaseWorkflow & { is_orphaned?: boolean };
 type Organization = components["schemas"]["OrganizationPublic"];
 
 export function Workflows() {
@@ -84,6 +89,10 @@ export function Workflows() {
 	const [editOrgId, setEditOrgId] = useState<string | null | undefined>(undefined);
 	const [isUpdating, setIsUpdating] = useState(false);
 
+	// Orphaned workflow dialog state
+	const [orphanedDialogOpen, setOrphanedDialogOpen] = useState(false);
+	const [orphanedWorkflow, setOrphanedWorkflow] = useState<Workflow | null>(null);
+
 	// Entity filter state
 	const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 	const [selectedFormId, setSelectedFormId] = useState<string | null>(null);
@@ -111,7 +120,8 @@ export function Workflows() {
 		filterByAgent: selectedAgentId ?? undefined,
 	});
 
-	const workflows = useMemo(() => data || [], [data]);
+	// Cast to Workflow type which includes is_orphaned (may not be in generated types yet)
+	const workflows = useMemo(() => (data || []) as Workflow[], [data]);
 
 	// Compute categories from workflows
 	const categories = useMemo<CategoryCount[]>(() => {
@@ -173,6 +183,11 @@ export function Workflows() {
 		// null means global, string means specific org
 		setEditOrgId(workflow.organization_id ?? null);
 		setEditOrgDialogOpen(true);
+	};
+
+	const handleOpenOrphanedDialog = (workflow: Workflow) => {
+		setOrphanedWorkflow(workflow);
+		setOrphanedDialogOpen(true);
 	};
 
 	const handleSaveOrgScope = async () => {
@@ -375,6 +390,20 @@ export function Workflows() {
 												</div>
 											</div>
 											<div className="flex flex-wrap items-center gap-1 mt-2">
+												{workflow.is_orphaned && (
+													<Badge
+														variant="outline"
+														className="bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300 cursor-pointer hover:bg-yellow-200 dark:hover:bg-yellow-800"
+														title="This workflow's file no longer exists. Click to resolve."
+														onClick={(e) => {
+															e.stopPropagation();
+															handleOpenOrphanedDialog(workflow);
+														}}
+													>
+														<Unlink className="mr-1 h-3 w-3" />
+														Orphaned
+													</Badge>
+												)}
 												{workflow.type === "tool" && (
 													<Badge
 														variant="secondary"
@@ -576,6 +605,21 @@ export function Workflows() {
 												</DataTableCell>
 												<DataTableCell>
 													<div className="flex items-center gap-1">
+														{workflow.is_orphaned && (
+															<Badge
+																variant="outline"
+																className="bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300 cursor-pointer hover:bg-yellow-200 dark:hover:bg-yellow-800 text-xs"
+																title="This workflow's file no longer exists. Click to resolve."
+																onClick={() =>
+																	handleOpenOrphanedDialog(
+																		workflow,
+																	)
+																}
+															>
+																<Unlink className="mr-1 h-2 w-2" />
+																Orphaned
+															</Badge>
+														)}
 														{workflow.type === "tool" && (
 															<Badge
 																variant="secondary"
@@ -707,6 +751,16 @@ export function Workflows() {
 					workflow={selectedWorkflow}
 					open={webhookDialogOpen}
 					onOpenChange={setWebhookDialogOpen}
+				/>
+			)}
+
+			{/* Orphaned Workflow Dialog */}
+			{orphanedWorkflow && (
+				<OrphanedWorkflowDialog
+					open={orphanedDialogOpen}
+					onClose={() => setOrphanedDialogOpen(false)}
+					workflow={orphanedWorkflow}
+					onSuccess={() => refetch()}
 				/>
 			)}
 

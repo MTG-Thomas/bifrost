@@ -1747,6 +1747,106 @@ export interface paths {
         patch: operations["update_workflow_api_workflows__workflow_id__patch"];
         trace?: never;
     };
+    "/api/workflows/orphaned": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List orphaned workflows
+         * @description Get all orphaned workflows with their references
+         */
+        get: operations["list_orphaned_workflows_api_workflows_orphaned_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{workflow_id}/compatible-replacements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get compatible replacements
+         * @description Get list of files/functions that could replace an orphaned workflow
+         */
+        get: operations["get_compatible_replacements_api_workflows__workflow_id__compatible_replacements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{workflow_id}/replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replace orphaned workflow
+         * @description Replace an orphaned workflow with content from an existing file
+         */
+        post: operations["replace_workflow_api_workflows__workflow_id__replace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{workflow_id}/recreate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recreate file from orphaned workflow
+         * @description Recreate the file from the orphaned workflow's stored code
+         */
+        post: operations["recreate_workflow_file_api_workflows__workflow_id__recreate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{workflow_id}/deactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deactivate orphaned workflow
+         * @description Deactivate an orphaned workflow
+         */
+        post: operations["deactivate_workflow_api_workflows__workflow_id__deactivate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/forms": {
         parameters: {
             query?: never;
@@ -2197,7 +2297,7 @@ export interface paths {
          * Search file contents
          * @description Search file contents for text or regex patterns.
          *
-         *     Uses local workspace cache synced from S3.
+         *     Searches database directly - workflows, modules, forms, and agents.
          */
         post: operations["search_file_contents_api_files_search_post"];
         delete?: never;
@@ -2561,7 +2661,7 @@ export interface paths {
         put?: never;
         /**
          * Pull from GitHub
-         * @description Pull latest changes from the connected GitHub repository
+         * @description Queue a pull operation from the connected GitHub repository
          */
         post: operations["pull_from_github_api_github_pull_post"];
         delete?: never;
@@ -2604,6 +2704,26 @@ export interface paths {
         get: operations["get_changes_api_github_changes_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/resolve-refs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve workflow references
+         * @description Manually resolve workflow references that couldn't be automatically matched
+         */
+        post: operations["resolve_refs_api_github_resolve_refs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2801,7 +2921,7 @@ export interface paths {
         put?: never;
         /**
          * Configure GitHub integration
-         * @description Queue GitHub repository setup job. Watch notification channel for progress.
+         * @description Save GitHub repository configuration. Cloning/syncing happens on first pull.
          */
         post: operations["configure_github_api_github_configure_post"];
         delete?: never;
@@ -2904,6 +3024,46 @@ export interface paths {
          * @description Remove GitHub integration configuration
          */
         post: operations["disconnect_github_api_github_disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/sync/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview sync changes
+         * @description Get a preview of what sync will do without executing
+         */
+        post: operations["preview_sync_api_github_sync_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/sync/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Execute sync
+         * @description Execute sync with user's conflict resolutions
+         */
+        post: operations["execute_sync_api_github_sync_execute_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3113,22 +3273,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6704,6 +6864,15 @@ export interface components {
             width?: string | null;
             /** Loadingworkflows */
             loadingWorkflows?: string[] | null;
+            /** Gridspan */
+            gridSpan?: number | null;
+            repeatFor?: components["schemas"]["RepeatFor"] | null;
+            /** Classname */
+            className?: string | null;
+            /** Style */
+            style?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * AppComponentResponse
@@ -7103,6 +7272,8 @@ export interface components {
             permissions: {
                 [key: string]: unknown;
             };
+            /** Styles */
+            styles?: string | null;
             /**
              * Pages
              * @description Array of page definitions with nested layout/components
@@ -7346,7 +7517,7 @@ export interface components {
             /** Mfa Required For Password */
             mfa_required_for_password: boolean;
             /** Oauth Providers */
-            oauth_providers: components["schemas"]["OAuthProviderInfo"][];
+            oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
         };
         /**
          * AuthorizeResponse
@@ -8208,6 +8379,44 @@ export interface components {
             is_pushed: boolean;
         };
         /**
+         * CompatibleReplacement
+         * @description Potential replacement for an orphaned workflow.
+         */
+        CompatibleReplacement: {
+            /**
+             * Path
+             * @description File path containing the replacement function
+             */
+            path: string;
+            /**
+             * Function Name
+             * @description Function name
+             */
+            function_name: string;
+            /**
+             * Signature
+             * @description Human-readable function signature
+             */
+            signature: string;
+            /**
+             * Compatibility
+             * @description Compatibility level: exact (perfect match) or compatible (can be used)
+             * @enum {string}
+             */
+            compatibility: "exact" | "compatible";
+        };
+        /**
+         * CompatibleReplacementsResponse
+         * @description Response containing compatible replacements for an orphaned workflow.
+         */
+        CompatibleReplacementsResponse: {
+            /**
+             * Replacements
+             * @description List of compatible replacement functions
+             */
+            replacements?: components["schemas"]["CompatibleReplacement"][];
+        };
+        /**
          * ConfigResponse
          * @description Configuration entity response (global or org-specific)
          */
@@ -8615,6 +8824,27 @@ export interface components {
             autoRefresh?: boolean | null;
             /** Refreshinterval */
             refreshInterval?: number | null;
+        };
+        /**
+         * DeactivateWorkflowResponse
+         * @description Response after deactivating an orphaned workflow.
+         */
+        DeactivateWorkflowResponse: {
+            /**
+             * Success
+             * @description Whether deactivation succeeded
+             */
+            success: boolean;
+            /**
+             * Workflow Id
+             * @description UUID of the deactivated workflow
+             */
+            workflow_id: string;
+            /**
+             * Warning
+             * @description Warning message if workflow is still referenced by other entities
+             */
+            warning?: string | null;
         };
         /**
          * DecoratorInfo
@@ -10089,9 +10319,9 @@ export interface components {
             modified: string;
             /**
              * Entity Type
-             * @description Platform entity type if file is a platform entity (workflow, form, app, agent), null for regular files
+             * @description Platform entity type if file is a platform entity (workflow, form, app, agent, module), null for regular files
              */
-            entity_type?: ("workflow" | "form" | "app" | "agent") | null;
+            entity_type?: ("workflow" | "form" | "app" | "agent" | "module") | null;
             /**
              * Entity Id
              * @description Platform entity ID if file is a platform entity, null for regular files
@@ -10762,23 +10992,23 @@ export interface components {
         };
         /**
          * GitHubSetupResponse
-         * @description Response after queueing GitHub setup job
+         * @description Response after configuring GitHub integration
          */
         GitHubSetupResponse: {
             /**
              * Job Id
-             * @description Job ID for tracking the setup operation
+             * @description Job ID for tracking the setup operation (deprecated)
              */
-            job_id: string;
+            job_id?: string | null;
             /**
              * Notification Id
-             * @description Notification ID for watching progress via WebSocket
+             * @description Notification ID for watching progress via WebSocket (deprecated)
              */
-            notification_id: string;
+            notification_id?: string | null;
             /**
              * Status
-             * @description Job status (queued)
-             * @default queued
+             * @description Configuration status
+             * @default configured
              */
             status: string;
         };
@@ -11693,14 +11923,26 @@ export interface components {
             justify?: ("start" | "center" | "end" | "between" | "around") | null;
             /** Columns */
             columns?: number | null;
-            /** Autosize */
-            autoSize?: boolean | null;
+            /** Distribute */
+            distribute?: ("natural" | "equal" | "fit") | null;
             /** Maxwidth */
             maxWidth?: ("sm" | "md" | "lg" | "xl" | "2xl" | "full" | "none") | null;
+            /** Maxheight */
+            maxHeight?: number | null;
+            /** Overflow */
+            overflow?: ("auto" | "scroll" | "hidden" | "visible") | null;
+            /** Sticky */
+            sticky?: ("top" | "bottom") | null;
+            /** Stickyoffset */
+            stickyOffset?: number | null;
             /** Visible */
             visible?: string | null;
             /** Classname */
             className?: string | null;
+            /** Style */
+            style?: {
+                [key: string]: unknown;
+            } | null;
             /** Children */
             children?: (components["schemas"]["LayoutContainer"] | components["schemas"]["AppComponentNode"])[];
         };
@@ -11938,11 +12180,6 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
-            /**
-             * Is Existing
-             * @default false
-             */
-            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -12192,29 +12429,15 @@ export interface components {
         };
         /**
          * OAuthCallbackRequest
-         * @description Request model for OAuth callback endpoint
+         * @description OAuth callback request (for when frontend handles callback).
          */
         OAuthCallbackRequest: {
-            /**
-             * Code
-             * @description Authorization code from OAuth provider
-             */
+            /** Provider */
+            provider: string;
+            /** Code */
             code: string;
-            /**
-             * State
-             * @description State parameter for CSRF protection
-             */
-            state?: string | null;
-            /**
-             * Redirect Uri
-             * @description Redirect URI used in authorization request
-             */
-            redirect_uri?: string | null;
-            /**
-             * Organization Id
-             * @description Organization ID for org-specific token storage (optional, for org overrides)
-             */
-            organization_id?: string | null;
+            /** State */
+            state: string;
         };
         /**
          * OAuthCallbackResponse
@@ -12644,7 +12867,7 @@ export interface components {
         };
         /**
          * OAuthProviderInfo
-         * @description OAuth provider information for login page
+         * @description OAuth provider information.
          */
         OAuthProviderInfo: {
             /** Name */
@@ -12660,7 +12883,7 @@ export interface components {
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
+            providers: components["schemas"]["OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -12864,6 +13087,89 @@ export interface components {
             ai_cost?: string;
         };
         /**
+         * OrphanInfo
+         * @description Information about a workflow that will become orphaned.
+         */
+        OrphanInfo: {
+            /**
+             * Workflow Id
+             * @description Workflow UUID
+             */
+            workflow_id: string;
+            /**
+             * Workflow Name
+             * @description Workflow display name
+             */
+            workflow_name: string;
+            /**
+             * Function Name
+             * @description Python function name
+             */
+            function_name: string;
+            /**
+             * Last Path
+             * @description Last known file path
+             */
+            last_path: string;
+            /**
+             * Used By
+             * @description Entities using this workflow
+             */
+            used_by?: components["schemas"]["WorkflowReference"][];
+        };
+        /**
+         * OrphanedWorkflowInfo
+         * @description Orphaned workflow with metadata and references.
+         */
+        OrphanedWorkflowInfo: {
+            /**
+             * Id
+             * @description Workflow UUID
+             */
+            id: string;
+            /**
+             * Name
+             * @description Workflow display name
+             */
+            name: string;
+            /**
+             * Function Name
+             * @description Python function name
+             */
+            function_name: string;
+            /**
+             * Last Path
+             * @description Last known file path
+             */
+            last_path: string;
+            /**
+             * Code
+             * @description Stored code snapshot
+             */
+            code?: string | null;
+            /**
+             * Used By
+             * @description Entities using this workflow
+             */
+            used_by?: components["schemas"]["WorkflowReference"][];
+            /**
+             * Orphaned At
+             * @description When workflow became orphaned
+             */
+            orphaned_at?: string | null;
+        };
+        /**
+         * OrphanedWorkflowsResponse
+         * @description Response containing list of orphaned workflows.
+         */
+        OrphanedWorkflowsResponse: {
+            /**
+             * Workflows
+             * @description List of orphaned workflows
+             */
+            workflows?: components["schemas"]["OrphanedWorkflowInfo"][];
+        };
+        /**
          * PackageInstallResponse
          * @description Response model for package installation
          */
@@ -12934,6 +13240,8 @@ export interface components {
             } | null;
             /** Launchworkflowdatasourceid */
             launchWorkflowDataSourceId?: string | null;
+            /** Styles */
+            styles?: string | null;
             permission?: components["schemas"]["PagePermissionConfig"] | null;
         };
         /**
@@ -13304,14 +13612,24 @@ export interface components {
         };
         /**
          * PullFromGitHubResponse
-         * @description Response after pulling from GitHub
+         * @description Response after queueing a pull from GitHub
          */
         PullFromGitHubResponse: {
             /**
              * Success
-             * @description Whether pull succeeded
+             * @description Whether job was queued successfully
              */
             success: boolean;
+            /**
+             * Job Id
+             * @description Job ID for tracking (when queued)
+             */
+            job_id?: string | null;
+            /**
+             * Status
+             * @description Status: 'queued', 'success', 'error'
+             */
+            status?: string | null;
             /**
              * Updated Files
              * @description List of updated file paths
@@ -13322,6 +13640,11 @@ export interface components {
              * @description List of conflicts (if any)
              */
             conflicts?: components["schemas"]["ConflictInfo"][];
+            /**
+             * Unresolved Refs
+             * @description Workflow refs that couldn't be resolved
+             */
+            unresolved_refs?: components["schemas"]["UnresolvedRefInfo"][];
             /**
              * Error
              * @description Error message if pull failed
@@ -13533,6 +13856,53 @@ export interface components {
             count: number;
         };
         /**
+         * RecreateFileResponse
+         * @description Response after recreating file from orphaned workflow's code.
+         */
+        RecreateFileResponse: {
+            /**
+             * Success
+             * @description Whether file recreation succeeded
+             */
+            success: boolean;
+            /**
+             * Workflow Id
+             * @description UUID of the workflow
+             */
+            workflow_id: string;
+            /**
+             * Path
+             * @description Path where file was recreated
+             */
+            path: string;
+        };
+        /**
+         * RefResolution
+         * @description Resolution for a single unresolved reference
+         */
+        RefResolution: {
+            /**
+             * File
+             * @description File containing the unresolved reference
+             */
+            file: string;
+            /**
+             * Field
+             * @description Field path containing the reference
+             */
+            field: string;
+            /**
+             * Ref
+             * @description The original path::function_name reference
+             */
+            ref: string;
+            /**
+             * Resolved Workflow Id
+             * @description UUID of the workflow to resolve to
+             */
+            resolved_workflow_id: string;
+        };
+        /**
          * RefreshAllResponse
          * @description Response for triggering refresh of all tokens.
          */
@@ -13661,6 +14031,88 @@ export interface components {
              * @description Optional notification ID to update with progress
              */
             notification_id?: string | null;
+        };
+        /**
+         * RepeatFor
+         * @description Repeat component for each item in an array.
+         */
+        RepeatFor: {
+            /** Items */
+            items: string;
+            /** Itemkey */
+            itemKey: string;
+            /** As */
+            as: string;
+        };
+        /**
+         * ReplaceWorkflowRequest
+         * @description Request to replace an orphaned workflow with content from existing file.
+         */
+        ReplaceWorkflowRequest: {
+            /**
+             * Source Path
+             * @description Path to file containing replacement function
+             */
+            source_path: string;
+            /**
+             * Function Name
+             * @description Name of function to use as replacement
+             */
+            function_name: string;
+        };
+        /**
+         * ReplaceWorkflowResponse
+         * @description Response after replacing an orphaned workflow.
+         */
+        ReplaceWorkflowResponse: {
+            /**
+             * Success
+             * @description Whether replacement succeeded
+             */
+            success: boolean;
+            /**
+             * Workflow Id
+             * @description UUID of the updated workflow
+             */
+            workflow_id: string;
+            /**
+             * New Path
+             * @description New file path for the workflow
+             */
+            new_path: string;
+        };
+        /**
+         * ResolveRefsRequest
+         * @description Request to resolve unresolved workflow references
+         */
+        ResolveRefsRequest: {
+            /**
+             * Resolutions
+             * @description List of reference resolutions
+             */
+            resolutions: components["schemas"]["RefResolution"][];
+        };
+        /**
+         * ResolveRefsResponse
+         * @description Response after resolving workflow references
+         */
+        ResolveRefsResponse: {
+            /**
+             * Success
+             * @description Whether all resolutions were applied successfully
+             */
+            success: boolean;
+            /**
+             * Files Updated
+             * @description Number of files updated
+             * @default 0
+             */
+            files_updated: number;
+            /**
+             * Errors
+             * @description Any errors encountered
+             */
+            errors?: string[];
         };
         /**
          * ResourceMetricsEntry
@@ -14846,6 +15298,150 @@ export interface components {
             count: number;
         };
         /**
+         * SyncAction
+         * @description A single sync action (pull or push).
+         */
+        SyncAction: {
+            /**
+             * Path
+             * @description File path relative to workspace root
+             */
+            path: string;
+            /** @description Type of action */
+            action: components["schemas"]["SyncActionType"];
+            /**
+             * Sha
+             * @description Git blob SHA (for pull actions)
+             */
+            sha?: string | null;
+        };
+        /**
+         * SyncActionType
+         * @description Type of sync action.
+         * @enum {string}
+         */
+        SyncActionType: "add" | "modify" | "delete";
+        /**
+         * SyncConflictInfo
+         * @description Information about a conflict between local and remote.
+         */
+        SyncConflictInfo: {
+            /**
+             * Path
+             * @description File path with conflict
+             */
+            path: string;
+            /**
+             * Local Content
+             * @description Local content
+             */
+            local_content?: string | null;
+            /**
+             * Remote Content
+             * @description Remote content
+             */
+            remote_content?: string | null;
+            /**
+             * Local Sha
+             * @description SHA of local content
+             */
+            local_sha: string;
+            /**
+             * Remote Sha
+             * @description SHA of remote content
+             */
+            remote_sha: string;
+        };
+        /**
+         * SyncExecuteRequest
+         * @description Request to execute sync with conflict resolutions.
+         */
+        SyncExecuteRequest: {
+            /**
+             * Conflict Resolutions
+             * @description Resolution for each conflicted file path
+             */
+            conflict_resolutions?: {
+                [key: string]: "keep_local" | "keep_remote";
+            };
+            /**
+             * Confirm Orphans
+             * @description User acknowledges orphan workflows
+             * @default false
+             */
+            confirm_orphans: boolean;
+        };
+        /**
+         * SyncExecuteResponse
+         * @description Result of sync execution.
+         */
+        SyncExecuteResponse: {
+            /**
+             * Success
+             * @description Whether sync completed successfully
+             */
+            success: boolean;
+            /**
+             * Pulled
+             * @description Number of files pulled
+             * @default 0
+             */
+            pulled: number;
+            /**
+             * Pushed
+             * @description Number of files pushed
+             * @default 0
+             */
+            pushed: number;
+            /**
+             * Orphaned Workflows
+             * @description IDs of workflows marked as orphaned
+             */
+            orphaned_workflows?: string[];
+            /**
+             * Commit Sha
+             * @description SHA of created commit (if any)
+             */
+            commit_sha?: string | null;
+            /**
+             * Error
+             * @description Error message if failed
+             */
+            error?: string | null;
+        };
+        /**
+         * SyncPreviewResponse
+         * @description Preview of sync operations before execution.
+         */
+        SyncPreviewResponse: {
+            /**
+             * To Pull
+             * @description Files to pull from GitHub
+             */
+            to_pull?: components["schemas"]["SyncAction"][];
+            /**
+             * To Push
+             * @description Files to push to GitHub
+             */
+            to_push?: components["schemas"]["SyncAction"][];
+            /**
+             * Conflicts
+             * @description Files with conflicts
+             */
+            conflicts?: components["schemas"]["SyncConflictInfo"][];
+            /**
+             * Will Orphan
+             * @description Workflows that will become orphaned
+             */
+            will_orphan?: components["schemas"]["OrphanInfo"][];
+            /**
+             * Is Empty
+             * @description True if no changes to sync
+             * @default false
+             */
+            is_empty: boolean;
+        };
+        /**
          * SystemLog
          * @description System log entry (platform events, not workflow executions)
          */
@@ -15124,6 +15720,27 @@ export interface components {
             devices: components["schemas"]["TrustedDeviceResponse"][];
         };
         /**
+         * UnresolvedRefInfo
+         * @description Information about an unresolved workflow reference
+         */
+        UnresolvedRefInfo: {
+            /**
+             * File
+             * @description File containing the unresolved reference
+             */
+            file: string;
+            /**
+             * Field
+             * @description Field path containing the reference
+             */
+            field: string;
+            /**
+             * Ref
+             * @description The path::function_name reference that couldn't be resolved
+             */
+            ref: string;
+        };
+        /**
          * UpdateOAuthConnectionRequest
          * @description Request model for updating an OAuth connection
          *     PUT /api/oauth/connections/{connection_name}
@@ -15355,7 +15972,7 @@ export interface components {
         };
         /**
          * UserCreate
-         * @description Input for creating a user.
+         * @description User creation request model.
          */
         UserCreate: {
             /**
@@ -15363,24 +15980,10 @@ export interface components {
              * Format: email
              */
             email: string;
+            /** Password */
+            password: string;
             /** Name */
             name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** @default ORG */
-            user_type: components["schemas"]["UserType"];
-            /** Organization Id */
-            organization_id?: string | null;
         };
         /**
          * UserFormsResponse
@@ -16171,6 +16774,27 @@ export interface components {
             total_value: number;
         };
         /**
+         * WorkflowReference
+         * @description A reference to an entity that uses a workflow.
+         */
+        WorkflowReference: {
+            /**
+             * Type
+             * @description Entity type (form, app, agent)
+             */
+            type: string;
+            /**
+             * Id
+             * @description Entity ID
+             */
+            id: string;
+            /**
+             * Name
+             * @description Entity name
+             */
+            name: string;
+        };
+        /**
          * WorkflowUpdateRequest
          * @description Request model for updating a workflow's editable properties.
          */
@@ -16305,25 +16929,77 @@ export interface components {
             backup_will_be_created: boolean;
         };
         /**
-         * UserCreate
-         * @description User creation request model.
+         * OAuthProviderInfo
+         * @description OAuth provider information for login page
          */
-        src__routers__auth__UserCreate: {
+        src__models__contracts__auth__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
+        };
+        /**
+         * OAuthCallbackRequest
+         * @description Request model for OAuth callback endpoint
+         */
+        src__models__contracts__oauth__OAuthCallbackRequest: {
+            /**
+             * Code
+             * @description Authorization code from OAuth provider
+             */
+            code: string;
+            /**
+             * State
+             * @description State parameter for CSRF protection
+             */
+            state?: string | null;
+            /**
+             * Redirect Uri
+             * @description Redirect URI used in authorization request
+             */
+            redirect_uri?: string | null;
+            /**
+             * Organization Id
+             * @description Organization ID for org-specific token storage (optional, for org overrides)
+             */
+            organization_id?: string | null;
+        };
+        /**
+         * UserCreate
+         * @description Input for creating a user.
+         */
+        src__models__contracts__users__UserCreate: {
             /**
              * Email
              * Format: email
              */
             email: string;
-            /** Password */
-            password: string;
             /** Name */
             name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** @default ORG */
+            user_type: components["schemas"]["UserType"];
+            /** Organization Id */
+            organization_id?: string | null;
         };
         /**
          * MFASetupResponse
          * @description MFA setup response with secret.
          */
-        src__routers__mfa__MFASetupResponse: {
+        src__routers__auth__MFASetupResponse: {
             /** Secret */
             secret: string;
             /** Qr Code Uri */
@@ -16334,6 +17010,11 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
         };
         /**
          * MFAVerifyRequest
@@ -16342,30 +17023,6 @@ export interface components {
         src__routers__mfa__MFAVerifyRequest: {
             /** Code */
             code: string;
-        };
-        /**
-         * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
-         */
-        src__routers__oauth_sso__OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
-            /** Code */
-            code: string;
-            /** State */
-            state: string;
-        };
-        /**
-         * OAuthProviderInfo
-         * @description OAuth provider information.
-         */
-        src__routers__oauth_sso__OAuthProviderInfo: {
-            /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
         };
     };
     responses: never;
@@ -16468,7 +17125,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__auth__MFASetupResponse"];
                 };
             };
             /** @description Validation Error */
@@ -16683,7 +17340,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__UserCreate"];
+                "application/json": components["schemas"]["UserCreate"];
             };
         };
         responses: {
@@ -16914,7 +17571,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
+                    "application/json": components["schemas"]["MFASetupResponse"];
                 };
             };
         };
@@ -17178,7 +17835,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
+                "application/json": components["schemas"]["OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -17629,7 +18286,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
             };
         };
         responses: {
@@ -18703,6 +19360,154 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowMetadata"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_orphaned_workflows_api_workflows_orphaned_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrphanedWorkflowsResponse"];
+                };
+            };
+        };
+    };
+    get_compatible_replacements_api_workflows__workflow_id__compatible_replacements_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompatibleReplacementsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_workflow_api_workflows__workflow_id__replace_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceWorkflowRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplaceWorkflowResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recreate_workflow_file_api_workflows__workflow_id__recreate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecreateFileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deactivate_workflow_api_workflows__workflow_id__deactivate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeactivateWorkflowResponse"];
                 };
             };
             /** @description Validation Error */
@@ -20260,6 +21065,39 @@ export interface operations {
             };
         };
     };
+    resolve_refs_api_github_resolve_refs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveRefsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveRefsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     init_repo_api_github_init_post: {
         parameters: {
             query?: never;
@@ -20685,6 +21523,59 @@ export interface operations {
             };
         };
     };
+    preview_sync_api_github_sync_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncPreviewResponse"];
+                };
+            };
+        };
+    };
+    execute_sync_api_github_sync_execute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncExecuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncExecuteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_connections_api_oauth_connections_get: {
         parameters: {
             query?: never;
@@ -20942,7 +21833,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__models__contracts__oauth__OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -21037,7 +21928,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -21070,7 +21961,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -21103,7 +21994,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -21136,7 +22027,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__delete: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {

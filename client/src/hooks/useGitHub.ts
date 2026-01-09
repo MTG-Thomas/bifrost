@@ -5,7 +5,7 @@
  * for imperative usage outside of React hooks
  */
 
-import { $api, apiClient } from "@/lib/api-client";
+import { $api, apiClient, authFetch } from "@/lib/api-client";
 import { useQueryClient } from "@tanstack/react-query";
 import type { components } from "@/lib/v1";
 
@@ -33,6 +33,66 @@ export type CommitHistoryResponse =
 	components["schemas"]["CommitHistoryResponse"];
 export type DiscardCommitsResponse =
 	components["schemas"]["DiscardUnpushedCommitsResponse"];
+export type UnresolvedRefInfo = components["schemas"]["UnresolvedRefInfo"];
+export type RefResolution = components["schemas"]["RefResolution"];
+export type ResolveRefsRequest = components["schemas"]["ResolveRefsRequest"];
+export type ResolveRefsResponse = components["schemas"]["ResolveRefsResponse"];
+
+// Sync Preview/Execute Types - defined locally until types are regenerated
+export type SyncActionType = "add" | "modify" | "delete";
+
+export interface SyncAction {
+	path: string;
+	action: SyncActionType;
+	sha?: string | null;
+}
+
+export interface SyncConflictInfo {
+	path: string;
+	local_content?: string | null;
+	remote_content?: string | null;
+	local_sha: string;
+	remote_sha: string;
+}
+
+export interface WorkflowReference {
+	type: string;
+	id: string;
+	name: string;
+}
+
+export interface OrphanInfo {
+	workflow_id: string;
+	workflow_name: string;
+	function_name: string;
+	last_path: string;
+	used_by: WorkflowReference[];
+}
+
+export interface SyncPreviewResponse {
+	to_pull: SyncAction[];
+	to_push: SyncAction[];
+	conflicts: SyncConflictInfo[];
+	will_orphan: OrphanInfo[];
+	is_empty: boolean;
+}
+
+export interface SyncExecuteRequest {
+	conflict_resolutions: Record<string, "keep_local" | "keep_remote">;
+	confirm_orphans: boolean;
+}
+
+export interface SyncExecuteResponse {
+	success: boolean;
+	job_id?: string | null;
+	status: string;
+	// These fields are populated via WebSocket completion, not initial response
+	pulled: number;
+	pushed: number;
+	orphaned_workflows: string[];
+	commit_sha?: string | null;
+	error?: string | null;
+}
 
 // =============================================================================
 // Query Hooks
@@ -54,9 +114,10 @@ export function useGitHubConfig() {
 
 /**
  * List repositories accessible with saved token
+ * Only runs when enabled is true (defaults to true)
  */
-export function useGitHubRepositories() {
-	return $api.useQuery("get", "/api/github/repositories", {}, {});
+export function useGitHubRepositories(enabled: boolean = true) {
+	return $api.useQuery("get", "/api/github/repositories", {}, { enabled });
 }
 
 /**
@@ -221,26 +282,6 @@ export function useInitRepo() {
 }
 
 /**
- * Pull changes from remote repository
- */
-export function usePullFromGitHub() {
-	const queryClient = useQueryClient();
-	return $api.useMutation("post", "/api/github/pull", {
-		onSuccess: () => {
-			queryClient.invalidateQueries({
-				queryKey: ["get", "/api/github/status"],
-			});
-			queryClient.invalidateQueries({
-				queryKey: ["get", "/api/github/changes"],
-			});
-			queryClient.invalidateQueries({
-				queryKey: ["get", "/api/github/commits"],
-			});
-		},
-	});
-}
-
-/**
  * Commit local changes
  */
 export function useCommitChanges() {
@@ -252,23 +293,6 @@ export function useCommitChanges() {
 			});
 			queryClient.invalidateQueries({
 				queryKey: ["get", "/api/github/changes"],
-			});
-			queryClient.invalidateQueries({
-				queryKey: ["get", "/api/github/commits"],
-			});
-		},
-	});
-}
-
-/**
- * Push committed changes to remote repository
- */
-export function usePushToGitHub() {
-	const queryClient = useQueryClient();
-	return $api.useMutation("post", "/api/github/push", {
-		onSuccess: () => {
-			queryClient.invalidateQueries({
-				queryKey: ["get", "/api/github/status"],
 			});
 			queryClient.invalidateQueries({
 				queryKey: ["get", "/api/github/commits"],
@@ -326,6 +350,72 @@ export function useAbortMerge() {
 			});
 		},
 	});
+}
+
+/**
+ * Resolve unresolved workflow references after pull
+ */
+export function useResolveWorkflowRefs() {
+	const queryClient = useQueryClient();
+	return $api.useMutation("post", "/api/github/resolve-refs", {
+		onSuccess: () => {
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/status"],
+			});
+			queryClient.invalidateQueries({
+				queryKey: ["get", "/api/github/changes"],
+			});
+		},
+	});
+}
+
+/**
+ * Get sync preview - shows what will be pulled/pushed and any conflicts
+ * Uses authFetch for CSRF protection since endpoint isn't in OpenAPI spec yet
+ */
+export function useSyncPreview() {
+	return {
+		mutateAsync: async (): Promise<SyncPreviewResponse> => {
+			const response = await authFetch("/api/github/sync", {
+				method: "GET",
+			});
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to get sync preview");
+			}
+			return response.json();
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Execute sync with conflict resolutions and orphan confirmation
+ * Uses authFetch for CSRF protection since endpoint isn't in OpenAPI spec yet
+ *
+ * NOTE: This queues a background job and returns immediately with job_id.
+ * The client should subscribe to WebSocket channel git:{job_id} AFTER
+ * receiving the response to get progress/completion messages.
+ * Query invalidation should happen in the UI when WebSocket completion is received.
+ */
+export function useSyncExecute() {
+	return {
+		mutateAsync: async (params: {
+			body: SyncExecuteRequest;
+		}): Promise<SyncExecuteResponse> => {
+			const response = await authFetch("/api/github/sync", {
+				method: "POST",
+				body: JSON.stringify(params.body),
+			});
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue sync");
+			}
+			// Returns job_id and status="queued", actual results come via WebSocket
+			return response.json();
+		},
+		isPending: false,
+	};
 }
 
 // =============================================================================

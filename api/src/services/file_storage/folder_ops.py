@@ -14,7 +14,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings
-from src.core.workspace_cache import get_workspace_cache
 from src.models import WorkspaceFile
 from src.models.enums import GitStatus
 
@@ -94,10 +93,6 @@ class FolderOperationsService:
         result = await self.db.execute(stmt)
         folder_record = result.scalar_one()
 
-        # Dual-write: Update Redis cache for folder (hash is None for folders)
-        cache = get_workspace_cache()
-        await cache.set_file_state(folder_path, content_hash=None, is_deleted=False)
-
         # Create on local filesystem too (for tools that read files directly)
         try:
             from src.core.paths import WORKSPACE_PATH
@@ -167,14 +162,6 @@ class FolderOperationsService:
             updated_at=now,
         )
         await self.db.execute(stmt)
-
-        # Dual-write: Update Redis cache to mark folder and children as deleted
-        cache = get_workspace_cache()
-        # Mark folder itself as deleted
-        await cache.set_file_state(folder_path, content_hash=None, is_deleted=True)
-        # Mark all children as deleted
-        for child in children:
-            await cache.set_file_state(child.path, content_hash=None, is_deleted=True)
 
         # Delete from local filesystem
         try:
