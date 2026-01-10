@@ -6,6 +6,7 @@ queue position visibility. Updates are event-driven - positions
 are recalculated and published when the queue changes.
 """
 
+import json
 import logging
 import time
 
@@ -177,3 +178,54 @@ async def cleanup_stale_entries(max_age_seconds: int = 600) -> int:
         await publish_all_queue_positions()
 
     return removed
+
+
+async def get_all_pending_executions() -> list[dict]:
+    """
+    Get all pending executions with metadata for heartbeat reporting.
+
+    Returns:
+        List of dicts with execution_id, workflow_id, workflow_name,
+        organization_name, and queued_at for each pending execution.
+    """
+    r = await _get_redis()
+
+    # Get execution IDs from sorted set
+    exec_ids = await r.zrange(QUEUE_KEY, 0, -1)
+
+    items = []
+    for exec_id in exec_ids:
+        # Get execution context from Redis (stored when queued)
+        context = await r.get(f"bifrost:exec:{exec_id}:context")
+        if context:
+            try:
+                data = json.loads(context)
+                items.append({
+                    "execution_id": exec_id,
+                    "workflow_id": data.get("workflow_id"),
+                    "workflow_name": data.get("name"),
+                    "organization_name": data.get("organization", {}).get("name")
+                    if isinstance(data.get("organization"), dict)
+                    else None,
+                    "queued_at": data.get("queued_at"),
+                })
+            except json.JSONDecodeError:
+                # Invalid context, include execution_id only
+                items.append({
+                    "execution_id": exec_id,
+                    "workflow_id": None,
+                    "workflow_name": None,
+                    "organization_name": None,
+                    "queued_at": None,
+                })
+        else:
+            # No context found, include execution_id only
+            items.append({
+                "execution_id": exec_id,
+                "workflow_id": None,
+                "workflow_name": None,
+                "organization_name": None,
+                "queued_at": None,
+            })
+
+    return items

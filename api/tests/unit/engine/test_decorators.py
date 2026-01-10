@@ -137,19 +137,6 @@ class TestWorkflowDecorator:
         assert test_func.__name__ == "test_func"
         assert test_func.__doc__ == "Original docstring"
 
-    def test_workflow_id_parameter(self):
-        """Test that id parameter is stored in metadata"""
-        @workflow(
-            id="test-uuid-1234",
-            name="test_workflow",
-            description="Test"
-        )
-        def test_func():
-            pass
-
-        metadata = test_func._executable_metadata
-        assert metadata.id == "test-uuid-1234"
-
     def test_workflow_name_auto_derived_from_function(self):
         """Test that name is derived from function name when not provided"""
         @workflow(description="A workflow")

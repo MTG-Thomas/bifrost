@@ -32,6 +32,7 @@ from src.config import Settings
 from src.models import WorkspaceFile, Workflow, Form, Agent
 from src.models.orm.applications import Application
 from src.models.enums import GitStatus
+from src.core.module_cache import set_module, invalidate_module
 from .models import WriteResult
 from .utils import serialize_form_to_json, serialize_agent_to_json
 
@@ -282,6 +283,11 @@ class FileOperationsService:
         await self.db.flush()  # Ensure changes are flushed before continuing
         logger.info(f"write_file({path}): upserted record entity_type={file_record.entity_type}, content_len={len(file_record.content) if file_record.content else None}")
 
+        # Update module cache in Redis for immediate availability in virtual imports
+        if platform_entity_type == "module" and module_content:
+            await set_module(path, module_content, content_hash)
+            logger.info(f"write_file({path}): cached module in Redis")
+
         # Extract metadata for workflows/forms/agents
         (
             final_content,
@@ -380,6 +386,11 @@ class FileOperationsService:
         # Clean up related metadata
         await self._remove_metadata(path)
 
+        # Invalidate module cache if this was a module
+        if entity_type == "module":
+            await invalidate_module(path)
+            logger.info(f"delete_file({path}): invalidated module cache")
+
         logger.info(f"File deleted: {path}")
 
     async def move_file(self, old_path: str, new_path: str) -> WorkspaceFile:
@@ -471,6 +482,10 @@ class FileOperationsService:
         elif entity_type == "module":
             # Module content is stored in workspace_files.content
             # No entity table to update, just workspace_files path (handled below)
+            # Update module cache: invalidate old path, cache at new path
+            await invalidate_module(old_path)
+            if file_record.content:
+                await set_module(new_path, file_record.content, file_record.content_hash or "")
             logger.info(f"Module path update: {old_path} -> {new_path}")
 
         else:

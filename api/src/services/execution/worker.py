@@ -168,13 +168,13 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             function_name = context_data.get("function_name")
             workflow_code = context_data.get("workflow_code")
             file_path = context_data.get("file_path")
-            result = None
+            load_error: str | None = None
 
             # Platform entities (workflows, tools, data providers) are stored in database
             # The code is passed from the consumer which has DB access
             # No filesystem fallback - platform entities must have code in database
             if workflow_code and function_name and file_path:
-                result = load_workflow_from_db(
+                workflow_func, metadata, load_error = load_workflow_from_db(
                     code=workflow_code,
                     path=file_path,
                     function_name=function_name,
@@ -188,12 +188,15 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                     f"file_path={file_path}"
                 )
 
-            if not result:
+            if workflow_func is None:
                 metrics = _capture_metrics(start_rss, start_utime, start_stime)
+                # Use the actual error if available, otherwise fall back to generic message
+                error_msg = load_error or f"Executable '{name}' not found"
+                error_type = "WorkflowLoadError" if load_error else "ExecutableNotFound"
                 return {
                     "status": ExecutionStatus.FAILED.value,
-                    "error_message": f"Executable '{name}' not found",
-                    "error_type": "ExecutableNotFound",
+                    "error_message": error_msg,
+                    "error_type": error_type,
                     "duration_ms": int((datetime.utcnow() - start_time).total_seconds() * 1000),
                     "result": None,
                     "logs": [],
@@ -205,7 +208,6 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                         "cpu_total_seconds": metrics.cpu_total_seconds,
                     },
                 }
-            workflow_func, metadata = result
 
         # Build execution request
         request = ExecutionRequest(

@@ -49,6 +49,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         api_key_id: str | None = None,
         status: ExecutionStatus = ExecutionStatus.RUNNING,
         is_local_execution: bool = False,
+        execution_model: str | None = None,
     ) -> Execution:
         """
         Create a new execution record.
@@ -67,6 +68,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             api_key_id: Optional workflow ID whose API key triggered this execution
             status: Initial status (default RUNNING)
             is_local_execution: Whether this is a local CLI execution
+            execution_model: Which system ran the execution ('process' or 'thread')
 
         Returns:
             Created Execution record
@@ -99,6 +101,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             form_id=parsed_form_id,
             api_key_id=parsed_api_key_id,
             is_local_execution=is_local_execution,
+            execution_model=execution_model,
             started_at=datetime.utcnow(),
         )
 
@@ -584,11 +587,15 @@ async def create_execution(
     api_key_id: str | None = None,
     status: ExecutionStatus = ExecutionStatus.RUNNING,
     is_local_execution: bool = False,
+    execution_model: str | None = None,
 ) -> None:
     """
     Create a new execution record in PostgreSQL.
 
     Standalone function for workers/consumers that manage their own DB sessions.
+
+    Args:
+        execution_model: Which system ran the execution ('process' or 'thread')
     """
     from src.core.database import get_session_factory
 
@@ -606,6 +613,7 @@ async def create_execution(
             api_key_id=api_key_id,
             status=status,
             is_local_execution=is_local_execution,
+            execution_model=execution_model,
         )
         await session.commit()
 

@@ -271,7 +271,11 @@ class tables:
         # Try to get existing, then update or insert
         existing = await tables.get(table, id, scope=scope, app=app)
         if existing:
-            return await tables.update(table, id, data, scope=scope, app=app)
+            result = await tables.update(table, id, data, scope=scope, app=app)
+            # update() returns None only if doc doesn't exist, but we just verified it exists
+            if result is None:
+                raise RuntimeError(f"Document {id} was deleted during upsert")
+            return result
         else:
             return await tables.insert(table, data, id=id, scope=scope, app=app)
 

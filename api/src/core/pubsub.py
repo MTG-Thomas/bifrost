@@ -791,3 +791,58 @@ async def publish_git_sync_completed(
         **kwargs,
     }
     await manager.broadcast(f"git:{job_id}", completion_message)
+
+
+# =============================================================================
+# Worker Monitoring Pub/Sub
+# =============================================================================
+# These functions enable real-time monitoring of worker processes.
+# - Heartbeats: Periodic updates with process state, memory, executions
+# - Events: Lifecycle events (online, offline, state changes)
+
+
+async def publish_worker_heartbeat(heartbeat: dict[str, Any]) -> None:
+    """
+    Publish worker heartbeat to platform_workers channel and store in Redis.
+
+    Contains detailed state about worker processes and their executions.
+    Published every heartbeat interval (default 10s).
+
+    The heartbeat is both:
+    1. Broadcast to WebSocket subscribers for real-time updates
+    2. Stored in Redis for API queries (with TTL)
+
+    Args:
+        heartbeat: Dict with worker_id, timestamp, processes, queue info
+    """
+    # Broadcast to WebSocket subscribers
+    await manager.broadcast("platform_workers", heartbeat)
+
+    # Store in Redis for API queries
+    worker_id = heartbeat.get("worker_id")
+    if worker_id:
+        try:
+            from src.core.redis_client import get_redis_client
+
+            redis_client = get_redis_client()
+            heartbeat_key = f"bifrost:pool:{worker_id}:heartbeat"
+            # Store with TTL slightly longer than heartbeat interval
+            await redis_client.setex(heartbeat_key, 60, json.dumps(heartbeat))
+        except Exception as e:
+            logger.warning(f"Failed to store heartbeat in Redis: {e}")
+
+
+async def publish_worker_event(event: dict[str, Any]) -> None:
+    """
+    Publish worker lifecycle event to platform_workers channel.
+
+    Events include:
+    - worker_online: Worker registered and ready
+    - worker_offline: Worker shutting down gracefully
+    - process_state_changed: Worker process state changed
+    - execution_stuck: Execution marked as stuck
+
+    Args:
+        event: Dict with type, worker_id, and event-specific data
+    """
+    await manager.broadcast("platform_workers", event)

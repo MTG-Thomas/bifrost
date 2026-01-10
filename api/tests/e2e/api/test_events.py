@@ -9,10 +9,11 @@ Tests the full event lifecycle:
 - Delivery retry
 """
 
-import time
 import uuid
 
 import pytest
+
+from tests.e2e.conftest import poll_until
 
 
 # Simple test workflow content for subscriptions
@@ -33,9 +34,9 @@ async def e2e_events_test_workflow(event: dict) -> dict:
 '''
 
 
-def _wait_for_workflow(e2e_client, platform_admin, workflow_name: str, max_attempts: int = 30) -> dict | None:
+def _wait_for_workflow(e2e_client, platform_admin, workflow_name: str, max_wait: float = 30.0) -> dict | None:
     """Wait for a workflow to be discovered and return it."""
-    for _ in range(max_attempts):
+    def check_workflow():
         response = e2e_client.get(
             "/api/workflows",
             headers=platform_admin.headers,
@@ -48,8 +49,9 @@ def _wait_for_workflow(e2e_client, platform_admin, workflow_name: str, max_attem
             )
             if workflow:
                 return workflow
-        time.sleep(1)
-    return None
+        return None
+
+    return poll_until(check_workflow, max_wait=max_wait, interval=0.1, backoff=1.5, max_interval=1.0)
 
 
 @pytest.fixture(scope="module")
@@ -502,24 +504,24 @@ class TestWebhookReceiver:
             json={"action": "test.created", "data": {"key": "value"}},
         )
 
-        # Wait a moment for async processing
-        time.sleep(0.5)
+        # Poll until event is created
+        def find_event():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                events = response.json()["items"]
+                matching = [
+                    e for e in events
+                    if e.get("data", {}).get("action") == "test.created"
+                ]
+                if matching:
+                    return matching
+            return None
 
-        # Verify event was created
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        assert response.status_code == 200
-
-        events = response.json()["items"]
-        assert len(events) >= 1
-
-        # Find our event
-        matching_events = [
-            e for e in events
-            if e.get("data", {}).get("action") == "test.created"
-        ]
+        matching_events = poll_until(find_event, max_wait=5.0)
+        assert matching_events is not None, "Event not created within timeout"
         assert len(matching_events) >= 1
 
     def test_webhook_with_invalid_source_returns_404(self, e2e_client):
@@ -589,19 +591,24 @@ class TestWebhookReceiver:
             json=payload,
         )
 
-        time.sleep(0.5)
+        # Poll until event is stored
+        def find_event():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                events = response.json()["items"]
+                matching = [
+                    e for e in events
+                    if e.get("data", {}).get("event_type") == "user.created"
+                ]
+                if matching:
+                    return matching
+            return None
 
-        # Verify payload was stored
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        events = response.json()["items"]
-
-        matching = [
-            e for e in events
-            if e.get("data", {}).get("event_type") == "user.created"
-        ]
+        matching = poll_until(find_event, max_wait=5.0)
+        assert matching is not None, "Event not stored within timeout"
         assert len(matching) >= 1
         assert matching[0]["data"]["user"]["email"] == "test@example.com"
 
@@ -618,18 +625,24 @@ class TestWebhookReceiver:
             },
         )
 
-        time.sleep(0.5)
+        # Poll until event with headers is stored
+        def find_event():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                events = response.json()["items"]
+                matching = [
+                    e for e in events
+                    if e.get("data", {}).get("header_test") is True
+                ]
+                if matching:
+                    return matching
+            return None
 
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        events = response.json()["items"]
-
-        matching = [
-            e for e in events
-            if e.get("data", {}).get("header_test") is True
-        ]
+        matching = poll_until(find_event, max_wait=5.0)
+        assert matching is not None, "Event not stored within timeout"
         assert len(matching) >= 1
         # Headers should be stored (lowercase)
         assert "x-custom-header" in matching[0].get("headers", {})
@@ -663,30 +676,38 @@ class TestEventDelivery:
             json={"delivery_test": True},
         )
 
-        time.sleep(1)  # Wait for processing
+        # Poll until event is created and has deliveries
+        def find_event_with_deliveries():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code != 200:
+                return None
+            events = response.json()["items"]
+            matching = [
+                e for e in events
+                if e.get("data", {}).get("delivery_test") is True
+            ]
+            if not matching:
+                return None
+            event = matching[0]
 
-        # Get events and find our event
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        events = response.json()["items"]
+            # Check if deliveries exist
+            del_response = e2e_client.get(
+                f"/api/events/{event['id']}/deliveries",
+                headers=platform_admin.headers,
+            )
+            if del_response.status_code == 200:
+                deliveries = del_response.json()["items"]
+                if deliveries:
+                    return {"event": event, "deliveries": deliveries}
+            return None
 
-        matching = [
-            e for e in events
-            if e.get("data", {}).get("delivery_test") is True
-        ]
-        assert len(matching) >= 1
-        event = matching[0]
+        result = poll_until(find_event_with_deliveries, max_wait=5.0)
+        assert result is not None, "Event with deliveries not found within timeout"
 
-        # Check deliveries were created
-        response = e2e_client.get(
-            f"/api/events/{event['id']}/deliveries",
-            headers=platform_admin.headers,
-        )
-        assert response.status_code == 200
-
-        deliveries = response.json()["items"]
+        deliveries = result["deliveries"]
         assert len(deliveries) >= 1
         assert deliveries[0]["workflow_id"] == subscription["workflow_id"]
 
@@ -713,20 +734,24 @@ class TestEventDelivery:
             json={"filter_test": "non_matching"},
         )
 
-        time.sleep(0.5)
+        # Poll until event is created
+        def find_event():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                events = response.json()["items"]
+                matching = [
+                    e for e in events
+                    if e.get("data", {}).get("filter_test") == "non_matching"
+                ]
+                if matching:
+                    return matching[0]
+            return None
 
-        # Get the event
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        events = response.json()["items"]
-        matching = [
-            e for e in events
-            if e.get("data", {}).get("filter_test") == "non_matching"
-        ]
-        assert len(matching) >= 1
-        event = matching[0]
+        event = poll_until(find_event, max_wait=5.0)
+        assert event is not None, "Event not created within timeout"
 
         # Should have no deliveries for filtered subscription
         # (since event_type doesn't match "specific.event")
@@ -754,15 +779,25 @@ class TestEventDelivery:
                 json={"list_test": True, "index": i},
             )
 
-        time.sleep(0.5)
+        # Poll until all 3 events are created
+        def find_all_events():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                list_events = [
+                    e for e in data["items"]
+                    if e.get("data", {}).get("list_test") is True
+                ]
+                if len(list_events) >= 3:
+                    return data
+            return None
 
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        assert response.status_code == 200
+        data = poll_until(find_all_events, max_wait=5.0)
+        assert data is not None, "Not all events created within timeout"
 
-        data = response.json()
         assert "items" in data
         assert "total" in data
 
@@ -782,20 +817,24 @@ class TestEventDelivery:
             json={"get_event_test": True},
         )
 
-        time.sleep(0.5)
+        # Poll until event is created
+        def find_event():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                events = response.json()["items"]
+                matching = [
+                    e for e in events
+                    if e.get("data", {}).get("get_event_test") is True
+                ]
+                if matching:
+                    return matching[0]["id"]
+            return None
 
-        # Get events list
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        events = response.json()["items"]
-        matching = [
-            e for e in events
-            if e.get("data", {}).get("get_event_test") is True
-        ]
-        assert len(matching) >= 1
-        event_id = matching[0]["id"]
+        event_id = poll_until(find_event, max_wait=5.0)
+        assert event_id is not None, "Event not created within timeout"
 
         # Get single event
         response = e2e_client.get(
@@ -822,29 +861,38 @@ class TestEventDelivery:
             json={"deliveries_list_test": True},
         )
 
-        time.sleep(1)
+        # Poll until event is created with deliveries
+        def find_event_with_deliveries():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code != 200:
+                return None
+            events = response.json()["items"]
+            matching = [
+                e for e in events
+                if e.get("data", {}).get("deliveries_list_test") is True
+            ]
+            if not matching:
+                return None
+            event_id = matching[0]["id"]
 
-        # Get events
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        events = response.json()["items"]
-        matching = [
-            e for e in events
-            if e.get("data", {}).get("deliveries_list_test") is True
-        ]
-        assert len(matching) >= 1
-        event_id = matching[0]["id"]
+            # Check if deliveries exist
+            del_response = e2e_client.get(
+                f"/api/events/{event_id}/deliveries",
+                headers=platform_admin.headers,
+            )
+            if del_response.status_code == 200:
+                data = del_response.json()
+                if data.get("items"):
+                    return {"event_id": event_id, "data": data}
+            return None
 
-        # List deliveries
-        response = e2e_client.get(
-            f"/api/events/{event_id}/deliveries",
-            headers=platform_admin.headers,
-        )
-        assert response.status_code == 200
+        result = poll_until(find_event_with_deliveries, max_wait=5.0)
+        assert result is not None, "Event with deliveries not found within timeout"
 
-        data = response.json()
+        data = result["data"]
         assert "items" in data
         assert len(data["items"]) >= 1
 
@@ -875,29 +923,40 @@ class TestDeliveryRetry:
             json={"retry_test": True},
         )
 
-        time.sleep(1)
+        # Poll until event is created with deliveries
+        def find_event_with_deliveries():
+            response = e2e_client.get(
+                f"/api/events/sources/{source_id}/events",
+                headers=platform_admin.headers,
+            )
+            if response.status_code != 200:
+                return None
+            events = response.json()["items"]
+            matching = [
+                e for e in events
+                if e.get("data", {}).get("retry_test") is True
+            ]
+            if not matching:
+                return None
+            event = matching[0]
 
-        # Get events and delivery
-        response = e2e_client.get(
-            f"/api/events/sources/{source_id}/events",
-            headers=platform_admin.headers,
-        )
-        events = response.json()["items"]
-        matching = [
-            e for e in events
-            if e.get("data", {}).get("retry_test") is True
-        ]
-        event = matching[0]
+            # Check if deliveries exist
+            del_response = e2e_client.get(
+                f"/api/events/{event['id']}/deliveries",
+                headers=platform_admin.headers,
+            )
+            if del_response.status_code == 200:
+                deliveries = del_response.json()["items"]
+                if deliveries:
+                    return {"event": event, "deliveries": deliveries}
+            return None
 
-        response = e2e_client.get(
-            f"/api/events/{event['id']}/deliveries",
-            headers=platform_admin.headers,
-        )
-        deliveries = response.json()["items"]
+        result = poll_until(find_event_with_deliveries, max_wait=5.0)
 
-        if not deliveries:
-            pytest.skip("No deliveries created")
+        if result is None:
+            pytest.skip("No deliveries created within timeout")
 
+        deliveries = result["deliveries"]
         delivery = deliveries[0]
 
         # Try to retry non-failed delivery

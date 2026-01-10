@@ -39,7 +39,6 @@ class WorkflowMetadata:
     """Metadata attached to workflow functions by the @workflow decorator."""
 
     # Identity
-    id: str | None = None
     name: str = ""
     description: str = ""
     category: str = "General"
@@ -92,7 +91,6 @@ class DataProviderMetadata:
     """Metadata attached to data provider functions by the @data_provider decorator."""
 
     # Identity
-    id: str | None = None
     name: str = ""
     description: str = ""
     category: str = "General"
@@ -119,7 +117,6 @@ def workflow(
     _func: Callable | None = None,
     *,
     # Identity
-    id: str | None = None,
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
@@ -160,7 +157,6 @@ def workflow(
             ...
 
     Args:
-        id: Persistent UUID (auto-assigned on first save)
         name: Workflow name (defaults to function name)
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -193,7 +189,6 @@ def workflow(
 
         # Create metadata
         metadata = WorkflowMetadata(
-            id=id,
             name=name or func.__name__,
             description=func_description or "",
             category=category,
@@ -226,7 +221,6 @@ def tool(
     _func: Callable | None = None,
     *,
     # Identity
-    id: str | None = None,
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
@@ -255,7 +249,6 @@ def tool(
             ...
 
     Args:
-        id: Persistent UUID (auto-assigned on first save)
         name: Tool name (defaults to function name)
         description: LLM-friendly description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -269,7 +262,6 @@ def tool(
     """
     return workflow(
         _func,
-        id=id,
         name=name,
         description=description,
         category=category,
@@ -286,7 +278,6 @@ def data_provider(
     _func: Callable | None = None,
     *,
     # Identity
-    id: str | None = None,
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
@@ -314,7 +305,6 @@ def data_provider(
             ...
 
     Args:
-        id: Persistent UUID (auto-assigned on first save)
         name: Provider name (defaults to function name)
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -332,7 +322,6 @@ def data_provider(
             func_description = func.__doc__.split("\n")[0].strip()
 
         metadata = DataProviderMetadata(
-            id=id,
             name=name or func.__name__,
             description=func_description or "",
             category=category,

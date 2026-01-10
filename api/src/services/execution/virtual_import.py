@@ -30,7 +30,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from src.core.module_cache_sync import get_module_index_sync, get_module_sync
+from src.core.module_cache_sync import get_module_sync
 
 logger = logging.getLogger(__name__)
 
@@ -211,18 +211,14 @@ class VirtualModuleFinder(MetaPathFinder):
     """
     Meta path finder that loads workspace modules from Redis cache.
 
-    Converts Python module names to file paths and checks if they exist
-    in the cached module index. If found, loads content from Redis.
+    Converts Python module names to file paths and fetches directly
+    from Redis. Each import attempt does a Redis GET for the module path.
 
     Key design points:
     - No hardcoded prefix required - works with any module name
-    - Lazy index loading - only fetches from Redis on first import
+    - Direct Redis fetch - newly-added modules are immediately available
     - Supports both modules (.py) and packages (__init__.py)
     """
-
-    def __init__(self) -> None:
-        """Initialize finder with empty index (loaded on first use)."""
-        self._module_index: set[str] | None = None
 
     def find_spec(
         self,
@@ -275,21 +271,19 @@ class VirtualModuleFinder(MetaPathFinder):
         Internal implementation of find_spec.
 
         Separated from find_spec to keep the recursion guard clean.
+
+        We fetch directly from Redis without checking an index first.
+        This ensures newly-added modules are immediately available
+        without needing to refresh a cached index.
         """
         # Convert module name to potential file paths
         possible_paths = self._module_name_to_paths(fullname)
 
-        # Check if any path exists in our cached index
-        module_index = self._get_module_index()
-
         for file_path, is_package in possible_paths:
-            if file_path not in module_index:
-                continue
-
-            # Fetch content from Redis
+            # Fetch directly from Redis - no index check needed
+            # This ensures newly-added modules are immediately available
             cached = get_module_sync(file_path)
             if not cached:
-                logger.warning(f"Module in index but not in cache: {file_path}")
                 continue
 
             # Create loader and spec
@@ -335,16 +329,9 @@ class VirtualModuleFinder(MetaPathFinder):
             (f"{base_path}/__init__.py", True),  # Package __init__
         ]
 
-    def _get_module_index(self) -> set[str]:
-        """Get or refresh the module index from Redis."""
-        if self._module_index is None:
-            self._module_index = get_module_index_sync()
-            logger.debug(f"Loaded module index: {len(self._module_index)} modules")
-        return self._module_index
-
     def invalidate_index(self) -> None:
-        """Force refresh of module index on next lookup."""
-        self._module_index = None
+        """No-op for API compatibility. Index is no longer used."""
+        pass
 
 
 # Global finder instance (for invalidation access)
@@ -359,7 +346,7 @@ def install_virtual_import_hook() -> VirtualModuleFinder:
     The hook is installed at the front of sys.meta_path so it
     takes precedence over the filesystem finder.
 
-    IMPORTANT: We pre-load the module index BEFORE installing the hook.
+    IMPORTANT: We pre-load encoding modules BEFORE installing the hook.
     This ensures all encoding modules (like encodings.idna for hostname
     resolution) are loaded before our hook can intercept imports.
 
@@ -377,14 +364,9 @@ def install_virtual_import_hook() -> VirtualModuleFinder:
     # might try to fetch from Redis before Redis can even connect.
     _preload_required_modules()
 
-    # Pre-load the module index BEFORE installing the hook.
-    # This ensures the Redis connection is established while our hook
-    # is NOT yet active, avoiding import deadlocks.
+    # Create finder and install the hook
+    # No index pre-loading needed - we fetch modules directly from Redis
     _finder = VirtualModuleFinder()
-    _finder._module_index = get_module_index_sync()
-    logger.debug(f"Pre-loaded module index: {len(_finder._module_index)} modules")
-
-    # NOW install the hook - it already has a cached index
     sys.meta_path.insert(0, _finder)
 
     logger.info("Virtual import hook installed")

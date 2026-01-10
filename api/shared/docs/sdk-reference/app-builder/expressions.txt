@@ -43,6 +43,15 @@ Text with embedded expressions returns a string:
 
 Expressions have access to these context variables:
 
+| Variable | Description |
+|----------|-------------|
+| `user` | Current authenticated user |
+| `variables` | Page-level mutable state |
+| `workflow` | Workflow results by data source ID |
+| `field` | Form input values |
+| `params` | Route parameters from URL |
+| `row` | Current row in DataTable actions |
+
 ### user
 
 Current authenticated user:
@@ -81,11 +90,11 @@ Access workflow results by their data source ID. This is the recommended way to 
 {{ workflow.customers.error }}            // Error message if failed
 ```
 
-**Recommended Pattern**: When using `launchWorkflowId` with `launchWorkflowDataSourceId`, access results via `{{ workflow.<dataSourceId>.result }}`. For example, if `launchWorkflowDataSourceId: "stats"`, use `{{ workflow.stats.result.revenue }}`.
+When using `launchWorkflowId` with `launchWorkflowDataSourceId`, access results via `{{ workflow.<dataSourceId>.result }}`. For example, if `launchWorkflowDataSourceId: "stats"`, use `{{ workflow.stats.result.revenue }}`.
 
 ### data (Legacy)
 
-**DEPRECATED**: The `data` context is deprecated. Use `{{ workflow.<key>.result }}` instead. The `data` context is maintained for backwards compatibility with apps using the legacy `dataSources` array.
+The `data` context is deprecated. Use `{{ workflow.<key>.result }}` instead. The `data` context is maintained for backwards compatibility with apps using the legacy `dataSources` array.
 
 Data from legacy page data sources:
 
@@ -103,6 +112,36 @@ Form input values (by fieldId):
 {{ field.customerName }}
 {{ field.quantity }}
 {{ field.isActive }}
+```
+
+### params
+
+Route parameters from the current URL path:
+
+```javascript
+{{ params.id }}           // From path "/customers/:id"
+{{ params.projectId }}    // From path "/projects/:projectId"
+{{ params.customerId }}   // From path "/customers/:customerId/orders"
+```
+
+Route parameters are extracted from the page's `path` definition. For example, if a page has `path: "/customers/:id"` and the URL is `/customers/abc123`, then `{{ params.id }}` evaluates to `"abc123"`.
+
+**Common patterns with route parameters:**
+
+```javascript
+// Pass to launch workflow
+"launchWorkflowParams": {
+  "customerId": "{{ params.id }}"
+}
+
+// Use in workflow action
+"actionParams": {
+  "id": "{{ params.id }}",
+  "name": "{{ field.name }}"
+}
+
+// Dynamic navigation
+"navigateTo": "/customers/{{ params.customerId }}/orders/{{ row.orderId }}"
 ```
 
 ### row (DataTable only)

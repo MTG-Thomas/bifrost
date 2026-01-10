@@ -80,6 +80,7 @@ async def execute_workflow(
 
             return json.dumps({
                 "success": result.status.value == "Success",
+                "execution_id": result.execution_id,
                 "workflow_id": str(workflow.id),
                 "workflow_name": workflow.name,
                 "status": result.status.value,
@@ -231,13 +232,6 @@ async def validate_workflow(context: Any, file_path: str) -> str:
             if not has_bifrost_import:
                 warnings.append("No bifrost import found. You may need `from bifrost import workflow`.")
 
-            # Check file extension
-            if not file_path.endswith(".workflow.py"):
-                warnings.append(
-                    f"File should end with .workflow.py for auto-discovery. "
-                    f"Current: {file_path.split('/')[-1]}"
-                )
-
             return json.dumps({
                 "valid": len(errors) == 0,
                 "errors": errors,
@@ -264,7 +258,7 @@ async def validate_workflow(context: Any, file_path: str) -> str:
         "properties": {
             "file_path": {
                 "type": "string",
-                "description": "Path for the new workflow file (should end with .workflow.py)",
+                "description": "Path for the new workflow file (e.g., 'workflows/my_task.py')",
             },
             "code": {
                 "type": "string",
@@ -305,14 +299,9 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
             "error": "Missing @workflow decorator. Your code must include a function decorated with @workflow."
         })
 
-    # Suggest .workflow.py extension
-    if not file_path.endswith(".workflow.py"):
-        suggested = file_path.replace(".py", ".workflow.py") if file_path.endswith(".py") else f"{file_path}.workflow.py"
-        return json.dumps({
-            "error": "File extension warning",
-            "message": "Workflow files should end with .workflow.py for auto-discovery.",
-            "suggested_path": suggested,
-        })
+    # Ensure .py extension
+    if not file_path.endswith(".py"):
+        file_path = f"{file_path}.py"
 
     try:
         async with get_db_context() as db:
@@ -357,13 +346,13 @@ async def get_workflow_schema(context: Any) -> str:
 
 ## File Structure
 
-Workflows are Python files with the `.workflow.py` extension:
+Workflows are Python files discovered by their `@workflow` decorator:
 ```
 workflows/
-├── my_task.workflow.py
-├── data_sync.workflow.py
+├── my_task.py
+├── data_sync.py
 └── reports/
-    └── daily_report.workflow.py
+    └── daily_report.py
 ```
 
 ## Basic Workflow
@@ -386,9 +375,9 @@ async def my_workflow(param1: str, param2: int = 10):
     description="What it does",       # Shown in workflow list
     category="automation",            # For organizing workflows
     schedule="0 9 * * *",            # Cron schedule (optional)
-    endpoint=True,                    # Expose as HTTP endpoint
-    tool=True,                        # Make available as MCP tool
-    tool_description="For LLMs",     # Description for AI tools
+    endpoint_enabled=True,            # Expose as HTTP endpoint
+    is_tool=True,                     # Make available as MCP tool
+    tool_description="For LLMs",      # Description for AI tools
 )
 async def my_workflow():
     ...

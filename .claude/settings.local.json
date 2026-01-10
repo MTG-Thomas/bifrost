@@ -160,7 +160,15 @@
       "mcp__bifrost__list_components",
       "mcp__bifrost__update_component",
       "mcp__bifrost__get_component",
-      "mcp__bifrost__get_table"
+      "mcp__bifrost__get_table",
+      "mcp__bifrost__get_table_schema",
+      "mcp__bifrost__search_knowledge",
+      "mcp__bifrost__list_integrations",
+      "mcp__bifrost__create_table",
+      "mcp__bifrost__create_workflow",
+      "mcp__bifrost__create_app",
+      "mcp__bifrost__create_form",
+      "Skill(superpowers:systematic-debugging)"
     ],
     "deny": [],
     "ask": [],

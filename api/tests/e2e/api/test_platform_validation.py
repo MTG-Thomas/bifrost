@@ -332,9 +332,7 @@ class TestWorkflowTypeValidation:
 
     def test_form_rejects_tool_as_workflow_id(self, e2e_client, platform_admin):
         """Form workflow_id must reference a workflow type, not a tool."""
-        import time
-
-        # Create a tool via editor API
+        # Create a tool via editor API with index=true for synchronous discovery
         tool_content = '''"""Test Tool for Validation"""
 from bifrost import tool
 
@@ -346,7 +344,7 @@ async def validation_test_tool(query: str) -> str:
     return f"Result: {query}"
 '''
         create_response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "validation_test_tool.py",
@@ -355,9 +353,6 @@ async def validation_test_tool(query: str) -> str:
             },
         )
         assert create_response.status_code == 200
-
-        # Wait for discovery to index it
-        time.sleep(3)
 
         # Find the tool we just created - check all workflows including tools
         workflows_response = e2e_client.get(
@@ -400,9 +395,7 @@ async def validation_test_tool(query: str) -> str:
 
     def test_form_rejects_data_provider_as_workflow_id(self, e2e_client, platform_admin):
         """Form workflow_id must reference a workflow type, not a data_provider."""
-        import time
-
-        # Create a data provider via editor API
+        # Create a data provider via editor API with index=true for synchronous discovery
         dp_content = '''"""Test Data Provider for Validation"""
 from bifrost import data_provider
 
@@ -414,7 +407,7 @@ async def validation_test_dp() -> list:
     return [{"value": "a", "label": "A"}]
 '''
         create_response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "validation_test_dp.py",
@@ -423,9 +416,6 @@ async def validation_test_dp() -> list:
             },
         )
         assert create_response.status_code == 200
-
-        # Wait for discovery to index it
-        time.sleep(2)
 
         # Find the data provider we just created
         dp_response = e2e_client.get(
@@ -462,9 +452,7 @@ async def validation_test_dp() -> list:
 
     def test_agent_rejects_workflow_as_tool(self, e2e_client, platform_admin):
         """Agent tool_ids must reference type='tool', not regular workflows."""
-        import time
-
-        # Create a regular workflow via editor API
+        # Create a regular workflow via editor API with index=true for synchronous discovery
         workflow_content = '''"""Test Workflow for Validation"""
 from bifrost import workflow
 
@@ -476,7 +464,7 @@ async def validation_test_workflow(input: str) -> str:
     return f"Processed: {input}"
 '''
         create_response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "validation_test_workflow.py",
@@ -485,9 +473,6 @@ async def validation_test_workflow(input: str) -> str:
             },
         )
         assert create_response.status_code == 200
-
-        # Wait for discovery to index it
-        time.sleep(2)
 
         # Find the workflow we just created
         workflows_response = e2e_client.get(

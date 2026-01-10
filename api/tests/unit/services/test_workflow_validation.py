@@ -55,7 +55,6 @@ class TestConvertWorkflowMetadataToModel:
     def test_basic_conversion(self):
         """Test basic metadata conversion without parameters"""
         metadata = WorkflowMetadata(
-            id="test-uuid",
             name="test_workflow",
             description="Test workflow description",
             category="Testing",
@@ -67,7 +66,8 @@ class TestConvertWorkflowMetadataToModel:
 
         result = _convert_workflow_metadata_to_model(metadata)
 
-        assert result.id == "test-uuid"
+        # ID is generated as pending-{name} for validation
+        assert result.id == "pending-test_workflow"
         assert result.name == "test_workflow"
         assert result.description == "Test workflow description"
         assert result.category == "Testing"
@@ -78,7 +78,6 @@ class TestConvertWorkflowMetadataToModel:
     def test_conversion_with_parameters(self):
         """Test conversion includes workflow parameters correctly"""
         metadata = WorkflowMetadata(
-            id="test-uuid",
             name="test_workflow",
             description="Test",
             parameters=[
@@ -125,7 +124,6 @@ class TestConvertWorkflowMetadataToModel:
         # It does NOT have: data_provider, help_text, validation, options
         # The conversion function should handle this gracefully
         metadata = WorkflowMetadata(
-            id="test-uuid",
             name="test_workflow",
             description="Test",
             parameters=[

@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 _sdk_tool: Callable[..., Any] | None = None
 
 try:
-    from claude_code_sdk import tool as sdk_tool_import
+    from claude_code_sdk import tool as sdk_tool_import  # type: ignore[import-not-found]
 
     _sdk_tool = sdk_tool_import
 except ImportError:
     try:
-        from anthropic.lib.bedrock._tools import tool as bedrock_tool
+        from anthropic.lib.bedrock._tools import tool as bedrock_tool  # type: ignore[import-not-found]
 
         _sdk_tool = bedrock_tool
     except ImportError:

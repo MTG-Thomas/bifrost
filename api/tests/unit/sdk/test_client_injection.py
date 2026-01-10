@@ -121,13 +121,15 @@ class TestClientInjection:
             # Access token should be stored
             assert client._access_token == "token_abc123"
 
-            # HTTP clients should be initialized
-            assert client._http is not None
+            # Sync HTTP client should be initialized eagerly
             assert client._sync_http is not None
-
-            # Check authorization header
-            assert client._http.headers["Authorization"] == "Bearer token_abc123"
             assert client._sync_http.headers["Authorization"] == "Bearer token_abc123"
+
+            # Async HTTP client is now lazily initialized per event loop
+            # Call _get_async_client() to create it
+            http = client._get_async_client()
+            assert http is not None
+            assert http.headers["Authorization"] == "Bearer token_abc123"
         finally:
             # Clean up async client (don't use asyncio.run to avoid nested event loop)
             pass

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
-from src.models.enums import ExecutionStatus
+from src.models.enums import ExecutionModel, ExecutionStatus
 
 if TYPE_CHECKING:
     pass
@@ -69,6 +69,8 @@ class WorkflowExecution(BaseModel):
     # Resource metrics (admin only, null for non-admins)
     peak_memory_bytes: int | None = None
     cpu_total_seconds: float | None = None
+    # Execution model tracking
+    execution_model: str | None = None  # 'process' or 'thread' - which worker model ran this
     # AI usage tracking
     ai_usage: list[AIUsagePublicSimple] | None = None
     ai_totals: AIUsageTotalsSimple | None = None
@@ -161,6 +163,10 @@ class ExecutionUpdate(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_ms: int | None = None
+    execution_model: ExecutionModel | None = Field(
+        default=None,
+        description="Execution model used: 'process' (legacy) or 'thread' (new thread pool)"
+    )
 
 
 class ExecutionPublic(ExecutionBase):
@@ -176,6 +182,10 @@ class ExecutionPublic(ExecutionBase):
     organization_id: UUID | None
     form_id: UUID | None
     created_at: datetime
+    execution_model: str | None = Field(
+        default=None,
+        description="Execution model used: 'process' (legacy) or 'thread' (new thread pool)"
+    )
 
     @field_serializer("created_at", "started_at", "completed_at")
     def serialize_dt(self, dt: datetime | None) -> str | None:

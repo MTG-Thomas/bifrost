@@ -4,13 +4,18 @@ Bifrost API - FastAPI Application
 Main entry point for the FastAPI application.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
 from src.config import get_settings
+from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.database import close_db, init_db
 from src.core.pubsub import manager as pubsub_manager
@@ -62,6 +67,9 @@ from src.routers import (
     app_pages_router,
     app_components_router,
     dependencies_router,
+    platform_workers_router,
+    platform_queue_router,
+    platform_stuck_router,
 )
 
 # Configure logging
@@ -249,6 +257,129 @@ def create_app() -> FastAPI:
     # Note: CORS middleware not needed - frontend proxies all /api requests
     # through Vite dev server (dev) or nginx (prod), making them same-origin.
 
+    # ==========================================================================
+    # Global Exception Handlers
+    # ==========================================================================
+    # These provide consistent error responses using the ErrorResponse model.
+    # Handlers are registered in order of specificity (most specific first).
+
+    @app.exception_handler(PydanticValidationError)
+    async def pydantic_validation_handler(
+        request: Request, exc: PydanticValidationError
+    ) -> JSONResponse:
+        """Pydantic model validation errors → 422."""
+        errors = exc.errors()
+        # Extract field names and messages for user-friendly output
+        field_errors = {
+            ".".join(str(loc) for loc in e["loc"]): e["msg"] for e in errors
+        }
+        return JSONResponse(
+            status_code=422,
+            content=ErrorResponse(
+                error="validation_error",
+                message="Validation failed",
+                details={"fields": field_errors},
+            ).model_dump(),
+        )
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error_handler(
+        request: Request, exc: IntegrityError
+    ) -> JSONResponse:
+        """Database constraint violations → 409."""
+        detail = str(exc.orig) if exc.orig else str(exc)
+
+        if "unique" in detail.lower() or "duplicate" in detail.lower():
+            message = "Resource already exists"
+        elif "foreign key" in detail.lower():
+            message = "Referenced resource not found"
+        else:
+            message = "Database constraint violation"
+
+        logger.warning(f"IntegrityError: {detail}")
+        return JSONResponse(
+            status_code=409,
+            content=ErrorResponse(
+                error="conflict",
+                message=message,
+            ).model_dump(),
+        )
+
+    @app.exception_handler(NoResultFound)
+    async def no_result_handler(
+        request: Request, exc: NoResultFound
+    ) -> JSONResponse:
+        """Query returned no results → 404."""
+        return JSONResponse(
+            status_code=404,
+            content=ErrorResponse(
+                error="not_found",
+                message="Resource not found",
+            ).model_dump(),
+        )
+
+    @app.exception_handler(ValueError)
+    async def value_error_handler(
+        request: Request, exc: ValueError
+    ) -> JSONResponse:
+        """ValueError from validation → 422."""
+        return JSONResponse(
+            status_code=422,
+            content=ErrorResponse(
+                error="validation_error",
+                message=str(exc),
+            ).model_dump(),
+        )
+
+    @app.exception_handler(asyncio.TimeoutError)
+    async def timeout_handler(
+        request: Request, exc: asyncio.TimeoutError
+    ) -> JSONResponse:
+        """Timeout errors → 504."""
+        logger.warning(f"Timeout error on {request.method} {request.url.path}")
+        return JSONResponse(
+            status_code=504,
+            content=ErrorResponse(
+                error="timeout",
+                message="Operation timed out",
+            ).model_dump(),
+        )
+
+    @app.exception_handler(OperationalError)
+    async def operational_error_handler(
+        request: Request, exc: OperationalError
+    ) -> JSONResponse:
+        """Database connection issues → 503."""
+        logger.error(f"Database operational error: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=503,
+            content=ErrorResponse(
+                error="service_unavailable",
+                message="Service temporarily unavailable",
+            ).model_dump(),
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(
+        request: Request, exc: Exception
+    ) -> JSONResponse:
+        """Catch-all for unhandled exceptions → 500 with safe message."""
+        logger.error(
+            f"Unhandled exception on {request.method} {request.url.path}: {exc}",
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content=ErrorResponse(
+                error="internal_error",
+                message="An unexpected error occurred",
+            ).model_dump(),
+        )
+
+    # ==========================================================================
+    # Middleware
+    # ==========================================================================
+
     # Add CSRF protection middleware
     # Only enforces for cookie-based auth with unsafe methods (POST, PUT, DELETE, PATCH)
     # Bearer token auth is exempt since browsers don't automatically include it
@@ -302,6 +433,9 @@ def create_app() -> FastAPI:
     app.include_router(app_pages_router)
     app.include_router(app_components_router)
     app.include_router(dependencies_router)
+    app.include_router(platform_workers_router)
+    app.include_router(platform_queue_router)
+    app.include_router(platform_stuck_router)
 
     # Mount MCP OAuth routes at root level (required by RFC 8414/9728)
     # These must be registered BEFORE the FastMCP ASGI mount

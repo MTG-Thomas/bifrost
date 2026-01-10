@@ -5,6 +5,7 @@ Init container script for Bifrost.
 Runs before API and workers start:
 1. Run database migrations (alembic upgrade head)
 2. Warm Redis module cache from database
+3. Warm Redis requirements cache from database
 
 Usage:
     python -m scripts.init_container
@@ -12,7 +13,8 @@ Usage:
 Exit codes:
     0 - Success
     1 - Migration failure
-    2 - Cache warming failure
+    2 - Module cache warming failure
+    3 - Requirements cache warming failure
 """
 
 from __future__ import annotations
@@ -82,6 +84,40 @@ def run_migrations() -> bool:
         return False
 
 
+async def warm_requirements_cache() -> bool:
+    """
+    Warm Redis requirements cache from database.
+
+    Loads requirements.txt content from workspace_files table into Redis cache
+    so workers can install packages without database access during startup.
+
+    Returns:
+        True if requirements.txt was cached, False if not found
+
+    Raises:
+        Exception: If cache warming fails
+    """
+    logger.info("Warming requirements cache from database...")
+
+    try:
+        from src.core.requirements_cache import warm_requirements_cache as _warm_cache
+
+        found = await _warm_cache()
+        if found:
+            logger.info("Requirements cache warmed successfully")
+        else:
+            logger.info("No requirements.txt found in database (cache empty)")
+        return found
+
+    except ImportError as e:
+        logger.error(f"Failed to import requirements_cache: {e}")
+        raise
+
+    except Exception as e:
+        logger.error(f"Failed to warm requirements cache: {e}")
+        raise
+
+
 async def warm_module_cache() -> int:
     """
     Warm Redis module cache from database.
@@ -126,7 +162,7 @@ async def main() -> int:
 
     # Step 1: Run migrations
     logger.info("")
-    logger.info("Step 1/2: Database Migrations")
+    logger.info("Step 1/3: Database Migrations")
     logger.info("-" * 40)
 
     if not run_migrations():
@@ -135,14 +171,25 @@ async def main() -> int:
 
     # Step 2: Warm module cache
     logger.info("")
-    logger.info("Step 2/2: Module Cache Warming")
+    logger.info("Step 2/3: Module Cache Warming")
     logger.info("-" * 40)
 
     try:
         module_count = await warm_module_cache()
     except Exception as e:
-        logger.error(f"FAILED: Cache warming failed - {e}")
+        logger.error(f"FAILED: Module cache warming failed - {e}")
         return 2
+
+    # Step 3: Warm requirements cache
+    logger.info("")
+    logger.info("Step 3/3: Requirements Cache Warming")
+    logger.info("-" * 40)
+
+    try:
+        requirements_found = await warm_requirements_cache()
+    except Exception as e:
+        logger.error(f"FAILED: Requirements cache warming failed - {e}")
+        return 3
 
     # Success
     logger.info("")
@@ -150,6 +197,7 @@ async def main() -> int:
     logger.info("Init Container Completed Successfully")
     logger.info("  - Migrations: Applied")
     logger.info(f"  - Module cache: {module_count} modules loaded")
+    logger.info(f"  - Requirements cache: {'cached' if requirements_found else 'empty'}")
     logger.info("=" * 60)
 
     return 0

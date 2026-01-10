@@ -12,7 +12,6 @@ These transitions test the DB-first model's ability to detect content type
 changes and route storage appropriately.
 """
 
-import time
 import pytest
 
 
@@ -45,7 +44,6 @@ async def process_data(data: dict) -> dict:
         assert response.status_code == 200
 
         # Verify NOT in workflows list
-        time.sleep(1)
         response = e2e_client.get(
             "/api/workflows",
             headers=platform_admin.headers,
@@ -78,7 +76,6 @@ async def process_data(data: dict) -> dict:
         assert response.status_code == 200
 
         # Step 3: Verify workflow now appears in DB
-        time.sleep(2)
         response = e2e_client.get(
             "/api/workflows",
             headers=platform_admin.headers,
@@ -124,7 +121,6 @@ async def get_options():
                 "encoding": "utf-8",
             },
         )
-        time.sleep(1)
 
         # Verify not in data providers
         response = e2e_client.get(
@@ -154,7 +150,6 @@ async def get_options():
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Verify appears in data providers
         response = e2e_client.get(
@@ -198,7 +193,6 @@ async def delete_file_test_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Verify workflow exists
         response = e2e_client.get(
@@ -214,9 +208,6 @@ async def delete_file_test_workflow() -> str:
             headers=platform_admin.headers,
         )
         assert response.status_code == 204
-
-        # Wait for cleanup
-        time.sleep(2)
 
         # Verify workflow removed
         response = e2e_client.get(
@@ -256,7 +247,6 @@ async def type_change_test(x: str) -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Verify appears as workflow
         response = e2e_client.get(
@@ -290,7 +280,6 @@ async def type_change_test(x: str) -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # The entry should be updated (same path, different type)
         # Type change behavior depends on implementation details
@@ -322,7 +311,6 @@ async def workflow_to_dp_test() -> list:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Verify exists as workflow
         response = e2e_client.get(
@@ -349,7 +337,6 @@ async def workflow_to_dp_test() -> list:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Check data providers - should now appear there
         response = e2e_client.get(

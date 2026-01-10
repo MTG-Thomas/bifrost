@@ -17,7 +17,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Callable
 
-from src.services.execution.module_loader import get_data_provider, WorkflowMetadata, exec_from_db
+from src.services.execution.module_loader import WorkflowMetadata, exec_from_db
 from src.models import WorkflowExecutionResponse
 from src.models.enums import ExecutionStatus
 
@@ -35,18 +35,6 @@ class WorkflowNotFoundError(Exception):
 
 class WorkflowLoadError(Exception):
     """Raised when a workflow fails to load."""
-
-    pass
-
-
-class DataProviderNotFoundError(Exception):
-    """Raised when a data provider cannot be found."""
-
-    pass
-
-
-class DataProviderLoadError(Exception):
-    """Raised when a data provider fails to load."""
 
     pass
 
@@ -385,106 +373,6 @@ async def run_code(
         code_base64=code_base64,
         parameters=parameters,
     )
-
-
-async def run_data_provider(
-    context: "ExecutionContext",
-    provider_name: str,
-    params: dict[str, Any] | None = None,
-    no_cache: bool = False,
-) -> list[dict[str, Any]]:
-    """
-    Execute a data provider and return options.
-
-    Args:
-        context: ExecutionContext with org scope and user info
-        provider_name: Name of the data provider
-        params: Input parameters for the data provider
-        no_cache: If True, bypass cache
-
-    Returns:
-        List of data provider options
-
-    Raises:
-        DataProviderNotFoundError: If provider doesn't exist
-        DataProviderLoadError: If provider fails to load
-        RuntimeError: If provider execution fails
-    """
-    from src.services.execution.pool import get_execution_pool
-
-    # Load data provider to get metadata
-    try:
-        result = get_data_provider(provider_name)
-        if not result:
-            raise DataProviderNotFoundError(
-                f"Data provider '{provider_name}' not found"
-            )
-
-        provider_func, provider_metadata = result
-        logger.debug(f"Loaded data provider: {provider_name}")
-    except DataProviderNotFoundError:
-        raise
-    except Exception as e:
-        logger.error(
-            f"Failed to load data provider {provider_name}: {e}", exc_info=True
-        )
-        raise DataProviderLoadError(
-            f"Failed to load data provider '{provider_name}': {str(e)}"
-        )
-
-    execution_id = str(uuid.uuid4())
-
-    # Build context data for subprocess
-    org_data = None
-    if context.organization:
-        org_data = {
-            "id": context.organization.id,
-            "name": context.organization.name,
-            "is_active": context.organization.is_active,
-        }
-
-    context_data = {
-        "execution_id": execution_id,
-        "name": provider_name,
-        "code": None,
-        "parameters": params or {},
-        "caller": {
-            "user_id": context.user_id,
-            "email": context.email,
-            "name": context.name,
-        },
-        "organization": org_data,
-        "config": context._config,
-        "tags": ["data_provider"],
-        "timeout_seconds": 60,  # Data providers should be quick
-        "cache_ttl_seconds": provider_metadata.cache_ttl_seconds,
-        "transient": True,  # No execution tracking for data providers
-        "no_cache": no_cache,
-        "is_platform_admin": context.is_platform_admin,
-    }
-
-    # Execute in isolated subprocess
-    pool = get_execution_pool()
-    result = await pool.execute(
-        execution_id=execution_id,
-        context_data=context_data,
-        timeout_seconds=60,  # Data providers should be quick
-    )
-
-    # Check result status
-    status_str = result.get("status", "Failed")
-    if status_str != "Success":
-        raise RuntimeError(
-            f"Data provider execution failed: {result.get('error_message')}"
-        )
-
-    options = result.get("result")
-    if not isinstance(options, list):
-        raise RuntimeError(
-            f"Data provider must return a list, got {type(options).__name__}"
-        )
-
-    return options
 
 
 async def _enqueue_workflow_async(

@@ -70,6 +70,9 @@ class Execution(Base):
         ForeignKey("workflows.id"), default=None
     )  # Workflow whose API key triggered this execution (null for user-triggered)
     is_local_execution: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    execution_model: Mapped[str | None] = mapped_column(
+        String(20), default=None
+    )  # 'process' or 'thread' - tracks which execution model ran the job
     session_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("cli_sessions.id", ondelete="SET NULL"), default=None
     )

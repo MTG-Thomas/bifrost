@@ -46,6 +46,11 @@ from src.routers.applications import router as applications_router
 from src.routers.app_pages import router as app_pages_router
 from src.routers.app_components import router as app_components_router
 from src.routers.dependencies import router as dependencies_router
+from src.routers.platform import (
+    workers_router as platform_workers_router,
+    queue_router as platform_queue_router,
+    stuck_router as platform_stuck_router,
+)
 
 __all__ = [
     "auth_router",
@@ -95,4 +100,7 @@ __all__ = [
     "app_pages_router",
     "app_components_router",
     "dependencies_router",
+    "platform_workers_router",
+    "platform_queue_router",
+    "platform_stuck_router",
 ]

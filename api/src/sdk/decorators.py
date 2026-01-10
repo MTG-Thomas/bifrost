@@ -31,7 +31,6 @@ def workflow(
     _func: Callable | None = None,
     *,
     # Identity
-    id: str | None = None,
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
@@ -83,7 +82,6 @@ def workflow(
             ...
 
     Args:
-        id: Persistent UUID (auto-assigned on first save)
         name: Workflow name (defaults to function name)
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -157,7 +155,6 @@ def workflow(
 
         # Initialize metadata
         metadata = WorkflowMetadata(
-            id=id,
             name=workflow_name,
             description=workflow_description,
             category=category,
@@ -206,7 +203,6 @@ def tool(
     _func: Callable | None = None,
     *,
     # Identity
-    id: str | None = None,
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
@@ -239,7 +235,6 @@ def tool(
             ...
 
     Args:
-        id: Persistent UUID (auto-assigned on first save)
         name: Tool name (defaults to function name)
         description: LLM-friendly description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -254,7 +249,6 @@ def tool(
     # Delegate to workflow with is_tool=True
     return workflow(
         _func,
-        id=id,
         name=name,
         description=description,
         category=category,
@@ -271,7 +265,6 @@ def data_provider(
     _func: Callable | None = None,
     *,
     # Identity
-    id: str | None = None,
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
@@ -303,7 +296,6 @@ def data_provider(
             ...
 
     Args:
-        id: Persistent UUID (auto-assigned on first save)
         name: Data provider name (defaults to function name)
         description: Human-readable description (defaults to first line of docstring)
         category: Category for organization (default: "General")
@@ -357,7 +349,6 @@ def data_provider(
 
         # Create metadata
         metadata = DataProviderMetadata(
-            id=id,
             name=provider_name,
             description=provider_description,
             category=category,

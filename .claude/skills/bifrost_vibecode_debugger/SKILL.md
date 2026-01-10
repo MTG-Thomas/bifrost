@@ -325,26 +325,30 @@ Pages load data via workflows, accessed through expressions:
 
 The workflow result is stored under `workflow.clientsList`, and the DataTable reads from `workflow.clientsList.clients`.
 
-## Decorators and IDs
+## Decorators
 
-Always include a generated UUID for decorator `id` parameters:
+Bifrost provides three decorator types:
 
 ```python
-@workflow(id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+from bifrost import workflow, tool, data_provider
+
+@workflow
 async def my_workflow(name: str) -> dict:
     '''What this workflow does.'''
     return {"result": "value"}
 
-@tool(id="b2c3d4e5-f6a7-8901-bcde-f12345678901")
+@tool
 async def my_tool(query: str) -> dict:
     '''Tool description for AI agents.'''
     return {"answer": "..."}
 
-@data_provider(id="c3d4e5f6-a7b8-9012-cdef-123456789012")
+@data_provider
 async def get_options() -> list[dict]:
     '''Returns options for dropdowns.'''
     return [{"label": "Option", "value": "opt"}]
 ```
+
+Note: `@tool` is an alias for `@workflow(is_tool=True)`. Use `@tool` for cleaner code when creating AI agent tools.
 
 ## Workspace Structure
 

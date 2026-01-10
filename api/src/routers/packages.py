@@ -3,12 +3,16 @@ Packages Router
 
 Python package management for the workflow runtime.
 Allows listing, installing, and uninstalling Python packages.
+
+Package visibility works by querying worker pools registered in Redis.
+Each worker registers its installed packages at bifrost:pool:{pool_id}.
 """
 
 import asyncio
 import logging
 import json
 import uuid
+from typing import Awaitable, cast
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -21,6 +25,7 @@ from src.models import (
     PackageUpdatesResponse,
 )
 from src.core.auth import Context, CurrentSuperuser
+from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import publish_broadcast
 
 logger = logging.getLogger(__name__)
@@ -31,6 +36,71 @@ router = APIRouter(prefix="/api/packages", tags=["Packages"])
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+
+async def get_packages_from_workers() -> list[InstalledPackage] | None:
+    """
+    Get installed packages from worker pools registered in Redis.
+
+    Workers register at bifrost:pool:{pool_id} and include a 'packages' field
+    with JSON-encoded list of {name, version} dicts.
+
+    Returns:
+        Aggregated list of unique packages from all workers, or None if no workers found.
+        When multiple workers have different versions, the highest version is used.
+    """
+    try:
+        redis_client = get_redis_client()
+        raw_redis = await redis_client._get_redis()
+        cursor: int = 0
+        all_packages: dict[str, str] = {}  # name -> version (highest wins)
+
+        while True:
+            cursor, keys = await cast(
+                Awaitable[tuple[int, list[str]]],
+                raw_redis.scan(cursor, match="bifrost:pool:*", count=100)
+            )
+            for key in keys:
+                # Skip non-registration keys (heartbeat, commands, etc.)
+                # Pool registration keys are exactly "bifrost:pool:{worker_id}" (3 parts)
+                # Other keys have more parts like "bifrost:pool:{worker_id}:heartbeat"
+                if key.count(":") != 2:
+                    continue
+                # Pool data is stored as a hash, get the "packages" field
+                packages_json = await cast(
+                    Awaitable[str | None],
+                    raw_redis.hget(key, "packages")
+                )
+                if packages_json:
+                    try:
+                        packages_data = json.loads(packages_json)
+                        for pkg in packages_data:
+                            name = pkg.get("name", "").lower()
+                            version = pkg.get("version", "")
+                            if name:
+                                # Keep highest version if multiple workers report different versions
+                                if name not in all_packages or version > all_packages[name]:
+                                    all_packages[name] = version
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Failed to parse packages from {key}")
+                        continue
+
+            if cursor == 0:
+                break
+
+        if not all_packages:
+            logger.debug("No worker packages found in Redis")
+            return None
+
+        logger.debug(f"Found {len(all_packages)} packages from workers")
+        return [
+            InstalledPackage(name=name, version=version)
+            for name, version in sorted(all_packages.items())
+        ]
+
+    except Exception as e:
+        logger.warning(f"Failed to get packages from workers: {e}")
+        return None
 
 
 async def check_package_updates() -> list[PackageUpdate]:
@@ -79,11 +149,12 @@ async def check_package_updates() -> list[PackageUpdate]:
         return []
 
 
-async def get_installed_packages() -> list[InstalledPackage]:
+async def get_installed_packages_local() -> list[InstalledPackage]:
     """
-    Get list of installed Python packages.
+    Get list of installed Python packages from local pip.
 
     Uses async subprocess to avoid blocking the event loop.
+    This is a fallback when no workers are registered in Redis.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -116,6 +187,24 @@ async def get_installed_packages() -> list[InstalledPackage]:
     except Exception as e:
         logger.error(f"Error getting installed packages: {str(e)}")
         return []
+
+
+async def get_installed_packages() -> list[InstalledPackage]:
+    """
+    Get list of installed Python packages.
+
+    First tries to get packages from registered workers in Redis.
+    Falls back to local pip if no workers are registered.
+    """
+    # Try to get packages from workers first
+    worker_packages = await get_packages_from_workers()
+    if worker_packages is not None:
+        logger.debug(f"Using packages from workers: {len(worker_packages)} packages")
+        return worker_packages
+
+    # Fallback to local pip (useful for dev/test or API-only deployments)
+    logger.debug("No workers found, falling back to local pip")
+    return await get_installed_packages_local()
 
 
 # =============================================================================
@@ -212,9 +301,9 @@ async def install_package(
     """
     try:
         job_id = str(uuid.uuid4())
-        package_spec = request.package
+        package_spec = request.package_name
         if request.version:
-            package_spec = f"{request.package}=={request.version}"
+            package_spec = f"{request.package_name}=={request.version}"
 
         logger.info(f"Broadcasting package installation: {package_spec}", extra={"job_id": job_id})
 
@@ -225,7 +314,7 @@ async def install_package(
             message={
                 "type": "package_install",
                 "job_id": job_id,
-                "package": request.package if request.package else None,
+                "package": request.package_name,
                 "version": request.version if request.version else None,
                 "connection_id": str(user.user_id),  # User subscribes to package:{user_id}
                 "user_id": str(user.user_id),
@@ -236,8 +325,10 @@ async def install_package(
         logger.info(f"Package installation broadcast: {package_spec}", extra={"job_id": job_id})
 
         return PackageInstallResponse(
-            job_id=job_id,
+            package_name=request.package_name,
+            version=request.version,
             status="queued",
+            message=f"Installation queued with job_id: {job_id}",
         )
 
     except Exception as e:

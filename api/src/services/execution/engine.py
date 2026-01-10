@@ -20,7 +20,7 @@ from src.sdk.context import Caller, ExecutionContext, Organization
 from src.sdk.error_handling import WorkflowError
 from src.sdk.errors import UserError, WorkflowExecutionException
 from src.models.enums import ExecutionStatus
-from src.core.cache import prewarm_sdk_cache, cleanup_execution_cache, get_cached_data_provider, cache_data_provider_result
+from src.core.cache import cleanup_execution_cache, get_cached_data_provider, cache_data_provider_result
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +55,6 @@ except ImportError:
     WriteBuffer = None  # type: ignore
     set_write_buffer = None  # type: ignore
     clear_write_buffer = None  # type: ignore
-
-# Import cache warming and flush
-try:
-    from bifrost._sync import flush_pending_changes
-    CACHE_AVAILABLE = True
-except ImportError:
-    CACHE_AVAILABLE = False
-    flush_pending_changes = None  # type: ignore
 
 # Data provider cache is now available via import at top
 DATA_PROVIDER_CACHE_AVAILABLE = True
@@ -269,20 +261,9 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         logger.debug(
             f"Set bifrost execution context for execution {request.execution_id}")
 
-    # Pre-warm SDK cache (reads config, oauth, forms, roles from Postgres into Redis)
-    if CACHE_AVAILABLE and prewarm_sdk_cache:
-        try:
-            org_id = request.organization.id if request.organization else None
-            await prewarm_sdk_cache(
-                execution_id=request.execution_id,
-                org_id=org_id,
-                user_id=request.caller.user_id,
-                is_admin=request.is_platform_admin,
-            )
-            logger.debug(f"Pre-warmed SDK cache for execution {request.execution_id}")
-        except Exception as e:
-            # Log but don't fail - SDK will fall back gracefully
-            logger.warning(f"Failed to pre-warm SDK cache: {e}")
+    # NOTE: SDK cache warming is done in the consumer BEFORE dispatching to thread workers.
+    # This avoids event loop issues - the consumer runs in a stable main event loop,
+    # while thread workers create new event loops via asyncio.run() per execution.
 
     # Set up stdout/stderr capture
     # Python's logging writes to stderr by default, so we'll capture it naturally
@@ -581,31 +562,11 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         )
 
     finally:
-        # Flush pending changes from write buffer to Postgres
-        if CACHE_AVAILABLE and flush_pending_changes:
-            try:
-                changes_count = await flush_pending_changes(request.execution_id)
-                if changes_count > 0:
-                    logger.info(f"Flushed {changes_count} pending changes for execution {request.execution_id}")
-            except Exception as e:
-                logger.error(f"Failed to flush pending changes: {e}", exc_info=True)
-
-        # Flush logs from Redis Stream to Postgres
-        if STREAM_LOGGING_AVAILABLE and flush_logs_to_postgres:
-            try:
-                logs_count = await flush_logs_to_postgres(request.execution_id)
-                if logs_count > 0:
-                    logger.debug(f"Flushed {logs_count} logs to Postgres for execution {request.execution_id}")
-            except Exception as e:
-                logger.warning(f"Failed to flush logs to Postgres: {e}")
-
-        # Cleanup execution cache (remove temporary Redis keys)
-        if CACHE_AVAILABLE and cleanup_execution_cache:
-            try:
-                await cleanup_execution_cache(request.execution_id)
-                logger.debug(f"Cleaned up execution cache for {request.execution_id}")
-            except Exception as e:
-                logger.warning(f"Failed to cleanup execution cache: {e}")
+        # NOTE: flush_pending_changes, flush_logs_to_postgres, and cleanup_execution_cache
+        # are now called from workflow_execution.py's _process_execution_result() callback.
+        # This avoids event loop issues when running in thread workers (each thread creates
+        # its own event loop via asyncio.run(), which breaks shared async Redis connections).
+        # The consumer callback runs in the stable main event loop.
 
         # Clear bifrost SDK context
         if BIFROST_CONTEXT_AVAILABLE:

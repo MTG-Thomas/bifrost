@@ -9,9 +9,9 @@ Tests the /api/endpoints/{workflow_name} functionality including:
 - Sync execution and result handling
 """
 
-import time
-
 import pytest
+
+from tests.e2e.conftest import poll_until
 
 
 # Workflow content for endpoint-enabled workflow
@@ -57,23 +57,24 @@ async def e2e_endpoint_post_only(data: str) -> dict:
 '''
 
 
-def _wait_for_workflow(e2e_client, platform_admin, workflow_name: str, max_attempts: int = 30) -> dict | None:
+def _wait_for_workflow(e2e_client, platform_admin, workflow_name: str, max_wait: float = 30.0) -> dict | None:
     """Wait for a workflow to be discovered and return it."""
-    for _ in range(max_attempts):
+
+    def check_workflow():
         response = e2e_client.get(
             "/api/workflows",
             headers=platform_admin.headers,
         )
-        if response.status_code == 200:
-            workflows = response.json()
-            workflow = next(
-                (w for w in workflows if w.get("name") == workflow_name),
-                None
-            )
-            if workflow:
-                return workflow
-        time.sleep(1)
-    return None
+        if response.status_code != 200:
+            return None
+        workflows = response.json()
+        workflow = next(
+            (w for w in workflows if w.get("name") == workflow_name),
+            None
+        )
+        return workflow
+
+    return poll_until(check_workflow, max_wait=max_wait, interval=0.2)
 
 
 @pytest.fixture(scope="module")

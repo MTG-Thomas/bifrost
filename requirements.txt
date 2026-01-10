@@ -85,6 +85,7 @@ apscheduler  # Scheduler
 # =============================================================================
 python-json-logger
 structlog
+psutil  # Process monitoring for worker heartbeats
 
 # =============================================================================
 # Testing

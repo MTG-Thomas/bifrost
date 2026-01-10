@@ -66,9 +66,9 @@ def _convert_workflow_metadata_to_model(
     # Extract the relative path for display
     relative_path = _extract_relative_path(workflow_metadata.source_file_path)
 
-    # Generate a placeholder ID for validation if not present
+    # Generate a placeholder ID for validation
     # (workflows get real IDs when saved to the database)
-    workflow_id = workflow_metadata.id or f"pending-{workflow_metadata.name}"
+    workflow_id = f"pending-{workflow_metadata.name}"
 
     return WorkflowMetadataModel(
         id=workflow_id,

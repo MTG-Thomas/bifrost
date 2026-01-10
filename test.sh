@@ -99,20 +99,37 @@ mkdir -p "$LOG_DIR"
 # Function to export docker logs
 # =============================================================================
 export_docker_logs() {
-    echo "Exporting docker logs to $LOG_DIR/docker-logs.txt..."
+    echo "Exporting docker logs to $LOG_DIR/..."
+
+    # Clean up old log files from previous runs
+    rm -f "$LOG_DIR"/*.log "$LOG_DIR"/docker-logs.txt 2>/dev/null
+
+    # Export combined logs with timestamps
     {
         echo "============================================================"
         echo "Docker Compose Logs - $(date)"
         echo "============================================================"
-        docker compose -f "$COMPOSE_FILE" logs --no-color 2>&1
-    } > "$LOG_DIR/docker-logs.txt" 2>&1 || true
+        docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps 2>&1
+    } > "$LOG_DIR/docker-logs.txt" 2>&1
 
-    # Also export individual service logs for easier debugging
-    for service in api worker coding-agent postgres rabbitmq redis pgbouncer client playwright-runner; do
-        docker compose -f "$COMPOSE_FILE" logs --no-color "$service" > "$LOG_DIR/$service.log" 2>&1 || true
+    # Dynamically get all service names (include all profiles to capture worker, test-runner, etc.)
+    local services
+    services=$(docker compose -f "$COMPOSE_FILE" --profile e2e --profile test --profile client config --services 2>/dev/null)
+
+    for service in $services; do
+        local log_file="$LOG_DIR/$service.log"
+        if docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps "$service" > "$log_file" 2>&1; then
+            if [ -s "$log_file" ]; then
+                echo "  Exported: $service.log ($(wc -l < "$log_file") lines)"
+            else
+                rm -f "$log_file"  # Remove empty log files
+            fi
+        fi
     done
 
-    echo "Docker logs exported to $LOG_DIR/"
+    echo ""
+    echo "Logs exported to $LOG_DIR/"
+    ls -la "$LOG_DIR"/*.log 2>/dev/null || echo "  No individual logs captured"
 }
 
 # =============================================================================

@@ -178,8 +178,6 @@ class TestWorkflowDBStorage:
 
     def test_workflow_code_stored_in_db(self, e2e_client, platform_admin):
         """Workflow code is stored in workflows.code column."""
-        import time
-
         workflow_content = '''"""DB Storage Test Workflow"""
 from bifrost import workflow
 
@@ -201,8 +199,6 @@ async def db_storage_test_workflow(x: int) -> int:
             },
         )
         assert response.status_code == 200
-
-        time.sleep(2)
 
         # Verify workflow appears in list with ID (stored in DB)
         response = e2e_client.get(
@@ -235,8 +231,6 @@ async def db_storage_test_workflow(x: int) -> int:
 
     def test_workflow_update_persists_to_db(self, e2e_client, platform_admin):
         """Workflow updates are persisted to database."""
-        import time
-
         original_content = '''"""Original Version"""
 from bifrost import workflow
 
@@ -254,7 +248,6 @@ async def update_persist_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Get original workflow
         response = e2e_client.get(
@@ -286,7 +279,6 @@ async def update_persist_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Verify update persisted
         response = e2e_client.get(
@@ -311,8 +303,6 @@ async def update_persist_workflow() -> str:
 
     def test_workflow_id_stable_across_updates(self, e2e_client, platform_admin):
         """Workflow ID remains stable across code updates."""
-        import time
-
         workflow_content = '''"""Stable ID Test"""
 from bifrost import workflow
 
@@ -330,7 +320,6 @@ async def stable_id_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Get original ID
         response = e2e_client.get(
@@ -360,9 +349,6 @@ async def stable_id_workflow() -> str:
                     "encoding": "utf-8",
                 },
             )
-            time.sleep(1)
-
-        time.sleep(1)
 
         # Verify ID unchanged
         response = e2e_client.get(
@@ -383,8 +369,6 @@ async def stable_id_workflow() -> str:
 
     def test_workflow_delete_removes_from_db(self, e2e_client, platform_admin):
         """Deleting workflow file removes it from database."""
-        import time
-
         workflow_content = '''"""Delete Test Workflow"""
 from bifrost import workflow
 
@@ -402,7 +386,6 @@ async def delete_from_db_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Verify exists
         response = e2e_client.get(
@@ -418,8 +401,6 @@ async def delete_from_db_workflow() -> str:
             headers=platform_admin.headers,
         )
         assert response.status_code == 204
-
-        time.sleep(2)
 
         # Verify removed from DB
         response = e2e_client.get(

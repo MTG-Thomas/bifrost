@@ -12,7 +12,6 @@ Key behaviors validated:
 - workspace_files entries have correct entity_type values
 """
 
-import time
 import pytest
 
 
@@ -37,9 +36,9 @@ async def db_first_test_workflow(message: str) -> dict:
     """A test workflow to verify DB storage."""
     return {"message": message, "source": "db"}
 '''
-        # Write workflow via editor API
+        # Write workflow via editor API with index=true for synchronous discovery
         response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "db_first_test_workflow.py",
@@ -48,9 +47,6 @@ async def db_first_test_workflow(message: str) -> dict:
             },
         )
         assert response.status_code == 200, f"Write workflow failed: {response.text}"
-
-        # Wait for indexing
-        time.sleep(2)
 
         # Verify workflow appears in workflows list
         response = e2e_client.get(
@@ -91,9 +87,9 @@ from bifrost import workflow
 async def read_test_workflow(x: int) -> int:
     return x * 2
 '''
-        # Create workflow
+        # Create workflow with index=true for synchronous discovery
         e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "read_test_workflow.py",
@@ -101,7 +97,6 @@ async def read_test_workflow(x: int) -> int:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Update the workflow via editor (simulates editing)
         updated_content = '''"""Read Test Workflow - Updated"""
@@ -147,9 +142,9 @@ from bifrost import workflow
 async def hash_test_workflow() -> str:
     return "version1"
 '''
-        # Create workflow
+        # Create workflow with index=true for synchronous discovery
         e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "hash_test_workflow.py",
@@ -157,7 +152,6 @@ async def hash_test_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Get workflow and note its state
         response = e2e_client.get(
@@ -180,7 +174,7 @@ async def hash_test_workflow() -> str:
     return "version2"
 '''
         response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "hash_test_workflow.py",
@@ -189,7 +183,6 @@ async def hash_test_workflow() -> str:
             },
         )
         assert response.status_code == 200
-        time.sleep(2)
 
         # Get updated workflow
         response = e2e_client.get(
@@ -272,10 +265,7 @@ class TestDBFirstForms:
         form = response.json()
         form_id = form["id"]
 
-        # Wait for sync
-        time.sleep(1)
-
-        # Check if form appears in forms directory listing
+        # Check if form appears in forms directory listing (soft check)
         response = e2e_client.get(
             "/api/files/editor",
             headers=platform_admin.headers,
@@ -360,9 +350,9 @@ async def db_first_test_provider(filter_value: str = None):
         options = [o for o in options if filter_value in o["label"]]
     return options
 '''
-        # Write data provider via editor
+        # Write data provider via editor with index=true for synchronous discovery
         response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "db_first_test_provider.py",
@@ -371,9 +361,6 @@ async def db_first_test_provider(filter_value: str = None):
             },
         )
         assert response.status_code == 200, f"Write DP failed: {response.text}"
-
-        # Wait for indexing
-        time.sleep(2)
 
         # Verify data provider appears in list
         response = e2e_client.get(
@@ -413,9 +400,9 @@ async def db_first_test_tool(input_text: str) -> str:
     """Processes input text."""
     return f"Processed: {input_text}"
 '''
-        # Write tool via editor
+        # Write tool via editor with index=true for synchronous discovery
         response = e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "db_first_test_tool.py",
@@ -424,9 +411,6 @@ async def db_first_test_tool(input_text: str) -> str:
             },
         )
         assert response.status_code == 200, f"Write tool failed: {response.text}"
-
-        # Wait for indexing
-        time.sleep(2)
 
         # Verify tool appears in workflows list (tools are in workflows table)
         response = e2e_client.get(
@@ -575,9 +559,9 @@ from bifrost import workflow
 async def entity_type_test_workflow() -> str:
     return "test"
 '''
-        # Create workflow
+        # Create workflow with index=true for synchronous discovery
         e2e_client.put(
-            "/api/files/editor/content",
+            "/api/files/editor/content?index=true",
             headers=platform_admin.headers,
             json={
                 "path": "entity_type_test.py",
@@ -585,7 +569,6 @@ async def entity_type_test_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # List files and check the entry
         response = e2e_client.get(

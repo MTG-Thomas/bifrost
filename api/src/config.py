@@ -78,23 +78,37 @@ class Settings(BaseSettings):
     # ==========================================================================
     max_concurrency: int = Field(
         default=10,
-        description="Max concurrent workflow executions (controls both RabbitMQ prefetch and subprocess pool)"
+        description="Max concurrent workflow executions (controls RabbitMQ prefetch)"
+    )
+
+    # Process Pool Configuration
+    min_workers: int = Field(
+        default=2,
+        description="Minimum worker processes to maintain (warm pool)"
+    )
+    max_workers: int = Field(
+        default=10,
+        description="Maximum worker processes for scaling"
     )
     execution_timeout_seconds: int = Field(
         default=300,
         description="Default execution timeout in seconds (5 minutes)"
     )
     graceful_shutdown_seconds: int = Field(
-        default=3,
+        default=5,
         description="Seconds to wait after SIGTERM before SIGKILL"
     )
-    cancel_check_interval_ms: int = Field(
-        default=250,
-        description="How often to check for cancellation (milliseconds)"
+    recycle_after_executions: int = Field(
+        default=0,
+        description="Recycle process after N executions (0 = never)"
     )
-    memory_throttle_threshold_mb: int = Field(
-        default=300,
-        description="Minimum available memory (MB) required to start new subprocess"
+    worker_heartbeat_interval_seconds: int = Field(
+        default=10,
+        description="Interval in seconds between worker heartbeat publications"
+    )
+    worker_registration_ttl_seconds: int = Field(
+        default=30,
+        description="TTL in seconds for worker registration in Redis (refreshed by heartbeat)"
     )
 
     # ==========================================================================

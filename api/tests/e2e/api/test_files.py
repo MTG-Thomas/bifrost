@@ -4,8 +4,9 @@ E2E tests for file operations (Editor API).
 Tests workspace file listing, reading, writing, and folder operations.
 """
 
-import time
 import pytest
+
+from tests.e2e.conftest import poll_until
 
 
 @pytest.mark.e2e
@@ -337,43 +338,45 @@ async def e2e_discovery_test_workflow(value: str):
 
     def test_workflow_file_creates_workflow(self, e2e_client, platform_admin, test_workflow_file):
         """Workflow is discoverable after file creation."""
-        max_attempts = 30
-        workflow_found = False
 
-        for _ in range(max_attempts):
+        def check_workflow():
             response = e2e_client.get(
                 "/api/workflows",
                 headers=platform_admin.headers,
             )
-            assert response.status_code == 200
+            if response.status_code != 200:
+                return None
             workflows = response.json()
             workflow_names = [w["name"] for w in workflows]
-
             if test_workflow_file["name"] in workflow_names:
-                workflow_found = True
-                break
+                return True
+            return None
 
-            time.sleep(1)
+        workflow_found = poll_until(check_workflow, max_wait=30.0, interval=0.2)
 
         assert workflow_found, \
-            f"Workflow {test_workflow_file['name']} not discovered after {max_attempts}s"
+            f"Workflow {test_workflow_file['name']} not discovered after 30s"
 
     def test_workflow_has_parameters(self, e2e_client, platform_admin, test_workflow_file):
         """Discovered workflow includes parameters."""
-        # Wait for discovery
-        time.sleep(2)
 
-        response = e2e_client.get(
-            "/api/workflows",
-            headers=platform_admin.headers,
-        )
-        assert response.status_code == 200
-        workflows = response.json()
+        def check_workflow_with_params():
+            response = e2e_client.get(
+                "/api/workflows",
+                headers=platform_admin.headers,
+            )
+            if response.status_code != 200:
+                return None
+            workflows = response.json()
+            workflow = next(
+                (w for w in workflows if w["name"] == test_workflow_file["name"]), None
+            )
+            if workflow and "parameters" in workflow:
+                return workflow
+            return None
 
-        workflow = next(
-            (w for w in workflows if w["name"] == test_workflow_file["name"]), None
-        )
-        if workflow:
-            assert "parameters" in workflow, "Workflow missing parameters field"
-            param_names = [p["name"] for p in workflow["parameters"]]
-            assert "value" in param_names, "Missing 'value' parameter"
+        workflow = poll_until(check_workflow_with_params, max_wait=10.0, interval=0.2)
+
+        assert workflow, f"Workflow {test_workflow_file['name']} with parameters not found"
+        param_names = [p["name"] for p in workflow["parameters"]]
+        assert "value" in param_names, "Missing 'value' parameter"

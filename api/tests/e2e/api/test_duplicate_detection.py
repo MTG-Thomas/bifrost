@@ -8,7 +8,6 @@ Tests how the system handles:
 - App duplicate slug handling
 """
 
-import time
 import pytest
 
 
@@ -43,7 +42,6 @@ async def duplicate_test_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Get workflow ID
         response = e2e_client.get(
@@ -82,7 +80,6 @@ async def duplicate_test_workflow() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Verify still only one workflow, same ID
         response = e2e_client.get(
@@ -133,7 +130,6 @@ async def common_workflow_name() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Create at second path (same name, different path)
         e2e_client.put(
@@ -145,7 +141,6 @@ async def common_workflow_name() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Should have two workflows with same name
         response = e2e_client.get(
@@ -203,7 +198,6 @@ async def multi_workflow_3() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Should create three workflow entries
         response = e2e_client.get(
@@ -317,7 +311,6 @@ async def dup_test_provider():
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Get first version
         response = e2e_client.get(
@@ -352,7 +345,6 @@ async def dup_test_provider():
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Should still be one provider with same ID
         response = e2e_client.get(
@@ -401,7 +393,6 @@ async def shared_name_entity() -> str:
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Create data provider with same name
         dp_content = '''"""Data Provider with shared name"""
@@ -420,7 +411,6 @@ async def shared_name_entity():
                 "encoding": "utf-8",
             },
         )
-        time.sleep(2)
 
         # Both should exist
         response = e2e_client.get(
@@ -468,7 +458,7 @@ async def idempotent_workflow() -> str:
     return "stable"
 '''
         # Write 3 times
-        for i in range(3):
+        for _ in range(3):
             response = e2e_client.put(
                 "/api/files/editor/content",
                 headers=platform_admin.headers,
@@ -479,9 +469,6 @@ async def idempotent_workflow() -> str:
                 },
             )
             assert response.status_code == 200
-            time.sleep(0.5)
-
-        time.sleep(2)
 
         # Should have exactly one workflow
         response = e2e_client.get(

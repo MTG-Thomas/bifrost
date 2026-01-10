@@ -10,6 +10,7 @@ Supports two modes:
 import asyncio
 import os
 import sys
+import threading
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -25,6 +26,11 @@ from .credentials import (
 
 # Global client injection for platform mode
 _injected_client: Optional["BifrostClient"] = None
+
+# Thread-local storage for per-thread singleton instances
+# This is needed because thread workers create new event loops via asyncio.run(),
+# and httpx.AsyncClient is bound to the event loop that created it.
+_thread_local = threading.local()
 
 # Auto-load .env file if present (for local development)
 try:
@@ -228,8 +234,6 @@ class BifrostClient:
     - CLI mode: Singleton pattern via get_instance()
     """
 
-    _instance: "BifrostClient | None" = None
-
     def __init__(self, api_url: str, access_token: str):
         """
         Initialize client.
@@ -240,11 +244,10 @@ class BifrostClient:
         """
         self.api_url = api_url.rstrip("/")
         self._access_token = access_token
-        self._http = httpx.AsyncClient(
-            base_url=self.api_url,
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=30.0,
-        )
+        # Async client is created lazily per event loop to handle thread workers
+        # that create new event loops via asyncio.run() on each execution
+        self._http: httpx.AsyncClient | None = None
+        self._http_loop: asyncio.AbstractEventLoop | None = None
         self._sync_http = httpx.Client(
             base_url=self.api_url,
             headers={"Authorization": f"Bearer {access_token}"},
@@ -252,10 +255,48 @@ class BifrostClient:
         )
         self._context: dict[str, Any] | None = None
 
+    def _get_async_client(self) -> httpx.AsyncClient:
+        """
+        Get httpx.AsyncClient, creating fresh one if needed for current event loop.
+
+        Thread workers use asyncio.run() which creates/destroys event loops per execution.
+        httpx.AsyncClient is bound to the event loop that created it, so we need to
+        create a new client when the event loop changes.
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop - create client anyway, it will bind when first used
+            current_loop = None
+
+        # Check if we need a new client (no client, or different event loop)
+        if self._http is None or (current_loop is not None and self._http_loop != current_loop):
+            # Close old client if it exists (best effort, ignore errors)
+            if self._http is not None:
+                try:
+                    # Can't await in sync method, but we can try to close transport
+                    pass  # httpx will handle cleanup when garbage collected
+                except Exception:
+                    pass
+
+            # Create new client bound to current event loop
+            self._http = httpx.AsyncClient(
+                base_url=self.api_url,
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                timeout=30.0,
+            )
+            self._http_loop = current_loop
+
+        return self._http
+
     @classmethod
     def get_instance(cls, require_auth: bool = False) -> "BifrostClient":
         """
-        Get singleton client instance.
+        Get thread-local singleton client instance.
+
+        Uses thread-local storage so each thread gets its own instance with
+        its own httpx.AsyncClient bound to the thread's event loop. This is
+        necessary because thread workers create new event loops via asyncio.run().
 
         Auto-initializes from credentials file (~/.bifrost/credentials.json)
         stored by 'bifrost login'.
@@ -270,7 +311,11 @@ class BifrostClient:
         Raises:
             RuntimeError: If no credentials file exists
         """
-        if cls._instance is None:
+        # Use thread-local storage instead of class-level singleton
+        # This ensures each thread gets its own client with httpx bound to its event loop
+        instance = getattr(_thread_local, 'bifrost_client', None)
+
+        if instance is None:
             # Try credentials file from CLI login
             creds = get_credentials()
 
@@ -292,8 +337,9 @@ class BifrostClient:
 
             if creds:
                 # Use credentials from file
-                cls._instance = cls(creds["api_url"], creds["access_token"])
-                return cls._instance
+                instance = cls(creds["api_url"], creds["access_token"])
+                _thread_local.bifrost_client = instance
+                return instance
 
             # No credentials - trigger login flow if required
             if require_auth:
@@ -309,15 +355,16 @@ class BifrostClient:
                         # Login successful, load credentials
                         creds = get_credentials()
                         if creds:
-                            cls._instance = cls(creds["api_url"], creds["access_token"])
-                            return cls._instance
+                            instance = cls(creds["api_url"], creds["access_token"])
+                            _thread_local.bifrost_client = instance
+                            return instance
 
             # No auth available
             raise RuntimeError(
                 "Not logged in. Run 'bifrost login' to authenticate."
             )
 
-        return cls._instance
+        return instance
 
     def _fetch_context_sync(self) -> dict[str, Any]:
         """Fetch development context synchronously."""
@@ -330,7 +377,8 @@ class BifrostClient:
     async def _fetch_context(self) -> dict[str, Any]:
         """Fetch development context."""
         if self._context is None:
-            response = await self._http.get("/api/cli/context")
+            http = self._get_async_client()
+            response = await http.get("/api/cli/context")
             response.raise_for_status()
             self._context = response.json()
         return self._context or {}
@@ -357,23 +405,23 @@ class BifrostClient:
 
     async def get(self, path: str, **kwargs) -> httpx.Response:
         """Make GET request."""
-        return await self._http.get(path, **kwargs)
+        return await self._get_async_client().get(path, **kwargs)
 
     async def post(self, path: str, **kwargs) -> httpx.Response:
         """Make POST request."""
-        return await self._http.post(path, **kwargs)
+        return await self._get_async_client().post(path, **kwargs)
 
     async def put(self, path: str, **kwargs) -> httpx.Response:
         """Make PUT request."""
-        return await self._http.put(path, **kwargs)
+        return await self._get_async_client().put(path, **kwargs)
 
     async def patch(self, path: str, **kwargs) -> httpx.Response:
         """Make PATCH request."""
-        return await self._http.patch(path, **kwargs)
+        return await self._get_async_client().patch(path, **kwargs)
 
     async def delete(self, path: str, **kwargs) -> httpx.Response:
         """Make DELETE request."""
-        return await self._http.delete(path, **kwargs)
+        return await self._get_async_client().delete(path, **kwargs)
 
     def stream(self, method: str, path: str, **kwargs):
         """
@@ -384,7 +432,7 @@ class BifrostClient:
                 async for line in response.aiter_lines():
                     process(line)
         """
-        return self._http.stream(method, path, **kwargs)
+        return self._get_async_client().stream(method, path, **kwargs)
 
     def get_sync(self, path: str, **kwargs) -> httpx.Response:
         """Make synchronous GET request."""
@@ -396,7 +444,8 @@ class BifrostClient:
 
     async def close(self):
         """Close HTTP clients."""
-        await self._http.aclose()
+        if self._http is not None:
+            await self._http.aclose()
         self._sync_http.close()
 
 

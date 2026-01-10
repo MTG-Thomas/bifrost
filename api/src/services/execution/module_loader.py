@@ -60,7 +60,6 @@ class ExecutableMetadata:
     Specific types extend this with their own additional fields.
     """
     # Identity
-    id: str | None = None  # Persistent UUID (stored in database)
     name: str = ""
     description: str = ""
     category: str = "General"
@@ -344,7 +343,7 @@ def load_workflow_from_db(
     code: str,
     path: str,
     function_name: str,
-) -> tuple[Callable, WorkflowMetadata] | None:
+) -> tuple[Callable[..., Any] | None, WorkflowMetadata | None, str | None]:
     """
     Load a workflow by executing code from the database.
 
@@ -357,13 +356,20 @@ def load_workflow_from_db(
         function_name: Python function name to find (e.g., "get_client_detail")
 
     Returns:
-        Tuple of (function, metadata) or None if not found
+        Tuple of (callable, metadata, error_message):
+        - On success: (callable, metadata, None)
+        - On failure: (None, None, error_message)
     """
     try:
         module = exec_from_db(code=code, path=path, function_name=function_name)
     except (SyntaxError, ImportError) as e:
         logger.error(f"Failed to execute workflow from DB: {e}")
-        return None
+        user_friendly_error = (
+            "An unexpected error happened outside of your workflow's function. "
+            "This could be because you used an invalid property on a decorator, "
+            f"import or something else.\n\n{e}"
+        )
+        return None, None, user_friendly_error
 
     # Find the decorated function by name
     for attr_name in dir(module):
@@ -386,14 +392,14 @@ def load_workflow_from_db(
                         timeout_seconds=getattr(metadata, 'timeout_seconds', 300),
                         type='data_provider',
                     )
-                    return (attr, workflow_meta)
+                    return (attr, workflow_meta, None)
                 elif isinstance(metadata, WorkflowMetadata):
-                    return (attr, metadata)
+                    return (attr, metadata, None)
                 else:
-                    return (attr, _convert_workflow_metadata(metadata))
+                    return (attr, _convert_workflow_metadata(metadata), None)
 
     logger.warning(f"Workflow function '{function_name}' not found in code from {path}")
-    return None
+    return (None, None, f"Workflow function '{function_name}' not found in code from {path}")
 
 
 # ==================== WORKFLOW DISCOVERY ====================
@@ -745,7 +751,6 @@ def _convert_workflow_metadata(old_metadata: Any) -> WorkflowMetadata:
     executable_type = getattr(old_metadata, 'type', 'tool' if is_tool else 'workflow')
 
     return WorkflowMetadata(
-        id=getattr(old_metadata, 'id', None),
         name=old_metadata.name,
         description=old_metadata.description,
         category=getattr(old_metadata, 'category', 'General'),
@@ -772,7 +777,6 @@ def _convert_workflow_metadata(old_metadata: Any) -> WorkflowMetadata:
 def _convert_data_provider_metadata(old_metadata: Any) -> DataProviderMetadata:
     """Convert old registry DataProviderMetadata to discovery DataProviderMetadata."""
     return DataProviderMetadata(
-        id=getattr(old_metadata, 'id', None),
         name=old_metadata.name,
         description=old_metadata.description,
         category=getattr(old_metadata, 'category', 'General'),

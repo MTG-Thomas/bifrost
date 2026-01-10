@@ -83,7 +83,7 @@ Pages are the screens of your application. Each page has:
 - **Launch Workflow**: Workflow to run on page load (recommended for data loading)
 - **Permissions**: Who can access the page
 
-**Data Loading Pattern**: All data loading uses workflows. Set `launchWorkflowId` and `launchWorkflowDataSourceId` on the page, then access results via `{{ workflow.<dataSourceId>.result }}` in expressions.
+All data loading uses workflows. Set `launchWorkflowId` and `launchWorkflowDataSourceId` on the page, then access results via `{{ workflow.<dataSourceId>.result }}` in expressions.
 
 ### Layouts
 

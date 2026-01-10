@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Claude Agent SDK for internal MCP (Coding Agent)
 try:
-    from claude_agent_sdk import create_sdk_mcp_server
+    from claude_agent_sdk import create_sdk_mcp_server  # type: ignore[import-not-found]
 
     HAS_CLAUDE_SDK = True
 except ImportError:

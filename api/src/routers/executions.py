@@ -653,7 +653,9 @@ async def cancel_execution(
         # Found in PostgreSQL and status is cancellable
         # Set Redis cancel flag so the execution pool can terminate the worker
         await redis_client.set_cancel_flag(str(execution_id))
-        logger.info(f"Set cancel flag for running execution: {execution_id}")
+        # Publish cancel event via pub/sub for immediate process termination
+        await redis_client.publish_cancel_event(str(execution_id))
+        logger.info(f"Set cancel flag and published event for execution: {execution_id}")
         return execution
 
     # Not found in PostgreSQL - check if it's still pending in Redis

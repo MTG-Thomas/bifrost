@@ -7,13 +7,34 @@ Tools for listing and viewing workflow execution history.
 import json
 import logging
 from typing import Any
+from uuid import UUID
 
+from src.core.auth import UserPrincipal
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
 
 # MCPContext is imported where needed to avoid circular imports
 
 logger = logging.getLogger(__name__)
+
+
+def _context_to_user_principal(context: Any) -> UserPrincipal:
+    """Convert MCPContext to UserPrincipal for repository calls."""
+    user_id = context.user_id
+    if isinstance(user_id, str):
+        user_id = UUID(user_id)
+
+    org_id = context.org_id
+    if isinstance(org_id, str):
+        org_id = UUID(org_id)
+
+    return UserPrincipal(
+        user_id=user_id,
+        email=getattr(context, "user_email", ""),
+        organization_id=org_id,
+        name=getattr(context, "user_name", ""),
+        is_superuser=getattr(context, "is_platform_admin", False),
+    )
 
 
 @system_tool(
@@ -59,18 +80,21 @@ async def list_executions(
         async with get_db_context() as db:
             repo = ExecutionRepository(db)
 
-            # Build filters
-            filters: dict[str, Any] = {}
-            if workflow_name:
-                filters["workflow_name"] = workflow_name
-            if status:
-                filters["status"] = status
+            # Convert context to UserPrincipal
+            user = _context_to_user_principal(context)
 
-            executions = await repo.list_executions(
-                filters=filters,
+            # Get org_id as UUID if present
+            org_id = None
+            if context.org_id:
+                org_id = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
+
+            # Call repository with correct signature
+            executions, _ = await repo.list_executions(
+                user=user,
+                org_id=org_id,
+                workflow_name=workflow_name,
+                status_filter=status,
                 limit=limit,
-                user_id=str(context.user_id) if not context.is_platform_admin else None,
-                org_id=str(context.org_id) if context.org_id else None,
             )
 
             if not executions:
@@ -79,12 +103,12 @@ async def list_executions(
             execution_list = []
             for ex in executions:
                 execution_data = {
-                    "id": str(ex.id),
+                    "id": ex.execution_id,
                     "workflow_name": ex.workflow_name or "Unknown",
-                    "status": ex.status.value,
+                    "status": ex.status.value if hasattr(ex.status, "value") else ex.status,
                     "duration_ms": ex.duration_ms,
-                    "created_at": ex.created_at.isoformat() if ex.created_at else None,
-                    "error": ex.error[:100] + "..." if ex.error and len(ex.error) > 100 else ex.error,
+                    "created_at": ex.started_at.isoformat() if ex.started_at else None,
+                    "error": ex.error_message[:100] + "..." if ex.error_message and len(ex.error_message) > 100 else ex.error_message,
                 }
                 execution_list.append(execution_data)
 
@@ -126,33 +150,40 @@ async def get_execution(context: Any, execution_id: str) -> str:
     try:
         async with get_db_context() as db:
             repo = ExecutionRepository(db)
-            execution = await repo.get_execution(execution_id)
 
+            # Convert context to UserPrincipal
+            user = _context_to_user_principal(context)
+
+            # Get execution with authorization check built in
+            execution, error_code = await repo.get_execution(
+                execution_id=UUID(execution_id),
+                user=user,
+            )
+
+            if error_code == "NotFound":
+                return json.dumps({"error": f"Execution not found: {execution_id}"})
+            if error_code == "Forbidden":
+                return json.dumps({"error": "Access denied"})
             if not execution:
                 return json.dumps({"error": f"Execution not found: {execution_id}"})
 
-            # Check access
-            if not context.is_platform_admin and str(execution.user_id) != str(context.user_id):
-                return json.dumps({"error": "Access denied"})
-
-            # Build execution data
+            # Build execution data from WorkflowExecution pydantic model
             execution_data: dict[str, Any] = {
-                "id": str(execution.id),
+                "id": execution.execution_id,
                 "workflow_name": execution.workflow_name or "Unknown",
-                "status": execution.status.value,
+                "status": execution.status.value if hasattr(execution.status, "value") else execution.status,
                 "duration_ms": execution.duration_ms,
-                "created_at": execution.created_at.isoformat() if execution.created_at else None,
+                "created_at": execution.started_at.isoformat() if execution.started_at else None,
                 "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
-                "error": execution.error,
+                "error": execution.error_message,
                 "result": execution.result,
             }
 
-            # Get logs
-            logs = await repo.get_execution_logs(execution_id)
-            if logs:
+            # Logs are included in the execution response from get_execution
+            if execution.logs:
                 execution_data["logs"] = [
-                    {"level": log.level, "message": log.message}
-                    for log in logs[-20:]  # Last 20 logs
+                    {"level": log.get("level", "info"), "message": log.get("message", "")}
+                    for log in execution.logs[-20:]  # Last 20 logs
                 ]
             else:
                 execution_data["logs"] = []

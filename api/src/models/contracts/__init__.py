@@ -480,6 +480,21 @@ from src.models.contracts.ai_usage import (
     UsageReportResponse,
 )
 
+# Platform Admin
+from src.models.contracts.platform import (
+    PoolDetail,
+    PoolsListResponse,
+    PoolStatsResponse,
+    PoolSummary,
+    ProcessInfo,
+    QueueItem,
+    QueueStatusResponse,
+    RecycleProcessRequest,
+    RecycleProcessResponse,
+    StuckHistoryResponse,
+    StuckWorkflowStats,
+)
+
 __all__ = [
     # Re-export everything defined above
     # NOTE: Bare names like User, Organization, Role, Form, Config, ExecutionLog
@@ -872,4 +887,16 @@ __all__ = [
     "ApplicationRollbackRequest",
     "VersionHistoryEntry",
     "VersionHistoryResponse",
+    # Platform Admin
+    "PoolDetail",
+    "PoolsListResponse",
+    "PoolStatsResponse",
+    "PoolSummary",
+    "ProcessInfo",
+    "QueueItem",
+    "QueueStatusResponse",
+    "RecycleProcessRequest",
+    "RecycleProcessResponse",
+    "StuckHistoryResponse",
+    "StuckWorkflowStats",
 ]

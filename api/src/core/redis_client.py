@@ -59,6 +59,7 @@ class PendingExecution(TypedDict):
     form_id: str | None
     api_key_id: str | None  # Workflow ID whose API key triggered this (for audit trail)
     startup: dict[str, Any] | None  # Launch workflow results (available via context.startup)
+    sync: bool  # If True, worker pushes result to Redis for sync execution
     created_at: str  # ISO format
     cancelled: bool
 
@@ -103,6 +104,7 @@ class RedisClient:
         script_name: str | None = None,
         startup: dict[str, Any] | None = None,
         api_key_id: str | None = None,
+        sync: bool = False,
     ) -> None:
         """
         Store pending execution in Redis.
@@ -122,6 +124,7 @@ class RedisClient:
             script_name: Optional script name for inline code execution
             startup: Optional startup data from launch workflow (available via context.startup)
             api_key_id: Optional workflow ID whose API key triggered this execution
+            sync: If True, worker will push result to Redis for sync execution
         """
         redis_client = await self._get_redis()
         key = f"{PENDING_KEY_PREFIX}{execution_id}{PENDING_KEY_SUFFIX}"
@@ -138,6 +141,7 @@ class RedisClient:
             "form_id": form_id,
             "api_key_id": api_key_id,
             "startup": startup,
+            "sync": sync,
             "created_at": datetime.utcnow().isoformat(),
             "cancelled": False,
         }
@@ -256,6 +260,50 @@ class RedisClient:
             return False
         return pending.get("cancelled", False)
 
+    async def update_pending_execution(
+        self,
+        execution_id: str,
+        updates: dict[str, Any],
+    ) -> bool:
+        """
+        Update fields in a pending execution record.
+
+        Called by Worker to add additional context (workflow_name, etc.)
+        that needs to be available when async results are processed.
+
+        Args:
+            execution_id: Execution ID
+            updates: Dict of fields to update
+
+        Returns:
+            True if execution was found and updated, False if not found
+        """
+        redis_client = await self._get_redis()
+        key = f"{PENDING_KEY_PREFIX}{execution_id}{PENDING_KEY_SUFFIX}"
+
+        try:
+            data = await redis_client.get(key)
+            if data is None:
+                return False
+
+            pending = json.loads(data)
+            pending.update(updates)
+
+            # Preserve remaining TTL
+            ttl = await redis_client.ttl(key)
+            if ttl > 0:
+                await redis_client.setex(key, ttl, json.dumps(pending))
+            else:
+                await redis_client.setex(
+                    key, PENDING_EXECUTION_TTL_SECONDS, json.dumps(pending)
+                )
+
+            logger.debug(f"Updated pending execution: {execution_id} with {list(updates.keys())}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update pending execution: {e}")
+            raise
+
     # =========================================================================
     # Sync Execution Results (BLPOP/RPUSH pattern)
     # =========================================================================
@@ -363,6 +411,27 @@ class RedisClient:
         except Exception as e:
             logger.error(f"Failed to set cancel flag: {e}")
             raise
+
+    async def publish_cancel_event(self, execution_id: str) -> None:
+        """
+        Publish a cancellation event to the process pool via pub/sub.
+
+        This notifies the ProcessPoolManager to immediately kill the worker
+        process handling this execution, rather than waiting for the next
+        cancel flag check.
+
+        Args:
+            execution_id: Execution ID to cancel
+        """
+        redis_client = await self._get_redis()
+        channel = "bifrost:cancel"
+        message = json.dumps({"execution_id": execution_id})
+        try:
+            await redis_client.publish(channel, message)
+            logger.debug(f"Published cancel event for execution: {execution_id}")
+        except Exception as e:
+            logger.error(f"Failed to publish cancel event: {e}")
+            # Don't raise - the cancel flag is set as a fallback
 
     async def close(self) -> None:
         """Close Redis connection."""

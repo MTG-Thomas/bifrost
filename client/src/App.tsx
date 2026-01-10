@@ -89,6 +89,11 @@ const UserSettings = lazy(() =>
 	import("@/pages/UserSettings").then((m) => ({ default: m.UserSettings })),
 );
 const SystemLogs = lazy(() => import("@/pages/SystemLogs"));
+const DiagnosticsPage = lazy(() =>
+	import("@/pages/diagnostics/DiagnosticsPage").then((m) => ({
+		default: m.DiagnosticsPage,
+	})),
+);
 const Login = lazy(() =>
 	import("@/pages/Login").then((m) => ({ default: m.Login })),
 );
@@ -499,7 +504,25 @@ function AppRoutes() {
 							}
 						/>
 
-						{/* System Logs - PlatformAdmin only */}
+						{/* Diagnostics - PlatformAdmin only */}
+						<Route
+							path="diagnostics"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<DiagnosticsPage />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="diagnostics/:tab"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<DiagnosticsPage />
+								</ProtectedRoute>
+							}
+						/>
+
+						{/* Legacy System Logs route - redirect to Diagnostics */}
 						<Route
 							path="logs"
 							element={

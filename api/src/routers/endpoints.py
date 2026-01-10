@@ -17,7 +17,7 @@ Architecture:
 """
 
 import logging
-from typing import Any, get_type_hints
+from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
@@ -46,71 +46,6 @@ class CachedWorkflowMetadata:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/endpoints", tags=["Endpoints"])
-
-
-def _coerce_query_params(query_params: dict[str, str], workflow_func: Any) -> dict[str, Any]:
-    """
-    Coerce query parameter strings to the types expected by the workflow function.
-
-    GET query parameters are always strings, but workflow functions may expect
-    int, float, bool, etc. This function inspects the function signature and
-    converts parameters accordingly.
-
-    Args:
-        query_params: Dictionary of string query parameters
-        workflow_func: The workflow function to get type hints from
-
-    Returns:
-        Dictionary with parameters coerced to the correct types
-    """
-    if not query_params:
-        return {}
-
-    result: dict[str, Any] = {}
-
-    # Get type hints from the workflow function
-    try:
-        hints = get_type_hints(workflow_func)
-    except Exception:
-        # If we can't get type hints, return params as-is
-        return dict(query_params)
-
-    for key, value in query_params.items():
-        if key not in hints:
-            # No type hint, keep as string
-            result[key] = value
-            continue
-
-        expected_type = hints[key]
-
-        # Handle Optional types (Union[X, None])
-        origin = getattr(expected_type, "__origin__", None)
-        if origin is type(None):  # noqa: E721
-            result[key] = value
-            continue
-
-        # Extract the actual type from Optional/Union
-        if hasattr(expected_type, "__args__"):
-            # Filter out NoneType from Union args
-            non_none_types = [t for t in expected_type.__args__ if t is not type(None)]
-            if non_none_types:
-                expected_type = non_none_types[0]
-
-        # Coerce based on expected type
-        try:
-            if expected_type is int:
-                result[key] = int(value)
-            elif expected_type is float:
-                result[key] = float(value)
-            elif expected_type is bool:
-                result[key] = value.lower() in ("true", "1", "yes", "on")
-            else:
-                result[key] = value
-        except (ValueError, TypeError):
-            # Coercion failed, keep as string (will fail validation later)
-            result[key] = value
-
-    return result
 
 
 # =============================================================================
@@ -360,6 +295,7 @@ async def _execute_sync(
         user_email=context.email or "",
         form_id=None,
         api_key_id=api_key_id,
+        sync=True,
     )
 
     # Queue execution with sync=True

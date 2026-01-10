@@ -347,7 +347,7 @@ Container with optional header.
 
 Full-featured data table with sorting, pagination, and actions. The `dataSource` prop binds to workflow results via the `launchWorkflowDataSourceId`.
 
-**Tip**: When using `launchWorkflowId` with `launchWorkflowDataSourceId: "customers"`, set `dataSource: "customers"` on the table. The table automatically reads from `{{ workflow.customers.result }}`.
+When using `launchWorkflowId` with `launchWorkflowDataSourceId: "customers"`, set `dataSource: "customers"` on the table. The table automatically reads from `{{ workflow.customers.result }}`.
 
 ```json
 {

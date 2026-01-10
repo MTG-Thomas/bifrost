@@ -5,8 +5,9 @@ Tests sync/async execution, polling, cancellation, and execution history.
 """
 
 import os
-import time
 import pytest
+
+from tests.e2e.conftest import poll_until
 
 
 # Module-level fixtures for workflows used across multiple test classes
@@ -186,8 +187,8 @@ class TestAsyncExecution:
         data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
-        # Poll for completion
-        for _ in range(30):
+        # Poll for completion using exponential backoff
+        def check_completed():
             response = e2e_client.get(
                 f"/api/executions/{execution_id}",
                 headers=platform_admin.headers,
@@ -196,11 +197,12 @@ class TestAsyncExecution:
                 data = response.json()
                 status = data.get("status")
                 if status in ["Success", "Failed"]:
-                    assert status == "Success", f"Execution failed: {data}"
-                    return
-            time.sleep(1)
+                    return data
+            return None
 
-        pytest.fail("Async execution did not complete within timeout")
+        result = poll_until(check_completed, max_wait=30.0)
+        assert result is not None, "Async execution did not complete within timeout"
+        assert result.get("status") == "Success", f"Execution failed: {result}"
 
 
 @pytest.mark.e2e
@@ -315,8 +317,21 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
         execution_id = data.get("execution_id") or data.get("executionId")
         assert execution_id, "Should return execution_id"
 
-        # Allow a moment for execution to start
-        time.sleep(2)
+        # Wait for execution to start (status changes from Pending)
+        def check_started():
+            response = e2e_client.get(
+                f"/api/executions/{execution_id}",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status")
+                if status and status != "Pending":
+                    return data
+            return None
+
+        started = poll_until(check_started, max_wait=10.0)
+        assert started is not None, "Execution did not start within timeout"
 
         # Cancel execution
         response = e2e_client.post(
@@ -352,6 +367,24 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
         data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
+        # Wait for execution to start (ensures PostgreSQL record exists)
+        # Without this, cancel might happen before worker creates the DB record,
+        # causing the subsequent status poll to fail with 404
+        def check_started():
+            response = e2e_client.get(
+                f"/api/executions/{execution_id}",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status")
+                if status and status != "Pending":
+                    return data
+            return None
+
+        started = poll_until(check_started, max_wait=10.0)
+        assert started is not None, "Execution did not start within timeout"
+
         # First cancellation should succeed
         response = e2e_client.post(
             f"/api/executions/{execution_id}/cancel",
@@ -359,8 +392,21 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
         )
         assert response.status_code == 200
 
-        # Give it a moment to process
-        time.sleep(1)
+        # Wait for cancellation to be processed (status changes to Cancelling or Cancelled)
+        def check_cancelled():
+            response = e2e_client.get(
+                f"/api/executions/{execution_id}",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status")
+                if status in ["Cancelling", "Cancelled"]:
+                    return data
+            return None
+
+        cancelled = poll_until(check_cancelled, max_wait=5.0)
+        assert cancelled is not None, "Cancellation was not processed within timeout"
 
         # Second cancellation should also succeed (idempotent)
         response = e2e_client.post(
@@ -680,7 +726,6 @@ class TestExecutionConcurrency:
         if not async_workflow["id"]:
             pytest.skip("Async workflow not discovered")
 
-        import time
         from datetime import datetime
 
         # Submit 3 executions with 2-second delays each
@@ -705,35 +750,25 @@ class TestExecutionConcurrency:
 
         assert len(execution_ids) == 3, "Should have 3 execution IDs"
 
-        # Poll until all executions complete
-        max_wait = 60  # seconds (generous for CI)
-        poll_interval = 0.5
-        elapsed = 0.0
+        # Terminal statuses that indicate execution is complete
+        terminal_statuses = ["Success", "Failed", "Timeout", "CompletedWithErrors", "Cancelled"]
 
-        while elapsed < max_wait:
-            all_done = True
+        # Poll until all executions complete using exponential backoff
+        def check_all_completed():
             for eid in execution_ids:
                 response = e2e_client.get(
                     f"/api/executions/{eid}",
                     headers=platform_admin.headers,
                 )
-                if response.status_code == 200:
-                    status = response.json().get("status")
-                    # Status values are: "Success", "Failed", "Timeout", etc.
-                    if status not in ["Success", "Failed", "Timeout", "CompletedWithErrors", "Cancelled"]:
-                        all_done = False
-                        break
-                else:
-                    all_done = False
-                    break
+                if response.status_code != 200:
+                    return None
+                status = response.json().get("status")
+                if status not in terminal_statuses:
+                    return None
+            return True
 
-            if all_done:
-                break
-
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-
-        assert elapsed < max_wait, "Timed out waiting for executions to complete"
+        completed = poll_until(check_all_completed, max_wait=60.0)
+        assert completed, "Timed out waiting for executions to complete"
 
         # Collect timestamp data from all executions
         executions_data = []
@@ -788,4 +823,659 @@ class TestExecutionConcurrency:
             f"Execution span {execution_span:.1f}s is too long. "
             f"Started: {[t.isoformat() for t in started_times]}, "  # type: ignore[union-attr]
             f"Completed: {[t.isoformat() for t in completed_times]}"  # type: ignore[union-attr]
+        )
+
+
+@pytest.mark.e2e
+class TestCodeHotReload:
+    """Verify process pool picks up code changes immediately.
+
+    These tests validate that after modifying workflow or module code,
+    subsequent executions use the new code (not stale cached versions).
+    This is critical for the process pool architecture where fresh processes
+    must load the latest code from the database.
+    """
+
+    def test_workflow_code_update_reflected_in_execution(
+        self, e2e_client, platform_admin
+    ):
+        """Modified workflow code is used immediately in next execution.
+
+        Tests:
+        1. Create workflow v1 returning "Hello World"
+        2. Execute -> verify "Hello World"
+        3. Update to v2 returning "Hello World Again"
+        4. Execute -> verify "Hello World Again" (not cached v1)
+        """
+        workflow_name = "e2e_hot_reload_workflow"
+        workflow_path = f"{workflow_name}.py"
+
+        # Step 1: Create workflow v1
+        v1_content = f'''"""Hot Reload Test Workflow v1"""
+from bifrost import workflow
+
+@workflow(
+    name="{workflow_name}",
+    description="Hot reload test workflow",
+    execution_mode="sync"
+)
+async def {workflow_name}():
+    return {{"message": "Hello World", "version": 1}}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": workflow_path,
+                "content": v1_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create v1 failed: {response.text}"
+
+        # Get workflow ID
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+        assert workflow is not None, "Workflow not discovered"
+        workflow_id = workflow["id"]
+
+        try:
+            # Step 2: Execute v1 and verify
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {}},
+            )
+            assert response.status_code == 200, f"Execute v1 failed: {response.text}"
+            data = response.json()
+            assert data["status"] == "Success", f"v1 execution failed: {data}"
+            result = data.get("result", {})
+            assert result.get("message") == "Hello World", \
+                f"Expected 'Hello World', got: {result}"
+            assert result.get("version") == 1, f"Expected version 1, got: {result}"
+
+            # Step 3: Update to v2
+            v2_content = f'''"""Hot Reload Test Workflow v2"""
+from bifrost import workflow
+
+@workflow(
+    name="{workflow_name}",
+    description="Hot reload test workflow - updated",
+    execution_mode="sync"
+)
+async def {workflow_name}():
+    return {{"message": "Hello World Again", "version": 2}}
+'''
+            response = e2e_client.put(
+                "/api/files/editor/content?index=true",
+                headers=platform_admin.headers,
+                json={
+                    "path": workflow_path,
+                    "content": v2_content,
+                    "encoding": "utf-8",
+                },
+            )
+            assert response.status_code == 200, f"Update to v2 failed: {response.text}"
+
+            # Step 4: Execute v2 and verify NEW code runs
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {}},
+            )
+            assert response.status_code == 200, f"Execute v2 failed: {response.text}"
+            data = response.json()
+            assert data["status"] == "Success", f"v2 execution failed: {data}"
+            result = data.get("result", {})
+            assert result.get("message") == "Hello World Again", \
+                f"Expected 'Hello World Again' (v2), got stale result: {result}"
+            assert result.get("version") == 2, \
+                f"Expected version 2, got stale version: {result}"
+
+        finally:
+            # Cleanup
+            e2e_client.delete(
+                f"/api/files/editor?path={workflow_path}",
+                headers=platform_admin.headers,
+            )
+
+    def test_module_code_update_reflected_in_execution(
+        self, e2e_client, platform_admin
+    ):
+        """Modified module code is used immediately in next execution.
+
+        Tests:
+        1. Create module with get_value() returning "original"
+        2. Create workflow importing module
+        3. Execute -> verify "original"
+        4. Update module to return "updated"
+        5. Execute -> verify "updated" (not cached)
+        """
+        module_name = "e2e_hot_reload_module"
+        module_path = f"{module_name}.py"
+        workflow_name = "e2e_module_consumer_workflow"
+        workflow_path = f"{workflow_name}.py"
+
+        # Step 1: Create module v1
+        module_v1_content = f'''"""Hot Reload Module v1"""
+
+def get_value():
+    return "original"
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content",
+            headers=platform_admin.headers,
+            json={
+                "path": module_path,
+                "content": module_v1_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create module v1 failed: {response.text}"
+
+        # Step 2: Create workflow that imports module
+        workflow_content = f'''"""Module Consumer Workflow"""
+from bifrost import workflow
+import {module_name}
+
+@workflow(
+    name="{workflow_name}",
+    description="Workflow that imports module",
+    execution_mode="sync"
+)
+async def {workflow_name}():
+    value = {module_name}.get_value()
+    return {{"value": value}}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": workflow_path,
+                "content": workflow_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create workflow failed: {response.text}"
+
+        # Get workflow ID
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+        assert workflow is not None, "Workflow not discovered"
+        workflow_id = workflow["id"]
+
+        try:
+            # Step 3: Execute and verify "original"
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {}},
+            )
+            assert response.status_code == 200, f"Execute v1 failed: {response.text}"
+            data = response.json()
+            assert data["status"] == "Success", f"v1 execution failed: {data}"
+            result = data.get("result", {})
+            assert result.get("value") == "original", \
+                f"Expected 'original', got: {result}"
+
+            # Step 4: Update module to v2
+            module_v2_content = f'''"""Hot Reload Module v2"""
+
+def get_value():
+    return "updated"
+'''
+            response = e2e_client.put(
+                "/api/files/editor/content",
+                headers=platform_admin.headers,
+                json={
+                    "path": module_path,
+                    "content": module_v2_content,
+                    "encoding": "utf-8",
+                },
+            )
+            assert response.status_code == 200, f"Update module v2 failed: {response.text}"
+
+            # Step 5: Execute and verify "updated" (not cached "original")
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {}},
+            )
+            assert response.status_code == 200, f"Execute v2 failed: {response.text}"
+            data = response.json()
+            assert data["status"] == "Success", f"v2 execution failed: {data}"
+            result = data.get("result", {})
+            assert result.get("value") == "updated", \
+                f"Expected 'updated' (v2), got stale cached result: {result}"
+
+        finally:
+            # Cleanup
+            e2e_client.delete(
+                f"/api/files/editor?path={workflow_path}",
+                headers=platform_admin.headers,
+            )
+            e2e_client.delete(
+                f"/api/files/editor?path={module_path}",
+                headers=platform_admin.headers,
+            )
+
+    def test_package_available_after_installation(
+        self, e2e_client, platform_admin
+    ):
+        """Newly installed packages are available in next execution.
+
+        Tests:
+        1. Create workflow importing 'humanize' (uncommon package)
+        2. Execute -> fails (package not found)
+        3. Install 'humanize' via /api/packages/install
+        4. Poll until package appears in installed list
+        5. Execute -> succeeds
+        6. Cleanup: uninstall package
+        """
+        package_name = "humanize"
+        workflow_name = "e2e_package_test_workflow"
+        workflow_path = f"{workflow_name}.py"
+
+        # First, check if package is already installed and uninstall it
+        response = e2e_client.get(
+            "/api/packages",
+            headers=platform_admin.headers,
+        )
+        if response.status_code == 200:
+            packages = response.json().get("packages", [])
+            if any(p.get("name", "").lower() == package_name for p in packages):
+                # Uninstall it first to ensure clean test
+                e2e_client.delete(
+                    f"/api/packages/{package_name}",
+                    headers=platform_admin.headers,
+                )
+
+        # Step 1: Create workflow that imports humanize
+        workflow_content = f'''"""Package Test Workflow"""
+from bifrost import workflow
+
+@workflow(
+    name="{workflow_name}",
+    description="Workflow testing package availability",
+    execution_mode="sync"
+)
+async def {workflow_name}(number: int = 1000000):
+    import humanize
+    return {{"humanized": humanize.intcomma(number)}}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": workflow_path,
+                "content": workflow_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create workflow failed: {response.text}"
+
+        # Get workflow ID
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+        assert workflow is not None, "Workflow not discovered"
+        workflow_id = workflow["id"]
+
+        try:
+            # Step 2: Execute - should fail due to missing package
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {"number": 1234567}},
+            )
+            # Execution might return 200 but with Failed status, or might return error
+            if response.status_code == 200:
+                data = response.json()
+                # Expected to fail because humanize is not installed
+                assert data["status"] == "Failed", \
+                    f"Expected Failed status (missing package), got: {data}"
+
+            # Step 3: Install the package
+            response = e2e_client.post(
+                "/api/packages/install",
+                headers=platform_admin.headers,
+                json={"package_name": package_name},
+            )
+            assert response.status_code == 200, f"Install request failed: {response.text}"
+            install_data = response.json()
+            assert install_data.get("status") == "queued", f"Unexpected install status: {install_data}"
+
+            # Step 4: Poll until package appears in installed list
+            def check_package_installed():
+                response = e2e_client.get(
+                    "/api/packages",
+                    headers=platform_admin.headers,
+                )
+                if response.status_code == 200:
+                    packages = response.json().get("packages", [])
+                    if any(p.get("name", "").lower() == package_name for p in packages):
+                        return True
+                return None
+
+            installed = poll_until(check_package_installed, max_wait=60.0)
+            assert installed, f"Package '{package_name}' not installed within timeout"
+
+            # Step 5: Execute again - should succeed now
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {"number": 1234567}},
+            )
+            assert response.status_code == 200, f"Execute failed: {response.text}"
+            data = response.json()
+            assert data["status"] == "Success", \
+                f"Expected Success after package install, got: {data}"
+            result = data.get("result", {})
+            assert result.get("humanized") == "1,234,567", \
+                f"Expected '1,234,567', got: {result}"
+
+        finally:
+            # Cleanup: delete workflow
+            e2e_client.delete(
+                f"/api/files/editor?path={workflow_path}",
+                headers=platform_admin.headers,
+            )
+            # Cleanup: uninstall package
+            e2e_client.delete(
+                f"/api/packages/{package_name}",
+                headers=platform_admin.headers,
+            )
+
+    def test_nested_module_package_update_reflected(
+        self, e2e_client, platform_admin
+    ):
+        """Updates to nested package modules are reflected immediately.
+
+        Tests:
+        1. Create mypackage/__init__.py and mypackage/utils.py
+        2. Create workflow importing from mypackage.utils
+        3. Execute -> verify original value
+        4. Update mypackage/utils.py
+        5. Execute -> verify updated value
+        """
+        pkg_name = "e2e_hot_reload_pkg"
+        init_path = f"{pkg_name}/__init__.py"
+        utils_path = f"{pkg_name}/utils.py"
+        workflow_name = "e2e_nested_pkg_workflow"
+        workflow_path = f"{workflow_name}.py"
+
+        # Step 1: Create package structure
+        # Create __init__.py
+        init_content = f'''"""Package init for {pkg_name}"""
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content",
+            headers=platform_admin.headers,
+            json={
+                "path": init_path,
+                "content": init_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create __init__.py failed: {response.text}"
+
+        # Create utils.py v1
+        utils_v1_content = '''"""Utils module v1"""
+
+CONSTANT = "original_constant"
+
+def get_data():
+    return {"source": "utils", "value": "original"}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content",
+            headers=platform_admin.headers,
+            json={
+                "path": utils_path,
+                "content": utils_v1_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create utils.py failed: {response.text}"
+
+        # Step 2: Create workflow importing from package
+        workflow_content = f'''"""Nested Package Consumer Workflow"""
+from bifrost import workflow
+from {pkg_name}.utils import get_data, CONSTANT
+
+@workflow(
+    name="{workflow_name}",
+    description="Workflow importing nested package",
+    execution_mode="sync"
+)
+async def {workflow_name}():
+    data = get_data()
+    return {{"data": data, "constant": CONSTANT}}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": workflow_path,
+                "content": workflow_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create workflow failed: {response.text}"
+
+        # Get workflow ID
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+        assert workflow is not None, "Workflow not discovered"
+        workflow_id = workflow["id"]
+
+        try:
+            # Step 3: Execute and verify original values
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {}},
+            )
+            assert response.status_code == 200, f"Execute v1 failed: {response.text}"
+            data = response.json()
+            assert data["status"] == "Success", f"v1 execution failed: {data}"
+            result = data.get("result", {})
+            assert result.get("constant") == "original_constant", \
+                f"Expected 'original_constant', got: {result}"
+            assert result.get("data", {}).get("value") == "original", \
+                f"Expected 'original', got: {result}"
+
+            # Step 4: Update utils.py to v2
+            utils_v2_content = '''"""Utils module v2"""
+
+CONSTANT = "updated_constant"
+
+def get_data():
+    return {"source": "utils", "value": "updated"}
+'''
+            response = e2e_client.put(
+                "/api/files/editor/content",
+                headers=platform_admin.headers,
+                json={
+                    "path": utils_path,
+                    "content": utils_v2_content,
+                    "encoding": "utf-8",
+                },
+            )
+            assert response.status_code == 200, f"Update utils.py v2 failed: {response.text}"
+
+            # Step 5: Execute and verify updated values
+            response = e2e_client.post(
+                "/api/workflows/execute",
+                headers=platform_admin.headers,
+                json={"workflow_id": workflow_id, "input_data": {}},
+            )
+            assert response.status_code == 200, f"Execute v2 failed: {response.text}"
+            data = response.json()
+            assert data["status"] == "Success", f"v2 execution failed: {data}"
+            result = data.get("result", {})
+            assert result.get("constant") == "updated_constant", \
+                f"Expected 'updated_constant' (v2), got stale: {result}"
+            assert result.get("data", {}).get("value") == "updated", \
+                f"Expected 'updated' (v2), got stale: {result}"
+
+        finally:
+            # Cleanup
+            e2e_client.delete(
+                f"/api/files/editor?path={workflow_path}",
+                headers=platform_admin.headers,
+            )
+            e2e_client.delete(
+                f"/api/files/editor?path={utils_path}",
+                headers=platform_admin.headers,
+            )
+            e2e_client.delete(
+                f"/api/files/editor?path={init_path}",
+                headers=platform_admin.headers,
+            )
+
+    @pytest.mark.asyncio
+    async def test_requirements_stored_in_database(
+        self, e2e_client, platform_admin, db_session
+    ):
+        """
+        Test that installing a package creates/updates requirements.txt in database.
+
+        Verifies that after package installation:
+        1. A workspace_files record exists with path='requirements.txt'
+        2. The record has entity_type='requirements'
+        3. The content includes the installed package
+        """
+        from sqlalchemy import select
+        from src.models.orm.workspace import WorkspaceFile
+
+        package_name = "humanize"
+
+        # First, check if package is already installed and uninstall it
+        response = e2e_client.get(
+            "/api/packages",
+            headers=platform_admin.headers,
+        )
+        if response.status_code == 200:
+            packages = response.json().get("packages", [])
+            if any(p.get("name", "").lower() == package_name for p in packages):
+                # Uninstall it first to ensure clean test
+                e2e_client.delete(
+                    f"/api/packages/{package_name}",
+                    headers=platform_admin.headers,
+                )
+
+        # Install a package
+        install_response = e2e_client.post(
+            "/api/packages/install",
+            headers=platform_admin.headers,
+            json={"package_name": package_name},
+        )
+        assert install_response.status_code == 200, f"Install failed: {install_response.text}"
+        install_data = install_response.json()
+        assert install_data.get("status") == "queued", f"Unexpected install status: {install_data}"
+
+        # Poll until package appears in installed list (confirms installation completed)
+        def check_package_installed():
+            response = e2e_client.get(
+                "/api/packages",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                packages = response.json().get("packages", [])
+                if any(p.get("name", "").lower() == package_name for p in packages):
+                    return True
+            return None
+
+        installed = poll_until(check_package_installed, max_wait=60.0)
+        assert installed, f"Package '{package_name}' not installed within timeout"
+
+        # Query database for requirements.txt
+        stmt = select(WorkspaceFile).where(
+            WorkspaceFile.path == "requirements.txt",
+            WorkspaceFile.entity_type == "requirements",
+            WorkspaceFile.is_deleted == False,  # noqa: E712
+        )
+        result = await db_session.execute(stmt)
+        file = result.scalar_one_or_none()
+
+        assert file is not None, "requirements.txt should be stored in database"
+        assert file.content is not None, "requirements.txt should have content"
+        assert package_name in file.content.lower(), \
+            f"requirements.txt should contain '{package_name}', got: {file.content}"
+        assert file.content_hash is not None, "requirements.txt should have content hash"
+
+        # Cleanup: uninstall package
+        e2e_client.delete(
+            f"/api/packages/{package_name}",
+            headers=platform_admin.headers,
+        )
+
+    @pytest.mark.asyncio
+    async def test_requirements_cached_in_redis(
+        self, e2e_client, platform_admin
+    ):
+        """
+        Test that installing a package updates Redis cache.
+
+        Verifies that after package installation:
+        1. The requirements cache in Redis is populated
+        2. The cached content includes the installed package
+        """
+        from src.core.requirements_cache import get_requirements
+
+        package_name = "humanize"
+
+        # First, check if package is already installed and uninstall it
+        response = e2e_client.get(
+            "/api/packages",
+            headers=platform_admin.headers,
+        )
+        if response.status_code == 200:
+            packages = response.json().get("packages", [])
+            if any(p.get("name", "").lower() == package_name for p in packages):
+                # Uninstall it first to ensure clean test
+                e2e_client.delete(
+                    f"/api/packages/{package_name}",
+                    headers=platform_admin.headers,
+                )
+
+        # Install a package
+        install_response = e2e_client.post(
+            "/api/packages/install",
+            headers=platform_admin.headers,
+            json={"package_name": package_name},
+        )
+        assert install_response.status_code == 200, f"Install failed: {install_response.text}"
+        install_data = install_response.json()
+        assert install_data.get("status") == "queued", f"Unexpected install status: {install_data}"
+
+        # Poll until package appears in installed list (confirms installation completed)
+        def check_package_installed():
+            response = e2e_client.get(
+                "/api/packages",
+                headers=platform_admin.headers,
+            )
+            if response.status_code == 200:
+                packages = response.json().get("packages", [])
+                if any(p.get("name", "").lower() == package_name for p in packages):
+                    return True
+            return None
+
+        installed = poll_until(check_package_installed, max_wait=60.0)
+        assert installed, f"Package '{package_name}' not installed within timeout"
+
+        # Check Redis cache
+        cached = await get_requirements()
+        assert cached is not None, "requirements.txt should be cached in Redis"
+        assert package_name in cached["content"].lower(), \
+            f"Redis cache should contain '{package_name}', got: {cached['content']}"
+
+        # Cleanup: uninstall package
+        e2e_client.delete(
+            f"/api/packages/{package_name}",
+            headers=platform_admin.headers,
         )

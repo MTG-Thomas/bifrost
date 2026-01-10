@@ -9,12 +9,13 @@ import logging
 from datetime import datetime, date
 from uuid import UUID
 
-from sqlalchemy import select, update, func, text
+from sqlalchemy import select, update, func, text, exists
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_session_factory
-from src.models import ExecutionMetricsDaily, WorkflowROIDaily
+from src.models import ExecutionMetricsDaily, WorkflowROIDaily, Workflow
 from src.models.enums import ExecutionStatus
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,7 @@ async def update_workflow_roi_daily(
         value: Value generated (only counted for SUCCESS)
         db: Optional database session
     """
+    logger.debug(f"ROI update called: workflow_id={workflow_id}, org_id={org_id}, status={status}, db_provided={db is not None}")
     today = date.today()
     workflow_uuid = UUID(workflow_id)
     org_uuid = (
@@ -300,6 +302,59 @@ async def update_workflow_roi_daily(
         if org_id and org_id.startswith("ORG:")
         else None
     )
+
+    def _is_missing_workflow_fk_violation(exc: IntegrityError) -> bool:
+        orig = getattr(exc, "orig", None)
+        orig_name = getattr(getattr(orig, "__class__", None), "__name__", "")
+        if orig_name != "ForeignKeyViolationError":
+            return False
+        constraint_name = getattr(orig, "constraint_name", None)
+        if constraint_name in {
+            # Legacy name from before workflow_economics_daily -> workflow_roi_daily rename
+            "workflow_economics_daily_workflow_id_fkey",
+            "workflow_roi_daily_workflow_id_fkey",
+        }:
+            return True
+        message = str(orig) if orig is not None else str(exc)
+        return (
+            "violates foreign key constraint" in message
+            and "workflow" in message
+            and ("workflows" in message or "workflow_id" in message)
+        )
+
+    # Check if workflow still exists (may have been deleted by test cleanup or user)
+    async def _workflow_exists(session: AsyncSession) -> bool:
+        stmt = select(exists().where(Workflow.id == workflow_uuid))
+        result = await session.execute(stmt)
+        exists_result = result.scalar() or False
+        logger.debug(f"ROI workflow exists check: workflow_id={workflow_id}, exists={exists_result}")
+        return exists_result
+
+    try:
+        # Verify workflow exists before attempting ROI upsert
+        if db is None:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                workflow_exists = await _workflow_exists(session)
+                logger.debug(f"ROI existence check (new session): workflow_id={workflow_id}, exists={workflow_exists}")
+                if not workflow_exists:
+                    logger.debug(
+                        f"Skipping ROI update - workflow {workflow_id} no longer exists"
+                    )
+                    return
+        else:
+            workflow_exists = await _workflow_exists(db)
+            logger.debug(f"ROI existence check (provided session): workflow_id={workflow_id}, exists={workflow_exists}")
+            if not workflow_exists:
+                logger.debug(
+                    f"Skipping ROI update - workflow {workflow_id} no longer exists"
+                )
+                return
+    except Exception as e:
+        logger.warning(f"Skipping ROI update - failed to check workflow existence: {e}")
+        return
+
+    logger.debug(f"ROI proceeding with upsert: workflow_id={workflow_id}")
 
     # Only count ROI for successful executions
     is_success = status == ExecutionStatus.SUCCESS.value
@@ -333,11 +388,31 @@ async def update_workflow_roi_daily(
             )
             await db.commit()
 
+    except IntegrityError as e:
+        orig = getattr(e, "orig", None)
+        orig_class = getattr(getattr(orig, "__class__", None), "__name__", "unknown")
+        constraint_name = getattr(orig, "constraint_name", "unknown")
+        logger.warning(f"ROI IntegrityError caught: workflow_id={workflow_id}, orig_class={orig_class}, constraint={constraint_name}")
+        if _is_missing_workflow_fk_violation(e):
+            logger.warning(
+                f"Skipping ROI update - workflow {workflow_id} not found (likely deleted during execution cleanup)"
+            )
+            if db is not None:
+                await db.rollback()
+            return
+        logger.error(
+            f"Integrity error updating workflow ROI (not FK violation): {e}",
+            exc_info=True,
+        )
+        if db is not None:
+            await db.rollback()
     except Exception as e:
         logger.error(
             f"Error updating workflow ROI: {e}",
             exc_info=True,
         )
+        if db is not None:
+            await db.rollback()
         # Don't raise - metrics update failure shouldn't fail the execution
 
 

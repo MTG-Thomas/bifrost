@@ -143,9 +143,13 @@ export function ExecutionDetails({
 	const streamingLogs = streamState?.streamingLogs ?? [];
 
 	// Determine if we should fetch from API
-	// Fetch when: stream received update (confirms DB write), OR fallback expired, OR no nav state
+	// Fetch when:
+	// - Stream received update (confirms DB write), OR
+	// - Fallback timer expired (5s after navigation), OR
+	// - No navigation state (direct link/refresh - fetch immediately!)
 	const hasReceivedUpdate = streamState?.hasReceivedUpdate ?? false;
-	const shouldFetchExecution = hasReceivedUpdate || fetchFallbackEnabled;
+	const shouldFetchExecution =
+		hasReceivedUpdate || fetchFallbackEnabled || !hasNavigationState;
 
 	// State for confirmation dialogs
 	const [showCancelDialog, setShowCancelDialog] = useState(false);
@@ -170,6 +174,7 @@ export function ExecutionDetails({
 	const {
 		data: executionData,
 		isLoading,
+		isFetching,
 		error,
 	} = useExecution(
 		shouldFetchExecution ? executionId : undefined,
@@ -552,7 +557,9 @@ export function ExecutionDetails({
 		}
 	};
 
-	if (isLoading) {
+	// Show loading state during initial load or background fetches/retries
+	// This prevents the "Waiting for execution" message from flashing on refresh
+	if (isLoading || isFetching) {
 		if (embedded) {
 			return (
 				<div className="flex items-center justify-center h-full p-8">
@@ -564,9 +571,10 @@ export function ExecutionDetails({
 	}
 
 	// Handle case where execution is not found yet (Redis-first architecture)
-	// The execution may be in Redis pending but not yet in PostgreSQL
-	// Show a waiting state instead of immediate error
-	if (!execution && !error) {
+	// This "waiting" state is ONLY for fresh executions when we navigate from
+	// the execution trigger (hasNavigationState is true). For page refreshes
+	// or direct links, we should show the loading state or error state instead.
+	if (!execution && !error && hasNavigationState) {
 		if (embedded) {
 			return (
 				<div className="flex flex-col items-center justify-center h-full p-8 text-center">
@@ -876,17 +884,30 @@ export function ExecutionDetails({
 							</motion.div>
 						)}
 
-						{/* Error Alert */}
+						{/* Error Section */}
 						{execution.error_message && (
-							<Alert variant="destructive">
-								<XCircle className="h-4 w-4" />
-								<AlertTitle>Error</AlertTitle>
-								<AlertDescription>
-									<pre className="mt-2 text-sm overflow-x-auto max-w-full whitespace-pre">
-										{execution.error_message}
-									</pre>
-								</AlertDescription>
-							</Alert>
+							<motion.div
+								initial={{ opacity: 0, y: 20 }}
+								animate={{ opacity: 1, y: 0 }}
+								transition={{ duration: 0.3 }}
+							>
+								<Card className="border-destructive">
+									<CardHeader>
+										<CardTitle className="flex items-center gap-2 text-destructive">
+											<XCircle className="h-5 w-5" />
+											Error
+										</CardTitle>
+										<CardDescription>
+											Workflow execution failed
+										</CardDescription>
+									</CardHeader>
+									<CardContent>
+										<pre className="text-sm whitespace-pre-wrap break-words font-mono bg-destructive/10 p-4 rounded-md overflow-x-auto">
+											{execution.error_message}
+										</pre>
+									</CardContent>
+								</Card>
+							</motion.div>
 						)}
 
 						{/* Logs Section - All users (DEBUG logs filtered for non-admins) */}

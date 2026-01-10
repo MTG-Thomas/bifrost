@@ -14,6 +14,7 @@ class ExecutionStatus(str, Enum):
     SUCCESS = "Success"
     FAILED = "Failed"
     TIMEOUT = "Timeout"
+    STUCK = "Stuck"  # Execution did not respond to cancellation within grace period
     COMPLETED_WITH_ERRORS = "CompletedWithErrors"
     CANCELLING = "Cancelling"
     CANCELLED = "Cancelled"
@@ -142,3 +143,13 @@ class CodingModePermission(str, Enum):
     """
     PLAN = "plan"
     EXECUTE = "acceptEdits"
+
+
+class ExecutionModel(str, Enum):
+    """
+    Execution model used for workflow execution.
+
+    Tracks which worker model was used:
+    - PROCESS: Process pool model (process_pool.py + simple_worker.py)
+    """
+    PROCESS = "process"

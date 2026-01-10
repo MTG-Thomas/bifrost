@@ -4,8 +4,9 @@ E2E tests for form management.
 Tests form CRUD operations, access levels, and role-based access.
 """
 
-import time
 import pytest
+
+from tests.e2e.conftest import poll_until
 
 
 @pytest.mark.e2e
@@ -254,28 +255,27 @@ class TestFormFileSync:
         """Form file appears in editor file listing."""
         form = form_with_file
 
-        # Wait a moment for file sync
-        time.sleep(1)
+        def check_form_file():
+            # List files in forms directory
+            response = e2e_client.get(
+                "/api/files/editor",
+                headers=platform_admin.headers,
+                params={"path": "forms"},
+            )
+            # Forms directory may or may not exist depending on implementation
+            if response.status_code == 200:
+                files = response.json()
+                if isinstance(files, list):
+                    file_names = [f.get("name", f.get("path", "")) for f in files]
+                    if any(
+                        form["id"] in name or "file_sync_test" in name.lower()
+                        for name in file_names
+                    ):
+                        return True
+            return None
 
-        # List files in forms directory
-        response = e2e_client.get(
-            "/api/files/editor",
-            headers=platform_admin.headers,
-            params={"path": "forms"},
-        )
-
-        # Forms directory may or may not exist depending on implementation
-        if response.status_code == 200:
-            files = response.json()
-            # Check if the form file is listed
-            if isinstance(files, list):
-                file_names = [f.get("name", f.get("path", "")) for f in files]
-                # The form file might be named after the form ID or name
-                # Soft check - file may be in a different location
-                _ = any(
-                    form["id"] in name or "file_sync_test" in name.lower()
-                    for name in file_names
-                )
+        # Poll for file sync - may or may not find it depending on implementation
+        poll_until(check_form_file, max_wait=2.0, interval=0.2)
 
     def test_form_file_can_be_deleted_via_editor(
         self, e2e_client, platform_admin

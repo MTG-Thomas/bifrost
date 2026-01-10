@@ -113,6 +113,8 @@ services:
       BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
       BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
       BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
+      # Thread-based worker model (new execution architecture)
+      BIFROST_USE_THREAD_WORKERS: "true"
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro
