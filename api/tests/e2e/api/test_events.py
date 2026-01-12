@@ -333,59 +333,47 @@ class TestEventSourceCRUD:
         )
         assert response.status_code == 403, f"Expected 403, got {response.status_code}: {response.text}"
 
-    def test_org_user_sees_global_sources(self, e2e_client, org1_user, event_source):
-        """Org users can see global (non-org-scoped) sources."""
+    def test_org_user_cannot_list_adapters(self, e2e_client, org1_user):
+        """Org users cannot list webhook adapters (platform admin only)."""
+        response = e2e_client.get(
+            "/api/events/adapters",
+            headers=org1_user.headers,
+        )
+        assert response.status_code == 403, f"Expected 403, got {response.status_code}: {response.text}"
+
+    def test_org_user_cannot_list_sources(self, e2e_client, org1_user):
+        """Org users cannot list event sources (platform admin only)."""
         response = e2e_client.get(
             "/api/events/sources",
             headers=org1_user.headers,
         )
-        assert response.status_code == 200, f"List sources failed: {response.text}"
+        assert response.status_code == 403, f"Expected 403, got {response.status_code}: {response.text}"
 
-        data = response.json()
-        source_ids = [s["id"] for s in data["items"]]
-
-        # Should see global source (event_source has no organization_id)
-        assert event_source["id"] in source_ids
-
-    def test_org_user_cannot_see_other_org_sources(
-        self, e2e_client, platform_admin, org1_user, org2
-    ):
-        """Org isolation for org-scoped sources."""
-        # Create a source scoped to org2
+    def test_org_user_cannot_get_source(self, e2e_client, platform_admin, org1_user):
+        """Org users cannot get event source details (platform admin only)."""
+        # Create a source as admin first
         response = e2e_client.post(
             "/api/events/sources",
             headers=platform_admin.headers,
             json={
-                "name": f"Org2 Source {uuid.uuid4().hex[:8]}",
+                "name": "Test Source for Auth Check",
                 "source_type": "webhook",
-                "organization_id": org2["id"],
                 "webhook": {"adapter_name": "generic", "config": {}},
             },
         )
-        org2_source = response.json()
+        source = response.json()
 
         try:
-            # org1_user should NOT see org2's source
+            # Org user should not be able to get it
             response = e2e_client.get(
-                "/api/events/sources",
+                f"/api/events/sources/{source['id']}",
                 headers=org1_user.headers,
             )
-            assert response.status_code == 200
-
-            data = response.json()
-            source_ids = [s["id"] for s in data["items"]]
-            assert org2_source["id"] not in source_ids
-
-            # Direct access should be forbidden
-            response = e2e_client.get(
-                f"/api/events/sources/{org2_source['id']}",
-                headers=org1_user.headers,
-            )
-            assert response.status_code == 403
+            assert response.status_code == 403, f"Expected 403, got {response.status_code}: {response.text}"
         finally:
             # Cleanup
             e2e_client.delete(
-                f"/api/events/sources/{org2_source['id']}",
+                f"/api/events/sources/{source['id']}",
                 headers=platform_admin.headers,
             )
 
