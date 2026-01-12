@@ -511,13 +511,16 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     roi_time_saved = workflow_data["time_saved"]
                     roi_value = workflow_data["value"]
 
-                    # Fallback: if user's org_id is None, use workflow's organization_id
-                    # This handles system-triggered workflows (schedules, webhooks) that
-                    # need to use the workflow's org scope for SDK operations
+                    # Scope resolution: org-scoped workflows use workflow's org,
+                    # global workflows use caller's org
                     workflow_org_id = workflow_data.get("organization_id")
-                    if org_id is None and workflow_org_id:
+                    if workflow_org_id:
+                        # Org-scoped workflow: always use workflow's org
                         org_id = workflow_org_id
-                        logger.info(f"Using workflow org_id fallback: {org_id}")
+                        logger.info(f"Scope: workflow org {org_id} (org-scoped workflow)")
+                    else:
+                        # Global workflow: use caller's org (already set from pending["org_id"])
+                        logger.info(f"Scope: caller org {org_id or 'GLOBAL'} (global workflow)")
                 except WorkflowNotFoundError:
                     logger.error(f"Workflow not found: {workflow_id}")
                     duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
@@ -568,6 +571,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 updates={
                     "workflow_name": workflow_name,
                     "workflow_id": workflow_id,
+                    "org_id": org_id,  # Resolved scope for result handlers
                 },
             )
 

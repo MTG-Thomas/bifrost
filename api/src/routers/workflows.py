@@ -46,6 +46,7 @@ from src.models.orm.workflow_access import WorkflowAccess
 from src.models.orm.forms import Form, FormField
 from src.models.orm.applications import Application, AppPage, AppComponent
 from src.models.orm.agents import Agent, AgentTool
+from src.models.orm.developer import DeveloperContext
 from src.services.workflow_validation import _extract_relative_path
 
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
@@ -584,20 +585,34 @@ async def execute_workflow(
             detail="Either workflow_id or code must be provided",
         )
 
+    # Determine execution org_id
+    # 1. Use ctx.org_id if set (from JWT)
+    # 2. For platform admins without org_id, check developer context
+    execution_org_id = ctx.org_id
+    if execution_org_id is None and ctx.user.is_superuser:
+        # Platform admin - check developer context for org override
+        dev_ctx_result = await db.execute(
+            select(DeveloperContext).where(DeveloperContext.user_id == ctx.user.user_id)
+        )
+        dev_ctx = dev_ctx_result.scalar_one_or_none()
+        if dev_ctx and dev_ctx.default_org_id:
+            execution_org_id = dev_ctx.default_org_id
+            logger.info(f"Using developer context org: {execution_org_id}")
+
     # Build shared context for execution
     org = None
-    if ctx.org_id:
-        org = Organization(id=str(ctx.org_id), name="", is_active=True)
+    if execution_org_id:
+        org = Organization(id=str(execution_org_id), name="", is_active=True)
 
     logger.info(
-        f"Building execution context: org_id={ctx.org_id}, is_superuser={ctx.user.is_superuser}, scope={'GLOBAL' if not ctx.org_id else str(ctx.org_id)}"
+        f"Building execution context: org_id={execution_org_id}, is_superuser={ctx.user.is_superuser}, scope={'GLOBAL' if not execution_org_id else str(execution_org_id)}"
     )
 
     shared_ctx = SharedContext(
         user_id=str(ctx.user.user_id),
         name=ctx.user.name,
         email=ctx.user.email,
-        scope=str(ctx.org_id) if ctx.org_id else "GLOBAL",
+        scope=str(execution_org_id) if execution_org_id else "GLOBAL",
         organization=org,
         is_platform_admin=ctx.user.is_superuser,
         is_function_key=False,
@@ -666,7 +681,7 @@ async def execute_workflow(
                 executed_by=ctx.user.user_id,
                 executed_by_name=ctx.user.name or ctx.user.email or "Unknown",
                 workflow_name=result.workflow_name or request.script_name or "inline_script",
-                org_id=ctx.org_id,
+                org_id=execution_org_id,
                 started_at=result.started_at,
                 completed_at=result.completed_at,
                 duration_ms=result.duration_ms,

@@ -13,11 +13,19 @@ from urllib.parse import quote
 
 from .client import get_client
 from .models import TableInfo, DocumentData, DocumentList
+from ._context import get_default_scope
 
 
 def _encode_table_name(name: str) -> str:
     """URL-encode table name for path parameters."""
     return quote(name, safe="")
+
+
+def _resolve_scope(scope: str | None) -> str | None:
+    """Resolve effective scope - explicit override or default from context."""
+    if scope is not None:
+        return scope
+    return get_default_scope()
 
 
 class tables:
@@ -86,9 +94,10 @@ class tables:
             >>> app_table = await tables.create("app_data", app="app-uuid")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.post(
             "/api/tables",
             params=params,
@@ -128,9 +137,10 @@ class tables:
             >>> app_tables = await tables.list(app="app-uuid")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.get("/api/tables", params=params)
         response.raise_for_status()
         data = response.json()
@@ -162,9 +172,10 @@ class tables:
             >>> await tables.delete("old_customers")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.delete(
             f"/api/tables/{_encode_table_name(name)}",
             params=params,
@@ -217,9 +228,10 @@ class tables:
             ... })
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
 
         body: dict[str, Any] = {"data": data}
         if id:
@@ -306,9 +318,10 @@ class tables:
             >>> doc = await tables.get("customers", "acme-001")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.get(
             f"/api/tables/{_encode_table_name(table)}/documents/{quote(doc_id, safe='')}",
             params=params,
@@ -350,9 +363,10 @@ class tables:
             >>> doc = await tables.update("customers", "uuid-here", {"status": "inactive"})
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.patch(
             f"/api/tables/{_encode_table_name(table)}/documents/{quote(doc_id, safe='')}",
             params=params,
@@ -393,9 +407,10 @@ class tables:
             >>> deleted = await tables.delete_document("customers", "uuid-here")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.delete(
             f"/api/tables/{_encode_table_name(table)}/documents/{quote(doc_id, safe='')}",
             params=params,
@@ -461,9 +476,10 @@ class tables:
             ... )
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.post(
             f"/api/tables/{_encode_table_name(table)}/documents/query",
             params=params,
@@ -508,9 +524,10 @@ class tables:
             >>> high_value = await tables.count("customers", where={"revenue": {"gte": 10000}})
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         params = {}
-        if scope:
-            params["scope"] = scope
+        if effective_scope:
+            params["scope"] = effective_scope
         response = await client.get(
             f"/api/tables/{_encode_table_name(table)}/documents/count",
             params=params,

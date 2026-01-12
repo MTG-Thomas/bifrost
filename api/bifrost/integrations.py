@@ -12,8 +12,16 @@ import logging
 
 from .client import get_client
 from .models import IntegrationData, IntegrationMappingResponse
+from ._context import get_default_scope
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_scope(scope: str | None) -> str | None:
+    """Resolve effective scope - explicit override or default from context."""
+    if scope is not None:
+        return scope
+    return get_default_scope()
 
 
 class integrations:
@@ -77,9 +85,10 @@ class integrations:
             >>> org_int = await integrations.get("HaloPSA", scope="org-uuid-here")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         response = await client.post(
             "/api/cli/integrations/get",
-            json={"name": name, "scope": scope}
+            json={"name": name, "scope": effective_scope}
         )
 
         if response.status_code == 200:
@@ -177,9 +186,10 @@ class integrations:
             >>> mapping = await integrations.get_mapping("HaloPSA", entity_id="tenant-456")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         response = await client.post(
             "/api/cli/integrations/get_mapping",
-            json={"name": name, "scope": scope, "entity_id": entity_id}
+            json={"name": name, "scope": effective_scope, "entity_id": entity_id}
         )
 
         if response.status_code == 200:

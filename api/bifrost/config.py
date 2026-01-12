@@ -12,6 +12,14 @@ from typing import Any
 
 from .client import get_client
 from .models import ConfigData
+from ._context import get_default_scope
+
+
+def _resolve_scope(scope: str | None) -> str | None:
+    """Resolve effective scope - explicit override or default from context."""
+    if scope is not None:
+        return scope
+    return get_default_scope()
 
 
 class config:
@@ -57,9 +65,10 @@ class config:
             >>> org_setting = await config.get("key", scope="org-uuid-here")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         response = await client.post(
             "/api/cli/config/get",
-            json={"key": key, "scope": scope}
+            json={"key": key, "scope": effective_scope}
         )
 
         if response.status_code == 200:
@@ -103,13 +112,14 @@ class config:
             >>> await config.set("org_setting", "value", scope="org-uuid-here")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         response = await client.post(
             "/api/cli/config/set",
             json={
                 "key": key,
                 "value": value,
                 "is_secret": is_secret,
-                "scope": scope,
+                "scope": effective_scope,
             }
         )
         response.raise_for_status()
@@ -146,9 +156,10 @@ class config:
             >>> global_cfg = await config.list(scope="global")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         response = await client.post(
             "/api/cli/config/list",
-            json={"scope": scope}
+            json={"scope": effective_scope}
         )
         response.raise_for_status()
         return ConfigData.model_validate({"data": response.json()})
@@ -179,9 +190,10 @@ class config:
             >>> await config.delete("global_key", scope="global")
         """
         client = get_client()
+        effective_scope = _resolve_scope(scope)
         response = await client.post(
             "/api/cli/config/delete",
-            json={"key": key, "scope": scope}
+            json={"key": key, "scope": effective_scope}
         )
         response.raise_for_status()
         return response.json()

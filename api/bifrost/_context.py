@@ -107,3 +107,20 @@ def clear_execution_context() -> None:
     Called by the workflow engine after user code execution completes.
     """
     _execution_context.set(None)
+
+
+def get_default_scope() -> str | None:
+    """
+    Get the default scope from ExecutionContext if available.
+
+    Used by SDK modules (tables, config, knowledge) to automatically
+    include the correct scope when making API calls.
+
+    Returns:
+        org_id from context for scoped operations, or None for global scope.
+        Returns None if not in a workflow execution context (CLI mode).
+    """
+    ctx = _execution_context.get()
+    if ctx is None:
+        return None  # Not in workflow context - let API handle it
+    return ctx.org_id  # Returns None for GLOBAL scope, org UUID otherwise
