@@ -18,6 +18,7 @@ This service handles three layers of access control:
 """
 
 import logging
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select, or_
@@ -25,6 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import ExecutionContext
 from src.models import Form, UserRole, Execution
+from src.models.orm.applications import Application
+from src.models.orm.app_roles import AppRole
+from src.models.orm.agents import Agent, AgentRole
+from src.models.orm.forms import FormRole
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +82,10 @@ class AuthorizationService:
         Returns:
             List of role UUID strings
         """
-        # Forms store assigned_roles as a JSON array of role IDs
-        query = select(Form.assigned_roles).where(Form.id == form_id)
+        # Query role assignments from the FormRole join table
+        query = select(FormRole.role_id).where(FormRole.form_id == form_id)
         result = await self.db.execute(query)
-        assigned_roles = result.scalar_one_or_none()
-
-        if assigned_roles is None:
-            return []
-
-        return [str(role_id) for role_id in assigned_roles]
+        return [str(role_id) for role_id in result.scalars().all()]
 
     # =========================================================================
     # Form Access Control
@@ -203,7 +203,7 @@ class AuthorizationService:
                 visible_forms.append(form)
             elif access_level == "role_based":
                 # Check if user has any of the roles assigned to this form
-                form_role_ids = [str(r) for r in (form.assigned_roles or [])]
+                form_role_ids = await self.get_form_role_ids(form.id)
                 if any(role_id in form_role_ids for role_id in user_role_ids):
                     visible_forms.append(form)
 
@@ -295,6 +295,138 @@ class AuthorizationService:
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
+
+    # =========================================================================
+    # Unified Entity Access Control
+    # =========================================================================
+
+    async def _check_role_access(
+        self,
+        entity_id: UUID,
+        entity_type: Literal["form", "app", "agent"],
+    ) -> bool:
+        """
+        Check if user has a role granting access to this entity.
+
+        Args:
+            entity_id: Entity ID (UUID)
+            entity_type: Type of entity ("form", "app", or "agent")
+
+        Returns:
+            True if user has a role that grants access, False otherwise
+        """
+        user_roles = await self.get_user_role_ids()
+        if not user_roles:
+            return False
+
+        # Map entity type to role table and ID column
+        role_configs = {
+            "form": (FormRole, FormRole.form_id),
+            "app": (AppRole, AppRole.app_id),
+            "agent": (AgentRole, AgentRole.agent_id),
+        }
+        role_table, id_column = role_configs[entity_type]
+
+        # Query roles assigned to this entity
+        query = select(role_table.role_id).where(id_column == entity_id)
+        result = await self.db.execute(query)
+        entity_roles = [str(r) for r in result.scalars().all()]
+
+        # Check if user has any of the entity's roles
+        return any(role in entity_roles for role in user_roles)
+
+    async def can_access_entity(
+        self,
+        entity: Form | Application | Agent,
+        entity_type: Literal["form", "app", "agent"],
+    ) -> bool:
+        """
+        Unified access check for forms, apps, and agents.
+
+        Rules:
+        1. Platform admins can access anything
+        2. Entity org must match user org (or entity must be global)
+        3. access_level="authenticated" -> any authenticated user in scope
+        4. access_level="role_based" -> user must have a matching role
+
+        Args:
+            entity: The entity to check access for
+            entity_type: Type of entity ("form", "app", or "agent")
+
+        Returns:
+            True if user can access the entity, False otherwise
+        """
+        # Platform admins can access anything
+        if self.context.is_platform_admin:
+            return True
+
+        # Check org scoping - entity org must match user org, or be global
+        entity_org = getattr(entity, "organization_id", None)
+        if entity_org is not None and entity_org != self.context.org_id:
+            return False
+
+        # If user has no org and entity is org-scoped, deny
+        if entity_org is not None and self.context.org_id is None:
+            return False
+
+        # Check access level (default to "authenticated" if not set)
+        raw_access_level = getattr(entity, "access_level", None)
+        if raw_access_level is None:
+            access_level_str = "authenticated"
+        elif hasattr(raw_access_level, "value"):
+            # It's an enum, get the string value
+            access_level_str = raw_access_level.value
+        else:
+            # It's already a string
+            access_level_str = str(raw_access_level)
+
+        if access_level_str == "authenticated":
+            return True
+
+        if access_level_str == "role_based":
+            return await self._check_role_access(entity.id, entity_type)
+
+        return False
+
+    # =========================================================================
+    # Entity-Specific Convenience Wrappers
+    # =========================================================================
+
+    async def can_access_form(self, form: Form) -> bool:
+        """
+        Check if user can access a form.
+
+        Args:
+            form: Form entity
+
+        Returns:
+            True if user can access the form, False otherwise
+        """
+        return await self.can_access_entity(form, "form")
+
+    async def can_access_app(self, app: Application) -> bool:
+        """
+        Check if user can access an application.
+
+        Args:
+            app: Application entity
+
+        Returns:
+            True if user can access the app, False otherwise
+        """
+        return await self.can_access_entity(app, "app")
+
+    async def can_access_agent(self, agent: Agent) -> bool:
+        """
+        Check if user can access an agent.
+
+        Args:
+            agent: Agent entity
+
+        Returns:
+            True if user can access the agent, False otherwise
+        """
+        return await self.can_access_entity(agent, "agent")
 
 
 # Convenience function for creating service from context

@@ -26,7 +26,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useEditorStore } from "@/stores/editorStore";
 import { useQuickAccessStore } from "@/stores/quickAccessStore";
 import { NotificationCenter } from "@/components/layout/NotificationCenter";
-import { profileService, type ProfileResponse } from "@/services/profile";
+import { useProfile } from "@/hooks/useProfile";
+import { profileService } from "@/services/profile";
 import { webSocketService } from "@/services/websocket";
 import { cn } from "@/lib/utils";
 
@@ -56,27 +57,16 @@ export function Header({
 	const [hasActiveCLISession, setHasActiveCLISession] = useState(false);
 	const isOnCLIPage = location.pathname.startsWith("/cli");
 
-	// Profile and avatar state
-	const [profile, setProfile] = useState<ProfileResponse | null>(null);
-	const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+	// Profile data via React Query (cached)
+	// dataUpdatedAt provides a stable timestamp for cache-busting avatar URLs
+	const { data: profile, dataUpdatedAt } = useProfile();
 
-	// Load profile data for avatar
-	useEffect(() => {
-		async function loadProfile() {
-			try {
-				const data = await profileService.getProfile();
-				setProfile(data);
-				if (data.has_avatar) {
-					setAvatarUrl(
-						`${profileService.getAvatarUrl()}?t=${Date.now()}`,
-					);
-				}
-			} catch (err) {
-				console.error("Failed to load profile:", err);
-			}
-		}
-		loadProfile();
-	}, []);
+	// Compute avatar URL with cache-busting timestamp from React Query
+	// Using dataUpdatedAt avoids calling Date.now() during render
+	const avatarUrl =
+		profile?.has_avatar && dataUpdatedAt
+			? `${profileService.getAvatarUrl()}?t=${dataUpdatedAt}`
+			: null;
 
 	// Subscribe to CLI session updates via websocket (platform admins only)
 	useEffect(() => {

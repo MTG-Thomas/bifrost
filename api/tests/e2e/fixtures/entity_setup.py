@@ -362,6 +362,7 @@ def test_agent_with_tools(
 def create_app_json_with_portable_refs(
     app_name: str,
     app_slug: str,
+    app_id: str,
     workflow_portable_ref: str,
 ) -> str:
     """
@@ -369,8 +370,15 @@ def create_app_json_with_portable_refs(
 
     This creates a valid app JSON that uses portable refs instead of UUIDs,
     simulating what would be pushed to GitHub.
+
+    Args:
+        app_name: Display name for the application.
+        app_slug: URL-friendly slug for the application.
+        app_id: Unique identifier for the application (used for sync matching).
+        workflow_portable_ref: Portable reference to a workflow (e.g., "path/to/file.py::workflow_name").
     """
     app_data = {
+        "id": app_id,
         "name": app_name,
         "slug": app_slug,
         "description": "App with portable refs for pull testing",
@@ -411,12 +419,19 @@ def create_app_json_with_portable_refs(
 
 def create_form_json_with_portable_refs(
     form_name: str,
+    form_id: str,
     workflow_portable_ref: str,
 ) -> str:
     """
     Generate .form.json content with portable workflow refs.
+
+    Args:
+        form_name: Display name for the form.
+        form_id: Unique identifier for the form (used for sync matching).
+        workflow_portable_ref: Portable reference to a workflow (e.g., "path/to/file.py::workflow_name").
     """
     form_data = {
+        "id": form_id,
         "name": form_name,
         "description": "Form with portable refs for pull testing",
         "workflow_id": workflow_portable_ref,
@@ -450,12 +465,19 @@ def create_form_json_with_portable_refs(
 
 def create_agent_json_with_portable_refs(
     agent_name: str,
+    agent_id: str,
     workflow_portable_ref: str,
 ) -> str:
     """
     Generate .agent.json content with portable workflow refs.
+
+    Args:
+        agent_name: Display name for the agent.
+        agent_id: Unique identifier for the agent (used for sync matching).
+        workflow_portable_ref: Portable reference to a workflow (e.g., "path/to/file.py::workflow_name").
     """
     agent_data = {
+        "id": agent_id,
         "name": agent_name,
         "description": "Agent with portable refs for pull testing",
         "system_prompt": "You are a test agent.",

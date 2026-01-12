@@ -37,6 +37,7 @@ from src.models.orm.app_roles import AppRole
 from src.models.orm.applications import AppComponent, AppPage, AppVersion, Application
 from src.repositories.org_scoped import OrgScopedRepository
 from src.services.app_builder_service import AppBuilderService
+from src.services.authorization import AuthorizationService
 from src.services.workflow_access_service import sync_app_workflow_access
 
 logger = logging.getLogger(__name__)
@@ -74,9 +75,9 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
-    async def get_by_id(self, app_id: UUID) -> Application | None:
+    async def get_by_id(self, id: UUID) -> Application | None:
         """Get application by UUID with cascade scoping."""
-        query = select(self.model).where(self.model.id == app_id)
+        query = select(self.model).where(self.model.id == id)
         query = self.filter_cascade(query)
 
         result = await self.session.execute(query)
@@ -307,17 +308,38 @@ def _resolve_target_org_safe(ctx: Context, scope: str | None) -> UUID | None:
 async def get_application_or_404(
     ctx: Context,
     slug: str,
-    scope: str | None = None,
+    scope: str | None = None,  # noqa: ARG001 - kept for API compatibility
 ) -> Application:
-    """Get application by slug or raise 404."""
-    target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
-    application = await repo.get_by_slug(slug)
+    """Get application by slug with access control.
+
+    Fetches the application without org filtering, then uses AuthorizationService
+    to check access. This allows platform admins to access any app regardless
+    of their current org context.
+
+    Returns:
+        Application if found and accessible
+
+    Raises:
+        HTTPException 404 if not found
+        HTTPException 403 if access denied
+    """
+    # Fetch app directly by slug without org filter
+    query = select(Application).where(Application.slug == slug)
+    result = await ctx.db.execute(query)
+    application = result.scalar_one_or_none()
 
     if not application:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Application '{slug}' not found",
+        )
+
+    # Check access using AuthorizationService
+    auth = AuthorizationService(ctx.db, ctx)
+    if not await auth.can_access_app(application):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this application",
         )
 
     return application
@@ -326,17 +348,38 @@ async def get_application_or_404(
 async def get_application_by_id_or_404(
     ctx: Context,
     app_id: UUID,
-    scope: str | None = None,
+    scope: str | None = None,  # noqa: ARG001 - kept for API compatibility
 ) -> Application:
-    """Get application by UUID or raise 404."""
-    target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
-    application = await repo.get_by_id(app_id)
+    """Get application by UUID with access control.
+
+    Fetches the application without org filtering, then uses AuthorizationService
+    to check access. This allows platform admins to access any app regardless
+    of their current org context.
+
+    Returns:
+        Application if found and accessible
+
+    Raises:
+        HTTPException 404 if not found
+        HTTPException 403 if access denied
+    """
+    # Fetch app directly by ID without org filter
+    query = select(Application).where(Application.id == app_id)
+    result = await ctx.db.execute(query)
+    application = result.scalar_one_or_none()
 
     if not application:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Application '{app_id}' not found",
+        )
+
+    # Check access using AuthorizationService
+    auth = AuthorizationService(ctx.db, ctx)
+    if not await auth.can_access_app(application):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this application",
         )
 
     return application
@@ -383,7 +426,7 @@ async def create_application(
 )
 async def list_applications(
     ctx: Context,
-    user: CurrentUser,
+    _user: CurrentUser,
     scope: str | None = Query(
         default=None,
         description="Filter scope: 'global' for global only, org UUID for specific org.",
@@ -418,7 +461,7 @@ async def list_applications(
 async def get_application(
     slug: str,
     ctx: Context,
-    user: CurrentUser,
+    _user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> ApplicationPublic:
     """Get application metadata by slug."""
@@ -476,7 +519,7 @@ async def update_application(
 async def delete_application(
     slug: str,
     ctx: Context,
-    user: CurrentUser,
+    _user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> None:
     """Delete an application."""
@@ -504,7 +547,7 @@ async def delete_application(
 async def get_draft(
     app_id: UUID,
     ctx: Context,
-    user: CurrentUser,
+    _user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> ApplicationDefinition:
     """
@@ -531,7 +574,7 @@ async def save_draft(
     app_id: UUID,
     data: ApplicationDraftSave,
     ctx: Context,
-    user: CurrentUser,
+    _user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> ApplicationDefinition:
     """
@@ -647,7 +690,7 @@ async def publish_application(
 async def export_application(
     app_id: UUID,
     ctx: Context,
-    user: CurrentUser,
+    _user: CurrentUser,
     version_id: UUID | None = Query(default=None, description="Version UUID to export (defaults to draft)"),
     scope: str | None = Query(default=None),
 ) -> dict[str, Any]:
@@ -751,7 +794,7 @@ async def rollback_application(
     app_id: UUID,
     data: ApplicationRollbackRequest,
     ctx: Context,
-    user: CurrentUser,
+    _user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> ApplicationPublic:
     """

@@ -129,12 +129,21 @@ export function useToolWorkflows() {
  * workflows themselves.
  *
  * Data providers are now stored as workflows with type="data_provider".
+ *
+ * @param options.enabled - Whether to fetch workflows (default: true). Set to false for non-admins.
  */
-export function useWorkflowsMetadata() {
+export function useWorkflowsMetadata(options?: { enabled?: boolean }) {
+	const enabled = options?.enabled ?? true;
 	const setWorkflows = useWorkflowsStore((state) => state.setWorkflows);
 
 	// Fetch all workflows (includes type: workflow, tool, data_provider)
-	const workflowsQuery = $api.useQuery("get", "/api/workflows", {});
+	// Only fetch if enabled (platform admins only can list workflows)
+	const workflowsQuery = $api.useQuery(
+		"get",
+		"/api/workflows",
+		{},
+		{ enabled },
+	);
 
 	// Update Zustand store when workflows change
 	// MUST be in useEffect to avoid infinite re-render loop

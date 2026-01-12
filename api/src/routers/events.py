@@ -150,10 +150,11 @@ async def _build_event_subscription_response(
     "/adapters",
     response_model=WebhookAdapterListResponse,
     summary="List available webhook adapters",
-    description="List all available webhook adapters and their configuration schemas.",
+    description="List all available webhook adapters and their configuration schemas (Platform admin only).",
 )
 async def list_adapters(
     ctx: Context,
+    user: CurrentSuperuser,
 ) -> WebhookAdapterListResponse:
     """List all available webhook adapters."""
     registry = get_adapter_registry()
@@ -168,12 +169,13 @@ async def list_adapters(
     "/adapters/{adapter_name}/dynamic-values",
     response_model=DynamicValuesResponse,
     summary="Get dynamic values for adapter config",
-    description="Fetch dynamic options for a config field with x-dynamic-values.",
+    description="Fetch dynamic options for a config field with x-dynamic-values (Platform admin only).",
 )
 async def get_dynamic_values(
     adapter_name: str,
     request: DynamicValuesRequest,
     ctx: Context,
+    user: CurrentSuperuser,
     db: DbSession,
 ) -> DynamicValuesResponse:
     """
@@ -216,15 +218,6 @@ async def get_dynamic_values(
                 detail="Integration not found",
             )
 
-        # Check access - only allow if user can see this integration
-        if not ctx.user.is_superuser:
-            # For org users, check if integration belongs to their org or is global
-            if integration.organization_id and integration.organization_id != ctx.org_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied to integration",
-                )
-
     # Call adapter's get_dynamic_values
     try:
         items = await adapter.get_dynamic_values(
@@ -259,35 +252,29 @@ async def get_dynamic_values(
     "/sources",
     response_model=EventSourceListResponse,
     summary="List event sources",
-    description="List all event sources visible to the user.",
+    description="List all event sources (Platform admin only).",
 )
 async def list_sources(
     ctx: Context,
+    user: CurrentSuperuser,
     db: DbSession,
     source_type: EventSourceType | None = Query(
         None, description="Filter by source type"
     ),
     organization_id: UUID | None = Query(
-        None, description="Filter by organization (superusers only)"
+        None, description="Filter by organization"
     ),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Skip results"),
 ) -> EventSourceListResponse:
     """
-    List event sources.
-
-    - Platform admins see all sources (or filter by org)
-    - Org users see their org's sources + global sources
+    List event sources (Platform admin only).
     """
     repo = EventSourceRepository(db)
 
-    # Determine org filter
-    if ctx.user.is_superuser:
-        org_filter = organization_id
-        include_global = organization_id is None
-    else:
-        org_filter = ctx.org_id
-        include_global = True
+    # Determine org filter (admins can filter by org or see all)
+    org_filter = organization_id
+    include_global = organization_id is None
 
     sources = await repo.get_by_organization(
         organization_id=org_filter,
@@ -423,14 +410,15 @@ async def create_source(
     "/sources/{source_id}",
     response_model=EventSourceResponse,
     summary="Get event source",
-    description="Get a specific event source by ID.",
+    description="Get a specific event source by ID (Platform admin only).",
 )
 async def get_source(
     source_id: UUID,
     ctx: Context,
+    user: CurrentSuperuser,
     db: DbSession,
 ) -> EventSourceResponse:
-    """Get event source by ID."""
+    """Get event source by ID (Platform admin only)."""
     repo = EventSourceRepository(db)
     source = await repo.get_by_id_with_details(source_id)
 
@@ -439,14 +427,6 @@ async def get_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event source not found",
         )
-
-    # Check access
-    if not ctx.user.is_superuser:
-        if source.organization_id and source.organization_id != ctx.org_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied",
-            )
 
     return await _build_event_source_response(source, db)
 
@@ -570,17 +550,18 @@ async def delete_source(
     "/sources/{source_id}/subscriptions",
     response_model=EventSubscriptionListResponse,
     summary="List subscriptions",
-    description="List subscriptions for an event source.",
+    description="List subscriptions for an event source (Platform admin only).",
 )
 async def list_subscriptions(
     source_id: UUID,
     ctx: Context,
+    user: CurrentSuperuser,
     db: DbSession,
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Skip results"),
 ) -> EventSubscriptionListResponse:
-    """List subscriptions for an event source."""
-    # Verify source exists and user has access
+    """List subscriptions for an event source (Platform admin only)."""
+    # Verify source exists
     source_repo = EventSourceRepository(db)
     source = await source_repo.get_by_id(source_id)
 
@@ -589,13 +570,6 @@ async def list_subscriptions(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event source not found",
         )
-
-    if not ctx.user.is_superuser:
-        if source.organization_id and source.organization_id != ctx.org_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied",
-            )
 
     # Get subscriptions
     sub_repo = EventSubscriptionRepository(db)
@@ -779,11 +753,12 @@ async def delete_subscription(
     "/sources/{source_id}/events",
     response_model=EventListResponse,
     summary="List events",
-    description="List events for an event source with optional filters.",
+    description="List events for an event source with optional filters (Platform admin only).",
 )
 async def list_events(
     source_id: UUID,
     ctx: Context,
+    user: CurrentSuperuser,
     db: DbSession,
     event_status: str | None = Query(None, alias="status", description="Filter by status (received, processing, completed, failed)"),
     event_type: str | None = Query(None, description="Filter by event type"),
@@ -792,10 +767,10 @@ async def list_events(
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Skip results"),
 ) -> EventListResponse:
-    """List events for an event source with optional filters."""
+    """List events for an event source with optional filters (Platform admin only)."""
     from src.models.enums import EventStatus
 
-    # Verify source exists and user has access
+    # Verify source exists
     source_repo = EventSourceRepository(db)
     source = await source_repo.get_by_id(source_id)
 
@@ -804,13 +779,6 @@ async def list_events(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event source not found",
         )
-
-    if not ctx.user.is_superuser:
-        if source.organization_id and source.organization_id != ctx.org_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied",
-            )
 
     # Parse status filter
     status_enum = None
@@ -876,14 +844,15 @@ async def list_events(
     "/{event_id}",
     response_model=EventResponse,
     summary="Get event",
-    description="Get a specific event by ID.",
+    description="Get a specific event by ID (Platform admin only).",
 )
 async def get_event(
     event_id: UUID,
     ctx: Context,
+    user: CurrentSuperuser,
     db: DbSession,
 ) -> EventResponse:
-    """Get event by ID."""
+    """Get event by ID (Platform admin only)."""
     # Get event with source
     result = await db.execute(
         select(Event)
@@ -898,14 +867,7 @@ async def get_event(
             detail="Event not found",
         )
 
-    # Check access
     source = event.event_source
-    if not ctx.user.is_superuser:
-        if source and source.organization_id and source.organization_id != ctx.org_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied",
-            )
 
     # Get delivery counts
     delivery_repo = EventDeliveryRepository(db)
@@ -940,15 +902,16 @@ async def get_event(
     "/{event_id}/deliveries",
     response_model=EventDeliveryListResponse,
     summary="List deliveries",
-    description="List deliveries for an event.",
+    description="List deliveries for an event (Platform admin only).",
 )
 async def list_deliveries(
     event_id: UUID,
     ctx: Context,
+    user: CurrentSuperuser,
     db: DbSession,
 ) -> EventDeliveryListResponse:
-    """List deliveries for an event."""
-    # Get event with source to check access
+    """List deliveries for an event (Platform admin only)."""
+    # Get event
     result = await db.execute(
         select(Event)
         .options(joinedload(Event.event_source))
@@ -961,15 +924,6 @@ async def list_deliveries(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event not found",
         )
-
-    # Check access
-    source = event.event_source
-    if not ctx.user.is_superuser:
-        if source and source.organization_id and source.organization_id != ctx.org_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied",
-            )
 
     # Get deliveries
     delivery_repo = EventDeliveryRepository(db)

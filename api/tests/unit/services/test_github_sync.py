@@ -11,6 +11,7 @@ from src.services.github_sync import (
     SyncActionType,
     ConflictInfo,
     OrphanInfo,
+    UnresolvedRefInfo,
     WorkflowReference,
     SyncPreview,
     SyncResult,
@@ -18,6 +19,7 @@ from src.services.github_sync import (
     SyncError,
     ConflictError,
     OrphanError,
+    UnresolvedRefsError,
     TreeEntry,
     GitHubAPIError,
 )
@@ -141,6 +143,24 @@ class TestOrphanInfo:
         assert orphan.used_by[1].type == "app"
 
 
+class TestUnresolvedRefInfo:
+    """Tests for UnresolvedRefInfo model."""
+
+    def test_creates_unresolved_ref_info(self):
+        """Test UnresolvedRefInfo creation."""
+        ref = UnresolvedRefInfo(
+            entity_type="app",
+            entity_path="apps/abc123.app.json",
+            field_path="pages.0.launch_workflow_id",
+            portable_ref="workflows/my_workflow.py::my_function",
+        )
+
+        assert ref.entity_type == "app"
+        assert ref.entity_path == "apps/abc123.app.json"
+        assert ref.field_path == "pages.0.launch_workflow_id"
+        assert ref.portable_ref == "workflows/my_workflow.py::my_function"
+
+
 class TestSyncPreview:
     """Tests for SyncPreview model."""
 
@@ -153,6 +173,7 @@ class TestSyncPreview:
         assert len(preview.to_push) == 0
         assert len(preview.conflicts) == 0
         assert len(preview.will_orphan) == 0
+        assert len(preview.unresolved_refs) == 0
 
     def test_creates_preview_with_changes(self):
         """Test SyncPreview with changes."""
@@ -180,6 +201,23 @@ class TestSyncPreview:
         )
 
         assert len(preview.conflicts) == 1
+
+    def test_preview_with_unresolved_refs(self):
+        """Test SyncPreview with unresolved refs."""
+        preview = SyncPreview(
+            unresolved_refs=[
+                UnresolvedRefInfo(
+                    entity_type="app",
+                    entity_path="apps/test.app.json",
+                    field_path="pages.0.launch_workflow_id",
+                    portable_ref="workflows/missing.py::missing_func",
+                )
+            ],
+            is_empty=False,
+        )
+
+        assert len(preview.unresolved_refs) == 1
+        assert preview.unresolved_refs[0].portable_ref == "workflows/missing.py::missing_func"
 
 
 class TestSyncResult:
@@ -243,6 +281,15 @@ class TestSyncExecuteRequest:
 
         assert len(request.conflict_resolutions) == 0
         assert request.confirm_orphans is False
+        assert request.confirm_unresolved_refs is False
+
+    def test_creates_request_with_unresolved_refs_confirmation(self):
+        """Test SyncExecuteRequest with unresolved refs confirmation."""
+        request = SyncExecuteRequest(
+            confirm_unresolved_refs=True,
+        )
+
+        assert request.confirm_unresolved_refs is True
 
 
 class TestTreeEntry:
@@ -288,6 +335,47 @@ class TestSyncExceptions:
         assert "wf-1" in str(error)
         assert "wf-2" in str(error)
         assert error.orphans == orphans
+
+    def test_unresolved_refs_error(self):
+        """Test UnresolvedRefsError exception."""
+        refs = [
+            UnresolvedRefInfo(
+                entity_type="app",
+                entity_path="apps/test.app.json",
+                field_path="pages.0.launch_workflow_id",
+                portable_ref="workflows/missing.py::func1",
+            ),
+            UnresolvedRefInfo(
+                entity_type="form",
+                entity_path="forms/test.form.json",
+                field_path="workflow_id",
+                portable_ref="workflows/missing.py::func2",
+            ),
+        ]
+        error = UnresolvedRefsError(refs)
+
+        assert "workflows/missing.py::func1" in str(error)
+        assert "workflows/missing.py::func2" in str(error)
+        assert error.unresolved_refs == refs
+
+    def test_unresolved_refs_error_truncates_many_refs(self):
+        """Test UnresolvedRefsError truncates message for many refs."""
+        refs = [
+            UnresolvedRefInfo(
+                entity_type="app",
+                entity_path=f"apps/test{i}.app.json",
+                field_path="pages.0.launch_workflow_id",
+                portable_ref=f"workflows/missing.py::func{i}",
+            )
+            for i in range(10)
+        ]
+        error = UnresolvedRefsError(refs)
+
+        # Only first 5 should be shown, plus count of remaining
+        assert "func0" in str(error)
+        assert "func4" in str(error)
+        assert "and 5 more" in str(error)
+        assert "func5" not in str(error)  # Not shown in message
 
 
 class TestGitHubAPIError:

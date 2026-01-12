@@ -28,13 +28,8 @@ import {
 	getAppPage,
 	type PageDefinition as PageDefinitionAPI,
 } from "@/hooks/useApplications";
-import { useWorkflows } from "@/hooks/useWorkflows";
 import { useWorkflowExecution } from "@/hooks/useWorkflowExecution";
 import { AppRenderer, AppShell } from "@/components/app-builder";
-import {
-	WorkflowExecutionModal,
-	type PendingWorkflow,
-} from "@/components/app-builder/WorkflowExecutionModal";
 import { WorkflowLoadingIndicator } from "@/components/app-builder/WorkflowLoadingIndicator";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 import { useAppLiveUpdates } from "@/hooks/useAppLiveUpdates";
@@ -47,9 +42,6 @@ import type {
 	ExpressionContext,
 } from "@/lib/app-builder-types";
 import { evaluateExpression } from "@/lib/expression-parser";
-import type { components } from "@/lib/v1";
-
-type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
 
 /**
  * Convert API PageDefinition to frontend PageDefinition type.
@@ -100,8 +92,6 @@ export function ApplicationRunner({
 	);
 
 	// Workflow execution state
-	const [pendingWorkflow, setPendingWorkflow] =
-		useState<PendingWorkflow | null>(null);
 	const [workflowResult, setWorkflowResult] = useState<
 		WorkflowResult | undefined
 	>(undefined);
@@ -130,14 +120,10 @@ export function ApplicationRunner({
 		};
 	}, [embed, searchParams]);
 
-	// Fetch workflows metadata for parameter lookup
-	const { data: workflows } = useWorkflows();
-
 	// Workflow execution with real-time WebSocket subscription
 	const {
 		executeWorkflow: executeWorkflowWithSubscription,
 		activeExecutionIds,
-		isExecuting,
 		activeWorkflowNames,
 	} = useWorkflowExecution({
 		onExecutionComplete: (_executionId, result) => {
@@ -332,37 +318,24 @@ export function ApplicationRunner({
 		return { currentPage: appDefinition.pages[0], routeParams: {} };
 	}, [appDefinition, pagePath, matchRoutePath]);
 
-	// Find a workflow by ID or name
-	const findWorkflow = useCallback(
-		(workflowId: string): WorkflowMetadata | undefined => {
-			if (!workflows) return undefined;
-			// Try to find by ID first, then by name
-			return workflows.find(
-				(w) => w.id === workflowId || w.name === workflowId,
-			);
-		},
-		[workflows],
-	);
-
-	// Execute workflow with parameters - now waits for actual completion via WebSocket
+	// Execute workflow with parameters - waits for completion via WebSocket
 	const executeWorkflow = useCallback(
 		async (
 			workflowId: string,
 			params: Record<string, unknown>,
 		): Promise<WorkflowResult | undefined> => {
-			const workflow = findWorkflow(workflowId);
 			try {
 				// Execute and wait for completion (hook handles WebSocket subscription)
 				const result = await executeWorkflowWithSubscription(
-					workflow?.id ?? workflowId,
+					workflowId,
 					params,
 				);
 				return result;
 			} catch (error) {
 				const errorResult: WorkflowResult = {
 					executionId: "",
-					workflowId: workflow?.id ?? workflowId,
-					workflowName: workflow?.name ?? workflowId,
+					workflowId: workflowId,
+					workflowName: workflowId,
 					status: "failed",
 					error:
 						error instanceof Error
@@ -376,26 +349,7 @@ export function ApplicationRunner({
 				return errorResult;
 			}
 		},
-		[executeWorkflowWithSubscription, findWorkflow],
-	);
-
-	// Check if workflow has required parameters that need user input
-	const hasRequiredParams = useCallback(
-		(
-			workflow: WorkflowMetadata,
-			providedParams: Record<string, unknown>,
-		): boolean => {
-			if (!workflow.parameters) return false;
-			return workflow.parameters.some((param) => {
-				const paramName = param.name ?? "";
-				// Required param not provided
-				if (param.required && !(paramName in providedParams)) {
-					return true;
-				}
-				return false;
-			});
-		},
-		[],
+		[executeWorkflowWithSubscription],
 	);
 
 	// Create a navigate function that handles relative paths within the app
@@ -473,6 +427,7 @@ export function ApplicationRunner({
 	);
 
 	// Workflow trigger handler with onComplete and onError support
+	// Executes workflow directly - server validates parameters
 	const handleTriggerWorkflow = useCallback(
 		async (
 			workflowId: string,
@@ -480,65 +435,25 @@ export function ApplicationRunner({
 			onComplete?: OnCompleteAction[],
 			onError?: OnCompleteAction[],
 		) => {
-			const workflow = findWorkflow(workflowId);
 			const providedParams = params ?? {};
 
-			const executeAndComplete = async (
-				finalParams: Record<string, unknown>,
-			) => {
-				const result = await executeWorkflow(workflowId, finalParams);
-				if (!result) return;
+			const result = await executeWorkflow(workflowId, providedParams);
+			if (!result) return;
 
-				// Execute onError actions if workflow failed
-				if (
-					result.status === "failed" &&
-					onError &&
-					onError.length > 0
-				) {
-					executeOnCompleteActions(onError, result);
-				}
-				// Execute onComplete actions if workflow succeeded
-				else if (
-					result.status === "completed" &&
-					onComplete &&
-					onComplete.length > 0
-				) {
-					executeOnCompleteActions(onComplete, result);
-				}
-			};
-
-			if (!workflow) {
-				// Workflow not found - execute anyway and let API handle the error
-				toast.warning(
-					`Workflow "${workflowId}" not found in metadata, attempting execution...`,
-				);
-				executeAndComplete(providedParams);
-				return;
+			// Execute onError actions if workflow failed
+			if (result.status === "failed" && onError && onError.length > 0) {
+				executeOnCompleteActions(onError, result);
 			}
-
-			// Check if we need to show the modal for required parameters
-			if (hasRequiredParams(workflow, providedParams)) {
-				// Show modal to collect missing parameters
-				setPendingWorkflow({
-					workflow,
-					providedParams,
-					onExecute: async (finalParams) => {
-						await executeAndComplete(finalParams);
-						setPendingWorkflow(null);
-					},
-					onCancel: () => setPendingWorkflow(null),
-				});
-			} else {
-				// Execute immediately with provided params
-				executeAndComplete(providedParams);
+			// Execute onComplete actions if workflow succeeded
+			else if (
+				result.status === "completed" &&
+				onComplete &&
+				onComplete.length > 0
+			) {
+				executeOnCompleteActions(onComplete, result);
 			}
 		},
-		[
-			findWorkflow,
-			hasRequiredParams,
-			executeWorkflow,
-			executeOnCompleteActions,
-		],
+		[executeWorkflow, executeOnCompleteActions],
 	);
 
 	// Refresh table handler - delegates to the Zustand store
@@ -549,20 +464,12 @@ export function ApplicationRunner({
 		[refreshDataSource],
 	);
 
-	// Build a Set of active workflow IDs and names for button loading states
-	// Include both ID and name so buttons can match either format
-	const activeWorkflowsSet = useMemo(() => {
-		const set = new Set<string>();
-		activeWorkflowNames.forEach((name) => {
-			set.add(name); // workflow name (e.g., "ticket_create")
-			// Also add the workflow ID so buttons can match by either ID or name
-			const workflow = workflows?.find((w) => w.name === name);
-			if (workflow?.id) {
-				set.add(workflow.id); // workflow UUID
-			}
-		});
-		return set;
-	}, [activeWorkflowNames, workflows]);
+	// Build a Set of active workflow names for button loading states
+	// activeWorkflowNames is Map<executionId, workflowName>, we want just the names
+	const activeWorkflowsSet = useMemo(
+		() => new Set(activeWorkflowNames.values()),
+		[activeWorkflowNames],
+	);
 
 	// Build inline styles for embed theme customization
 	const embedThemeStyles = useMemo(() => {
@@ -751,10 +658,6 @@ export function ApplicationRunner({
 					activeCount={activeExecutionIds.length}
 					workflowNames={activeWorkflowNames}
 				/>
-				<WorkflowExecutionModal
-					pending={pendingWorkflow}
-					isExecuting={isExecuting}
-				/>
 			</div>
 		);
 	}
@@ -792,12 +695,6 @@ export function ApplicationRunner({
 			>
 				{appContent}
 			</AppShell>
-
-			{/* Workflow Parameters Modal */}
-			<WorkflowExecutionModal
-				pending={pendingWorkflow}
-				isExecuting={isExecuting}
-			/>
 		</div>
 	);
 }

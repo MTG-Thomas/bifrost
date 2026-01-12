@@ -10,11 +10,10 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.orm.applications import Application
+from src.models.orm.applications import AppComponent, Application, AppPage, AppVersion
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +106,7 @@ class AppIndexer:
         If the JSON contains an 'id' field, uses that ID (for dual-write from API).
         Otherwise generates a new ID (for files synced from git/editor).
 
-        Updates app draft_definition in the applications table.
+        Creates/updates the app with a draft version containing pages and components.
 
         Args:
             path: File path
@@ -170,47 +169,152 @@ class AppIndexer:
             # Remove non-alphanumeric characters except hyphens
             slug = "".join(c for c in slug if c.isalnum() or c == "-")
 
-        # Build definition from app_data (exclude top-level metadata)
-        definition = {
-            k: v for k, v in app_data.items()
-            if k not in ("id", "name", "slug", "description", "icon", "organization_id",
-                         "created_at", "updated_at", "created_by")
-        }
-
-        # Upsert application
-        stmt = insert(Application).values(
-            id=app_id,
-            name=name,
-            slug=slug,
-            description=app_data.get("description"),
-            icon=app_data.get("icon"),
-            draft_definition=definition,
-            created_by="file_sync",
-        ).on_conflict_do_update(
-            index_elements=[Application.id],
-            set_={
-                "name": name,
-                "slug": slug,
-                "description": app_data.get("description"),
-                "icon": app_data.get("icon"),
-                "draft_definition": definition,
-                "updated_at": now,
-            },
+        # Check if app exists
+        existing_app = await self.db.execute(
+            select(Application).where(Application.id == app_id)
         )
-        await self.db.execute(stmt)
+        existing_app = existing_app.scalar_one_or_none()
 
-        # Update workspace_files with entity routing
-        from uuid import UUID as UUID_type
-        from src.models import WorkspaceFile
+        if existing_app:
+            # Update existing app metadata
+            existing_app.name = name
+            existing_app.slug = slug
+            existing_app.description = app_data.get("description")
+            existing_app.icon = app_data.get("icon")
+            existing_app.navigation = app_data.get("navigation", {})
+            existing_app.global_data_sources = app_data.get("global_data_sources", [])
+            existing_app.global_variables = app_data.get("global_variables", {})
+            existing_app.permissions = app_data.get("permissions", {})
+            existing_app.updated_at = now
 
-        stmt = update(WorkspaceFile).where(WorkspaceFile.path == path).values(
-            entity_type="app",
-            entity_id=app_id if isinstance(app_id, UUID_type) else UUID_type(str(app_id)),
+            # Get existing draft version to reuse or create new
+            version_id = existing_app.draft_version_id
+            if not version_id:
+                # Create new draft version
+                version_id = uuid4()
+                new_version = AppVersion(id=version_id, application_id=app_id)
+                self.db.add(new_version)
+                existing_app.draft_version_id = version_id
+        else:
+            # Create new application with draft version
+            version_id = uuid4()
+
+            new_app = Application(
+                id=app_id,
+                name=name,
+                slug=slug,
+                description=app_data.get("description"),
+                icon=app_data.get("icon"),
+                navigation=app_data.get("navigation", {}),
+                global_data_sources=app_data.get("global_data_sources", []),
+                global_variables=app_data.get("global_variables", {}),
+                permissions=app_data.get("permissions", {}),
+                created_by="file_sync",
+            )
+            self.db.add(new_app)
+            await self.db.flush()  # Flush to get app ID for FK
+
+            new_version = AppVersion(id=version_id, application_id=app_id)
+            self.db.add(new_version)
+            await self.db.flush()
+
+            # Update app with draft version pointer
+            new_app.draft_version_id = version_id
+
+        # Clear existing pages and components for this version
+        await self.db.execute(
+            delete(AppPage).where(AppPage.version_id == version_id)
         )
-        await self.db.execute(stmt)
 
+        # Create pages and components from app_data
+        pages_data = app_data.get("pages", [])
+        for page_order, page_data in enumerate(pages_data):
+            await self._create_page_with_components(
+                app_id, version_id, page_data, page_order
+            )
+
+        await self.db.flush()
         logger.debug(f"Indexed app: {name} from {path}")
         return content_modified
+
+    async def _create_page_with_components(
+        self,
+        app_id: UUID,
+        version_id: UUID,
+        page_data: dict[str, Any],
+        page_order: int,
+    ) -> None:
+        """Create a page and its components from page data."""
+        page_id_str = page_data.get("id") or page_data.get("page_id") or f"page_{page_order}"
+
+        # Parse launch_workflow_id - may be UUID string or None
+        launch_workflow_id = None
+        launch_workflow_id_raw = page_data.get("launch_workflow_id")
+        if launch_workflow_id_raw:
+            try:
+                launch_workflow_id = UUID(launch_workflow_id_raw)
+            except ValueError:
+                # Could be a portable ref that wasn't resolved - leave as None
+                logger.debug(f"Could not parse launch_workflow_id: {launch_workflow_id_raw}")
+
+        # Create the page
+        page = AppPage(
+            application_id=app_id,
+            version_id=version_id,
+            page_id=page_id_str,
+            title=page_data.get("title", page_id_str),
+            path=page_data.get("path", f"/{page_id_str}"),
+            data_sources=page_data.get("data_sources", []),
+            variables=page_data.get("variables", {}),
+            launch_workflow_id=launch_workflow_id,
+            launch_workflow_params=page_data.get("launch_workflow_params", {}),
+            launch_workflow_data_source_id=page_data.get("launch_workflow_data_source_id"),
+            permission=page_data.get("permission", {}),
+            page_order=page_order,
+            root_layout_type=page_data.get("root_layout_type", "column"),
+            root_layout_config=page_data.get("root_layout_config", {}),
+        )
+        self.db.add(page)
+        await self.db.flush()  # Get page.id for component FK
+
+        # Create components from layout tree
+        layout = page_data.get("layout")
+        if layout:
+            await self._create_components_from_layout(page.id, layout, parent_id=None)
+
+    async def _create_components_from_layout(
+        self,
+        page_db_id: UUID,
+        layout: dict[str, Any],
+        parent_id: UUID | None,
+        order: int = 0,
+    ) -> None:
+        """Recursively create components from a layout tree."""
+        component_id_str = layout.get("id") or f"comp_{uuid4().hex[:8]}"
+        component_type = layout.get("type", "column")
+        props = layout.get("props", {})
+
+        # Create the component
+        component = AppComponent(
+            page_id=page_db_id,
+            component_id=component_id_str,
+            parent_id=parent_id,
+            type=component_type,
+            props=props,
+            component_order=order,
+            visible=layout.get("visible"),
+            width=layout.get("width"),
+            loading_workflows=layout.get("loading_workflows"),
+        )
+        self.db.add(component)
+        await self.db.flush()  # Get component.id for children FK
+
+        # Recursively create children
+        children = layout.get("children", [])
+        for child_order, child in enumerate(children):
+            await self._create_components_from_layout(
+                page_db_id, child, parent_id=component.id, order=child_order
+            )
 
     async def delete_app_for_file(self, path: str) -> int:
         """

@@ -29,6 +29,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.services.file_storage.file_ops import compute_git_blob_sha
+from src.services.github_sync_virtual_files import (
+    SerializationError,
+    VirtualFileProvider,
+)
 
 if TYPE_CHECKING:
     from src.models import Workflow
@@ -99,6 +103,16 @@ class OrphanInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UnresolvedRefInfo(BaseModel):
+    """Information about an unresolved portable workflow ref."""
+    entity_type: str = Field(..., description="Type: app, form, or agent")
+    entity_path: str = Field(..., description="File path being imported")
+    field_path: str = Field(..., description="Field containing the ref, e.g., pages.0.launch_workflow_id")
+    portable_ref: str = Field(..., description="The portable ref that couldn't be resolved")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SyncPreview(BaseModel):
     """Preview of sync operations before execution."""
     to_pull: list[SyncAction] = Field(
@@ -116,6 +130,14 @@ class SyncPreview(BaseModel):
     will_orphan: list[OrphanInfo] = Field(
         default_factory=list,
         description="Workflows that will become orphaned"
+    )
+    unresolved_refs: list[UnresolvedRefInfo] = Field(
+        default_factory=list,
+        description="Workflow refs that couldn't be resolved"
+    )
+    serialization_errors: list[SerializationError] = Field(
+        default_factory=list,
+        description="Entities that failed to serialize for sync"
     )
     is_empty: bool = Field(
         default=False,
@@ -152,6 +174,10 @@ class SyncExecuteRequest(BaseModel):
     confirm_orphans: bool = Field(
         default=False,
         description="User acknowledges orphan workflows"
+    )
+    confirm_unresolved_refs: bool = Field(
+        default=False,
+        description="User acknowledges unresolved workflow refs"
     )
 
     model_config = ConfigDict(from_attributes=True)
@@ -466,6 +492,16 @@ class OrphanError(SyncError):
         super().__init__(f"Must confirm orphan workflows: {', '.join(orphans)}")
 
 
+class UnresolvedRefsError(SyncError):
+    """User must confirm unresolved workflow refs."""
+    def __init__(self, unresolved_refs: list[UnresolvedRefInfo]):
+        self.unresolved_refs = unresolved_refs
+        refs_summary = ", ".join(r.portable_ref for r in unresolved_refs[:5])
+        if len(unresolved_refs) > 5:
+            refs_summary += f" (and {len(unresolved_refs) - 5} more)"
+        super().__init__(f"Unresolved workflow refs: {refs_summary}")
+
+
 # =============================================================================
 # GitHub Sync Service
 # =============================================================================
@@ -526,6 +562,31 @@ class GitHubSyncService:
             for row in result
             if not row.path.endswith("/")  # Skip folders
         }
+
+    async def _get_virtual_file_shas(
+        self,
+    ) -> tuple[dict[str, str], list[SerializationError]]:
+        """
+        Get path -> computed_sha mapping for virtual platform files.
+
+        Virtual files are platform entities (apps, forms, agents) serialized
+        to JSON with portable workflow refs.
+
+        Returns:
+            Tuple of:
+            - Dict mapping path to computed git blob SHA
+            - List of serialization errors encountered
+        """
+        provider = VirtualFileProvider(self.db)
+        result = await provider.get_all_virtual_files()
+
+        shas = {
+            vf.path: vf.computed_sha
+            for vf in result.files
+            if vf.computed_sha is not None
+        }
+
+        return shas, result.errors
 
     def _clone_to_temp(self) -> str:
         """
@@ -620,11 +681,49 @@ class GitHubSyncService:
 
             logger.info(f"Found {len(remote_files)} files in remote")
 
+            # 2b. Identify virtual files in remote and extract entity IDs
+            # Virtual files are platform entities (apps, forms, agents) that can be synced
+            remote_virtual_files: dict[str, tuple[str, str, str]] = {}  # entity_id -> (path, sha, entity_type)
+            for path, sha in list(remote_files.items()):
+                if VirtualFileProvider.is_virtual_file_path(path):
+                    entity_type = VirtualFileProvider.get_entity_type_from_path(path)
+                    filename = path.split("/")[-1]
+                    entity_id = VirtualFileProvider.extract_id_from_filename(filename)
+
+                    if entity_type and entity_id:
+                        remote_virtual_files[entity_id] = (path, sha, entity_type)
+                        # Remove from regular remote_files to handle separately
+                        del remote_files[path]
+                    else:
+                        # Non-standard filename - try reading content
+                        try:
+                            file_path_obj = clone_path / path
+                            content = file_path_obj.read_bytes()
+                            entity_id = VirtualFileProvider.extract_id_from_content(content)
+                            if entity_id and entity_type:
+                                remote_virtual_files[entity_id] = (path, sha, entity_type)
+                                del remote_files[path]
+                        except Exception:
+                            pass  # Leave as regular file
+
+            logger.info(f"Found {len(remote_virtual_files)} virtual files in remote")
+
             # 3. Get local file SHAs from DB (no S3 read!)
             local_shas = await self._get_local_file_shas()
             logger.info(f"Found {len(local_shas)} files in local DB")
 
-            # 4. Categorize changes by comparing SHAs
+            # 3b. Get virtual platform file SHAs (and collect serialization errors)
+            virtual_shas, serialization_errors = await self._get_virtual_file_shas()
+            logger.info(f"Found {len(virtual_shas)} virtual platform files")
+            if serialization_errors:
+                logger.warning(
+                    f"Found {len(serialization_errors)} serialization errors"
+                )
+
+            # Note: We do NOT merge virtual_shas into local_shas because virtual files
+            # are compared by entity ID, not by path. They are handled separately below.
+
+            # 4. Categorize changes by comparing SHAs (regular workspace files only)
             to_pull: list[SyncAction] = []
             to_push: list[SyncAction] = []
             conflicts: list[ConflictInfo] = []
@@ -727,8 +826,61 @@ class GitHubSyncService:
                         action=SyncActionType.ADD,
                     ))
 
-            # 5. Detect orphaned workflows
+            # 5. Compare virtual files by entity ID
+            # Virtual files use entity ID as stable identifier, not path
+            provider = VirtualFileProvider(self.db)
+            local_virtual_result = await provider.get_all_virtual_files()
+            local_virtual_by_id = {vf.entity_id: vf for vf in local_virtual_result.files}
+            # Note: errors already captured via _get_virtual_file_shas() above
+
+            # Virtual files in local but not in remote -> push
+            for entity_id, vf in local_virtual_by_id.items():
+                if entity_id not in remote_virtual_files:
+                    to_push.append(SyncAction(
+                        path=vf.path,
+                        action=SyncActionType.ADD,
+                    ))
+
+            # Virtual files in remote but not in local -> pull
+            for entity_id, (remote_path, remote_sha, _) in remote_virtual_files.items():
+                if entity_id not in local_virtual_by_id:
+                    to_pull.append(SyncAction(
+                        path=remote_path,
+                        action=SyncActionType.ADD,
+                        sha=remote_sha,
+                    ))
+
+            # Both exist -> compare SHAs
+            for entity_id, vf in local_virtual_by_id.items():
+                if entity_id in remote_virtual_files:
+                    remote_path, remote_sha, _ = remote_virtual_files[entity_id]
+                    if vf.computed_sha != remote_sha:
+                        # Conflict - different content
+                        conflict_paths.add(vf.path)
+
+                        # Get content for conflict display
+                        local_content_str = vf.content.decode("utf-8", errors="replace") if vf.content else None
+                        remote_content_str = None
+                        try:
+                            remote_file = clone_path / remote_path
+                            remote_content = remote_file.read_bytes()
+                            remote_content_str = remote_content.decode("utf-8", errors="replace")
+                        except Exception:
+                            pass
+
+                        conflicts.append(ConflictInfo(
+                            path=vf.path,  # Use local path (consistent UUID-based naming)
+                            local_content=local_content_str,
+                            remote_content=remote_content_str,
+                            local_sha=vf.computed_sha or "",
+                            remote_sha=remote_sha,
+                        ))
+
+            # 6. Detect orphaned workflows
             will_orphan = await self._detect_orphans(to_pull, to_push, conflicts, clone_dir)
+
+            # 7. Detect unresolved workflow refs in virtual files to pull
+            unresolved_refs = await self._detect_unresolved_refs(to_pull, clone_path)
 
             is_empty = (
                 len(to_pull) == 0
@@ -741,6 +893,8 @@ class GitHubSyncService:
                 to_push=to_push,
                 conflicts=conflicts,
                 will_orphan=will_orphan,
+                unresolved_refs=unresolved_refs,
+                serialization_errors=serialization_errors,
                 is_empty=is_empty,
             )
 
@@ -842,6 +996,77 @@ class GitHubSyncService:
 
         return orphans
 
+    async def _detect_unresolved_refs(
+        self,
+        to_pull: list[SyncAction],
+        clone_path: Path,
+    ) -> list[UnresolvedRefInfo]:
+        """
+        Detect workflow refs in virtual files that cannot be resolved.
+
+        When importing forms, apps, or agents from GitHub, they may reference
+        workflows using portable refs (path::function_name). If those workflows
+        don't exist in the target environment, the import would fail or leave
+        broken references.
+
+        Args:
+            to_pull: Files to pull from remote
+            clone_path: Path to cloned repo for reading file content
+
+        Returns:
+            List of UnresolvedRefInfo for refs that couldn't be resolved
+        """
+        import json
+
+        from src.services.file_storage.ref_translation import (
+            build_ref_to_uuid_map,
+            get_nested_value,
+        )
+
+        unresolved_refs: list[UnresolvedRefInfo] = []
+
+        # Build the ref-to-UUID map for checking
+        ref_to_uuid = await build_ref_to_uuid_map(self.db)
+
+        # Check each virtual file being pulled
+        for action in to_pull:
+            if not VirtualFileProvider.is_virtual_file_path(action.path):
+                continue
+
+            # Read the content from clone
+            file_path = clone_path / action.path
+            if not file_path.exists():
+                continue
+
+            try:
+                content = file_path.read_bytes()
+                data = json.loads(content.decode("utf-8"))
+
+                # Get export metadata with workflow ref fields
+                export_meta = data.get("_export", {})
+                workflow_ref_fields = export_meta.get("workflow_refs", [])
+
+                for field_path in workflow_ref_fields:
+                    # Get the value at this field path
+                    ref_value = get_nested_value(data, field_path)
+
+                    if ref_value and ref_value not in ref_to_uuid:
+                        # This ref can't be resolved
+                        entity_type = VirtualFileProvider.get_entity_type_from_path(action.path) or "unknown"
+                        unresolved_refs.append(UnresolvedRefInfo(
+                            entity_type=entity_type,
+                            entity_path=action.path,
+                            field_path=field_path,
+                            portable_ref=ref_value,
+                        ))
+            except json.JSONDecodeError:
+                # Not valid JSON, will fail during import anyway
+                pass
+            except Exception as e:
+                logger.debug(f"Error checking unresolved refs in {action.path}: {e}")
+
+        return unresolved_refs
+
     async def _get_workflows_in_file(self, path: str) -> list["Workflow"]:
         """Get all workflows associated with a file path."""
         from src.models import Workflow
@@ -942,6 +1167,7 @@ class GitHubSyncService:
         self,
         conflict_resolutions: dict[str, Literal["keep_local", "keep_remote"]],
         confirm_orphans: bool = False,
+        confirm_unresolved_refs: bool = False,
         progress_callback: ProgressCallback | None = None,
         log_callback: LogCallback | None = None,
     ) -> SyncResult:
@@ -951,6 +1177,7 @@ class GitHubSyncService:
         Args:
             conflict_resolutions: Dict mapping path to resolution choice
             confirm_orphans: Whether user confirmed orphan workflows
+            confirm_unresolved_refs: Whether user confirmed unresolved workflow refs
             progress_callback: Optional async callback for progress updates.
                 Called with {"phase": str, "current": int, "total": int, "path": str | None}
 
@@ -960,6 +1187,7 @@ class GitHubSyncService:
         Raises:
             ConflictError: If conflicts exist without resolution
             OrphanError: If orphans exist without confirmation
+            UnresolvedRefsError: If unresolved refs exist without confirmation
         """
         from src.services.file_storage import FileStorageService
 
@@ -991,6 +1219,10 @@ class GitHubSyncService:
         # Validate orphan confirmation
         if preview.will_orphan and not confirm_orphans:
             raise OrphanError([o.workflow_id for o in preview.will_orphan])
+
+        # Validate unresolved refs confirmation
+        if preview.unresolved_refs and not confirm_unresolved_refs:
+            raise UnresolvedRefsError(preview.unresolved_refs)
 
         # Validate conflict resolutions
         if preview.conflicts:
@@ -1037,7 +1269,11 @@ class GitHubSyncService:
 
                 try:
                     if action.action == SyncActionType.DELETE:
-                        await file_storage.delete_file(action.path)
+                        # Check if this is a virtual file (app, form, agent)
+                        if VirtualFileProvider.is_virtual_file_path(action.path):
+                            await self._delete_virtual_file(action.path)
+                        else:
+                            await file_storage.delete_file(action.path)
                         logger.debug(f"Deleted local file: {action.path}")
                     else:
                         if not action.sha or not clone_dir:
@@ -1048,14 +1284,22 @@ class GitHubSyncService:
                             logger.warning(f"File not in clone: {action.path}")
                             continue
                         content = local_file.read_bytes()
-                        await file_storage.write_file(
-                            path=action.path,
-                            content=content,
-                            updated_by="github_sync",
-                            force_deactivation=True,  # Allow deactivation during sync
-                        )
-                        # Update github_sha for this file
-                        await self._update_github_sha(action.path, action.sha)
+
+                        # Check if this is a virtual file (app, form, agent)
+                        if VirtualFileProvider.is_virtual_file_path(action.path):
+                            # Use indexer to import virtual file
+                            await self._import_virtual_file(action.path, content)
+                            # Virtual files don't need github_sha update (no workspace_file entry)
+                        else:
+                            # Regular file - use file storage
+                            await file_storage.write_file(
+                                path=action.path,
+                                content=content,
+                                updated_by="github_sync",
+                                force_deactivation=True,  # Allow deactivation during sync
+                            )
+                            # Update github_sha for this file
+                            await self._update_github_sha(action.path, action.sha)
                         logger.debug(f"Pulled file: {action.path}")
                     pulled += 1
                 except Exception as e:
@@ -1085,13 +1329,20 @@ class GitHubSyncService:
                             local_file = Path(clone_dir) / path
                             if local_file.exists():
                                 content = local_file.read_bytes()
-                                await file_storage.write_file(
-                                    path=path,
-                                    content=content,
-                                    updated_by="github_sync",
-                                    force_deactivation=True,
-                                )
-                                await self._update_github_sha(path, conflict.remote_sha)
+
+                                # Check if this is a virtual file (app, form, agent)
+                                if VirtualFileProvider.is_virtual_file_path(path):
+                                    # Use indexer to import virtual file
+                                    await self._import_virtual_file(path, content)
+                                else:
+                                    # Regular file - use file storage
+                                    await file_storage.write_file(
+                                        path=path,
+                                        content=content,
+                                        updated_by="github_sync",
+                                        force_deactivation=True,
+                                    )
+                                    await self._update_github_sha(path, conflict.remote_sha)
                                 logger.debug(f"Resolved conflict (keep remote): {path}")
                                 pulled += 1
                         except Exception as e:
@@ -1101,7 +1352,11 @@ class GitHubSyncService:
                     elif conflict and conflict.remote_content is None:
                         # Remote deleted the file
                         try:
-                            await file_storage.delete_file(path)
+                            # Check if this is a virtual file (app, form, agent)
+                            if VirtualFileProvider.is_virtual_file_path(path):
+                                await self._delete_virtual_file(path)
+                            else:
+                                await file_storage.delete_file(path)
                             logger.debug(f"Resolved conflict (remote deleted): {path}")
                             pulled += 1
                         except Exception as e:
@@ -1230,9 +1485,29 @@ class GitHubSyncService:
                     "sha": None,
                 })
             else:
-                # Read local content
+                # Read local content - check for virtual files first
+                content: bytes | None = None
                 try:
-                    content, _ = await file_storage.read_file(action.path)
+                    if VirtualFileProvider.is_virtual_file_path(action.path):
+                        # Get content from virtual file provider
+                        entity_type = VirtualFileProvider.get_entity_type_from_path(action.path)
+                        filename = action.path.split("/")[-1]
+                        entity_id = VirtualFileProvider.extract_id_from_filename(filename)
+
+                        if entity_type and entity_id:
+                            vf_provider = VirtualFileProvider(self.db)
+                            vf = await vf_provider.get_virtual_file_by_id(entity_type, entity_id)
+                            if vf and vf.content:
+                                content = vf.content
+                            else:
+                                logger.warning(f"Virtual file not found: {action.path}")
+                                continue
+                        else:
+                            logger.warning(f"Could not parse virtual file path: {action.path}")
+                            continue
+                    else:
+                        # Regular file - read from file storage
+                        content, _ = await file_storage.read_file(action.path)
                 except FileNotFoundError:
                     logger.warning(f"File to push not found: {action.path}")
                     continue
@@ -1273,9 +1548,11 @@ class GitHubSyncService:
             commit_sha,
         )
 
-        # 6. Update github_sha for pushed files
+        # 6. Update github_sha for pushed files (skip virtual files)
         for path, blob_sha in blob_shas.items():
-            await self._update_github_sha(path, blob_sha)
+            if not VirtualFileProvider.is_virtual_file_path(path):
+                await self._update_github_sha(path, blob_sha)
+            # Virtual files don't have workspace_file entries, so no SHA to update
 
         return commit_sha
 
@@ -1318,6 +1595,83 @@ class GitHubSyncService:
         )
         await self.db.execute(stmt)
         logger.info(f"Marked workflow as orphaned: {workflow_id}")
+
+    async def _import_virtual_file(self, path: str, content: bytes) -> None:
+        """
+        Import a virtual file (app, form, agent) using the appropriate indexer.
+
+        Virtual files are platform entities stored in their own database tables,
+        not in workspace_files. This method routes the content to the correct
+        indexer based on the file path pattern.
+
+        Args:
+            path: File path (e.g., "apps/{id}.app.json")
+            content: JSON content bytes
+        """
+        from src.services.file_storage.indexers.agent import AgentIndexer
+        from src.services.file_storage.indexers.app import AppIndexer
+        from src.services.file_storage.indexers.form import FormIndexer
+
+        entity_type = VirtualFileProvider.get_entity_type_from_path(path)
+
+        if entity_type == "app":
+            indexer = AppIndexer(self.db)
+            await indexer.index_app(path, content)
+            logger.debug(f"Imported app from {path}")
+        elif entity_type == "form":
+            indexer = FormIndexer(self.db)
+            await indexer.index_form(path, content)
+            logger.debug(f"Imported form from {path}")
+        elif entity_type == "agent":
+            indexer = AgentIndexer(self.db)
+            await indexer.index_agent(path, content)
+            logger.debug(f"Imported agent from {path}")
+        else:
+            raise ValueError(f"Unknown virtual file type for path: {path}")
+
+    async def _delete_virtual_file(self, path: str) -> None:
+        """
+        Delete a virtual file (app, form, agent) from its database table.
+
+        Virtual files don't exist in workspace_files - they're stored in their
+        own tables (applications, forms, agents). This method deletes the entity
+        from the appropriate table based on the file path pattern.
+
+        Args:
+            path: File path (e.g., "apps/{id}.app.json")
+        """
+        from uuid import UUID
+        from sqlalchemy import delete
+        from src.models import Form
+        from src.models.orm import Agent
+        from src.models.orm.applications import Application
+
+        entity_type = VirtualFileProvider.get_entity_type_from_path(path)
+        filename = path.split("/")[-1]
+        entity_id_str = VirtualFileProvider.extract_id_from_filename(filename)
+
+        if not entity_id_str:
+            logger.warning(f"Could not extract entity ID from virtual file path: {path}")
+            return
+
+        try:
+            entity_id = UUID(entity_id_str)
+        except ValueError:
+            logger.warning(f"Invalid entity ID in virtual file path: {path}")
+            return
+
+        if entity_type == "app":
+            stmt = delete(Application).where(Application.id == entity_id)
+            await self.db.execute(stmt)
+            logger.debug(f"Deleted app {entity_id}")
+        elif entity_type == "form":
+            stmt = delete(Form).where(Form.id == entity_id)
+            await self.db.execute(stmt)
+            logger.debug(f"Deleted form {entity_id}")
+        elif entity_type == "agent":
+            stmt = delete(Agent).where(Agent.id == entity_id)
+            await self.db.execute(stmt)
+            logger.debug(f"Deleted agent {entity_id}")
 
 
 # =============================================================================

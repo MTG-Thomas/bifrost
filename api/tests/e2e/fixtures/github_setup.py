@@ -478,3 +478,79 @@ def update_remote_file(github_test_branch):
         }
 
     return _update_file
+
+
+@pytest.fixture(scope="function")
+def get_github_file_content(github_test_branch):
+    """
+    Factory fixture to fetch file content directly from GitHub.
+
+    This is useful for verifying that pushed files have the correct content
+    (portable refs, _export metadata, etc.). Virtual files don't exist in
+    workspace_files, so we can't use the files API to verify them.
+
+    Usage:
+        def test_portable_refs(get_github_file_content, ...):
+            content = get_github_file_content("apps/uuid.app.json")
+            assert content["_export"]["workflow_refs"] is not None
+
+    Skips test if GitHub is not configured.
+
+    Returns:
+        Factory function that fetches and parses JSON files from GitHub
+    """
+    if github_test_branch is None:
+        pytest.skip("GitHub not configured (GITHUB_TEST_PAT not set)")
+
+    config = github_test_branch
+    pat = config["pat"]
+    repo = config["repo"]
+    branch = config["branch"]
+
+    def _get_content(path: str) -> dict[str, Any] | None:
+        """
+        Fetch file content from GitHub and return parsed JSON.
+
+        Args:
+            path: File path in the repository (e.g., "apps/uuid.app.json")
+
+        Returns:
+            Parsed JSON content as a dict, or None if file not found
+
+        Raises:
+            httpx.HTTPStatusError: For non-404 HTTP errors
+            json.JSONDecodeError: If content is not valid JSON
+        """
+        import base64
+        import json
+
+        import httpx
+
+        url = f"https://api.github.com/repos/{repo}/contents/{path}"
+        headers = {
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github.v3+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        params = {"ref": branch}
+
+        logger.debug(f"Fetching GitHub file: {path} from {repo}@{branch}")
+
+        response = httpx.get(url, headers=headers, params=params)
+
+        if response.status_code == 404:
+            logger.debug(f"GitHub file not found: {path}")
+            return None
+
+        response.raise_for_status()
+
+        data = response.json()
+        content_b64 = data.get("content", "")
+        # GitHub returns base64 with newlines, so we need to handle that
+        content_bytes = base64.b64decode(content_b64)
+        parsed = json.loads(content_bytes.decode("utf-8"))
+
+        logger.debug(f"Successfully fetched GitHub file: {path}")
+        return parsed
+
+    return _get_content

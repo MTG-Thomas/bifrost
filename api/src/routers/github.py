@@ -29,6 +29,7 @@ from src.models import (
     SyncExecuteRequest,
     SyncExecuteResponse,
     SyncPreviewResponse,
+    SyncSerializationError,
     ValidateTokenRequest,
 )
 from src.services.github_api import GitHubAPIClient, GitHubAPIError
@@ -627,6 +628,7 @@ async def get_sync_preview(
         SyncAction,
         SyncActionType,
         SyncConflictInfo,
+        SyncUnresolvedRefInfo,
         WorkflowReference,
     )
     from src.services.github_sync import GitHubSyncService, SyncError
@@ -701,6 +703,25 @@ async def get_sync_preview(
                 )
                 for o in preview.will_orphan
             ],
+            unresolved_refs=[
+                SyncUnresolvedRefInfo(
+                    entity_type=u.entity_type,
+                    entity_path=u.entity_path,
+                    field_path=u.field_path,
+                    portable_ref=u.portable_ref,
+                )
+                for u in preview.unresolved_refs
+            ],
+            serialization_errors=[
+                SyncSerializationError(
+                    entity_type=e.entity_type,
+                    entity_id=e.entity_id,
+                    entity_name=e.entity_name,
+                    path=e.path,
+                    error=e.error,
+                )
+                for e in preview.serialization_errors
+            ],
             is_empty=preview.is_empty,
         )
 
@@ -768,6 +789,7 @@ async def execute_sync(
             user_email=user.email,
             conflict_resolutions=request.conflict_resolutions,
             confirm_orphans=request.confirm_orphans,
+            confirm_unresolved_refs=request.confirm_unresolved_refs,
         )
 
         logger.info(f"Git sync execute job queued via Redis pubsub: {job_id}")

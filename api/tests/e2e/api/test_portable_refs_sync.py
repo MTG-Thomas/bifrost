@@ -16,7 +16,7 @@ Tests skip gracefully if environment variables are not configured.
 import json
 import logging
 import time
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -283,11 +283,13 @@ class TestPortableRefsPull:
         workflow = test_workflow
         app_slug = f"e2e-pull-test-{int(time.time())}"
         app_name = "E2E Pull Test App"
+        app_id = str(uuid4())
 
         # Create app JSON with portable refs on GitHub
         app_content = create_app_json_with_portable_refs(
             app_name=app_name,
             app_slug=app_slug,
+            app_id=app_id,
             workflow_portable_ref=workflow["portable_ref"],
         )
 
@@ -352,10 +354,12 @@ class TestPortableRefsPull:
         """
         workflow = test_workflow
         form_name = f"E2E Pull Test Form {int(time.time())}"
+        form_id = str(uuid4())
 
         # Create form JSON with portable refs
         form_content = create_form_json_with_portable_refs(
             form_name=form_name,
+            form_id=form_id,
             workflow_portable_ref=workflow["portable_ref"],
         )
 
@@ -407,10 +411,12 @@ class TestPortableRefsPull:
         """
         workflow = test_workflow
         agent_name = f"E2E Pull Test Agent {int(time.time())}"
+        agent_id = str(uuid4())
 
         # Create agent JSON with portable refs
         agent_content = create_agent_json_with_portable_refs(
             agent_name=agent_name,
+            agent_id=agent_id,
             workflow_portable_ref=workflow["portable_ref"],
         )
 
@@ -472,12 +478,14 @@ class TestMissingRefsGracefulDegradation:
         The portable ref should stay as-is (not become null or error).
         """
         app_slug = f"e2e-missing-ref-{int(time.time())}"
+        app_id = str(uuid4())
         non_existent_ref = "workflows/does_not_exist.py::fake_function"
 
         # Create app with non-existent workflow ref
         app_content = create_app_json_with_portable_refs(
             app_name="Missing Ref Test App",
             app_slug=app_slug,
+            app_id=app_id,
             workflow_portable_ref=non_existent_ref,
         )
 
@@ -519,10 +527,12 @@ class TestMissingRefsGracefulDegradation:
         Form with ref to non-existent workflow imports gracefully.
         """
         form_name = f"Missing Ref Form {int(time.time())}"
+        form_id = str(uuid4())
         non_existent_ref = "workflows/missing.py::no_such_function"
 
         form_content = create_form_json_with_portable_refs(
             form_name=form_name,
+            form_id=form_id,
             workflow_portable_ref=non_existent_ref,
         )
 
@@ -552,10 +562,12 @@ class TestMissingRefsGracefulDegradation:
         Agent with refs to non-existent tools imports gracefully.
         """
         agent_name = f"Missing Tools Agent {int(time.time())}"
+        agent_id = str(uuid4())
         non_existent_ref = "workflows/no_tool.py::missing_tool"
 
         agent_content = create_agent_json_with_portable_refs(
             agent_name=agent_name,
+            agent_id=agent_id,
             workflow_portable_ref=non_existent_ref,
         )
 
@@ -587,11 +599,13 @@ class TestMissingRefsGracefulDegradation:
         """
         workflow = test_workflow
         app_slug = f"e2e-partial-{int(time.time())}"
+        app_id = str(uuid4())
 
         # Create app with two buttons:
         # - One references existing workflow (should resolve)
         # - One references non-existent workflow (should stay portable)
         app_data = {
+            "id": app_id,
             "name": "Partial Ref Test App",
             "slug": app_slug,
             "pages": [

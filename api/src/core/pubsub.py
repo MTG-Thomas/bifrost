@@ -685,6 +685,7 @@ async def publish_git_sync_request(
     user_email: str,
     conflict_resolutions: Mapping[str, str],
     confirm_orphans: bool,
+    confirm_unresolved_refs: bool = False,
 ) -> None:
     """
     Request a git sync operation from the scheduler.
@@ -699,6 +700,7 @@ async def publish_git_sync_request(
         user_email: Email of the user (for git commit author)
         conflict_resolutions: Dict mapping file paths to resolution strategy
         confirm_orphans: Whether to proceed with orphan cleanup
+        confirm_unresolved_refs: Whether to proceed despite unresolved refs
     """
     message = {
         "type": "git_sync_request",
@@ -708,6 +710,7 @@ async def publish_git_sync_request(
         "userEmail": user_email,
         "conflictResolutions": conflict_resolutions,
         "confirmOrphans": confirm_orphans,
+        "confirmUnresolvedRefs": confirm_unresolved_refs,
     }
     await manager._publish_to_redis("scheduler:git-sync", message)
 
@@ -776,6 +779,7 @@ async def publish_git_sync_completed(
     Publish git sync completion.
 
     Broadcasts to git:{job_id} channel to notify the UI that sync is complete.
+    Also stores the result in Redis for HTTP polling (5-minute TTL).
 
     Args:
         job_id: Unique job ID
@@ -783,6 +787,8 @@ async def publish_git_sync_completed(
         message: Human-readable completion message
         **kwargs: Additional data (conflicts, orphans, counts, etc.)
     """
+    import json
+
     completion_message = {
         "type": "git_complete",
         "jobId": job_id,
@@ -791,6 +797,22 @@ async def publish_git_sync_completed(
         **kwargs,
     }
     await manager.broadcast(f"git:{job_id}", completion_message)
+
+    # Store result in Redis for HTTP polling (used by E2E tests and fallback)
+    try:
+        from src.core.redis_client import get_redis_client
+
+        redis_client = get_redis_client()
+        if redis_client:
+            result_key = f"bifrost:job:{job_id}"
+            # Store job result with 5-minute TTL
+            await redis_client.setex(
+                result_key,
+                300,  # 5 minutes TTL
+                json.dumps(completion_message),
+            )
+    except Exception as e:
+        logger.warning(f"Failed to store job result in Redis: {e}")
 
 
 # =============================================================================

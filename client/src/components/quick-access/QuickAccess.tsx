@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, FileText, Workflow, FileCode, Loader2 } from "lucide-react";
 import { useEditorStore } from "@/stores/editorStore";
+import { useAuth } from "@/contexts/AuthContext";
 import { useForms } from "@/hooks/useForms";
 import { useWorkflowsMetadata } from "@/hooks/useWorkflows";
 import { fileService } from "@/services/fileService";
@@ -32,6 +33,7 @@ interface QuickAccessProps {
  */
 export function QuickAccess({ isOpen, onClose }: QuickAccessProps) {
 	const navigate = useNavigate();
+	const { isPlatformAdmin } = useAuth();
 	const openFileInTab = useEditorStore((state) => state.openFileInTab);
 	const openEditor = useEditorStore((state) => state.openEditor);
 	const setSidebarPanel = useEditorStore((state) => state.setSidebarPanel);
@@ -45,7 +47,10 @@ export function QuickAccess({ isOpen, onClose }: QuickAccessProps) {
 	const resultsRef = useRef<(HTMLButtonElement | null)[]>([]);
 
 	const { data: formsData } = useForms();
-	const { data: workflowsData } = useWorkflowsMetadata();
+	// Only fetch workflows for platform admins (endpoint requires superuser)
+	const { data: workflowsData } = useWorkflowsMetadata({
+		enabled: isPlatformAdmin,
+	});
 
 	// Focus input when opened
 	useEffect(() => {

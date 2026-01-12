@@ -26,6 +26,7 @@ from src.models.contracts.app_components import PageDefinition
 from src.core.pubsub import publish_app_draft_update
 from src.models.orm.applications import AppPage, Application
 from src.services.app_builder_service import AppBuilderService
+from src.services.authorization import AuthorizationService
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,9 @@ async def get_application_or_404(ctx: Context, app_id: UUID) -> Application:
             detail=f"Application '{app_id}' not found",
         )
 
-    # Check org access (org_id matches user org or app is global)
-    if application.organization_id is not None and application.organization_id != ctx.org_id:
+    # Use AuthorizationService for access check (handles platform admin, org scoping, access_level)
+    auth = AuthorizationService(ctx.db, ctx)
+    if not await auth.can_access_app(application):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this application",

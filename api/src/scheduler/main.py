@@ -342,12 +342,14 @@ class Scheduler:
             GitHubSyncService,
             ConflictError,
             OrphanError,
+            UnresolvedRefsError,
         )
 
         job_id = data.get("jobId", "unknown")
         org_id = data.get("orgId")
         conflict_resolutions = data.get("conflictResolutions", {})
         confirm_orphans = data.get("confirmOrphans", False)
+        confirm_unresolved_refs = data.get("confirmUnresolvedRefs", False)
 
         logger.info(f"Starting git sync job {job_id} for org {org_id}")
 
@@ -459,6 +461,7 @@ class Scheduler:
                 sync_result = await sync_service.execute_sync(
                     conflict_resolutions=conflict_resolutions,
                     confirm_orphans=confirm_orphans,
+                    confirm_unresolved_refs=confirm_unresolved_refs,
                     progress_callback=progress_callback,
                     log_callback=log_callback,
                 )
@@ -506,6 +509,23 @@ class Scheduler:
                 status="orphans_detected",
                 message="Must confirm orphan workflows before proceeding",
                 orphans=e.orphans,
+            )
+
+        except UnresolvedRefsError as e:
+            logger.warning(f"Git sync job {job_id} has unresolved refs: {len(e.unresolved_refs)}")
+            await publish_git_sync_completed(
+                job_id,
+                status="unresolved_refs",
+                message="Unresolved workflow refs detected. Set confirm_unresolved_refs=True to proceed.",
+                unresolved_refs=[
+                    {
+                        "entity_type": r.entity_type,
+                        "entity_path": r.entity_path,
+                        "field_path": r.field_path,
+                        "portable_ref": r.portable_ref,
+                    }
+                    for r in e.unresolved_refs
+                ],
             )
 
         except Exception as e:

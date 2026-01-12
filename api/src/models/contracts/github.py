@@ -444,6 +444,27 @@ class OrphanInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SyncUnresolvedRefInfo(BaseModel):
+    """Information about an unresolved portable workflow ref."""
+    entity_type: str = Field(..., description="Type: app, form, or agent")
+    entity_path: str = Field(..., description="File path being imported")
+    field_path: str = Field(..., description="Field containing the ref, e.g., pages.0.launch_workflow_id")
+    portable_ref: str = Field(..., description="The portable ref that couldn't be resolved")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SyncSerializationError(BaseModel):
+    """Information about an entity that failed to serialize for sync."""
+    entity_type: str = Field(..., description="Type: app, form, or agent")
+    entity_id: str = Field(..., description="Entity UUID")
+    entity_name: str = Field(..., description="Entity display name")
+    path: str = Field(..., description="Virtual file path (used as resolution key)")
+    error: str = Field(..., description="Human-readable error message")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SyncPreviewResponse(BaseModel):
     """Preview of sync operations before execution."""
     to_pull: list[SyncAction] = Field(
@@ -462,6 +483,14 @@ class SyncPreviewResponse(BaseModel):
         default_factory=list,
         description="Workflows that will become orphaned"
     )
+    unresolved_refs: list[SyncUnresolvedRefInfo] = Field(
+        default_factory=list,
+        description="Workflow refs that couldn't be resolved"
+    )
+    serialization_errors: list[SyncSerializationError] = Field(
+        default_factory=list,
+        description="Entities that failed to serialize for sync (can be skipped)"
+    )
     is_empty: bool = Field(
         default=False,
         description="True if no changes to sync"
@@ -477,13 +506,17 @@ class SyncExecuteRequest(BaseModel):
     to WebSocket channel git:{job_id} AFTER receiving the response to receive
     streaming progress and completion messages.
     """
-    conflict_resolutions: dict[str, Literal["keep_local", "keep_remote"]] = Field(
+    conflict_resolutions: dict[str, Literal["keep_local", "keep_remote", "skip"]] = Field(
         default_factory=dict,
-        description="Resolution for each conflicted file path"
+        description="Resolution for each conflicted file path. 'skip' excludes the entity from sync."
     )
     confirm_orphans: bool = Field(
         default=False,
         description="User acknowledges orphan workflows"
+    )
+    confirm_unresolved_refs: bool = Field(
+        default=False,
+        description="User acknowledges unresolved workflow refs"
     )
 
     model_config = ConfigDict(from_attributes=True)
