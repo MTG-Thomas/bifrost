@@ -49,39 +49,164 @@ router = APIRouter(prefix="/api/applications", tags=["Applications"])
 
 
 class ApplicationRepository(OrgScopedRepository[Application]):
-    """Repository for application operations."""
+    """
+    Repository for application operations.
+
+    Applications use the CASCADE scoping pattern for org users:
+    - Org-specific applications + global (NULL org_id) applications
+
+    Role-based access control:
+    - Applications with access_level="role_based" require user to have a role assigned
+    - Applications with access_level="authenticated" are accessible to any authenticated user
+    """
 
     model = Application
+    role_table = AppRole
+    role_entity_id_column = "app_id"
 
-    async def list_applications(
-        self,
-        filter_type: OrgFilterType = OrgFilterType.ORG_PLUS_GLOBAL,
-    ) -> list[Application]:
-        """List applications with specified filter type."""
+    async def list_applications(self) -> list[Application]:
+        """
+        List applications with cascade scoping and role-based access.
+
+        Uses the base class scoping and role checking automatically.
+
+        Returns:
+            List of Application ORM objects
+        """
+        # Build base query with cascade scoping
         query = select(self.model)
-        query = self.apply_filter(query, filter_type, self.org_id)
+        query = self._apply_cascade_scope(query)
+        query = query.order_by(self.model.name)
+
+        result = await self.session.execute(query)
+        entities = list(result.scalars().all())
+
+        # Filter by role access for non-superusers with role-based entities
+        if not self.is_superuser:
+            accessible = []
+            for entity in entities:
+                if await self._can_access_entity(entity):
+                    accessible.append(entity)
+            return accessible
+
+        return entities
+
+    async def list_all_in_scope(
+        self,
+        filter_type: OrgFilterType = OrgFilterType.ALL,
+    ) -> list[Application]:
+        """
+        List all applications in scope without role-based filtering.
+
+        Used by platform admins who bypass role checks.
+        Supports all filter types:
+        - ALL: No org filter, show everything
+        - GLOBAL_ONLY: Only applications with org_id IS NULL
+        - ORG_ONLY: Only applications in the specific org (no global fallback)
+        - ORG_PLUS_GLOBAL: Applications in the org + global applications
+
+        Args:
+            filter_type: How to filter by organization scope
+
+        Returns:
+            List of Application ORM objects
+        """
+        query = select(self.model)
+
+        # Apply org filtering based on filter type
+        if filter_type == OrgFilterType.ALL:
+            # No org filter - show everything
+            pass
+        elif filter_type == OrgFilterType.GLOBAL_ONLY:
+            # Only global applications (org_id IS NULL)
+            query = query.where(self.model.organization_id.is_(None))
+        elif filter_type == OrgFilterType.ORG_ONLY:
+            # Only the specific org, NO global fallback
+            if self.org_id is not None:
+                query = query.where(self.model.organization_id == self.org_id)
+            else:
+                # Edge case: ORG_ONLY with no org_id - return nothing
+                query = query.where(self.model.id == None)  # noqa: E711
+        elif filter_type == OrgFilterType.ORG_PLUS_GLOBAL:
+            # Cascade scope: org + global
+            query = self._apply_cascade_scope(query)
+
         query = query.order_by(self.model.name)
 
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
     async def get_by_slug(self, slug: str) -> Application | None:
-        """Get application by slug with cascade scoping: org-specific > global.
-
-        Uses get_one_cascade() to avoid MultipleResultsFound when the same
-        slug exists in both org scope and global scope.
         """
+        Get application by slug with cascade scoping and role-based access check.
+
+        Prioritizes org-specific over global to avoid MultipleResultsFound
+        when the same slug exists in both scopes.
+
+        Args:
+            slug: Application slug
+
+        Returns:
+            Application if found and accessible, None otherwise
+        """
+        # Build query filtering by slug
         query = select(self.model).where(self.model.slug == slug)
-        return await self.get_one_cascade(query)
+
+        # Apply cascade scoping: prioritize org-specific, then global
+        if self.org_id is not None:
+            # Try org-specific first
+            org_query = query.where(self.model.organization_id == self.org_id)
+            result = await self.session.execute(org_query)
+            entity = result.scalar_one_or_none()
+            if entity:
+                if await self._can_access_entity(entity):
+                    return entity
+                return None
+
+        # Fall back to global
+        global_query = query.where(self.model.organization_id.is_(None))
+        result = await self.session.execute(global_query)
+        entity = result.scalar_one_or_none()
+
+        if entity and await self._can_access_entity(entity):
+            return entity
+        return None
 
     async def get_by_id(self, id: UUID) -> Application | None:
-        """Get application by UUID with cascade scoping: org-specific > global.
-
-        Uses get_one_cascade() to avoid MultipleResultsFound when the same
-        ID exists in both org scope and global scope.
         """
+        Get application by UUID with cascade scoping and role-based access check.
+
+        Prioritizes org-specific over global to avoid MultipleResultsFound
+        when the same ID exists in both scopes.
+
+        Args:
+            id: Application UUID
+
+        Returns:
+            Application if found and accessible, None otherwise
+        """
+        # Build query filtering by ID
         query = select(self.model).where(self.model.id == id)
-        return await self.get_one_cascade(query)
+
+        # Apply cascade scoping: prioritize org-specific, then global
+        if self.org_id is not None:
+            # Try org-specific first
+            org_query = query.where(self.model.organization_id == self.org_id)
+            result = await self.session.execute(org_query)
+            entity = result.scalar_one_or_none()
+            if entity:
+                if await self._can_access_entity(entity):
+                    return entity
+                return None
+
+        # Fall back to global
+        global_query = query.where(self.model.organization_id.is_(None))
+        result = await self.session.execute(global_query)
+        entity = result.scalar_one_or_none()
+
+        if entity and await self._can_access_entity(entity):
+            return entity
+        return None
 
     async def get_by_slug_strict(self, slug: str) -> Application | None:
         """Get application by slug strictly in current org scope (no fallback)."""
@@ -405,7 +530,12 @@ async def create_application(
 ) -> ApplicationPublic:
     """Create a new application."""
     target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
+    repo = ApplicationRepository(
+        ctx.db,
+        target_org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
 
     try:
         application = await repo.create_application(data, created_by=user.email)
@@ -424,7 +554,7 @@ async def create_application(
 )
 async def list_applications(
     ctx: Context,
-    _user: CurrentUser,
+    user: CurrentUser,
     scope: str | None = Query(
         default=None,
         description="Filter scope: 'global' for global only, org UUID for specific org.",
@@ -439,8 +569,19 @@ async def list_applications(
             detail=str(e),
         )
 
-    repo = ApplicationRepository(ctx.db, filter_org)
-    applications = await repo.list_applications(filter_type)
+    repo = ApplicationRepository(
+        ctx.db,
+        filter_org,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
+
+    # Superusers use list_all_in_scope (respects filter_type, no role checks)
+    # Regular users use list_applications (cascade scope + role checks)
+    if user.is_platform_admin:
+        applications = await repo.list_all_in_scope(filter_type)
+    else:
+        applications = await repo.list_applications()
 
     # Convert each application with role_ids
     public_apps = [await application_to_public(app, repo) for app in applications]
@@ -459,12 +600,17 @@ async def list_applications(
 async def get_application(
     slug: str,
     ctx: Context,
-    _user: CurrentUser,
+    user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> ApplicationPublic:
     """Get application metadata by slug."""
     target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
+    repo = ApplicationRepository(
+        ctx.db,
+        target_org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
     application = await get_application_or_404(ctx, slug, scope)
     return await application_to_public(application, repo)
 
@@ -483,7 +629,12 @@ async def update_application(
 ) -> ApplicationPublic:
     """Update application metadata and access control."""
     target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
+    repo = ApplicationRepository(
+        ctx.db,
+        target_org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
     application = await repo.update_application(
         slug,
         data,
@@ -541,12 +692,17 @@ async def update_application(
 async def delete_application(
     slug: str,
     ctx: Context,
-    _user: CurrentUser,
+    user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> None:
     """Delete an application."""
     target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
+    repo = ApplicationRepository(
+        ctx.db,
+        target_org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
     success = await repo.delete_application(slug)
 
     if not success:
@@ -640,7 +796,12 @@ async def publish_application(
     Also syncs workflow_roles for execution authorization.
     """
     target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
+    repo = ApplicationRepository(
+        ctx.db,
+        target_org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
 
     try:
         message = data.message if data else None
@@ -748,7 +909,7 @@ async def rollback_application(
     app_id: UUID,
     data: ApplicationRollbackRequest,
     ctx: Context,
-    _user: CurrentUser,
+    user: CurrentUser,
     scope: str | None = Query(default=None),
 ) -> ApplicationPublic:
     """
@@ -758,7 +919,12 @@ async def rollback_application(
     The draft version remains unchanged.
     """
     target_org_id = _resolve_target_org_safe(ctx, scope)
-    repo = ApplicationRepository(ctx.db, target_org_id)
+    repo = ApplicationRepository(
+        ctx.db,
+        target_org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
     application = await get_application_by_id_or_404(ctx, app_id, scope)
 
     service = AppBuilderService(ctx.db)
