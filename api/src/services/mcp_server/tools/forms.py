@@ -113,14 +113,18 @@ async def get_form_schema(context: Any) -> str:
                     "type": "object",
                     "properties": {
                         "name": {"type": "string"},
-                        "type": {"type": "string", "enum": ["text", "email", "number", "select", "checkbox", "textarea", "radio", "datetime", "file"]},
-                        "label": {"type": "string"},
+                        "type": {"type": "string", "enum": ["text", "email", "number", "select", "checkbox", "textarea", "radio", "datetime", "file", "markdown", "html"]},
+                        "label": {"type": "string", "description": "Display label (required except for markdown/html)"},
                         "required": {"type": "boolean"},
                         "placeholder": {"type": "string"},
                         "help_text": {"type": "string"},
-                        "options": {"type": "array", "items": {"type": "object"}}
+                        "options": {"type": "array", "items": {"type": "object"}, "description": "For select/radio fields"},
+                        "allowed_types": {"type": "array", "items": {"type": "string"}, "description": "For file fields: allowed MIME types (e.g., 'image/*', '.pdf', 'application/json')"},
+                        "multiple": {"type": "boolean", "description": "For file fields: allow multiple file uploads"},
+                        "max_size_mb": {"type": "integer", "description": "For file fields: maximum file size in MB"},
+                        "content": {"type": "string", "description": "For markdown/html fields: static content to display"}
                     },
-                    "required": ["name", "type", "label"]
+                    "required": ["name", "type"]
                 }
             },
             "description": {"type": "string", "description": "Optional form description"},

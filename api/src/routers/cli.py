@@ -2495,9 +2495,14 @@ async def cli_upsert_document(
     Auto-creates the table if it doesn't exist.
     If a document with the given id exists, it is replaced with the new data.
     If not, a new document is created.
+
+    Uses atomic INSERT ... ON CONFLICT DO UPDATE to prevent race conditions.
     """
-    from src.models.orm.tables import Document
     from datetime import datetime
+
+    from sqlalchemy.dialects.postgresql import insert
+
+    from src.models.orm.tables import Document
 
     org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
@@ -2508,32 +2513,28 @@ async def cli_upsert_document(
         db, request.table, org_uuid, app_uuid, current_user.email
     )
 
-    # Check if document exists
-    stmt = select(Document).where(
-        Document.table_id == table.id,
-        Document.id == request.id,
-    )
+    now = datetime.utcnow()
+
+    # Atomic upsert using PostgreSQL's INSERT ... ON CONFLICT DO UPDATE
+    stmt = insert(Document).values(
+        id=request.id,
+        table_id=table.id,
+        data=request.data,
+        created_by=current_user.email,
+        created_at=now,
+        updated_at=now,
+    ).on_conflict_do_update(
+        index_elements=["table_id", "id"],
+        set_={
+            "data": request.data,
+            "updated_by": current_user.email,
+            "updated_at": now,
+        },
+    ).returning(Document)
+
     result = await db.execute(stmt)
-    existing = result.scalar_one_or_none()
-
-    if existing:
-        # Update existing document (full replace)
-        existing.data = request.data
-        existing.updated_by = current_user.email
-        existing.updated_at = datetime.utcnow()
-        doc = existing
-    else:
-        # Create new document
-        doc = Document(
-            id=request.id,
-            table_id=table.id,
-            data=request.data,
-            created_by=current_user.email,
-        )
-        db.add(doc)
-
+    doc = result.scalar_one()
     await db.commit()
-    await db.refresh(doc)
 
     return SDKDocumentData(
         id=doc.id,

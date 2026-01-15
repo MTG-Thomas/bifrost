@@ -53,6 +53,8 @@ interface UseFormFileUploadOptions {
 	maxSizeMb?: number | null;
 	/** Allowed MIME types (optional validation) */
 	allowedTypes?: string[] | null;
+	/** Field name for server-side validation */
+	fieldName?: string;
 }
 
 interface UseFormFileUploadReturn {
@@ -75,7 +77,7 @@ export function useFormFileUpload(
 	options: UseFormFileUploadOptions = {},
 ): UseFormFileUploadReturn {
 	const [uploadState, setUploadState] = useState<UploadState>(initialState);
-	const { onUploadStart, onUploadEnd, maxSizeMb, allowedTypes } = options;
+	const { onUploadStart, onUploadEnd, maxSizeMb, allowedTypes, fieldName } = options;
 
 	const reset = useCallback(() => {
 		setUploadState(initialState);
@@ -144,6 +146,7 @@ export function useFormFileUpload(
 							content_type:
 								file.type || "application/octet-stream",
 							file_size: file.size,
+							field_name: fieldName,
 						},
 					},
 				);
@@ -257,7 +260,7 @@ export function useFormFileUpload(
 				throw err;
 			}
 		},
-		[formId, maxSizeMb, allowedTypes, onUploadStart, onUploadEnd],
+		[formId, maxSizeMb, allowedTypes, fieldName, onUploadStart, onUploadEnd],
 	);
 
 	return {

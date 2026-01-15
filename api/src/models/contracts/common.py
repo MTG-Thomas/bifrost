@@ -57,6 +57,10 @@ class FileUploadRequest(BaseModel):
     file_name: str = Field(..., description="Original file name")
     content_type: str = Field(..., description="MIME type of the file")
     file_size: int = Field(..., description="File size in bytes")
+    field_name: str | None = Field(
+        default=None,
+        description="Form field name for server-side validation of allowed types and max size"
+    )
 
 
 class UploadedFileMetadata(BaseModel):

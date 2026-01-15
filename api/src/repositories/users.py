@@ -80,16 +80,21 @@ class UserRepository(BaseRepository[User]):  # type: ignore[type-var]
         Check if any real users exist in the system.
 
         Used for first-user detection during auto-provisioning.
-        Excludes system accounts (those with NULL organization_id) from the count.
+        Excludes:
+        - System user (SYSTEM_USER_UUID) - automated execution account
+        - Users with NULL organization_id - system/global accounts
 
         Returns:
-            True if at least one organization-bound user exists, False otherwise
+            True if at least one real human user exists, False otherwise
         """
         from sqlalchemy import exists
+
+        from src.core.constants import SYSTEM_USER_UUID
 
         result = await self.session.execute(
             select(exists().where(
                 User.id.isnot(None),
+                User.id != SYSTEM_USER_UUID,
                 User.organization_id.isnot(None),
             ))
         )

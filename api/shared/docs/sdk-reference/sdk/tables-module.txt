@@ -115,6 +115,7 @@ Insert a document into a table.
 async def insert(
     table: str,
     data: dict[str, Any],
+    id: str | None = None,
     scope: str | None = None,
     app: str | None = None,
 ) -> DocumentData
@@ -126,6 +127,7 @@ async def insert(
 |-----------|------|-------------|
 | `table` | str | Table name |
 | `data` | dict | Document data (any JSON-serializable dict) |
+| `id` | str | Optional document ID (auto-generated UUID if not provided) |
 | `scope` | str | Organization scope |
 | `app` | str | Application UUID |
 
@@ -143,6 +145,45 @@ doc = await tables.insert("customers", {
     "revenue": 50000
 })
 print(f"Created document: {doc.id}")
+
+# With user-provided ID
+doc = await tables.insert("customers", id="acme-001", data={
+    "name": "Acme Corp",
+    "email": "info@acme.com"
+})
+```
+
+### tables.upsert()
+
+Upsert (create or replace) a document.
+
+```python
+async def upsert(
+    table: str,
+    id: str,
+    data: dict[str, Any],
+    scope: str | None = None,
+    app: str | None = None,
+) -> DocumentData
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `table` | str | Table name |
+| `id` | str | Document ID (required for upsert) |
+| `data` | dict | Document data |
+| `scope` | str | Organization scope |
+| `app` | str | Application UUID |
+
+#### Example
+
+```python
+doc = await tables.upsert("employees", id="john@example.com", data={
+    "name": "John Doe",
+    "department": "Engineering"
+})
 ```
 
 ### tables.get()
@@ -271,12 +312,11 @@ print(f"Showing {len(results.documents)} of {results.total}")
 
 ### tables.count()
 
-Count documents matching a filter.
+Count all documents in a table.
 
 ```python
 async def count(
     table: str,
-    where: dict[str, Any] | None = None,
     scope: str | None = None,
     app: str | None = None,
 ) -> int
@@ -286,7 +326,6 @@ async def count(
 
 ```python
 total = await tables.count("customers")
-active = await tables.count("customers", where={"status": "active"})
 ```
 
 ## Filter Operators

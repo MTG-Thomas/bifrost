@@ -82,6 +82,7 @@ export function FileUploadField({
 	const { uploadFile } = useFormFileUpload(formId, {
 		maxSizeMb,
 		allowedTypes,
+		fieldName,
 	});
 
 	// Parse current value into completed files list

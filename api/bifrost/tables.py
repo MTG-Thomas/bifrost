@@ -9,16 +9,10 @@ All methods are async and must be awaited.
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
 
 from .client import get_client
 from .models import TableInfo, DocumentData, DocumentList
 from ._context import get_default_scope
-
-
-def _encode_table_name(name: str) -> str:
-    """URL-encode table name for path parameters."""
-    return quote(name, safe="")
 
 
 def _resolve_scope(scope: str | None) -> str | None:
@@ -95,16 +89,14 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
         response = await client.post(
-            "/api/tables",
-            params=params,
+            "/api/cli/tables/create",
             json={
                 "name": name,
                 "description": description,
-                "schema": table_schema,
+                "table_schema": table_schema,
+                "scope": effective_scope,
+                "app": app,
             }
         )
         response.raise_for_status()
@@ -138,13 +130,15 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
-        response = await client.get("/api/tables", params=params)
+        response = await client.post(
+            "/api/cli/tables/list",
+            json={
+                "scope": effective_scope,
+                "app": app,
+            }
+        )
         response.raise_for_status()
-        data = response.json()
-        return [TableInfo.model_validate(t) for t in data.get("tables", [])]
+        return [TableInfo.model_validate(t) for t in response.json()]
 
     @staticmethod
     async def delete(
@@ -173,12 +167,13 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
-        response = await client.delete(
-            f"/api/tables/{_encode_table_name(name)}",
-            params=params,
+        response = await client.post(
+            "/api/cli/tables/delete",
+            json={
+                "name": name,
+                "scope": effective_scope,
+                "app": app,
+            }
         )
         response.raise_for_status()
         return True
@@ -229,18 +224,15 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
-
-        body: dict[str, Any] = {"data": data}
-        if id:
-            body["id"] = id
-
         response = await client.post(
-            f"/api/tables/{_encode_table_name(table)}/documents",
-            params=params,
-            json=body,
+            "/api/cli/tables/documents/insert",
+            json={
+                "table": table,
+                "data": data,
+                "id": id,
+                "scope": effective_scope,
+                "app": app,
+            }
         )
         response.raise_for_status()
         return DocumentData.model_validate(response.json())
@@ -280,16 +272,20 @@ class tables:
             ...     "department": "Engineering",
             ... })
         """
-        # Try to get existing, then update or insert
-        existing = await tables.get(table, id, scope=scope, app=app)
-        if existing:
-            result = await tables.update(table, id, data, scope=scope, app=app)
-            # update() returns None only if doc doesn't exist, but we just verified it exists
-            if result is None:
-                raise RuntimeError(f"Document {id} was deleted during upsert")
-            return result
-        else:
-            return await tables.insert(table, data, id=id, scope=scope, app=app)
+        client = get_client()
+        effective_scope = _resolve_scope(scope)
+        response = await client.post(
+            "/api/cli/tables/documents/upsert",
+            json={
+                "table": table,
+                "id": id,
+                "data": data,
+                "scope": effective_scope,
+                "app": app,
+            }
+        )
+        response.raise_for_status()
+        return DocumentData.model_validate(response.json())
 
     @staticmethod
     async def get(
@@ -319,12 +315,14 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
-        response = await client.get(
-            f"/api/tables/{_encode_table_name(table)}/documents/{quote(doc_id, safe='')}",
-            params=params,
+        response = await client.post(
+            "/api/cli/tables/documents/get",
+            json={
+                "table": table,
+                "id": doc_id,
+                "scope": effective_scope,
+                "app": app,
+            }
         )
         if response.status_code == 404:
             return None
@@ -364,13 +362,15 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
-        response = await client.patch(
-            f"/api/tables/{_encode_table_name(table)}/documents/{quote(doc_id, safe='')}",
-            params=params,
-            json={"data": data},
+        response = await client.post(
+            "/api/cli/tables/documents/update",
+            json={
+                "table": table,
+                "id": doc_id,
+                "data": data,
+                "scope": effective_scope,
+                "app": app,
+            }
         )
         if response.status_code == 404:
             return None
@@ -408,12 +408,14 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
-        response = await client.delete(
-            f"/api/tables/{_encode_table_name(table)}/documents/{quote(doc_id, safe='')}",
-            params=params,
+        response = await client.post(
+            "/api/cli/tables/documents/delete",
+            json={
+                "table": table,
+                "id": doc_id,
+                "scope": effective_scope,
+                "app": app,
+            }
         )
         if response.status_code == 404:
             return False
@@ -477,18 +479,17 @@ class tables:
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
         response = await client.post(
-            f"/api/tables/{_encode_table_name(table)}/documents/query",
-            params=params,
+            "/api/cli/tables/documents/query",
             json={
+                "table": table,
                 "where": where,
                 "order_by": order_by,
                 "order_dir": order_dir,
                 "limit": limit,
                 "offset": offset,
+                "scope": effective_scope,
+                "app": app,
             }
         )
         # Return empty result if table doesn't exist
@@ -500,21 +501,19 @@ class tables:
     @staticmethod
     async def count(
         table: str,
-        where: dict[str, Any] | None = None,
         scope: str | None = None,
         app: str | None = None,
     ) -> int:
         """
-        Count documents matching filter.
+        Count all documents in a table.
 
         Args:
             table: Table name
-            where: Filter conditions with optional operators (same as query)
             scope: Organization scope
             app: Application UUID
 
         Returns:
-            int: Number of matching documents. Returns 0 if table doesn't exist.
+            int: Number of documents in the table. Returns 0 if table doesn't exist.
 
         Raises:
             RuntimeError: If not authenticated
@@ -522,21 +521,16 @@ class tables:
         Example:
             >>> from bifrost import tables
             >>> total = await tables.count("customers")
-            >>> active = await tables.count("customers", where={"status": "active"})
-            >>> high_value = await tables.count("customers", where={"revenue": {"gte": 10000}})
         """
-        # Note: where filter is not currently supported by the count endpoint
-        # but is included for API consistency with query()
-        _ = where  # Reserved for future use
-        _ = app  # Reserved for future use
         client = get_client()
         effective_scope = _resolve_scope(scope)
-        params = {}
-        if effective_scope:
-            params["scope"] = effective_scope
-        response = await client.get(
-            f"/api/tables/{_encode_table_name(table)}/documents/count",
-            params=params,
+        response = await client.post(
+            "/api/cli/tables/documents/count",
+            json={
+                "table": table,
+                "scope": effective_scope,
+                "app": app,
+            }
         )
         # Return 0 if table doesn't exist
         if response.status_code == 404:

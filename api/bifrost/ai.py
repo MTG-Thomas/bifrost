@@ -122,7 +122,7 @@ async def _inject_knowledge_context(
     results = await knowledge_module.search(
         user_query,
         namespace=knowledge,
-        org_id=org_id,
+        scope=org_id,
         limit=5,
     )
 

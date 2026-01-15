@@ -1130,6 +1130,51 @@ def _sanitize_filename(filename: str) -> str:
     return sanitized
 
 
+def _check_mime_type_allowed(content_type: str, allowed_types: list[str]) -> bool:
+    """
+    Check if a MIME type matches the allowed types.
+
+    Supports:
+    - Exact match: "application/pdf"
+    - Wildcard: "image/*"
+    - Extension: ".pdf" (matched against content_type)
+    """
+    for allowed in allowed_types:
+        if allowed.endswith("/*"):
+            # Wildcard match (e.g., "image/*")
+            prefix = allowed[:-1]  # "image/"
+            if content_type.startswith(prefix):
+                return True
+        elif allowed.startswith("."):
+            # Extension-based - map common extensions to MIME types
+            ext_to_mime = {
+                ".pdf": "application/pdf",
+                ".doc": "application/msword",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".xls": "application/vnd.ms-excel",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".csv": "text/csv",
+                ".txt": "text/plain",
+                ".json": "application/json",
+                ".xml": "application/xml",
+                ".zip": "application/zip",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".svg": "image/svg+xml",
+                ".webp": "image/webp",
+            }
+            if allowed.lower() in ext_to_mime:
+                if content_type == ext_to_mime[allowed.lower()]:
+                    return True
+        else:
+            # Exact MIME type match
+            if content_type == allowed:
+                return True
+    return False
+
+
 @router.post(
     "/{form_id}/upload",
     response_model=FileUploadResponse,
@@ -1157,7 +1202,11 @@ async def generate_upload_url(
     from src.services.file_storage import FileStorageService
 
     # Verify form exists and user has access
-    result = await db.execute(select(FormORM).where(FormORM.id == form_id))
+    result = await db.execute(
+        select(FormORM)
+        .options(selectinload(FormORM.fields))
+        .where(FormORM.id == form_id)
+    )
     form = result.scalar_one_or_none()
 
     if not form or not form.is_active:
@@ -1173,6 +1222,30 @@ async def generate_upload_url(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this form",
         )
+
+    # Server-side validation of file constraints if field_name provided
+    if request.field_name:
+        field = next(
+            (f for f in form.fields if f.name == request.field_name),
+            None
+        )
+        if field:
+            # Validate file type
+            if field.allowed_types:
+                if not _check_mime_type_allowed(request.content_type, field.allowed_types):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"File type '{request.content_type}' not allowed. Allowed: {', '.join(field.allowed_types)}",
+                    )
+
+            # Validate file size
+            if field.max_size_mb:
+                max_bytes = field.max_size_mb * 1024 * 1024
+                if request.file_size > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"File size {request.file_size} bytes exceeds maximum {field.max_size_mb}MB",
+                    )
 
     # Generate unique path for upload
     file_uuid = str(uuid4())
