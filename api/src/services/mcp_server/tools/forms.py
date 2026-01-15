@@ -29,29 +29,41 @@ async def list_forms(context: Any) -> str:
     import json
 
     from src.core.database import get_db_context
-    from src.core.org_filter import OrgFilterType
     from src.repositories.forms import FormRepository
 
     logger.info("MCP list_forms called")
 
     try:
         async with get_db_context() as db:
-            # Determine filter type and org_id based on context
+            # Determine org_id and user context based on context
             if context.is_platform_admin:
-                # Platform admins see all forms
-                filter_type = OrgFilterType.ALL
-                org_id = None
+                # Platform admins see all forms (no org filtering)
+                repo = FormRepository(
+                    session=db,
+                    org_id=None,
+                    is_superuser=True,
+                )
+                forms = await repo.list_all_in_scope(active_only=True)
             elif context.org_id:
                 # Org users see their org's forms + global forms
-                filter_type = OrgFilterType.ORG_PLUS_GLOBAL
                 org_id = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
+                user_id = UUID(str(context.user_id)) if context.user_id else None
+                repo = FormRepository(
+                    session=db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    is_superuser=False,
+                )
+                forms = await repo.list_forms(active_only=True)
             else:
                 # No org context - only global forms
-                filter_type = OrgFilterType.GLOBAL_ONLY
-                org_id = None
-
-            repo = FormRepository(db, org_id)
-            forms = await repo.list_forms(filter_type, active_only=True)
+                repo = FormRepository(
+                    session=db,
+                    org_id=None,
+                    user_id=None,
+                    is_superuser=False,
+                )
+                forms = await repo.list_forms(active_only=True)
 
             return json.dumps({
                 "forms": [

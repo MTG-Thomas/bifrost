@@ -292,7 +292,8 @@ class TestListForms:
 
             with patch("src.repositories.forms.FormRepository") as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.list_forms = AsyncMock(return_value=[mock_form])
+                # Platform admins use list_all_in_scope instead of list_forms
+                mock_repo.list_all_in_scope = AsyncMock(return_value=[mock_form])
                 mock_repo_cls.return_value = mock_repo
 
                 result = await list_forms(platform_admin_context)

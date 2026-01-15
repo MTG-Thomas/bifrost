@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
-from sqlalchemy import delete, select, or_
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -418,8 +418,9 @@ async def list_forms(
     - Org users see: their org's forms + global forms (org_id IS NULL)
     - Access is further filtered by access_level (authenticated, role_based)
 
-    This endpoint uses a single optimized query with SQL-level filtering
-    instead of multiple roundtrips and Python filtering.
+    Uses the FormRepository which handles:
+    - Cascade scoping (org + global for org users)
+    - Role-based access control (for non-superusers)
     """
     # Resolve organization filter based on user permissions
     try:
@@ -430,48 +431,27 @@ async def list_forms(
             detail=str(e),
         )
 
+    # Create repository with appropriate scope and user context
+    # For superusers: is_superuser=True bypasses role checks
+    # For org users: user_id enables role-based access filtering
+    repo = FormRepository(
+        session=db,
+        org_id=filter_org,
+        user_id=ctx.user.user_id if not ctx.user.is_superuser else None,
+        is_superuser=ctx.user.is_superuser,
+    )
+
     # Platform admins bypass access level filtering - they see all forms within org scope
     if ctx.user.is_superuser:
-        repo = FormRepository(db, filter_org)
-        forms = await repo.list_forms(filter_type, active_only=False)
+        # Use list_all_in_scope which skips role checks (appropriate for superusers)
+        # Pass filter_type to control org scoping behavior
+        forms = await repo.list_all_in_scope(filter_type=filter_type, active_only=False)
         return [FormPublic.model_validate(f) for f in forms]
 
-    # For org users, we need additional access-level filtering on top of org filtering
-    # Build subquery for forms accessible via user's roles
-    user_accessible_forms_subquery = (
-        select(FormRoleORM.form_id)
-        .join(UserRoleORM, UserRoleORM.role_id == FormRoleORM.role_id)
-        .where(UserRoleORM.user_id == ctx.user.user_id)
-        .distinct()
-    )
-
-    # Get org-filtered forms first via repository, then apply access-level filtering
-    repo = FormRepository(db, filter_org)
-
-    # Build main query with all access logic in SQL for org users
-    # A form is visible if:
-    # 1. It's active AND
-    # 2. It belongs to user's org OR is global (org_id IS NULL) AND
-    # 3. Access level is 'authenticated' OR
-    #    (access level is 'role_based' AND user has a matching role)
-    query = select(FormORM).options(selectinload(FormORM.fields))
-    query = query.where(FormORM.is_active)
-    query = repo.apply_filter(query, filter_type, filter_org)
-    query = query.where(
-        or_(
-            FormORM.access_level == "authenticated",
-            # role_based access: user must have a role assigned to the form
-            # Also include forms with NULL access_level (defaults to role_based)
-            or_(
-                FormORM.access_level == "role_based",
-                FormORM.access_level.is_(None)
-            ) & FormORM.id.in_(user_accessible_forms_subquery)
-        )
-    )
-    query = query.order_by(FormORM.name)
-
-    result = await db.execute(query)
-    return [FormPublic.model_validate(f) for f in result.scalars().all()]
+    # For org users: repository handles cascade scoping + role-based access
+    # list_forms() applies both cascade scope and role checks automatically
+    forms = await repo.list_forms(active_only=True)
+    return [FormPublic.model_validate(f) for f in forms]
 
 
 @router.post(
