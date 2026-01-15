@@ -2,7 +2,7 @@
 
 **Design:** [2026-01-15-org-scoped-repository-design.md](./2026-01-15-org-scoped-repository-design.md)
 
-**Status:** Phases 1-2 complete, Phase 3+ pending
+**Status:** Phases 1-4 complete, Phase 5+ pending
 
 ---
 
@@ -71,46 +71,55 @@
 
 ---
 
-## Phase 3: Migrate BaseRepository Repos to OrgScopedRepository
+## Phase 3: Migrate BaseRepository Repos to OrgScopedRepository ✅
 
-- [ ] **3.1** Migrate `WorkflowRepository`
+- [x] **3.1** Migrate `WorkflowRepository`
   - File: `api/src/repositories/workflows.py`
   - Change base class: `BaseRepository` → `OrgScopedRepository`
   - Add `role_table = WorkflowRole`, `role_entity_id_column = "workflow_id"`
   - Update all methods to use new pattern
-  - **Context:** Workflows have RBAC via `WorkflowRole` table and `access_level` field
+  - **Done:** Commits `cdd8c7f6`, `e5c87308` (doc clarifications)
+  - **Pattern:** Methods use `_apply_cascade_scope()`, `get_by_name` delegates to base `get()`
+  - **Also updated:** All 11 callers (routers, services, MCP tools)
 
-- [ ] **3.2** Migrate `DataProviderRepository`
+- [x] **3.2** Migrate `DataProviderRepository`
   - File: `api/src/repositories/data_providers.py`
   - Change base class: `BaseRepository` → `OrgScopedRepository`
   - Add `role_table = None`
   - Update all methods to use new pattern
-  - **Context:** Data providers are SDK-only, no RBAC needed
+  - **Done:** Commit `b259b424`
+  - **Pattern:** SDK-only, `get_by_name` delegates to base `get()` with type filter
 
-- [ ] **3.3** Migrate `KnowledgeRepository`
+- [x] **3.3** Migrate `KnowledgeRepository`
   - File: `api/src/repositories/knowledge.py`
   - Change base class: `BaseRepository` → `OrgScopedRepository`
   - Add `role_table = None`
   - Update all methods to use new pattern
-  - **Context:** Knowledge is SDK-only, no RBAC needed
+  - **Done:** Commit `b78d2308`
+  - **Pattern:** SDK-only, preserved custom org_id handling in methods
+  - **Also updated:** cli.py (7 sites), docs_indexer.py, agent_executor.py, MCP tools
 
 ---
 
-## Phase 4: Create New Repositories
+## Phase 4: Create New Repositories ✅
 
-- [ ] **4.1** Create `ConfigRepository`
-  - Extract from inline code in `api/src/routers/config.py`
-  - Extend `OrgScopedRepository[Config]`
+- [x] **4.1** Update `ConfigRepository`
+  - File: `api/src/routers/config.py` (inline repo)
+  - Already extended `OrgScopedRepository[Config]`
   - Add `role_table = None`
-  - Implement `get(key=...)` with cascade
-  - **Context:** Configs are SDK-only, no RBAC needed
+  - Replace non-existent `apply_filter()` with custom OrgFilterType logic
+  - Replace non-existent `get_one_cascade()` with base `get()`
+  - **Done:** Commit `649609f7`
+  - **Pattern:** Custom OrgFilterType handling for list_configs(), base get() for lookups
 
-- [ ] **4.2** Create `IntegrationMappingRepository`
-  - New file: `api/src/repositories/integration_mappings.py`
+- [x] **4.2** Create `IntegrationMappingRepository`
+  - File: `api/src/repositories/integrations.py` (added to existing file)
   - Extend `OrgScopedRepository[IntegrationMapping]`
   - Add `role_table = None`
-  - Implement `get(integration_name=...)` with cascade
-  - **Context:** Integration mappings are SDK-only, no RBAC needed
+  - Added `get_by_integration_name()` with cascade
+  - **Done:** Commit `ca56030d`
+  - **Pattern:** First looks up Integration by name, then uses cascade to find mapping
+  - **Also updated:** Exported from `api/src/repositories/__init__.py`
 
 ---
 
