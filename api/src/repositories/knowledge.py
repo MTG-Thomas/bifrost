@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from src.models.orm import KnowledgeStore
-from src.repositories.base import BaseRepository
+from src.repositories.org_scoped import OrgScopedRepository
 
 
 @dataclass
@@ -39,7 +39,7 @@ class NamespaceInfo:
     scopes: dict[str, int]  # {"global": count, "org": count, "total": count}
 
 
-class KnowledgeRepository(BaseRepository[KnowledgeStore]):
+class KnowledgeRepository(OrgScopedRepository[KnowledgeStore]):
     """
     Repository for knowledge store operations.
 
@@ -48,9 +48,15 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
     - Org-scoped storage with global fallback
     - Vector similarity search
     - Metadata filtering
+
+    Note: This repository has custom scoping logic for its methods since
+    the organization_id on documents represents where data is stored,
+    not access control. Pass org_id to constructor for consistency with
+    OrgScopedRepository pattern; methods use self.org_id as default.
     """
 
     model = KnowledgeStore
+    role_table = None  # No RBAC - SDK-only access
 
     async def store(
         self,
@@ -73,12 +79,14 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
             namespace: Namespace for organization
             key: Optional user-provided key for upserts
             metadata: Optional metadata dict
-            organization_id: Organization scope (None for global)
+            organization_id: Organization scope (None for global). Defaults to self.org_id.
             created_by: User who created the document
 
         Returns:
             Document ID (UUID as string)
         """
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         if key:
             # Use upsert for key-based storage
             # Build values dict using column objects to avoid SQLAlchemy MetaData conflict
@@ -86,7 +94,7 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
             metadata_col = KnowledgeStore.__table__.c.metadata
             values = {
                 KnowledgeStore.namespace: namespace,
-                KnowledgeStore.organization_id: organization_id,
+                KnowledgeStore.organization_id: target_org_id,
                 KnowledgeStore.key: key,
                 KnowledgeStore.content: content,
                 metadata_col: metadata or {},
@@ -111,7 +119,7 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
             # No key - just insert
             doc = KnowledgeStore(
                 namespace=namespace,
-                organization_id=organization_id,
+                organization_id=target_org_id,
                 content=content,
                 doc_metadata=metadata or {},
                 embedding=embedding,
@@ -137,7 +145,7 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
         Args:
             query_embedding: Query vector
             namespace: Namespace(s) to search
-            organization_id: Organization scope
+            organization_id: Organization scope. Defaults to self.org_id.
             limit: Maximum results
             min_score: Minimum similarity score (0-1)
             metadata_filter: Filter by metadata fields
@@ -146,6 +154,8 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
         Returns:
             List of KnowledgeDocument sorted by similarity
         """
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         namespaces = [namespace] if isinstance(namespace, str) else namespace
 
         # Build the query
@@ -162,15 +172,15 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
         )
 
         # Organization scoping with optional fallback
-        if organization_id and fallback:
+        if target_org_id and fallback:
             # Search both org and global
             stmt = stmt.where(
-                (KnowledgeStore.organization_id == organization_id) |
+                (KnowledgeStore.organization_id == target_org_id) |
                 (KnowledgeStore.organization_id.is_(None))
             )
-        elif organization_id:
+        elif target_org_id:
             # Only org scope
-            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
         else:
             # Only global scope
             stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
@@ -226,18 +236,20 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
         Args:
             key: Document key
             namespace: Namespace
-            organization_id: Organization scope (None for global)
+            organization_id: Organization scope (None for global). Defaults to self.org_id.
 
         Returns:
             True if deleted, False if not found
         """
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         stmt = delete(KnowledgeStore).where(
             KnowledgeStore.key == key,
             KnowledgeStore.namespace == namespace,
         )
 
-        if organization_id:
-            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        if target_org_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
         else:
             stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
 
@@ -254,17 +266,19 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
 
         Args:
             namespace: Namespace to delete
-            organization_id: Organization scope (None for global)
+            organization_id: Organization scope (None for global). Defaults to self.org_id.
 
         Returns:
             Number of documents deleted
         """
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         stmt = delete(KnowledgeStore).where(
             KnowledgeStore.namespace == namespace,
         )
 
-        if organization_id:
-            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        if target_org_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
         else:
             stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
 
@@ -280,12 +294,14 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
         List all namespaces with document counts per scope.
 
         Args:
-            organization_id: If provided, include org-scoped counts
+            organization_id: If provided, include org-scoped counts. Defaults to self.org_id.
             include_global: If True, include global namespaces
 
         Returns:
             List of NamespaceInfo with scope counts
         """
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         # This is a bit complex - we need to get counts grouped by namespace and org_id
         stmt = select(
             KnowledgeStore.namespace,
@@ -297,13 +313,13 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
         )
 
         # Filter by what we want to see
-        if organization_id and include_global:
+        if target_org_id and include_global:
             stmt = stmt.where(
-                (KnowledgeStore.organization_id == organization_id) |
+                (KnowledgeStore.organization_id == target_org_id) |
                 (KnowledgeStore.organization_id.is_(None))
             )
-        elif organization_id:
-            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        elif target_org_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
         elif include_global:
             stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
 
@@ -344,18 +360,20 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
         Args:
             key: Document key
             namespace: Namespace
-            organization_id: Organization scope (None for global)
+            organization_id: Organization scope (None for global). Defaults to self.org_id.
 
         Returns:
             KnowledgeDocument or None if not found
         """
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         stmt = select(KnowledgeStore).where(
             KnowledgeStore.key == key,
             KnowledgeStore.namespace == namespace,
         )
 
-        if organization_id:
-            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        if target_org_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
         else:
             stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
 
@@ -387,18 +405,20 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
 
         Args:
             namespace: Namespace to query
-            organization_id: Organization scope (None for global)
+            organization_id: Organization scope (None for global). Defaults to self.org_id.
 
         Returns:
             Dict mapping key -> KnowledgeDocument (only docs with keys)
         """
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         stmt = select(KnowledgeStore).where(
             KnowledgeStore.namespace == namespace,
             KnowledgeStore.key.isnot(None),
         )
 
-        if organization_id:
-            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        if target_org_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
         else:
             stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
 
@@ -422,8 +442,8 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
     async def delete_orphaned_docs(
         self,
         namespace: str,
-        organization_id: UUID | None,
-        valid_keys: set[str],
+        organization_id: UUID | None = None,
+        valid_keys: set[str] | None = None,
     ) -> int:
         """
         Delete documents not in the valid_keys set.
@@ -433,7 +453,7 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
 
         Args:
             namespace: Namespace to clean up
-            organization_id: Organization scope (None for global)
+            organization_id: Organization scope (None for global). Defaults to self.org_id.
             valid_keys: Set of keys that should be kept
 
         Returns:
@@ -443,13 +463,15 @@ class KnowledgeRepository(BaseRepository[KnowledgeStore]):
             # Safety: don't delete everything if valid_keys is empty
             return 0
 
+        # Use self.org_id as default if not explicitly provided
+        target_org_id = organization_id if organization_id is not None else self.org_id
         stmt = delete(KnowledgeStore).where(
             KnowledgeStore.namespace == namespace,
             KnowledgeStore.key.notin_(valid_keys),
         )
 
-        if organization_id:
-            stmt = stmt.where(KnowledgeStore.organization_id == organization_id)
+        if target_org_id:
+            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
         else:
             stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
 

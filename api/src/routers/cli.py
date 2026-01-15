@@ -1705,14 +1705,13 @@ async def cli_knowledge_store(
         embedding = await embedding_client.embed_single(request.content)
 
         # Store document
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         doc_id = await repo.store(
             content=request.content,
             embedding=embedding,
             namespace=request.namespace,
             key=request.key,
             metadata=request.metadata,
-            organization_id=org_uuid,
             created_by=current_user.user_id,
         )
 
@@ -1759,7 +1758,7 @@ async def cli_knowledge_store_many(
         embeddings = await embedding_client.embed(contents)
 
         # Store each document
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         doc_ids = []
         for doc, embedding in zip(request.documents, embeddings):
             doc_id = await repo.store(
@@ -1768,7 +1767,6 @@ async def cli_knowledge_store_many(
                 namespace=request.namespace,
                 key=doc.get("key"),
                 metadata=doc.get("metadata"),
-                organization_id=org_uuid,
                 created_by=current_user.user_id,
             )
             doc_ids.append(doc_id)
@@ -1814,11 +1812,10 @@ async def cli_knowledge_search(
         query_embedding = await embedding_client.embed_single(request.query)
 
         # Search
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         results = await repo.search(
             query_embedding=query_embedding,
             namespace=request.namespace,
-            organization_id=org_uuid,
             limit=request.limit,
             min_score=request.min_score,
             metadata_filter=request.metadata_filter,
@@ -1869,11 +1866,10 @@ async def cli_knowledge_delete(
         org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         deleted = await repo.delete_by_key(
             key=request.key,
             namespace=request.namespace,
-            organization_id=org_uuid,
         )
 
         await db.commit()
@@ -1906,10 +1902,9 @@ async def cli_knowledge_delete_namespace(
         org_id = await _get_cli_org_id(current_user.user_id, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         deleted_count = await repo.delete_namespace(
             namespace=namespace,
-            organization_id=org_uuid,
         )
 
         await db.commit()
@@ -1943,9 +1938,8 @@ async def cli_knowledge_list_namespaces(
         org_id = await _get_cli_org_id(current_user.user_id, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         results = await repo.list_namespaces(
-            organization_id=org_uuid,
             include_global=include_global,
         )
 
@@ -1983,11 +1977,10 @@ async def cli_knowledge_get(
         org_id = await _get_cli_org_id(current_user.user_id, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         result = await repo.get_by_key(
             key=key,
             namespace=namespace,
-            organization_id=org_uuid,
         )
 
         if not result:

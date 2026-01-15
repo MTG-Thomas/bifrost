@@ -991,11 +991,12 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             query_embedding = await embedding_client.embed_single(query)
 
             # Search knowledge store
-            repo = KnowledgeRepository(self.session)
+            repo = KnowledgeRepository(
+                self.session, org_id=agent.organization_id, is_superuser=True
+            )
             results = await repo.search(
                 query_embedding=query_embedding,
                 namespace=namespaces,
-                organization_id=agent.organization_id,
                 limit=limit,
                 fallback=True,  # Search org + global
             )

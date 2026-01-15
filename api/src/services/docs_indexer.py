@@ -93,12 +93,11 @@ async def index_platform_docs() -> dict[str, Any]:
             # No embedding configuration - skip gracefully
             return {"status": "skipped", "reason": str(e)}
 
-        repo = KnowledgeRepository(db)
+        repo = KnowledgeRepository(db, org_id=None, is_superuser=True)
 
         # Fetch existing docs upfront to compare content hashes
         existing_docs = await repo.get_all_by_namespace(
             namespace=NAMESPACE,
-            organization_id=None,
         )
 
         logger.info(
@@ -128,7 +127,7 @@ async def index_platform_docs() -> dict[str, Any]:
                 # Content is new or changed - generate embedding
                 embedding = await embedding_client.embed_single(content)
 
-                # Store with upsert
+                # Store with upsert (org_id=None for global scope set in repo constructor)
                 await repo.store(
                     content=content,
                     embedding=embedding,
@@ -140,7 +139,6 @@ async def index_platform_docs() -> dict[str, Any]:
                         "indexed_at": indexed_at,
                         "content_hash": content_hash,
                     },
-                    organization_id=None,  # Global scope
                 )
 
                 indexed_count += 1
@@ -156,7 +154,6 @@ async def index_platform_docs() -> dict[str, Any]:
             try:
                 deleted_count = await repo.delete_orphaned_docs(
                     namespace=NAMESPACE,
-                    organization_id=None,
                     valid_keys=current_keys,
                 )
                 if deleted_count > 0:

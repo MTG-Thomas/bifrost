@@ -88,11 +88,12 @@ async def search_knowledge(
             query_embedding = await embedding_client.embed_single(query)
 
             # Search knowledge store
-            repo = KnowledgeRepository(db)
+            repo = KnowledgeRepository(
+                db, org_id=context.org_id if context.org_id else None, is_superuser=True
+            )
             results = await repo.search(
                 query_embedding=query_embedding,
                 namespace=namespaces_to_search,
-                organization_id=context.org_id if context.org_id else None,
                 limit=limit,
                 fallback=True,
             )
