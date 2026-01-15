@@ -50,9 +50,12 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
 
     Configs use the CASCADE scoping pattern:
     - Org-specific configs + global (NULL org_id) configs
+
+    Config is SDK-only (no RBAC), so role_table is not set.
     """
 
     model = ConfigModel
+    role_table = None  # No RBAC for configs
 
     async def list_configs(
         self,
@@ -62,9 +65,29 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
 
         Args:
             filter_type: How to filter by organization scope
+
+        Filter types:
+            - ALL: No filter, show everything (superuser only)
+            - GLOBAL_ONLY: Only org_id IS NULL
+            - ORG_ONLY: Only specific org, NO global fallback
+            - ORG_PLUS_GLOBAL: Specific org + global records (cascade scoping)
         """
         query = select(self.model)
-        query = self.apply_filter(query, filter_type, self.org_id)
+
+        # Apply filter based on filter_type
+        if filter_type == OrgFilterType.ALL:
+            # No filter - superuser sees everything
+            pass
+        elif filter_type == OrgFilterType.GLOBAL_ONLY:
+            # Only global configs
+            query = query.where(self.model.organization_id.is_(None))
+        elif filter_type == OrgFilterType.ORG_ONLY:
+            # Only specific org, no global fallback
+            query = query.where(self.model.organization_id == self.org_id)
+        else:
+            # ORG_PLUS_GLOBAL - use cascade scoping from base class
+            query = self._apply_cascade_scope(query)
+
         query = query.order_by(self.model.key)
 
         result = await self.session.execute(query)
@@ -96,11 +119,10 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
     async def get_config(self, key: str) -> ConfigModel | None:
         """Get config by key with cascade scoping: org-specific > global.
 
-        Uses get_one_cascade() to avoid MultipleResultsFound when
-        the same key exists in both org scope and global scope.
+        Uses base class get() which prioritizes org-specific over global
+        to avoid MultipleResultsFound when the same key exists in both scopes.
         """
-        query = select(self.model).where(self.model.key == key)
-        return await self.get_one_cascade(query)
+        return await self.get(key=key)
 
     async def get_config_strict(self, key: str) -> ConfigModel | None:
         """Get config strictly in current org scope (no fallback)."""
@@ -221,8 +243,9 @@ async def get_config(
             detail=str(e),
         )
 
-    # Use repository for all filtering - centralized in apply_filter()
-    repo = ConfigRepository(ctx.db, filter_org)
+    # Use repository for all filtering
+    # Config endpoints are superuser-only, so is_superuser=True (no role checks)
+    repo = ConfigRepository(ctx.db, org_id=filter_org, is_superuser=True)
     return await repo.list_configs(filter_type)
 
 
@@ -256,7 +279,8 @@ async def set_config(
             detail=str(e),
         )
 
-    repo = ConfigRepository(ctx.db, target_org_id)
+    # Config endpoints are superuser-only, so is_superuser=True (no role checks)
+    repo = ConfigRepository(ctx.db, org_id=target_org_id, is_superuser=True)
 
     try:
         result = await repo.set_config(request, updated_by=user.email)
@@ -290,7 +314,8 @@ async def delete_config(
     user: CurrentSuperuser,
 ) -> None:
     """Delete a configuration key."""
-    repo = ConfigRepository(ctx.db, ctx.org_id)
+    # Config endpoints are superuser-only, so is_superuser=True (no role checks)
+    repo = ConfigRepository(ctx.db, org_id=ctx.org_id, is_superuser=True)
 
     success = await repo.delete_config(key)
     if not success:
