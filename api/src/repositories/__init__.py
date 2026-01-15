@@ -8,6 +8,7 @@ from src.repositories.executions import (
     create_execution,
     update_execution,
 )
+from src.repositories.integrations import IntegrationMappingRepository
 from src.repositories.knowledge import KnowledgeDocument, KnowledgeRepository, NamespaceInfo
 from src.core.exceptions import AccessDeniedError
 from src.repositories.org_scoped import OrgScopedRepository
@@ -22,6 +23,7 @@ __all__ = [
     "DataProviderRepository",
     "ExecutionLogRepository",
     "ExecutionRepository",
+    "IntegrationMappingRepository",
     "KnowledgeDocument",
     "KnowledgeRepository",
     "NamespaceInfo",

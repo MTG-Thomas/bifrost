@@ -21,6 +21,50 @@ from src.models.contracts.integrations import (
     IntegrationMappingUpdate,
 )
 from src.repositories.base import BaseRepository
+from src.repositories.org_scoped import OrgScopedRepository
+
+
+class IntegrationMappingRepository(OrgScopedRepository[IntegrationMapping]):
+    """Repository for integration mapping operations with cascade scoping.
+
+    Cascade scoping: org-specific mappings > global mappings
+
+    This repository provides lookup methods that automatically cascade from
+    org-specific mappings to global (organization_id IS NULL) mappings when
+    no org-specific mapping exists.
+
+    Note: This is SDK-only, no RBAC required (role_table = None).
+    """
+
+    model = IntegrationMapping
+    role_table = None  # SDK-only, no RBAC
+
+    async def get_by_integration_name(self, name: str) -> IntegrationMapping | None:
+        """Get mapping by integration name with cascade scoping.
+
+        Lookup flow:
+        1. Find the Integration by name
+        2. Use cascade scoping to find mapping:
+           - First try org-specific mapping (if org_id is set)
+           - Fall back to global mapping (organization_id IS NULL)
+
+        Args:
+            name: Integration name to look up
+
+        Returns:
+            IntegrationMapping if found with cascade scoping, None otherwise
+        """
+        # First get integration by name
+        integration_result = await self.session.execute(
+            select(Integration).where(Integration.name == name)
+        )
+        integration = integration_result.scalar_one_or_none()
+        if not integration:
+            return None
+
+        # Then use cascade scoping to find mapping
+        # The inherited get() method handles cascade: org-specific first, then global
+        return await self.get(integration_id=integration.id)
 
 
 class IntegrationsRepository(BaseRepository[Integration]):
