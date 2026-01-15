@@ -7,12 +7,12 @@
 
 import DOMPurify from "dompurify";
 import { cn } from "@/lib/utils";
-import type {
-	HtmlComponentProps,
-	ExpressionContext,
-} from "@/lib/app-builder-types";
+import type { ExpressionContext } from "@/lib/app-builder-helpers";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { JsxTemplateRenderer } from "@/components/ui/jsx-template-renderer";
+import type { components } from "@/lib/v1";
+
+type HtmlComponentType = components["schemas"]["HtmlComponent"];
 
 /**
  * Adapts App Builder context to JsxTemplateRenderer context format
@@ -81,7 +81,7 @@ export function HtmlComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as HtmlComponentProps;
+	const { props } = component as HtmlComponentType;
 	const content = props.content || "";
 
 	// Check if content looks like JSX (contains React-style attributes or JSX expressions)
@@ -94,7 +94,7 @@ export function HtmlComponent({
 			<JsxTemplateRenderer
 				template={content}
 				context={adaptContext(context)}
-				className={cn(props.className)}
+				className={cn(props.class_name)}
 			/>
 		);
 	}
@@ -104,7 +104,7 @@ export function HtmlComponent({
 
 	return (
 		<div
-			className={cn(props.className)}
+			className={cn(props.class_name)}
 			dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
 		/>
 	);

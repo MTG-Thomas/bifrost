@@ -6,12 +6,33 @@
  */
 
 import { cn } from "@/lib/utils";
-import type {
-	FormGroupComponentProps,
-	AppComponent,
-	LayoutContainer,
-} from "@/lib/app-builder-types";
-import { isLayoutContainer } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+import type { LayoutContainer } from "@/types/app-builder";
+import { isLayoutContainer } from "@/lib/app-builder-utils";
+
+type FormGroupComponent = components["schemas"]["FormGroupComponent"];
+type AppComponent =
+	| components["schemas"]["HeadingComponent"]
+	| components["schemas"]["TextComponent"]
+	| components["schemas"]["HtmlComponent"]
+	| components["schemas"]["CardComponent"]
+	| components["schemas"]["DividerComponent"]
+	| components["schemas"]["SpacerComponent"]
+	| components["schemas"]["ButtonComponent"]
+	| components["schemas"]["StatCardComponent"]
+	| components["schemas"]["ImageComponent"]
+	| components["schemas"]["BadgeComponent"]
+	| components["schemas"]["ProgressComponent"]
+	| components["schemas"]["DataTableComponent"]
+	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["FileViewerComponent"]
+	| components["schemas"]["ModalComponent"]
+	| components["schemas"]["TextInputComponent"]
+	| components["schemas"]["NumberInputComponent"]
+	| components["schemas"]["SelectComponent"]
+	| components["schemas"]["CheckboxComponent"]
+	| components["schemas"]["FormEmbedComponent"]
+	| components["schemas"]["FormGroupComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { Label } from "@/components/ui/label";
 import { renderRegisteredComponent } from "../ComponentRegistry";
@@ -60,7 +81,7 @@ export function FormGroupComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as FormGroupComponentProps;
+	const { props } = component as FormGroupComponent;
 	const direction = props.direction || "column";
 	const gap = props.gap ?? 16;
 
@@ -75,7 +96,7 @@ export function FormGroupComponent({
 	const children = props.children || [];
 
 	return (
-		<div className={cn("space-y-2", props.className)}>
+		<div className={cn("space-y-2", props.class_name)}>
 			{/* Group label */}
 			{props.label && (
 				<div className="space-y-1">

@@ -25,7 +25,7 @@ import {
 	AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from "@/lib/utils";
-import type { TableColumn } from "@/lib/app-builder-types";
+import type { TableColumn } from "@/lib/app-builder-helpers";
 
 export interface ColumnBuilderProps {
 	/** Current column definitions */
@@ -292,22 +292,22 @@ export function ColumnBuilder({
 										</p>
 										<Input
 											value={
-												column.badgeColors
+												column.badge_colors
 													? JSON.stringify(
-															column.badgeColors,
+															column.badge_colors,
 														)
 													: ""
 											}
 											onChange={(e) => {
 												try {
-													const badgeColors = e.target
+													const badge_colors = e.target
 														.value
 														? JSON.parse(
 																e.target.value,
 															)
 														: undefined;
 													handleUpdateColumn(index, {
-														badgeColors,
+														badge_colors,
 													});
 												} catch {
 													// Invalid JSON, ignore

@@ -28,7 +28,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Home, FileText, Plus, Trash2, GripVertical } from "lucide-react";
-import type { PageDefinition } from "@/lib/app-builder-types";
+import type { PageDefinition } from "@/lib/app-builder-helpers";
 
 /**
  * Drag data for page reordering

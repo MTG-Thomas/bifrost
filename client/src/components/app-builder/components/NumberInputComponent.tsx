@@ -7,7 +7,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import type { NumberInputComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type NumberInputComponent = components["schemas"]["NumberInputComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,11 +26,11 @@ import { Label } from "@/components/ui/label";
  *   id: "quantity-input",
  *   type: "number-input",
  *   props: {
- *     fieldId: "quantity",
+ *     field_id: "quantity",
  *     label: "Quantity",
  *     min: 1,
  *     max: 100,
- *     defaultValue: 1
+ *     default_value: 1
  *   }
  * }
  *
@@ -38,7 +40,7 @@ import { Label } from "@/components/ui/label";
  *   id: "price-input",
  *   type: "number-input",
  *   props: {
- *     fieldId: "price",
+ *     field_id: "price",
  *     label: "Price",
  *     min: 0,
  *     step: 0.01,
@@ -50,18 +52,18 @@ export function NumberInputComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as NumberInputComponentProps;
+	const { props } = component as NumberInputComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
 	const getDefaultValue = (): number | "" => {
-		if (props.defaultValue === undefined || props.defaultValue === null) {
+		if (props.default_value === undefined || props.default_value === null) {
 			return "";
 		}
-		if (typeof props.defaultValue === "number") {
-			return props.defaultValue;
+		if (typeof props.default_value === "number") {
+			return props.default_value;
 		}
 		// Already evaluated - just convert to number
-		const num = Number(props.defaultValue);
+		const num = Number(props.default_value);
 		return isNaN(num) ? "" : num;
 	};
 
@@ -83,16 +85,16 @@ export function NumberInputComponent({
 	// Update field value in context when value changes
 	useEffect(() => {
 		if (setFieldValue) {
-			setFieldValue(props.fieldId, value === "" ? null : value);
+			setFieldValue(props.field_id, value === "" ? null : value);
 		}
-	}, [props.fieldId, value, setFieldValue]);
+	}, [props.field_id, value, setFieldValue]);
 
 	// Initialize field value on mount
 	useEffect(() => {
 		if (setFieldValue && defaultValue !== "") {
-			setFieldValue(props.fieldId, defaultValue);
+			setFieldValue(props.field_id, defaultValue);
 		}
-	}, [props.fieldId, defaultValue, setFieldValue]);
+	}, [props.field_id, defaultValue, setFieldValue]);
 
 	const handleChange = useCallback(
 		(e: React.ChangeEvent<HTMLInputElement>) => {
@@ -112,7 +114,7 @@ export function NumberInputComponent({
 	const inputId = `field-${component.id}`;
 
 	return (
-		<div className={cn("space-y-2", props.className)}>
+		<div className={cn("space-y-2", props.class_name)}>
 			{label && (
 				<Label htmlFor={inputId}>
 					{label}
@@ -128,10 +130,10 @@ export function NumberInputComponent({
 				onChange={handleChange}
 				placeholder={placeholder}
 				disabled={isDisabled}
-				required={props.required}
-				min={props.min}
-				max={props.max}
-				step={props.step}
+				required={props.required ?? undefined}
+				min={props.min ?? undefined}
+				max={props.max ?? undefined}
+				step={props.step ?? undefined}
 			/>
 		</div>
 	);

@@ -68,7 +68,7 @@ export function useWorkflowsFiltered(options?: {
 }
 
 /**
- * Update a workflow's properties (e.g., organization scope).
+ * Update a workflow's properties (e.g., organization scope, access level).
  * Platform admin only.
  *
  * Note: Uses direct fetch since the PATCH endpoint may not be in generated types yet.
@@ -79,8 +79,20 @@ export function useUpdateWorkflow() {
 	return {
 		mutateAsync: async (
 			workflowId: string,
-			organizationId: string | null,
+			updates: {
+				organizationId?: string | null;
+				accessLevel?: "authenticated" | "role_based";
+			},
 		) => {
+			// Build request body with only provided fields
+			const body: Record<string, string | null | undefined> = {};
+			if (updates.organizationId !== undefined) {
+				body.organization_id = updates.organizationId;
+			}
+			if (updates.accessLevel !== undefined) {
+				body.access_level = updates.accessLevel;
+			}
+
 			// Use direct fetch since the PATCH endpoint might not be in generated types
 			const response = await fetch(`/api/workflows/${workflowId}`, {
 				method: "PATCH",
@@ -88,7 +100,7 @@ export function useUpdateWorkflow() {
 					"Content-Type": "application/json",
 				},
 				credentials: "include",
-				body: JSON.stringify({ organization_id: organizationId }),
+				body: JSON.stringify(body),
 			});
 
 			if (!response.ok) {

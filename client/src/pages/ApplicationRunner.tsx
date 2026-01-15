@@ -40,7 +40,7 @@ import type {
 	OnCompleteAction,
 	LayoutContainer,
 	ExpressionContext,
-} from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
 import { evaluateExpression } from "@/lib/expression-parser";
 
 /**
@@ -49,22 +49,22 @@ import { evaluateExpression } from "@/lib/expression-parser";
  * but we cast to ensure type safety.
  */
 function convertApiPageToFrontend(apiPage: PageDefinitionAPI): PageDefinition {
-	// API returns snake_case - convert to frontend camelCase
+	// API returns snake_case - keep snake_case for frontend PageDefinition
 	return {
 		id: apiPage.id,
 		title: apiPage.title,
 		path: apiPage.path,
 		layout: apiPage.layout as unknown as LayoutContainer,
 		variables: (apiPage.variables ?? {}) as Record<string, unknown>,
-		launchWorkflowId: apiPage.launch_workflow_id ?? undefined,
-		launchWorkflowParams: apiPage.launch_workflow_params ?? undefined,
-		launchWorkflowDataSourceId: apiPage.launch_workflow_data_source_id ?? undefined,
+		launch_workflow_id: apiPage.launch_workflow_id ?? undefined,
+		launch_workflow_params: apiPage.launch_workflow_params ?? undefined,
+		launch_workflow_data_source_id: apiPage.launch_workflow_data_source_id ?? undefined,
 		permission: apiPage.permission
 			? {
-					allowedRoles: apiPage.permission.allowed_roles ?? undefined,
-					accessExpression:
+					allowed_roles: apiPage.permission.allowed_roles ?? undefined,
+					access_expression:
 						apiPage.permission.access_expression ?? undefined,
-					redirectTo: apiPage.permission.redirect_to ?? undefined,
+					redirect_to: apiPage.permission.redirect_to ?? undefined,
 				}
 			: undefined,
 	};
@@ -386,38 +386,38 @@ export function ApplicationRunner({
 			for (const action of actions) {
 				switch (action.type) {
 					case "navigate":
-						if (action.navigateTo) {
+						if (action.navigate_to) {
 							// Evaluate any expressions in the navigation path
-							const path = action.navigateTo.includes("{{")
+							const path = action.navigate_to.includes("{{")
 								? String(
 										evaluateExpression(
-											action.navigateTo,
+											action.navigate_to,
 											context,
-										) ?? action.navigateTo,
+										) ?? action.navigate_to,
 									)
-								: action.navigateTo;
+								: action.navigate_to;
 							appNavigate(path);
 						}
 						break;
 
 					case "set-variable":
-						if (action.variableName) {
-							const value = action.variableValue?.includes("{{")
+						if (action.variable_name) {
+							const value = action.variable_value?.includes("{{")
 								? evaluateExpression(
-										action.variableValue,
+										action.variable_value,
 										context,
 									)
-								: (action.variableValue ?? result.result);
+								: (action.variable_value ?? result.result);
 							// Use the store's setVariable function directly (getState for callback context)
 							useAppBuilderStore
 								.getState()
-								.setVariable(action.variableName, value);
+								.setVariable(action.variable_name, value);
 						}
 						break;
 
 					case "refresh-table":
-						if (action.dataSourceKey) {
-							refreshDataSource(action.dataSourceKey);
+						if (action.data_source_key) {
+							refreshDataSource(action.data_source_key);
 						}
 						break;
 				}

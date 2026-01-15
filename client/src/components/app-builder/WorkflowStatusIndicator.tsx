@@ -19,7 +19,7 @@ import {
 	DialogDescription,
 	DialogFooter,
 } from "@/components/ui/dialog";
-import type { WorkflowResult } from "@/lib/app-builder-types";
+import type { WorkflowResult } from "@/types/app-builder";
 
 interface WorkflowStatusIndicatorProps {
 	/** Map of execution ID to workflow name for currently running workflows */

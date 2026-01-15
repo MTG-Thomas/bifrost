@@ -18,20 +18,20 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@/components/ui/dialog";
-import type {
-	ModalComponentProps,
-	ExpressionContext,
-} from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+import type { ExpressionContext } from "@/types/app-builder";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { evaluateExpression } from "@/lib/expression-parser";
 import { LayoutRenderer } from "../LayoutRenderer";
 import { useAppContext } from "@/contexts/AppContext";
 
+type ModalComponent = components["schemas"]["ModalComponent"];
+
 /**
  * Get modal size classes
  */
 function getModalSizeClass(
-	size?: ModalComponentProps["props"]["size"],
+	size?: ModalComponent["props"]["size"],
 ): string {
 	switch (size) {
 		case "sm":
@@ -52,11 +52,11 @@ export function ModalComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as ModalComponentProps;
+	const { props } = component as ModalComponent;
 	const { isModalOpen } = useAppContext();
 
 	// Determine if this modal has its own trigger button or is controlled externally
-	const hasTrigger = props.triggerLabel !== undefined;
+	const hasTrigger = props.trigger_label !== undefined;
 
 	// Local state for modals with trigger buttons
 	const [localIsOpen, setLocalIsOpen] = useState(false);
@@ -88,10 +88,10 @@ export function ModalComponent({
 					props.description,
 			)
 		: undefined;
-	const triggerLabel = props.triggerLabel
+	const triggerLabel = props.trigger_label
 		? String(
-				evaluateExpression(props.triggerLabel, context) ??
-					props.triggerLabel,
+				evaluateExpression(props.trigger_label, context) ??
+					props.trigger_label,
 			)
 		: undefined;
 
@@ -99,35 +99,35 @@ export function ModalComponent({
 	const handleActionClick = useCallback(
 		async (
 			action: NonNullable<
-				ModalComponentProps["props"]["footerActions"]
+				ModalComponent["props"]["footer_actions"]
 			>[number],
 			index: number,
 		) => {
 			setLoadingAction(index);
 
 			try {
-				switch (action.actionType) {
+				switch (action.action_type) {
 					case "navigate":
-						if (action.navigateTo && context.navigate) {
-							const path = action.navigateTo.includes("{{")
+						if (action.navigate_to && context.navigate) {
+							const path = action.navigate_to.includes("{{")
 								? String(
 										evaluateExpression(
-											action.navigateTo,
+											action.navigate_to,
 											context,
-										) ?? action.navigateTo,
+										) ?? action.navigate_to,
 									)
-								: action.navigateTo;
+								: action.navigate_to;
 							context.navigate(path);
 						}
 						break;
 
 					case "workflow":
-						if (action.workflowId && context.triggerWorkflow) {
+						if (action.workflow_id && context.triggerWorkflow) {
 							// Evaluate action params
 							const params: Record<string, unknown> = {};
-							if (action.actionParams) {
+							if (action.action_params) {
 								for (const [key, value] of Object.entries(
-									action.actionParams,
+									action.action_params,
 								)) {
 									if (
 										typeof value === "string" &&
@@ -143,21 +143,21 @@ export function ModalComponent({
 								}
 							}
 							context.triggerWorkflow(
-								action.workflowId,
+								action.workflow_id,
 								params,
-								action.onComplete,
+								action.on_complete ?? undefined,
 							);
 						}
 						break;
 
 					case "submit":
-						if (action.workflowId && context.submitForm) {
+						if (action.workflow_id && context.submitForm) {
 							// Evaluate additional params
 							const additionalParams: Record<string, unknown> =
 								{};
-							if (action.actionParams) {
+							if (action.action_params) {
 								for (const [key, value] of Object.entries(
-									action.actionParams,
+									action.action_params,
 								)) {
 									if (
 										typeof value === "string" &&
@@ -171,17 +171,17 @@ export function ModalComponent({
 								}
 							}
 							context.submitForm(
-								action.workflowId,
+								action.workflow_id,
 								additionalParams,
-								action.onComplete,
-								action.onError,
+								action.on_complete ?? undefined,
+								action.on_error ?? undefined,
 							);
 						}
 						break;
 				}
 
 				// Close modal if configured
-				if (action.closeOnClick !== false) {
+				if (action.close_on_click !== false) {
 					setIsOpen(false);
 				}
 			} finally {
@@ -199,22 +199,22 @@ export function ModalComponent({
 	};
 
 	const sizeClass = getModalSizeClass(props.size);
-	const showCloseButton = props.showCloseButton ?? true;
+	const showCloseButton = props.show_close_button ?? true;
 
 	return (
 		<Dialog open={isOpen} onOpenChange={setIsOpen}>
 			{hasTrigger && triggerLabel && (
 				<DialogTrigger asChild>
 					<Button
-						variant={props.triggerVariant || "default"}
-						size={props.triggerSize || "default"}
+						variant={props.trigger_variant || "default"}
+						size={props.trigger_size || "default"}
 					>
 						{triggerLabel}
 					</Button>
 				</DialogTrigger>
 			)}
 			<DialogContent
-				className={cn(sizeClass, props.className)}
+				className={cn(sizeClass, props.class_name)}
 				// Hide the default close button if not wanted
 				onInteractOutside={(e) => {
 					// Prevent closing when clicking inside the modal content
@@ -239,9 +239,9 @@ export function ModalComponent({
 				</div>
 
 				{/* Footer Actions */}
-				{props.footerActions && props.footerActions.length > 0 && (
+				{props.footer_actions && props.footer_actions.length > 0 && (
 					<DialogFooter>
-						{props.footerActions.map((action, index) => {
+						{props.footer_actions.map((action, index) => {
 							const isLoading = loadingAction === index;
 							const label = action.label.includes("{{")
 								? String(

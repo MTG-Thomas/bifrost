@@ -6,7 +6,9 @@
  */
 
 import { cn } from "@/lib/utils";
-import type { CardComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type CardComponent = components["schemas"]["CardComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import {
 	Card,
@@ -41,7 +43,7 @@ export function CardComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as CardComponentProps;
+	const { props } = component as CardComponent;
 	// Props are pre-evaluated by ComponentRegistry
 	const title = props?.title ? String(props.title) : undefined;
 	const description = props?.description
@@ -53,7 +55,7 @@ export function CardComponent({
 	const hasChildren = props?.children && props.children.length > 0;
 
 	return (
-		<Card className={cn("h-full", props?.className)}>
+		<Card className={cn("h-full", props?.class_name)}>
 			{hasHeader && (
 				<CardHeader>
 					{title && <CardTitle>{title}</CardTitle>}
@@ -70,7 +72,7 @@ export function CardComponent({
 								key={
 									"id" in child ? child.id : `child-${index}`
 								}
-								layout={child}
+								layout={child as any}
 								context={context}
 							/>
 						))}

@@ -5,9 +5,14 @@
  * organized into sections using accordions.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Trash2, Shield, AlertTriangle } from "lucide-react";
 import { useRoles } from "@/hooks/useRoles";
+import { $api } from "@/lib/api-client";
+import {
+	WorkflowSelectorDialog,
+	type EntityRole,
+} from "@/components/workflows/WorkflowSelectorDialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -40,10 +45,9 @@ import type {
 	LayoutMaxWidth,
 	ButtonActionType,
 	PageDefinition,
-} from "@/lib/app-builder-types";
-import { isLayoutContainer } from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
+import { isLayoutContainer } from "@/lib/app-builder-helpers";
 import {
-	WorkflowSelector,
 	KeyValueEditor,
 	ColumnBuilder,
 	OptionBuilder,
@@ -182,10 +186,10 @@ function CommonPropertiesSection({
 						>
 							<Input
 								type="number"
-								value={appComponent.gridSpan ?? 1}
+								value={appComponent.grid_span ?? 1}
 								onChange={(e) =>
 									onChange({
-										gridSpan: Number(e.target.value),
+										grid_span: Number(e.target.value),
 									})
 								}
 								min={1}
@@ -198,10 +202,10 @@ function CommonPropertiesSection({
 							description="Custom Tailwind or CSS classes"
 						>
 							<Input
-								value={appComponent.className ?? ""}
+								value={appComponent.class_name ?? ""}
 								onChange={(e) =>
 									onChange({
-										className: e.target.value || undefined,
+										class_name: e.target.value || undefined,
 									})
 								}
 								placeholder="text-blue-500 font-bold"
@@ -215,7 +219,7 @@ function CommonPropertiesSection({
 									<JsonEditor
 										value={appComponent.style ?? {}}
 										onChange={(value) =>
-											onChange({ style: value as React.CSSProperties })
+											onChange({ style: value as Record<string, unknown> })
 										}
 										rows={4}
 									/>
@@ -233,14 +237,14 @@ function CommonPropertiesSection({
 										description="Array to iterate over"
 									>
 										<Input
-											value={appComponent.repeatFor?.items ?? ""}
+											value={appComponent.repeat_for?.items ?? ""}
 											onChange={(e) =>
 												onChange({
-													repeatFor: e.target.value
+													repeat_for: e.target.value
 														? {
 																items: e.target.value,
-																as: appComponent.repeatFor?.as || "item",
-																itemKey: appComponent.repeatFor?.itemKey || "id",
+																as: appComponent.repeat_for?.as || "item",
+																item_key: appComponent.repeat_for?.item_key || "id",
 														  }
 														: undefined,
 												})
@@ -249,20 +253,20 @@ function CommonPropertiesSection({
 										/>
 									</FormField>
 
-									{appComponent.repeatFor && (
+									{appComponent.repeat_for && (
 										<>
 											<FormField
 												label="Loop Variable"
 												description="Name to access each item"
 											>
 												<Input
-													value={appComponent.repeatFor.as}
+													value={appComponent.repeat_for.as}
 													onChange={(e) =>
 														onChange({
-															repeatFor: {
-																items: appComponent.repeatFor!.items,
+															repeat_for: {
+																items: appComponent.repeat_for!.items,
 																as: e.target.value,
-																itemKey: appComponent.repeatFor!.itemKey,
+																item_key: appComponent.repeat_for!.item_key,
 															},
 														})
 													}
@@ -275,13 +279,13 @@ function CommonPropertiesSection({
 												description="Unique property for React keys"
 											>
 												<Input
-													value={appComponent.repeatFor.itemKey}
+													value={appComponent.repeat_for.item_key}
 													onChange={(e) =>
 														onChange({
-															repeatFor: {
-																items: appComponent.repeatFor!.items,
-																as: appComponent.repeatFor!.as,
-																itemKey: e.target.value,
+															repeat_for: {
+																items: appComponent.repeat_for!.items,
+																as: appComponent.repeat_for!.as,
+																item_key: e.target.value,
 															},
 														})
 													}
@@ -316,31 +320,72 @@ function PagePropertiesSection({
 	appAccessLevel?: "authenticated" | "role_based";
 	appRoleIds?: string[];
 }) {
+	// Dialog state for launch workflow selector
+	const [launchWorkflowDialogOpen, setLaunchWorkflowDialogOpen] =
+		useState(false);
+
 	// Fetch roles for page-level access control
 	const { data: rolesData } = useRoles();
 
+	// Fetch workflows for display name lookup
+	const { data: workflowsData } = $api.useQuery("get", "/api/workflows", {});
+
+	// Convert appRoleIds to EntityRole[] format for the dialog
+	const entityRoles: EntityRole[] = useMemo(
+		() =>
+			rolesData
+				?.filter((r) => appRoleIds?.includes(r.id))
+				.map((r) => ({ id: r.id, name: r.name })) ?? [],
+		[rolesData, appRoleIds],
+	);
+
+	// Get launch workflow name for button display
+	const launchWorkflowName = useMemo(
+		() =>
+			workflowsData?.find((w) => w.id === page.launch_workflow_id)?.name,
+		[workflowsData, page.launch_workflow_id],
+	);
+
 	// Get current page-level allowed roles
-	const pageAllowedRoles = page.permission?.allowedRoles ?? [];
+	const pageAllowedRoles = page.permission?.allowed_roles ?? [];
 
 	// Filter roles to only show those that are allowed at app level
-	const availableRoles = rolesData?.filter(
-		(role) => !appRoleIds?.length || appRoleIds.includes(role.id)
-	) ?? [];
+	const availableRoles =
+		rolesData?.filter(
+			(role) => !appRoleIds?.length || appRoleIds.includes(role.id),
+		) ?? [];
 
 	// Handle role toggle
 	const handleRoleToggle = (roleId: string, checked: boolean) => {
 		const currentRoles = pageAllowedRoles;
 		const newRoles = checked
 			? [...currentRoles, roleId]
-			: currentRoles.filter((id) => id !== roleId);
+			: currentRoles.filter((id: string) => id !== roleId);
 
 		onChange({
 			permission: {
 				...page.permission,
-				allowedRoles: newRoles.length > 0 ? newRoles : undefined,
+				allowed_roles: newRoles.length > 0 ? newRoles : undefined,
 			},
 		});
 	};
+
+	// Handle launch workflow selection from dialog
+	const handleLaunchWorkflowSelect = useCallback(
+		(workflowIds: string[], _assignRoles: boolean) => {
+			const workflowId = workflowIds[0] || undefined;
+			onChange({
+				launch_workflow_id: workflowId,
+				launch_workflow_params: workflowId
+					? page.launch_workflow_params
+					: undefined,
+				launch_workflow_data_source_id: workflowId
+					? page.launch_workflow_data_source_id
+					: undefined,
+			});
+		},
+		[onChange, page.launch_workflow_params, page.launch_workflow_data_source_id],
+	);
 
 	return (
 		<AccordionItem value="page">
@@ -371,35 +416,54 @@ function PagePropertiesSection({
 						label="Launch Workflow"
 						description="Workflow when page loads. Access via {{ workflow.<dataSourceId> }}"
 					>
-						<WorkflowSelector
-							value={page.launchWorkflowId}
-							onChange={(workflowId: string | undefined) =>
-								onChange({
-									launchWorkflowId: workflowId || undefined,
-									launchWorkflowParams: workflowId
-										? page.launchWorkflowParams
-										: undefined,
-									launchWorkflowDataSourceId: workflowId
-										? page.launchWorkflowDataSourceId
-										: undefined,
-								})
+						<div className="flex gap-2">
+							<Button
+								variant="outline"
+								className="flex-1 justify-start font-normal"
+								onClick={() => setLaunchWorkflowDialogOpen(true)}
+							>
+								{launchWorkflowName || "Select launch workflow (optional)"}
+							</Button>
+							{page.launch_workflow_id && (
+								<Button
+									variant="ghost"
+									size="icon"
+									onClick={() =>
+										onChange({
+											launch_workflow_id: undefined,
+											launch_workflow_params: undefined,
+											launch_workflow_data_source_id: undefined,
+										})
+									}
+								>
+									<Trash2 className="h-4 w-4" />
+								</Button>
+							)}
+						</div>
+						<WorkflowSelectorDialog
+							open={launchWorkflowDialogOpen}
+							onOpenChange={setLaunchWorkflowDialogOpen}
+							entityRoles={entityRoles}
+							workflowType="workflow"
+							mode="single"
+							selectedWorkflowIds={
+								page.launch_workflow_id ? [page.launch_workflow_id] : []
 							}
-							placeholder="Select launch workflow (optional)"
-							allowClear
+							onSelect={handleLaunchWorkflowSelect}
 						/>
 					</FormField>
 
-					{page.launchWorkflowId && (
+					{page.launch_workflow_id && (
 						<>
 							<FormField
 								label="Data Source ID"
 								description="Access workflow result via {{ workflow.<id> }}. Defaults to workflow function name."
 							>
 								<Input
-									value={page.launchWorkflowDataSourceId ?? ""}
+									value={page.launch_workflow_data_source_id ?? ""}
 									onChange={(e) =>
 										onChange({
-											launchWorkflowDataSourceId:
+											launch_workflow_data_source_id:
 												e.target.value || undefined,
 										})
 									}
@@ -412,10 +476,10 @@ function PagePropertiesSection({
 								description="Parameters to pass to the launch workflow"
 							>
 								<WorkflowParameterEditor
-									workflowId={page.launchWorkflowId}
-									value={page.launchWorkflowParams ?? {}}
+									workflowId={page.launch_workflow_id}
+									value={page.launch_workflow_params ?? {}}
 									onChange={(params) =>
-										onChange({ launchWorkflowParams: params })
+										onChange({ launch_workflow_params: params })
 									}
 									isRowAction={false}
 								/>
@@ -483,12 +547,12 @@ function PagePropertiesSection({
 							description="Where to redirect users without access"
 						>
 							<Input
-								value={page.permission?.redirectTo ?? ""}
+								value={page.permission?.redirect_to ?? ""}
 								onChange={(e) =>
 									onChange({
 										permission: {
 											...page.permission,
-											redirectTo: e.target.value || undefined,
+											redirect_to: e.target.value || undefined,
 										},
 									})
 								}
@@ -800,7 +864,7 @@ function LayoutPropertiesSection({
 							<JsonEditor
 								value={component.style ?? {}}
 								onChange={(value) =>
-									onChange({ style: value as React.CSSProperties })
+									onChange({ style: value as Record<string, unknown> })
 								}
 								rows={4}
 							/>
@@ -1003,16 +1067,58 @@ function HtmlPropertiesSection({
 function ButtonPropertiesSection({
 	component,
 	onChange,
+	appRoleIds,
 }: {
 	component: AppComponent;
 	onChange: (updates: Partial<AppComponent>) => void;
+	appRoleIds?: string[];
 }) {
+	// Dialog state for workflow selectors
+	const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false);
+	const [submitWorkflowDialogOpen, setSubmitWorkflowDialogOpen] =
+		useState(false);
+
+	// Fetch roles for entity role context
+	const { data: rolesData } = useRoles();
+
+	// Fetch workflows for display name lookup
+	const { data: workflowsData } = $api.useQuery("get", "/api/workflows", {});
+
+	// Convert appRoleIds to EntityRole[] format for the dialog
+	const entityRoles: EntityRole[] = useMemo(
+		() =>
+			rolesData
+				?.filter((r) => appRoleIds?.includes(r.id))
+				.map((r) => ({ id: r.id, name: r.name })) ?? [],
+		[rolesData, appRoleIds],
+	);
+
 	if (component.type !== "button") return null;
 
 	const props = component.props;
 	// Support both 'label' and 'text' for button text (matches ButtonComponent behavior)
 	const labelValue =
 		props.label ?? (props as Record<string, unknown>).text ?? "";
+
+	// Get workflow name for button display
+	const workflowName = workflowsData?.find(
+		(w) => w.id === props.workflow_id,
+	)?.name;
+
+	// Handle workflow selection from dialog
+	const handleWorkflowSelect = (
+		workflowIds: string[],
+		_assignRoles: boolean,
+	) => {
+		const workflowId = workflowIds[0] || undefined;
+		onChange({
+			props: {
+				...props,
+				workflow_id: workflowId,
+				action_params: {},
+			},
+		});
+	};
 
 	return (
 		<AccordionItem value="button">
@@ -1124,12 +1230,12 @@ function ButtonPropertiesSection({
 
 				<FormField label="Action Type">
 					<Select
-						value={props.actionType ?? ""}
+						value={props.action_type ?? ""}
 						onValueChange={(value) =>
 							onChange({
 								props: {
 									...props,
-									actionType: value as ButtonActionType,
+									action_type: value as ButtonActionType,
 								},
 							})
 						}
@@ -1146,18 +1252,18 @@ function ButtonPropertiesSection({
 					</Select>
 				</FormField>
 
-				{props.actionType === "navigate" && (
+				{props.action_type === "navigate" && (
 					<FormField
 						label="Navigate To"
 						description="Path to navigate (supports expressions)"
 					>
 						<Input
-							value={props.navigateTo ?? ""}
+							value={props.navigate_to ?? ""}
 							onChange={(e) =>
 								onChange({
 									props: {
 										...props,
-										navigateTo: e.target.value,
+										navigate_to: e.target.value,
 									},
 								})
 							}
@@ -1166,35 +1272,59 @@ function ButtonPropertiesSection({
 					</FormField>
 				)}
 
-				{props.actionType === "workflow" && (
+				{props.action_type === "workflow" && (
 					<>
 						<FormField label="Workflow">
-							<WorkflowSelector
-								value={props.workflowId}
-								onChange={(workflowId: string | undefined) =>
-									onChange({
-										props: {
-											...props,
-											workflowId,
-											actionParams: {},
-										},
-									})
+							<div className="flex gap-2">
+								<Button
+									variant="outline"
+									className="flex-1 justify-start font-normal"
+									onClick={() => setWorkflowDialogOpen(true)}
+								>
+									{workflowName || "Select a workflow"}
+								</Button>
+								{props.workflow_id && (
+									<Button
+										variant="ghost"
+										size="icon"
+										onClick={() =>
+											onChange({
+												props: {
+													...props,
+													workflow_id: undefined,
+													action_params: {},
+												},
+											})
+										}
+									>
+										<Trash2 className="h-4 w-4" />
+									</Button>
+								)}
+							</div>
+							<WorkflowSelectorDialog
+								open={workflowDialogOpen}
+								onOpenChange={setWorkflowDialogOpen}
+								entityRoles={entityRoles}
+								workflowType="workflow"
+								mode="single"
+								selectedWorkflowIds={
+									props.workflow_id ? [props.workflow_id] : []
 								}
-								placeholder="Select a workflow"
+								onSelect={handleWorkflowSelect}
 							/>
 						</FormField>
 
-						{props.workflowId && (
+						{props.workflow_id && (
 							<FormField
 								label="Parameters"
 								description="Values to pass to the workflow"
 							>
 								<WorkflowParameterEditor
-									workflowId={props.workflowId}
-									value={props.actionParams ?? {}}
+									workflowId={props.workflow_id}
+									value={props.action_params ?? {}}
 									onChange={(actionParams) =>
 										onChange({
-											props: { ...props, actionParams },
+											props: { ...props, action_params: actionParams },
 										})
 									}
 									isRowAction={false}
@@ -1204,38 +1334,62 @@ function ButtonPropertiesSection({
 					</>
 				)}
 
-				{props.actionType === "submit" && (
+				{props.action_type === "submit" && (
 					<>
 						<FormField
 							label="Workflow"
 							description="All form field values will be passed automatically"
 						>
-							<WorkflowSelector
-								value={props.workflowId}
-								onChange={(workflowId: string | undefined) =>
-									onChange({
-										props: {
-											...props,
-											workflowId,
-											actionParams: {},
-										},
-									})
+							<div className="flex gap-2">
+								<Button
+									variant="outline"
+									className="flex-1 justify-start font-normal"
+									onClick={() => setSubmitWorkflowDialogOpen(true)}
+								>
+									{workflowName || "Select a workflow"}
+								</Button>
+								{props.workflow_id && (
+									<Button
+										variant="ghost"
+										size="icon"
+										onClick={() =>
+											onChange({
+												props: {
+													...props,
+													workflow_id: undefined,
+													action_params: {},
+												},
+											})
+										}
+									>
+										<Trash2 className="h-4 w-4" />
+									</Button>
+								)}
+							</div>
+							<WorkflowSelectorDialog
+								open={submitWorkflowDialogOpen}
+								onOpenChange={setSubmitWorkflowDialogOpen}
+								entityRoles={entityRoles}
+								workflowType="workflow"
+								mode="single"
+								selectedWorkflowIds={
+									props.workflow_id ? [props.workflow_id] : []
 								}
-								placeholder="Select a workflow"
+								onSelect={handleWorkflowSelect}
 							/>
 						</FormField>
 
-						{props.workflowId && (
+						{props.workflow_id && (
 							<FormField
 								label="Additional Parameters"
 								description="Extra values to include (form fields auto-included)"
 							>
 								<WorkflowParameterEditor
-									workflowId={props.workflowId}
-									value={props.actionParams ?? {}}
+									workflowId={props.workflow_id}
+									value={props.action_params ?? {}}
 									onChange={(actionParams) =>
 										onChange({
-											props: { ...props, actionParams },
+											props: { ...props, action_params: actionParams },
 										})
 									}
 									isRowAction={false}
@@ -1245,16 +1399,16 @@ function ButtonPropertiesSection({
 					</>
 				)}
 
-				{props.actionType === "custom" && (
+				{props.action_type === "custom" && (
 					<>
 						<FormField label="Custom Action ID">
 							<Input
-								value={props.customActionId ?? ""}
+								value={props.custom_action_id ?? ""}
 								onChange={(e) =>
 									onChange({
 										props: {
 											...props,
-											customActionId: e.target.value,
+											custom_action_id: e.target.value,
 										},
 									})
 								}
@@ -1264,10 +1418,10 @@ function ButtonPropertiesSection({
 
 						<FormField label="Parameters">
 							<KeyValueEditor
-								value={props.actionParams ?? {}}
+								value={props.action_params ?? {}}
 								onChange={(actionParams) =>
 									onChange({
-										props: { ...props, actionParams },
+										props: { ...props, action_params: actionParams },
 									})
 								}
 							/>
@@ -1333,14 +1487,14 @@ function ImagePropertiesSection({
 					description="Maximum width (e.g., 200 or 100%)"
 				>
 					<Input
-						value={props.maxWidth ?? ""}
+						value={props.max_width ?? ""}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
 								props: {
 									...props,
-									maxWidth: val
+									max_width: val
 										? isNaN(numVal)
 											? val
 											: numVal
@@ -1357,14 +1511,14 @@ function ImagePropertiesSection({
 					description="Maximum height (e.g., 200 or 100%)"
 				>
 					<Input
-						value={props.maxHeight ?? ""}
+						value={props.max_height ?? ""}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
 								props: {
 									...props,
-									maxHeight: val
+									max_height: val
 										? isNaN(numVal)
 											? val
 											: numVal
@@ -1381,12 +1535,12 @@ function ImagePropertiesSection({
 					description="How the image scales within its container"
 				>
 					<Select
-						value={props.objectFit ?? "contain"}
+						value={props.object_fit ?? "contain"}
 						onValueChange={(value) =>
 							onChange({
 								props: {
 									...props,
-									objectFit: value as typeof props.objectFit,
+									object_fit: value as typeof props.object_fit,
 								},
 							})
 						}
@@ -1558,16 +1712,16 @@ function StatCardPropertiesSection({
 				>
 					<JsonEditor
 						value={
-							props.onClick ?? {
+							props.on_click ?? {
 								type: "navigate",
-								navigateTo: "",
+								navigate_to: "",
 							}
 						}
 						onChange={(value) =>
 							onChange({
 								props: {
 									...props,
-									onClick: value as typeof props.onClick,
+									on_click: value as typeof props.on_click,
 								},
 							})
 						}
@@ -1600,10 +1754,10 @@ function DataTablePropertiesSection({
 					description="ID of a page data source (e.g., clientsList)"
 				>
 					<Input
-						value={props.dataSource}
+						value={props.data_source}
 						onChange={(e) =>
 							onChange({
-								props: { ...props, dataSource: e.target.value },
+								props: { ...props, data_source: e.target.value },
 							})
 						}
 						placeholder="dataSourceId"
@@ -1615,10 +1769,10 @@ function DataTablePropertiesSection({
 					description="Path to array in result (e.g., 'clients' if workflow returns { clients: [...] })"
 				>
 					<Input
-						value={props.dataPath ?? ""}
+						value={props.data_path ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: { ...props, dataPath: e.target.value || undefined },
+								props: { ...props, data_path: e.target.value || undefined },
 							})
 						}
 						placeholder="Leave empty if result is already an array"
@@ -1677,12 +1831,12 @@ function DataTablePropertiesSection({
 					<FormField label="Page Size" description="Rows per page">
 						<Input
 							type="number"
-							value={props.pageSize ?? 10}
+							value={props.page_size ?? 10}
 							onChange={(e) =>
 								onChange({
 									props: {
 										...props,
-										pageSize: Number(e.target.value) || 10,
+										page_size: Number(e.target.value) || 10,
 									},
 								})
 							}
@@ -1697,12 +1851,12 @@ function DataTablePropertiesSection({
 					description="Message when no data"
 				>
 					<Input
-						value={props.emptyMessage ?? ""}
+						value={props.empty_message ?? ""}
 						onChange={(e) =>
 							onChange({
 								props: {
 									...props,
-									emptyMessage: e.target.value || undefined,
+									empty_message: e.target.value || undefined,
 								},
 							})
 						}
@@ -1726,10 +1880,10 @@ function DataTablePropertiesSection({
 					description="Actions available for each row"
 				>
 					<TableActionBuilder
-						value={props.rowActions ?? []}
+						value={props.row_actions ?? []}
 						onChange={(rowActions) =>
 							onChange({
-								props: { ...props, rowActions },
+								props: { ...props, row_actions: rowActions },
 							})
 						}
 						isRowAction={true}
@@ -1741,10 +1895,10 @@ function DataTablePropertiesSection({
 					description="Actions in table header"
 				>
 					<TableActionBuilder
-						value={props.headerActions ?? []}
+						value={props.header_actions ?? []}
 						onChange={(headerActions) =>
 							onChange({
-								props: { ...props, headerActions },
+								props: { ...props, header_actions: headerActions },
 							})
 						}
 						isRowAction={false}
@@ -1756,26 +1910,26 @@ function DataTablePropertiesSection({
 					description="What happens when a row is clicked"
 				>
 					<Select
-						value={props.onRowClick?.type ?? "none"}
+						value={props.on_row_click?.type ?? "none"}
 						onValueChange={(type) => {
 							if (type === "none") {
 								onChange({
-									props: { ...props, onRowClick: undefined },
+									props: { ...props, on_row_click: undefined },
 								});
 							} else {
 								onChange({
 									props: {
 										...props,
-										onRowClick: {
+										on_row_click: {
 											type: type as
 												| "navigate"
 												| "select"
 												| "set-variable",
-											navigateTo:
+											navigate_to:
 												type === "navigate"
 													? "/details/{{ row.id }}"
 													: undefined,
-											variableName:
+											variable_name:
 												type === "set-variable"
 													? "selectedRow"
 													: undefined,
@@ -1801,20 +1955,20 @@ function DataTablePropertiesSection({
 					</Select>
 				</FormField>
 
-				{props.onRowClick?.type === "navigate" && (
+				{props.on_row_click?.type === "navigate" && (
 					<FormField
 						label="Navigate To"
 						description="Path with {{ row.* }} expressions"
 					>
 						<Input
-							value={props.onRowClick.navigateTo ?? ""}
+							value={props.on_row_click.navigate_to ?? ""}
 							onChange={(e) =>
 								onChange({
 									props: {
 										...props,
-										onRowClick: {
-											...props.onRowClick!,
-											navigateTo: e.target.value,
+										on_row_click: {
+											...props.on_row_click!,
+											navigate_to: e.target.value,
 										},
 									},
 								})
@@ -1824,20 +1978,20 @@ function DataTablePropertiesSection({
 					</FormField>
 				)}
 
-				{props.onRowClick?.type === "set-variable" && (
+				{props.on_row_click?.type === "set-variable" && (
 					<FormField
 						label="Variable Name"
 						description="Store the row in this variable"
 					>
 						<Input
-							value={props.onRowClick.variableName ?? ""}
+							value={props.on_row_click.variable_name ?? ""}
 							onChange={(e) =>
 								onChange({
 									props: {
 										...props,
-										onRowClick: {
-											...props.onRowClick!,
-											variableName: e.target.value,
+										on_row_click: {
+											...props.on_row_click!,
+											variable_name: e.target.value,
 										},
 									},
 								})
@@ -1898,12 +2052,12 @@ function TabsPropertiesSection({
 					description="ID of initially active tab"
 				>
 					<Input
-						value={props.defaultTab ?? ""}
+						value={props.default_tab ?? ""}
 						onChange={(e) =>
 							onChange({
 								props: {
 									...props,
-									defaultTab: e.target.value || undefined,
+									default_tab: e.target.value || undefined,
 								},
 							})
 						}
@@ -2025,15 +2179,15 @@ function ProgressPropertiesSection({
 				<FormField label="Show Label">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.showLabel ?? false}
+							checked={props.show_label ?? false}
 							onCheckedChange={(checked) =>
 								onChange({
-									props: { ...props, showLabel: checked },
+									props: { ...props, show_label: checked },
 								})
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.showLabel ? "Yes" : "No"}
+							{props.show_label ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -2153,10 +2307,10 @@ function TextInputPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.fieldId}
+						value={props.field_id}
 						onChange={(e) =>
 							onChange({
-								props: { ...props, fieldId: e.target.value },
+								props: { ...props, field_id: e.target.value },
 							})
 						}
 						placeholder="fieldName"
@@ -2198,12 +2352,12 @@ function TextInputPropertiesSection({
 					description="Supports expressions"
 				>
 					<Input
-						value={props.defaultValue ?? ""}
+						value={props.default_value ?? ""}
 						onChange={(e) =>
 							onChange({
 								props: {
 									...props,
-									defaultValue: e.target.value || undefined,
+									default_value: e.target.value || undefined,
 								},
 							})
 						}
@@ -2212,12 +2366,12 @@ function TextInputPropertiesSection({
 
 				<FormField label="Input Type">
 					<Select
-						value={props.inputType ?? "text"}
+						value={props.input_type ?? "text"}
 						onValueChange={(value) =>
 							onChange({
 								props: {
 									...props,
-									inputType: value as typeof props.inputType,
+									input_type: value as typeof props.input_type,
 								},
 							})
 						}
@@ -2308,10 +2462,10 @@ function NumberInputPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.fieldId}
+						value={props.field_id}
 						onChange={(e) =>
 							onChange({
-								props: { ...props, fieldId: e.target.value },
+								props: { ...props, field_id: e.target.value },
 							})
 						}
 						placeholder="fieldName"
@@ -2353,14 +2507,14 @@ function NumberInputPropertiesSection({
 					description="Number or expression"
 				>
 					<Input
-						value={String(props.defaultValue ?? "")}
+						value={String(props.default_value ?? "")}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
 								props: {
 									...props,
-									defaultValue: val
+									default_value: val
 										? isNaN(numVal)
 											? val
 											: numVal
@@ -2464,10 +2618,10 @@ function SelectPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.fieldId}
+						value={props.field_id}
 						onChange={(e) =>
 							onChange({
-								props: { ...props, fieldId: e.target.value },
+								props: { ...props, field_id: e.target.value },
 							})
 						}
 						placeholder="fieldName"
@@ -2506,12 +2660,12 @@ function SelectPropertiesSection({
 
 				<FormField label="Default Value">
 					<Input
-						value={props.defaultValue ?? ""}
+						value={props.default_value ?? ""}
 						onChange={(e) =>
 							onChange({
 								props: {
 									...props,
-									defaultValue: e.target.value || undefined,
+									default_value: e.target.value || undefined,
 								},
 							})
 						}
@@ -2539,12 +2693,12 @@ function SelectPropertiesSection({
 					description="Data source name for dynamic options"
 				>
 					<Input
-						value={props.optionsSource ?? ""}
+						value={props.options_source ?? ""}
 						onChange={(e) =>
 							onChange({
 								props: {
 									...props,
-									optionsSource: e.target.value || undefined,
+									options_source: e.target.value || undefined,
 								},
 							})
 						}
@@ -2552,19 +2706,19 @@ function SelectPropertiesSection({
 					/>
 				</FormField>
 
-				{props.optionsSource && (
+				{props.options_source && (
 					<>
 						<FormField
 							label="Value Field"
 							description="Field in data source for option value"
 						>
 							<Input
-								value={props.valueField ?? ""}
+								value={props.value_field ?? ""}
 								onChange={(e) =>
 									onChange({
 										props: {
 											...props,
-											valueField:
+											value_field:
 												e.target.value || undefined,
 										},
 									})
@@ -2578,12 +2732,12 @@ function SelectPropertiesSection({
 							description="Field in data source for option label"
 						>
 							<Input
-								value={props.labelField ?? ""}
+								value={props.label_field ?? ""}
 								onChange={(e) =>
 									onChange({
 										props: {
 											...props,
-											labelField:
+											label_field:
 												e.target.value || undefined,
 										},
 									})
@@ -2635,10 +2789,10 @@ function CheckboxPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.fieldId}
+						value={props.field_id}
 						onChange={(e) =>
 							onChange({
-								props: { ...props, fieldId: e.target.value },
+								props: { ...props, field_id: e.target.value },
 							})
 						}
 						placeholder="fieldName"
@@ -2677,18 +2831,18 @@ function CheckboxPropertiesSection({
 				<FormField label="Default Checked">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.defaultChecked ?? false}
+							checked={props.default_checked ?? false}
 							onCheckedChange={(checked) =>
 								onChange({
 									props: {
 										...props,
-										defaultChecked: checked,
+										default_checked: checked,
 									},
 								})
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.defaultChecked ? "Yes" : "No"}
+							{props.default_checked ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -2717,6 +2871,7 @@ function CheckboxPropertiesSection({
 function getComponentTypeSections(
 	component: AppComponent,
 	onChange: (updates: Partial<AppComponent>) => void,
+	appRoleIds?: string[],
 ): React.ReactNode {
 	const componentType = component.type as ComponentType;
 
@@ -2747,6 +2902,7 @@ function getComponentTypeSections(
 				<ButtonPropertiesSection
 					component={component}
 					onChange={onChange}
+					appRoleIds={appRoleIds}
 				/>
 			);
 		case "image":
@@ -2984,6 +3140,7 @@ export function PropertyEditor({
 							onChange as (
 								updates: Partial<AppComponent>,
 							) => void,
+							appRoleIds,
 						)
 					)}
 				</Accordion>

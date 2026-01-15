@@ -412,8 +412,7 @@ class BifrostAuthProvider:
                     "name": user.name,
                     "is_superuser": user.is_superuser,
                     "org_id": str(user.organization_id) if user.organization_id else None,
-                    "user_type": user.user_type,
-                    "type": "access",
+                                        "type": "access",
                 }
                 access_token = create_access_token(data=token_data)
                 refresh_token, _jti = create_refresh_token(data={"sub": str(user.id)})
@@ -466,8 +465,7 @@ class BifrostAuthProvider:
                     "name": user.name,
                     "is_superuser": user.is_superuser,
                     "org_id": str(user.organization_id) if user.organization_id else None,
-                    "user_type": user.user_type,
-                    "type": "access",
+                                        "type": "access",
                 }
                 access_token = create_access_token(data=token_data)
                 new_refresh_token, _jti = create_refresh_token(data={"sub": str(user.id)})

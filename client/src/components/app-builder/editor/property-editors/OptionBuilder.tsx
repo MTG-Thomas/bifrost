@@ -10,7 +10,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { SelectOption } from "@/lib/app-builder-types";
+import type { SelectOption } from "@/lib/app-builder-helpers";
 
 export interface OptionBuilderProps {
 	/** Current options */

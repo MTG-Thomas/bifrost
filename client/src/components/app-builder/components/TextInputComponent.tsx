@@ -7,7 +7,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import type { TextInputComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type TextInputComponent = components["schemas"]["TextInputComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,7 +26,7 @@ import { Label } from "@/components/ui/label";
  *   id: "name-input",
  *   type: "text-input",
  *   props: {
- *     fieldId: "userName",
+ *     field_id: "userName",
  *     label: "Name",
  *     placeholder: "Enter your name",
  *     required: true
@@ -37,9 +39,9 @@ import { Label } from "@/components/ui/label";
  *   id: "email-input",
  *   type: "text-input",
  *   props: {
- *     fieldId: "userEmail",
+ *     field_id: "userEmail",
  *     label: "Email Address",
- *     inputType: "email",
+ *     input_type: "email",
  *     required: true
  *   }
  * }
@@ -48,10 +50,10 @@ export function TextInputComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as TextInputComponentProps;
+	const { props } = component as TextInputComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
-	const defaultValue = props.defaultValue ? String(props.defaultValue) : "";
+	const defaultValue = props.default_value ? String(props.default_value) : "";
 
 	// Local state for the input value
 	const [value, setValue] = useState(defaultValue);
@@ -69,16 +71,16 @@ export function TextInputComponent({
 	// Update field value in context when value changes
 	useEffect(() => {
 		if (setFieldValue) {
-			setFieldValue(props.fieldId, value);
+			setFieldValue(props.field_id, value);
 		}
-	}, [props.fieldId, value, setFieldValue]);
+	}, [props.field_id, value, setFieldValue]);
 
 	// Initialize field value on mount
 	useEffect(() => {
 		if (setFieldValue && defaultValue) {
-			setFieldValue(props.fieldId, defaultValue);
+			setFieldValue(props.field_id, defaultValue);
 		}
-	}, [props.fieldId, defaultValue, setFieldValue]);
+	}, [props.field_id, defaultValue, setFieldValue]);
 
 	const handleChange = useCallback(
 		(e: React.ChangeEvent<HTMLInputElement>) => {
@@ -90,7 +92,7 @@ export function TextInputComponent({
 	const inputId = `field-${component.id}`;
 
 	return (
-		<div className={cn("space-y-2", props.className)}>
+		<div className={cn("space-y-2", props.class_name)}>
 			{label && (
 				<Label htmlFor={inputId}>
 					{label}
@@ -101,15 +103,15 @@ export function TextInputComponent({
 			)}
 			<Input
 				id={inputId}
-				type={props.inputType || "text"}
+				type={props.input_type || "text"}
 				value={value}
 				onChange={handleChange}
 				placeholder={placeholder}
 				disabled={isDisabled}
-				required={props.required}
-				minLength={props.minLength}
-				maxLength={props.maxLength}
-				pattern={props.pattern}
+				required={props.required ?? undefined}
+				minLength={props.min_length ?? undefined}
+				maxLength={props.max_length ?? undefined}
+				pattern={props.pattern ?? undefined}
 			/>
 		</div>
 	);

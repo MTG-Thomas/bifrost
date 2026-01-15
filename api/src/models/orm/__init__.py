@@ -29,7 +29,7 @@ from src.models.orm.organizations import Organization
 from src.models.orm.tables import Document, Table
 from src.models.orm.users import Role, User, UserRole
 from src.models.orm.workspace import WorkspaceFile
-from src.models.orm.workflow_access import WorkflowAccess
+from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import DataProvider, Workflow
 
 __all__ = [
@@ -72,7 +72,7 @@ __all__ = [
     # Workflows
     "Workflow",
     "DataProvider",
-    "WorkflowAccess",
+    "WorkflowRole",
     # OAuth
     "OAuthProvider",
     "OAuthToken",

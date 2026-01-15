@@ -26,8 +26,8 @@ import type {
 	LayoutContainer,
 	AppComponent,
 	NavigationConfig,
-} from "@/lib/app-builder-types";
-import { isLayoutContainer, getElementChildren } from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
+import { isLayoutContainer, getElementChildren } from "@/lib/app-builder-helpers";
 import {
 	createDefaultComponent,
 	insertIntoTree,
@@ -175,7 +175,7 @@ export function EditorShell({
 			return null;
 		}
 
-		return findComponent(currentPage.layout);
+		return findComponent(currentPage.layout as unknown as LayoutContainer);
 	}, [selectedComponentId, currentPage]);
 
 	// Update the definition with a new page layout
@@ -204,16 +204,16 @@ export function EditorShell({
 			const insertPosition = position === "inside" ? "inside" : position;
 
 			const updatedLayout = insertIntoTree(
-				currentPage.layout,
+				currentPage.layout as unknown as LayoutContainer,
 				elementToInsert,
 				parentId,
 				insertPosition,
 			);
 
-			updatePageLayout(currentPage.id, updatedLayout);
+			updatePageLayout(currentPage.id, updatedLayout as LayoutContainer);
 
 			// Select the newly added component (components have IDs, layouts don't need selection)
-			if (!isLayoutContainer(elementToInsert)) {
+			if (!isLayoutContainer(elementToInsert as unknown as LayoutContainer | AppComponent)) {
 				const componentId = (elementToInsert as AppComponent).id;
 				onSelectComponent(componentId);
 
@@ -253,14 +253,14 @@ export function EditorShell({
 			if (!currentPage) return;
 
 			const moveResult = moveInTree(
-				currentPage.layout,
+				currentPage.layout as unknown as LayoutContainer,
 				sourceId,
 				targetId,
 				position,
 			);
 
 			if (moveResult.moved) {
-				updatePageLayout(currentPage.id, moveResult.layout);
+				updatePageLayout(currentPage.id, moveResult.layout as LayoutContainer);
 
 				// Call granular move callback if provided
 				if (onComponentMove) {
@@ -290,7 +290,7 @@ export function EditorShell({
 			if (!currentPage) return;
 
 			// Find the element to duplicate
-			const found = findElementInTree(currentPage.layout, componentId);
+			const found = findElementInTree(currentPage.layout as unknown as LayoutContainer, componentId);
 			if (!found) return;
 
 			// Deep clone the element (and regenerate IDs)
@@ -314,16 +314,16 @@ export function EditorShell({
 
 			// Insert after the original
 			const updatedLayout = insertIntoTree(
-				currentPage.layout,
+				currentPage.layout as unknown as LayoutContainer,
 				cloned,
 				componentId,
 				"after",
 			);
 
-			updatePageLayout(currentPage.id, updatedLayout);
+			updatePageLayout(currentPage.id, updatedLayout as LayoutContainer);
 
 			// Select the new component
-			if (!isLayoutContainer(cloned)) {
+			if (!isLayoutContainer(cloned as unknown as LayoutContainer | AppComponent)) {
 				const newComponentId = (cloned as AppComponent).id;
 				onSelectComponent(newComponentId);
 
@@ -356,8 +356,8 @@ export function EditorShell({
 		(componentId: string) => {
 			if (!currentPage) return;
 
-			const { layout } = removeFromTree(currentPage.layout, componentId);
-			updatePageLayout(currentPage.id, layout);
+			const { layout } = removeFromTree(currentPage.layout as unknown as LayoutContainer, componentId);
+			updatePageLayout(currentPage.id, layout as LayoutContainer);
 
 			// Clear selection if deleted component was selected
 			if (selectedComponentId === componentId) {
@@ -431,11 +431,11 @@ export function EditorShell({
 			}
 
 			const updatedLayout = updateInTree(
-				currentPage.layout,
+				currentPage.layout as unknown as LayoutContainer,
 				selectedComponentId,
 				updates,
 			);
-			updatePageLayout(currentPage.id, updatedLayout);
+			updatePageLayout(currentPage.id, updatedLayout as LayoutContainer);
 
 			// Call granular update callback if provided
 			// Only for non-layout components (layout containers don't have a component_id)

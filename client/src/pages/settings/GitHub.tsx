@@ -364,6 +364,7 @@ export function GitHub() {
 				body: {
 					conflict_resolutions: resolutions,
 					confirm_orphans: confirmOrphans,
+					confirm_unresolved_refs: true,
 				},
 			});
 

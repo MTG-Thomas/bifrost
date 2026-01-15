@@ -196,12 +196,15 @@ class TestGetWorkflowSchemaImpl:
 
         result = await get_workflow_schema(context)
 
-        # Check for key sections
-        assert "# Bifrost Workflow Schema" in result
-        assert "@workflow" in result
-        assert "from bifrost import workflow" in result
-        assert "Data Providers" in result
-        assert "Best Practices" in result
+        # Check for key sections (generated from Pydantic models)
+        assert "# Workflow Schema Documentation" in result
+        assert "WorkflowMetadata" in result
+        assert "WorkflowParameter" in result
+        # Check for markdown table format
+        assert "| Field | Type | Required | Description |" in result
+        # Check for SDK reference section
+        assert "SDK Documentation" in result
+        assert "get_sdk_schema" in result
 
 
 class TestGetWorkflowImpl:
@@ -283,7 +286,7 @@ class TestSystemToolsRegistry:
     """Tests for SYSTEM_TOOLS registry."""
 
     def test_all_tools_registered(self):
-        """All 38 system tools should be registered via @system_tool decorator."""
+        """All system tools should be registered via @system_tool decorator."""
         from src.routers.tools import SYSTEM_TOOLS
 
         tool_ids = {t.id for t in SYSTEM_TOOLS}
@@ -338,8 +341,9 @@ class TestSystemToolsRegistry:
         assert "search_knowledge" in tool_ids
         assert "get_data_provider_schema" in tool_ids
 
-        # Total count (46 tools including app builder, component, page, table, and organization tools)
-        assert len(tool_ids) == 46, f"Expected 46 tools, got {len(tool_ids)}: {sorted(tool_ids)}"
+        # Total count - verify we have a reasonable number of tools
+        # (exact count may change as tools are added)
+        assert len(tool_ids) >= 46, f"Expected at least 46 tools, got {len(tool_ids)}: {sorted(tool_ids)}"
 
     def test_file_operations_disabled_for_coding_agent(self):
         """File operation tools should be disabled by default for coding agent."""

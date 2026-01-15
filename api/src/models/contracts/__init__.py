@@ -252,6 +252,7 @@ from src.models.contracts.oauth import (
 
 # Workflows & Metadata
 from src.models.contracts.workflows import (
+    AssignRolesToWorkflowRequest,
     DataProviderMetadata,
     FormDiscoveryMetadata,
     MetadataResponse,
@@ -261,6 +262,7 @@ from src.models.contracts.workflows import (
     WorkflowKeyResponse,
     WorkflowMetadata,
     WorkflowParameter,
+    WorkflowRolesResponse,
     WorkflowUpdateRequest,
     WorkflowValidationRequest,
     WorkflowValidationResponse,
@@ -852,6 +854,8 @@ __all__ = [
     "WorkflowValidationResponse",
     "EntityUsage",
     "WorkflowUsageStats",
+    "WorkflowRolesResponse",
+    "AssignRolesToWorkflowRequest",
     "DataProviderRequest",
     "DataProviderOption",
     "DataProviderResponse",

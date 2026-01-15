@@ -27,6 +27,5 @@ class ProfileResponse(BaseModel):
     email: str
     name: str | None
     has_avatar: bool
-    user_type: str
     organization_id: UUID | None
     is_superuser: bool

@@ -6,7 +6,6 @@ interface UserDetails {
 	id: string;
 	email: string;
 	name: string;
-	user_type: "PLATFORM" | "ORG";
 	is_superuser: boolean;
 	is_active: boolean;
 	is_verified: boolean;
@@ -48,7 +47,7 @@ export function useUserPermissions() {
 	return {
 		userDetails,
 		isPlatformAdmin: userDetails?.is_superuser ?? false,
-		isOrgUser: userDetails?.user_type === "ORG",
+		isOrgUser: !userDetails?.is_superuser && userDetails?.organization_id != null,
 		isLoading: authLoading || detailsLoading,
 		error,
 		hasAccess: !!userDetails && !error,

@@ -40,7 +40,7 @@ function EditUserDialogContent({
 	const [displayName, setDisplayName] = useState(user.name || "");
 	const [isActive, setIsActive] = useState(user.is_active);
 	const [isPlatformUser, setIsPlatformUser] = useState(
-		user.user_type === "PLATFORM",
+		user.is_superuser,
 	);
 	const [isSuperuser, setIsSuperuser] = useState(user.is_superuser);
 	const [orgId, setOrgId] = useState<string>(user.organization_id || "");
@@ -61,9 +61,9 @@ function EditUserDialogContent({
 	// Check if editing own account
 	const isEditingSelf = !!(currentUser && user.id === currentUser.id);
 
-	const isRoleChanging = (user.user_type === "PLATFORM") !== isPlatformUser;
-	const isDemoting = user.user_type === "PLATFORM" && !isPlatformUser;
-	const isPromoting = user.user_type !== "PLATFORM" && isPlatformUser;
+	const isRoleChanging = user.is_superuser !== isPlatformUser;
+	const isDemoting = user.is_superuser && !isPlatformUser;
+	const isPromoting = !user.is_superuser && isPlatformUser;
 
 	// Auto-select provider org when promoting to platform user
 	const handleUserTypeChange = (value: string) => {
@@ -107,6 +107,7 @@ function EditUserDialogContent({
 
 		// Build request body with all fields (nulls for unchanged)
 		// When editing self, only allow displayName changes
+		// Note: is_superuser now determines platform admin status (user_type was removed)
 		const body = {
 			name:
 				displayName.trim() !== (user.name || "")
@@ -114,17 +115,9 @@ function EditUserDialogContent({
 					: null,
 			is_active:
 				!isEditingSelf && isActive !== user.is_active ? isActive : null,
-			user_type:
+			is_superuser:
 				!isEditingSelf && isRoleChanging
 					? isPlatformUser
-						? "PLATFORM"
-						: "ORG"
-					: null,
-			is_superuser:
-				!isEditingSelf &&
-				isPlatformUser &&
-				isSuperuser !== user.is_superuser
-					? isSuperuser
 					: null,
 			organization_id:
 				!isEditingSelf && isDemoting ? orgId || null : null,
@@ -134,7 +127,6 @@ function EditUserDialogContent({
 		if (
 			body.name === null &&
 			body.is_active === null &&
-			body.user_type === null &&
 			body.is_superuser === null &&
 			body.organization_id === null
 		) {

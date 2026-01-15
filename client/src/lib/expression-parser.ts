@@ -5,7 +5,7 @@
  * Supports dot notation for nested property access and basic operators.
  */
 
-import type { ExpressionContext } from "./app-builder-types";
+import type { ExpressionContext } from "@/types/app-builder";
 
 /**
  * Regular expression to match template expressions {{ ... }}
@@ -61,7 +61,7 @@ function getNestedValue(obj: unknown, path: string): unknown {
  * - {{ user.name }} - user info
  * - {{ variables.selectedId }} - page variables
  * - {{ field.customerName }} - form field values
- * - {{ workflow.<dataSourceId>.result }} - workflow result (e.g., workflow.get_client.result.clients)
+ * - {{ workflow.<dataSourceId> }} - workflow result (e.g., workflow.get_client.clients for nested access)
  * - {{ row.id }} - current row in table row click handlers
  * - {{ params.id }} - route parameters from URL
  */

@@ -383,8 +383,6 @@ async def update_app(
     name: str | None = None,
     description: str | None = None,
     navigation: dict[str, Any] | None = None,
-    global_data_sources: list[dict[str, Any]] | None = None,
-    global_variables: dict[str, Any] | None = None,
 ) -> str:
     """
     Update application metadata only.
@@ -435,14 +433,6 @@ async def update_app(
             if navigation is not None:
                 app.navigation = navigation
                 updates_made.append("navigation")
-
-            if global_data_sources is not None:
-                app.global_data_sources = global_data_sources
-                updates_made.append("global_data_sources")
-
-            if global_variables is not None:
-                app.global_variables = global_variables
-                updates_made.append("global_variables")
 
             if not updates_made:
                 return json.dumps({"error": "No updates specified"})

@@ -24,9 +24,53 @@ from src.models.orm import (
     AppComponent,
     Form,
     Workflow,
-    WorkflowAccess,
 )
-from src.services.workflow_access_service import _extract_workflows_from_props
+
+
+def _extract_workflows_from_props(obj: dict | list | str | int | None) -> set[UUID]:
+    """
+    Recursively find all workflowId and dataProviderId values in a nested dict/list.
+
+    Handles all nested patterns including:
+    - props.workflowId
+    - props.onClick.workflowId
+    - props.rowActions[].onClick.workflowId
+    - Any other nested structure
+
+    Args:
+        obj: Nested dict, list, or primitive
+
+    Returns:
+        Set of workflow UUIDs found
+    """
+    workflows: set[UUID] = set()
+
+    if isinstance(obj, dict):
+        # Check for workflowId key
+        if wf_id := obj.get("workflowId"):
+            if isinstance(wf_id, str):
+                try:
+                    workflows.add(UUID(wf_id))
+                except ValueError:
+                    pass
+
+        # Check for dataProviderId key
+        if dp_id := obj.get("dataProviderId"):
+            if isinstance(dp_id, str):
+                try:
+                    workflows.add(UUID(dp_id))
+                except ValueError:
+                    pass
+
+        # Recurse into all values
+        for value in obj.values():
+            workflows.update(_extract_workflows_from_props(value))
+
+    elif isinstance(obj, list):
+        for item in obj:
+            workflows.update(_extract_workflows_from_props(item))
+
+    return workflows
 
 
 EntityType = Literal["workflow", "form", "app", "agent"]
@@ -175,6 +219,62 @@ class DependencyGraphService:
 
         return graph
 
+    async def _app_uses_workflow(
+        self,
+        app: Application,
+        workflow_id: UUID,
+    ) -> bool:
+        """
+        Check if an application uses a specific workflow.
+
+        Checks pages (launch_workflow_id, data_sources) and components (props).
+        """
+        if not app.active_version_id:
+            return False
+
+        # Get pages for the active version
+        pages_result = await self.db.execute(
+            select(AppPage).where(AppPage.version_id == app.active_version_id)
+        )
+        pages = pages_result.scalars().all()
+
+        for page in pages:
+            # Check launch workflow
+            if page.launch_workflow_id == workflow_id:
+                return True
+
+            # Check data sources
+            for ds in page.data_sources or []:
+                if ds.get("workflowId") == str(workflow_id):
+                    return True
+                if ds.get("dataProviderId") == str(workflow_id):
+                    return True
+
+        # Get components for those pages
+        page_ids = [p.id for p in pages]
+        if not page_ids:
+            return False
+
+        components_result = await self.db.execute(
+            select(AppComponent).where(AppComponent.page_id.in_(page_ids))
+        )
+        components = components_result.scalars().all()
+
+        for comp in components:
+            # Check loading_workflows
+            for wf_id in comp.loading_workflows or []:
+                try:
+                    if UUID(wf_id) == workflow_id:
+                        return True
+                except ValueError:
+                    pass
+
+            # Check props recursively
+            if workflow_id in _extract_workflows_from_props(comp.props or {}):
+                return True
+
+        return False
+
     async def _fetch_entity_node(
         self,
         entity_type: EntityType,
@@ -250,20 +350,33 @@ class DependencyGraphService:
 
         if entity_type == "workflow":
             # Workflows are USED BY forms, apps, and agents
-            # Use workflow_access table for reverse lookups
-            result = await self.db.execute(
-                select(WorkflowAccess).where(
-                    WorkflowAccess.workflow_id == entity_id
+            # Query entities directly for reverse lookups
+
+            # Check forms that reference this workflow
+            forms_result = await self.db.execute(
+                select(Form.id).where(
+                    Form.is_active.is_(True),
+                    (
+                        (Form.workflow_id == str(entity_id))
+                        | (Form.launch_workflow_id == str(entity_id))
+                    ),
                 )
             )
-            accesses = result.scalars().all()
-            for access in accesses:
-                if access.entity_type == "form":
-                    dependencies.append(("form", access.entity_id, "used_by"))
-                elif access.entity_type == "app":
-                    dependencies.append(("app", access.entity_id, "used_by"))
+            for form_id in forms_result.scalars().all():
+                dependencies.append(("form", form_id, "used_by"))
 
-            # Also check agents directly (via agent_tools)
+            # Check apps that might reference this workflow (via pages/components)
+            # This is expensive but dependency graph is rarely called
+            apps_result = await self.db.execute(
+                select(Application).options(selectinload(Application.active_version))
+            )
+            for app in apps_result.scalars().all():
+                if app.active_version_id:
+                    # Check if this app uses the workflow
+                    if await self._app_uses_workflow(app, entity_id):
+                        dependencies.append(("app", app.id, "used_by"))
+
+            # Check agents directly (via agent_tools)
             result = await self.db.execute(
                 select(AgentTool.agent_id).where(
                     AgentTool.workflow_id == entity_id
@@ -368,23 +481,6 @@ class DependencyGraphService:
                     # Props (recursive extraction)
                     for wf_id in _extract_workflows_from_props(comp.props or {}):
                         dependencies.append(("workflow", wf_id, "uses"))
-
-                # Also check global data sources
-                for ds in app.global_data_sources or []:
-                    if wf_id := ds.get("workflowId"):
-                        try:
-                            dependencies.append(
-                                ("workflow", UUID(wf_id), "uses")
-                            )
-                        except ValueError:
-                            pass
-                    if dp_id := ds.get("dataProviderId"):
-                        try:
-                            dependencies.append(
-                                ("workflow", UUID(dp_id), "uses")
-                            )
-                        except ValueError:
-                            pass
 
         elif entity_type == "agent":
             # Agents USE workflows (via agent_tools)

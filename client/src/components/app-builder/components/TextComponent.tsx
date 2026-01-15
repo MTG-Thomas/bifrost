@@ -6,7 +6,9 @@
  */
 
 import { cn } from "@/lib/utils";
-import type { TextComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type TextComponent = components["schemas"]["TextComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 
 /**
@@ -27,13 +29,13 @@ import type { RegisteredComponentProps } from "../ComponentRegistry";
  * }
  */
 export function TextComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as TextComponentProps;
+	const { props } = component as TextComponent;
 	// Props are pre-evaluated by ComponentRegistry
 	const text = String(props?.text ?? "");
 	const label = props?.label ? String(props.label) : undefined;
 
 	return (
-		<div className={cn("space-y-1", props?.className)}>
+		<div className={cn("space-y-1", props?.class_name)}>
 			{label && (
 				<p className="text-sm font-medium text-muted-foreground">
 					{label}

@@ -6,13 +6,57 @@
  */
 
 import type { ComponentType as ReactComponentType } from "react";
-import type {
-	ComponentType,
-	AppComponent,
-	ExpressionContext,
-} from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+import type { ExpressionContext } from "@/types/app-builder";
 import { evaluateComponentProps } from "@/lib/expression-parser";
 import { Skeleton } from "@/components/ui/skeleton";
+
+// Type aliases for generated API types
+type AppComponent =
+	| components["schemas"]["HeadingComponent"]
+	| components["schemas"]["TextComponent"]
+	| components["schemas"]["HtmlComponent"]
+	| components["schemas"]["CardComponent"]
+	| components["schemas"]["DividerComponent"]
+	| components["schemas"]["SpacerComponent"]
+	| components["schemas"]["ButtonComponent"]
+	| components["schemas"]["StatCardComponent"]
+	| components["schemas"]["ImageComponent"]
+	| components["schemas"]["BadgeComponent"]
+	| components["schemas"]["ProgressComponent"]
+	| components["schemas"]["DataTableComponent"]
+	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["FileViewerComponent"]
+	| components["schemas"]["ModalComponent"]
+	| components["schemas"]["TextInputComponent"]
+	| components["schemas"]["NumberInputComponent"]
+	| components["schemas"]["SelectComponent"]
+	| components["schemas"]["CheckboxComponent"]
+	| components["schemas"]["FormEmbedComponent"]
+	| components["schemas"]["FormGroupComponent"];
+
+type ComponentType =
+	| "heading"
+	| "text"
+	| "html"
+	| "card"
+	| "divider"
+	| "spacer"
+	| "button"
+	| "stat-card"
+	| "image"
+	| "badge"
+	| "progress"
+	| "data-table"
+	| "tabs"
+	| "file-viewer"
+	| "modal"
+	| "text-input"
+	| "number-input"
+	| "select"
+	| "checkbox"
+	| "form-embed"
+	| "form-group";
 
 /**
  * Props passed to each registered component
@@ -181,17 +225,17 @@ function ComponentSkeleton({
  * Check if any of the specified workflows are currently active
  */
 function isWorkflowLoading(
-	loadingWorkflows: string[] | undefined,
+	loading_workflows: string[] | null | undefined,
 	activeWorkflows: Set<string> | undefined,
 ): boolean {
 	if (
-		!loadingWorkflows ||
-		loadingWorkflows.length === 0 ||
+		!loading_workflows ||
+		loading_workflows.length === 0 ||
 		!activeWorkflows
 	) {
 		return false;
 	}
-	return loadingWorkflows.some((wfId) => activeWorkflows.has(wfId));
+	return loading_workflows.some((wfId) => activeWorkflows.has(wfId));
 }
 
 /**
@@ -206,7 +250,7 @@ function isWorkflowLoading(
  * handlers are evaluated at runtime). See NON_EVALUABLE_PROPS in
  * expression-parser.ts for the full list.
  *
- * If the component has `loadingWorkflows` specified and any of those
+ * If the component has `loading_workflows` specified and any of those
  * workflows are currently executing, a loading skeleton is shown instead.
  *
  * @param component - The component definition
@@ -219,7 +263,7 @@ export function renderRegisteredComponent(
 ): React.ReactElement {
 	// Check if component should show loading skeleton
 	if (
-		isWorkflowLoading(component.loadingWorkflows, context.activeWorkflows)
+		isWorkflowLoading(component.loading_workflows, context.activeWorkflows)
 	) {
 		return <ComponentSkeleton key={component.id} type={component.type} />;
 	}

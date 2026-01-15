@@ -60,40 +60,25 @@ export {
 	registerBasicComponents,
 } from "./components";
 
-// Re-export types from lib for convenience
+// Re-export types from @/types/app-builder for convenience
 export type {
-	ComponentType,
-	ComponentWidth,
-	ButtonActionType,
-	HeadingLevel,
-	LayoutAlign,
-	LayoutJustify,
-	LayoutType,
 	ExpressionUser,
 	ExpressionContext,
-	BaseComponentProps,
-	HeadingComponentProps,
-	TextComponentProps,
-	CardComponentProps,
-	DividerComponentProps,
-	SpacerComponentProps,
-	ButtonComponentProps,
-	StatCardComponentProps,
-	ImageComponentProps,
-	BadgeComponentProps,
-	ProgressComponentProps,
-	DataTableComponentProps,
-	TabsComponentProps,
-	TableColumn,
-	TableAction,
-	TabItem,
-	AppComponent,
 	LayoutContainer,
 	PageDefinition,
 	ApplicationDefinition,
-} from "@/lib/app-builder-types";
+	WorkflowResult,
+	NavItem,
+	NavigationConfig,
+	RepeatFor,
+	OnCompleteAction,
+} from "@/types/app-builder";
 
-export { isLayoutContainer, isAppComponent } from "@/lib/app-builder-types";
+// Re-export from API types
+export type { components } from "@/lib/v1";
+
+// Re-export utility functions
+export { isLayoutContainer, isAppComponent, canHaveChildren, getElementChildren, CONTAINER_TYPES } from "@/lib/app-builder-utils";
 
 // Re-export expression utilities
 export {

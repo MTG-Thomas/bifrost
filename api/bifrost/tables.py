@@ -452,11 +452,11 @@ class tables:
             app: Application UUID
 
         Returns:
-            DocumentList: Query results with documents, total count, and pagination info
+            DocumentList: Query results with documents, total count, and pagination info.
+            Returns empty list if table doesn't exist.
 
         Raises:
             RuntimeError: If not authenticated
-            HTTPError: If table not found (404)
 
         Example:
             >>> from bifrost import tables
@@ -491,6 +491,9 @@ class tables:
                 "offset": offset,
             }
         )
+        # Return empty result if table doesn't exist
+        if response.status_code == 404:
+            return DocumentList(documents=[], total=0, limit=limit, offset=offset)
         response.raise_for_status()
         return DocumentList.model_validate(response.json())
 
@@ -511,11 +514,10 @@ class tables:
             app: Application UUID
 
         Returns:
-            int: Number of matching documents
+            int: Number of matching documents. Returns 0 if table doesn't exist.
 
         Raises:
             RuntimeError: If not authenticated
-            HTTPError: If table not found (404)
 
         Example:
             >>> from bifrost import tables
@@ -523,6 +525,10 @@ class tables:
             >>> active = await tables.count("customers", where={"status": "active"})
             >>> high_value = await tables.count("customers", where={"revenue": {"gte": 10000}})
         """
+        # Note: where filter is not currently supported by the count endpoint
+        # but is included for API consistency with query()
+        _ = where  # Reserved for future use
+        _ = app  # Reserved for future use
         client = get_client()
         effective_scope = _resolve_scope(scope)
         params = {}
@@ -532,6 +538,9 @@ class tables:
             f"/api/tables/{_encode_table_name(table)}/documents/count",
             params=params,
         )
+        # Return 0 if table doesn't exist
+        if response.status_code == 404:
+            return 0
         response.raise_for_status()
         data = response.json()
         return data.get("count", 0)

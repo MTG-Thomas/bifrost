@@ -51,6 +51,7 @@ class WorkflowExecution(BaseModel):
     execution_id: str
     workflow_name: str
     org_id: str | None = None  # Organization ID for display/filtering
+    org_name: str | None = None  # Organization name for display (effective scope)
     form_id: str | None = None
     executed_by: str
     executed_by_name: str  # Display name of user who executed

@@ -6,7 +6,9 @@
 
 import { cn } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { TabsComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type TabsComponent = components["schemas"]["TabsComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { LayoutRenderer } from "../LayoutRenderer";
 
@@ -14,7 +16,7 @@ export function TabsComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as TabsComponentProps;
+	const { props } = component as TabsComponent;
 
 	// Guard against undefined props or items
 	// Support both 'items' and 'tabs' for backward compatibility
@@ -23,14 +25,14 @@ export function TabsComponent({
 		return null;
 	}
 
-	const defaultTab = props?.defaultTab || items[0]?.id;
+	const defaultTab = props?.default_tab || items[0]?.id;
 	const isVertical = props?.orientation === "vertical";
 
 	return (
 		<Tabs
 			defaultValue={defaultTab}
-			className={cn(isVertical && "flex gap-4", props?.className)}
-			orientation={props?.orientation}
+			className={cn(isVertical && "flex gap-4", props?.class_name)}
+			orientation={props?.orientation ?? undefined}
 		>
 			<TabsList
 				className={cn(

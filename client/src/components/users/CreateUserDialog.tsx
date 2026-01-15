@@ -86,7 +86,6 @@ function CreateUserDialogContent({
 					name: displayName.trim(),
 					is_active: true,
 					is_superuser: isPlatformAdmin,
-					user_type: isPlatformAdmin ? "PLATFORM" : "ORG",
 					organization_id: orgId || null,
 				},
 			});

@@ -15,6 +15,8 @@ import {
 	Building2,
 	Pencil,
 	Unlink,
+	Shield,
+	Users,
 } from "lucide-react";
 import { useIsDesktop } from "@/hooks/useMediaQuery";
 import type { CategoryCount } from "@/components/workflows/WorkflowSidebar";
@@ -26,14 +28,6 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogFooter,
-	DialogHeader,
-	DialogTitle,
-} from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -45,23 +39,31 @@ import {
 	DataTableHeader,
 	DataTableRow,
 } from "@/components/ui/data-table";
-import { useWorkflowsFiltered, useUpdateWorkflow } from "@/hooks/useWorkflows";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useWorkflowsFiltered } from "@/hooks/useWorkflows";
 import { useWorkflowKeys } from "@/hooks/useWorkflowKeys";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { HttpTriggerDialog } from "@/components/workflows/HttpTriggerDialog";
 import { OrphanedWorkflowDialog } from "@/components/workflows/OrphanedWorkflowDialog";
+import { WorkflowEditDialog } from "@/components/workflows/WorkflowEditDialog";
 import { WorkflowSidebar } from "@/components/workflows/WorkflowSidebar";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
-import { toast } from "sonner";
 import type { components } from "@/lib/v1";
 
-// Extend WorkflowMetadata with is_orphaned field (may not be in generated types yet)
+// Extend WorkflowMetadata with fields that may not be in generated types yet
 type BaseWorkflow = components["schemas"]["WorkflowMetadata"];
-type Workflow = BaseWorkflow & { is_orphaned?: boolean };
+type Workflow = BaseWorkflow & {
+	is_orphaned?: boolean;
+	access_level?: "authenticated" | "role_based";
+};
 type Organization = components["schemas"]["OrganizationPublic"];
 
 export function Workflows() {
@@ -69,7 +71,6 @@ export function Workflows() {
 	const { scope, isGlobalScope } = useOrgScope();
 	const { isPlatformAdmin } = useAuth();
 	const { data: apiKeys } = useWorkflowKeys({ includeRevoked: false });
-	const updateWorkflow = useUpdateWorkflow();
 	const isDesktop = useIsDesktop();
 
 	// Filter state
@@ -90,11 +91,9 @@ export function Workflows() {
 		setSidebarOpen(isDesktop);
 	}, [isDesktop]);
 
-	// Edit org scope dialog state
-	const [editOrgDialogOpen, setEditOrgDialogOpen] = useState(false);
+	// Edit workflow dialog state
+	const [editDialogOpen, setEditDialogOpen] = useState(false);
 	const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null);
-	const [editOrgId, setEditOrgId] = useState<string | null | undefined>(undefined);
-	const [isUpdating, setIsUpdating] = useState(false);
 
 	// Orphaned workflow dialog state
 	const [orphanedDialogOpen, setOrphanedDialogOpen] = useState(false);
@@ -184,43 +183,14 @@ export function Workflows() {
 		setWebhookDialogOpen(true);
 	};
 
-	const handleEditOrgScope = (workflow: Workflow) => {
+	const handleEditWorkflow = (workflow: Workflow) => {
 		setEditingWorkflow(workflow);
-		// Convert organization_id to the format expected by OrganizationSelect
-		// null means global, string means specific org
-		setEditOrgId(workflow.organization_id ?? null);
-		setEditOrgDialogOpen(true);
+		setEditDialogOpen(true);
 	};
 
 	const handleOpenOrphanedDialog = (workflow: Workflow) => {
 		setOrphanedWorkflow(workflow);
 		setOrphanedDialogOpen(true);
-	};
-
-	const handleSaveOrgScope = async () => {
-		if (!editingWorkflow?.id) return;
-
-		setIsUpdating(true);
-		try {
-			// OrganizationSelect uses:
-			// - undefined for "All" (show all)
-			// - null for "Global"
-			// - string for specific org
-			// For saving, we convert undefined to null (global)
-			const orgIdToSave = editOrgId === undefined ? null : editOrgId;
-			await updateWorkflow.mutateAsync(editingWorkflow.id, orgIdToSave);
-			toast.success(
-				`Workflow "${editingWorkflow.name}" updated to ${orgIdToSave ? getOrgName(orgIdToSave) : "Global"} scope`,
-			);
-			setEditOrgDialogOpen(false);
-			setEditingWorkflow(null);
-		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to update workflow",
-			);
-		} finally {
-			setIsUpdating(false);
-		}
 	};
 
 	return (
@@ -423,7 +393,7 @@ export function Workflows() {
 														variant="ghost"
 														size="icon-sm"
 														onClick={() =>
-															handleEditOrgScope(workflow)
+															handleEditWorkflow(workflow)
 														}
 														title="Edit organization scope"
 													>
@@ -444,7 +414,7 @@ export function Workflows() {
 										</CardHeader>
 
 										<CardContent className="pt-0 mt-auto space-y-3">
-											{/* Metadata line: Category + Scope */}
+											{/* Metadata line: Category + Scope + Access Level */}
 											<div className="flex items-center gap-2 text-xs text-muted-foreground">
 												{workflow.category && (
 													<span>{workflow.category}</span>
@@ -466,6 +436,33 @@ export function Workflows() {
 															</>
 														)}
 													</span>
+												)}
+												{isPlatformAdmin && workflow.access_level && (
+													<>
+														<span>·</span>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<span className="flex items-center gap-1 cursor-help">
+																	{workflow.access_level === "authenticated" ? (
+																		<>
+																			<Users className="h-3 w-3" />
+																			Auth
+																		</>
+																	) : (
+																		<>
+																			<Shield className="h-3 w-3" />
+																			Roles
+																		</>
+																	)}
+																</span>
+															</TooltipTrigger>
+															<TooltipContent>
+																{workflow.access_level === "authenticated"
+																	? "Any authenticated user can execute"
+																	: "Role-based access required"}
+															</TooltipContent>
+														</Tooltip>
+													</>
 												)}
 											</div>
 
@@ -576,6 +573,9 @@ export function Workflows() {
 											<DataTableHead className="text-right">
 												Parameters
 											</DataTableHead>
+											{isPlatformAdmin && (
+												<DataTableHead>Access</DataTableHead>
+											)}
 											<DataTableHead>Status</DataTableHead>
 											<DataTableHead className="text-right">
 												<span className="sr-only">Actions</span>
@@ -621,6 +621,39 @@ export function Workflows() {
 												<DataTableCell className="text-right">
 													{workflow.parameters?.length ?? 0}
 												</DataTableCell>
+												{isPlatformAdmin && (
+													<DataTableCell>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<Badge
+																	variant={
+																		workflow.access_level === "authenticated"
+																			? "secondary"
+																			: "outline"
+																	}
+																	className="text-xs cursor-help"
+																>
+																	{workflow.access_level === "authenticated" ? (
+																		<>
+																			<Users className="mr-1 h-2 w-2" />
+																			Auth
+																		</>
+																	) : (
+																		<>
+																			<Shield className="mr-1 h-2 w-2" />
+																			Roles
+																		</>
+																	)}
+																</Badge>
+															</TooltipTrigger>
+															<TooltipContent>
+																{workflow.access_level === "authenticated"
+																	? "Any authenticated user can execute"
+																	: "Role-based access required"}
+															</TooltipContent>
+														</Tooltip>
+													</DataTableCell>
+												)}
 												<DataTableCell>
 													<div className="flex items-center gap-1">
 														{workflow.is_orphaned && (
@@ -717,7 +750,7 @@ export function Workflows() {
 																variant="outline"
 																size="sm"
 																onClick={() =>
-																	handleEditOrgScope(workflow)
+																	handleEditWorkflow(workflow)
 																}
 																title="Edit organization scope"
 															>
@@ -782,39 +815,13 @@ export function Workflows() {
 				/>
 			)}
 
-			{/* Edit Organization Scope Dialog */}
-			<Dialog open={editOrgDialogOpen} onOpenChange={setEditOrgDialogOpen}>
-				<DialogContent>
-					<DialogHeader>
-						<DialogTitle>Edit Workflow Organization Scope</DialogTitle>
-						<DialogDescription>
-							Change the organization scope for "{editingWorkflow?.name}".
-							Global workflows are available to all organizations.
-						</DialogDescription>
-					</DialogHeader>
-					<div className="py-4">
-						<OrganizationSelect
-							value={editOrgId}
-							onChange={setEditOrgId}
-							showAll={false}
-							showGlobal={true}
-							placeholder="Select organization..."
-						/>
-					</div>
-					<DialogFooter>
-						<Button
-							variant="outline"
-							onClick={() => setEditOrgDialogOpen(false)}
-							disabled={isUpdating}
-						>
-							Cancel
-						</Button>
-						<Button onClick={handleSaveOrgScope} disabled={isUpdating}>
-							{isUpdating ? "Saving..." : "Save"}
-						</Button>
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
+			{/* Workflow Edit Dialog */}
+			<WorkflowEditDialog
+				workflow={editingWorkflow}
+				open={editDialogOpen}
+				onOpenChange={setEditDialogOpen}
+				onSuccess={() => refetch()}
+			/>
 		</div>
 	);
 }

@@ -63,6 +63,9 @@ class WorkflowMetadata(BaseModel):
     # Organization scoping - NULL means global (available to all orgs)
     organization_id: str | None = Field(default=None, description="Organization ID if org-scoped, None for global")
 
+    # Access control
+    access_level: str = Field(default="role_based", description="Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required)")
+
     # Optional fields with defaults
     category: str = Field(default="General", description="Category for organization")
     tags: list[str] = Field(default_factory=list, description="Tags for categorization and search")
@@ -232,3 +235,20 @@ class WorkflowUpdateRequest(BaseModel):
         default=None,
         description="Organization ID to scope the workflow to, or null for global scope"
     )
+    access_level: str | None = Field(
+        default=None,
+        description="Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required)"
+    )
+
+
+# ==================== WORKFLOW ROLE ACCESS CONTROL ====================
+
+
+class WorkflowRolesResponse(BaseModel):
+    """Response model for getting roles assigned to a workflow."""
+    role_ids: list[str] = Field(..., description="List of role IDs assigned to the workflow")
+
+
+class AssignRolesToWorkflowRequest(BaseModel):
+    """Request model for assigning roles to a workflow."""
+    role_ids: list[str] = Field(..., min_length=1, description="List of role IDs to assign")

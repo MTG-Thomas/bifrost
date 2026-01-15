@@ -65,7 +65,6 @@ from src.models.contracts import *  # noqa: F401, F403
 # Enums
 from src.models.enums import (
     ExecutionStatus,
-    UserType,
     FormAccessLevel,
     FormFieldType,
     ConfigType,
@@ -120,7 +119,6 @@ __all__ = [
     "DeveloperContext",
     # Enums
     "ExecutionStatus",
-    "UserType",
     "FormAccessLevel",
     "FormFieldType",
     "ConfigType",

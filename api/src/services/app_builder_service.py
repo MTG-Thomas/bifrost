@@ -843,8 +843,6 @@ class AppBuilderService:
             "description": app.description,
             "icon": app.icon,
             "navigation": app.navigation,
-            "globalDataSources": app.global_data_sources,
-            "globalVariables": app.global_variables,
             "permissions": app.permissions,
             "pages": exported_pages,
             "exportVersion": "1.0",
@@ -867,8 +865,6 @@ class AppBuilderService:
             organization_id=organization_id,
             created_by=created_by,
             navigation=data.get("navigation", {}),
-            global_data_sources=data.get("globalDataSources", []),
-            global_variables=data.get("globalVariables", {}),
             permissions=data.get("permissions", {}),
         )
         self.session.add(app)

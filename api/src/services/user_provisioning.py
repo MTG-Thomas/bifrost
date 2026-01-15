@@ -17,7 +17,6 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import User
-from src.models.enums import UserType
 from src.repositories.organizations import OrganizationRepository
 from src.repositories.users import UserRepository
 
@@ -26,10 +25,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ProvisioningResult:
-    """Result of user provisioning attempt."""
+    """Result of user provisioning attempt.
+
+    User type is now derived from is_superuser + organization_id:
+    - is_superuser=True, org_id=UUID: Platform admin in an org
+    - is_superuser=False, org_id=UUID: Regular org user
+    - is_superuser=True, org_id=None: System account (global scope)
+    """
 
     user: User
-    user_type: UserType
     is_platform_admin: bool
     organization_id: UUID | None
     was_created: bool
@@ -87,7 +91,6 @@ async def ensure_user_provisioned(
         logger.info(f"Found existing user: {email}")
         return ProvisioningResult(
             user=user,
-            user_type=user.user_type,
             is_platform_admin=user.is_superuser,
             organization_id=user.organization_id,
             was_created=False,
@@ -116,7 +119,6 @@ async def ensure_user_provisioned(
 
         return ProvisioningResult(
             user=user,
-            user_type=UserType.PLATFORM,
             is_platform_admin=True,
             organization_id=user.organization_id,  # PROVIDER_ORG_ID assigned by create_user
             was_created=True,
@@ -155,7 +157,6 @@ async def ensure_user_provisioned(
 
     return ProvisioningResult(
         user=user,
-        user_type=UserType.ORG,
         is_platform_admin=False,
         organization_id=matched_org.id,
         was_created=True,

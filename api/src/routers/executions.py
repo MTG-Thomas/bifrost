@@ -13,6 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 # Import existing Pydantic models for API compatibility
 from src.models import (
@@ -62,7 +63,7 @@ class ExecutionRepository:
         offset: int = 0,
     ) -> tuple[list[WorkflowExecution], str | None]:
         """List executions with filtering."""
-        query = select(ExecutionModel)
+        query = select(ExecutionModel).options(selectinload(ExecutionModel.organization))
 
         # Organization scoping
         if org_id:
@@ -138,9 +139,11 @@ class ExecutionRepository:
         Returns:
             Tuple of (execution, error_code) where error_code is None on success
         """
-        # 1. Fetch base execution
+        # 1. Fetch base execution with organization for effective scope display
         result = await self.db.execute(
-            select(ExecutionModel).where(ExecutionModel.id == execution_id)
+            select(ExecutionModel)
+            .options(selectinload(ExecutionModel.organization))
+            .where(ExecutionModel.id == execution_id)
         )
         execution = result.scalar_one_or_none()
 
@@ -220,10 +223,17 @@ class ExecutionRepository:
             )
 
         # 5. Build response with conditional admin-only fields
+        # Determine org_name for effective scope display
+        if execution.organization_id:
+            org_name = execution.organization.name if execution.organization else None
+        else:
+            org_name = "Global"
+
         return WorkflowExecution(
             execution_id=str(execution.id),
             workflow_name=execution.workflow_name,
             org_id=str(execution.organization_id) if execution.organization_id else None,
+            org_name=org_name,
             form_id=str(execution.form_id) if execution.form_id else None,
             executed_by=str(execution.executed_by),
             executed_by_name=execution.executed_by_name or str(execution.executed_by),
@@ -397,10 +407,22 @@ class ExecutionRepository:
                   fields (variables) are gated based on is_superuser.
         """
         is_admin = user.is_superuser if user else False
+        # Determine org_name: use organization relationship if loaded, otherwise None for global
+        org_name: str | None = None
+        if execution.organization_id:
+            # Try to get name from loaded relationship, fall back to "Unknown" if not loaded
+            if hasattr(execution, 'organization') and execution.organization is not None:
+                org_name = execution.organization.name
+            else:
+                org_name = None  # Will be populated by caller if needed
+        else:
+            org_name = "Global"  # No org_id means global scope
+
         return WorkflowExecution(
             execution_id=str(execution.id),
             workflow_name=execution.workflow_name,
             org_id=str(execution.organization_id) if execution.organization_id else None,
+            org_name=org_name,
             form_id=str(execution.form_id) if execution.form_id else None,
             executed_by=str(execution.executed_by),
             executed_by_name=execution.executed_by_name or str(execution.executed_by),
@@ -437,7 +459,7 @@ async def list_executions(
         "or org UUID for specific org + global."
     ),
     workflowName: str | None = Query(None, description="Filter by workflow name"),
-    status: str | None = Query(None, description="Filter by execution status"),
+    status_filter: str | None = Query(None, alias="status", description="Filter by execution status"),
     startDate: str | None = Query(None, description="Filter by start date (ISO format)"),
     endDate: str | None = Query(None, description="Filter by end date (ISO format)"),
     excludeLocal: bool = Query(True, description="Exclude local runner executions"),
@@ -481,7 +503,7 @@ async def list_executions(
         user=ctx.user,
         org_id=org_filter,
         workflow_name=workflowName,
-        status_filter=status,
+        status_filter=status_filter,
         start_date=startDate,
         end_date=endDate,
         exclude_local=excludeLocal,

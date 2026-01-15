@@ -6,11 +6,11 @@
  */
 
 import { cn } from "@/lib/utils";
-import type {
-	HeadingComponentProps,
-	HeadingLevel,
-} from "@/lib/app-builder-types";
+import type { HeadingLevel } from "@/lib/app-builder-helpers";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
+import type { components } from "@/lib/v1";
+
+type HeadingComponentType = components["schemas"]["HeadingComponent"];
 
 /**
  * Get Tailwind classes for heading level
@@ -51,12 +51,12 @@ function getHeadingClasses(level: HeadingLevel): string {
  * }
  */
 export function HeadingComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as HeadingComponentProps;
+	const { props } = component as HeadingComponentType;
 	const level = props?.level || 1;
 	// Props are pre-evaluated by ComponentRegistry
 	const text = String(props?.text ?? "");
 
-	const classes = cn(getHeadingClasses(level), props?.className);
+	const classes = cn(getHeadingClasses(level), props?.class_name);
 
 	// Render the appropriate heading element
 	switch (level) {

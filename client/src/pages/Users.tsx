@@ -122,8 +122,8 @@ export function Users() {
 		setSelectedUser(undefined);
 	};
 
-	const getUserTypeBadge = (type: string) => {
-		return type === "PLATFORM" ? (
+	const getUserTypeBadge = (isSuperuser: boolean) => {
+		return isSuperuser ? (
 			<Badge variant="default">
 				<Shield className="mr-1 h-3 w-3" />
 				Platform Admin
@@ -254,7 +254,7 @@ export function Users() {
 										{user.email}
 									</DataTableCell>
 									<DataTableCell>
-										{getUserTypeBadge(user.user_type)}
+										{getUserTypeBadge(user.is_superuser)}
 									</DataTableCell>
 									<DataTableCell>
 										<Badge

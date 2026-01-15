@@ -20,13 +20,6 @@ class ExecutionStatus(str, Enum):
     CANCELLED = "Cancelled"
 
 
-class UserType(str, Enum):
-    """User type - Platform admin, organization user, or system account"""
-    PLATFORM = "PLATFORM"
-    ORG = "ORG"
-    SYSTEM = "SYSTEM"  # Hidden service accounts (API key executions)
-
-
 class FormAccessLevel(str, Enum):
     """Form access control levels"""
     AUTHENTICATED = "authenticated"

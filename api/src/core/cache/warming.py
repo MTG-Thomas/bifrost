@@ -228,20 +228,11 @@ async def _prewarm_roles(
     r: Any,
     org_uuid: UUID | None,
 ) -> None:
-    """Pre-warm roles for the organization."""
+    """Pre-warm roles (roles are global, not org-scoped)."""
     from src.models import FormRole, Role, UserRole
 
-    # Query roles
-    if org_uuid:
-        query = select(Role).where(
-            Role.is_active.is_(True),
-            or_(Role.organization_id == org_uuid, Role.organization_id.is_(None)),
-        )
-    else:
-        query = select(Role).where(
-            Role.is_active.is_(True),
-            Role.organization_id.is_(None),
-        )
+    # Roles are global - query all active roles regardless of org
+    query = select(Role).where(Role.is_active.is_(True))
 
     result = await db.execute(query)
     roles = result.scalars().all()
@@ -250,6 +241,7 @@ async def _prewarm_roles(
         return
 
     roles_data: dict[str, str] = {}
+    # Use org_id for cache key partitioning (even though roles are global)
     org_id = str(org_uuid) if org_uuid else None
 
     for role in roles:
@@ -258,7 +250,6 @@ async def _prewarm_roles(
             "name": role.name,
             "description": role.description,
             "is_active": role.is_active,
-            "organization_id": str(role.organization_id) if role.organization_id else None,
         }
         roles_data[str(role.id)] = json.dumps(cache_value)
 

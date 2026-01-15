@@ -8,10 +8,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum as SQLAlchemyEnum, ForeignKey, Index, LargeBinary, String, Text, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.models.enums import UserType
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
@@ -37,17 +36,8 @@ class User(Base):
     is_registered: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mfa_enforced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-    user_type: Mapped[UserType] = mapped_column(
-        SQLAlchemyEnum(
-            UserType,
-            name="user_type",
-            create_type=False,
-            values_callable=lambda x: [e.value for e in x],
-        ),
-        default=UserType.ORG,
-    )
-    organization_id: Mapped[UUID] = mapped_column(
-        ForeignKey("organizations.id"), nullable=False
+    organization_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True
     )
     last_login: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(
@@ -93,7 +83,11 @@ class User(Base):
 
 
 class Role(Base):
-    """Role database table."""
+    """Role database table.
+
+    Roles are globally defined - org scoping happens at the entity level
+    (forms, apps, agents, workflows), not on roles themselves.
+    """
 
     __tablename__ = "roles"
 
@@ -101,9 +95,6 @@ class Role(Base):
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(Text, default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    organization_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("organizations.id"), default=None
-    )
     created_by: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, server_default=text("NOW()")
@@ -122,8 +113,6 @@ class Role(Base):
         secondary="agent_roles",
         back_populates="roles",
     )
-
-    __table_args__ = (Index("ix_roles_organization_id", "organization_id"),)
 
 
 class UserRole(Base):

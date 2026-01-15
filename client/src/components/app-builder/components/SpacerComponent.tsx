@@ -5,7 +5,9 @@
  */
 
 import { cn } from "@/lib/utils";
-import type { SpacerComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type SpacerComponent = components["schemas"]["SpacerComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 
 /**
@@ -88,14 +90,14 @@ function getSpacingStyle(size?: number | string): {
  * }
  */
 export function SpacerComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as SpacerComponentProps;
+	const { props } = component as SpacerComponent;
 	// Handle missing props gracefully
-	const size = props?.size ?? props?.height;
+	const size = props?.size ?? props?.height ?? undefined;
 	const { className: spacingClass, style } = getSpacingStyle(size);
 
 	return (
 		<div
-			className={cn("w-full", spacingClass, props?.className)}
+			className={cn("w-full", spacingClass, props?.class_name)}
 			style={style}
 			aria-hidden="true"
 		/>

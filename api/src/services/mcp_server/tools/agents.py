@@ -182,23 +182,37 @@ async def get_agent(
             )
 
             if agent_id:
+                # ID-based lookup: IDs are unique, so cascade filter is safe
                 try:
                     uuid_id = UUID(agent_id)
                 except ValueError:
                     return json.dumps({"error": f"'{agent_id}' is not a valid UUID"})
                 query = query.where(Agent.id == uuid_id)
-            else:
-                query = query.where(Agent.name == agent_name)
-
-            # Apply org scoping for non-admins
-            if not context.is_platform_admin and context.org_id:
-                org_uuid = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
-                query = query.where(
-                    or_(
-                        Agent.organization_id == org_uuid,
-                        Agent.organization_id.is_(None)  # Global agents
+                # Apply org scoping for non-admins (cascade filter for ID lookups)
+                if not context.is_platform_admin and context.org_id:
+                    org_uuid = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
+                    query = query.where(
+                        or_(
+                            Agent.organization_id == org_uuid,
+                            Agent.organization_id.is_(None)  # Global agents
+                        )
                     )
-                )
+            else:
+                # Name-based lookup: use prioritized lookup (org-specific > global)
+                query = query.where(Agent.name == agent_name)
+                if not context.is_platform_admin and context.org_id:
+                    org_uuid = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
+                    query = query.where(
+                        or_(
+                            Agent.organization_id == org_uuid,
+                            Agent.organization_id.is_(None)  # Global agents
+                        )
+                    )
+                    # Prioritize org-specific over global (nulls come last)
+                    query = query.order_by(Agent.organization_id.desc().nulls_last()).limit(1)
+                elif not context.is_platform_admin:
+                    # No org context - only global agents
+                    query = query.where(Agent.organization_id.is_(None))
 
             result = await db.execute(query)
             agent = result.scalar_one_or_none()

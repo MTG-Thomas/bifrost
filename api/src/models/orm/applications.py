@@ -91,12 +91,6 @@ class Application(Base):
     navigation: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default="{}"
     )
-    global_data_sources: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSONB, default=list, server_default="[]"
-    )
-    global_variables: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, server_default="{}"
-    )
     permissions: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default="{}"
     )

@@ -30,6 +30,8 @@ from src.models.orm.applications import Application
 from src.models.orm.app_roles import AppRole
 from src.models.orm.agents import Agent, AgentRole
 from src.models.orm.forms import FormRole
+from src.models.orm.workflows import Workflow
+from src.models.orm.workflow_roles import WorkflowRole
 
 logger = logging.getLogger(__name__)
 
@@ -303,14 +305,14 @@ class AuthorizationService:
     async def _check_role_access(
         self,
         entity_id: UUID,
-        entity_type: Literal["form", "app", "agent"],
+        entity_type: Literal["form", "app", "agent", "workflow"],
     ) -> bool:
         """
         Check if user has a role granting access to this entity.
 
         Args:
             entity_id: Entity ID (UUID)
-            entity_type: Type of entity ("form", "app", or "agent")
+            entity_type: Type of entity ("form", "app", "agent", or "workflow")
 
         Returns:
             True if user has a role that grants access, False otherwise
@@ -324,6 +326,7 @@ class AuthorizationService:
             "form": (FormRole, FormRole.form_id),
             "app": (AppRole, AppRole.app_id),
             "agent": (AgentRole, AgentRole.agent_id),
+            "workflow": (WorkflowRole, WorkflowRole.workflow_id),
         }
         role_table, id_column = role_configs[entity_type]
 
@@ -337,11 +340,11 @@ class AuthorizationService:
 
     async def can_access_entity(
         self,
-        entity: Form | Application | Agent,
-        entity_type: Literal["form", "app", "agent"],
+        entity: Form | Application | Agent | Workflow,
+        entity_type: Literal["form", "app", "agent", "workflow"],
     ) -> bool:
         """
-        Unified access check for forms, apps, and agents.
+        Unified access check for forms, apps, agents, and workflows.
 
         Rules:
         1. Platform admins can access anything
@@ -351,7 +354,7 @@ class AuthorizationService:
 
         Args:
             entity: The entity to check access for
-            entity_type: Type of entity ("form", "app", or "agent")
+            entity_type: Type of entity ("form", "app", "agent", or "workflow")
 
         Returns:
             True if user can access the entity, False otherwise
@@ -427,6 +430,18 @@ class AuthorizationService:
             True if user can access the agent, False otherwise
         """
         return await self.can_access_entity(agent, "agent")
+
+    async def can_access_workflow(self, workflow: Workflow) -> bool:
+        """
+        Check if user can access a workflow.
+
+        Args:
+            workflow: Workflow entity
+
+        Returns:
+            True if user can access the workflow, False otherwise
+        """
+        return await self.can_access_entity(workflow, "workflow")
 
 
 # Convenience function for creating service from context

@@ -14,7 +14,7 @@ import type {
 	ApplicationDefinition,
 	PageDefinition,
 	ExpressionContext,
-} from "@/lib/app-builder-types";
+} from "@/types/app-builder";
 import {
 	hasAppAccess,
 	hasPageAccess,
@@ -93,6 +93,12 @@ function LoginRequired() {
  *
  * Wraps content and checks permissions before rendering.
  * Handles both app-level and page-level access control.
+ *
+ * TODO: Backend alignment needed - The backend Application model has an `access_level`
+ * field (public, authenticated, role_based) that should be considered in permission
+ * checks here. Currently hasAppAccess() only checks app.permissions.public and role
+ * assignments. A future update should integrate access_level into the frontend
+ * permission logic to match backend authorization behavior.
  */
 export function PermissionGuard({
 	app,

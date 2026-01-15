@@ -136,7 +136,6 @@ class TestWorkersListEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         result = await list_pools(admin)
@@ -188,7 +187,6 @@ class TestWorkersListEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         result = await list_pools(admin)
@@ -222,7 +220,6 @@ class TestWorkerDetailEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -281,7 +278,6 @@ class TestWorkerDetailEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         result = await get_pool(worker_id, admin)
@@ -313,7 +309,6 @@ class TestRecycleProcessEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -352,7 +347,6 @@ class TestRecycleProcessEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         request = RecycleProcessRequest(reason="Manual recycle test")
@@ -384,7 +378,6 @@ class TestQueueEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         result = await get_queue(admin, limit=50, offset=0)
@@ -414,7 +407,6 @@ class TestStuckHistoryEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         result = await get_stuck_history(admin, hours=24, db=db_session)
@@ -454,7 +446,6 @@ class TestStuckHistoryEndpoint:
             email="admin@test.com",
             organization_id=None,
             is_superuser=True,
-            user_type="PLATFORM",
         )
 
         result = await get_stuck_history(admin, hours=24, db=db_session)

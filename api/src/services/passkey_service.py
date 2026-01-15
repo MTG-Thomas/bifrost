@@ -534,15 +534,13 @@ class PasskeyService:
             raise ValueError("Another user was created during registration")
 
         # Create user as Platform admin (first user)
-        from src.models.enums import UserType
-
+        # is_superuser=True with org_id = platform admin in that org
         user = User(
             email=setup_data["email"],
             name=setup_data["name"],
             is_active=True,
             is_superuser=True,
             is_registered=True,
-            user_type=UserType.PLATFORM,
             hashed_password=None,  # Passwordless user
             webauthn_user_id=base64url_to_bytes(setup_data["webauthn_user_id"]),
             organization_id=PROVIDER_ORG_ID,

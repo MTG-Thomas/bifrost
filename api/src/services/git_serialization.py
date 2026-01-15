@@ -353,8 +353,6 @@ def serialize_app_to_dict(app: Application, workflow_map: dict[str, str]) -> tup
         "description": app.description,
         "icon": app.icon,
         "navigation": app.navigation,
-        "global_data_sources": app.global_data_sources,
-        "global_variables": app.global_variables,
         "permissions": app.permissions,
         "access_level": app.access_level,
         "pages": pages_data,

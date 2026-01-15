@@ -363,24 +363,39 @@ async def get_form(
             query = select(FormORM).options(selectinload(FormORM.fields))
 
             if form_id:
+                # ID-based lookup: IDs are unique, so cascade filter is safe
                 try:
                     uuid_id = UUID_TYPE(form_id)
                 except ValueError:
                     return json.dumps({"error": f"'{form_id}' is not a valid UUID"})
                 query = query.where(FormORM.id == uuid_id)
-            else:
-                query = query.where(FormORM.name == form_name)
-
-            # Apply org scoping for non-admins
-            if not context.is_platform_admin and context.org_id:
-                from sqlalchemy import or_
-                org_uuid = UUID_TYPE(str(context.org_id))
-                query = query.where(
-                    or_(
-                        FormORM.organization_id == org_uuid,
-                        FormORM.organization_id.is_(None)  # Global forms
+                # Apply org scoping for non-admins (cascade filter for ID lookups)
+                if not context.is_platform_admin and context.org_id:
+                    from sqlalchemy import or_
+                    org_uuid = UUID_TYPE(str(context.org_id))
+                    query = query.where(
+                        or_(
+                            FormORM.organization_id == org_uuid,
+                            FormORM.organization_id.is_(None)  # Global forms
+                        )
                     )
-                )
+            else:
+                # Name-based lookup: use prioritized lookup (org-specific > global)
+                query = query.where(FormORM.name == form_name)
+                if not context.is_platform_admin and context.org_id:
+                    from sqlalchemy import or_
+                    org_uuid = UUID_TYPE(str(context.org_id))
+                    query = query.where(
+                        or_(
+                            FormORM.organization_id == org_uuid,
+                            FormORM.organization_id.is_(None)  # Global forms
+                        )
+                    )
+                    # Prioritize org-specific over global (nulls come last)
+                    query = query.order_by(FormORM.organization_id.desc().nulls_last()).limit(1)
+                elif not context.is_platform_admin:
+                    # No org context - only global forms
+                    query = query.where(FormORM.organization_id.is_(None))
 
             result = await db.execute(query)
             form = result.scalar_one_or_none()

@@ -57,8 +57,6 @@ def _serialize_app_to_json(
         "description": app.description,
         "icon": app.icon,
         "navigation": app.navigation or {},
-        "global_data_sources": app.global_data_sources or [],
-        "global_variables": app.global_variables or {},
         "permissions": app.permissions or {},
         "pages": serialized_pages,
         "export_version": "1.0",
@@ -71,6 +69,7 @@ def _serialize_app_to_json(
                 "pages.*.layout..*.props.workflow_id",
                 "pages.*.data_sources.*.workflow_id",
                 "pages.*.launch_workflow_id",
+                "pages.*.launch_workflow.workflow_id",
             ],
             "version": "1.0",
         }
@@ -108,6 +107,13 @@ class AppIndexer:
 
         Creates/updates the app with a draft version containing pages and components.
 
+        Instance-specific fields ignored on import:
+        - organization_id: Set from import context or None (global)
+        - permissions: Set to {} (role IDs don't transfer across instances)
+        - access_level: Set to "role_based" (locked down by default)
+        - created_by: Set to "file_sync" or importing user
+        - created_at/updated_at: Regenerated (ignore if present in JSON)
+
         Args:
             path: File path
             content: File content bytes
@@ -138,6 +144,12 @@ class AppIndexer:
             )
             if unresolved:
                 logger.warning(f"Unresolved portable refs in {path}: {unresolved}")
+
+        # Strip instance-specific fields that don't transfer across instances
+        app_data.pop("organization_id", None)
+        app_data.pop("created_at", None)
+        app_data.pop("updated_at", None)
+        app_data.pop("published_at", None)
 
         name = app_data.get("name")
         if not name:
@@ -182,9 +194,9 @@ class AppIndexer:
             existing_app.description = app_data.get("description")
             existing_app.icon = app_data.get("icon")
             existing_app.navigation = app_data.get("navigation", {})
-            existing_app.global_data_sources = app_data.get("global_data_sources", [])
-            existing_app.global_variables = app_data.get("global_variables", {})
-            existing_app.permissions = app_data.get("permissions", {})
+            # Reset instance-specific fields - don't import from file
+            existing_app.permissions = {}
+            existing_app.access_level = "role_based"  # Locked down by default
             existing_app.updated_at = now
 
             # Get existing draft version to reuse or create new
@@ -206,9 +218,10 @@ class AppIndexer:
                 description=app_data.get("description"),
                 icon=app_data.get("icon"),
                 navigation=app_data.get("navigation", {}),
-                global_data_sources=app_data.get("global_data_sources", []),
-                global_variables=app_data.get("global_variables", {}),
-                permissions=app_data.get("permissions", {}),
+                # Instance-specific defaults
+                organization_id=None,  # Import as global by default
+                permissions={},  # Empty - role IDs don't transfer
+                access_level="role_based",  # Locked down by default
                 created_by="file_sync",
             )
             self.db.add(new_app)

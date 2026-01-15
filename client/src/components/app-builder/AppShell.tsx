@@ -31,7 +31,7 @@ import type {
 	NavItem,
 	ExpressionContext,
 	WorkflowResult,
-} from "@/lib/app-builder-types";
+} from "@/types/app-builder";
 import { evaluateExpression } from "@/lib/expression-parser";
 import { hasPageAccess } from "@/lib/app-builder-permissions";
 import { getIcon } from "@/lib/icons";

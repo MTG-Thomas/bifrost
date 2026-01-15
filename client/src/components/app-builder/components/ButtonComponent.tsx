@@ -7,12 +7,12 @@
 import { useCallback, useMemo } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type {
-	ButtonComponentProps,
-	OnCompleteAction,
-} from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+import type { OnCompleteAction } from "@/types/app-builder";
 import { evaluateExpression } from "@/lib/expression-parser";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
+
+type ButtonComponent = components["schemas"]["ButtonComponent"];
 import { Button } from "@/components/ui/button";
 import { getIcon } from "@/lib/icons";
 
@@ -28,8 +28,8 @@ import { getIcon } from "@/lib/icons";
  *   type: "button",
  *   props: {
  *     label: "Go Home",
- *     actionType: "navigate",
- *     navigateTo: "/home"
+ *     action_type: "navigate",
+ *     navigate_to: "/home"
  *   }
  * }
  *
@@ -40,9 +40,9 @@ import { getIcon } from "@/lib/icons";
  *   type: "button",
  *   props: {
  *     label: "Run Analysis",
- *     actionType: "workflow",
- *     workflowId: "analysis-workflow",
- *     actionParams: { mode: "full" }
+ *     action_type: "workflow",
+ *     workflow_id: "analysis-workflow",
+ *     action_params: { mode: "full" }
  *   }
  * }
  *
@@ -53,8 +53,8 @@ import { getIcon } from "@/lib/icons";
  *   type: "button",
  *   props: {
  *     label: "Do Something",
- *     actionType: "custom",
- *     customActionId: "my-action"
+ *     action_type: "custom",
+ *     custom_action_id: "my-action"
  *   }
  * }
  */
@@ -62,7 +62,7 @@ export function ButtonComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as ButtonComponentProps;
+	const { props } = component as ButtonComponent;
 	// Support both 'label' and 'text' for button text
 	const labelValue =
 		props?.label ?? (props as Record<string, unknown>)?.text ?? "";
@@ -72,12 +72,12 @@ export function ButtonComponent({
 
 	// Check if this button's workflow is currently executing
 	const isWorkflowLoading = useMemo(() => {
-		// Support both old format (actionType at top level) and new format (onClick object)
+		// Support both old format (action_type at top level) and new format (onClick object)
 		const onClick = (props as Record<string, unknown>)?.onClick as
-			| { type?: string; workflowId?: string }
+			| { type?: string; workflow_id?: string }
 			| undefined;
-		const actionType = props?.actionType || onClick?.type;
-		const workflowId = props?.workflowId || onClick?.workflowId;
+		const actionType = props?.action_type || onClick?.type;
+		const workflowId = props?.workflow_id || onClick?.workflow_id;
 
 		// Only check for workflow and submit action types
 		if (
@@ -103,28 +103,28 @@ export function ButtonComponent({
 	})();
 
 	const handleClick = useCallback(() => {
-		// Support both old format (actionType at top level) and new format (onClick object)
+		// Support both old format (action_type at top level) and new format (onClick object)
 		const onClick = (props as Record<string, unknown>)?.onClick as
 			| {
 					type?: string;
-					navigateTo?: string;
-					workflowId?: string;
-					actionParams?: Record<string, unknown>;
-					onComplete?: OnCompleteAction[];
-					onError?: OnCompleteAction[];
+					navigate_to?: string;
+					workflow_id?: string;
+					action_params?: Record<string, unknown>;
+					on_complete?: OnCompleteAction[];
+					on_error?: OnCompleteAction[];
 			  }
 			| undefined;
 
-		const actionType = props?.actionType || onClick?.type;
-		const navigateTo = props?.navigateTo || onClick?.navigateTo;
-		const workflowId = props?.workflowId || onClick?.workflowId;
-		const modalId = props?.modalId;
-		const actionParams = props?.actionParams || onClick?.actionParams;
-		const onComplete = (props?.onComplete || onClick?.onComplete) as
+		const actionType = props?.action_type || onClick?.type;
+		const navigateTo = props?.navigate_to || onClick?.navigate_to;
+		const workflowId = props?.workflow_id || onClick?.workflow_id;
+		const modalId = props?.modal_id;
+		const actionParams = props?.action_params || onClick?.action_params;
+		const onComplete = (props?.on_complete || onClick?.on_complete) as
 			| OnCompleteAction[]
 			| undefined;
-		const onError = ((props as Record<string, unknown>)?.onError ||
-			onClick?.onError) as OnCompleteAction[] | undefined;
+		const onError = ((props as Record<string, unknown>)?.on_error ||
+			onClick?.on_error) as OnCompleteAction[] | undefined;
 
 		// Evaluate expressions in actionParams before passing to workflows
 		const evaluatedParams: Record<string, unknown> = {};
@@ -180,9 +180,9 @@ export function ButtonComponent({
 				break;
 
 			case "custom":
-				if (props?.customActionId && context.onCustomAction) {
+				if (props?.custom_action_id && context.onCustomAction) {
 					context.onCustomAction(
-						props.customActionId,
+						props.custom_action_id,
 						evaluatedParams,
 					);
 				}
@@ -207,7 +207,7 @@ export function ButtonComponent({
 			size={props?.size || "default"}
 			disabled={isDisabled || isWorkflowLoading}
 			onClick={handleClick}
-			className={cn(props?.className)}
+			className={cn(props?.class_name)}
 		>
 			{renderIcon()}
 			{label}

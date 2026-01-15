@@ -12,7 +12,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useExecuteWorkflow } from "@/hooks/useWorkflows";
 import { webSocketService, type ExecutionUpdate } from "@/services/websocket";
-import type { WorkflowResult } from "@/lib/app-builder-types";
+import type { WorkflowResult } from "@/types/app-builder";
 
 const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 

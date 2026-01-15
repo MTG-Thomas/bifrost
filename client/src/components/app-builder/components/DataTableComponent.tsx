@@ -48,12 +48,12 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getIcon } from "@/lib/icons";
-import type {
-	DataTableComponentProps,
-	TableColumn,
-	TableAction,
-} from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
+
+type DataTableComponent = components["schemas"]["DataTableComponent"];
+type TableColumn = components["schemas"]["TableColumn"];
+type TableAction = components["schemas"]["TableAction"];
 import {
 	evaluateExpression,
 	evaluateVisibility,
@@ -96,7 +96,7 @@ function formatCellValue(value: unknown, column: TableColumn): React.ReactNode {
 
 		case "badge": {
 			const stringValue = String(value);
-			const variant = column.badgeColors?.[stringValue] as
+			const variant = column.badge_colors?.[stringValue] as
 				| "default"
 				| "secondary"
 				| "destructive"
@@ -115,10 +115,10 @@ export function DataTableComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as DataTableComponentProps;
+	const { props } = component as DataTableComponent;
 
 	// Table cache from store
-	const cachedEntry = useTableCache(props.cacheKey);
+	const cachedEntry = useTableCache(props.cache_key ?? undefined);
 	const setTableCache = useAppBuilderStore((state) => state.setTableCache);
 	const clearTableCache = useAppBuilderStore(
 		(state) => state.clearTableCache,
@@ -131,18 +131,18 @@ export function DataTableComponent({
 	const rawData = useMemo(() => {
 		let data: unknown;
 
-		if (props.dataSource.startsWith("{{")) {
+		if (props.data_source.startsWith("{{")) {
 			// Explicit expression - evaluate directly
-			data = evaluateExpression(props.dataSource, context);
+			data = evaluateExpression(props.data_source, context);
 		} else if (context.workflow) {
 			// Check workflow namespace first (from launchWorkflow with dataSourceId)
-			// e.g., dataSource="clientsList" → workflow.clientsList
-			const workflowResult = context.workflow[props.dataSource];
+			// e.g., data_source="clientsList" → workflow.clientsList
+			const workflowResult = context.workflow[props.data_source];
 			if (workflowResult !== undefined) {
 				data = workflowResult;
-			} else if (props.dataSource.includes(".")) {
+			} else if (props.data_source.includes(".")) {
 				// Dot-notation path within workflow namespace (e.g., "clientsList.items")
-				const parts = props.dataSource.split(".");
+				const parts = props.data_source.split(".");
 				const workflowKey = parts[0];
 				const nestedPath = parts.slice(1).join(".");
 				const result = context.workflow[workflowKey];
@@ -155,14 +155,14 @@ export function DataTableComponent({
 			}
 		}
 
-		// Apply dataPath if specified to extract array from result object
-		// e.g., dataPath="clients" extracts the array from { clients: [...], total: 2 }
-		if (data && props.dataPath) {
-			data = getNestedValue(data as Record<string, unknown>, props.dataPath);
+		// Apply data_path if specified to extract array from result object
+		// e.g., data_path="clients" extracts the array from { clients: [...], total: 2 }
+		if (data && props.data_path) {
+			data = getNestedValue(data as Record<string, unknown>, props.data_path);
 		}
 
 		return data;
-	}, [props.dataSource, props.dataPath, context]);
+	}, [props.data_source, props.data_path, context]);
 
 	// Use cached data if available and no fresh data yet
 	const effectiveData = useMemo(() => {
@@ -185,10 +185,10 @@ export function DataTableComponent({
 
 	// Update cache when fresh data arrives
 	useEffect(() => {
-		if (props.cacheKey && Array.isArray(rawData) && rawData.length > 0) {
-			setTableCache(props.cacheKey, rawData, props.dataSource);
+		if (props.cache_key && Array.isArray(rawData) && rawData.length > 0) {
+			setTableCache(props.cache_key, rawData, props.data_source);
 		}
-	}, [props.cacheKey, rawData, props.dataSource, setTableCache]);
+	}, [props.cache_key, rawData, props.data_source, setTableCache]);
 
 	// Show skeleton if data is undefined AND we're loading
 	const isLoading =
@@ -196,15 +196,15 @@ export function DataTableComponent({
 
 	// Refresh handler
 	const handleRefresh = useCallback(() => {
-		if (props.cacheKey) {
-			clearTableCache(props.cacheKey);
+		if (props.cache_key) {
+			clearTableCache(props.cache_key);
 		}
 		setIsRefreshing(true);
 		// Trigger data source refresh
-		context.refreshTable?.(props.dataSource);
+		context.refreshTable?.(props.data_source);
 		// Reset refreshing state after a delay (data will re-fetch)
 		setTimeout(() => setIsRefreshing(false), 500);
-	}, [props.cacheKey, props.dataSource, context, clearTableCache]);
+	}, [props.cache_key, props.data_source, context, clearTableCache]);
 
 	// State
 	const [searchQuery, setSearchQuery] = useState("");
@@ -234,7 +234,7 @@ export function DataTableComponent({
 		cancelLabel: "Cancel",
 	});
 
-	const pageSize = props.pageSize ?? 10;
+	const pageSize = props.page_size ?? 10;
 
 	// Filter data by search
 	const filteredData = useMemo(() => {
@@ -310,20 +310,20 @@ export function DataTableComponent({
 	};
 
 	const handleRowClick = (row: Record<string, unknown>, index: number) => {
-		if (!props.onRowClick) return;
+		if (!props.on_row_click) return;
 
 		if (
-			props.onRowClick.type === "navigate" &&
-			props.onRowClick.navigateTo
+			props.on_row_click.type === "navigate" &&
+			props.on_row_click.navigate_to
 		) {
 			const path = String(
-				evaluateExpression(props.onRowClick.navigateTo, {
+				evaluateExpression(props.on_row_click.navigate_to, {
 					...context,
 					row,
 				}) ?? "",
 			);
 			context.navigate?.(path);
-		} else if (props.onRowClick.type === "select" && props.selectable) {
+		} else if (props.on_row_click.type === "select" && props.selectable) {
 			setSelectedRows((prev) => {
 				const next = new Set(prev);
 				if (next.has(index)) {
@@ -334,8 +334,8 @@ export function DataTableComponent({
 				return next;
 			});
 		} else if (
-			props.onRowClick.type === "set-variable" &&
-			props.onRowClick.variableName
+			props.on_row_click.type === "set-variable" &&
+			props.on_row_click.variable_name
 		) {
 			// TODO: Integrate with AppContext for variable state management
 			// This requires adding setVariable to ExpressionContext
@@ -372,20 +372,20 @@ export function DataTableComponent({
 			};
 
 			if (
-				action.onClick.type === "navigate" &&
-				action.onClick.navigateTo
+				action.on_click.type === "navigate" &&
+				action.on_click.navigate_to
 			) {
 				const path = String(
-					evaluateExpression(action.onClick.navigateTo, rowContext) ??
+					evaluateExpression(action.on_click.navigate_to, rowContext) ??
 						"",
 				);
 				context.navigate?.(path);
 			} else if (
-				action.onClick.type === "workflow" &&
-				action.onClick.workflowId
+				action.on_click.type === "workflow" &&
+				action.on_click.workflow_id
 			) {
-				// Evaluate actionParams expressions with row context
-				const actionParams = action.onClick.actionParams ?? {};
+				// Evaluate action_params expressions with row context
+				const actionParams = action.on_click.action_params ?? {};
 				const evaluatedParams: Record<string, unknown> = { row };
 
 				// Evaluate each param value if it contains expressions
@@ -401,21 +401,21 @@ export function DataTableComponent({
 				}
 
 				context.triggerWorkflow?.(
-					action.onClick.workflowId,
+					action.on_click.workflow_id,
 					evaluatedParams,
 				);
 			} else if (
-				action.onClick.type === "set-variable" &&
-				action.onClick.variableName
+				action.on_click.type === "set-variable" &&
+				action.on_click.variable_name
 			) {
 				// Evaluate variable value with row context
-				const value = action.onClick.variableValue
+				const value = action.on_click.variable_value
 					? evaluateExpression(
-							action.onClick.variableValue,
+							action.on_click.variable_value,
 							rowContext,
 						)
 					: row;
-				context.setVariable?.(action.onClick.variableName, value);
+				context.setVariable?.(action.on_click.variable_name, value);
 			}
 		},
 		[context],
@@ -455,8 +455,8 @@ export function DataTableComponent({
 					row,
 					title,
 					message,
-					confirmLabel: action.confirm.confirmLabel || "Confirm",
-					cancelLabel: action.confirm.cancelLabel || "Cancel",
+					confirmLabel: action.confirm.confirm_label || "Confirm",
+					cancelLabel: action.confirm.cancel_label || "Cancel",
 				});
 			} else {
 				// No confirmation needed, execute immediately
@@ -491,12 +491,12 @@ export function DataTableComponent({
 	};
 
 	// Don't show empty message when loading - skeleton will be shown instead
-	if (data.length === 0 && !props.emptyMessage && !isLoading) {
+	if (data.length === 0 && !props.empty_message && !isLoading) {
 		return (
 			<div
 				className={cn(
 					"text-center py-8 text-muted-foreground",
-					props.className,
+					props.class_name,
 				)}
 			>
 				No data available
@@ -506,11 +506,11 @@ export function DataTableComponent({
 
 	return (
 		<TooltipProvider>
-			<div className={cn("space-y-4", props.className)}>
+			<div className={cn("space-y-4", props.class_name)}>
 				{/* Header with search, refresh, and actions */}
 				{(props.searchable ||
-					props.headerActions?.length ||
-					props.cacheKey) && (
+					props.header_actions?.length ||
+					props.cache_key) && (
 					<div className="flex items-center justify-between gap-4">
 						{props.searchable && (
 							<div className="relative flex-1 max-w-sm">
@@ -528,7 +528,7 @@ export function DataTableComponent({
 						)}
 						<div className="flex items-center gap-2">
 							{/* Refresh Button */}
-							{props.cacheKey && (
+							{props.cache_key && (
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<Button
@@ -552,7 +552,7 @@ export function DataTableComponent({
 								</Tooltip>
 							)}
 							{/* Header Actions */}
-							{props.headerActions?.map((action, idx) => {
+							{props.header_actions?.map((action, idx) => {
 								const IconComponent = action.icon
 									? getIcon(action.icon)
 									: null;
@@ -626,7 +626,7 @@ export function DataTableComponent({
 										)}
 										style={{
 											width:
-												column.width !== "auto"
+												column.width && column.width !== "auto"
 													? column.width
 													: undefined,
 										}}
@@ -642,7 +642,7 @@ export function DataTableComponent({
 										</div>
 									</TableHead>
 								))}
-								{props.rowActions?.length && (
+								{props.row_actions?.length && (
 									<TableHead className="w-24 text-right">
 										Actions
 									</TableHead>
@@ -664,7 +664,7 @@ export function DataTableComponent({
 												<Skeleton className="h-4 w-full" />
 											</TableCell>
 										))}
-										{props.rowActions?.length && (
+										{props.row_actions?.length && (
 											<TableCell className="text-right">
 												<Skeleton className="h-8 w-16 ml-auto" />
 											</TableCell>
@@ -677,11 +677,11 @@ export function DataTableComponent({
 										colSpan={
 											props.columns.length +
 											(props.selectable ? 1 : 0) +
-											(props.rowActions?.length ? 1 : 0)
+											(props.row_actions?.length ? 1 : 0)
 										}
 										className="text-center py-8 text-muted-foreground"
 									>
-										{props.emptyMessage ||
+										{props.empty_message ||
 											"No results found"}
 									</TableCell>
 								</TableRow>
@@ -698,7 +698,7 @@ export function DataTableComponent({
 												`row-${rowIndex}`
 											}
 											className={cn(
-												props.onRowClick &&
+												props.on_row_click &&
 													"cursor-pointer",
 												selectedRows.has(rowIndex) &&
 													"bg-muted/50",
@@ -739,7 +739,7 @@ export function DataTableComponent({
 													)}
 												</TableCell>
 											))}
-											{props.rowActions?.length && (
+											{props.row_actions?.length && (
 												<TableCell
 													className="text-right"
 													onClick={(e) =>
@@ -747,7 +747,7 @@ export function DataTableComponent({
 													}
 												>
 													<div className="flex items-center justify-end gap-1">
-														{props.rowActions.map(
+														{props.row_actions.map(
 															(action, idx) => {
 																// Create row-scoped context for expression evaluation
 																const actionRowContext =

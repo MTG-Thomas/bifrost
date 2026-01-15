@@ -33,6 +33,7 @@ from src.models.contracts.agents import (
 from src.models.enums import AgentAccessLevel
 from src.models.orm import Agent, AgentDelegation, AgentRole, AgentTool, Role, Workflow
 from src.repositories.agents import AgentRepository
+from src.services.workflow_role_service import sync_agent_roles_to_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +401,9 @@ async def create_agent(
     )
     agent = result.scalar_one()
 
+    # Sync agent roles to referenced workflows (tools) - additive
+    await sync_agent_roles_to_workflows(db, agent, assigned_by=user.email)
+
     return _agent_to_public(agent)
 
 
@@ -578,6 +582,9 @@ async def update_agent(
         .where(Agent.id == agent_id)
     )
     agent = result.scalar_one()
+
+    # Sync agent roles to referenced workflows (tools) - additive
+    await sync_agent_roles_to_workflows(db, agent, assigned_by=user.email)
 
     return _agent_to_public(agent)
 

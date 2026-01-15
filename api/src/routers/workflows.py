@@ -17,11 +17,14 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import distinct, func, or_, select
+from sqlalchemy import delete, distinct, func, or_, select
 
 # Import existing Pydantic models for API compatibility
 from src.models import (
+    AssignRolesToWorkflowRequest,
     CompatibleReplacement,
     CompatibleReplacementsResponse,
     DeactivateWorkflowResponse,
@@ -36,17 +39,19 @@ from src.models import (
     WorkflowMetadata,
     WorkflowParameter,
     WorkflowReference,
+    WorkflowRolesResponse,
     WorkflowUpdateRequest,
     WorkflowUsageStats,
     WorkflowValidationRequest,
     WorkflowValidationResponse,
 )
 from src.models import Workflow as WorkflowORM
-from src.models.orm.workflow_access import WorkflowAccess
+from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.forms import Form, FormField
 from src.models.orm.applications import Application, AppPage, AppComponent
 from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.developer import DeveloperContext
+from src.models.orm.users import Role
 from src.services.workflow_validation import _extract_relative_path
 
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
@@ -89,6 +94,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
         tags=workflow.tags or [],
         type=workflow_type,
         organization_id=str(workflow.organization_id) if workflow.organization_id else None,
+        access_level=workflow.access_level or "role_based",
         parameters=parameters,
         execution_mode=execution_mode,
         timeout_seconds=workflow.timeout_seconds or 1800,
@@ -140,6 +146,117 @@ def _extract_workflows_from_props(obj: Any, workflow_ids: set[str]) -> None:
     elif isinstance(obj, list):
         for item in obj:
             _extract_workflows_from_props(item, workflow_ids)
+
+
+async def _get_form_workflow_ids(db: DbSession, form_id: UUID) -> set[UUID]:
+    """
+    Get all workflow IDs referenced by a form.
+
+    Extracts from:
+    - form.workflow_id (main execution workflow)
+    - form.launch_workflow_id (startup/pre-execution workflow)
+    - form_fields.data_provider_id (dynamic field data providers)
+    """
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Form)
+        .options(selectinload(Form.fields))
+        .where(Form.id == form_id)
+    )
+    form = result.scalar_one_or_none()
+
+    if not form:
+        return set()
+
+    workflow_ids: set[UUID] = set()
+
+    # Main workflow
+    if form.workflow_id:
+        try:
+            workflow_ids.add(UUID(form.workflow_id))
+        except ValueError:
+            pass
+
+    # Launch workflow
+    if form.launch_workflow_id:
+        try:
+            workflow_ids.add(UUID(form.launch_workflow_id))
+        except ValueError:
+            pass
+
+    # Data providers from fields
+    for field in form.fields:
+        if field.data_provider_id:
+            workflow_ids.add(field.data_provider_id)
+
+    return workflow_ids
+
+
+async def _get_app_workflow_ids(db: DbSession, app_id: UUID) -> set[UUID]:
+    """
+    Get all workflow IDs referenced by an app.
+
+    Extracts from pages and components in the active version:
+    - page.launch_workflow_id
+    - page.data_sources[].workflowId / dataProviderId
+    - component.loading_workflows[]
+    - component.props (recursively)
+    """
+    result = await db.execute(
+        select(Application).where(Application.id == app_id)
+    )
+    app = result.scalar_one_or_none()
+
+    if not app or not app.active_version_id:
+        return set()
+
+    workflow_ids: set[UUID] = set()
+
+    # Get pages for the active version
+    pages_result = await db.execute(
+        select(AppPage).where(AppPage.version_id == app.active_version_id)
+    )
+    pages = list(pages_result.scalars().all())
+
+    for page in pages:
+        # Page launch workflow
+        if page.launch_workflow_id:
+            workflow_ids.add(page.launch_workflow_id)
+
+        # Page data sources
+        for ds in page.data_sources or []:
+            if wf_id := ds.get("workflowId"):
+                try:
+                    workflow_ids.add(UUID(wf_id))
+                except ValueError:
+                    pass
+            if dp_id := ds.get("dataProviderId"):
+                try:
+                    workflow_ids.add(UUID(dp_id))
+                except ValueError:
+                    pass
+
+    # Get components for those pages
+    page_ids = [p.id for p in pages]
+    if page_ids:
+        components_result = await db.execute(
+            select(AppComponent).where(AppComponent.page_id.in_(page_ids))
+        )
+        components = list(components_result.scalars().all())
+
+        for comp in components:
+            # Loading workflows
+            for wf_id in comp.loading_workflows or []:
+                try:
+                    workflow_ids.add(UUID(wf_id))
+                except ValueError:
+                    pass
+
+            # Props (recursive extraction)
+            _extract_workflows_from_props(comp.props or {}, workflow_ids)
+
+    return workflow_ids
 
 
 # =============================================================================
@@ -243,26 +360,27 @@ async def list_workflows(
             else:
                 query = query.where(WorkflowORM.type != "tool")
 
-        # Apply entity filters via workflow_access table
+        # Apply entity filters by querying entities directly
         if filter_by_form:
-            # Get workflow IDs used by this form
-            workflow_ids_subquery = select(WorkflowAccess.workflow_id).where(
-                WorkflowAccess.entity_type == "form",
-                WorkflowAccess.entity_id == filter_by_form,
-            )
-            query = query.where(WorkflowORM.id.in_(workflow_ids_subquery))
+            # Get workflow IDs used by this form (direct query)
+            workflow_ids = await _get_form_workflow_ids(db, filter_by_form)
+            if workflow_ids:
+                query = query.where(WorkflowORM.id.in_(workflow_ids))
+            else:
+                # No workflows found, return empty result
+                return []
         elif filter_by_app:
-            # Get workflow IDs used by this app
-            workflow_ids_subquery = select(WorkflowAccess.workflow_id).where(
-                WorkflowAccess.entity_type == "app",
-                WorkflowAccess.entity_id == filter_by_app,
-            )
-            query = query.where(WorkflowORM.id.in_(workflow_ids_subquery))
+            # Get workflow IDs used by this app (query pages/components)
+            workflow_ids = await _get_app_workflow_ids(db, filter_by_app)
+            if workflow_ids:
+                query = query.where(WorkflowORM.id.in_(workflow_ids))
+            else:
+                # No workflows found, return empty result
+                return []
         elif filter_by_agent:
-            # Get workflow IDs used by this agent
-            workflow_ids_subquery = select(WorkflowAccess.workflow_id).where(
-                WorkflowAccess.entity_type == "agent",
-                WorkflowAccess.entity_id == filter_by_agent,
+            # Get workflow IDs used by this agent (via agent_tools)
+            workflow_ids_subquery = select(AgentTool.workflow_id).where(
+                AgentTool.agent_id == filter_by_agent,
             )
             query = query.where(WorkflowORM.id.in_(workflow_ids_subquery))
 
@@ -409,13 +527,12 @@ async def get_workflow_usage_stats(
         ]
 
         # =========================================================================
-        # Apps: global_data_sources + pages.launch_workflow_id + pages.data_sources + component props
+        # Apps: pages.launch_workflow_id + pages.data_sources + component props
         # Note: Pages belong to versions (draft/active). We check both to catch all usage.
         # =========================================================================
         apps_query = select(
             Application.id,
             Application.name,
-            Application.global_data_sources,
             Application.draft_version_id,
             Application.active_version_id,
         ).order_by(Application.name)
@@ -428,15 +545,6 @@ async def get_workflow_usage_stats(
         apps: list[EntityUsage] = []
         for app_row in apps_list:
             workflow_ids: set[str] = set()
-
-            # Extract workflows from app-level global_data_sources
-            if app_row.global_data_sources:
-                for ds in app_row.global_data_sources:
-                    if isinstance(ds, dict):
-                        if wf_id := ds.get("workflowId"):
-                            workflow_ids.add(str(wf_id))
-                        if dp_id := ds.get("dataProviderId"):
-                            workflow_ids.add(str(dp_id))
 
             # Build list of version IDs to check (draft and/or active)
             version_ids: list[UUID] = []
@@ -763,6 +871,7 @@ async def update_workflow(
 
     Currently supports updating:
     - organization_id: Set to null for global scope, or an org UUID for org-scoped
+    - access_level: 'authenticated' or 'role_based'
 
     Requires platform admin access.
     """
@@ -799,10 +908,19 @@ async def update_workflow(
             # Set to global scope
             workflow.organization_id = None
 
+        # Update access_level if provided
+        if request.access_level is not None:
+            if request.access_level not in ("authenticated", "role_based"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid access_level: '{request.access_level}'. Must be 'authenticated' or 'role_based'",
+                )
+            workflow.access_level = request.access_level
+
         await db.commit()
         await db.refresh(workflow)
 
-        logger.info(f"Updated workflow '{workflow.name}' organization_id to {workflow.organization_id}")
+        logger.info(f"Updated workflow '{workflow.name}' organization_id={workflow.organization_id}, access_level={workflow.access_level}")
         return _convert_workflow_orm_to_schema(workflow)
 
     except HTTPException:
@@ -1108,3 +1226,149 @@ async def deactivate_workflow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to deactivate workflow",
         )
+
+
+# =============================================================================
+# Workflow Role Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/{workflow_id}/roles",
+    response_model=WorkflowRolesResponse,
+    summary="Get workflow roles",
+    description="Get all roles assigned to a workflow (Platform admin only)",
+)
+async def get_workflow_roles(
+    workflow_id: UUID,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> WorkflowRolesResponse:
+    """Get all roles assigned to a workflow.
+
+    Args:
+        workflow_id: UUID of the workflow
+
+    Returns:
+        WorkflowRolesResponse with list of role IDs
+    """
+    # Verify workflow exists
+    result = await db.execute(
+        select(WorkflowORM.id).where(WorkflowORM.id == workflow_id)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow with ID '{workflow_id}' not found",
+        )
+
+    # Get role IDs assigned to this workflow
+    result = await db.execute(
+        select(WorkflowRole.role_id).where(WorkflowRole.workflow_id == workflow_id)
+    )
+    role_ids = [str(rid) for rid in result.scalars().all()]
+
+    return WorkflowRolesResponse(role_ids=role_ids)
+
+
+@router.post(
+    "/{workflow_id}/roles",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Assign roles to workflow",
+    description="Assign roles to a workflow (batch operation, Platform admin only)",
+)
+async def assign_roles_to_workflow(
+    workflow_id: UUID,
+    request: AssignRolesToWorkflowRequest,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> None:
+    """Assign roles to a workflow.
+
+    This is a batch operation that adds the specified roles to the workflow.
+    Roles that are already assigned will be skipped.
+
+    Args:
+        workflow_id: UUID of the workflow
+        request: Request containing list of role IDs to assign
+    """
+    # Verify workflow exists
+    result = await db.execute(
+        select(WorkflowORM.id).where(WorkflowORM.id == workflow_id)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow with ID '{workflow_id}' not found",
+        )
+
+    now = datetime.utcnow()
+
+    for role_id_str in request.role_ids:
+        role_uuid = UUID(role_id_str)
+
+        # Verify role exists
+        role_result = await db.execute(
+            select(Role.id).where(Role.id == role_uuid)
+        )
+        if not role_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Role with ID '{role_id_str}' not found",
+            )
+
+        # Check if already assigned
+        existing = await db.execute(
+            select(WorkflowRole).where(
+                WorkflowRole.workflow_id == workflow_id,
+                WorkflowRole.role_id == role_uuid,
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+
+        # Create new assignment
+        workflow_role = WorkflowRole(
+            workflow_id=workflow_id,
+            role_id=role_uuid,
+            assigned_by=user.email,
+            assigned_at=now,
+        )
+        db.add(workflow_role)
+
+    await db.flush()
+    logger.info(f"Assigned roles to workflow {workflow_id}")
+
+
+@router.delete(
+    "/{workflow_id}/roles/{role_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove role from workflow",
+    description="Remove a role from a workflow (Platform admin only)",
+)
+async def remove_role_from_workflow(
+    workflow_id: UUID,
+    role_id: UUID,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> None:
+    """Remove a role from a workflow.
+
+    Args:
+        workflow_id: UUID of the workflow
+        role_id: UUID of the role to remove
+    """
+    result = await db.execute(
+        delete(WorkflowRole).where(
+            WorkflowRole.workflow_id == workflow_id,
+            WorkflowRole.role_id == role_id,
+        )
+    )
+
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow-role assignment not found",
+        )
+
+    logger.info(f"Removed role {role_id} from workflow {workflow_id}")

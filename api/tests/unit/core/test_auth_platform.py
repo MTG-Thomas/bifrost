@@ -1,8 +1,14 @@
 """
-Unit tests for PLATFORM user authentication.
+Unit tests for user authentication.
 
-Tests that PLATFORM users (engine, system) can authenticate without org_id,
-while regular ORG users still require org_id in their tokens.
+Tests that superusers (system accounts) can authenticate without org_id,
+while regular users still require org_id in their tokens.
+
+Auth model:
+- is_superuser=true, org_id=UUID: Platform admin in an org
+- is_superuser=false, org_id=UUID: Regular org user
+- is_superuser=true, org_id=None: System account (global scope)
+- is_superuser=false, org_id=None: INVALID (rejected at token parsing)
 """
 
 import pytest
@@ -35,24 +41,23 @@ def create_credentials(token: str) -> HTTPAuthorizationCredentials:
     return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
-class TestPlatformUserTokenValidation:
-    """Tests for PLATFORM user token handling without org_id."""
+class TestSystemAccountTokenValidation:
+    """Tests for system account (superuser without org_id) token handling."""
 
     @pytest.mark.asyncio
-    async def test_platform_user_without_org_id_is_valid(
+    async def test_superuser_without_org_id_is_valid(
         self, mock_request, mock_db
     ):
-        """Engine/system token without org_id should authenticate successfully."""
+        """System account token (superuser, no org_id) should authenticate successfully."""
         user_id = str(uuid4())
 
-        # Create token with user_type=PLATFORM but no org_id
+        # Create token with is_superuser=True but no org_id (system account)
         token = create_access_token({
             "sub": user_id,
             "email": "engine@bifrost.internal",
             "name": "Bifrost Engine",
-            "user_type": "PLATFORM",
             "is_superuser": True,
-            # NO org_id claim
+            # NO org_id claim - valid for system accounts
         })
 
         credentials = create_credentials(token)
@@ -61,57 +66,53 @@ class TestPlatformUserTokenValidation:
 
         assert user is not None
         assert str(user.user_id) == user_id
-        assert user.organization_id is None
-        assert user.user_type == "PLATFORM"
+        assert user.organization_id is None  # System account has no org
         assert user.is_superuser is True
         assert user.email == "engine@bifrost.internal"
 
     @pytest.mark.asyncio
-    async def test_platform_user_with_org_id_is_also_valid(
+    async def test_superuser_with_org_id_is_platform_admin(
         self, mock_request, mock_db
     ):
-        """PLATFORM user with org_id should also work (edge case)."""
+        """Superuser with org_id should be a platform admin in that org."""
         user_id = str(uuid4())
         org_id = str(uuid4())
 
-        # PLATFORM user with org_id (unusual but should work)
+        # Platform admin: superuser with org_id
         token = create_access_token({
             "sub": user_id,
             "email": "admin@example.com",
             "name": "Platform Admin",
-            "user_type": "PLATFORM",
             "is_superuser": True,
-            "org_id": org_id,  # Has org_id
+            "org_id": org_id,
         })
 
         credentials = create_credentials(token)
 
         user = await get_current_user_optional(mock_request, credentials, mock_db)
 
-        # PLATFORM users with org_id in token still get organization_id=None
-        # because PLATFORM handling is done first
         assert user is not None
-        assert user.organization_id is None
-        assert user.user_type == "PLATFORM"
+        assert str(user.organization_id) == org_id
+        assert user.is_superuser is True
 
 
 class TestOrgUserTokenValidation:
-    """Tests for regular ORG user token handling."""
+    """Tests for regular org user token handling."""
 
     @pytest.mark.asyncio
-    async def test_org_user_without_org_id_is_rejected(
+    async def test_regular_user_without_org_id_is_rejected(
         self, mock_request, mock_db
     ):
-        """Regular ORG user token without org_id should be rejected."""
+        """Non-superuser token without org_id should be rejected."""
         user_id = str(uuid4())
 
-        # ORG user without org_id
+        # Regular user without org_id - invalid
         token = create_access_token({
             "sub": user_id,
             "email": "user@example.com",
             "name": "Regular User",
-            "user_type": "ORG",
-            # NO org_id claim
+            "is_superuser": False,
+            # NO org_id claim - invalid for non-superusers
         })
 
         credentials = create_credentials(token)
@@ -122,10 +123,10 @@ class TestOrgUserTokenValidation:
         assert user is None
 
     @pytest.mark.asyncio
-    async def test_org_user_with_org_id_is_valid(
+    async def test_regular_user_with_org_id_is_valid(
         self, mock_request, mock_db
     ):
-        """Regular ORG user token with org_id should authenticate."""
+        """Regular user token with org_id should authenticate."""
         user_id = str(uuid4())
         org_id = str(uuid4())
 
@@ -133,7 +134,7 @@ class TestOrgUserTokenValidation:
             "sub": user_id,
             "email": "user@example.com",
             "name": "Regular User",
-            "user_type": "ORG",
+            "is_superuser": False,
             "org_id": org_id,
         })
 
@@ -144,21 +145,21 @@ class TestOrgUserTokenValidation:
         assert user is not None
         assert str(user.user_id) == user_id
         assert str(user.organization_id) == org_id
-        assert user.user_type == "ORG"
+        assert user.is_superuser is False
         assert user.email == "user@example.com"
 
     @pytest.mark.asyncio
-    async def test_org_user_with_invalid_org_id_is_rejected(
+    async def test_user_with_invalid_org_id_is_rejected(
         self, mock_request, mock_db
     ):
-        """ORG user token with invalid org_id format should be rejected."""
+        """Token with invalid org_id format should be rejected."""
         user_id = str(uuid4())
 
         token = create_access_token({
             "sub": user_id,
             "email": "user@example.com",
             "name": "Regular User",
-            "user_type": "ORG",
+            "is_superuser": False,
             "org_id": "not-a-uuid",
         })
 
@@ -169,23 +170,23 @@ class TestOrgUserTokenValidation:
         assert user is None
 
 
-class TestDefaultUserType:
-    """Tests for default user_type handling."""
+class TestMissingClaimsHandling:
+    """Tests for tokens with missing claims."""
 
     @pytest.mark.asyncio
-    async def test_missing_user_type_defaults_to_org(
+    async def test_token_without_is_superuser_defaults_to_false(
         self, mock_request, mock_db
     ):
-        """Token without user_type should be rejected (missing required claim)."""
+        """Token without is_superuser should default to False (and require org_id)."""
         user_id = str(uuid4())
         org_id = str(uuid4())
 
-        # Token missing user_type (but has email)
+        # Token missing is_superuser but has org_id
         token = create_access_token({
             "sub": user_id,
             "email": "user@example.com",
             "name": "User",
-            # NO user_type
+            # NO is_superuser - defaults to False
             "org_id": org_id,
         })
 
@@ -193,5 +194,7 @@ class TestDefaultUserType:
 
         user = await get_current_user_optional(mock_request, credentials, mock_db)
 
-        # Should be rejected because user_type is required
-        assert user is None
+        # Should work because org_id is provided
+        assert user is not None
+        assert str(user.organization_id) == org_id
+        assert user.is_superuser is False

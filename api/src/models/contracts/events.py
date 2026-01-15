@@ -10,7 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.models.enums import EventDeliveryStatus, EventSourceType, EventStatus
+from src.models.enums import EventSourceType, EventStatus
 
 
 # ==================== WEBHOOK ADAPTER MODELS ====================

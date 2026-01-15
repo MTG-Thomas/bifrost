@@ -62,11 +62,30 @@ class TableRepository(OrgScopedRepository[Table]):
         return list(result.scalars().all())
 
     async def get_by_name(self, name: str) -> Table | None:
-        """Get table by name with cascade scoping."""
-        query = select(self.model).where(self.model.name == name)
-        query = self.filter_cascade(query)
+        """Get by name with priority: org-specific > global.
 
-        result = await self.session.execute(query)
+        This uses prioritized lookup to avoid MultipleResultsFound when
+        the same name exists in both org scope and global scope.
+        """
+        # First try org-specific (if we have an org)
+        if self.org_id:
+            result = await self.session.execute(
+                select(self.model).where(
+                    self.model.name == name,
+                    self.model.organization_id == self.org_id,
+                )
+            )
+            entity = result.scalar_one_or_none()
+            if entity:
+                return entity
+
+        # Fall back to global (or global-only if no org_id)
+        result = await self.session.execute(
+            select(self.model).where(
+                self.model.name == name,
+                self.model.organization_id.is_(None),
+            )
+        )
         return result.scalar_one_or_none()
 
     async def get_by_name_strict(self, name: str) -> Table | None:
@@ -620,9 +639,9 @@ async def query_documents(
 ) -> DocumentListResponse:
     """Query documents with filtering and pagination (platform admin only).
 
-    Auto-creates the table if it doesn't exist (returns empty results).
+    Returns 404 if the table doesn't exist.
     """
-    table = await get_or_create_table(ctx, name, scope, created_by=user.email)
+    table = await get_table_or_404(ctx, name, scope)
     repo = DocumentRepository(ctx.db, table)
 
     documents, total = await repo.query(query_params)
@@ -648,9 +667,9 @@ async def count_documents(
 ) -> DocumentCountResponse:
     """Count documents in a table (platform admin only).
 
-    Auto-creates the table if it doesn't exist (returns 0).
+    Returns 404 if the table doesn't exist.
     """
-    table = await get_or_create_table(ctx, name, scope, created_by=user.email)
+    table = await get_table_or_404(ctx, name, scope)
     repo = DocumentRepository(ctx.db, table)
 
     count = await repo.count()

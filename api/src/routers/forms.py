@@ -40,8 +40,8 @@ except ImportError:
     CACHE_INVALIDATION_AVAILABLE = False
     invalidate_form = None  # type: ignore
 
-# Import workflow access sync
-from src.services.workflow_access_service import sync_form_workflow_access
+# Import workflow role sync
+from src.services.workflow_role_service import sync_form_roles_to_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -553,8 +553,8 @@ async def create_form(
         logger.error(f"Failed to write form file for {form.id}: {e}", exc_info=True)
         # Continue - database write succeeded, file write can be retried
 
-    # Sync workflow_access table for execution authorization
-    await sync_form_workflow_access(db, form, form.fields)
+    # Sync form roles to referenced workflows (additive)
+    await sync_form_roles_to_workflows(db, form, form.fields, assigned_by=ctx.user.email)
 
     logger.info(f"Created form {form.id}: {form.name} (file: {form.file_path})")
 
@@ -737,8 +737,8 @@ async def update_form(
         logger.error(f"Failed to update form file for {form_id}: {e}", exc_info=True)
         # Continue - database write succeeded
 
-    # Sync workflow_access table for execution authorization
-    await sync_form_workflow_access(db, form, form.fields)
+    # Sync form roles to referenced workflows (additive)
+    await sync_form_roles_to_workflows(db, form, form.fields, assigned_by=ctx.user.email)
 
     logger.info(f"Updated form {form_id} (file: {form.file_path})")
 

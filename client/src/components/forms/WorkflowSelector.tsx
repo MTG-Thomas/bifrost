@@ -7,8 +7,15 @@
  * Used consistently in forms, apps, agents, and anywhere workflows are selected.
  */
 
-import { useMemo, useState } from "react";
-import { Check, ChevronsUpDown, Globe, Loader2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+	AlertTriangle,
+	Check,
+	ChevronsUpDown,
+	Globe,
+	Loader2,
+	X,
+} from "lucide-react";
 import {
 	Select,
 	SelectContent,
@@ -33,10 +40,20 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { $api } from "@/lib/api-client";
+import { fetchWorkflowRolesBatch } from "@/hooks/useWorkflowRoles";
 import type { components } from "@/lib/v1";
 
 type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
 type ExecutableType = components["schemas"]["ExecutableType"];
+
+/**
+ * Extended workflow metadata with role information
+ */
+interface WorkflowWithRoleStatus extends WorkflowMetadata {
+	roleIds?: string[];
+	hasMismatch?: boolean;
+	missingRoleNames?: string[];
+}
 
 export interface WorkflowSelectorProps {
 	/** Currently selected workflow ID */
@@ -77,6 +94,21 @@ export interface WorkflowSelectorProps {
 	 * Show organization badge on org-scoped workflows
 	 */
 	showOrgBadge?: boolean;
+	/**
+	 * Show role badges and mismatch warnings on workflows.
+	 * When enabled, fetches roles for each workflow and displays them.
+	 */
+	showRoleBadges?: boolean;
+	/**
+	 * Entity role IDs to compare against workflow roles for mismatch detection.
+	 * Only used when showRoleBadges is true.
+	 */
+	entityRoleIds?: string[];
+	/**
+	 * Map of role ID to role name for displaying role names in warnings.
+	 * Only used when showRoleBadges is true and entityRoleIds is provided.
+	 */
+	entityRoleNames?: Record<string, string>;
 }
 
 /**
@@ -111,7 +143,16 @@ export function WorkflowSelector({
 	type,
 	variant = "select",
 	showOrgBadge = false,
+	showRoleBadges = false,
+	entityRoleIds = [],
+	entityRoleNames = {},
 }: WorkflowSelectorProps) {
+	// State for workflow roles when showRoleBadges is enabled
+	const [workflowRolesMap, setWorkflowRolesMap] = useState<
+		Map<string, string[]>
+	>(new Map());
+	const [isLoadingRoles, setIsLoadingRoles] = useState(false);
+
 	// Fetch workflows with scope and type filtering
 	const {
 		data: workflows,
@@ -126,10 +167,62 @@ export function WorkflowSelector({
 		},
 	});
 
+	// Fetch workflow roles when showRoleBadges is enabled
+	useEffect(() => {
+		if (!showRoleBadges || !workflows || workflows.length === 0) return;
+
+		const loadRoles = async () => {
+			setIsLoadingRoles(true);
+			try {
+				const workflowIds = workflows.map((w) => w.id);
+				const roleMap = await fetchWorkflowRolesBatch(workflowIds);
+				setWorkflowRolesMap(roleMap);
+			} catch (error) {
+				console.error("Failed to load workflow roles:", error);
+			} finally {
+				setIsLoadingRoles(false);
+			}
+		};
+
+		loadRoles();
+	}, [showRoleBadges, workflows]);
+
+	// Enhance workflows with role status information
+	const workflowsWithRoleStatus: WorkflowWithRoleStatus[] = useMemo(() => {
+		if (!workflows) return [];
+
+		return workflows.map((workflow) => {
+			if (!showRoleBadges) return workflow;
+
+			const roleIds = workflowRolesMap.get(workflow.id) || [];
+			const roleIdSet = new Set(roleIds);
+
+			// Find entity roles that are NOT in the workflow's roles
+			const missingRoleIds = entityRoleIds.filter((id) => !roleIdSet.has(id));
+			const missingRoleNames = missingRoleIds.map(
+				(id) => entityRoleNames[id] || id.slice(0, 8),
+			);
+			const hasMismatch =
+				missingRoleIds.length > 0 && entityRoleIds.length > 0;
+
+			return {
+				...workflow,
+				roleIds,
+				hasMismatch,
+				missingRoleNames,
+			};
+		});
+	}, [
+		workflows,
+		showRoleBadges,
+		workflowRolesMap,
+		entityRoleIds,
+		entityRoleNames,
+	]);
+
 	// Sort workflows: global first (no org), then alphabetically by name
 	const sortedWorkflows = useMemo(() => {
-		if (!workflows) return [];
-		return [...workflows].sort((a, b) => {
+		return [...workflowsWithRoleStatus].sort((a, b) => {
 			// Global workflows (no org_id) come first
 			const aIsGlobal = !a.organization_id;
 			const bIsGlobal = !b.organization_id;
@@ -139,25 +232,27 @@ export function WorkflowSelector({
 			// Then sort alphabetically by name
 			return (a.name ?? "").localeCompare(b.name ?? "");
 		});
-	}, [workflows]);
+	}, [workflowsWithRoleStatus]);
 
 	// Find the selected workflow for display
 	const selectedWorkflow = useMemo(() => {
-		if (!value || !workflows) return null;
-		return workflows.find((w) => w.id === value || w.name === value) ?? null;
-	}, [value, workflows]);
+		if (!value || !sortedWorkflows) return null;
+		return (
+			sortedWorkflows.find((w) => w.id === value || w.name === value) ?? null
+		);
+	}, [value, sortedWorkflows]);
 
-	if (isLoading) {
+	if (isLoading || (showRoleBadges && isLoadingRoles)) {
 		return (
 			<div
 				className={cn(
 					"flex items-center gap-2 h-10 px-3 border rounded-md bg-muted/50",
-					className
+					className,
 				)}
 			>
 				<Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
 				<span className="text-sm text-muted-foreground">
-					Loading workflows...
+					{isLoading ? "Loading workflows..." : "Loading role info..."}
 				</span>
 			</div>
 		);
@@ -168,7 +263,7 @@ export function WorkflowSelector({
 			<div
 				className={cn(
 					"flex items-center h-10 px-3 border border-destructive/50 rounded-md bg-destructive/10",
-					className
+					className,
 				)}
 			>
 				<span className="text-sm text-destructive">
@@ -179,7 +274,7 @@ export function WorkflowSelector({
 	}
 
 	// Render workflow item content (shared between Select and Combobox)
-	const renderWorkflowItem = (workflow: WorkflowMetadata) => (
+	const renderWorkflowItem = (workflow: WorkflowWithRoleStatus) => (
 		<div className="flex flex-col gap-0.5">
 			<div className="flex items-center gap-2">
 				<span>{workflow.name}</span>
@@ -192,12 +287,31 @@ export function WorkflowSelector({
 						Global
 					</Badge>
 				)}
+				{/* Role mismatch warning */}
+				{showRoleBadges && workflow.hasMismatch && (
+					<Badge
+						variant="outline"
+						className="text-xs px-1.5 py-0 h-5 text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-700"
+					>
+						<AlertTriangle className="h-3 w-3 mr-1" />
+						Missing roles
+					</Badge>
+				)}
 			</div>
 			{workflow.description && (
 				<span className="text-xs text-muted-foreground truncate max-w-[250px]">
 					{workflow.description}
 				</span>
 			)}
+			{/* Show missing role names if there's a mismatch */}
+			{showRoleBadges &&
+				workflow.hasMismatch &&
+				workflow.missingRoleNames &&
+				workflow.missingRoleNames.length > 0 && (
+					<span className="text-xs text-amber-600 dark:text-amber-400">
+						Missing: {workflow.missingRoleNames.join(", ")}
+					</span>
+				)}
 		</div>
 	);
 
@@ -240,6 +354,9 @@ export function WorkflowSelector({
 								>
 									<Globe className="h-3 w-3" />
 								</Badge>
+							)}
+							{selectedWorkflow.hasMismatch && (
+								<AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
 							)}
 						</div>
 					) : (
@@ -293,9 +410,9 @@ function ComboboxWorkflowSelector({
 	allowClear: boolean;
 	className?: string;
 	disabled: boolean;
-	workflows: WorkflowMetadata[];
-	selectedWorkflow: WorkflowMetadata | null;
-	renderItem: (workflow: WorkflowMetadata) => React.ReactNode;
+	workflows: WorkflowWithRoleStatus[];
+	selectedWorkflow: WorkflowWithRoleStatus | null;
+	renderItem: (workflow: WorkflowWithRoleStatus) => React.ReactNode;
 	showOrgBadge: boolean;
 }) {
 	const [open, setOpen] = useState(false);
@@ -328,6 +445,9 @@ function ComboboxWorkflowSelector({
 										<Globe className="h-3 w-3" />
 									</Badge>
 								)}
+							{selectedWorkflow.hasMismatch && (
+								<AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+							)}
 						</div>
 					) : (
 						placeholder

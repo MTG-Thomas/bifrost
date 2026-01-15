@@ -113,37 +113,42 @@ export type DataSourceType = "api" | "static" | "computed" | "data-provider" | "
 // Re-export types from v1.d.ts for convenience
 // =============================================================================
 
+// Types without -Input/-Output variants (use directly)
 export type RepeatFor = components["schemas"]["RepeatFor"];
 export type OnCompleteAction = components["schemas"]["OnCompleteAction"];
 export type TableColumn = components["schemas"]["TableColumn"];
-export type TableAction = components["schemas"]["TableAction"];
-export type TabItem = components["schemas"]["TabItem"];
 export type SelectOption = components["schemas"]["SelectOption"];
-export type PageDefinition = components["schemas"]["PageDefinition"];
-export type DataSourceConfig = components["schemas"]["DataSourceConfig"];
 export type PagePermission = components["schemas"]["PagePermission"];
 
-// Props types
+// Core types
+export type TableAction = components["schemas"]["TableAction"];
+export type TabItem = components["schemas"]["TabItem"];
+export type PageDefinition = components["schemas"]["PageDefinition"];
+export type DataSourceConfig = components["schemas"]["DataSourceConfig"];
+
+// Props types without -Input/-Output variants
 export type HeadingProps = components["schemas"]["HeadingProps"];
 export type TextProps = components["schemas"]["TextProps"];
 export type HtmlProps = components["schemas"]["HtmlProps"];
-export type CardProps = components["schemas"]["CardProps"];
 export type DividerProps = components["schemas"]["DividerProps"];
 export type SpacerProps = components["schemas"]["SpacerProps"];
-export type ButtonProps = components["schemas"]["ButtonProps"];
-export type StatCardProps = components["schemas"]["StatCardProps"];
 export type ImageProps = components["schemas"]["ImageProps"];
 export type BadgeProps = components["schemas"]["BadgeProps"];
 export type ProgressProps = components["schemas"]["ProgressProps"];
-export type DataTableProps = components["schemas"]["DataTableProps"];
-export type TabsProps = components["schemas"]["TabsProps"];
 export type FileViewerProps = components["schemas"]["FileViewerProps"];
-export type ModalProps = components["schemas"]["ModalProps"];
 export type TextInputProps = components["schemas"]["TextInputProps"];
 export type NumberInputProps = components["schemas"]["NumberInputProps"];
 export type SelectProps = components["schemas"]["SelectProps"];
 export type CheckboxProps = components["schemas"]["CheckboxProps"];
 export type FormEmbedProps = components["schemas"]["FormEmbedProps"];
+
+// Props types
+export type CardProps = components["schemas"]["CardProps"];
+export type ButtonProps = components["schemas"]["ButtonProps"];
+export type StatCardProps = components["schemas"]["StatCardProps"];
+export type DataTableProps = components["schemas"]["DataTableProps"];
+export type TabsProps = components["schemas"]["TabsProps"];
+export type ModalProps = components["schemas"]["ModalProps"];
 export type FormGroupProps = components["schemas"]["FormGroupProps"];
 
 // Full component types (with id, type, props, and common fields)

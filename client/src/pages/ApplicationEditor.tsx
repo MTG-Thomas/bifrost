@@ -58,6 +58,7 @@ import {
 	useUpdateApplication,
 	usePublishApplication,
 	getAppPage,
+	type PageDefinition,
 } from "@/hooks/useApplications";
 import { useRoles } from "@/hooks/useRoles";
 import { useWorkflows } from "@/hooks/useWorkflows";
@@ -78,11 +79,12 @@ import type {
 	AppComponent,
 	WorkflowResult,
 	ExpressionContext,
-} from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
 import type { components } from "@/lib/v1";
 
 type ApiLayoutContainer = components["schemas"]["LayoutContainer"];
 type ApiComponentNode = components["schemas"]["AppComponentNode"];
+type ApiChildElement = ApiLayoutContainer["children"][number];
 
 /**
  * Convert API LayoutContainer (with null values) to frontend LayoutContainer (with undefined).
@@ -100,7 +102,7 @@ function convertApiLayout(apiLayout: ApiLayoutContainer): LayoutContainer {
 		visible: apiLayout.visible ?? undefined,
 		className: apiLayout.class_name ?? undefined,
 		children: (apiLayout.children ?? []).map(
-			(child): LayoutContainer | AppComponent => {
+			(child: ApiChildElement): LayoutContainer | AppComponent => {
 				// Check if it's a layout container (has type: row/column/grid and children)
 				if (
 					"children" in child &&
@@ -403,26 +405,26 @@ export function ApplicationEditor() {
 				// Build the ApplicationDefinition
 				// Convert API page format to frontend format, handling null -> undefined
 				const convertedPages: FrontendPageDefinition[] =
-					loadedPages.map((page) => ({
+					loadedPages.map((page: PageDefinition) => ({
 						id: page.id,
 						title: page.title,
 						path: page.path,
 						layout: convertApiLayout(page.layout),
 						variables: page.variables ?? {},
-						launchWorkflowId: page.launch_workflow_id ?? undefined,
-						launchWorkflowParams:
+						launch_workflow_id: page.launch_workflow_id ?? undefined,
+						launch_workflow_params:
 							page.launch_workflow_params ?? undefined,
-						launchWorkflowDataSourceId:
+						launch_workflow_data_source_id:
 							page.launch_workflow_data_source_id ?? undefined,
 						permission: page.permission
 							? {
-									allowedRoles:
+									allowed_roles:
 										page.permission.allowed_roles ??
 										undefined,
-									accessExpression:
+									access_expression:
 										page.permission.access_expression ??
 										undefined,
-									redirectTo:
+									redirect_to:
 										page.permission.redirect_to ?? undefined,
 								}
 							: undefined,
@@ -495,10 +497,10 @@ export function ApplicationEditor() {
 						title: currentPage.title,
 						path: currentPage.path,
 						variables: currentPage.variables,
-						launchWorkflowId: currentPage.launchWorkflowId,
-						launchWorkflowParams: currentPage.launchWorkflowParams,
-						launchWorkflowDataSourceId:
-							currentPage.launchWorkflowDataSourceId,
+						launch_workflow_id: currentPage.launch_workflow_id,
+						launch_workflow_params: currentPage.launch_workflow_params,
+						launch_workflow_data_source_id:
+							currentPage.launch_workflow_data_source_id,
 						permission: currentPage.permission,
 					});
 
@@ -511,11 +513,11 @@ export function ApplicationEditor() {
 							title: currentPage.title,
 							path: currentPage.path,
 							variables: currentPage.variables,
-							launch_workflow_id: currentPage.launchWorkflowId ?? null,
+							launch_workflow_id: currentPage.launch_workflow_id ?? null,
 							launch_workflow_params:
-								currentPage.launchWorkflowParams ?? null,
+								currentPage.launch_workflow_params ?? null,
 							launch_workflow_data_source_id:
-								currentPage.launchWorkflowDataSourceId ?? null,
+								currentPage.launch_workflow_data_source_id ?? null,
 							permission: currentPage.permission as { [key: string]: unknown } | null | undefined,
 						});
 					}
@@ -536,10 +538,10 @@ export function ApplicationEditor() {
 					title: currentPage.title,
 					path: currentPage.path,
 					variables: currentPage.variables,
-					launchWorkflowId: currentPage.launchWorkflowId,
-					launchWorkflowParams: currentPage.launchWorkflowParams,
-					launchWorkflowDataSourceId:
-						currentPage.launchWorkflowDataSourceId,
+					launch_workflow_id: currentPage.launch_workflow_id,
+					launch_workflow_params: currentPage.launch_workflow_params,
+					launch_workflow_data_source_id:
+						currentPage.launch_workflow_data_source_id,
 					permission: currentPage.permission,
 				});
 			}

@@ -46,7 +46,6 @@ class UserPublic(BaseModel):
     is_superuser: bool
     is_verified: bool
     is_registered: bool
-    user_type: str
     organization_id: str | None
     mfa_enabled: bool
     created_at: datetime | None

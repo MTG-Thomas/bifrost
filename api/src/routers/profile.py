@@ -59,7 +59,6 @@ async def get_profile(
         email=user.email,
         name=user.name,
         has_avatar=user.avatar_data is not None,
-        user_type=user.user_type.value,
         organization_id=user.organization_id,
         is_superuser=user.is_superuser,
     )
@@ -106,7 +105,6 @@ async def update_profile(
         email=user.email,
         name=user.name,
         has_avatar=user.avatar_data is not None,
-        user_type=user.user_type.value,
         organization_id=user.organization_id,
         is_superuser=user.is_superuser,
     )
@@ -195,7 +193,6 @@ async def upload_avatar(
         email=user.email,
         name=user.name,
         has_avatar=True,
-        user_type=user.user_type.value,
         organization_id=user.organization_id,
         is_superuser=user.is_superuser,
     )
@@ -232,7 +229,6 @@ async def delete_avatar(
         email=user.email,
         name=user.name,
         has_avatar=False,
-        user_type=user.user_type.value,
         organization_id=user.organization_id,
         is_superuser=user.is_superuser,
     )

@@ -168,7 +168,8 @@
       "mcp__bifrost__create_workflow",
       "mcp__bifrost__create_app",
       "mcp__bifrost__create_form",
-      "Skill(superpowers:systematic-debugging)"
+      "Skill(superpowers:systematic-debugging)",
+      "Skill(superpowers:brainstorming)"
     ],
     "deny": [],
     "ask": [],

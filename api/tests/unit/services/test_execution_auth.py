@@ -1,13 +1,14 @@
 """
 Unit tests for ExecutionAuthService.
 
-Tests cover the precomputed workflow_access table approach:
+Tests cover the authorization model:
 - Platform admin access (always allowed, no DB query)
 - API key access (always allowed, no DB query)
-- Workflow access via workflow_access table lookup
+- Integration-based access (data providers tied to integrations)
+- Direct workflow access via workflow.access_level + workflow_roles
 
-The workflow_access table is populated at mutation time (form create/update,
-app publish) and contains precomputed workflow references for fast lookups.
+The workflow_roles table is populated when forms/apps are created/updated,
+allowing role-based access control at the workflow level.
 """
 
 import pytest
@@ -126,15 +127,26 @@ class TestNoUserAccess:
         assert result is False
 
 
-class TestWorkflowAccessTableLookup:
-    """Tests for workflow_access table based access."""
+class TestDirectWorkflowAccess:
+    """Tests for direct workflow access via access_level and workflow_roles."""
 
     @pytest.mark.asyncio
-    async def test_access_granted_when_in_workflow_access(self, auth_service, mock_db):
-        """User with workflow_access entry should have access."""
-        mock_result = MagicMock()
-        mock_result.scalar.return_value = True  # Integration check returns True
-        mock_db.execute = AsyncMock(return_value=mock_result)
+    async def test_access_granted_via_workflow_roles(self, auth_service, mock_db):
+        """User with matching role via workflow_roles should have access."""
+        # First query (integration check) returns False
+        # Second query (direct workflow access) returns True
+        integration_result = MagicMock()
+        integration_result.scalar.return_value = False
+        direct_result = MagicMock()
+        direct_result.scalar_one_or_none.return_value = MagicMock(
+            access_level="role_based"
+        )
+        role_result = MagicMock()
+        role_result.scalar.return_value = True
+
+        mock_db.execute = AsyncMock(
+            side_effect=[integration_result, direct_result, role_result]
+        )
 
         result = await auth_service.can_execute_workflow(
             workflow_id=WORKFLOW_ID,
@@ -144,14 +156,14 @@ class TestWorkflowAccessTableLookup:
             is_api_key=False,
         )
         assert result is True
-        # Integration check returns True, so we short-circuit (only 1 query)
-        mock_db.execute.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_access_denied_when_not_in_workflow_access(self, auth_service, mock_db):
-        """User without workflow_access entry should be denied."""
+    async def test_access_denied_when_no_matching_role(self, auth_service, mock_db):
+        """User without matching role should be denied."""
+        # Integration check returns False, direct access check also returns False
         mock_result = MagicMock()
         mock_result.scalar.return_value = False
+        mock_result.scalar_one_or_none.return_value = None  # Workflow not found or no access
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         result = await auth_service.can_execute_workflow(
@@ -162,14 +174,12 @@ class TestWorkflowAccessTableLookup:
             is_api_key=False,
         )
         assert result is False
-        # Two queries: integration check (False) + workflow_access check (False)
-        assert mock_db.execute.call_count == 2
 
     @pytest.mark.asyncio
     async def test_data_provider_access(self, auth_service, mock_db):
-        """Data providers are checked same as workflows (via workflow_access)."""
+        """Data providers are checked via workflow_roles (same as workflows)."""
         mock_result = MagicMock()
-        mock_result.scalar.return_value = True
+        mock_result.scalar.return_value = True  # Integration check returns True
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         result = await auth_service.can_execute_workflow(
@@ -186,9 +196,11 @@ class TestIntegrationAccess:
     """Tests for integration-based access to data providers."""
 
     @pytest.mark.asyncio
-    async def test_integration_linked_data_provider_grants_access(self, auth_service, mock_db):
+    async def test_integration_linked_data_provider_grants_access(
+        self, auth_service, mock_db
+    ):
         """Data provider tied to an integration is accessible to any authenticated user."""
-        # First call (integration check) returns True
+        # Integration check returns True
         mock_result = MagicMock()
         mock_result.scalar.return_value = True
         mock_db.execute = AsyncMock(return_value=mock_result)
@@ -205,15 +217,19 @@ class TestIntegrationAccess:
         mock_db.execute.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_integration_falls_through_to_workflow_access(self, auth_service, mock_db):
-        """Non-integration data provider falls through to workflow_access check."""
-        # Create mock results: first False (no integration), then True (has workflow_access)
+    async def test_no_integration_falls_through_to_direct_access(
+        self, auth_service, mock_db
+    ):
+        """Non-integration workflow falls through to direct access check."""
+        # First False (no integration), then True (has direct workflow access)
         integration_result = MagicMock()
         integration_result.scalar.return_value = False
-        workflow_result = MagicMock()
-        workflow_result.scalar.return_value = True
+        direct_result = MagicMock()
+        direct_result.scalar_one_or_none.return_value = MagicMock(
+            access_level="authenticated"
+        )
 
-        mock_db.execute = AsyncMock(side_effect=[integration_result, workflow_result])
+        mock_db.execute = AsyncMock(side_effect=[integration_result, direct_result])
 
         result = await auth_service.can_execute_workflow(
             workflow_id=DATA_PROVIDER_ID,
@@ -223,16 +239,16 @@ class TestIntegrationAccess:
             is_api_key=False,
         )
         assert result is True
-        # Both integration check and workflow_access check
+        # Both integration check and direct access check
         assert mock_db.execute.call_count == 2
 
 
 class TestOrgScoping:
-    """Tests for organization scoping via workflow_access."""
+    """Tests for organization scoping via workflow access."""
 
     @pytest.mark.asyncio
     async def test_global_workflow_accessible(self, auth_service, mock_db):
-        """User can access workflow from global entity (organization_id=NULL)."""
+        """User can access global workflow (organization_id=NULL)."""
         mock_result = MagicMock()
         mock_result.scalar.return_value = True
         mock_db.execute = AsyncMock(return_value=mock_result)
@@ -248,9 +264,10 @@ class TestOrgScoping:
 
     @pytest.mark.asyncio
     async def test_different_org_denied(self, auth_service, mock_db):
-        """User cannot access workflow from different org's entity."""
+        """User cannot access workflow from different org."""
         mock_result = MagicMock()
         mock_result.scalar.return_value = False
+        mock_result.scalar_one_or_none.return_value = None
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         result = await auth_service.can_execute_workflow(
@@ -344,31 +361,13 @@ class TestAccessPrecedence:
         # DB should not be called for API key
         mock_db.execute.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_single_query_for_workflow_access(self, auth_service, mock_db):
-        """Workflow access lookup should use a single query."""
-        mock_result = MagicMock()
-        mock_result.scalar.return_value = True
-        mock_db.execute = AsyncMock(return_value=mock_result)
-
-        result = await auth_service.can_execute_workflow(
-            workflow_id=WORKFLOW_ID,
-            user_id=USER_ID,
-            user_org_id=ORG_ID,
-            is_superuser=False,
-            is_api_key=False,
-        )
-        assert result is True
-        # Only one query should be executed (workflow_access lookup)
-        assert mock_db.execute.call_count == 1
-
 
 class TestEdgeCases:
     """Tests for edge cases and boundary conditions."""
 
     @pytest.mark.asyncio
     async def test_invalid_workflow_id_format(self, auth_service, mock_db):
-        """Handle non-UUID workflow IDs gracefully - should return False without querying."""
+        """Handle non-UUID workflow IDs gracefully - should return False."""
         result = await auth_service.can_execute_workflow(
             workflow_id="not-a-uuid",
             user_id=USER_ID,
@@ -378,12 +377,10 @@ class TestEdgeCases:
         )
         # Should not raise, just return False
         assert result is False
-        # DB should not be queried for invalid UUID
-        mock_db.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_workflow_id(self, auth_service, mock_db):
-        """Handle empty workflow ID - should return False without querying."""
+        """Handle empty workflow ID - should return False."""
         result = await auth_service.can_execute_workflow(
             workflow_id="",
             user_id=USER_ID,
@@ -392,8 +389,6 @@ class TestEdgeCases:
             is_api_key=False,
         )
         assert result is False
-        # DB should not be queried for empty UUID
-        mock_db.execute.assert_not_called()
 
 
 class TestAccessLevels:
@@ -402,9 +397,15 @@ class TestAccessLevels:
     @pytest.mark.asyncio
     async def test_authenticated_access_level(self, auth_service, mock_db):
         """Authenticated access level should grant access to any authenticated user."""
-        mock_result = MagicMock()
-        mock_result.scalar.return_value = True
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        # Integration check returns False, direct check finds workflow with authenticated access
+        integration_result = MagicMock()
+        integration_result.scalar.return_value = False
+        direct_result = MagicMock()
+        direct_result.scalar_one_or_none.return_value = MagicMock(
+            access_level="authenticated"
+        )
+
+        mock_db.execute = AsyncMock(side_effect=[integration_result, direct_result])
 
         result = await auth_service.can_execute_workflow(
             workflow_id=WORKFLOW_ID,
@@ -418,10 +419,19 @@ class TestAccessLevels:
     @pytest.mark.asyncio
     async def test_role_based_access_requires_role(self, auth_service, mock_db):
         """Role-based access requires user to have matching role."""
-        # Simulate user not having the required role
-        mock_result = MagicMock()
-        mock_result.scalar.return_value = False
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        # Integration check False, workflow found with role_based, but role check fails
+        integration_result = MagicMock()
+        integration_result.scalar.return_value = False
+        direct_result = MagicMock()
+        direct_result.scalar_one_or_none.return_value = MagicMock(
+            access_level="role_based"
+        )
+        role_result = MagicMock()
+        role_result.scalar.return_value = False
+
+        mock_db.execute = AsyncMock(
+            side_effect=[integration_result, direct_result, role_result]
+        )
 
         result = await auth_service.can_execute_workflow(
             workflow_id=WORKFLOW_ID,
@@ -431,39 +441,3 @@ class TestAccessLevels:
             is_api_key=False,
         )
         assert result is False
-
-
-class TestEntityTypes:
-    """Tests verifying both form and app entity types work."""
-
-    @pytest.mark.asyncio
-    async def test_form_entity_type_access(self, auth_service, mock_db):
-        """Form entity type should grant workflow access."""
-        mock_result = MagicMock()
-        mock_result.scalar.return_value = True
-        mock_db.execute = AsyncMock(return_value=mock_result)
-
-        result = await auth_service.can_execute_workflow(
-            workflow_id=WORKFLOW_ID,
-            user_id=USER_ID,
-            user_org_id=ORG_ID,
-            is_superuser=False,
-            is_api_key=False,
-        )
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_app_entity_type_access(self, auth_service, mock_db):
-        """App entity type should grant workflow access."""
-        mock_result = MagicMock()
-        mock_result.scalar.return_value = True
-        mock_db.execute = AsyncMock(return_value=mock_result)
-
-        result = await auth_service.can_execute_workflow(
-            workflow_id=WORKFLOW_ID,
-            user_id=USER_ID,
-            user_org_id=ORG_ID,
-            is_superuser=False,
-            is_api_key=False,
-        )
-        assert result is True

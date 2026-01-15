@@ -5,17 +5,62 @@
  * Used by the editor for adding, removing, moving, and updating components.
  */
 
-import type {
-	LayoutContainer,
-	AppComponent,
-	ComponentType,
-	LayoutType,
-} from "./app-builder-types";
+import type { components } from "./v1";
+import type { LayoutContainer } from "@/types/app-builder";
 import {
 	isLayoutContainer,
 	canHaveChildren,
 	getElementChildren,
-} from "./app-builder-types";
+} from "./app-builder-utils";
+
+// Type aliases for generated API types
+type AppComponent =
+	| components["schemas"]["HeadingComponent"]
+	| components["schemas"]["TextComponent"]
+	| components["schemas"]["HtmlComponent"]
+	| components["schemas"]["CardComponent"]
+	| components["schemas"]["DividerComponent"]
+	| components["schemas"]["SpacerComponent"]
+	| components["schemas"]["ButtonComponent"]
+	| components["schemas"]["StatCardComponent"]
+	| components["schemas"]["ImageComponent"]
+	| components["schemas"]["BadgeComponent"]
+	| components["schemas"]["ProgressComponent"]
+	| components["schemas"]["DataTableComponent"]
+	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["FileViewerComponent"]
+	| components["schemas"]["ModalComponent"]
+	| components["schemas"]["TextInputComponent"]
+	| components["schemas"]["NumberInputComponent"]
+	| components["schemas"]["SelectComponent"]
+	| components["schemas"]["CheckboxComponent"]
+	| components["schemas"]["FormEmbedComponent"]
+	| components["schemas"]["FormGroupComponent"];
+
+type ComponentType =
+	| "heading"
+	| "text"
+	| "html"
+	| "card"
+	| "divider"
+	| "spacer"
+	| "button"
+	| "stat-card"
+	| "image"
+	| "badge"
+	| "progress"
+	| "data-table"
+	| "tabs"
+	| "file-viewer"
+	| "modal"
+	| "text-input"
+	| "number-input"
+	| "select"
+	| "checkbox"
+	| "form-embed"
+	| "form-group";
+
+type LayoutType = "row" | "column" | "grid";
 
 // ============================================================================
 // ID Generation
@@ -92,7 +137,7 @@ export function createDefaultComponent(
 				type: "button",
 				props: {
 					label: "Click Me",
-					actionType: "navigate",
+					action_type: "navigate",
 					variant: "default",
 				},
 			};
@@ -154,7 +199,7 @@ export function createDefaultComponent(
 				type: "progress",
 				props: {
 					value: 50,
-					showLabel: true,
+					show_label: true,
 				},
 			};
 		case "data-table":
@@ -162,13 +207,13 @@ export function createDefaultComponent(
 				id,
 				type: "data-table",
 				props: {
-					dataSource: "tableName",
+					data_source: "tableName",
 					columns: [
 						{ key: "id", header: "ID" },
 						{ key: "name", header: "Name" },
 					],
 					paginated: true,
-					pageSize: 10,
+					page_size: 10,
 				},
 			};
 		case "tabs":
@@ -196,7 +241,7 @@ export function createDefaultComponent(
 				id,
 				type: "text-input",
 				props: {
-					fieldId: `field_${id.slice(-6)}`,
+					field_id: `field_${id.slice(-6)}`,
 					label: "Label",
 					placeholder: "Enter text...",
 				},
@@ -206,7 +251,7 @@ export function createDefaultComponent(
 				id,
 				type: "number-input",
 				props: {
-					fieldId: `field_${id.slice(-6)}`,
+					field_id: `field_${id.slice(-6)}`,
 					label: "Number",
 					placeholder: "0",
 				},
@@ -216,7 +261,7 @@ export function createDefaultComponent(
 				id,
 				type: "select",
 				props: {
-					fieldId: `field_${id.slice(-6)}`,
+					field_id: `field_${id.slice(-6)}`,
 					label: "Select",
 					placeholder: "Select an option",
 					options: [
@@ -230,7 +275,7 @@ export function createDefaultComponent(
 				id,
 				type: "checkbox",
 				props: {
-					fieldId: `field_${id.slice(-6)}`,
+					field_id: `field_${id.slice(-6)}`,
 					label: "Checkbox label",
 				},
 			};
@@ -240,7 +285,7 @@ export function createDefaultComponent(
 				type: "file-viewer",
 				props: {
 					src: "https://example.com/file.pdf",
-					displayMode: "inline",
+					display_mode: "inline",
 				},
 			};
 		case "modal":
@@ -250,7 +295,7 @@ export function createDefaultComponent(
 				props: {
 					title: "Modal Title",
 					description: "Modal description",
-					triggerLabel: "Open Modal",
+					trigger_label: "Open Modal",
 					content: {
 						id: `${id}_modal_content`,
 						type: "column",
@@ -258,7 +303,7 @@ export function createDefaultComponent(
 						gap: 16,
 						padding: 16,
 					},
-					showCloseButton: true,
+					show_close_button: true,
 				},
 			};
 		case "form-embed":
@@ -266,9 +311,9 @@ export function createDefaultComponent(
 				id,
 				type: "form-embed",
 				props: {
-					formId: "",
-					showTitle: true,
-					showDescription: true,
+					form_id: "",
+					show_title: true,
+					show_description: true,
 				},
 			};
 		case "form-group":
@@ -667,7 +712,11 @@ function deepCloneWithNewIds(
 		return {
 			...element,
 			children: element.children.map((child) =>
-				deepCloneWithNewIds(child),
+				// API returns AppComponentNode with type: string, but at runtime
+				// these have the correct structure for our frontend types
+				deepCloneWithNewIds(
+					child as unknown as LayoutContainer | AppComponent,
+				),
 			),
 		};
 	}

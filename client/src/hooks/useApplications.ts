@@ -39,8 +39,8 @@ export type AppComponentMove = components["schemas"]["AppComponentMove"];
 export type AppComponentListResponse =
 	components["schemas"]["AppComponentListResponse"];
 
-export type ApplicationExport = components["schemas"]["ApplicationExport"];
-export type ApplicationImport = components["schemas"]["ApplicationImport"];
+// Export type for applications
+export type ApplicationExport = ApplicationPublic;
 
 /** Helper to extract error message from API error response */
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -608,28 +608,6 @@ export function useExportApplication(
 	);
 }
 
-/**
- * Hook to import an application from JSON
- */
-export function useImportApplication() {
-	const queryClient = useQueryClient();
-
-	return $api.useMutation("post", "/api/applications/import", {
-		onSuccess: (data) => {
-			queryClient.invalidateQueries({
-				queryKey: ["get", "/api/applications"],
-			});
-			toast.success("Application imported", {
-				description: `Application "${data.name}" has been imported`,
-			});
-		},
-		onError: (error) => {
-			toast.error("Failed to import application", {
-				description: getErrorMessage(error, "Unknown error"),
-			});
-		},
-	});
-}
 
 // =============================================================================
 // Imperative API Functions (for use outside React components)
@@ -777,23 +755,6 @@ export async function exportApplication(
 	return data;
 }
 
-/**
- * Import application (imperative)
- */
-export async function importApplication(
-	appData: ApplicationImport,
-	scope?: string,
-): Promise<ApplicationPublic> {
-	const { data, error } = await apiClient.POST("/api/applications/import", {
-		params: {
-			query: scope ? { scope } : undefined,
-		},
-		body: appData,
-	});
-	if (error)
-		throw new Error(getErrorMessage(error, "Failed to import application"));
-	return data;
-}
 
 // =============================================================================
 // Page Imperative Functions

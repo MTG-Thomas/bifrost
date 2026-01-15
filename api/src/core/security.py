@@ -361,11 +361,11 @@ def authenticate_engine() -> None:
     ENGINE_USER_ID = "00000000-0000-0000-0000-000000000001"
 
     # Create a long-lived superuser token (30 days)
+    # is_superuser=True with no org_id = system account with global access
     token_data = {
         "sub": ENGINE_USER_ID,
         "email": "engine@bifrost.internal",
         "name": "Bifrost Engine",
-        "user_type": "PLATFORM",  # PLATFORM users have elevated access
         "is_superuser": True,
     }
 

@@ -78,7 +78,6 @@ interface JwtPayload {
 	sub?: string;
 	email?: string;
 	name?: string;
-	user_type?: "PLATFORM" | "ORG";
 	is_superuser?: boolean;
 	org_id?: string | null;
 	roles?: string[];
@@ -108,13 +107,16 @@ function parseJwt(token: string): JwtPayload | null {
 
 // Extract user from JWT payload
 function extractUser(payload: JwtPayload): AuthUser {
+	const isSuperuser = payload.is_superuser || false;
+	const organizationId = payload.org_id || null;
 	return {
 		id: payload.sub || "",
 		email: payload.email || "",
 		name: payload.name || "",
-		userType: payload.user_type || "ORG",
-		isSuperuser: payload.is_superuser || false,
-		organizationId: payload.org_id || null,
+		// Derive userType from is_superuser: platform users are superusers
+		userType: isSuperuser ? "PLATFORM" : "ORG",
+		isSuperuser,
+		organizationId,
 		roles: payload.roles || [],
 	};
 }

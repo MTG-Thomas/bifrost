@@ -12,7 +12,6 @@ from src.models import (
     CreateRoleRequest,
     Role,
     UpdateRoleRequest,
-    UserType,
 )
 
 
@@ -204,23 +203,6 @@ class TestRoleResponse:
 
         assert role.description is None
         assert role.is_active is True
-
-
-class TestUserTypeValidation:
-    """Test UserType enum for role assignment validation"""
-
-    def test_platform_user_type(self):
-        """PLATFORM user type should be valid"""
-        assert UserType.PLATFORM.value == "PLATFORM"
-
-    def test_org_user_type(self):
-        """ORG user type should be valid"""
-        assert UserType.ORG.value == "ORG"
-
-    def test_invalid_user_type(self):
-        """Invalid user type should fail"""
-        with pytest.raises(ValueError):
-            UserType("INVALID")
 
 
 # Integration-style contract tests (mocked API calls)

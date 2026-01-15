@@ -101,7 +101,6 @@ async def create_role(
         name=request.name,
         description=request.description,
         is_active=request.is_active,
-        organization_id=request.organization_id,
         created_by=user.email,
         created_at=now,
         updated_at=now,
@@ -113,10 +112,9 @@ async def create_role(
 
     logger.info(f"Created role {role.id}: {role.name}")
 
-    # Invalidate cache
+    # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
-        org_id = str(role.organization_id) if role.organization_id else None
-        await invalidate_role(org_id, str(role.id))
+        await invalidate_role(None, str(role.id))
 
     return RolePublic.model_validate(role)
 
@@ -181,10 +179,9 @@ async def update_role(
 
     logger.info(f"Updated role {role_id}")
 
-    # Invalidate cache
+    # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
-        org_id = str(role.organization_id) if role.organization_id else None
-        await invalidate_role(org_id, str(role_id))
+        await invalidate_role(None, str(role_id))
 
     return RolePublic.model_validate(role)
 
@@ -234,10 +231,9 @@ async def delete_role(
     await db.flush()
     logger.info(f"Soft deleted role {role_id}")
 
-    # Invalidate cache
+    # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
-        org_id = str(role.organization_id) if role.organization_id else None
-        await invalidate_role(org_id, str(role_id))
+        await invalidate_role(None, str(role_id))
 
 
 # =============================================================================
@@ -313,14 +309,9 @@ async def assign_users_to_role(
     await db.flush()
     logger.info(f"Assigned users to role {role_id}")
 
-    # Invalidate cache - need to get role's org_id
+    # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
-        role_result = await db.execute(
-            select(RoleORM.organization_id).where(RoleORM.id == role_id)
-        )
-        role_org_id = role_result.scalar_one_or_none()
-        org_id_str = str(role_org_id) if role_org_id else None
-        await invalidate_role_users(org_id_str, str(role_id))
+        await invalidate_role_users(None, str(role_id))
 
 
 @router.delete(
@@ -362,14 +353,9 @@ async def remove_user_from_role(
 
     logger.info(f"Removed user {user_id} from role {role_id}")
 
-    # Invalidate cache - need to get role's org_id
+    # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
-        role_result = await db.execute(
-            select(RoleORM.organization_id).where(RoleORM.id == role_id)
-        )
-        role_org_id = role_result.scalar_one_or_none()
-        org_id_str = str(role_org_id) if role_org_id else None
-        await invalidate_role_users(org_id_str, str(role_id))
+        await invalidate_role_users(None, str(role_id))
 
 
 # =============================================================================
@@ -445,14 +431,9 @@ async def assign_forms_to_role(
     await db.flush()
     logger.info(f"Assigned forms to role {role_id}")
 
-    # Invalidate cache - need to get role's org_id
+    # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_forms:
-        role_result = await db.execute(
-            select(RoleORM.organization_id).where(RoleORM.id == role_id)
-        )
-        role_org_id = role_result.scalar_one_or_none()
-        org_id_str = str(role_org_id) if role_org_id else None
-        await invalidate_role_forms(org_id_str, str(role_id))
+        await invalidate_role_forms(None, str(role_id))
 
 
 @router.delete(
@@ -483,14 +464,9 @@ async def remove_form_from_role(
 
     logger.info(f"Removed form {form_id} from role {role_id}")
 
-    # Invalidate cache - need to get role's org_id
+    # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_forms:
-        role_result = await db.execute(
-            select(RoleORM.organization_id).where(RoleORM.id == role_id)
-        )
-        role_org_id = role_result.scalar_one_or_none()
-        org_id_str = str(role_org_id) if role_org_id else None
-        await invalidate_role_forms(org_id_str, str(role_id))
+        await invalidate_role_forms(None, str(role_id))
 
 
 # =============================================================================
@@ -566,14 +542,9 @@ async def assign_agents_to_role(
     await db.flush()
     logger.info(f"Assigned agents to role {role_id}")
 
-    # Invalidate cache if available
+    # Invalidate cache if available (roles are global, no org_id needed)
     if AGENT_CACHE_INVALIDATION_AVAILABLE and invalidate_role_agents:
-        role_result = await db.execute(
-            select(RoleORM.organization_id).where(RoleORM.id == role_id)
-        )
-        role_org_id = role_result.scalar_one_or_none()
-        org_id_str = str(role_org_id) if role_org_id else None
-        await invalidate_role_agents(org_id_str, str(role_id))
+        await invalidate_role_agents(None, str(role_id))
 
 
 @router.delete(
@@ -604,11 +575,6 @@ async def remove_agent_from_role(
 
     logger.info(f"Removed agent {agent_id} from role {role_id}")
 
-    # Invalidate cache if available
+    # Invalidate cache if available (roles are global, no org_id needed)
     if AGENT_CACHE_INVALIDATION_AVAILABLE and invalidate_role_agents:
-        role_result = await db.execute(
-            select(RoleORM.organization_id).where(RoleORM.id == role_id)
-        )
-        role_org_id = role_result.scalar_one_or_none()
-        org_id_str = str(role_org_id) if role_org_id else None
-        await invalidate_role_agents(org_id_str, str(role_id))
+        await invalidate_role_agents(None, str(role_id))

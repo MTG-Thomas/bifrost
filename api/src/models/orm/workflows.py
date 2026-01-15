@@ -19,6 +19,8 @@ from src.models.orm.base import Base
 if TYPE_CHECKING:
     from src.models.orm.agents import Agent
     from src.models.orm.organizations import Organization
+    from src.models.orm.users import Role
+    from src.models.orm.workflow_roles import WorkflowRole
 
 
 class Workflow(Base):
@@ -97,6 +99,12 @@ class Workflow(Base):
     )
     api_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
+    # Access control
+    # Values: 'authenticated' (any logged-in user), 'role_based' (must have assigned role)
+    access_level: Mapped[str] = mapped_column(
+        String(20), default="role_based", server_default="role_based"
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, server_default=text("NOW()")
@@ -116,6 +124,15 @@ class Workflow(Base):
     agents: Mapped[list["Agent"]] = relationship(
         secondary="agent_tools",
         back_populates="tools",
+    )
+    # Roles via junction table
+    workflow_roles: Mapped[list["WorkflowRole"]] = relationship(
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+    )
+    roles: Mapped[list["Role"]] = relationship(
+        secondary="workflow_roles",
+        viewonly=True,
     )
 
     __table_args__ = (

@@ -8,11 +8,11 @@
 
 import { useState, useCallback } from "react";
 import { cn } from "@/lib/utils";
-import type {
-	FormEmbedComponentProps,
-	OnCompleteAction,
-} from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+import type { OnCompleteAction } from "@/types/app-builder";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
+
+type FormEmbedComponent = components["schemas"]["FormEmbedComponent"];
 import { useForm } from "@/hooks/useForms";
 import { FormRenderer } from "@/components/forms/FormRenderer";
 import { ExecutionInlineDisplay } from "./ExecutionInlineDisplay";
@@ -62,14 +62,14 @@ type EmbedPhase =
  * }
  */
 export function FormEmbedComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as FormEmbedComponentProps;
+	const { props } = component as FormEmbedComponent;
 	const { context, setVariable, setWorkflowResult } = useAppContext();
 
 	// State machine for form → executing → complete phases
 	const [phase, setPhase] = useState<EmbedPhase>({ type: "form" });
 
 	// Fetch the form by ID
-	const { data: form, isLoading, error } = useForm(props.formId);
+	const { data: form, isLoading, error } = useForm(props.form_id);
 
 	// Handle when FormRenderer starts execution
 	const handleExecutionStart = useCallback((executionId: string) => {
@@ -82,14 +82,14 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 			for (const action of actions) {
 				switch (action.type) {
 					case "navigate":
-						if (action.navigateTo && context.navigate) {
-							context.navigate(action.navigateTo);
+						if (action.navigate_to && context.navigate) {
+							context.navigate(action.navigate_to);
 						}
 						break;
 					case "set-variable":
-						if (action.variableName !== undefined) {
+						if (action.variable_name !== undefined && action.variable_name !== null) {
 							// If value is an expression referencing result, resolve it
-							let value: unknown = action.variableValue;
+							let value: unknown = action.variable_value;
 							if (
 								typeof value === "string" &&
 								value.includes("{{ workflow.result")
@@ -98,14 +98,14 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 								value = result;
 							}
 							setVariable(
-								action.variableName,
-								value as string | undefined,
+								action.variable_name,
+								(value as string) ?? undefined,
 							);
 						}
 						break;
 					case "refresh-table":
-						if (action.dataSourceKey && context.refreshTable) {
-							context.refreshTable(action.dataSourceKey);
+						if (action.data_source_key && context.refreshTable) {
+							context.refreshTable(action.data_source_key);
 						}
 						break;
 					default:
@@ -127,7 +127,7 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 
 			// Inject result into expression context using form ID as dataSourceId
 			if (result !== undefined) {
-				const dataSourceId = props.formId || "form";
+				const dataSourceId = props.form_id || "form";
 				setWorkflowResult(dataSourceId, {
 					executionId,
 					status: "completed",
@@ -136,11 +136,11 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 			}
 
 			// Execute onSubmit actions
-			if (props.onSubmit && props.onSubmit.length > 0) {
-				executeOnCompleteActions(props.onSubmit, result);
+			if (props.on_submit && props.on_submit.length > 0) {
+				executeOnCompleteActions(props.on_submit, result);
 			}
 		},
-		[phase, props.formId, props.onSubmit, setWorkflowResult, executeOnCompleteActions],
+		[phase, props.form_id, props.on_submit, setWorkflowResult, executeOnCompleteActions],
 	);
 
 	// Handle "Submit Another" - reset to form phase
@@ -154,7 +154,7 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 			<div
 				className={cn(
 					"flex items-center justify-center py-8",
-					props.className,
+					props.class_name,
 				)}
 			>
 				<Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -167,7 +167,7 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 		const errorMessage =
 			error instanceof Error ? error.message : "Form not found";
 		return (
-			<Card className={cn("border-destructive/50", props.className)}>
+			<Card className={cn("border-destructive/50", props.class_name)}>
 				<CardContent className="flex items-center gap-2 py-6 text-destructive">
 					<AlertTriangle className="h-5 w-5" />
 					<span>Failed to load form: {errorMessage}</span>
@@ -178,14 +178,14 @@ export function FormEmbedComponent({ component }: RegisteredComponentProps) {
 
 	// Render based on current phase
 	return (
-		<div className={cn("space-y-4", props.className)}>
+		<div className={cn("space-y-4", props.class_name)}>
 			{/* Optional title and description from props */}
-			{(props.showTitle || props.showDescription) && (
+			{(props.show_title || props.show_description) && (
 				<div className="space-y-1">
-					{props.showTitle && form.name && (
+					{props.show_title && form.name && (
 						<h3 className="text-lg font-semibold">{form.name}</h3>
 					)}
-					{props.showDescription && form.description && (
+					{props.show_description && form.description && (
 						<p className="text-sm text-muted-foreground">
 							{form.description}
 						</p>

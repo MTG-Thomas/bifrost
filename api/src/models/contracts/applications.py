@@ -103,7 +103,11 @@ class ApplicationUpdate(BaseModel):
 
 
 class ApplicationPublic(ApplicationBase):
-    """Application output for API responses."""
+    """Application output for API responses.
+
+    This is the unified model for both list/get operations AND export/import.
+    Fields like `pages` are optional - omitted for list views, included for export.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -129,6 +133,15 @@ class ApplicationPublic(ApplicationBase):
     navigation: dict[str, Any] | None = Field(
         default=None,
         description="Navigation configuration (sidebar items, etc.)",
+    )
+    # Export fields - optional, only included when exporting full app
+    permissions: dict[str, Any] | None = Field(
+        default=None,
+        description="Permission configuration (included in export)",
+    )
+    pages: list[PageDefinition] | None = Field(
+        default=None,
+        description="Page definitions with nested layout/components (included in export)",
     )
 
     @field_serializer("created_at", "updated_at", "published_at")
@@ -489,21 +502,4 @@ class AppPageWithComponents(AppPageResponse):
 
 
 # ==================== IMPORT MODELS ====================
-
-
-class ApplicationImport(BaseModel):
-    """Input for importing an application from JSON."""
-
-    name: str = Field(min_length=1, max_length=255)
-    slug: str = Field(
-        min_length=1,
-        max_length=255,
-        pattern=r"^[a-z][a-z0-9-]*$",
-    )
-    description: str | None = None
-    icon: str | None = None
-    navigation: dict[str, Any] = Field(default_factory=dict)
-    global_data_sources: list[dict[str, Any]] = Field(default_factory=list)
-    global_variables: dict[str, Any] = Field(default_factory=dict)
-    permissions: dict[str, Any] = Field(default_factory=dict)
-    pages: list[PageDefinition] = Field(description="Array of page definitions with nested layout/components")
+# Applications use file sync (like forms/agents), not a dedicated import endpoint

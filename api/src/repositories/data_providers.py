@@ -9,6 +9,7 @@ New code should use WorkflowRepository.get_data_providers() instead.
 """
 
 from typing import Sequence
+from uuid import UUID
 
 from sqlalchemy import func, select
 
@@ -28,13 +29,40 @@ class DataProviderRepository(BaseRepository[Workflow]):
 
     model = Workflow
 
-    async def get_by_name(self, name: str) -> Workflow | None:
-        """Get data provider by name."""
+    async def get_by_name(
+        self, name: str, org_id: UUID | None = None
+    ) -> Workflow | None:
+        """Get data provider by name with priority: org-specific > global.
+
+        This uses prioritized lookup to avoid MultipleResultsFound when
+        the same name exists in both org scope and global scope.
+
+        Args:
+            name: Data provider name to look up
+            org_id: If provided, check org-specific first, then global fallback.
+                   If None, only check global data providers.
+        """
+        # First try org-specific (if we have an org)
+        if org_id:
+            result = await self.session.execute(
+                select(Workflow).where(
+                    Workflow.name == name,
+                    Workflow.type == "data_provider",
+                    Workflow.is_active.is_(True),
+                    Workflow.organization_id == org_id,
+                )
+            )
+            entity = result.scalar_one_or_none()
+            if entity:
+                return entity
+
+        # Fall back to global (or global-only if no org_id)
         result = await self.session.execute(
             select(Workflow).where(
                 Workflow.name == name,
                 Workflow.type == "data_provider",
                 Workflow.is_active.is_(True),
+                Workflow.organization_id.is_(None),
             )
         )
         return result.scalar_one_or_none()

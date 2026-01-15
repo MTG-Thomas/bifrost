@@ -1281,6 +1281,14 @@ export function ExecutionDetails({
 								</div>
 								<div>
 									<p className="text-sm font-medium text-muted-foreground">
+										Effective Scope
+									</p>
+									<p className="text-sm mt-1">
+										{execution.org_name || "Global"}
+									</p>
+								</div>
+								<div>
+									<p className="text-sm font-medium text-muted-foreground">
 										Started At
 									</p>
 									<p className="text-sm mt-1">

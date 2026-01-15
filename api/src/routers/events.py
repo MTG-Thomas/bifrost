@@ -1047,7 +1047,6 @@ async def create_delivery(
         )
 
     # Check if delivery already exists
-    delivery_repo = EventDeliveryRepository(db)
     existing = await db.execute(
         select(EventDelivery).where(
             EventDelivery.event_id == event_id,

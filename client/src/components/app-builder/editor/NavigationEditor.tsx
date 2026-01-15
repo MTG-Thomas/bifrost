@@ -67,7 +67,7 @@ import type {
 	NavItem,
 	NavigationConfig,
 	PageDefinition,
-} from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
 
 interface NavigationEditorProps {
 	/** Current application definition */

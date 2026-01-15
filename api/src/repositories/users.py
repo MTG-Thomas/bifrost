@@ -9,7 +9,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.constants import PROVIDER_ORG_ID
 from src.models import User
 from src.repositories.base import BaseRepository
 
@@ -81,19 +80,17 @@ class UserRepository(BaseRepository[User]):  # type: ignore[type-var]
         Check if any real users exist in the system.
 
         Used for first-user detection during auto-provisioning.
-        Excludes SYSTEM users (service accounts) from the count.
+        Excludes system accounts (those with NULL organization_id) from the count.
 
         Returns:
-            True if at least one non-system user exists, False otherwise
+            True if at least one organization-bound user exists, False otherwise
         """
         from sqlalchemy import exists
-
-        from src.models.enums import UserType
 
         result = await self.session.execute(
             select(exists().where(
                 User.id.isnot(None),
-                User.user_type != UserType.SYSTEM,
+                User.organization_id.isnot(None),
             ))
         )
         return result.scalar() or False
@@ -109,24 +106,21 @@ class UserRepository(BaseRepository[User]):  # type: ignore[type-var]
         """
         Create a new user.
 
+        The user model uses is_superuser + nullable organization_id as source of truth:
+        - is_superuser=True, organization_id=UUID: Platform admin in an org
+        - is_superuser=False, organization_id=UUID: Regular org user
+        - is_superuser=True, organization_id=None: System account (global scope)
+
         Args:
             email: User email
             hashed_password: Pre-hashed password (None for OAuth users)
             name: Display name
             is_superuser: Whether user is platform admin
-            organization_id: Organization membership (None for platform admins)
+            organization_id: Organization membership (None for system accounts)
 
         Returns:
             Created user
         """
-        from src.models.enums import UserType
-
-        # Auto-assign PROVIDER_ORG for platform admins (superusers)
-        # Database requires organization_id NOT NULL, so PLATFORM users
-        # belong to the PROVIDER organization rather than NULL
-        if is_superuser and organization_id is None:
-            organization_id = PROVIDER_ORG_ID
-
         user = User(
             email=email,
             hashed_password=hashed_password,
@@ -134,7 +128,6 @@ class UserRepository(BaseRepository[User]):  # type: ignore[type-var]
             is_superuser=is_superuser,
             is_active=True,
             is_verified=False,
-            user_type=UserType.PLATFORM if is_superuser else UserType.ORG,
             organization_id=organization_id,
         )
         return await self.create(user)

@@ -126,30 +126,31 @@ class TestGetFormSchema:
         """Should return comprehensive form schema documentation."""
         result = await get_form_schema(org_user_context)
 
-        # Check that documentation contains key sections
+        # Check that documentation contains key sections (generated from Pydantic models)
         assert "Form Schema Documentation" in result
-        assert "Field Types" in result
-        assert "Text Field" in result
-        assert "Select Field" in result
+        assert "FormCreate" in result
+        assert "FormField" in result
+        assert "| Field |" in result  # Table format
 
     @pytest.mark.asyncio
-    async def test_includes_field_types(self, org_user_context):
-        """Should include documentation for common field types."""
+    async def test_includes_field_definitions(self, org_user_context):
+        """Should include documentation for form fields."""
         result = await get_form_schema(org_user_context)
 
-        # Verify field types are documented
-        field_types = ["text", "number", "select", "boolean", "date"]
-        for field_type in field_types:
-            assert field_type in result, f"Field type {field_type} not documented"
+        # Verify common form fields are documented
+        assert "name" in result
+        assert "type" in result
+        assert "label" in result
+        assert "required" in result
 
     @pytest.mark.asyncio
-    async def test_includes_example_json(self, org_user_context):
-        """Should include JSON examples."""
+    async def test_includes_model_tables(self, org_user_context):
+        """Should include model documentation in table format."""
         result = await get_form_schema(org_user_context)
 
-        # Find the example JSON blocks
-        assert "```json" in result
-        assert '"type":' in result
+        # Schema is now generated from Pydantic models with markdown tables
+        assert "| Field | Type | Required | Description |" in result
+        assert "FormSchema" in result
 
 
 # ==================== list_workflows Tests ====================

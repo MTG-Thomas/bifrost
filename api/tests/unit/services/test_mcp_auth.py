@@ -42,7 +42,6 @@ def admin_token_payload() -> dict:
         "email": "admin@platform.local",
         "name": "Platform Admin",
         "is_superuser": True,
-        "user_type": "admin",
         "org_id": str(uuid4()),
     }
 
@@ -55,7 +54,6 @@ def regular_user_payload() -> dict:
         "email": "user@org.local",
         "name": "Regular User",
         "is_superuser": False,
-        "user_type": "user",
         "org_id": str(uuid4()),
     }
 

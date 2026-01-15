@@ -7,17 +7,60 @@
 
 import type React from "react";
 import { cn } from "@/lib/utils";
-import type {
-	LayoutContainer,
-	AppComponent,
-	ExpressionContext,
-	ComponentWidth,
-	LayoutType,
-	ComponentType,
-	LayoutMaxWidth,
-} from "@/lib/app-builder-types";
-import { isLayoutContainer } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+import type { LayoutContainer, ExpressionContext } from "@/types/app-builder";
+import { isLayoutContainer } from "@/lib/app-builder-utils";
 import { evaluateVisibility, evaluateExpression } from "@/lib/expression-parser";
+
+// Type aliases for cleaner code
+type AppComponent =
+	| components["schemas"]["HeadingComponent"]
+	| components["schemas"]["TextComponent"]
+	| components["schemas"]["HtmlComponent"]
+	| components["schemas"]["CardComponent"]
+	| components["schemas"]["DividerComponent"]
+	| components["schemas"]["SpacerComponent"]
+	| components["schemas"]["ButtonComponent"]
+	| components["schemas"]["StatCardComponent"]
+	| components["schemas"]["ImageComponent"]
+	| components["schemas"]["BadgeComponent"]
+	| components["schemas"]["ProgressComponent"]
+	| components["schemas"]["DataTableComponent"]
+	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["FileViewerComponent"]
+	| components["schemas"]["ModalComponent"]
+	| components["schemas"]["TextInputComponent"]
+	| components["schemas"]["NumberInputComponent"]
+	| components["schemas"]["SelectComponent"]
+	| components["schemas"]["CheckboxComponent"]
+	| components["schemas"]["FormEmbedComponent"]
+	| components["schemas"]["FormGroupComponent"];
+
+type ComponentWidth = "auto" | "full" | "1/2" | "1/3" | "1/4" | "2/3" | "3/4";
+type LayoutType = "row" | "column" | "grid";
+type ComponentType =
+	| "heading"
+	| "text"
+	| "html"
+	| "card"
+	| "divider"
+	| "spacer"
+	| "button"
+	| "stat-card"
+	| "image"
+	| "badge"
+	| "progress"
+	| "data-table"
+	| "tabs"
+	| "file-viewer"
+	| "modal"
+	| "text-input"
+	| "number-input"
+	| "select"
+	| "checkbox"
+	| "form-embed"
+	| "form-group";
+type LayoutMaxWidth = "sm" | "md" | "lg" | "xl" | "2xl" | "full" | "none";
 import { renderRegisteredComponent } from "./ComponentRegistry";
 
 /**
@@ -108,8 +151,8 @@ function getJustifyClasses(justify?: string): string {
  * Get Tailwind classes for max-width constraint
  * Useful for constraining form layouts to readable widths
  */
-function getMaxWidthClasses(maxWidth?: LayoutMaxWidth): string {
-	switch (maxWidth) {
+function getMaxWidthClasses(max_width?: LayoutMaxWidth): string {
+	switch (max_width) {
 		case "sm":
 			return "max-w-sm mx-auto"; // 384px, centered
 		case "md":
@@ -171,10 +214,10 @@ function getLayoutStyles(layout: {
 	type: LayoutType;
 	gap?: number;
 	padding?: number;
-	maxHeight?: number;
+	max_height?: number;
 	overflow?: string;
 	sticky?: string;
-	stickyOffset?: number;
+	sticky_offset?: number;
 	style?: React.CSSProperties;
 }): React.CSSProperties {
 	const styles: React.CSSProperties = {
@@ -183,8 +226,8 @@ function getLayoutStyles(layout: {
 	};
 
 	// Scrollable container support
-	if (layout.maxHeight) {
-		styles.maxHeight = `${layout.maxHeight}px`;
+	if (layout.max_height) {
+		styles.maxHeight = `${layout.max_height}px`;
 	}
 	if (layout.overflow) {
 		styles.overflow = layout.overflow;
@@ -194,9 +237,9 @@ function getLayoutStyles(layout: {
 	if (layout.sticky) {
 		styles.position = "sticky";
 		if (layout.sticky === "top") {
-			styles.top = `${layout.stickyOffset ?? 0}px`;
+			styles.top = `${layout.sticky_offset ?? 0}px`;
 		} else if (layout.sticky === "bottom") {
-			styles.bottom = `${layout.stickyOffset ?? 0}px`;
+			styles.bottom = `${layout.sticky_offset ?? 0}px`;
 		}
 		styles.zIndex = 10; // Ensure sticky elements stay on top
 	}
@@ -312,6 +355,58 @@ function SelectableWrapper({
 }
 
 /**
+ * Normalize null values from API to undefined for type safety
+ * Converts the entire layout tree recursively
+ */
+function normalizeLayoutObject<T>(obj: T): T {
+	if (!obj || typeof obj !== "object") {
+		return obj;
+	}
+
+	if (Array.isArray(obj)) {
+		return obj.map(item => normalizeLayoutObject(item)) as T;
+	}
+
+	const normalized = { ...obj } as any;
+
+	// Convert null to undefined for common nullable fields
+	const nullableFields = [
+		"visible",
+		"align",
+		"justify",
+		"max_width",
+		"gap",
+		"padding",
+		"max_height",
+		"overflow",
+		"sticky",
+		"sticky_offset",
+		"class_name",
+		"style",
+		"width",
+		"repeat_for",
+		"props",
+		"grid_span",
+		"distribute",
+	];
+
+	for (const field of nullableFields) {
+		if (field in normalized && normalized[field] === null) {
+			normalized[field] = undefined;
+		}
+	}
+
+	// Recursively normalize children
+	if (normalized.children && Array.isArray(normalized.children)) {
+		normalized.children = normalized.children.map((child: any) =>
+			normalizeLayoutObject(child),
+		);
+	}
+
+	return normalized as T;
+}
+
+/**
  * Generate a stable unique key for a layout child
  * For components, use their id. For layout containers, generate a key from
  * the parent's key/type and child index to ensure uniqueness across the tree.
@@ -340,8 +435,12 @@ function renderLayoutContainer(
 	parentKey = "root",
 	previewContext?: PreviewSelectionContext,
 ): React.ReactElement | null {
-	// Check visibility
-	if (!evaluateVisibility(layout.visible, context)) {
+	// Normalize null values from API to undefined for type safety (recursive)
+	// Type assertion is safe because normalizeLayoutObject converts all null values to undefined
+	const normalizedLayout = normalizeLayoutObject(layout) as LayoutContainer;
+
+	// Check visibility - use non-null assertion since we normalized the value
+	if (!evaluateVisibility(normalizedLayout.visible ?? undefined, context)) {
 		return null;
 	}
 
@@ -349,14 +448,23 @@ function renderLayoutContainer(
 		previewContext || {};
 
 	const baseClasses = cn(
-		getAlignClasses(layout.align),
-		getJustifyClasses(layout.justify),
-		getMaxWidthClasses(layout.maxWidth),
-		layout.className,
+		getAlignClasses(normalizedLayout.align ?? undefined),
+		getJustifyClasses(normalizedLayout.justify ?? undefined),
+		getMaxWidthClasses(normalizedLayout.max_width ?? undefined),
+		normalizedLayout.class_name,
 		className,
 	);
 
-	const layoutStyles = getLayoutStyles(layout);
+	const layoutStyles = getLayoutStyles({
+		type: normalizedLayout.type,
+		gap: normalizedLayout.gap ?? undefined,
+		padding: normalizedLayout.padding ?? undefined,
+		max_height: normalizedLayout.max_height ?? undefined,
+		overflow: normalizedLayout.overflow ?? undefined,
+		sticky: normalizedLayout.sticky ?? undefined,
+		sticky_offset: normalizedLayout.sticky_offset ?? undefined,
+		style: normalizedLayout.style ?? undefined,
+	});
 
 	// Generate a unique key for this container based on parent
 	const containerKey = parentKey;
@@ -374,9 +482,9 @@ function renderLayoutContainer(
 		const key = generateChildKey(child, index, containerKey);
 
 		// Grid spanning support
-		if (parentType === "grid" && !isLayoutContainer(child) && child.gridSpan && child.gridSpan > 1) {
+		if (parentType === "grid" && !isLayoutContainer(child) && child.grid_span && child.grid_span > 1) {
 			return (
-				<div key={key} style={{ gridColumn: `span ${child.gridSpan}` }}>
+				<div key={key} style={{ gridColumn: `span ${child.grid_span}` }}>
 					<LayoutRenderer
 						layout={child}
 						context={context}
@@ -458,15 +566,15 @@ function renderLayoutContainer(
 		return content;
 	};
 
-	switch (layout.type) {
+	switch (normalizedLayout.type) {
 		case "row":
 			return wrapWithSelectable(
 				<div
-					className={cn("flex flex-row flex-wrap", baseClasses, layout.className)}
+					className={cn("flex flex-row flex-wrap", baseClasses, normalizedLayout.class_name)}
 					style={layoutStyles}
 				>
-					{layout.children.map((child, index) =>
-						renderChild(child, index, "row", layout.distribute),
+					{(normalizedLayout.children as (LayoutContainer | AppComponent)[]).map((child, index) =>
+						renderChild(child, index, "row", normalizedLayout.distribute ?? undefined),
 					)}
 				</div>,
 			);
@@ -474,11 +582,11 @@ function renderLayoutContainer(
 		case "column":
 			return wrapWithSelectable(
 				<div
-					className={cn("flex flex-col", baseClasses, layout.className)}
+					className={cn("flex flex-col", baseClasses, normalizedLayout.class_name)}
 					style={layoutStyles}
 				>
-					{layout.children.map((child, index) =>
-						renderChild(child, index, "column", layout.distribute),
+					{(normalizedLayout.children as (LayoutContainer | AppComponent)[]).map((child, index) =>
+						renderChild(child, index, "column", normalizedLayout.distribute ?? undefined),
 					)}
 				</div>,
 			);
@@ -488,14 +596,14 @@ function renderLayoutContainer(
 				<div
 					className={cn(
 						"grid",
-						getGridColumnsClass(layout.columns),
+						getGridColumnsClass(normalizedLayout.columns ?? undefined),
 						baseClasses,
-						layout.className,
+						normalizedLayout.class_name,
 					)}
 					style={layoutStyles}
 				>
-					{layout.children.map((child, index) =>
-						renderChild(child, index, "grid", layout.distribute),
+					{(normalizedLayout.children as (LayoutContainer | AppComponent)[]).map((child, index) =>
+						renderChild(child, index, "grid", normalizedLayout.distribute ?? undefined),
 					)}
 				</div>,
 			);
@@ -514,14 +622,18 @@ function renderComponent(
 	className?: string,
 	previewContext?: PreviewSelectionContext,
 ): React.ReactElement | null {
+	// Normalize null values from API to undefined for type safety (recursive)
+	// Type assertion is safe because normalizeLayoutObject converts all null values to undefined
+	const normalizedComponent = normalizeLayoutObject(component) as AppComponent;
+
 	// Handle component repetition
-	if (component.repeatFor) {
-		const items = evaluateExpression(component.repeatFor.items, context);
+	if (normalizedComponent.repeat_for) {
+		const items = evaluateExpression(normalizedComponent.repeat_for.items, context);
 
 		if (!Array.isArray(items)) {
 			console.error(
-				`repeatFor items must evaluate to an array. Got: ${typeof items}`,
-				{ component: component.id, expression: component.repeatFor.items }
+				`repeat_for items must evaluate to an array. Got: ${typeof items}`,
+				{ component: normalizedComponent.id, expression: normalizedComponent.repeat_for.items }
 			);
 			return null;
 		}
@@ -530,19 +642,19 @@ function renderComponent(
 			<>
 				{items.map((item, index) => {
 					// Get unique key from item
-					const key = item[component.repeatFor!.itemKey] ?? index;
+					const key = item[normalizedComponent.repeat_for!.item_key] ?? index;
 
 					// Extend context with loop variable
 					const extendedContext: ExpressionContext = {
 						...context,
-						[component.repeatFor!.as]: item,
+						[normalizedComponent.repeat_for!.as]: item,
 					};
 
-					// Render component for this item (without repeatFor to prevent infinite loop)
+					// Render component for this item (without repeat_for to prevent infinite loop)
 					return (
 						<LayoutRenderer
 							key={key}
-							layout={{ ...component, repeatFor: undefined }}
+							layout={{ ...normalizedComponent, repeat_for: undefined }}
 							context={extendedContext}
 							className={className}
 							isPreview={previewContext?.isPreview}
@@ -556,25 +668,25 @@ function renderComponent(
 	}
 
 	// Check visibility
-	if (!evaluateVisibility(component.visible, context)) {
+	if (!evaluateVisibility(normalizedComponent.visible ?? undefined, context)) {
 		return null;
 	}
 
 	const { isPreview, selectedComponentId, onSelectComponent } =
 		previewContext || {};
 
-	const widthClass = getWidthClasses(component.width);
-	const wrappedComponent = renderRegisteredComponent(component, context);
+	const widthClass = getWidthClasses(normalizedComponent.width ?? undefined);
+	const wrappedComponent = renderRegisteredComponent(normalizedComponent, context);
 
 	// Wrap in SelectableWrapper when in preview mode
 	const wrapWithSelectable = (content: React.ReactElement | null) => {
 		if (!content) return null;
-		if (isPreview && onSelectComponent && component.id) {
+		if (isPreview && onSelectComponent && normalizedComponent.id) {
 			return (
 				<SelectableWrapper
-					id={component.id}
-					type={component.type}
-					isSelected={selectedComponentId === component.id}
+					id={normalizedComponent.id}
+					type={normalizedComponent.type}
+					isSelected={selectedComponentId === normalizedComponent.id}
 					onSelect={onSelectComponent}
 				>
 					{content}
@@ -584,13 +696,13 @@ function renderComponent(
 		return content;
 	};
 
-	// Wrap component if it has width, className, or style
-	if (component.width || component.className || component.style) {
+	// Wrap component if it has width, class_name, or style
+	if (normalizedComponent.width || normalizedComponent.class_name || normalizedComponent.style) {
 		return wrapWithSelectable(
 			<div
-				key={component.id}
-				className={cn(widthClass, component.className, className)}
-				style={component.style}
+				key={normalizedComponent.id}
+				className={cn(widthClass, normalizedComponent.class_name, className)}
+				style={normalizedComponent.style ?? undefined}
 			>
 				{wrappedComponent}
 			</div>,

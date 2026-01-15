@@ -7,10 +7,10 @@
 
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { cn } from "@/lib/utils";
-import type {
-	SelectComponentProps,
-	SelectOption,
-} from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type SelectComponent = components["schemas"]["SelectComponent"];
+type SelectOption = components["schemas"]["SelectOption"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import {
 	Select,
@@ -33,14 +33,14 @@ import { Label } from "@/components/ui/label";
  *   id: "status-select",
  *   type: "select",
  *   props: {
- *     fieldId: "status",
+ *     field_id: "status",
  *     label: "Status",
  *     options: [
  *       { value: "active", label: "Active" },
  *       { value: "inactive", label: "Inactive" },
  *       { value: "pending", label: "Pending" }
  *     ],
- *     defaultValue: "active"
+ *     default_value: "active"
  *   }
  * }
  *
@@ -50,11 +50,11 @@ import { Label } from "@/components/ui/label";
  *   id: "category-select",
  *   type: "select",
  *   props: {
- *     fieldId: "categoryId",
+ *     field_id: "categoryId",
  *     label: "Category",
- *     optionsSource: "categories",
- *     valueField: "id",
- *     labelField: "name"
+ *     options_source: "categories",
+ *     value_field: "id",
+ *     label_field: "name"
  *   }
  * }
  */
@@ -62,10 +62,10 @@ export function SelectComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as SelectComponentProps;
+	const { props } = component as SelectComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
-	const defaultValue = props.defaultValue ? String(props.defaultValue) : "";
+	const defaultValue = props.default_value ? String(props.default_value) : "";
 
 	// Local state for the selected value
 	const [value, setValue] = useState(defaultValue);
@@ -93,8 +93,8 @@ export function SelectComponent({
 				return props.options as SelectOption[];
 			}
 			// Raw data - apply field mapping
-			const valueField = props.valueField || "value";
-			const labelField = props.labelField || "label";
+			const valueField = props.value_field || "value";
+			const labelField = props.label_field || "label";
 			return props.options.map((item): SelectOption => {
 				const itemObj = item as unknown as Record<string, unknown>;
 				return {
@@ -106,10 +106,10 @@ export function SelectComponent({
 			});
 		}
 
-		// If optionsSource is specified, get from workflow results
-		if (props.optionsSource && context.workflow) {
-			// Check if optionsSource references a workflow result (e.g., "get_options.result.items")
-			const parts = props.optionsSource.split(".");
+		// If options_source is specified, get from workflow results
+		if (props.options_source && context.workflow) {
+			// Check if options_source references a workflow result (e.g., "get_options.result.items")
+			const parts = props.options_source.split(".");
 			const workflowKey = parts[0];
 			const workflowResult = context.workflow[workflowKey];
 
@@ -132,8 +132,8 @@ export function SelectComponent({
 				}
 
 				if (Array.isArray(sourceData)) {
-					const valueField = props.valueField || "value";
-					const labelField = props.labelField || "label";
+					const valueField = props.value_field || "value";
+					const labelField = props.label_field || "label";
 
 					return sourceData.map((item) => ({
 						value: String(item[valueField] ?? ""),
@@ -146,9 +146,9 @@ export function SelectComponent({
 		return [];
 	}, [
 		props.options,
-		props.optionsSource,
-		props.valueField,
-		props.labelField,
+		props.options_source,
+		props.value_field,
+		props.label_field,
 		context.workflow,
 	]);
 
@@ -158,16 +158,16 @@ export function SelectComponent({
 	// Update field value in context when value changes
 	useEffect(() => {
 		if (setFieldValue) {
-			setFieldValue(props.fieldId, value || null);
+			setFieldValue(props.field_id, value || null);
 		}
-	}, [props.fieldId, value, setFieldValue]);
+	}, [props.field_id, value, setFieldValue]);
 
 	// Initialize field value on mount
 	useEffect(() => {
 		if (setFieldValue && defaultValue) {
-			setFieldValue(props.fieldId, defaultValue);
+			setFieldValue(props.field_id, defaultValue);
 		}
-	}, [props.fieldId, defaultValue, setFieldValue]);
+	}, [props.field_id, defaultValue, setFieldValue]);
 
 	const handleChange = useCallback((newValue: string) => {
 		setValue(newValue);
@@ -176,7 +176,7 @@ export function SelectComponent({
 	const inputId = `field-${component.id}`;
 
 	return (
-		<div className={cn("space-y-2", props.className)}>
+		<div className={cn("space-y-2", props.class_name)}>
 			{label && (
 				<Label htmlFor={inputId}>
 					{label}
@@ -189,7 +189,7 @@ export function SelectComponent({
 				value={value}
 				onValueChange={handleChange}
 				disabled={isDisabled}
-				required={props.required}
+				required={props.required ?? undefined}
 			>
 				<SelectTrigger id={inputId}>
 					<SelectValue placeholder={placeholder} />

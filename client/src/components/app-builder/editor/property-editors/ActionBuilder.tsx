@@ -5,11 +5,12 @@
  * Used by Button, DataTable row/header actions, and StatCard onClick.
  */
 
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 import {
 	Select,
 	SelectContent,
@@ -18,7 +19,11 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { WorkflowSelector } from "@/components/forms/WorkflowSelector";
+import { $api } from "@/lib/api-client";
+import {
+	WorkflowSelectorDialog,
+	type EntityRole,
+} from "@/components/workflows/WorkflowSelectorDialog";
 import { KeyValueEditor } from "./KeyValueEditor";
 
 /**
@@ -70,6 +75,8 @@ export interface ActionBuilderProps {
 	parameterHint?: string;
 	/** Additional CSS classes */
 	className?: string;
+	/** Entity roles for workflow selection dialog */
+	entityRoles?: EntityRole[];
 }
 
 const ACTION_TYPE_LABELS: Record<ActionType, string> = {
@@ -100,7 +107,22 @@ export function ActionBuilder({
 	showConfirmation = false,
 	parameterHint,
 	className,
+	entityRoles,
 }: ActionBuilderProps) {
+	const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false);
+
+	// Fetch workflows to display selected workflow name
+	const { data: workflows } = $api.useQuery("get", "/api/workflows", {
+		params: { query: { type: "workflow" } },
+	});
+
+	// Find selected workflow name for button display
+	const selectedWorkflowName = useMemo(() => {
+		if (!value.workflowId || !workflows) return undefined;
+		const workflow = workflows.find((w) => w.id === value.workflowId);
+		return workflow?.name;
+	}, [value.workflowId, workflows]);
+
 	const handleTypeChange = useCallback(
 		(type: ActionType) => {
 			// Reset type-specific fields when type changes
@@ -175,12 +197,26 @@ export function ActionBuilder({
 				<div className="space-y-4">
 					<div className="space-y-2">
 						<Label className="text-sm font-medium">Workflow</Label>
-						<WorkflowSelector
-							value={value.workflowId}
-							onChange={(workflowId) =>
-								onChange({ ...value, workflowId })
+						<Button
+							variant="outline"
+							size="sm"
+							className="w-full justify-start font-normal"
+							onClick={() => setWorkflowDialogOpen(true)}
+						>
+							{selectedWorkflowName || "Select Workflow"}
+						</Button>
+						<WorkflowSelectorDialog
+							open={workflowDialogOpen}
+							onOpenChange={setWorkflowDialogOpen}
+							entityRoles={entityRoles ?? []}
+							workflowType="workflow"
+							mode="single"
+							selectedWorkflowIds={
+								value.workflowId ? [value.workflowId] : []
 							}
-							placeholder="Select a workflow"
+							onSelect={(ids) =>
+								onChange({ ...value, workflowId: ids[0] || undefined })
+							}
 						/>
 					</div>
 

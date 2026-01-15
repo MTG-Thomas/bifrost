@@ -7,7 +7,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import type { CheckboxComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type CheckboxComponent = components["schemas"]["CheckboxComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -16,7 +18,7 @@ import { Label } from "@/components/ui/label";
  * Checkbox Component
  *
  * Renders a checkbox with label and optional description.
- * Value is tracked in the expression context under {{ field.<fieldId> }}.
+ * Value is tracked in the expression context under {{ field.<field_id> }}.
  *
  * @example
  * // Simple checkbox
@@ -24,7 +26,7 @@ import { Label } from "@/components/ui/label";
  *   id: "terms-checkbox",
  *   type: "checkbox",
  *   props: {
- *     fieldId: "acceptTerms",
+ *     field_id: "acceptTerms",
  *     label: "I accept the terms and conditions",
  *     required: true
  *   }
@@ -36,10 +38,10 @@ import { Label } from "@/components/ui/label";
  *   id: "subscribe-checkbox",
  *   type: "checkbox",
  *   props: {
- *     fieldId: "subscribe",
+ *     field_id: "subscribe",
  *     label: "Subscribe to newsletter",
  *     description: "Receive weekly updates about new features",
- *     defaultChecked: true
+ *     default_checked: true
  *   }
  * }
  */
@@ -47,10 +49,10 @@ export function CheckboxComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as CheckboxComponentProps;
+	const { props } = component as CheckboxComponent;
 
 	// Get default checked state
-	const defaultChecked = props.defaultChecked ?? false;
+	const defaultChecked = props.default_checked ?? false;
 
 	// Local state for the checked value
 	const [checked, setChecked] = useState(defaultChecked);
@@ -68,16 +70,16 @@ export function CheckboxComponent({
 	// Update field value in context when value changes
 	useEffect(() => {
 		if (setFieldValue) {
-			setFieldValue(props.fieldId, checked);
+			setFieldValue(props.field_id, checked);
 		}
-	}, [props.fieldId, checked, setFieldValue]);
+	}, [props.field_id, checked, setFieldValue]);
 
 	// Initialize field value on mount
 	useEffect(() => {
 		if (setFieldValue) {
-			setFieldValue(props.fieldId, defaultChecked);
+			setFieldValue(props.field_id, defaultChecked);
 		}
-	}, [props.fieldId, defaultChecked, setFieldValue]);
+	}, [props.field_id, defaultChecked, setFieldValue]);
 
 	const handleChange = useCallback(
 		(newChecked: boolean | "indeterminate") => {
@@ -91,13 +93,13 @@ export function CheckboxComponent({
 	const inputId = `field-${component.id}`;
 
 	return (
-		<div className={cn("flex items-start space-x-3", props.className)}>
+		<div className={cn("flex items-start space-x-3", props.class_name)}>
 			<Checkbox
 				id={inputId}
 				checked={checked}
 				onCheckedChange={handleChange}
 				disabled={isDisabled}
-				required={props.required}
+				required={props.required ?? undefined}
 			/>
 			<div className="grid gap-1.5 leading-none">
 				<Label

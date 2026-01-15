@@ -189,39 +189,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def publish_to_redis_sync(channel: str, message: dict[str, Any]) -> None:
-    """
-    Publish to Redis using sync client.
-
-    This avoids event loop affinity issues when publishing from
-    worker threads. Uses a thread-local connection for efficiency.
-
-    Args:
-        channel: Channel name (without bifrost: prefix)
-        message: Message payload
-    """
-    import threading
-    import redis as redis_sync  # Sync redis client
-
-    # Thread-local storage for Redis connections
-    if not hasattr(publish_to_redis_sync, '_local'):
-        publish_to_redis_sync._local = threading.local()
-
-    local = publish_to_redis_sync._local
-
-    # Get or create connection for this thread
-    if not hasattr(local, 'redis') or local.redis is None:
-        settings = get_settings()
-        local.redis = redis_sync.from_url(settings.redis_url)
-
-    try:
-        local.redis.publish(f"bifrost:{channel}", json.dumps(message))
-    except Exception as e:
-        logger.warning(f"Failed to publish to Redis (sync): {e}")
-        # Reset connection on error
-        local.redis = None
-
-
 # Convenience functions for common pubsub operations
 
 async def publish_execution_update(
@@ -244,31 +211,6 @@ async def publish_execution_update(
         **(data or {})
     }
     await manager.broadcast(f"execution:{execution_id}", message)
-
-
-def publish_execution_log_sync(
-    execution_id: str | UUID,
-    level: str,
-    message: str,
-    data: dict[str, Any] | None = None
-) -> None:
-    """
-    Publish execution log entry (sync version for worker threads).
-
-    Args:
-        execution_id: Execution ID
-        level: Log level (debug, info, warning, error)
-        message: Log message
-        data: Additional log data
-    """
-    log_entry = {
-        "type": "execution_log",
-        "executionId": str(execution_id),
-        "level": level,
-        "message": message,
-        "data": data
-    }
-    publish_to_redis_sync(f"execution:{execution_id}", log_entry)
 
 
 async def publish_execution_log(
@@ -344,56 +286,6 @@ async def publish_history_update(
     # Always publish to user's channel and global admin channel
     await manager.broadcast(f"history:user:{executed_by}", message)
     await manager.broadcast("history:GLOBAL", message)
-
-
-def publish_history_update_sync(
-    execution_id: str | UUID,
-    status: str,
-    executed_by: str | UUID,
-    executed_by_name: str,
-    workflow_name: str,
-    org_id: str | UUID | None = None,
-    started_at: Any = None,
-    completed_at: Any = None,
-    duration_ms: int | None = None,
-) -> None:
-    """
-    Publish execution update to history channels (sync version for worker threads).
-
-    Broadcasts to:
-    - history:user:{executed_by} - for the user who ran the execution
-    - history:GLOBAL - for platform admins watching all executions
-
-    Args:
-        execution_id: Execution ID
-        status: Execution status (Pending, Running, Success, Failed, etc.)
-        executed_by: User ID who ran the execution
-        executed_by_name: Display name of the user
-        workflow_name: Name of the workflow
-        org_id: Organization ID (if org-scoped)
-        started_at: When the execution started
-        completed_at: When the execution completed
-        duration_ms: Execution duration in milliseconds
-    """
-    from datetime import datetime
-
-    message = {
-        "type": "history_update",
-        "execution_id": str(execution_id),
-        "workflow_name": workflow_name,
-        "status": status,
-        "executed_by": str(executed_by),
-        "executed_by_name": executed_by_name,
-        "org_id": str(org_id) if org_id else None,
-        "started_at": started_at.isoformat() if isinstance(started_at, datetime) else started_at,
-        "completed_at": completed_at.isoformat() if isinstance(completed_at, datetime) else completed_at,
-        "duration_ms": duration_ms,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-
-    # Always publish to user's channel and global admin channel
-    publish_to_redis_sync(f"history:user:{executed_by}", message)
-    publish_to_redis_sync("history:GLOBAL", message)
 
 
 async def publish_user_notification(

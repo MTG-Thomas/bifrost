@@ -7,6 +7,12 @@
 export { WorkflowSelector } from "@/components/forms/WorkflowSelector";
 export type { WorkflowSelectorProps } from "@/components/forms/WorkflowSelector";
 
+export { WorkflowSelectorDialog } from "@/components/workflows/WorkflowSelectorDialog";
+export type {
+	WorkflowSelectorDialogProps,
+	EntityRole,
+} from "@/components/workflows/WorkflowSelectorDialog";
+
 export { KeyValueEditor } from "./KeyValueEditor";
 export type { KeyValueEditorProps, KeyValuePair } from "./KeyValueEditor";
 

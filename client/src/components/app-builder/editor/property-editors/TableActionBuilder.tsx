@@ -5,7 +5,7 @@
  * Supports multiple actions with add/remove and full action configuration.
  */
 
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Plus, Trash2, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,9 +24,13 @@ import {
 	AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from "@/lib/utils";
-import { WorkflowSelector } from "@/components/forms/WorkflowSelector";
+import { $api } from "@/lib/api-client";
+import {
+	WorkflowSelectorDialog,
+	type EntityRole,
+} from "@/components/workflows/WorkflowSelectorDialog";
 import { WorkflowParameterEditor } from "./WorkflowParameterEditor";
-import type { TableAction } from "@/lib/app-builder-types";
+import type { TableAction } from "@/lib/app-builder-helpers";
 
 export interface TableActionBuilderProps {
 	/** Current actions */
@@ -37,6 +41,8 @@ export interface TableActionBuilderProps {
 	isRowAction?: boolean;
 	/** Additional CSS classes */
 	className?: string;
+	/** Entity roles for workflow selection dialog */
+	entityRoles?: EntityRole[];
 }
 
 const ACTION_TYPES = [
@@ -70,12 +76,29 @@ export function TableActionBuilder({
 	onChange,
 	isRowAction = false,
 	className,
+	entityRoles,
 }: TableActionBuilderProps) {
+	// Track which action's workflow dialog is open (by index)
+	const [workflowDialogOpenIndex, setWorkflowDialogOpenIndex] = useState<
+		number | null
+	>(null);
+
+	// Fetch workflows to display selected workflow names
+	const { data: workflows } = $api.useQuery("get", "/api/workflows", {
+		params: { query: { type: "workflow" } },
+	});
+
+	// Create a lookup map for workflow names
+	const workflowNameMap = useMemo(() => {
+		if (!workflows) return new Map<string, string>();
+		return new Map(workflows.map((w) => [w.id, w.name ?? w.id]));
+	}, [workflows]);
+
 	const handleAddAction = useCallback(() => {
 		const newAction: TableAction = {
 			label: "Action",
 			variant: "default",
-			onClick: {
+			on_click: {
 				type: "workflow",
 			},
 		};
@@ -101,13 +124,13 @@ export function TableActionBuilder({
 	);
 
 	const handleUpdateOnClick = useCallback(
-		(index: number, updates: Partial<TableAction["onClick"]>) => {
+		(index: number, updates: Partial<TableAction["on_click"]>) => {
 			onChange(
 				value.map((action, i) =>
 					i === index
 						? {
 								...action,
-								onClick: { ...action.onClick, ...updates },
+								on_click: { ...action.on_click, ...updates },
 							}
 						: action,
 				),
@@ -143,7 +166,7 @@ export function TableActionBuilder({
 												ACTION_TYPES.find(
 													(t) =>
 														t.value ===
-														action.onClick.type,
+														action.on_click.type,
 												)?.label
 											}
 											)
@@ -231,10 +254,10 @@ export function TableActionBuilder({
 										Action Type
 									</Label>
 									<Select
-										value={action.onClick.type}
+										value={action.on_click.type}
 										onValueChange={(type) =>
 											handleUpdateOnClick(index, {
-												type: type as TableAction["onClick"]["type"],
+												type: type as TableAction["on_click"]["type"],
 											})
 										}
 									>
@@ -255,18 +278,18 @@ export function TableActionBuilder({
 								</div>
 
 								{/* Navigate Fields */}
-								{action.onClick.type === "navigate" && (
+								{action.on_click.type === "navigate" && (
 									<div className="space-y-2">
 										<Label className="text-sm">
 											Navigate To
 										</Label>
 										<Input
 											value={
-												action.onClick.navigateTo ?? ""
+												action.on_click.navigate_to ?? ""
 											}
 											onChange={(e) =>
 												handleUpdateOnClick(index, {
-													navigateTo: e.target.value,
+													navigate_to: e.target.value,
 												})
 											}
 											placeholder={
@@ -286,43 +309,79 @@ export function TableActionBuilder({
 								)}
 
 								{/* Workflow Fields */}
-								{action.onClick.type === "workflow" && (
+								{action.on_click.type === "workflow" && (
 									<div className="space-y-4">
 										<div className="space-y-2">
 											<Label className="text-sm">
 												Workflow
 											</Label>
-											<WorkflowSelector
-												value={
-													action.onClick.workflowId
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												className="w-full justify-start font-normal"
+												onClick={() =>
+													setWorkflowDialogOpenIndex(
+														index,
+													)
 												}
-												onChange={(workflowId) =>
+											>
+												{action.on_click.workflow_id
+													? workflowNameMap.get(
+															action.on_click
+																.workflow_id,
+														) || "Select Workflow"
+													: "Select Workflow"}
+											</Button>
+											<WorkflowSelectorDialog
+												open={
+													workflowDialogOpenIndex ===
+													index
+												}
+												onOpenChange={(open) =>
+													setWorkflowDialogOpenIndex(
+														open ? index : null,
+													)
+												}
+												entityRoles={entityRoles ?? []}
+												workflowType="workflow"
+												mode="single"
+												selectedWorkflowIds={
+													action.on_click.workflow_id
+														? [
+																action.on_click
+																	.workflow_id,
+															]
+														: []
+												}
+												onSelect={(ids) =>
 													handleUpdateOnClick(index, {
-														workflowId,
-														actionParams: {},
+														workflow_id:
+															ids[0] || undefined,
+														action_params: {},
 													})
 												}
 											/>
 										</div>
 
-										{action.onClick.workflowId && (
+										{action.on_click.workflow_id && (
 											<div className="space-y-2">
 												<Label className="text-sm">
 													Parameters
 												</Label>
 												<WorkflowParameterEditor
 													workflowId={
-														action.onClick
-															.workflowId
+														action.on_click
+															.workflow_id
 													}
 													value={
-														action.onClick
-															.actionParams ?? {}
+														action.on_click
+															.action_params ?? {}
 													}
 													onChange={(actionParams) =>
 														handleUpdateOnClick(
 															index,
-															{ actionParams },
+															{ action_params: actionParams },
 														)
 													}
 													isRowAction={isRowAction}
@@ -333,7 +392,7 @@ export function TableActionBuilder({
 								)}
 
 								{/* Set Variable Fields */}
-								{action.onClick.type === "set-variable" && (
+								{action.on_click.type === "set-variable" && (
 									<div className="space-y-4">
 										<div className="space-y-2">
 											<Label className="text-sm">
@@ -341,12 +400,12 @@ export function TableActionBuilder({
 											</Label>
 											<Input
 												value={
-													action.onClick
-														.variableName ?? ""
+													action.on_click
+														.variable_name ?? ""
 												}
 												onChange={(e) =>
 													handleUpdateOnClick(index, {
-														variableName:
+														variable_name:
 															e.target.value,
 													})
 												}
@@ -360,12 +419,12 @@ export function TableActionBuilder({
 											</Label>
 											<Input
 												value={
-													action.onClick
-														.variableValue ?? ""
+													action.on_click
+														.variable_value ?? ""
 												}
 												onChange={(e) =>
 													handleUpdateOnClick(index, {
-														variableValue:
+														variable_value:
 															e.target.value,
 													})
 												}
@@ -386,7 +445,7 @@ export function TableActionBuilder({
 								)}
 
 								{/* Delete Type Notice */}
-								{action.onClick.type === "delete" && (
+								{action.on_click.type === "delete" && (
 									<div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
 										<p className="text-sm text-destructive">
 											Delete actions should have
@@ -438,8 +497,8 @@ export function TableActionBuilder({
 								</div>
 
 								{/* Confirmation */}
-								{(action.onClick.type === "delete" ||
-									action.onClick.type === "workflow") && (
+								{(action.on_click.type === "delete" ||
+									action.on_click.type === "workflow") && (
 									<div className="space-y-3 pt-2 border-t">
 										<Label className="text-sm font-medium">
 											Confirmation Dialog

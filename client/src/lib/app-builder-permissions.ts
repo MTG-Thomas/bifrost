@@ -8,7 +8,7 @@ import type {
 	ApplicationDefinition,
 	PageDefinition,
 	ExpressionContext,
-} from "./app-builder-types";
+} from "@/types/app-builder";
 import { evaluateExpression } from "./expression-parser";
 
 /**
@@ -111,9 +111,9 @@ export function hasPageAccess(
 	}
 
 	// Check allowed roles
-	if (permission.allowedRoles && permission.allowedRoles.length > 0) {
-		const hasRole = permission.allowedRoles.some(
-			(role) => role === "*" || userRoles.includes(role),
+	if (permission.allowed_roles && permission.allowed_roles.length > 0) {
+		const hasRole = permission.allowed_roles.some(
+			(role: string) => role === "*" || userRoles.includes(role),
 		);
 		if (!hasRole) {
 			return false;
@@ -121,10 +121,10 @@ export function hasPageAccess(
 	}
 
 	// Check access expression
-	if (permission.accessExpression) {
+	if (permission.access_expression) {
 		try {
 			const result = evaluateExpression(
-				permission.accessExpression,
+				permission.access_expression,
 				context as ExpressionContext,
 			);
 			if (result === false) {
@@ -154,5 +154,5 @@ export function filterAccessiblePages(
  * Get redirect path for a denied page
  */
 export function getPageRedirectPath(page: PageDefinition): string | undefined {
-	return page.permission?.redirectTo;
+	return page.permission?.redirect_to ?? undefined;
 }

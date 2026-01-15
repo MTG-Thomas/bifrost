@@ -13,7 +13,7 @@ import { useCallback, useMemo } from "react";
 import { useNavigate as useRouterNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
-import type { ExpressionContext } from "@/lib/app-builder-types";
+import type { ExpressionContext } from "@/types/app-builder";
 
 /**
  * Generate a unique execution ID

@@ -6,11 +6,13 @@
  */
 
 import { cn } from "@/lib/utils";
-import type { ImageComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type ImageComponent = components["schemas"]["ImageComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 
 export function ImageComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as ImageComponentProps;
+	const { props } = component as ImageComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
 	const src = String(props?.src ?? "");
@@ -18,22 +20,22 @@ export function ImageComponent({ component }: RegisteredComponentProps) {
 
 	const style: React.CSSProperties = {};
 
-	if (props?.maxWidth) {
+	if (props?.max_width) {
 		style.maxWidth =
-			typeof props.maxWidth === "number"
-				? `${props.maxWidth}px`
-				: props.maxWidth;
+			typeof props.max_width === "number"
+				? `${props.max_width}px`
+				: props.max_width;
 	}
 
-	if (props?.maxHeight) {
+	if (props?.max_height) {
 		style.maxHeight =
-			typeof props.maxHeight === "number"
-				? `${props.maxHeight}px`
-				: props.maxHeight;
+			typeof props.max_height === "number"
+				? `${props.max_height}px`
+				: props.max_height;
 	}
 
-	const objectFitClass = props?.objectFit
-		? `object-${props.objectFit}`
+	const objectFitClass = props?.object_fit
+		? `object-${props.object_fit}`
 		: "object-contain";
 
 	return (
@@ -41,7 +43,7 @@ export function ImageComponent({ component }: RegisteredComponentProps) {
 			src={src}
 			alt={alt}
 			style={style}
-			className={cn(objectFitClass, props?.className)}
+			className={cn(objectFitClass, props?.class_name)}
 		/>
 	);
 }

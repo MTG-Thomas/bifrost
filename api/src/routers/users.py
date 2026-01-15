@@ -22,7 +22,6 @@ from src.models import (
     UserRolesResponse,
     UserFormsResponse,
 )
-from src.models.enums import UserType
 from src.core.constants import PROVIDER_ORG_ID
 
 logger = logging.getLogger(__name__)
@@ -60,10 +59,10 @@ async def list_users(
             detail=str(e),
         )
 
-    # Filter out system users (used for API key executions)
+    # Filter out system accounts (they have no organization_id)
     query = select(UserORM).where(
         UserORM.is_active,
-        UserORM.user_type != UserType.SYSTEM,
+        UserORM.organization_id.isnot(None),
     )
 
     if type:
@@ -116,7 +115,6 @@ async def create_user(
         is_superuser=request.is_superuser,
         is_verified=True,  # Trusted since created by admin
         is_registered=False,  # User must complete registration to set password
-        user_type=request.user_type,
         organization_id=request.organization_id,
         created_at=now,
         updated_at=now,
@@ -316,12 +314,10 @@ async def get_user_forms(
             detail="User not found",
         )
 
-    user_type = UserType.PLATFORM if db_user.is_superuser else UserType.ORG
-
     # Platform admins have access to all forms
     if db_user.is_superuser:
         return UserFormsResponse(
-            user_type=user_type,
+            is_superuser=True,
             has_access_to_all_forms=True,
             form_ids=[],
         )
@@ -334,7 +330,7 @@ async def get_user_forms(
 
     if not role_ids:
         return UserFormsResponse(
-            user_type=user_type,
+            is_superuser=False,
             has_access_to_all_forms=False,
             form_ids=[],
         )
@@ -346,7 +342,7 @@ async def get_user_forms(
     form_ids = list(set(str(fid) for fid in form_result.scalars().all()))
 
     return UserFormsResponse(
-        user_type=user_type,
+        is_superuser=False,
         has_access_to_all_forms=False,
         form_ids=form_ids,
     )

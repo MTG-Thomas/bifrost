@@ -25,7 +25,9 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@/components/ui/dialog";
-import type { FileViewerComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type FileViewerComponent = components["schemas"]["FileViewerComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { evaluateExpression } from "@/lib/expression-parser";
 
@@ -239,19 +241,19 @@ export function FileViewerComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as FileViewerComponentProps;
+	const { props } = component as FileViewerComponent;
 	const [isModalOpen, setIsModalOpen] = useState(false);
 
 	// Evaluate expressions
 	const src = String(evaluateExpression(props.src, context) ?? "");
-	const fileName = props.fileName
-		? String(evaluateExpression(props.fileName, context) ?? "")
+	const fileName = props.file_name
+		? String(evaluateExpression(props.file_name, context) ?? "")
 		: undefined;
 
 	// Detect file type
 	const mimeType = useMemo(
-		() => detectMimeType(src, props.mimeType),
-		[src, props.mimeType],
+		() => detectMimeType(src, props.mime_type ?? undefined),
+		[src, props.mime_type],
 	);
 	const category = useMemo(() => getFileCategory(mimeType), [mimeType]);
 	const displayName = useMemo(
@@ -259,9 +261,9 @@ export function FileViewerComponent({
 		[src, fileName],
 	);
 
-	const displayMode = props.displayMode || "inline";
+	const displayMode = props.display_mode || "inline";
 	const showDownloadButton =
-		props.showDownloadButton ?? displayMode !== "download";
+		props.show_download_button ?? displayMode !== "download";
 
 	// Download handler
 	const handleDownload = () => {
@@ -281,10 +283,10 @@ export function FileViewerComponent({
 			<Button
 				variant="outline"
 				onClick={handleDownload}
-				className={cn("gap-2", props.className)}
+				className={cn("gap-2", props.class_name)}
 			>
 				<FileIcon category={category} className="h-4 w-4" />
-				{props.downloadLabel || displayName}
+				{props.download_label || displayName}
 				<Download className="h-4 w-4" />
 			</Button>
 		);
@@ -297,10 +299,10 @@ export function FileViewerComponent({
 				<DialogTrigger asChild>
 					<Button
 						variant="outline"
-						className={cn("gap-2", props.className)}
+						className={cn("gap-2", props.class_name)}
 					>
 						<FileIcon category={category} className="h-4 w-4" />
-						{props.downloadLabel || displayName}
+						{props.download_label || displayName}
 						<ExternalLink className="h-4 w-4" />
 					</Button>
 				</DialogTrigger>
@@ -339,13 +341,13 @@ export function FileViewerComponent({
 
 	// Inline mode - embed the file directly
 	return (
-		<div className={cn("relative", props.className)}>
+		<div className={cn("relative", props.class_name)}>
 			<FileContent
 				src={src}
 				mimeType={mimeType}
 				category={category}
-				maxWidth={props.maxWidth}
-				maxHeight={props.maxHeight}
+				maxWidth={props.max_width ?? undefined}
+				maxHeight={props.max_height ?? undefined}
 			/>
 			{showDownloadButton && (
 				<div className="mt-2 flex justify-end">

@@ -27,8 +27,7 @@ class MockAuthHelper:
         Create a base64-encoded X-MS-CLIENT-PRINCIPAL header for a platform admin.
 
         Platform admins have:
-        - UserType: "PLATFORM"
-        - IsPlatformAdmin: True
+        - is_superuser: True
         - Can access GLOBAL scope and any org scope
 
         Args:
@@ -62,8 +61,7 @@ class MockAuthHelper:
         Create a base64-encoded X-MS-CLIENT-PRINCIPAL header for an organization user.
 
         Org users have:
-        - UserType: "ORG"
-        - IsPlatformAdmin: False
+        - is_superuser: False
         - Fixed org_id (cannot override via headers)
         - Can only access their assigned org
 

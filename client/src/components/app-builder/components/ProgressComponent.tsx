@@ -7,11 +7,13 @@
 
 import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
-import type { ProgressComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type ProgressComponent = components["schemas"]["ProgressComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 
 export function ProgressComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as ProgressComponentProps;
+	const { props } = component as ProgressComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
 	const rawValue = props?.value ?? 0;
@@ -24,9 +26,9 @@ export function ProgressComponent({ component }: RegisteredComponentProps) {
 	const clampedValue = Math.max(0, Math.min(100, value));
 
 	return (
-		<div className={cn("w-full", props?.className)}>
+		<div className={cn("w-full", props?.class_name)}>
 			<Progress value={clampedValue} className="h-2" />
-			{props?.showLabel && (
+			{props?.show_label && (
 				<p className="mt-1 text-right text-sm text-muted-foreground">
 					{Math.round(clampedValue)}%
 				</p>

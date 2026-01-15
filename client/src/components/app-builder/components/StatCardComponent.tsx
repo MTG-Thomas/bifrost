@@ -8,7 +8,9 @@ import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
-import type { StatCardComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
+
+type StatCardComponent = components["schemas"]["StatCardComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { evaluateExpression } from "@/lib/expression-parser";
 import { getIcon } from "@/lib/icons";
@@ -39,7 +41,7 @@ export function StatCardComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as StatCardComponentProps;
+	const { props } = component as StatCardComponent;
 
 	// Evaluate expressions - get raw values to check if undefined
 	const rawValue = evaluateExpression(props?.value ?? "", context);
@@ -53,34 +55,34 @@ export function StatCardComponent({
 	const isLoading = rawValue === undefined && context.isDataLoading;
 
 	const handleClick = () => {
-		if (!props?.onClick) return;
+		if (!props?.on_click) return;
 
 		if (
-			props.onClick.type === "navigate" &&
-			props.onClick.navigateTo &&
+			props.on_click.type === "navigate" &&
+			props.on_click.navigate_to &&
 			context.navigate
 		) {
 			const path = String(
-				evaluateExpression(props.onClick.navigateTo, context) ?? "",
+				evaluateExpression(props.on_click.navigate_to, context) ?? "",
 			);
 			context.navigate(path);
 		} else if (
-			props.onClick.type === "workflow" &&
-			props.onClick.workflowId &&
+			props.on_click.type === "workflow" &&
+			props.on_click.workflow_id &&
 			context.triggerWorkflow
 		) {
-			context.triggerWorkflow(props.onClick.workflowId);
+			context.triggerWorkflow(props.on_click.workflow_id);
 		}
 	};
 
-	const isClickable = !!props?.onClick;
+	const isClickable = !!props?.on_click;
 
 	return (
 		<Card
 			className={cn(
 				"flex-1 transition-colors",
 				isClickable && "cursor-pointer hover:bg-accent",
-				props?.className,
+				props?.class_name,
 			)}
 			onClick={isClickable ? handleClick : undefined}
 		>

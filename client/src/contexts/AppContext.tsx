@@ -19,7 +19,7 @@ import type {
 	ExpressionUser,
 	WorkflowResult,
 	OnCompleteAction,
-} from "@/lib/app-builder-types";
+} from "@/types/app-builder";
 import { useAuth } from "./AuthContext";
 
 /**

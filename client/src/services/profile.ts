@@ -9,7 +9,6 @@ export interface ProfileResponse {
 	email: string;
 	name: string | null;
 	has_avatar: boolean;
-	user_type: string;
 	organization_id: string | null;
 	is_superuser: boolean;
 }

@@ -39,7 +39,7 @@ import {
 	Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ComponentType, LayoutType } from "@/lib/app-builder-types";
+import type { ComponentType, LayoutType } from "@/lib/app-builder-helpers";
 import { componentCategories } from "@/lib/app-builder-tree";
 
 interface ComponentInserterProps {

@@ -13,7 +13,6 @@ are in separate routers (app_pages.py, app_components.py).
 """
 
 import logging
-from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -26,7 +25,6 @@ from src.models.contracts.applications import (
     ApplicationCreate,
     ApplicationDefinition,
     ApplicationDraftSave,
-    ApplicationImport,
     ApplicationListResponse,
     ApplicationPublic,
     ApplicationPublishRequest,
@@ -38,7 +36,7 @@ from src.models.orm.applications import AppComponent, AppPage, AppVersion, Appli
 from src.repositories.org_scoped import OrgScopedRepository
 from src.services.app_builder_service import AppBuilderService
 from src.services.authorization import AuthorizationService
-from src.services.workflow_access_service import sync_app_workflow_access
+from src.services.workflow_role_service import sync_app_roles_to_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +115,6 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             organization_id=self.org_id,
             created_by=created_by,
             navigation={},
-            global_data_sources=[],
-            global_variables={},
             permissions={},
             access_level=data.access_level,
         )
@@ -499,6 +495,30 @@ async def update_application(
             detail=f"Application '{slug}' not found",
         )
 
+    # Sync app roles to workflows if role_ids changed
+    # Only sync draft pages/components (live sync happens on publish)
+    if data.role_ids is not None and application.draft_version_id:
+        draft_pages_query = select(AppPage).where(
+            AppPage.application_id == application.id,
+            AppPage.version_id == application.draft_version_id,
+        )
+        draft_pages_result = await ctx.db.execute(draft_pages_query)
+        draft_pages = list(draft_pages_result.scalars().all())
+
+        draft_components: list[AppComponent] = []
+        for page in draft_pages:
+            comp_query = select(AppComponent).where(AppComponent.page_id == page.id)
+            comp_result = await ctx.db.execute(comp_query)
+            draft_components.extend(comp_result.scalars().all())
+
+        await sync_app_roles_to_workflows(
+            db=ctx.db,
+            app_id=application.id,
+            pages=draft_pages,
+            components=draft_components,
+            assigned_by=user.email,
+        )
+
     # Emit event for real-time updates
     await publish_app_draft_update(
         app_id=str(application.id),
@@ -615,7 +635,7 @@ async def publish_application(
     Publish the draft to live.
 
     Copies all draft pages and components to live versions.
-    Also syncs workflow_access table for execution authorization.
+    Also syncs workflow_roles for execution authorization.
     """
     target_org_id = _resolve_target_org_safe(ctx, scope)
     repo = ApplicationRepository(ctx.db, target_org_id)
@@ -629,7 +649,7 @@ async def publish_application(
                 detail=f"Application '{app_id}' not found",
             )
 
-        # Sync workflow_access for the newly published live pages/components
+        # Sync workflow roles for the newly published live pages/components
         # Query pages by the active version (set by publish)
         if not application.active_version_id:
             raise HTTPException(
@@ -653,13 +673,13 @@ async def publish_application(
             comp_result = await ctx.db.execute(comp_query)
             live_components.extend(comp_result.scalars().all())
 
-        await sync_app_workflow_access(
+        # Sync app roles to referenced workflows - additive
+        await sync_app_roles_to_workflows(
             db=ctx.db,
             app_id=app_id,
-            access_level=application.access_level,
-            organization_id=application.organization_id,
             pages=live_pages,
             components=live_components,
+            assigned_by=user.email,
         )
 
         # Emit event for real-time updates
@@ -685,6 +705,7 @@ async def publish_application(
 
 @router.get(
     "/{app_id}/export",
+    response_model=ApplicationPublic,
     summary="Export application to JSON",
 )
 async def export_application(
@@ -693,7 +714,7 @@ async def export_application(
     _user: CurrentUser,
     version_id: UUID | None = Query(default=None, description="Version UUID to export (defaults to draft)"),
     scope: str | None = Query(default=None),
-) -> dict[str, Any]:
+) -> ApplicationPublic:
     """
     Export full application to JSON for GitHub sync/portability.
 
@@ -708,76 +729,7 @@ async def export_application(
     service = AppBuilderService(ctx.db)
     export_data = await service.export_application(application, version_id)
 
-    return export_data
-
-
-@router.post(
-    "/import",
-    response_model=ApplicationPublic,
-    status_code=status.HTTP_201_CREATED,
-    summary="Import application from JSON",
-)
-async def import_application(
-    data: ApplicationImport,
-    ctx: Context,
-    user: CurrentUser,
-    scope: str | None = Query(
-        default=None,
-        description="Target scope: 'global' or org UUID. Defaults to current org.",
-    ),
-) -> ApplicationPublic:
-    """
-    Import application from JSON.
-
-    Creates a new application with all pages and components from the exported data.
-    Handles `_export` metadata for portable workflow ref resolution.
-    """
-    from src.services.file_storage.ref_translation import (
-        build_ref_to_uuid_map,
-        extract_export_metadata,
-        transform_path_refs_to_uuids,
-    )
-
-    target_org_id = _resolve_target_org_safe(ctx, scope)
-
-    # Check if application already exists
-    repo = ApplicationRepository(ctx.db, target_org_id)
-    existing = await repo.get_by_slug_strict(data.slug)
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Application with slug '{data.slug}' already exists",
-        )
-
-    # Convert to dict for processing
-    import_data = data.model_dump(mode="json")
-
-    # Handle _export metadata for portable ref resolution
-    workflow_ref_fields = extract_export_metadata(import_data)
-    if workflow_ref_fields:
-        ref_to_uuid = await build_ref_to_uuid_map(ctx.db)
-        unresolved = transform_path_refs_to_uuids(
-            import_data,
-            workflow_ref_fields,
-            ref_to_uuid,
-            file_path=f"{data.slug}.app.json",
-        )
-        if unresolved:
-            # Log warning but don't fail - graceful degradation
-            unresolved_refs = [f"{u.field}: {u.ref}" for u in unresolved]
-            logger.warning(
-                f"Unresolved workflow refs in import of '{data.slug}': {unresolved_refs}"
-            )
-
-    service = AppBuilderService(ctx.db)
-    application = await service.import_application(
-        import_data,
-        organization_id=target_org_id,
-        created_by=user.email,
-    )
-
-    logger.info(f"Imported application '{data.slug}' with {len(data.pages)} pages")
-    return await application_to_public(application, repo)
+    return ApplicationPublic.model_validate(export_data)
 
 
 # =============================================================================

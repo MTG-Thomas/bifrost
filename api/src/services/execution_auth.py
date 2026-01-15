@@ -5,10 +5,8 @@ Unified permission checking for workflow and data provider execution.
 Determines if a user can execute a workflow based on:
 1. Platform admin status
 2. API key access
-3. Precomputed workflow_access table (populated at mutation time)
-
-Uses the workflow_access table for O(1) lookups instead of JSONB traversal.
-The table is populated by form create/update and app publish operations.
+3. Integration-based access (data providers tied to integrations)
+4. Direct workflow access via workflow.access_level + workflow_roles
 
 All workflow ID checks also cover data providers, since data providers
 are now stored in the workflows table with type='data_provider'.
@@ -17,14 +15,13 @@ are now stored in the workflows table with type='data_provider'.
 import logging
 from uuid import UUID
 
-from sqlalchemy import exists, literal, select
+from sqlalchemy import exists, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.orm.app_roles import AppRole
-from src.models.orm.forms import FormRole
 from src.models.orm.integrations import Integration
 from src.models.orm.users import UserRole
-from src.models.orm.workflow_access import WorkflowAccess
+from src.models.orm.workflow_roles import WorkflowRole
+from src.models.orm.workflows import Workflow
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +33,11 @@ class ExecutionAuthService:
     Permission is granted if ANY of:
     1. User is platform admin (superuser)
     2. Request is via API key
-    3. User has access via workflow_access table (precomputed at mutation time)
+    3. Workflow is tied to an integration (any authenticated user)
+    4. User has direct access via workflow.access_level + workflow_roles
 
-    The workflow_access table is populated when forms are created/updated
-    and when apps are published. This allows O(1) authorization checks
-    instead of JSONB traversal at execution time.
+    Authorization is based on the workflow's access_level and workflow_roles table,
+    which are populated when forms/apps are created/updated.
     """
 
     def __init__(self, db: AsyncSession):
@@ -88,29 +85,36 @@ class ExecutionAuthService:
             logger.debug(f"Execution allowed: workflow {workflow_id} is tied to an integration")
             return True
 
-        # 4. Check precomputed workflow_access table
-        if await self._has_workflow_access(workflow_id, user_id, user_org_id):
-            logger.debug(f"Execution allowed: user has access to workflow {workflow_id}")
+        # 4. Check direct workflow access via workflow.access_level + workflow_roles
+        # This checks if the workflow itself grants access (authenticated or role-based)
+        if await self._has_direct_workflow_access(workflow_id, user_id, user_org_id):
+            logger.debug(f"Execution allowed: user has direct access to workflow {workflow_id}")
             return True
 
         logger.debug(f"Execution denied: no access found for workflow {workflow_id}")
         return False
 
-    async def _has_workflow_access(
+    async def _has_direct_workflow_access(
         self,
         workflow_id: str,
         user_id: UUID,
         user_org_id: UUID | None,
     ) -> bool:
         """
-        Check if user has access to a workflow via the precomputed workflow_access table.
+        Check if user has direct access to a workflow via its access_level and workflow_roles.
 
-        The query:
-        1. Finds workflow_access entries for this workflow in user's org (or global)
-        2. Checks if access_level is 'authenticated' (any authenticated user)
-        3. Or checks if user has a role that grants access (form_roles or app_roles)
+        This is a new authorization path that checks:
+        1. Workflow org scoping (user's org or global)
+        2. Workflow access_level: 'authenticated' (any authenticated user) or 'role_based'
+        3. For role_based, checks if user has a matching role via workflow_roles
 
-        This is O(1) due to the index on (workflow_id, organization_id).
+        Args:
+            workflow_id: UUID string of the workflow
+            user_id: User UUID
+            user_org_id: User's organization UUID
+
+        Returns:
+            True if user has direct access to the workflow
         """
         try:
             workflow_uuid = UUID(workflow_id)
@@ -118,61 +122,55 @@ class ExecutionAuthService:
             logger.warning(f"Invalid workflow_id format: {workflow_id}")
             return False
 
-        # Subquery for user's role IDs
-        user_roles_subq = select(UserRole.role_id).where(UserRole.user_id == user_id)
-
-        # Build the access check query
-        # Check if there's a workflow_access entry that grants access
-        query = select(
-            exists(
-                select(literal(1))
-                .select_from(WorkflowAccess)
-                .where(
-                    # Workflow match
-                    WorkflowAccess.workflow_id == workflow_uuid,
-                    # Org scoping: user's org or global (NULL)
-                    (
-                        (WorkflowAccess.organization_id == user_org_id)
-                        if user_org_id
-                        else WorkflowAccess.organization_id.is_(None)
-                    )
-                    | WorkflowAccess.organization_id.is_(None),
-                    # Access level check
-                    (
-                        # Authenticated: any authenticated user has access
-                        (WorkflowAccess.access_level == "authenticated")
-                        |
-                        # Role-based: check if user has a matching role
-                        (
-                            # Form access: check form_roles
-                            (
-                                (WorkflowAccess.entity_type == "form")
-                                & exists(
-                                    select(FormRole.form_id).where(
-                                        FormRole.form_id == WorkflowAccess.entity_id,
-                                        FormRole.role_id.in_(user_roles_subq),
-                                    )
-                                )
-                            )
-                            |
-                            # App access: check app_roles
-                            (
-                                (WorkflowAccess.entity_type == "app")
-                                & exists(
-                                    select(AppRole.app_id).where(
-                                        AppRole.app_id == WorkflowAccess.entity_id,
-                                        AppRole.role_id.in_(user_roles_subq),
-                                    )
-                                )
-                            )
-                        )
-                    ),
-                )
-            )
+        # Get the workflow with org scoping
+        query = select(Workflow).where(
+            Workflow.id == workflow_uuid,
+            Workflow.is_active.is_(True),
         )
 
+        # Apply org scoping: user's org or global (NULL)
+        if user_org_id:
+            query = query.where(
+                or_(
+                    Workflow.organization_id == user_org_id,
+                    Workflow.organization_id.is_(None),
+                )
+            )
+        else:
+            query = query.where(Workflow.organization_id.is_(None))
+
         result = await self.db.execute(query)
-        return result.scalar() or False
+        workflow = result.scalar_one_or_none()
+
+        if not workflow:
+            return False
+
+        # Check access_level
+        access_level = workflow.access_level or "role_based"
+
+        if access_level == "authenticated":
+            # Any authenticated user can access
+            return True
+
+        if access_level == "role_based":
+            # Check if user has a role assigned to this workflow
+            user_roles_subq = select(UserRole.role_id).where(UserRole.user_id == user_id)
+
+            role_check_query = select(
+                exists(
+                    select(literal(1))
+                    .select_from(WorkflowRole)
+                    .where(
+                        WorkflowRole.workflow_id == workflow_uuid,
+                        WorkflowRole.role_id.in_(user_roles_subq),
+                    )
+                )
+            )
+
+            role_result = await self.db.execute(role_check_query)
+            return role_result.scalar() or False
+
+        return False
 
     async def _has_integration_access(self, workflow_id: str) -> bool:
         """

@@ -10,18 +10,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useCreateSubscription } from "@/services/events";
 import { useWorkflows } from "@/hooks/useWorkflows";
+import { WorkflowSelectorDialog } from "@/components/workflows/WorkflowSelectorDialog";
 import type { components } from "@/lib/v1";
 
 type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
@@ -44,11 +38,14 @@ function CreateSubscriptionDialogContent({
 	const [workflowId, setWorkflowId] = useState("");
 	const [eventType, setEventType] = useState("");
 	const [errors, setErrors] = useState<string[]>([]);
+	const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false);
 
-	// Fetch available workflows
-	const { data: workflowsData, isLoading: isLoadingWorkflows } =
-		useWorkflows();
+	// Fetch available workflows for display name lookup
+	const { data: workflowsData } = useWorkflows();
 	const workflows: WorkflowMetadata[] = workflowsData || [];
+
+	// Get selected workflow name for display
+	const selectedWorkflow = workflows.find((w) => w.id === workflowId);
 
 	const isLoading = createMutation.isPending;
 
@@ -111,30 +108,27 @@ function CreateSubscriptionDialogContent({
 					</Alert>
 				)}
 
-				{/* Workflow Select */}
+				{/* Workflow Selector */}
 				<div className="space-y-2">
-					<Label htmlFor="workflow">Workflow</Label>
-					<Select value={workflowId} onValueChange={setWorkflowId}>
-						<SelectTrigger id="workflow">
-							<SelectValue
-								placeholder={
-									isLoadingWorkflows
-										? "Loading workflows..."
-										: "Select a workflow..."
-								}
-							/>
-						</SelectTrigger>
-						<SelectContent>
-							{workflows.map((workflow) => (
-								<SelectItem
-									key={workflow.id}
-									value={workflow.id}
-								>
-									{workflow.name}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<Label>Workflow</Label>
+					<Button
+						type="button"
+						variant="outline"
+						className="w-full justify-start font-normal"
+						onClick={() => setWorkflowDialogOpen(true)}
+					>
+						{selectedWorkflow?.name || "Select a workflow..."}
+					</Button>
+					<WorkflowSelectorDialog
+						open={workflowDialogOpen}
+						onOpenChange={setWorkflowDialogOpen}
+						entityRoles={[]}
+						mode="single"
+						selectedWorkflowIds={workflowId ? [workflowId] : []}
+						onSelect={(ids) => setWorkflowId(ids[0] || "")}
+						title="Select Workflow"
+						description="Choose a workflow to receive events from this source."
+					/>
 					<p className="text-xs text-muted-foreground">
 						The workflow will receive the event data as input
 						parameters.

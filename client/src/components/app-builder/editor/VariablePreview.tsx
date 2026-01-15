@@ -33,7 +33,7 @@ import type {
 	ExpressionContext,
 	PageDefinition,
 	WorkflowResult,
-} from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
 
 interface VariablePreviewProps {
 	/** Current expression context (for preview mode) */

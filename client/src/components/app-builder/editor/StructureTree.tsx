@@ -65,12 +65,12 @@ import type {
 	AppComponent,
 	ComponentType,
 	LayoutType,
-} from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
 import {
 	isLayoutContainer,
 	canHaveChildren,
 	getElementChildren,
-} from "@/lib/app-builder-types";
+} from "@/lib/app-builder-helpers";
 import {
 	getComponentLabel,
 	getComponentInfo,
@@ -697,7 +697,11 @@ export function StructureTree({
 			{/* Component tree */}
 			<div>
 				<TreeItem
-					element={currentPage.layout}
+					element={
+						currentPage.layout as unknown as
+							| LayoutContainer
+							| AppComponent
+					}
 					elementId={rootLayoutId}
 					parentId=""
 					index={0}

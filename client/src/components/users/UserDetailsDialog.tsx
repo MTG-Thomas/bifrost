@@ -48,7 +48,7 @@ export function UserDetailsDialog({
 					<DialogTitle>{user.name || user.email}</DialogTitle>
 					<DialogDescription>
 						{user.email} •{" "}
-						{user.user_type === "PLATFORM"
+						{user.is_superuser
 							? "MSP Technician"
 							: "Organization User"}
 					</DialogDescription>
@@ -69,38 +69,21 @@ export function UserDetailsDialog({
 								</span>
 								<Badge
 									variant={
-										user.user_type === "PLATFORM"
+										user.is_superuser
 											? "default"
 											: "secondary"
 									}
 								>
-									{user.user_type === "PLATFORM" ? (
+									{user.is_superuser ? (
 										<>
 											<Shield className="mr-1 h-3 w-3" />
-											MSP Technician
+											Platform Admin
 										</>
 									) : (
 										"Organization User"
 									)}
 								</Badge>
 							</div>
-
-							{user.user_type === "PLATFORM" && (
-								<div className="flex items-center justify-between">
-									<span className="text-sm text-muted-foreground">
-										MSP Admin
-									</span>
-									<Badge
-										variant={
-											user.is_superuser
-												? "destructive"
-												: "outline"
-										}
-									>
-										{user.is_superuser ? "Yes" : "No"}
-									</Badge>
-								</div>
-							)}
 
 							<div className="flex items-center justify-between">
 								<span className="text-sm text-muted-foreground">
@@ -140,8 +123,8 @@ export function UserDetailsDialog({
 						</CardContent>
 					</Card>
 
-					{/* Roles and Forms Tabs (only for ORG users) */}
-					{user.user_type === "ORG" && (
+					{/* Roles and Forms Tabs (only for org users - non-superusers with org) */}
+					{!user.is_superuser && user.organization_id && (
 						<Tabs defaultValue="roles">
 							<TabsList className="grid w-full grid-cols-2">
 								<TabsTrigger value="roles">
@@ -273,8 +256,8 @@ export function UserDetailsDialog({
 						</Tabs>
 					)}
 
-					{/* MSP users have full access */}
-					{user.user_type === "PLATFORM" && (
+					{/* Platform admins have full access */}
+					{user.is_superuser && (
 						<Card>
 							<CardHeader>
 								<CardTitle className="text-base">

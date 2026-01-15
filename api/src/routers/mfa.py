@@ -231,7 +231,6 @@ async def verify_mfa(
         "sub": str(user.id),
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
-        "user_type": user.user_type.value,
         "is_superuser": user.is_superuser,
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,

@@ -11,7 +11,7 @@ import type {
 	PageDefinition,
 	WorkflowResult,
 	ExpressionContext,
-} from "@/lib/app-builder-types";
+} from "@/types/app-builder";
 import { evaluateExpression } from "@/lib/expression-parser";
 
 interface PageDataState {
@@ -70,9 +70,9 @@ function evaluateInputParams(
  * Hook for loading page data via launch workflow
  *
  * Pages configure data loading with:
- * - launchWorkflowId: The workflow to execute on page mount
- * - launchWorkflowParams: Parameters to pass (supports expressions like {{ params.id }})
- * - launchWorkflowDataSourceId: Key name for accessing results (defaults to workflow name)
+ * - launch_workflow_id: The workflow to execute on page mount
+ * - launch_workflow_params: Parameters to pass (supports expressions like {{ params.id }})
+ * - launch_workflow_data_source_id: Key name for accessing results (defaults to workflow name)
  *
  * @example
  * const { isLoading, workflow, refresh } = usePageData({
@@ -105,12 +105,13 @@ export function usePageData({
 	const pageId = page?.id;
 
 	// Get launch workflow config (flat or nested format)
+	// Note: API returns null/undefined, but evaluateInputParams expects undefined
 	const launchWorkflowId =
-		page?.launchWorkflowId ?? page?.launchWorkflow?.workflowId;
+		page?.launch_workflow_id ?? page?.launch_workflow?.workflow_id;
 	const launchWorkflowParams =
-		page?.launchWorkflowParams ?? page?.launchWorkflow?.params;
+		(page?.launch_workflow_params ?? page?.launch_workflow?.params) ?? undefined;
 	const launchWorkflowDataSourceId =
-		page?.launchWorkflowDataSourceId ?? page?.launchWorkflow?.dataSourceId;
+		page?.launch_workflow_data_source_id ?? page?.launch_workflow?.data_source_id ?? undefined;
 
 	// Create stable key for route params to avoid infinite loops
 	const routeParamsKey = JSON.stringify(baseContext.params || {});

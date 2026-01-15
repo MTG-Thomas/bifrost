@@ -7,11 +7,13 @@
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import type { BadgeComponentProps } from "@/lib/app-builder-types";
+import type { components } from "@/lib/v1";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 
+type BadgeComponent = components["schemas"]["BadgeComponent"];
+
 export function BadgeComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as BadgeComponentProps;
+	const { props } = component as BadgeComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
 	const text = String(props?.text ?? "");
@@ -19,7 +21,7 @@ export function BadgeComponent({ component }: RegisteredComponentProps) {
 	return (
 		<Badge
 			variant={props?.variant || "default"}
-			className={cn(props?.className)}
+			className={cn(props?.class_name)}
 		>
 			{text}
 		</Badge>

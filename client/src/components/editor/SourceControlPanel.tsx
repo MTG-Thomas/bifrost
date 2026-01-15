@@ -288,6 +288,7 @@ export function SourceControlPanel() {
 				body: {
 					conflict_resolutions: conflictResolutions,
 					confirm_orphans: orphansConfirmed,
+					confirm_unresolved_refs: true,
 				},
 			});
 

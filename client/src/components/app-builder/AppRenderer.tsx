@@ -12,7 +12,8 @@ import type {
 	PageDefinition,
 	WorkflowResult,
 	OnCompleteAction,
-} from "@/lib/app-builder-types";
+	ExpressionContext,
+} from "@/types/app-builder";
 import {
 	AppContextProvider,
 	useExpressionContext,
@@ -22,7 +23,6 @@ import { registerBasicComponents } from "./components";
 import { usePageData } from "@/hooks/usePageData";
 import { useAuth } from "@/contexts/AuthContext";
 import { evaluateExpression } from "@/lib/expression-parser";
-import type { ExpressionContext } from "@/lib/app-builder-types";
 
 // Track if components have been registered
 let componentsRegistered = false;

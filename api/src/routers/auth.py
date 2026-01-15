@@ -10,7 +10,7 @@ Provides endpoints for user authentication:
 Key Features:
 - First user login auto-promotes to PlatformAdmin
 - Subsequent users auto-join organizations by email domain
-- JWT tokens include user_type, org_id, and roles
+- JWT tokens include is_superuser, org_id, and roles
 - Refresh tokens use JTI for revocation support
 """
 
@@ -251,7 +251,6 @@ class UserResponse(BaseModel):
     is_active: bool
     is_superuser: bool
     is_verified: bool
-    user_type: str
     organization_id: str | None
     roles: list[str] = []
 
@@ -284,7 +283,7 @@ async def login(
     Performs user provisioning on each login:
     - First user in system becomes PlatformAdmin
     - Subsequent users are matched to organizations by email domain
-    - JWT tokens include user_type, org_id, and roles for authorization
+    - JWT tokens include is_superuser, org_id, and roles for authorization
 
     Rate limited: 10 requests per minute per IP address.
 
@@ -589,7 +588,6 @@ async def mfa_initial_verify(
         "sub": str(user.id),
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
-        "user_type": user.user_type.value,
         "is_superuser": user.is_superuser,
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
@@ -744,7 +742,6 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
         "sub": str(user.id),
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
-        "user_type": user.user_type.value,
         "is_superuser": user.is_superuser,
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
@@ -765,8 +762,7 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
         f"User logged in: {user.email}",
         extra={
             "user_id": str(user.id),
-            "user_type": user.user_type.value,
-            "is_superuser": user.is_superuser,
+                "is_superuser": user.is_superuser,
             "org_id": str(user.organization_id) if user.organization_id else None,
         }
     )
@@ -894,7 +890,6 @@ async def refresh_token(
         "sub": str(user.id),
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
-        "user_type": user.user_type.value,
         "is_superuser": user.is_superuser,
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
@@ -938,7 +933,6 @@ async def get_current_user_info(
         is_active=current_user.is_active,
         is_superuser=current_user.is_superuser,
         is_verified=current_user.is_verified,
-        user_type=current_user.user_type,
         organization_id=str(current_user.organization_id) if current_user.organization_id else None,
         roles=current_user.roles,
     )
@@ -1179,7 +1173,7 @@ async def register_user(
                 f"Pre-created user completed registration: {existing_user.email}",
                 extra={
                     "user_id": str(existing_user.id),
-                    "user_type": existing_user.user_type.value,
+                    "is_superuser": existing_user.is_superuser,
                 }
             )
 
@@ -1197,7 +1191,6 @@ async def register_user(
                 is_active=existing_user.is_active,
                 is_superuser=existing_user.is_superuser,
                 is_verified=existing_user.is_verified,
-                user_type=existing_user.user_type.value,
                 organization_id=str(existing_user.organization_id) if existing_user.organization_id else None,
                 roles=roles,
             )
@@ -1231,7 +1224,7 @@ async def register_user(
         f"User registered: {user.email}",
         extra={
             "user_id": str(user.id),
-            "user_type": result.user_type.value,
+            "is_superuser": user.is_superuser,
             "was_created": result.was_created,
         }
     )
@@ -1243,7 +1236,6 @@ async def register_user(
         is_active=user.is_active,
         is_superuser=user.is_superuser,
         is_verified=user.is_verified,
-        user_type=result.user_type.value,
         organization_id=str(user.organization_id) if user.organization_id else None,
         roles=result.roles,
     )
@@ -1651,7 +1643,6 @@ async def setup_passkey_verify(
         "sub": str(user.id),
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
-        "user_type": user.user_type.value,
         "is_superuser": user.is_superuser,
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,

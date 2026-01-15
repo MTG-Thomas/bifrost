@@ -32,12 +32,17 @@ class UserPrincipal:
 
     Represents an authenticated user with their identity and permissions.
     All user info is extracted from JWT claims (no database lookup required).
+
+    Auth model:
+    - is_superuser=true, org_id=UUID: Platform admin in an org
+    - is_superuser=false, org_id=UUID: Regular org user
+    - is_superuser=true, org_id=None: System account (global scope)
+    - is_superuser=false, org_id=None: INVALID (rejected at token parsing)
     """
     user_id: UUID
     email: str
-    organization_id: UUID | None  # User's home org (None for PLATFORM users)
+    organization_id: UUID | None  # User's org (None for system accounts)
     name: str = ""
-    user_type: str = "ORG"  # PLATFORM, ORG, or SYSTEM
     is_active: bool = True
     is_superuser: bool = False
     is_verified: bool = False
@@ -46,7 +51,12 @@ class UserPrincipal:
     @property
     def is_platform_admin(self) -> bool:
         """Check if user is a platform admin (superuser)."""
-        return self.is_superuser or self.user_type == "PLATFORM"
+        return self.is_superuser
+
+    @property
+    def is_system_account(self) -> bool:
+        """Check if this is a system account (superuser with no org)."""
+        return self.is_superuser and self.organization_id is None
 
     def has_role(self, role: str) -> bool:
         """Check if user has a specific role."""
@@ -111,7 +121,8 @@ async def get_current_user_optional(
     User info is extracted from JWT claims. Tokens must:
     - Have type="access" (refresh tokens are rejected)
     - Have valid issuer and audience claims
-    - Include embedded user claims (email, user_type)
+    - Include email claim
+    - Have org_id if not a superuser
 
     Returns None if no token is provided or token is invalid.
     Does not raise an exception for unauthenticated requests.
@@ -152,54 +163,41 @@ async def get_current_user_optional(
     except ValueError:
         return None
 
-    # Tokens MUST have embedded claims - no legacy fallback
-    if "email" not in payload or "user_type" not in payload:
+    # Token MUST have email claim
+    if "email" not in payload:
         logger.warning(
-            f"Token for user {user_id} missing required claims (email/user_type). "
+            f"Token for user {user_id} missing required email claim. "
             "Legacy tokens are no longer supported."
         )
         return None
 
-    # Check user_type first to handle PLATFORM users (engine, system)
-    user_type = payload.get("user_type", "ORG")
-
-    # PLATFORM users (engine, system) don't require org_id - they operate globally
-    if user_type == "PLATFORM":
-        return UserPrincipal(
-            user_id=user_id,
-            email=payload.get("email", ""),
-            organization_id=None,  # PLATFORM users operate globally
-            name=payload.get("name", ""),
-            user_type=user_type,
-            is_active=True,
-            is_superuser=payload.get("is_superuser", False),
-            is_verified=True,
-            roles=payload.get("roles", []),
-        )
-
-    # For non-PLATFORM users, org_id is required
+    is_superuser = payload.get("is_superuser", False)
     org_id_str = payload.get("org_id")
-    if not org_id_str:
-        logger.warning(
-            f"Token for user {user_id} missing org_id claim. "
-            "User must re-authenticate to get a token with organization."
+
+    # Parse organization_id
+    organization_id: UUID | None = None
+    if org_id_str:
+        try:
+            organization_id = UUID(org_id_str)
+        except ValueError:
+            logger.warning(f"Token for user {user_id} has invalid org_id format: {org_id_str}")
+            return None
+    elif not is_superuser:
+        # Non-superuser without org is invalid
+        logger.error(
+            f"Invalid token for user {user_id}: "
+            "non-superuser must have organization_id"
         )
         return None
-
-    try:
-        org_id = UUID(org_id_str)
-    except ValueError:
-        logger.warning(f"Token for user {user_id} has invalid org_id format: {org_id_str}")
-        return None
+    # else: superuser with no org = system account (valid)
 
     return UserPrincipal(
         user_id=user_id,
         email=payload.get("email", ""),
-        organization_id=org_id,
+        organization_id=organization_id,
         name=payload.get("name", ""),
-        user_type=user_type,
-        is_active=True,  # Token is valid, user was active at issue time
-        is_superuser=payload.get("is_superuser", False),
+        is_active=True,
+        is_superuser=is_superuser,
         is_verified=True,
         roles=payload.get("roles", []),
     )
@@ -411,54 +409,41 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
     except ValueError:
         return None
 
-    # Tokens MUST have embedded claims - no legacy fallback
-    if "email" not in payload or "user_type" not in payload:
+    # Token MUST have email claim
+    if "email" not in payload:
         logger.warning(
-            f"WebSocket token for user {user_id} missing required claims. "
+            f"WebSocket token for user {user_id} missing required email claim. "
             "Legacy tokens are no longer supported."
         )
         return None
 
-    # Check user_type first to handle PLATFORM users (engine, system)
-    user_type = payload.get("user_type", "ORG")
-
-    # PLATFORM users (engine, system) don't require org_id - they operate globally
-    if user_type == "PLATFORM":
-        return UserPrincipal(
-            user_id=user_id,
-            email=payload.get("email", ""),
-            organization_id=None,  # PLATFORM users operate globally
-            name=payload.get("name", ""),
-            user_type=user_type,
-            is_active=True,
-            is_superuser=payload.get("is_superuser", False),
-            is_verified=True,
-            roles=payload.get("roles", []),
-        )
-
-    # For non-PLATFORM users, org_id is required
+    is_superuser = payload.get("is_superuser", False)
     org_id_str = payload.get("org_id")
-    if not org_id_str:
-        logger.warning(
-            f"WebSocket token for user {user_id} missing org_id claim. "
-            "User must re-authenticate to get a token with organization."
+
+    # Parse organization_id
+    organization_id: UUID | None = None
+    if org_id_str:
+        try:
+            organization_id = UUID(org_id_str)
+        except ValueError:
+            logger.warning(f"WebSocket token for user {user_id} has invalid org_id format: {org_id_str}")
+            return None
+    elif not is_superuser:
+        # Non-superuser without org is invalid
+        logger.error(
+            f"Invalid WebSocket token for user {user_id}: "
+            "non-superuser must have organization_id"
         )
         return None
-
-    try:
-        org_id = UUID(org_id_str)
-    except ValueError:
-        logger.warning(f"WebSocket token for user {user_id} has invalid org_id format: {org_id_str}")
-        return None
+    # else: superuser with no org = system account (valid)
 
     return UserPrincipal(
         user_id=user_id,
         email=payload.get("email", ""),
-        organization_id=org_id,
+        organization_id=organization_id,
         name=payload.get("name", ""),
-        user_type=user_type,
         is_active=True,
-        is_superuser=payload.get("is_superuser", False),
+        is_superuser=is_superuser,
         is_verified=True,
         roles=payload.get("roles", []),
     )

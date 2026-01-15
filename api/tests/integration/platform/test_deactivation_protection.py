@@ -53,9 +53,20 @@ async def clean_tables(db_session: AsyncSession):
 
     Instead of truncating entire tables (which affects other concurrent tests),
     this fixture deletes only records created by this test module.
+
+    Also resets Redis-using singletons to avoid connection leaks across event loops
+    (each test function gets a fresh event loop with asyncio_default_fixture_loop_scope=function).
     """
     from sqlalchemy import delete
     from src.models import Workflow, WorkspaceFile
+    import src.services.notification_service as notification_module
+    import src.core.redis_client as redis_module
+
+    # Reset singletons BEFORE test runs to ensure fresh Redis connections on current event loop.
+    # We can't call close() on old services because they were created on a closed event loop.
+    # Just clear the singleton references - old connections are effectively dead anyway.
+    notification_module._notification_service = None
+    redis_module._redis_client = None
 
     yield
 

@@ -22,7 +22,6 @@ class TestProfile:
         assert data["email"] == platform_admin.email
         assert "name" in data
         assert "has_avatar" in data
-        assert "user_type" in data
         assert "is_superuser" in data
         assert data["is_superuser"] is True  # Platform admin is superuser
 

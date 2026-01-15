@@ -6,9 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator, model_validator
-
-from src.models.enums import UserType
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, model_validator
 
 if TYPE_CHECKING:
     pass
@@ -22,10 +20,10 @@ class User(BaseModel):
     id: str = Field(..., description="User ID from Azure AD")
     email: str
     display_name: str
-    user_type: UserType = Field(
-        default=UserType.PLATFORM, description="Platform admin or organization user")
-    is_platform_admin: bool = Field(
-        default=False, description="Whether user is platform admin")
+    is_superuser: bool = Field(
+        default=False, description="Whether user is a platform admin (superuser)")
+    organization_id: str | None = Field(
+        default=None, description="Organization ID (null for system accounts)")
     is_active: bool = Field(default=True)
     last_login: datetime | None = None
     created_at: datetime
@@ -35,15 +33,6 @@ class User(BaseModel):
         None, description="Azure AD user object ID (oid claim) for duplicate prevention")
     last_entra_id_sync: datetime | None = Field(
         None, description="Last synchronization timestamp from Azure AD")
-
-    @field_validator('is_platform_admin')
-    @classmethod
-    def validate_platform_admin(cls, v, info):
-        """Validate that only PLATFORM users can be admins"""
-        user_type = info.data.get('user_type')
-        if v and user_type != UserType.PLATFORM:
-            raise ValueError("Only PLATFORM users can be admins")
-        return v
 
 
 class CreateUserRequest(BaseModel):
@@ -88,7 +77,6 @@ class UserBase(BaseModel):
     is_verified: bool = Field(default=False)
     is_registered: bool = Field(default=True)
     mfa_enabled: bool = Field(default=False)
-    user_type: UserType = Field(default=UserType.ORG)
 
 
 class UserCreate(BaseModel):
@@ -98,7 +86,6 @@ class UserCreate(BaseModel):
     password: str | None = None  # Plain text, will be hashed
     is_active: bool = True
     is_superuser: bool = False
-    user_type: UserType = UserType.ORG
     organization_id: UUID | None = None
 
 
@@ -174,8 +161,11 @@ class RoleBase(BaseModel):
 
 
 class RoleCreate(RoleBase):
-    """Input for creating a role."""
-    organization_id: UUID | None = None
+    """Input for creating a role.
+
+    Roles are globally defined - org scoping happens at the entity level.
+    """
+    pass
 
 
 class RoleUpdate(BaseModel):
@@ -186,11 +176,13 @@ class RoleUpdate(BaseModel):
 
 
 class RolePublic(RoleBase):
-    """Role output for API responses."""
+    """Role output for API responses.
+
+    Roles are globally defined - org scoping happens at the entity level.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    organization_id: UUID | None
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -275,6 +267,6 @@ class UserRolesResponse(BaseModel):
 
 class UserFormsResponse(BaseModel):
     """Response model for getting forms accessible to a user"""
-    user_type: UserType = Field(..., description="User type (PLATFORM or ORG)")
+    is_superuser: bool = Field(..., description="Whether user is a platform admin")
     has_access_to_all_forms: bool = Field(..., description="Whether user has access to all forms")
     form_ids: list[str] = Field(default_factory=list, description="List of form IDs user can access (empty if has_access_to_all_forms=true)")
