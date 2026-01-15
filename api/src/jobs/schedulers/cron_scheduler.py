@@ -43,8 +43,9 @@ async def process_scheduled_workflows() -> dict[str, Any]:
         from src.services.cron_parser import calculate_next_run, is_cron_expression_valid
 
         # Query scheduled workflows from database (replaces scan_all_workflows)
+        # System-level access: org_id=None, is_superuser=True to see all scheduled workflows
         async with get_db_context() as db:
-            workflow_repo = WorkflowRepository(db)
+            workflow_repo = WorkflowRepository(db, org_id=None, is_superuser=True)
             scheduled_workflows = await workflow_repo.get_scheduled()
 
         results["total_schedules"] = len(scheduled_workflows)

@@ -521,8 +521,14 @@ async def _execute_workflow_tool_impl(
 
     try:
         async with get_db_context() as db:
-            repo = WorkflowRepository(db)
-            workflow = await repo.get_by_id(workflow_id)
+            # Use context for proper org scoping and role-based access
+            repo = WorkflowRepository(
+                db,
+                org_id=context.org_id,
+                user_id=context.user_id,
+                is_superuser=False,
+            )
+            workflow = await repo.get(id=workflow_id)
 
             if not workflow:
                 return f"Error: Workflow '{workflow_name}' not found"

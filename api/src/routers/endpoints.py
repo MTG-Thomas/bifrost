@@ -135,7 +135,8 @@ async def execute_endpoint(
             logger.debug(f"Cache miss for endpoint workflow: {workflow_name}")
 
             # Get workflow from database (need the UUID for execution)
-            workflow_repo = WorkflowRepository(db)
+            # System-level access: org_id=None, is_superuser=True bypasses cascade scoping
+            workflow_repo = WorkflowRepository(db, org_id=None, is_superuser=True)
             try:
                 workflow = await workflow_repo.get_endpoint_workflow_by_name(workflow_name)
             except ValueError as e:

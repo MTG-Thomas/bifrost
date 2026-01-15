@@ -61,8 +61,15 @@ async def execute_workflow(
 
     try:
         async with get_db_context() as db:
-            repo = WorkflowRepository(db)
-            workflow = await repo.get_by_id(workflow_uuid)
+            ctx_org_id = UUID(str(context.org_id)) if context.org_id else None
+            ctx_user_id = UUID(str(context.user_id)) if context.user_id else None
+            repo = WorkflowRepository(
+                db,
+                org_id=ctx_org_id,
+                user_id=ctx_user_id,
+                is_superuser=context.is_platform_admin,
+            )
+            workflow = await repo.get(id=workflow_uuid)
 
             if not workflow:
                 return json.dumps({"error": f"Workflow with ID '{workflow_id}' not found. Use list_workflows to see available workflows."})
@@ -130,7 +137,15 @@ async def list_workflows(
 
     try:
         async with get_db_context() as db:
-            repo = WorkflowRepository(db)
+            from uuid import UUID
+            ctx_org_id = UUID(str(context.org_id)) if context.org_id else None
+            ctx_user_id = UUID(str(context.user_id)) if context.user_id else None
+            repo = WorkflowRepository(
+                db,
+                org_id=ctx_org_id,
+                user_id=ctx_user_id,
+                is_superuser=context.is_platform_admin,
+            )
             workflows = await repo.search(query=query, category=category, limit=100)
             total_count = await repo.count_active()
 
@@ -411,11 +426,18 @@ async def get_workflow(
 
     try:
         async with get_db_context() as db:
-            repo = WorkflowRepository(db)
+            ctx_org_id = UUID(str(context.org_id)) if context.org_id else None
+            ctx_user_id = UUID(str(context.user_id)) if context.user_id else None
+            repo = WorkflowRepository(
+                db,
+                org_id=ctx_org_id,
+                user_id=ctx_user_id,
+                is_superuser=context.is_platform_admin,
+            )
 
             if workflow_id:
                 try:
-                    workflow = await repo.get_by_id(UUID(workflow_id))
+                    workflow = await repo.get(id=UUID(workflow_id))
                 except ValueError:
                     return json.dumps({"error": f"Invalid workflow_id format: {workflow_id}"})
             else:

@@ -284,8 +284,9 @@ class TestWorkflowRepositoryScopedLookup:
         mock_result_org.scalar_one_or_none.return_value = org_workflow
         mock_session.execute.return_value = mock_result_org
 
-        repo = WorkflowRepository(mock_session)
-        result = await repo.get_by_name("shared_workflow", org_id=org_id)
+        # OrgScopedRepository takes org_id in constructor, not method
+        repo = WorkflowRepository(mock_session, org_id=org_id, is_superuser=True)
+        result = await repo.get_by_name("shared_workflow")
 
         assert result is not None
         assert result.id == org_workflow.id
@@ -309,8 +310,9 @@ class TestWorkflowRepositoryScopedLookup:
 
         mock_session.execute.side_effect = [mock_result_org, mock_result_global]
 
-        repo = WorkflowRepository(mock_session)
-        result = await repo.get_by_name("shared_workflow", org_id=org_id)
+        # OrgScopedRepository takes org_id in constructor, not method
+        repo = WorkflowRepository(mock_session, org_id=org_id, is_superuser=True)
+        result = await repo.get_by_name("shared_workflow")
 
         assert result is not None
         assert result.id == global_workflow.id
@@ -329,8 +331,9 @@ class TestWorkflowRepositoryScopedLookup:
         mock_result_org.scalar_one_or_none.return_value = org_workflow
         mock_session.execute.return_value = mock_result_org
 
-        repo = WorkflowRepository(mock_session)
-        result = await repo.get_by_name("shared_workflow", org_id=org_id)
+        # OrgScopedRepository takes org_id in constructor, not method
+        repo = WorkflowRepository(mock_session, org_id=org_id, is_superuser=True)
+        result = await repo.get_by_name("shared_workflow")
 
         assert result is not None
         assert result.id == org_workflow.id
@@ -347,8 +350,9 @@ class TestWorkflowRepositoryScopedLookup:
         mock_result.scalar_one_or_none.return_value = global_workflow
         mock_session.execute.return_value = mock_result
 
-        repo = WorkflowRepository(mock_session)
-        result = await repo.get_by_name("shared_workflow")  # No org_id
+        # OrgScopedRepository with org_id=None means global-only scope
+        repo = WorkflowRepository(mock_session, org_id=None, is_superuser=True)
+        result = await repo.get_by_name("shared_workflow")
 
         assert result is not None
         assert result.id == global_workflow.id

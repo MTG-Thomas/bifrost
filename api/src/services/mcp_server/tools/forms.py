@@ -240,16 +240,23 @@ async def create_form(
 
     try:
         async with get_db_context() as db:
-            # Verify workflow exists
-            workflow_repo = WorkflowRepository(db)
-            workflow = await workflow_repo.get_by_id(UUID_TYPE(workflow_id))
+            # Verify workflow exists with proper scoping
+            ctx_org_id = UUID_TYPE(str(context.org_id)) if context.org_id else None
+            ctx_user_id = UUID_TYPE(str(context.user_id)) if context.user_id else None
+            workflow_repo = WorkflowRepository(
+                db,
+                org_id=ctx_org_id,
+                user_id=ctx_user_id,
+                is_superuser=context.is_platform_admin,
+            )
+            workflow = await workflow_repo.get(id=UUID_TYPE(workflow_id))
             if not workflow:
                 return json.dumps({"error": f"Workflow '{workflow_id}' not found. Use list_workflows to see available workflows."})
 
             # Verify launch workflow if provided
             launch_workflow = None
             if launch_workflow_id:
-                launch_workflow = await workflow_repo.get_by_id(UUID_TYPE(launch_workflow_id))
+                launch_workflow = await workflow_repo.get(id=UUID_TYPE(launch_workflow_id))
                 if not launch_workflow:
                     return json.dumps({"error": f"Launch workflow '{launch_workflow_id}' not found."})
 
@@ -420,21 +427,28 @@ async def get_form(
                 identifier = form_id or form_name
                 return json.dumps({"error": f"Form '{identifier}' not found. Use list_forms to see available forms."})
 
-            # Get workflow names
-            workflow_repo = WorkflowRepository(db)
+            # Get workflow names with proper scoping
+            ctx_org_id = UUID_TYPE(str(context.org_id)) if context.org_id else None
+            ctx_user_id = UUID_TYPE(str(context.user_id)) if context.user_id else None
+            workflow_repo = WorkflowRepository(
+                db,
+                org_id=ctx_org_id,
+                user_id=ctx_user_id,
+                is_superuser=context.is_platform_admin,
+            )
             workflow_name = None
             launch_workflow_name = None
 
             if form.workflow_id:
                 try:
-                    workflow = await workflow_repo.get_by_id(UUID_TYPE(form.workflow_id))
+                    workflow = await workflow_repo.get(id=UUID_TYPE(form.workflow_id))
                     workflow_name = workflow.name if workflow else None
                 except Exception:
                     pass
 
             if form.launch_workflow_id:
                 try:
-                    launch_workflow = await workflow_repo.get_by_id(UUID_TYPE(form.launch_workflow_id))
+                    launch_workflow = await workflow_repo.get(id=UUID_TYPE(form.launch_workflow_id))
                     launch_workflow_name = launch_workflow.name if launch_workflow else None
                 except Exception:
                     pass
@@ -588,8 +602,15 @@ async def update_form(
                 except ValueError:
                     return json.dumps({"error": f"workflow_id '{workflow_id}' is not a valid UUID"})
 
-                workflow_repo = WorkflowRepository(db)
-                workflow = await workflow_repo.get_by_id(UUID_TYPE(workflow_id))
+                ctx_org_id = UUID_TYPE(str(context.org_id)) if context.org_id else None
+                ctx_user_id = UUID_TYPE(str(context.user_id)) if context.user_id else None
+                workflow_repo = WorkflowRepository(
+                    db,
+                    org_id=ctx_org_id,
+                    user_id=ctx_user_id,
+                    is_superuser=context.is_platform_admin,
+                )
+                workflow = await workflow_repo.get(id=UUID_TYPE(workflow_id))
                 if not workflow:
                     return json.dumps({"error": f"Workflow '{workflow_id}' not found."})
                 form.workflow_id = workflow_id
@@ -606,8 +627,15 @@ async def update_form(
                     except ValueError:
                         return json.dumps({"error": f"launch_workflow_id '{launch_workflow_id}' is not a valid UUID"})
 
-                    workflow_repo = WorkflowRepository(db)
-                    launch_workflow = await workflow_repo.get_by_id(UUID_TYPE(launch_workflow_id))
+                    ctx_org_id = UUID_TYPE(str(context.org_id)) if context.org_id else None
+                    ctx_user_id = UUID_TYPE(str(context.user_id)) if context.user_id else None
+                    workflow_repo = WorkflowRepository(
+                        db,
+                        org_id=ctx_org_id,
+                        user_id=ctx_user_id,
+                        is_superuser=context.is_platform_admin,
+                    )
+                    launch_workflow = await workflow_repo.get(id=UUID_TYPE(launch_workflow_id))
                     if not launch_workflow:
                         return json.dumps({"error": f"Launch workflow '{launch_workflow_id}' not found."})
                     form.launch_workflow_id = launch_workflow_id

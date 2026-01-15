@@ -13,63 +13,44 @@ Organization Scoping:
 - Workflows with organization_id = NULL are global (available to all orgs)
 - Workflows with organization_id set are org-scoped
 - Queries filter: global + user's org (unless platform admin requests all)
+
+Access Control:
+- Workflows use OrgScopedRepository for cascade scoping
+- Role-based access via WorkflowRole junction table
+- access_level field: 'authenticated' or 'role_based'
 """
 
 from datetime import datetime
 from typing import Literal, Sequence
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.sql import Select
+from sqlalchemy import func, select
 
 from src.models import Workflow
-from src.repositories.base import BaseRepository
+from src.models.orm.workflow_roles import WorkflowRole
+from src.repositories.org_scoped import OrgScopedRepository
 
 # Type discriminator values
 WorkflowType = Literal["workflow", "tool", "data_provider"]
 
 
-class WorkflowRepository(BaseRepository[Workflow]):
-    """Repository for workflow registry operations."""
+class WorkflowRepository(OrgScopedRepository[Workflow]):
+    """
+    Repository for workflow registry operations.
+
+    Uses OrgScopedRepository for cascade scoping:
+    - Org users see: org-specific workflows + global (NULL org_id) workflows
+    - Role-based access: workflows with access_level="role_based" require role assignment
+
+    Class attributes:
+        model: Workflow ORM model
+        role_table: WorkflowRole junction table for RBAC
+        role_entity_id_column: Column name linking roles to workflows
+    """
 
     model = Workflow
-
-    # ==========================================================================
-    # Organization Scoping Helpers
-    # ==========================================================================
-
-    def _apply_org_filter(
-        self,
-        stmt: Select,
-        org_id: UUID | None = None,
-        include_global: bool = True,
-    ) -> Select:
-        """Apply organization scoping filter to a query.
-
-        Args:
-            stmt: SQLAlchemy select statement
-            org_id: If provided, filter to this org (+ global if include_global=True)
-                   If None, return all workflows (no org filter)
-            include_global: Whether to include global (organization_id=NULL) workflows
-
-        Returns:
-            Modified statement with org filter applied
-        """
-        if org_id is None:
-            # No filtering - return all (for platform admins viewing all)
-            return stmt
-
-        if include_global:
-            # Standard case: org's workflows + global workflows
-            return stmt.where(
-                or_(
-                    Workflow.organization_id == org_id,
-                    Workflow.organization_id.is_(None),
-                )
-            )
-        else:
-            # Only org-specific workflows (no global)
-            return stmt.where(Workflow.organization_id == org_id)
+    role_table = WorkflowRole
+    role_entity_id_column = "workflow_id"
 
     # ==========================================================================
     # Type-Based Queries
@@ -79,14 +60,14 @@ class WorkflowRepository(BaseRepository[Workflow]):
         self,
         type: WorkflowType,
         active_only: bool = True,
-        org_id: UUID | None = None,
     ) -> Sequence[Workflow]:
-        """Get workflows filtered by type.
+        """Get workflows filtered by type with cascade scoping.
+
+        Uses the repository's org_id for cascade scoping (org + global).
 
         Args:
             type: The type to filter by ('workflow', 'tool', 'data_provider')
             active_only: If True, only return active workflows
-            org_id: If provided, filter to org + global. If None, return all.
 
         Returns:
             Sequence of workflows matching the type
@@ -94,81 +75,59 @@ class WorkflowRepository(BaseRepository[Workflow]):
         stmt = select(Workflow).where(Workflow.type == type)
         if active_only:
             stmt = stmt.where(Workflow.is_active.is_(True))
-        stmt = self._apply_org_filter(stmt, org_id)
+        stmt = self._apply_cascade_scope(stmt)
         stmt = stmt.order_by(Workflow.name)
         result = await self.session.execute(stmt)
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def get_data_providers(
         self,
         active_only: bool = True,
-        org_id: UUID | None = None,
     ) -> Sequence[Workflow]:
         """Get all data providers.
 
         Convenience method for get_by_type('data_provider').
         """
-        return await self.get_by_type("data_provider", active_only=active_only, org_id=org_id)
+        return await self.get_by_type("data_provider", active_only=active_only)
 
     async def get_tools(
         self,
         active_only: bool = True,
-        org_id: UUID | None = None,
     ) -> Sequence[Workflow]:
         """Get all AI agent tools.
 
         Convenience method for get_by_type('tool').
         """
-        return await self.get_by_type("tool", active_only=active_only, org_id=org_id)
+        return await self.get_by_type("tool", active_only=active_only)
 
     async def get_workflows_only(
         self,
         active_only: bool = True,
-        org_id: UUID | None = None,
     ) -> Sequence[Workflow]:
         """Get only workflows (excludes tools and data providers).
 
         Convenience method for get_by_type('workflow').
         """
-        return await self.get_by_type("workflow", active_only=active_only, org_id=org_id)
+        return await self.get_by_type("workflow", active_only=active_only)
 
     # ==========================================================================
     # Standard Queries
     # ==========================================================================
 
-    async def get_by_name(
-        self, name: str, org_id: UUID | None = None
-    ) -> Workflow | None:
-        """Get workflow by name with priority: org-specific > global.
+    async def get_by_name(self, name: str) -> Workflow | None:
+        """Get workflow by name with cascade scoping and role check.
 
-        This uses prioritized lookup to avoid MultipleResultsFound when
-        the same name exists in both org scope and global scope.
+        Uses the base class get() method which handles:
+        - Priority: org-specific > global (avoids MultipleResultsFound)
+        - Role-based access control
 
         Args:
             name: Workflow name to look up
-            org_id: If provided, check org-specific first, then global fallback.
-                   If None, only check global workflows.
-        """
-        # First try org-specific (if we have an org)
-        if org_id:
-            result = await self.session.execute(
-                select(Workflow).where(
-                    Workflow.name == name,
-                    Workflow.organization_id == org_id,
-                )
-            )
-            entity = result.scalar_one_or_none()
-            if entity:
-                return entity
 
-        # Fall back to global (or global-only if no org_id)
-        result = await self.session.execute(
-            select(Workflow).where(
-                Workflow.name == name,
-                Workflow.organization_id.is_(None),
-            )
-        )
-        return result.scalar_one_or_none()
+        Returns:
+            Workflow if found and accessible, None otherwise
+        """
+        return await self.get(name=name)
 
     async def get_by_name_and_type(
         self,
@@ -195,17 +154,19 @@ class WorkflowRepository(BaseRepository[Workflow]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_all_active(self, org_id: UUID | None = None) -> Sequence[Workflow]:
-        """Get all active workflows.
+    async def get_all_active(self) -> Sequence[Workflow]:
+        """Get all active workflows with cascade scoping.
 
-        Args:
-            org_id: If provided, filter to org + global. If None, return all.
+        Uses the repository's org_id for cascade scoping (org + global).
+
+        Returns:
+            Sequence of active workflows in scope
         """
         stmt = select(Workflow).where(Workflow.is_active.is_(True))
-        stmt = self._apply_org_filter(stmt, org_id)
+        stmt = self._apply_cascade_scope(stmt)
         stmt = stmt.order_by(Workflow.name)
         result = await self.session.execute(stmt)
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def get_scheduled(self) -> Sequence[Workflow]:
         """Get all active workflows with schedules (for CRON processing)."""
@@ -252,11 +213,12 @@ class WorkflowRepository(BaseRepository[Workflow]):
         type: WorkflowType | None = None,
         has_schedule: bool | None = None,
         endpoint_enabled: bool | None = None,
-        org_id: UUID | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Sequence[Workflow]:
-        """Search workflows with filters.
+        """Search workflows with filters and cascade scoping.
+
+        Uses the repository's org_id for cascade scoping (org + global).
 
         Args:
             query: Text search in name/description
@@ -264,7 +226,6 @@ class WorkflowRepository(BaseRepository[Workflow]):
             type: Filter by type ('workflow', 'tool', 'data_provider')
             has_schedule: Filter by whether schedule is set
             endpoint_enabled: Filter by endpoint_enabled flag
-            org_id: If provided, filter to org + global. If None, return all.
             limit: Maximum number of results
             offset: Result offset for pagination
 
@@ -273,8 +234,8 @@ class WorkflowRepository(BaseRepository[Workflow]):
         """
         stmt = select(Workflow).where(Workflow.is_active.is_(True))
 
-        # Apply org filter
-        stmt = self._apply_org_filter(stmt, org_id)
+        # Apply cascade scoping
+        stmt = self._apply_cascade_scope(stmt)
 
         if query:
             stmt = stmt.where(
@@ -299,7 +260,7 @@ class WorkflowRepository(BaseRepository[Workflow]):
 
         stmt = stmt.order_by(Workflow.name).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     # ==========================================================================
     # API Key Operations
@@ -324,7 +285,7 @@ class WorkflowRepository(BaseRepository[Workflow]):
         expires_at: datetime | None = None,
     ) -> Workflow | None:
         """Set API key for a workflow."""
-        workflow = await self.get_by_id(workflow_id)
+        workflow = await self.get(id=workflow_id)
         if not workflow:
             return None
 
@@ -341,7 +302,7 @@ class WorkflowRepository(BaseRepository[Workflow]):
 
     async def revoke_api_key(self, workflow_id: UUID) -> Workflow | None:
         """Revoke API key for a workflow."""
-        workflow = await self.get_by_id(workflow_id)
+        workflow = await self.get(id=workflow_id)
         if not workflow:
             return None
 
@@ -351,7 +312,7 @@ class WorkflowRepository(BaseRepository[Workflow]):
 
     async def update_api_key_last_used(self, workflow_id: UUID) -> None:
         """Update last used timestamp for API key."""
-        workflow = await self.get_by_id(workflow_id)
+        workflow = await self.get(id=workflow_id)
         if workflow:
             workflow.api_key_last_used_at = datetime.utcnow()
             await self.session.flush()

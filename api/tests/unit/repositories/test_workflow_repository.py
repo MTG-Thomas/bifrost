@@ -25,8 +25,12 @@ class TestWorkflowRepository:
 
     @pytest.fixture
     def repository(self, mock_session):
-        """Create repository with mock session."""
-        return WorkflowRepository(mock_session)
+        """Create repository with mock session.
+
+        Uses org_id=None and is_superuser=True for system-level access
+        (like old BaseRepository behavior).
+        """
+        return WorkflowRepository(mock_session, org_id=None, is_superuser=True)
 
     @pytest.fixture
     def mock_workflow(self):
@@ -208,8 +212,8 @@ class TestWorkflowRepository:
 
     async def test_set_api_key(self, repository, mock_session, mock_workflow):
         """Test setting API key for a workflow."""
-        # Mock get_by_id
-        with patch.object(repository, 'get_by_id', return_value=mock_workflow):
+        # Mock get() method (OrgScopedRepository uses get(id=...) not get_by_id)
+        with patch.object(repository, 'get', return_value=mock_workflow):
             result = await repository.set_api_key(
                 workflow_id=mock_workflow.id,
                 key_hash="new_hash",
@@ -224,7 +228,8 @@ class TestWorkflowRepository:
 
     async def test_revoke_api_key(self, repository, mock_session, mock_workflow):
         """Test revoking API key."""
-        with patch.object(repository, 'get_by_id', return_value=mock_workflow):
+        # Mock get() method (OrgScopedRepository uses get(id=...) not get_by_id)
+        with patch.object(repository, 'get', return_value=mock_workflow):
             result = await repository.revoke_api_key(mock_workflow.id)
 
         assert result == mock_workflow
