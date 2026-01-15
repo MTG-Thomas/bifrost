@@ -560,7 +560,12 @@ async def get_form(
     """Get a specific form by ID."""
     # Use FormRepository for consistent query logic
     # Note: We don't filter by org here - access control is done after fetch
-    repo = FormRepository(db, org_id=None)  # No org filtering for initial fetch
+    repo = FormRepository(
+        session=db,
+        org_id=None,  # No org filtering for initial fetch
+        user_id=ctx.user.user_id if not ctx.user.is_superuser else None,
+        is_superuser=ctx.user.is_superuser,
+    )
     form = await repo.get_form(form_id)
 
     if not form:
