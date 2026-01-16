@@ -431,8 +431,20 @@ async def update_app(
                 updates_made.append("description")
 
             if navigation is not None:
-                app.navigation = navigation
-                updates_made.append("navigation")
+                # Validate navigation through Pydantic model with strict checking
+                from pydantic import ValidationError
+
+                from src.models.contracts.app_components import NavigationConfig
+
+                try:
+                    # Use strict=True to catch type mismatches
+                    validated_nav = NavigationConfig.model_validate(navigation, strict=True)
+                    app.navigation = validated_nav.model_dump(exclude_none=True)
+                    updates_made.append("navigation")
+                except ValidationError as e:
+                    return json.dumps({
+                        "error": f"Invalid navigation configuration: {e}"
+                    })
 
             if not updates_made:
                 return json.dumps({"error": "No updates specified"})
