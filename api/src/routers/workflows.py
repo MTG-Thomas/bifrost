@@ -694,18 +694,26 @@ async def execute_workflow(
         )
 
     # Determine execution org_id
-    # 1. Use ctx.org_id if set (from JWT)
-    # 2. For platform admins without org_id, check developer context
-    execution_org_id = ctx.org_id
-    if execution_org_id is None and ctx.user.is_superuser:
-        # Platform admin - check developer context for org override
-        dev_ctx_result = await db.execute(
-            select(DeveloperContext).where(DeveloperContext.user_id == ctx.user.user_id)
-        )
-        dev_ctx = dev_ctx_result.scalar_one_or_none()
-        if dev_ctx and dev_ctx.default_org_id:
-            execution_org_id = dev_ctx.default_org_id
-            logger.info(f"Using developer context org: {execution_org_id}")
+    # Priority order:
+    # 1. Org-scoped workflow: use workflow's organization_id (enforces workflow isolation)
+    # 2. Global workflow: use caller's org context (ctx.org_id or developer context)
+    # 3. Inline code: use caller's org context
+    if workflow and workflow.organization_id:
+        # Org-scoped workflow - execution MUST use workflow's org for data isolation
+        execution_org_id = workflow.organization_id
+        logger.info(f"Using workflow's organization: {execution_org_id}")
+    else:
+        # Global workflow or inline code - use caller's org context
+        execution_org_id = ctx.org_id
+        if execution_org_id is None and ctx.user.is_superuser:
+            # Platform admin - check developer context for org override
+            dev_ctx_result = await db.execute(
+                select(DeveloperContext).where(DeveloperContext.user_id == ctx.user.user_id)
+            )
+            dev_ctx = dev_ctx_result.scalar_one_or_none()
+            if dev_ctx and dev_ctx.default_org_id:
+                execution_org_id = dev_ctx.default_org_id
+                logger.info(f"Using developer context org: {execution_org_id}")
 
     # Build shared context for execution
     org = None

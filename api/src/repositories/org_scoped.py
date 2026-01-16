@@ -6,12 +6,17 @@ access control patterns. All org-scoped repositories should extend this class
 for consistent tenant isolation and access control.
 
 Access Control Model:
-    - Superusers: Cascade scoping (org + global), no role checks
+    - ID lookups (get(id=...)): No cascade needed - IDs are globally unique.
+      Find entity directly and check access (superusers bypass role checks).
+    - Name/key lookups (get(name=...), get(key=...)): Cascade scoping applies.
+      Org-specific first, then global fallback. Respects org_id for correct
+      entity resolution even for superusers.
+    - Superusers: Skip role checks only, not cascade scoping for name lookups.
     - Regular users: Cascade scoping + role checks (if entity has roles)
 
-Scoping Patterns:
-    - org_id set: WHERE (organization_id = org_id OR organization_id IS NULL)
-    - org_id None: WHERE organization_id IS NULL
+Scoping Patterns (for name/key lookups):
+    - org_id set: Try org-specific first, then fall back to global
+    - org_id None: Only check global scope
 """
 
 from typing import Any, Generic, TypeVar
@@ -95,12 +100,19 @@ class OrgScopedRepository(Generic[ModelT]):
 
     async def get(self, **filters: Any) -> ModelT | None:
         """
-        Get a single entity with cascade scoping and role check.
+        Get a single entity with appropriate scoping based on lookup type.
 
-        For cascade scoping, prioritizes org-specific over global to avoid
-        MultipleResultsFound when both exist.
+        Behavior differs based on lookup type:
 
-        Superusers bypass org scoping entirely - they can access any entity by ID.
+        **ID lookups (get(id=...)):**
+        - IDs are globally unique, no cascade needed
+        - Find entity directly and check access
+        - Superusers can access any entity by ID
+
+        **Name/key lookups (get(name=...), get(key=...)):**
+        - Names can exist in multiple orgs, cascade scoping required
+        - Org-specific first, then global fallback
+        - Respects org_id even for superusers (correct entity resolution)
 
         Args:
             **filters: Filter conditions (e.g., id=uuid, name="foo")
@@ -109,10 +121,10 @@ class OrgScopedRepository(Generic[ModelT]):
             Entity if found and accessible, None otherwise
 
         Example:
-            # Get by ID
+            # Get by ID - no cascade, finds any entity
             entity = await repo.get(id=entity_id)
 
-            # Get by name (cascade: org-specific first, then global)
+            # Get by name - cascade: org-specific first, then global
             entity = await repo.get(name="my-entity")
         """
         # Build base query with filters
@@ -122,13 +134,27 @@ class OrgScopedRepository(Generic[ModelT]):
             if column is not None:
                 query = query.where(column == value)
 
-        # Superusers bypass org scoping - can access any entity directly
-        if self.is_superuser:
+        # ID lookup: globally unique, no cascade needed
+        # Find the entity directly and check access permissions
+        if "id" in filters:
             result = await self.session.execute(query)
             entity = result.scalar_one_or_none()
-            if entity:
+            if not entity:
+                return None
+
+            # Superusers can access any entity by ID
+            if self.is_superuser:
+                return entity
+
+            # Regular users: verify entity is in their scope (their org or global)
+            entity_org_id = getattr(entity, "organization_id", None)
+            in_scope = entity_org_id is None or entity_org_id == self.org_id
+            if in_scope and await self._can_access_entity(entity):
                 return entity
             return None
+
+        # Name/key lookup: cascade scoping applies (even for superusers)
+        # This ensures correct entity resolution when names exist in multiple orgs
 
         # Step 1: Try org-specific lookup (if we have an org)
         if self.org_id is not None:
@@ -136,7 +162,7 @@ class OrgScopedRepository(Generic[ModelT]):
             result = await self.session.execute(org_query)
             entity = result.scalar_one_or_none()
             if entity:
-                if await self._can_access_entity(entity):
+                if self.is_superuser or await self._can_access_entity(entity):
                     return entity
                 return None
 
@@ -145,7 +171,7 @@ class OrgScopedRepository(Generic[ModelT]):
         result = await self.session.execute(global_query)
         entity = result.scalar_one_or_none()
 
-        if entity and await self._can_access_entity(entity):
+        if entity and (self.is_superuser or await self._can_access_entity(entity)):
             return entity
         return None
 

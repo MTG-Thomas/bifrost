@@ -1073,3 +1073,367 @@ async def {workflow_name}():
         assert "org2" in overridden.get("knowledge", []), (
             f"Overridden knowledge should see org2. Got: {overridden.get('knowledge')}"
         )
+
+
+# =============================================================================
+# Test Cases - Regular Org User Workflow Execution
+# =============================================================================
+
+
+@pytest.mark.e2e
+class TestOrgUserWorkflowExecution:
+    """
+    Test that regular org users can execute workflows they have access to.
+
+    Tests the authorization flow for non-superusers:
+    - Authenticated workflows (access_level=authenticated)
+    - Role-based workflows (access_level=role_based)
+    - Cross-org access denial
+    """
+
+    @pytest.fixture(scope="class")
+    def org1_authenticated_workflow(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+    ):
+        """
+        Create a workflow scoped to org1 with access_level=authenticated.
+
+        Any user in org1 can execute this workflow.
+        """
+        workflow_name = "e2e_org1_authenticated_workflow"
+        workflow_path = f"{workflow_name}.py"
+
+        workflow_content = f'''"""E2E Org1 Authenticated Workflow"""
+from bifrost import workflow, context
+
+@workflow(
+    name="{workflow_name}",
+    description="Tests org user execution of authenticated workflow",
+    execution_mode="sync",
+)
+async def {workflow_name}():
+    """Returns execution context info."""
+    return {{
+        "executed": True,
+        "org_id": context.org_id,
+        "scope": context.scope,
+    }}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": workflow_path,
+                "content": workflow_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create workflow failed: {response.text}"
+
+        # Get workflow ID
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+        assert workflow is not None, "Workflow not discovered"
+        workflow_id = workflow["id"]
+
+        # Set organization_id and access_level=authenticated
+        response = e2e_client.patch(
+            f"/api/workflows/{workflow_id}",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": org1["id"],
+                "access_level": "authenticated",
+            },
+        )
+        assert response.status_code == 200, f"Set workflow org/access_level failed: {response.text}"
+
+        yield {
+            "id": workflow_id,
+            "name": workflow_name,
+            "org_id": org1["id"],
+            "path": workflow_path,
+        }
+
+        # Cleanup
+        e2e_client.delete(
+            f"/api/files/editor?path={workflow_path}",
+            headers=platform_admin.headers,
+        )
+
+    @pytest.fixture(scope="class")
+    def global_authenticated_workflow(
+        self,
+        e2e_client,
+        platform_admin,
+    ):
+        """
+        Create a global workflow with access_level=authenticated.
+
+        Any authenticated user can execute this workflow.
+        """
+        workflow_name = "e2e_global_authenticated_workflow"
+        workflow_path = f"{workflow_name}.py"
+
+        workflow_content = f'''"""E2E Global Authenticated Workflow"""
+from bifrost import workflow, context
+
+@workflow(
+    name="{workflow_name}",
+    description="Tests org user execution of global authenticated workflow",
+    execution_mode="sync",
+)
+async def {workflow_name}():
+    """Returns execution context info."""
+    return {{
+        "executed": True,
+        "org_id": context.org_id,
+        "scope": context.scope,
+    }}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": workflow_path,
+                "content": workflow_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create workflow failed: {response.text}"
+
+        # Get workflow ID
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+        assert workflow is not None, "Workflow not discovered"
+        workflow_id = workflow["id"]
+
+        # Set access_level=authenticated (no organization_id = global)
+        response = e2e_client.patch(
+            f"/api/workflows/{workflow_id}",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": None,
+                "access_level": "authenticated",
+            },
+        )
+        assert response.status_code == 200, f"Set workflow access_level failed: {response.text}"
+
+        yield {
+            "id": workflow_id,
+            "name": workflow_name,
+            "org_id": None,
+            "path": workflow_path,
+        }
+
+        # Cleanup
+        e2e_client.delete(
+            f"/api/files/editor?path={workflow_path}",
+            headers=platform_admin.headers,
+        )
+
+    @pytest.fixture(scope="class")
+    def org2_authenticated_workflow(
+        self,
+        e2e_client,
+        platform_admin,
+        org2,
+    ):
+        """
+        Create a workflow scoped to org2 with access_level=authenticated.
+
+        Only users in org2 can execute this workflow.
+        """
+        workflow_name = "e2e_org2_authenticated_workflow"
+        workflow_path = f"{workflow_name}.py"
+
+        workflow_content = f'''"""E2E Org2 Authenticated Workflow"""
+from bifrost import workflow, context
+
+@workflow(
+    name="{workflow_name}",
+    description="Tests cross-org access denial",
+    execution_mode="sync",
+)
+async def {workflow_name}():
+    """Returns execution context info."""
+    return {{
+        "executed": True,
+        "org_id": context.org_id,
+        "scope": context.scope,
+    }}
+'''
+        response = e2e_client.put(
+            "/api/files/editor/content?index=true",
+            headers=platform_admin.headers,
+            json={
+                "path": workflow_path,
+                "content": workflow_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert response.status_code == 200, f"Create workflow failed: {response.text}"
+
+        # Get workflow ID
+        response = e2e_client.get("/api/workflows", headers=platform_admin.headers)
+        workflows = response.json()
+        workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+        assert workflow is not None, "Workflow not discovered"
+        workflow_id = workflow["id"]
+
+        # Set organization_id=org2 and access_level=authenticated
+        response = e2e_client.patch(
+            f"/api/workflows/{workflow_id}",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": org2["id"],
+                "access_level": "authenticated",
+            },
+        )
+        assert response.status_code == 200, f"Set workflow org/access_level failed: {response.text}"
+
+        yield {
+            "id": workflow_id,
+            "name": workflow_name,
+            "org_id": org2["id"],
+            "path": workflow_path,
+        }
+
+        # Cleanup
+        e2e_client.delete(
+            f"/api/files/editor?path={workflow_path}",
+            headers=platform_admin.headers,
+        )
+
+    def test_org_user_executes_own_org_authenticated_workflow(
+        self,
+        e2e_client,
+        org1_user,
+        org1,
+        org1_authenticated_workflow,
+    ):
+        """
+        Regular org user can execute authenticated workflow in their org.
+
+        org1_user executing org1's authenticated workflow should succeed.
+        """
+        response = e2e_client.post(
+            "/api/workflows/execute",
+            headers=org1_user.headers,
+            json={
+                "workflow_id": org1_authenticated_workflow["id"],
+                "input_data": {},
+            },
+        )
+        assert response.status_code == 200, f"Execute failed: {response.text}"
+        data = response.json()
+        assert data["status"] == "Success", f"Execution failed: {data}"
+
+        result = data.get("result", {})
+        assert result["executed"] is True
+        # Org-scoped workflow uses workflow's org_id
+        assert result["org_id"] == org1["id"], (
+            f"Expected org_id={org1['id']}, got {result['org_id']}"
+        )
+
+    def test_org_user_executes_global_authenticated_workflow(
+        self,
+        e2e_client,
+        org1_user,
+        org1,
+        global_authenticated_workflow,
+    ):
+        """
+        Regular org user can execute global authenticated workflow.
+
+        org1_user executing global workflow should succeed,
+        with workflow using org1_user's org context.
+        """
+        response = e2e_client.post(
+            "/api/workflows/execute",
+            headers=org1_user.headers,
+            json={
+                "workflow_id": global_authenticated_workflow["id"],
+                "input_data": {},
+            },
+        )
+        assert response.status_code == 200, f"Execute failed: {response.text}"
+        data = response.json()
+        assert data["status"] == "Success", f"Execution failed: {data}"
+
+        result = data.get("result", {})
+        assert result["executed"] is True
+        # Global workflow uses caller's org context
+        assert result["org_id"] == org1["id"], (
+            f"Expected caller's org_id={org1['id']}, got {result['org_id']}"
+        )
+
+    def test_org_user_cannot_execute_other_org_workflow(
+        self,
+        e2e_client,
+        org1_user,
+        org2_authenticated_workflow,
+    ):
+        """
+        Regular org user cannot execute workflow from another org.
+
+        org1_user trying to execute org2's workflow should get 403.
+        """
+        response = e2e_client.post(
+            "/api/workflows/execute",
+            headers=org1_user.headers,
+            json={
+                "workflow_id": org2_authenticated_workflow["id"],
+                "input_data": {},
+            },
+        )
+        assert response.status_code == 403, (
+            f"Expected 403 Forbidden, got {response.status_code}: {response.text}"
+        )
+
+    def test_superuser_can_execute_any_org_workflow(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+        org2,
+        org1_authenticated_workflow,
+        org2_authenticated_workflow,
+    ):
+        """
+        Platform admin (superuser) can execute any org's workflow.
+
+        Verifies the superuser bypass fix - platform admin with org_id=None
+        should be able to execute org-scoped workflows.
+        """
+        # Execute org1 workflow
+        response = e2e_client.post(
+            "/api/workflows/execute",
+            headers=platform_admin.headers,
+            json={
+                "workflow_id": org1_authenticated_workflow["id"],
+                "input_data": {},
+            },
+        )
+        assert response.status_code == 200, f"Execute org1 workflow failed: {response.text}"
+        data = response.json()
+        assert data["status"] == "Success", f"Execution failed: {data}"
+        assert data.get("result", {}).get("org_id") == org1["id"]
+
+        # Execute org2 workflow
+        response = e2e_client.post(
+            "/api/workflows/execute",
+            headers=platform_admin.headers,
+            json={
+                "workflow_id": org2_authenticated_workflow["id"],
+                "input_data": {},
+            },
+        )
+        assert response.status_code == 200, f"Execute org2 workflow failed: {response.text}"
+        data = response.json()
+        assert data["status"] == "Success", f"Execution failed: {data}"
+        assert data.get("result", {}).get("org_id") == org2["id"]
