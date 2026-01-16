@@ -311,7 +311,8 @@ class TestWorkflowRepositoryScopedLookup:
         mock_session.execute.side_effect = [mock_result_org, mock_result_global]
 
         # OrgScopedRepository takes org_id in constructor, not method
-        repo = WorkflowRepository(mock_session, org_id=org_id, is_superuser=True)
+        # Use is_superuser=False to test cascade scoping behavior
+        repo = WorkflowRepository(mock_session, org_id=org_id, is_superuser=False)
         result = await repo.get_by_name("shared_workflow")
 
         assert result is not None
@@ -415,7 +416,8 @@ class TestDataProviderRepositoryScopedLookup:
         mock_session.execute.side_effect = [mock_result_org, mock_result_global]
 
         # OrgScopedRepository takes org_id in constructor
-        repo = DataProviderRepository(mock_session, org_id=org_id, is_superuser=True)
+        # Use is_superuser=False to test cascade scoping behavior
+        repo = DataProviderRepository(mock_session, org_id=org_id, is_superuser=False)
         result = await repo.get_by_name("shared_provider")
 
         assert result is not None

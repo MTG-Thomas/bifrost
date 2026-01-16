@@ -568,7 +568,8 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.get_by_id = AsyncMock(return_value=mock_workflow)
+                # Use `get` instead of `get_by_id` - OrgScopedRepository.get() is async
+                mock_repo.get = AsyncMock(return_value=mock_workflow)
                 mock_repo_cls.return_value = mock_repo
 
                 with patch(
@@ -603,7 +604,8 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.get_by_id = AsyncMock(return_value=None)
+                # Use `get` instead of `get_by_id` - OrgScopedRepository.get() is async
+                mock_repo.get = AsyncMock(return_value=None)
                 mock_repo_cls.return_value = mock_repo
 
                 result = await execute_workflow(
@@ -652,7 +654,8 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                mock_repo.get_by_id = AsyncMock(return_value=mock_workflow)
+                # Use `get` instead of `get_by_id` - OrgScopedRepository.get() is async
+                mock_repo.get = AsyncMock(return_value=mock_workflow)
                 mock_repo_cls.return_value = mock_repo
 
                 with patch(
