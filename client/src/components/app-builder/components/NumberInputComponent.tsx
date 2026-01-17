@@ -52,7 +52,8 @@ export function NumberInputComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as NumberInputComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as NumberInputComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
 	const getDefaultValue = (): number | "" => {

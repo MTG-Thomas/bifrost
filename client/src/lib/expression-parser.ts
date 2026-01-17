@@ -448,12 +448,18 @@ const NON_EVALUABLE_PROPS = new Set([
 	"footerActions", // Modal footer
 	"rowActions", // DataTable row actions
 	"headerActions", // DataTable header actions
+	"row_actions", // DataTable row actions (snake_case)
+	"header_actions", // DataTable header actions (snake_case)
 
 	// Action handlers (evaluated at runtime with dynamic context)
 	"onClick",
 	"onRowClick",
+	"on_click", // snake_case variant
+	"on_row_click", // Row click handler - evaluated at click time with row context
 	"onComplete",
 	"onError",
+	"on_complete", // snake_case variant
+	"on_error", // snake_case variant
 
 	// StatCard trend object (contains direction enum)
 	"trend",

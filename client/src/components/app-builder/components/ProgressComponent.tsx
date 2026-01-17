@@ -13,10 +13,11 @@ type ProgressComponent = components["schemas"]["ProgressComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 
 export function ProgressComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as ProgressComponent;
+	// In the unified model, props are at the top level of the component
+	const comp = component as ProgressComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
-	const rawValue = props?.value ?? 0;
+	const rawValue = comp.value ?? 0;
 	const value =
 		typeof rawValue === "number"
 			? rawValue
@@ -26,9 +27,9 @@ export function ProgressComponent({ component }: RegisteredComponentProps) {
 	const clampedValue = Math.max(0, Math.min(100, value));
 
 	return (
-		<div className={cn("w-full", props?.class_name)}>
+		<div className={cn("w-full", comp.class_name)}>
 			<Progress value={clampedValue} className="h-2" />
-			{props?.show_label && (
+			{comp.show_label && (
 				<p className="mt-1 text-right text-sm text-muted-foreground">
 					{Math.round(clampedValue)}%
 				</p>

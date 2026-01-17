@@ -40,6 +40,7 @@ export type ComponentType =
 	| "progress"
 	| "data-table"
 	| "tabs"
+	| "tab-item"
 	| "file-viewer"
 	| "modal"
 	| "text-input"
@@ -122,57 +123,58 @@ export type PagePermission = components["schemas"]["PagePermission"];
 
 // Core types
 export type TableAction = components["schemas"]["TableAction"];
-export type TabItem = components["schemas"]["TabItem"];
+export type TabItemComponent = components["schemas"]["TabItemComponent"];
 export type PageDefinition = components["schemas"]["PageDefinition"];
 export type DataSourceConfig = components["schemas"]["DataSourceConfig"];
 
-// Props types without -Input/-Output variants
-export type HeadingProps = components["schemas"]["HeadingProps"];
-export type TextProps = components["schemas"]["TextProps"];
-export type HtmlProps = components["schemas"]["HtmlProps"];
-export type DividerProps = components["schemas"]["DividerProps"];
-export type SpacerProps = components["schemas"]["SpacerProps"];
-export type ImageProps = components["schemas"]["ImageProps"];
-export type BadgeProps = components["schemas"]["BadgeProps"];
-export type ProgressProps = components["schemas"]["ProgressProps"];
-export type FileViewerProps = components["schemas"]["FileViewerProps"];
-export type TextInputProps = components["schemas"]["TextInputProps"];
-export type NumberInputProps = components["schemas"]["NumberInputProps"];
-export type SelectProps = components["schemas"]["SelectProps"];
-export type CheckboxProps = components["schemas"]["CheckboxProps"];
-export type FormEmbedProps = components["schemas"]["FormEmbedProps"];
+// Full component types (unified model - props at top level)
+export type RowComponent = components["schemas"]["RowComponent"];
+export type ColumnComponent = components["schemas"]["ColumnComponent"];
+export type GridComponent = components["schemas"]["GridComponent"];
+export type HeadingComponent = components["schemas"]["HeadingComponent"];
+export type TextComponent = components["schemas"]["TextComponent"];
+export type HtmlComponent = components["schemas"]["HtmlComponent"];
+export type CardComponent = components["schemas"]["CardComponent"];
+export type DividerComponent = components["schemas"]["DividerComponent"];
+export type SpacerComponent = components["schemas"]["SpacerComponent"];
+export type ButtonComponent = components["schemas"]["ButtonComponent"];
+export type StatCardComponent = components["schemas"]["StatCardComponent"];
+export type ImageComponent = components["schemas"]["ImageComponent"];
+export type BadgeComponent = components["schemas"]["BadgeComponent"];
+export type ProgressComponent = components["schemas"]["ProgressComponent"];
+export type DataTableComponent = components["schemas"]["DataTableComponent"];
+export type TabsComponent = components["schemas"]["TabsComponent"];
+export type FileViewerComponent = components["schemas"]["FileViewerComponent"];
+export type ModalComponent = components["schemas"]["ModalComponent"];
+export type TextInputComponent = components["schemas"]["TextInputComponent"];
+export type NumberInputComponent = components["schemas"]["NumberInputComponent"];
+export type SelectComponent = components["schemas"]["SelectComponent"];
+export type CheckboxComponent = components["schemas"]["CheckboxComponent"];
+export type FormEmbedComponent = components["schemas"]["FormEmbedComponent"];
+export type FormGroupComponent = components["schemas"]["FormGroupComponent"];
 
-// Props types
-export type CardProps = components["schemas"]["CardProps"];
-export type ButtonProps = components["schemas"]["ButtonProps"];
-export type StatCardProps = components["schemas"]["StatCardProps"];
-export type DataTableProps = components["schemas"]["DataTableProps"];
-export type TabsProps = components["schemas"]["TabsProps"];
-export type ModalProps = components["schemas"]["ModalProps"];
-export type FormGroupProps = components["schemas"]["FormGroupProps"];
-
-// Full component types (with id, type, props, and common fields)
-export type HeadingComponentProps = components["schemas"]["HeadingComponent"];
-export type TextComponentProps = components["schemas"]["TextComponent"];
-export type HtmlComponentProps = components["schemas"]["HtmlComponent"];
-export type CardComponentProps = components["schemas"]["CardComponent"];
-export type DividerComponentProps = components["schemas"]["DividerComponent"];
-export type SpacerComponentProps = components["schemas"]["SpacerComponent"];
-export type ButtonComponentProps = components["schemas"]["ButtonComponent"];
-export type StatCardComponentProps = components["schemas"]["StatCardComponent"];
-export type ImageComponentProps = components["schemas"]["ImageComponent"];
-export type BadgeComponentProps = components["schemas"]["BadgeComponent"];
-export type ProgressComponentProps = components["schemas"]["ProgressComponent"];
-export type DataTableComponentProps = components["schemas"]["DataTableComponent"];
-export type TabsComponentProps = components["schemas"]["TabsComponent"];
-export type FileViewerComponentProps = components["schemas"]["FileViewerComponent"];
-export type ModalComponentProps = components["schemas"]["ModalComponent"];
-export type TextInputComponentProps = components["schemas"]["TextInputComponent"];
-export type NumberInputComponentProps = components["schemas"]["NumberInputComponent"];
-export type SelectComponentProps = components["schemas"]["SelectComponent"];
-export type CheckboxComponentProps = components["schemas"]["CheckboxComponent"];
-export type FormEmbedComponentProps = components["schemas"]["FormEmbedComponent"];
-export type FormGroupComponentProps = components["schemas"]["FormGroupComponent"];
+// Legacy aliases for backwards compatibility
+export type HeadingComponentProps = HeadingComponent;
+export type TextComponentProps = TextComponent;
+export type HtmlComponentProps = HtmlComponent;
+export type CardComponentProps = CardComponent;
+export type DividerComponentProps = DividerComponent;
+export type SpacerComponentProps = SpacerComponent;
+export type ButtonComponentProps = ButtonComponent;
+export type StatCardComponentProps = StatCardComponent;
+export type ImageComponentProps = ImageComponent;
+export type BadgeComponentProps = BadgeComponent;
+export type ProgressComponentProps = ProgressComponent;
+export type DataTableComponentProps = DataTableComponent;
+export type TabsComponentProps = TabsComponent;
+export type FileViewerComponentProps = FileViewerComponent;
+export type ModalComponentProps = ModalComponent;
+export type TextInputComponentProps = TextInputComponent;
+export type NumberInputComponentProps = NumberInputComponent;
+export type SelectComponentProps = SelectComponent;
+export type CheckboxComponentProps = CheckboxComponent;
+export type FormEmbedComponentProps = FormEmbedComponent;
+export type FormGroupComponentProps = FormGroupComponent;
 
 // =============================================================================
 // Navigation and Permission Types (re-exported from generated API types)
@@ -244,10 +246,22 @@ export interface BaseComponentProps {
 // =============================================================================
 
 /**
+ * Layout container types (row, column, grid).
+ * In the unified model, these are now individual component types.
+ */
+export type LayoutContainer =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"];
+
+/**
  * Union type of all app components.
- * Excludes AppComponentNode which has `type: string` and breaks discriminated unions.
+ * In the unified model, all components including layout containers are here.
  */
 export type AppComponent =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"]
 	| components["schemas"]["HeadingComponent"]
 	| components["schemas"]["TextComponent"]
 	| components["schemas"]["HtmlComponent"]
@@ -261,6 +275,7 @@ export type AppComponent =
 	| components["schemas"]["ProgressComponent"]
 	| components["schemas"]["DataTableComponent"]
 	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["TabItemComponent"]
 	| components["schemas"]["FileViewerComponent"]
 	| components["schemas"]["ModalComponent"]
 	| components["schemas"]["TextInputComponent"]
@@ -269,69 +284,6 @@ export type AppComponent =
 	| components["schemas"]["CheckboxComponent"]
 	| components["schemas"]["FormEmbedComponent"]
 	| components["schemas"]["FormGroupComponent"];
-
-/**
- * API-sourced Layout container from OpenAPI spec.
- * This type matches exactly what the API returns, including AppComponentNode.
- */
-export type ApiLayoutContainer = components["schemas"]["LayoutContainer"];
-
-/**
- * API-sourced children element type from OpenAPI spec.
- * This includes AppComponentNode which has a generic string type field.
- * Use this type when receiving data from the API and cast to LayoutElement.
- */
-export type ApiLayoutElement =
-	| components["schemas"]["LayoutContainer"]
-	| components["schemas"]["HeadingComponent"]
-	| components["schemas"]["TextComponent"]
-	| components["schemas"]["HtmlComponent"]
-	| components["schemas"]["CardComponent"]
-	| components["schemas"]["DividerComponent"]
-	| components["schemas"]["SpacerComponent"]
-	| components["schemas"]["ButtonComponent"]
-	| components["schemas"]["StatCardComponent"]
-	| components["schemas"]["ImageComponent"]
-	| components["schemas"]["BadgeComponent"]
-	| components["schemas"]["ProgressComponent"]
-	| components["schemas"]["DataTableComponent"]
-	| components["schemas"]["TabsComponent"]
-	| components["schemas"]["FileViewerComponent"]
-	| components["schemas"]["ModalComponent"]
-	| components["schemas"]["TextInputComponent"]
-	| components["schemas"]["NumberInputComponent"]
-	| components["schemas"]["SelectComponent"]
-	| components["schemas"]["CheckboxComponent"]
-	| components["schemas"]["FormEmbedComponent"]
-	| components["schemas"]["FormGroupComponent"]
-	| components["schemas"]["AppComponentNode"];
-
-/**
- * Layout container for organizing components.
- *
- * Uses the strict discriminated union for children (no AppComponentNode).
- * When receiving API data, cast to this type.
- */
-export interface LayoutContainer {
-	id: string;
-	type: "row" | "column" | "grid";
-	gap?: number | null;
-	padding?: number | null;
-	align?: ("start" | "center" | "end" | "stretch") | null;
-	justify?: ("start" | "center" | "end" | "between" | "around") | null;
-	columns?: number | null;
-	distribute?: ("natural" | "equal" | "fit") | null;
-	maxWidth?: ("sm" | "md" | "lg" | "xl" | "2xl" | "full" | "none") | null;
-	maxHeight?: number | null;
-	overflow?: ("auto" | "scroll" | "hidden" | "visible") | null;
-	sticky?: ("top" | "bottom") | null;
-	stickyOffset?: number | null;
-	className?: string | null;
-	style?: { [key: string]: unknown } | null;
-	visible?: string | null;
-	// Children use the strict discriminated union
-	children: (LayoutContainer | AppComponent)[];
-}
 
 /**
  * User information for expression context
@@ -418,7 +370,8 @@ export interface ExpressionContext {
 }
 
 /**
- * Types that can contain children (layout containers + components with props.children)
+ * Types that can contain children (layout containers + container components)
+ * These are all component types that have a `children` field in the unified model.
  */
 export const CONTAINER_TYPES = [
 	"row",
@@ -426,19 +379,22 @@ export const CONTAINER_TYPES = [
 	"grid",
 	"card",
 	"modal",
+	"tabs",
+	"tab-item",
+	"form-group",
 ] as const;
 
 /**
  * Element type for the layout tree.
- * Strict discriminated union that allows type narrowing.
+ * In the unified model, this is the same as AppComponent.
  */
-export type LayoutElement = LayoutContainer | AppComponent;
+export type LayoutElement = AppComponent;
 
 /**
- * Type guard to check if an element is a LayoutContainer
+ * Type guard to check if an element is a LayoutContainer (row, column, grid)
  */
 export function isLayoutContainer(
-	element: LayoutElement,
+	element: AppComponent,
 ): element is LayoutContainer {
 	return (
 		element.type === "row" ||
@@ -448,44 +404,23 @@ export function isLayoutContainer(
 }
 
 /**
- * Type guard to check if an element is an AppComponent
- */
-export function isAppComponent(element: LayoutElement): element is AppComponent {
-	return !isLayoutContainer(element);
-}
-
-/**
  * Check if an element type can have children
  */
-export function canHaveChildren(element: LayoutElement): boolean {
+export function canHaveChildren(element: AppComponent): boolean {
 	return CONTAINER_TYPES.includes(
 		element.type as (typeof CONTAINER_TYPES)[number],
 	);
 }
 
 /**
- * Get children from an element (handles both direct children and props.children)
+ * Get children from an element.
+ * In the unified model, container components have children directly on the component.
  */
-export function getElementChildren(element: LayoutElement): LayoutElement[] {
-	// Layout containers have direct children
-	if (isLayoutContainer(element)) {
-		return (element.children || []) as LayoutElement[];
-	}
-	// Components may have children in props.children (e.g., Card)
-	if ("props" in element) {
-		const props = element.props as {
-			children?: LayoutElement[];
-			content?: LayoutContainer;
-		};
-		// Check for props.children first (cards)
-		if (Array.isArray(props?.children)) {
-			return props.children;
-		}
-		// Check for props.content (modals)
-		if (props?.content) {
-			// Modal content is a single LayoutContainer, return it as an array
-			return [props.content];
-		}
+export function getElementChildren(element: AppComponent): AppComponent[] {
+	// All container types (row, column, grid, card, modal, tabs, tab-item, form-group)
+	// have children directly on the element
+	if ("children" in element && Array.isArray(element.children)) {
+		return element.children as AppComponent[];
 	}
 	return [];
 }

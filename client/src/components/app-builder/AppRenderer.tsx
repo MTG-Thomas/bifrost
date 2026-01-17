@@ -59,6 +59,18 @@ function PageRenderer({
 }: PageRendererProps) {
 	const context = useExpressionContext();
 
+	// In the unified model, pages have children directly instead of a layout wrapper.
+	// We wrap children in a column layout for consistent rendering.
+	const rootLayout = useMemo(
+		() => ({
+			id: `${page.id}-root`,
+			type: "column" as const,
+			gap: 16,
+			children: page.children || [],
+		}),
+		[page.id, page.children],
+	);
+
 	return (
 		<div className="app-builder-page">
 			{/* Inject page-level CSS styles */}
@@ -69,7 +81,7 @@ function PageRenderer({
 				/>
 			)}
 			<LayoutRenderer
-				layout={page.layout}
+				layout={rootLayout}
 				context={context}
 				isPreview={isPreview}
 				selectedComponentId={selectedComponentId}

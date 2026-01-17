@@ -8,12 +8,15 @@
 import type React from "react";
 import { cn } from "@/lib/utils";
 import type { components } from "@/lib/v1";
-import type { LayoutContainer, ExpressionContext } from "@/types/app-builder";
+import type { ExpressionContext } from "@/types/app-builder";
 import { isLayoutContainer } from "@/lib/app-builder-utils";
 import { evaluateVisibility, evaluateExpression } from "@/lib/expression-parser";
 
-// Type aliases for cleaner code
+// Type aliases for cleaner code - unified model where all components are AppComponent
 type AppComponent =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"]
 	| components["schemas"]["HeadingComponent"]
 	| components["schemas"]["TextComponent"]
 	| components["schemas"]["HtmlComponent"]
@@ -27,6 +30,7 @@ type AppComponent =
 	| components["schemas"]["ProgressComponent"]
 	| components["schemas"]["DataTableComponent"]
 	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["TabItemComponent"]
 	| components["schemas"]["FileViewerComponent"]
 	| components["schemas"]["ModalComponent"]
 	| components["schemas"]["TextInputComponent"]
@@ -35,6 +39,34 @@ type AppComponent =
 	| components["schemas"]["CheckboxComponent"]
 	| components["schemas"]["FormEmbedComponent"]
 	| components["schemas"]["FormGroupComponent"];
+
+// LayoutContainer is a subset of AppComponent that represents the row/column/grid types
+type LayoutContainer =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"];
+
+// Helper type for accessing optional properties that may exist on some layout container types
+// This provides a superset of all layout properties for easier access with optional chaining
+interface LayoutContainerProps {
+	id: string;
+	type: "row" | "column" | "grid";
+	children?: AppComponent[];
+	gap?: number | string | null;
+	padding?: number | string | null;
+	align?: "start" | "center" | "end" | "stretch" | null;
+	justify?: "start" | "center" | "end" | "between" | "around" | null;
+	distribute?: "natural" | "equal" | "fit" | null;
+	max_width?: "sm" | "md" | "lg" | "xl" | "2xl" | "full" | "none" | null;
+	max_height?: number | null;
+	overflow?: "auto" | "scroll" | "hidden" | "visible" | null;
+	sticky?: "top" | "bottom" | null;
+	sticky_offset?: number | null;
+	columns?: number | string;
+	class_name?: string | null;
+	visible?: string | null;
+	style?: Record<string, unknown> | null;
+}
 
 type ComponentWidth = "auto" | "full" | "1/2" | "1/3" | "1/4" | "2/3" | "3/4";
 type LayoutType = "row" | "column" | "grid";
@@ -52,6 +84,7 @@ type ComponentType =
 	| "progress"
 	| "data-table"
 	| "tabs"
+	| "tab-item"
 	| "file-viewer"
 	| "modal"
 	| "text-input"
@@ -290,6 +323,7 @@ function getTypeLabel(type: ComponentType | LayoutType): string {
 		progress: "Progress",
 		"data-table": "Data Table",
 		tabs: "Tabs",
+		"tab-item": "Tab Item",
 		"file-viewer": "File Viewer",
 		modal: "Modal",
 		"text-input": "Text Input",
@@ -437,7 +471,8 @@ function renderLayoutContainer(
 ): React.ReactElement | null {
 	// Normalize null values from API to undefined for type safety (recursive)
 	// Type assertion is safe because normalizeLayoutObject converts all null values to undefined
-	const normalizedLayout = normalizeLayoutObject(layout) as LayoutContainer;
+	// Cast to LayoutContainerProps to access optional properties across the union types
+	const normalizedLayout = normalizeLayoutObject(layout) as LayoutContainerProps;
 
 	// Check visibility - use non-null assertion since we normalized the value
 	if (!evaluateVisibility(normalizedLayout.visible ?? undefined, context)) {
@@ -455,15 +490,23 @@ function renderLayoutContainer(
 		className,
 	);
 
+	// Convert gap/padding to numbers if they're strings
+	const gapValue = typeof normalizedLayout.gap === 'string'
+		? parseInt(normalizedLayout.gap, 10)
+		: normalizedLayout.gap ?? undefined;
+	const paddingValue = typeof normalizedLayout.padding === 'string'
+		? parseInt(normalizedLayout.padding, 10)
+		: normalizedLayout.padding ?? undefined;
+
 	const layoutStyles = getLayoutStyles({
 		type: normalizedLayout.type,
-		gap: normalizedLayout.gap ?? undefined,
-		padding: normalizedLayout.padding ?? undefined,
+		gap: gapValue,
+		padding: paddingValue,
 		max_height: normalizedLayout.max_height ?? undefined,
 		overflow: normalizedLayout.overflow ?? undefined,
 		sticky: normalizedLayout.sticky ?? undefined,
 		sticky_offset: normalizedLayout.sticky_offset ?? undefined,
-		style: normalizedLayout.style ?? undefined,
+		style: normalizedLayout.style as React.CSSProperties | undefined,
 	});
 
 	// Generate a unique key for this container based on parent
@@ -591,12 +634,16 @@ function renderLayoutContainer(
 				</div>,
 			);
 
-		case "grid":
+		case "grid": {
+			// Convert columns to number if it's a string
+			const columnsValue = typeof normalizedLayout.columns === 'string'
+				? parseInt(normalizedLayout.columns, 10)
+				: normalizedLayout.columns;
 			return wrapWithSelectable(
 				<div
 					className={cn(
 						"grid",
-						getGridColumnsClass(normalizedLayout.columns ?? undefined),
+						getGridColumnsClass(columnsValue),
 						baseClasses,
 						normalizedLayout.class_name,
 					)}
@@ -607,6 +654,7 @@ function renderLayoutContainer(
 					)}
 				</div>,
 			);
+		}
 
 		default:
 			return null;
@@ -654,7 +702,7 @@ function renderComponent(
 					return (
 						<LayoutRenderer
 							key={key}
-							layout={{ ...normalizedComponent, repeat_for: undefined }}
+							layout={{ ...normalizedComponent, repeat_for: undefined } as AppComponent}
 							context={extendedContext}
 							className={className}
 							isPreview={previewContext?.isPreview}

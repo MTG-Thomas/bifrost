@@ -623,12 +623,13 @@ export function StructureTree({
 
 	const currentPage = pages.find((p) => p.id === selectedPageId);
 
+	// Create a virtual root container for the page children
+	// This represents the page itself as a container
+	const rootLayoutId = currentPage?.id ? `page_root_${currentPage.id}` : "page_root";
+
 	// Track which nodes are expanded - initialize with root layout ID
 	const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
-		if (currentPage?.layout?.id) {
-			return new Set([currentPage.layout.id]);
-		}
-		return new Set();
+		return new Set([rootLayoutId]);
 	});
 
 	const handleToggleExpand = useCallback((id: string) => {
@@ -663,8 +664,13 @@ export function StructureTree({
 		);
 	}
 
-	// Get the root layout ID
-	const rootLayoutId = currentPage.layout.id;
+	// Create a virtual root container representing the page body
+	// In the unified model, pages have children directly (like HTML body)
+	const virtualRootLayout: LayoutContainer = {
+		id: rootLayoutId,
+		type: "column",
+		children: (currentPage.children ?? []) as AppComponent[],
+	};
 
 	return (
 		<div className={cn("overflow-auto", className)}>
@@ -697,11 +703,7 @@ export function StructureTree({
 			{/* Component tree */}
 			<div>
 				<TreeItem
-					element={
-						currentPage.layout as unknown as
-							| LayoutContainer
-							| AppComponent
-					}
+					element={virtualRootLayout}
 					elementId={rootLayoutId}
 					parentId=""
 					index={0}

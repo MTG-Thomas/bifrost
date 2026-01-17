@@ -90,14 +90,15 @@ function getSpacingStyle(size?: number | string): {
  * }
  */
 export function SpacerComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as SpacerComponent;
+	// In the unified model, props are at the top level of the component
+	const comp = component as SpacerComponent;
 	// Handle missing props gracefully
-	const size = props?.size ?? props?.height ?? undefined;
+	const size = comp.size ?? comp.height ?? undefined;
 	const { className: spacingClass, style } = getSpacingStyle(size);
 
 	return (
 		<div
-			className={cn("w-full", spacingClass, props?.class_name)}
+			className={cn("w-full", spacingClass, comp.class_name)}
 			style={style}
 			aria-hidden="true"
 		/>

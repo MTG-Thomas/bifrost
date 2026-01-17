@@ -55,6 +55,31 @@ import {
 	WorkflowParameterEditor,
 } from "./property-editors";
 
+/**
+ * Helper type for accessing optional properties that may exist on some layout container types.
+ * The API uses snake_case names. This interface provides a superset of all layout properties
+ * for easier access with optional chaining when the LayoutContainer union doesn't have a property.
+ */
+interface LayoutContainerProps {
+	id: string;
+	type: "row" | "column" | "grid";
+	children?: unknown[];
+	gap?: number | string | null;
+	padding?: number | string | null;
+	align?: "start" | "center" | "end" | "stretch" | null;
+	justify?: "start" | "center" | "end" | "between" | "around" | null;
+	distribute?: "natural" | "equal" | "fit" | null;
+	max_width?: "sm" | "md" | "lg" | "xl" | "2xl" | "full" | "none" | null;
+	max_height?: number | null;
+	overflow?: "auto" | "scroll" | "hidden" | "visible" | null;
+	sticky?: "top" | "bottom" | null;
+	sticky_offset?: number | null;
+	columns?: number | string;
+	class_name?: string | null;
+	visible?: string | null;
+	style?: Record<string, unknown> | null;
+}
+
 export interface PropertyEditorProps {
 	/** Currently selected component or layout container */
 	component: AppComponent | LayoutContainer | null;
@@ -594,6 +619,8 @@ function LayoutPropertiesSection({
 	onChange: (updates: Partial<LayoutContainer>) => void;
 }) {
 	const isGrid = component.type === "grid";
+	// Cast to helper type for accessing optional properties across the union
+	const layoutProps = component as unknown as LayoutContainerProps;
 
 	return (
 		<AccordionItem value="layout">
@@ -654,9 +681,9 @@ function LayoutPropertiesSection({
 
 				<FormField label="Align" description="Cross-axis alignment">
 					<Select
-						value={component.align ?? "stretch"}
+						value={layoutProps.align ?? "stretch"}
 						onValueChange={(value) =>
-							onChange({ align: value as LayoutAlign })
+							onChange({ align: value as LayoutAlign } as Partial<LayoutContainer>)
 						}
 					>
 						<SelectTrigger>
@@ -673,9 +700,9 @@ function LayoutPropertiesSection({
 
 				<FormField label="Justify" description="Main-axis distribution">
 					<Select
-						value={component.justify ?? "start"}
+						value={layoutProps.justify ?? "start"}
 						onValueChange={(value) =>
-							onChange({ justify: value as LayoutJustify })
+							onChange({ justify: value as LayoutJustify } as Partial<LayoutContainer>)
 						}
 					>
 						<SelectTrigger>
@@ -698,14 +725,14 @@ function LayoutPropertiesSection({
 					description="Constrain layout width (use lg for forms)"
 				>
 					<Select
-						value={component.maxWidth ?? "none"}
+						value={layoutProps.max_width ?? "none"}
 						onValueChange={(value) =>
 							onChange({
-								maxWidth:
+								max_width:
 									value === "none"
 										? undefined
 										: (value as LayoutMaxWidth),
-							})
+							} as Partial<LayoutContainer>)
 						}
 					>
 						<SelectTrigger>
@@ -731,14 +758,14 @@ function LayoutPropertiesSection({
 					description="How children fill available space"
 				>
 					<Select
-						value={component.distribute ?? "natural"}
+						value={layoutProps.distribute ?? "natural"}
 						onValueChange={(value) =>
 							onChange({
 								distribute:
 									value === "natural"
 										? undefined
 										: (value as "natural" | "equal" | "fit"),
-							})
+							} as Partial<LayoutContainer>)
 						}
 					>
 						<SelectTrigger>
@@ -758,13 +785,13 @@ function LayoutPropertiesSection({
 				>
 					<Input
 						type="number"
-						value={component.maxHeight ?? ""}
+						value={layoutProps.max_height ?? ""}
 						onChange={(e) =>
 							onChange({
-								maxHeight: e.target.value
+								max_height: e.target.value
 									? Number(e.target.value)
 									: undefined,
-							})
+							} as Partial<LayoutContainer>)
 						}
 						placeholder="None"
 						min={0}
@@ -776,14 +803,14 @@ function LayoutPropertiesSection({
 					description="Behavior when content exceeds bounds"
 				>
 					<Select
-						value={component.overflow ?? "visible"}
+						value={layoutProps.overflow ?? "visible"}
 						onValueChange={(value) =>
 							onChange({
 								overflow:
 									value === "visible"
 										? undefined
 										: (value as "auto" | "scroll" | "hidden" | "visible"),
-							})
+							} as Partial<LayoutContainer>)
 						}
 					>
 						<SelectTrigger>
@@ -803,14 +830,14 @@ function LayoutPropertiesSection({
 					description="Pin container to edge when scrolling"
 				>
 					<Select
-						value={component.sticky ?? "none"}
+						value={layoutProps.sticky ?? "none"}
 						onValueChange={(value) =>
 							onChange({
 								sticky:
 									value === "none"
 										? undefined
 										: (value as "top" | "bottom"),
-							})
+							} as Partial<LayoutContainer>)
 						}
 					>
 						<SelectTrigger>
@@ -824,18 +851,18 @@ function LayoutPropertiesSection({
 					</Select>
 				</FormField>
 
-				{component.sticky && (
+				{layoutProps.sticky && (
 					<FormField
 						label="Sticky Offset"
 						description="Distance from edge (pixels)"
 					>
 						<Input
 							type="number"
-							value={component.stickyOffset ?? 0}
+							value={layoutProps.sticky_offset ?? 0}
 							onChange={(e) =>
 								onChange({
-									stickyOffset: Number(e.target.value),
-								})
+									sticky_offset: Number(e.target.value),
+								} as Partial<LayoutContainer>)
 							}
 							min={0}
 						/>
@@ -847,11 +874,11 @@ function LayoutPropertiesSection({
 					description="Custom Tailwind or CSS classes"
 				>
 					<Input
-						value={component.className ?? ""}
+						value={layoutProps.class_name ?? ""}
 						onChange={(e) =>
 							onChange({
-								className: e.target.value || undefined,
-							})
+								class_name: e.target.value || undefined,
+							} as Partial<LayoutContainer>)
 						}
 						placeholder="bg-blue-500 rounded-lg"
 					/>
@@ -911,8 +938,6 @@ function HeadingPropertiesSection({
 }) {
 	if (component.type !== "heading") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="heading">
 			<AccordionTrigger>Heading</AccordionTrigger>
@@ -922,11 +947,9 @@ function HeadingPropertiesSection({
 					description="Supports expressions like {{ data.title }}"
 				>
 					<Input
-						value={props.text}
+						value={component.text}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, text: e.target.value },
-							})
+							onChange({ text: e.target.value })
 						}
 					/>
 				</FormField>
@@ -936,13 +959,10 @@ function HeadingPropertiesSection({
 					description="Heading size (1 = largest)"
 				>
 					<Select
-						value={String(props.level ?? 1)}
+						value={String(component.level ?? 1)}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									level: Number(value) as HeadingLevel,
-								},
+								level: Number(value) as HeadingLevel,
 							})
 						}
 					>
@@ -974,8 +994,6 @@ function TextPropertiesSection({
 }) {
 	if (component.type !== "text") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="text">
 			<AccordionTrigger>Text</AccordionTrigger>
@@ -985,11 +1003,9 @@ function TextPropertiesSection({
 					description="Supports expressions like {{ user.name }}"
 				>
 					<Textarea
-						value={props.text}
+						value={component.text}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, text: e.target.value },
-							})
+							onChange({ text: e.target.value })
 						}
 						rows={3}
 					/>
@@ -1000,13 +1016,10 @@ function TextPropertiesSection({
 					description="Optional label above the text"
 				>
 					<Input
-						value={props.label ?? ""}
+						value={component.label ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									label: e.target.value || undefined,
-								},
+								label: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -1027,8 +1040,6 @@ function HtmlPropertiesSection({
 }) {
 	if (component.type !== "html") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="html">
 			<AccordionTrigger>HTML/JSX Content</AccordionTrigger>
@@ -1038,11 +1049,9 @@ function HtmlPropertiesSection({
 					description="Plain HTML or JSX with context access (use className= for JSX, class= for HTML)"
 				>
 					<Textarea
-						value={props.content}
+						value={component.content}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, content: e.target.value },
-							})
+							onChange({ content: e.target.value })
 						}
 						rows={12}
 						className="font-mono text-xs"
@@ -1095,14 +1104,9 @@ function ButtonPropertiesSection({
 
 	if (component.type !== "button") return null;
 
-	const props = component.props;
-	// Support both 'label' and 'text' for button text (matches ButtonComponent behavior)
-	const labelValue =
-		props.label ?? (props as Record<string, unknown>).text ?? "";
-
 	// Get workflow name for button display
 	const workflowName = workflowsData?.find(
-		(w) => w.id === props.workflow_id,
+		(w) => w.id === component.workflow_id,
 	)?.name;
 
 	// Handle workflow selection from dialog
@@ -1112,11 +1116,8 @@ function ButtonPropertiesSection({
 	) => {
 		const workflowId = workflowIds[0] || undefined;
 		onChange({
-			props: {
-				...props,
-				workflow_id: workflowId,
-				action_params: {},
-			},
+			workflow_id: workflowId,
+			action_params: {},
 		});
 	};
 
@@ -1126,32 +1127,18 @@ function ButtonPropertiesSection({
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Label">
 					<Input
-						value={String(labelValue)}
-						onChange={(e) => {
-							// Normalize to use 'label' and remove 'text' if present
-							const newProps = {
-								...props,
-								label: e.target.value,
-							};
-							if ("text" in newProps) {
-								delete (newProps as Record<string, unknown>)
-									.text;
-							}
-							onChange({ props: newProps });
-						}}
+						value={component.label}
+						onChange={(e) => onChange({ label: e.target.value })}
 						placeholder="Button text..."
 					/>
 				</FormField>
 
 				<FormField label="Variant">
 					<Select
-						value={props.variant ?? "default"}
+						value={component.variant ?? "default"}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									variant: value as typeof props.variant,
-								},
+								variant: value as typeof component.variant,
 							})
 						}
 					>
@@ -1173,13 +1160,10 @@ function ButtonPropertiesSection({
 
 				<FormField label="Size">
 					<Select
-						value={props.size ?? "default"}
+						value={component.size ?? "default"}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									size: value as typeof props.size,
-								},
+								size: value as typeof component.size,
 							})
 						}
 					>
@@ -1200,28 +1184,22 @@ function ButtonPropertiesSection({
 				>
 					<Input
 						value={
-							typeof props.disabled === "boolean"
-								? props.disabled
+							typeof component.disabled === "boolean"
+								? component.disabled
 									? "true"
 									: ""
-								: (props.disabled ?? "")
+								: (component.disabled ?? "")
 						}
 						onChange={(e) => {
 							const value = e.target.value;
 							// Empty = not disabled
 							if (!value || value === "false") {
-								onChange({
-									props: { ...props, disabled: false },
-								});
+								onChange({ disabled: false });
 							} else if (value === "true") {
-								onChange({
-									props: { ...props, disabled: true },
-								});
+								onChange({ disabled: true });
 							} else {
 								// Expression string
-								onChange({
-									props: { ...props, disabled: value },
-								});
+								onChange({ disabled: value });
 							}
 						}}
 						placeholder="false, true, or {{ expression }}"
@@ -1230,13 +1208,10 @@ function ButtonPropertiesSection({
 
 				<FormField label="Action Type">
 					<Select
-						value={props.action_type ?? ""}
+						value={component.action_type ?? ""}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									action_type: value as ButtonActionType,
-								},
+								action_type: value as ButtonActionType,
 							})
 						}
 					>
@@ -1252,19 +1227,16 @@ function ButtonPropertiesSection({
 					</Select>
 				</FormField>
 
-				{props.action_type === "navigate" && (
+				{component.action_type === "navigate" && (
 					<FormField
 						label="Navigate To"
 						description="Path to navigate (supports expressions)"
 					>
 						<Input
-							value={props.navigate_to ?? ""}
+							value={component.navigate_to ?? ""}
 							onChange={(e) =>
 								onChange({
-									props: {
-										...props,
-										navigate_to: e.target.value,
-									},
+									navigate_to: e.target.value,
 								})
 							}
 							placeholder="/path/to/page"
@@ -1272,7 +1244,7 @@ function ButtonPropertiesSection({
 					</FormField>
 				)}
 
-				{props.action_type === "workflow" && (
+				{component.action_type === "workflow" && (
 					<>
 						<FormField label="Workflow">
 							<div className="flex gap-2">
@@ -1283,17 +1255,14 @@ function ButtonPropertiesSection({
 								>
 									{workflowName || "Select a workflow"}
 								</Button>
-								{props.workflow_id && (
+								{component.workflow_id && (
 									<Button
 										variant="ghost"
 										size="icon"
 										onClick={() =>
 											onChange({
-												props: {
-													...props,
-													workflow_id: undefined,
-													action_params: {},
-												},
+												workflow_id: undefined,
+												action_params: {},
 											})
 										}
 									>
@@ -1308,24 +1277,22 @@ function ButtonPropertiesSection({
 								workflowType="workflow"
 								mode="single"
 								selectedWorkflowIds={
-									props.workflow_id ? [props.workflow_id] : []
+									component.workflow_id ? [component.workflow_id] : []
 								}
 								onSelect={handleWorkflowSelect}
 							/>
 						</FormField>
 
-						{props.workflow_id && (
+						{component.workflow_id && (
 							<FormField
 								label="Parameters"
 								description="Values to pass to the workflow"
 							>
 								<WorkflowParameterEditor
-									workflowId={props.workflow_id}
-									value={props.action_params ?? {}}
+									workflowId={component.workflow_id}
+									value={component.action_params ?? {}}
 									onChange={(actionParams) =>
-										onChange({
-											props: { ...props, action_params: actionParams },
-										})
+										onChange({ action_params: actionParams })
 									}
 									isRowAction={false}
 								/>
@@ -1334,7 +1301,7 @@ function ButtonPropertiesSection({
 					</>
 				)}
 
-				{props.action_type === "submit" && (
+				{component.action_type === "submit" && (
 					<>
 						<FormField
 							label="Workflow"
@@ -1348,17 +1315,14 @@ function ButtonPropertiesSection({
 								>
 									{workflowName || "Select a workflow"}
 								</Button>
-								{props.workflow_id && (
+								{component.workflow_id && (
 									<Button
 										variant="ghost"
 										size="icon"
 										onClick={() =>
 											onChange({
-												props: {
-													...props,
-													workflow_id: undefined,
-													action_params: {},
-												},
+												workflow_id: undefined,
+												action_params: {},
 											})
 										}
 									>
@@ -1373,24 +1337,22 @@ function ButtonPropertiesSection({
 								workflowType="workflow"
 								mode="single"
 								selectedWorkflowIds={
-									props.workflow_id ? [props.workflow_id] : []
+									component.workflow_id ? [component.workflow_id] : []
 								}
 								onSelect={handleWorkflowSelect}
 							/>
 						</FormField>
 
-						{props.workflow_id && (
+						{component.workflow_id && (
 							<FormField
 								label="Additional Parameters"
 								description="Extra values to include (form fields auto-included)"
 							>
 								<WorkflowParameterEditor
-									workflowId={props.workflow_id}
-									value={props.action_params ?? {}}
+									workflowId={component.workflow_id}
+									value={component.action_params ?? {}}
 									onChange={(actionParams) =>
-										onChange({
-											props: { ...props, action_params: actionParams },
-										})
+										onChange({ action_params: actionParams })
 									}
 									isRowAction={false}
 								/>
@@ -1399,17 +1361,14 @@ function ButtonPropertiesSection({
 					</>
 				)}
 
-				{props.action_type === "custom" && (
+				{component.action_type === "custom" && (
 					<>
 						<FormField label="Custom Action ID">
 							<Input
-								value={props.custom_action_id ?? ""}
+								value={component.custom_action_id ?? ""}
 								onChange={(e) =>
 									onChange({
-										props: {
-											...props,
-											custom_action_id: e.target.value,
-										},
+										custom_action_id: e.target.value,
 									})
 								}
 								placeholder="action-id"
@@ -1418,11 +1377,9 @@ function ButtonPropertiesSection({
 
 						<FormField label="Parameters">
 							<KeyValueEditor
-								value={props.action_params ?? {}}
+								value={component.action_params ?? {}}
 								onChange={(actionParams) =>
-									onChange({
-										props: { ...props, action_params: actionParams },
-									})
+									onChange({ action_params: actionParams })
 								}
 							/>
 						</FormField>
@@ -1443,8 +1400,6 @@ function ImagePropertiesSection({
 }) {
 	if (component.type !== "image") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="image">
 			<AccordionTrigger>Image</AccordionTrigger>
@@ -1454,11 +1409,9 @@ function ImagePropertiesSection({
 					description="Image URL or expression"
 				>
 					<Input
-						value={props.src}
+						value={component.src}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, src: e.target.value },
-							})
+							onChange({ src: e.target.value })
 						}
 						placeholder="https://example.com/image.png"
 					/>
@@ -1469,13 +1422,10 @@ function ImagePropertiesSection({
 					description="Accessibility description"
 				>
 					<Input
-						value={props.alt ?? ""}
+						value={component.alt ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									alt: e.target.value || undefined,
-								},
+								alt: e.target.value || undefined,
 							})
 						}
 						placeholder="Image description"
@@ -1487,19 +1437,16 @@ function ImagePropertiesSection({
 					description="Maximum width (e.g., 200 or 100%)"
 				>
 					<Input
-						value={props.max_width ?? ""}
+						value={component.max_width ?? ""}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
-								props: {
-									...props,
-									max_width: val
-										? isNaN(numVal)
-											? val
-											: numVal
-										: undefined,
-								},
+								max_width: val
+									? isNaN(numVal)
+										? val
+										: numVal
+									: undefined,
 							});
 						}}
 						placeholder="auto"
@@ -1511,19 +1458,16 @@ function ImagePropertiesSection({
 					description="Maximum height (e.g., 200 or 100%)"
 				>
 					<Input
-						value={props.max_height ?? ""}
+						value={component.max_height ?? ""}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
-								props: {
-									...props,
-									max_height: val
-										? isNaN(numVal)
-											? val
-											: numVal
-										: undefined,
-								},
+								max_height: val
+									? isNaN(numVal)
+										? val
+										: numVal
+									: undefined,
 							});
 						}}
 						placeholder="auto"
@@ -1535,13 +1479,10 @@ function ImagePropertiesSection({
 					description="How the image scales within its container"
 				>
 					<Select
-						value={props.object_fit ?? "contain"}
+						value={component.object_fit ?? "contain"}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									object_fit: value as typeof props.object_fit,
-								},
+								object_fit: value as typeof component.object_fit,
 							})
 						}
 					>
@@ -1571,21 +1512,16 @@ function CardPropertiesSection({
 }) {
 	if (component.type !== "card") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="card">
 			<AccordionTrigger>Card</AccordionTrigger>
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Title" description="Optional card title">
 					<Input
-						value={props.title ?? ""}
+						value={component.title ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									title: e.target.value || undefined,
-								},
+								title: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -1597,13 +1533,10 @@ function CardPropertiesSection({
 					description="Optional card description"
 				>
 					<Textarea
-						value={props.description ?? ""}
+						value={component.description ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									description: e.target.value || undefined,
-								},
+								description: e.target.value || undefined,
 							})
 						}
 						rows={2}
@@ -1625,19 +1558,15 @@ function StatCardPropertiesSection({
 }) {
 	if (component.type !== "stat-card") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="stat-card">
 			<AccordionTrigger>Stat Card</AccordionTrigger>
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Title">
 					<Input
-						value={props.title}
+						value={component.title}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, title: e.target.value },
-							})
+							onChange({ title: e.target.value })
 						}
 					/>
 				</FormField>
@@ -1647,24 +1576,19 @@ function StatCardPropertiesSection({
 					description="Supports expressions like {{ data.count }}"
 				>
 					<Input
-						value={props.value}
+						value={component.value}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, value: e.target.value },
-							})
+							onChange({ value: e.target.value })
 						}
 					/>
 				</FormField>
 
 				<FormField label="Description" description="Additional context">
 					<Input
-						value={props.description ?? ""}
+						value={component.description ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									description: e.target.value || undefined,
-								},
+								description: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -1676,13 +1600,10 @@ function StatCardPropertiesSection({
 					description="Icon name (e.g., users, chart)"
 				>
 					<Input
-						value={props.icon ?? ""}
+						value={component.icon ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									icon: e.target.value || undefined,
-								},
+								icon: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -1692,14 +1613,11 @@ function StatCardPropertiesSection({
 				<FormField label="Trend" description="Optional trend indicator">
 					<JsonEditor
 						value={
-							props.trend ?? { value: "", direction: "neutral" }
+							component.trend ?? { value: "", direction: "neutral" }
 						}
 						onChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									trend: value as typeof props.trend,
-								},
+								trend: value as typeof component.trend,
 							})
 						}
 						rows={4}
@@ -1712,17 +1630,14 @@ function StatCardPropertiesSection({
 				>
 					<JsonEditor
 						value={
-							props.on_click ?? {
+							component.on_click ?? {
 								type: "navigate",
 								navigate_to: "",
 							}
 						}
 						onChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									on_click: value as typeof props.on_click,
-								},
+								on_click: value as typeof component.on_click,
 							})
 						}
 						rows={4}
@@ -1743,8 +1658,6 @@ function DataTablePropertiesSection({
 }) {
 	if (component.type !== "data-table") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="data-table">
 			<AccordionTrigger>Data Table</AccordionTrigger>
@@ -1754,11 +1667,9 @@ function DataTablePropertiesSection({
 					description="ID of a page data source (e.g., clientsList)"
 				>
 					<Input
-						value={props.data_source}
+						value={component.data_source}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, data_source: e.target.value },
-							})
+							onChange({ data_source: e.target.value })
 						}
 						placeholder="dataSourceId"
 					/>
@@ -1769,11 +1680,9 @@ function DataTablePropertiesSection({
 					description="Path to array in result (e.g., 'clients' if workflow returns { clients: [...] })"
 				>
 					<Input
-						value={props.data_path ?? ""}
+						value={component.data_path ?? ""}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, data_path: e.target.value || undefined },
-							})
+							onChange({ data_path: e.target.value || undefined })
 						}
 						placeholder="Leave empty if result is already an array"
 					/>
@@ -1782,15 +1691,13 @@ function DataTablePropertiesSection({
 				<FormField label="Searchable">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.searchable ?? false}
+							checked={component.searchable ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, searchable: checked },
-								})
+								onChange({ searchable: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.searchable ? "Yes" : "No"}
+							{component.searchable ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -1798,15 +1705,13 @@ function DataTablePropertiesSection({
 				<FormField label="Selectable">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.selectable ?? false}
+							checked={component.selectable ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, selectable: checked },
-								})
+								onChange({ selectable: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.selectable ? "Yes" : "No"}
+							{component.selectable ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -1814,30 +1719,25 @@ function DataTablePropertiesSection({
 				<FormField label="Paginated">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.paginated ?? false}
+							checked={component.paginated ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, paginated: checked },
-								})
+								onChange({ paginated: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.paginated ? "Yes" : "No"}
+							{component.paginated ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
 
-				{props.paginated && (
+				{component.paginated && (
 					<FormField label="Page Size" description="Rows per page">
 						<Input
 							type="number"
-							value={props.page_size ?? 10}
+							value={component.page_size ?? 10}
 							onChange={(e) =>
 								onChange({
-									props: {
-										...props,
-										page_size: Number(e.target.value) || 10,
-									},
+									page_size: Number(e.target.value) || 10,
 								})
 							}
 							min={1}
@@ -1851,13 +1751,10 @@ function DataTablePropertiesSection({
 					description="Message when no data"
 				>
 					<Input
-						value={props.empty_message ?? ""}
+						value={component.empty_message ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									empty_message: e.target.value || undefined,
-								},
+								empty_message: e.target.value || undefined,
 							})
 						}
 						placeholder="No data available"
@@ -1866,11 +1763,9 @@ function DataTablePropertiesSection({
 
 				<FormField label="Columns" description="Define table columns">
 					<ColumnBuilder
-						value={props.columns}
+						value={component.columns}
 						onChange={(columns) =>
-							onChange({
-								props: { ...props, columns },
-							})
+							onChange({ columns })
 						}
 					/>
 				</FormField>
@@ -1880,11 +1775,9 @@ function DataTablePropertiesSection({
 					description="Actions available for each row"
 				>
 					<TableActionBuilder
-						value={props.row_actions ?? []}
+						value={component.row_actions ?? []}
 						onChange={(rowActions) =>
-							onChange({
-								props: { ...props, row_actions: rowActions },
-							})
+							onChange({ row_actions: rowActions })
 						}
 						isRowAction={true}
 					/>
@@ -1895,11 +1788,9 @@ function DataTablePropertiesSection({
 					description="Actions in table header"
 				>
 					<TableActionBuilder
-						value={props.header_actions ?? []}
+						value={component.header_actions ?? []}
 						onChange={(headerActions) =>
-							onChange({
-								props: { ...props, header_actions: headerActions },
-							})
+							onChange({ header_actions: headerActions })
 						}
 						isRowAction={false}
 					/>
@@ -1910,30 +1801,25 @@ function DataTablePropertiesSection({
 					description="What happens when a row is clicked"
 				>
 					<Select
-						value={props.on_row_click?.type ?? "none"}
+						value={component.on_row_click?.type ?? "none"}
 						onValueChange={(type) => {
 							if (type === "none") {
-								onChange({
-									props: { ...props, on_row_click: undefined },
-								});
+								onChange({ on_row_click: undefined });
 							} else {
 								onChange({
-									props: {
-										...props,
-										on_row_click: {
-											type: type as
-												| "navigate"
-												| "select"
-												| "set-variable",
-											navigate_to:
-												type === "navigate"
-													? "/details/{{ row.id }}"
-													: undefined,
-											variable_name:
-												type === "set-variable"
-													? "selectedRow"
-													: undefined,
-										},
+									on_row_click: {
+										type: type as
+											| "navigate"
+											| "select"
+											| "set-variable",
+										navigate_to:
+											type === "navigate"
+												? "/details/{{ row.id }}"
+												: undefined,
+										variable_name:
+											type === "set-variable"
+												? "selectedRow"
+												: undefined,
 									},
 								});
 							}
@@ -1955,21 +1841,18 @@ function DataTablePropertiesSection({
 					</Select>
 				</FormField>
 
-				{props.on_row_click?.type === "navigate" && (
+				{component.on_row_click?.type === "navigate" && (
 					<FormField
 						label="Navigate To"
 						description="Path with {{ row.* }} expressions"
 					>
 						<Input
-							value={props.on_row_click.navigate_to ?? ""}
+							value={component.on_row_click.navigate_to ?? ""}
 							onChange={(e) =>
 								onChange({
-									props: {
-										...props,
-										on_row_click: {
-											...props.on_row_click!,
-											navigate_to: e.target.value,
-										},
+									on_row_click: {
+										...component.on_row_click!,
+										navigate_to: e.target.value,
 									},
 								})
 							}
@@ -1978,21 +1861,18 @@ function DataTablePropertiesSection({
 					</FormField>
 				)}
 
-				{props.on_row_click?.type === "set-variable" && (
+				{component.on_row_click?.type === "set-variable" && (
 					<FormField
 						label="Variable Name"
 						description="Store the row in this variable"
 					>
 						<Input
-							value={props.on_row_click.variable_name ?? ""}
+							value={component.on_row_click.variable_name ?? ""}
 							onChange={(e) =>
 								onChange({
-									props: {
-										...props,
-										on_row_click: {
-											...props.on_row_click!,
-											variable_name: e.target.value,
-										},
+									on_row_click: {
+										...component.on_row_click!,
+										variable_name: e.target.value,
 									},
 								})
 							}
@@ -2015,23 +1895,18 @@ function TabsPropertiesSection({
 }) {
 	if (component.type !== "tabs") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="tabs">
 			<AccordionTrigger>Tabs</AccordionTrigger>
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Orientation">
 					<Select
-						value={props.orientation ?? "horizontal"}
+						value={component.orientation ?? "horizontal"}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									orientation: value as
-										| "horizontal"
-										| "vertical",
-								},
+								orientation: value as
+									| "horizontal"
+									| "vertical",
 							})
 						}
 					>
@@ -2052,13 +1927,10 @@ function TabsPropertiesSection({
 					description="ID of initially active tab"
 				>
 					<Input
-						value={props.default_tab ?? ""}
+						value={component.default_tab ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									default_tab: e.target.value || undefined,
-								},
+								default_tab: e.target.value || undefined,
 							})
 						}
 						placeholder="First tab"
@@ -2070,13 +1942,10 @@ function TabsPropertiesSection({
 					description="Tab definitions (JSON array)"
 				>
 					<JsonEditor
-						value={props.items}
+						value={component.children}
 						onChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									items: value as typeof props.items,
-								},
+								children: value as typeof component.children,
 							})
 						}
 						rows={10}
@@ -2097,32 +1966,25 @@ function BadgePropertiesSection({
 }) {
 	if (component.type !== "badge") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="badge">
 			<AccordionTrigger>Badge</AccordionTrigger>
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Text">
 					<Input
-						value={props.text}
+						value={component.text}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, text: e.target.value },
-							})
+							onChange({ text: e.target.value })
 						}
 					/>
 				</FormField>
 
 				<FormField label="Variant">
 					<Select
-						value={props.variant ?? "default"}
+						value={component.variant ?? "default"}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									variant: value as typeof props.variant,
-								},
+								variant: value as typeof component.variant,
 							})
 						}
 					>
@@ -2154,23 +2016,18 @@ function ProgressPropertiesSection({
 }) {
 	if (component.type !== "progress") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="progress">
 			<AccordionTrigger>Progress</AccordionTrigger>
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Value" description="0-100 or expression">
 					<Input
-						value={String(props.value)}
+						value={String(component.value)}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
-								props: {
-									...props,
-									value: isNaN(numVal) ? val : numVal,
-								},
+								value: isNaN(numVal) ? val : numVal,
 							});
 						}}
 					/>
@@ -2179,15 +2036,13 @@ function ProgressPropertiesSection({
 				<FormField label="Show Label">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.show_label ?? false}
+							checked={component.show_label ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, show_label: checked },
-								})
+								onChange({ show_label: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.show_label ? "Yes" : "No"}
+							{component.show_label ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -2206,23 +2061,18 @@ function DividerPropertiesSection({
 }) {
 	if (component.type !== "divider") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="divider">
 			<AccordionTrigger>Divider</AccordionTrigger>
 			<AccordionContent className="space-y-4 px-1">
 				<FormField label="Orientation">
 					<Select
-						value={props.orientation ?? "horizontal"}
+						value={component.orientation ?? "horizontal"}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									orientation: value as
-										| "horizontal"
-										| "vertical",
-								},
+								orientation: value as
+									| "horizontal"
+									| "vertical",
 							})
 						}
 					>
@@ -2252,8 +2102,6 @@ function SpacerPropertiesSection({
 }) {
 	if (component.type !== "spacer") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="spacer">
 			<AccordionTrigger>Spacer</AccordionTrigger>
@@ -2263,19 +2111,16 @@ function SpacerPropertiesSection({
 					description="Size in pixels or Tailwind units"
 				>
 					<Input
-						value={String(props.size ?? "")}
+						value={String(component.size ?? "")}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
-								props: {
-									...props,
-									size: val
-										? isNaN(numVal)
-											? val
-											: numVal
-										: undefined,
-								},
+								size: val
+									? isNaN(numVal)
+										? val
+										: numVal
+									: undefined,
 							});
 						}}
 						placeholder="16"
@@ -2296,8 +2141,6 @@ function TextInputPropertiesSection({
 }) {
 	if (component.type !== "text-input") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="text-input">
 			<AccordionTrigger>Text Input</AccordionTrigger>
@@ -2307,11 +2150,9 @@ function TextInputPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.field_id}
+						value={component.field_id}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, field_id: e.target.value },
-							})
+							onChange({ field_id: e.target.value })
 						}
 						placeholder="fieldName"
 					/>
@@ -2319,13 +2160,10 @@ function TextInputPropertiesSection({
 
 				<FormField label="Label">
 					<Input
-						value={props.label ?? ""}
+						value={component.label ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									label: e.target.value || undefined,
-								},
+								label: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -2334,13 +2172,10 @@ function TextInputPropertiesSection({
 
 				<FormField label="Placeholder">
 					<Input
-						value={props.placeholder ?? ""}
+						value={component.placeholder ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									placeholder: e.target.value || undefined,
-								},
+								placeholder: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -2352,13 +2187,10 @@ function TextInputPropertiesSection({
 					description="Supports expressions"
 				>
 					<Input
-						value={props.default_value ?? ""}
+						value={component.default_value ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									default_value: e.target.value || undefined,
-								},
+								default_value: e.target.value || undefined,
 							})
 						}
 					/>
@@ -2366,13 +2198,10 @@ function TextInputPropertiesSection({
 
 				<FormField label="Input Type">
 					<Select
-						value={props.input_type ?? "text"}
+						value={component.input_type ?? "text"}
 						onValueChange={(value) =>
 							onChange({
-								props: {
-									...props,
-									input_type: value as typeof props.input_type,
-								},
+								input_type: value as typeof component.input_type,
 							})
 						}
 					>
@@ -2392,15 +2221,13 @@ function TextInputPropertiesSection({
 				<FormField label="Required">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.required ?? false}
+							checked={component.required ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, required: checked },
-								})
+								onChange({ required: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.required ? "Yes" : "No"}
+							{component.required ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -2411,26 +2238,20 @@ function TextInputPropertiesSection({
 				>
 					<Input
 						value={
-							typeof props.disabled === "boolean"
-								? props.disabled
+							typeof component.disabled === "boolean"
+								? component.disabled
 									? "true"
 									: ""
-								: (props.disabled ?? "")
+								: (component.disabled ?? "")
 						}
 						onChange={(e) => {
 							const value = e.target.value;
 							if (!value || value === "false") {
-								onChange({
-									props: { ...props, disabled: false },
-								});
+								onChange({ disabled: false });
 							} else if (value === "true") {
-								onChange({
-									props: { ...props, disabled: true },
-								});
+								onChange({ disabled: true });
 							} else {
-								onChange({
-									props: { ...props, disabled: value },
-								});
+								onChange({ disabled: value });
 							}
 						}}
 						placeholder="false, true, or {{ expression }}"
@@ -2451,8 +2272,6 @@ function NumberInputPropertiesSection({
 }) {
 	if (component.type !== "number-input") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="number-input">
 			<AccordionTrigger>Number Input</AccordionTrigger>
@@ -2462,11 +2281,9 @@ function NumberInputPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.field_id}
+						value={component.field_id}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, field_id: e.target.value },
-							})
+							onChange({ field_id: e.target.value })
 						}
 						placeholder="fieldName"
 					/>
@@ -2474,13 +2291,10 @@ function NumberInputPropertiesSection({
 
 				<FormField label="Label">
 					<Input
-						value={props.label ?? ""}
+						value={component.label ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									label: e.target.value || undefined,
-								},
+								label: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -2489,13 +2303,10 @@ function NumberInputPropertiesSection({
 
 				<FormField label="Placeholder">
 					<Input
-						value={props.placeholder ?? ""}
+						value={component.placeholder ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									placeholder: e.target.value || undefined,
-								},
+								placeholder: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -2507,19 +2318,16 @@ function NumberInputPropertiesSection({
 					description="Number or expression"
 				>
 					<Input
-						value={String(props.default_value ?? "")}
+						value={String(component.default_value ?? "")}
 						onChange={(e) => {
 							const val = e.target.value;
 							const numVal = Number(val);
 							onChange({
-								props: {
-									...props,
-									default_value: val
-										? isNaN(numVal)
-											? val
-											: numVal
-										: undefined,
-								},
+								default_value: val
+									? isNaN(numVal)
+										? val
+										: numVal
+									: undefined,
 							});
 						}}
 					/>
@@ -2528,15 +2336,12 @@ function NumberInputPropertiesSection({
 				<FormField label="Min">
 					<Input
 						type="number"
-						value={props.min ?? ""}
+						value={component.min ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									min: e.target.value
-										? Number(e.target.value)
-										: undefined,
-								},
+								min: e.target.value
+									? Number(e.target.value)
+									: undefined,
 							})
 						}
 					/>
@@ -2545,15 +2350,12 @@ function NumberInputPropertiesSection({
 				<FormField label="Max">
 					<Input
 						type="number"
-						value={props.max ?? ""}
+						value={component.max ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									max: e.target.value
-										? Number(e.target.value)
-										: undefined,
-								},
+								max: e.target.value
+									? Number(e.target.value)
+									: undefined,
 							})
 						}
 					/>
@@ -2562,15 +2364,12 @@ function NumberInputPropertiesSection({
 				<FormField label="Step">
 					<Input
 						type="number"
-						value={props.step ?? ""}
+						value={component.step ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									step: e.target.value
-										? Number(e.target.value)
-										: undefined,
-								},
+								step: e.target.value
+									? Number(e.target.value)
+									: undefined,
 							})
 						}
 						placeholder="1"
@@ -2580,15 +2379,13 @@ function NumberInputPropertiesSection({
 				<FormField label="Required">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.required ?? false}
+							checked={component.required ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, required: checked },
-								})
+								onChange({ required: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.required ? "Yes" : "No"}
+							{component.required ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -2607,8 +2404,6 @@ function SelectPropertiesSection({
 }) {
 	if (component.type !== "select") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="select">
 			<AccordionTrigger>Select</AccordionTrigger>
@@ -2618,11 +2413,9 @@ function SelectPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.field_id}
+						value={component.field_id}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, field_id: e.target.value },
-							})
+							onChange({ field_id: e.target.value })
 						}
 						placeholder="fieldName"
 					/>
@@ -2630,13 +2423,10 @@ function SelectPropertiesSection({
 
 				<FormField label="Label">
 					<Input
-						value={props.label ?? ""}
+						value={component.label ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									label: e.target.value || undefined,
-								},
+								label: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -2645,13 +2435,10 @@ function SelectPropertiesSection({
 
 				<FormField label="Placeholder">
 					<Input
-						value={props.placeholder ?? ""}
+						value={component.placeholder ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									placeholder: e.target.value || undefined,
-								},
+								placeholder: e.target.value || undefined,
 							})
 						}
 						placeholder="Select an option"
@@ -2660,13 +2447,10 @@ function SelectPropertiesSection({
 
 				<FormField label="Default Value">
 					<Input
-						value={props.default_value ?? ""}
+						value={component.default_value ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									default_value: e.target.value || undefined,
-								},
+								default_value: e.target.value || undefined,
 							})
 						}
 					/>
@@ -2678,12 +2462,10 @@ function SelectPropertiesSection({
 				>
 					<OptionBuilder
 						value={
-							Array.isArray(props.options) ? props.options : []
+							Array.isArray(component.options) ? component.options : []
 						}
 						onChange={(options) =>
-							onChange({
-								props: { ...props, options },
-							})
+							onChange({ options })
 						}
 					/>
 				</FormField>
@@ -2693,34 +2475,28 @@ function SelectPropertiesSection({
 					description="Data source name for dynamic options"
 				>
 					<Input
-						value={props.options_source ?? ""}
+						value={component.options_source ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									options_source: e.target.value || undefined,
-								},
+								options_source: e.target.value || undefined,
 							})
 						}
 						placeholder="None (use static options)"
 					/>
 				</FormField>
 
-				{props.options_source && (
+				{component.options_source && (
 					<>
 						<FormField
 							label="Value Field"
 							description="Field in data source for option value"
 						>
 							<Input
-								value={props.value_field ?? ""}
+								value={component.value_field ?? ""}
 								onChange={(e) =>
 									onChange({
-										props: {
-											...props,
-											value_field:
-												e.target.value || undefined,
-										},
+										value_field:
+											e.target.value || undefined,
 									})
 								}
 								placeholder="value"
@@ -2732,14 +2508,11 @@ function SelectPropertiesSection({
 							description="Field in data source for option label"
 						>
 							<Input
-								value={props.label_field ?? ""}
+								value={component.label_field ?? ""}
 								onChange={(e) =>
 									onChange({
-										props: {
-											...props,
-											label_field:
-												e.target.value || undefined,
-										},
+										label_field:
+											e.target.value || undefined,
 									})
 								}
 								placeholder="label"
@@ -2751,15 +2524,13 @@ function SelectPropertiesSection({
 				<FormField label="Required">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.required ?? false}
+							checked={component.required ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, required: checked },
-								})
+								onChange({ required: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.required ? "Yes" : "No"}
+							{component.required ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -2778,8 +2549,6 @@ function CheckboxPropertiesSection({
 }) {
 	if (component.type !== "checkbox") return null;
 
-	const props = component.props;
-
 	return (
 		<AccordionItem value="checkbox">
 			<AccordionTrigger>Checkbox</AccordionTrigger>
@@ -2789,11 +2558,9 @@ function CheckboxPropertiesSection({
 					description="ID for accessing value via {{ field.fieldId }}"
 				>
 					<Input
-						value={props.field_id}
+						value={component.field_id}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, field_id: e.target.value },
-							})
+							onChange({ field_id: e.target.value })
 						}
 						placeholder="fieldName"
 					/>
@@ -2801,11 +2568,9 @@ function CheckboxPropertiesSection({
 
 				<FormField label="Label">
 					<Input
-						value={props.label}
+						value={component.label}
 						onChange={(e) =>
-							onChange({
-								props: { ...props, label: e.target.value },
-							})
+							onChange({ label: e.target.value })
 						}
 					/>
 				</FormField>
@@ -2815,13 +2580,10 @@ function CheckboxPropertiesSection({
 					description="Help text below the checkbox"
 				>
 					<Input
-						value={props.description ?? ""}
+						value={component.description ?? ""}
 						onChange={(e) =>
 							onChange({
-								props: {
-									...props,
-									description: e.target.value || undefined,
-								},
+								description: e.target.value || undefined,
 							})
 						}
 						placeholder="None"
@@ -2831,18 +2593,15 @@ function CheckboxPropertiesSection({
 				<FormField label="Default Checked">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.default_checked ?? false}
+							checked={component.default_checked ?? false}
 							onCheckedChange={(checked) =>
 								onChange({
-									props: {
-										...props,
-										default_checked: checked,
-									},
+									default_checked: checked,
 								})
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.default_checked ? "Yes" : "No"}
+							{component.default_checked ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -2850,15 +2609,13 @@ function CheckboxPropertiesSection({
 				<FormField label="Required">
 					<div className="flex items-center gap-2">
 						<Switch
-							checked={props.required ?? false}
+							checked={component.required ?? false}
 							onCheckedChange={(checked) =>
-								onChange({
-									props: { ...props, required: checked },
-								})
+								onChange({ required: checked })
 							}
 						/>
 						<span className="text-sm text-muted-foreground">
-							{props.required ? "Yes" : "No"}
+							{component.required ? "Yes" : "No"}
 						</span>
 					</div>
 				</FormField>
@@ -3032,6 +2789,7 @@ function getComponentDisplayName(
 		progress: "Progress",
 		"data-table": "Data Table",
 		tabs: "Tabs",
+		"tab-item": "Tab Item",
 		"file-viewer": "File Viewer",
 		modal: "Modal",
 		"text-input": "Text Input",

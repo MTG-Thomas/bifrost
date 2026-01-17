@@ -50,7 +50,8 @@ export function TextInputComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as TextInputComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as TextInputComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
 	const defaultValue = props.default_value ? String(props.default_value) : "";

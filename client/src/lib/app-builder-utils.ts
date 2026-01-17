@@ -7,9 +7,11 @@
 
 import type { components } from "./v1";
 
-// Type aliases for cleaner code
-type LayoutContainer = components["schemas"]["LayoutContainer"];
+// Type aliases for cleaner code - unified model where all components are AppComponent
 type AppComponent =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"]
 	| components["schemas"]["HeadingComponent"]
 	| components["schemas"]["TextComponent"]
 	| components["schemas"]["HtmlComponent"]
@@ -23,6 +25,7 @@ type AppComponent =
 	| components["schemas"]["ProgressComponent"]
 	| components["schemas"]["DataTableComponent"]
 	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["TabItemComponent"]
 	| components["schemas"]["FileViewerComponent"]
 	| components["schemas"]["ModalComponent"]
 	| components["schemas"]["TextInputComponent"]
@@ -32,15 +35,22 @@ type AppComponent =
 	| components["schemas"]["FormEmbedComponent"]
 	| components["schemas"]["FormGroupComponent"];
 
-type LayoutElement = LayoutContainer | AppComponent;
+// LayoutContainer is a subset of AppComponent that represents the row/column/grid types
+type LayoutContainer =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"];
+
+// LayoutElement is the same as AppComponent in the unified model
+type LayoutElement = AppComponent;
 
 /**
  * Layout types that can contain children
  */
-export const CONTAINER_TYPES = ["row", "column", "grid", "card", "modal"] as const;
+export const CONTAINER_TYPES = ["row", "column", "grid", "card", "modal", "tabs", "tab-item", "form-group"] as const;
 
 /**
- * Type guard to check if an element is a LayoutContainer
+ * Type guard to check if an element is a LayoutContainer (row, column, grid)
  */
 export function isLayoutContainer(element: LayoutElement): element is LayoutContainer {
 	return (
@@ -63,30 +73,14 @@ export function canHaveChildren(element: LayoutElement): boolean {
 }
 
 /**
- * Get children from an element (handles both direct children and props.children)
+ * Get children from an element.
+ * In the unified model, container components have children directly on the component.
  */
 export function getElementChildren(element: LayoutElement): LayoutElement[] {
-	// Layout containers have direct children
-	if (isLayoutContainer(element)) {
-		return (element.children || []) as LayoutElement[];
-	}
-
-	// Components may have children in props (e.g., Card, Modal)
-	if ("props" in element && element.props) {
-		const props = element.props as {
-			children?: LayoutElement[];
-			content?: LayoutContainer;
-		};
-
-		// Check for props.children first (cards)
-		if (Array.isArray(props.children)) {
-			return props.children;
-		}
-
-		// Check for props.content (modals)
-		if (props.content) {
-			return [props.content];
-		}
+	// All container types (row, column, grid, card, modal, tabs, tab-item, form-group)
+	// have children directly on the element in the unified model
+	if ("children" in element && Array.isArray(element.children)) {
+		return element.children as LayoutElement[];
 	}
 
 	return [];

@@ -21,7 +21,11 @@ import type { components } from "@/lib/v1";
 
 // Core layout and page types
 export type PageDefinition = components["schemas"]["PageDefinition"];
-export type LayoutContainer = components["schemas"]["LayoutContainer"];
+export type RowComponent = components["schemas"]["RowComponent"];
+export type ColumnComponent = components["schemas"]["ColumnComponent"];
+export type GridComponent = components["schemas"]["GridComponent"];
+// LayoutContainer is a union of the layout component types
+export type LayoutContainer = RowComponent | ColumnComponent | GridComponent;
 export type RepeatFor = components["schemas"]["RepeatFor"];
 export type OnCompleteAction = components["schemas"]["OnCompleteAction"];
 

@@ -13,6 +13,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 // Type aliases for generated API types
 type AppComponent =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"]
 	| components["schemas"]["HeadingComponent"]
 	| components["schemas"]["TextComponent"]
 	| components["schemas"]["HtmlComponent"]
@@ -26,6 +29,7 @@ type AppComponent =
 	| components["schemas"]["ProgressComponent"]
 	| components["schemas"]["DataTableComponent"]
 	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["TabItemComponent"]
 	| components["schemas"]["FileViewerComponent"]
 	| components["schemas"]["ModalComponent"]
 	| components["schemas"]["TextInputComponent"]
@@ -36,6 +40,9 @@ type AppComponent =
 	| components["schemas"]["FormGroupComponent"];
 
 type ComponentType =
+	| "row"
+	| "column"
+	| "grid"
 	| "heading"
 	| "text"
 	| "html"
@@ -49,6 +56,7 @@ type ComponentType =
 	| "progress"
 	| "data-table"
 	| "tabs"
+	| "tab-item"
 	| "file-viewer"
 	| "modal"
 	| "text-input"
@@ -271,16 +279,12 @@ export function renderRegisteredComponent(
 	const Component = getComponent(component.type) || UnknownComponent;
 
 	// Automatically evaluate props before passing to component
-	// We use type assertion here because evaluateComponentProps preserves
-	// the shape of props but TypeScript can't verify this statically
-	const evaluatedProps = evaluateComponentProps(
-		component.props as Record<string, unknown>,
+	// In the unified model, props are at the top level of the component object
+	// (not nested in a `props` wrapper), so we evaluate the entire component
+	const evaluatedComponent = evaluateComponentProps(
+		component as unknown as Record<string, unknown>,
 		context,
-	);
-	const evaluatedComponent = {
-		...component,
-		props: evaluatedProps,
-	} as AppComponent;
+	) as AppComponent;
 
 	return (
 		<Component

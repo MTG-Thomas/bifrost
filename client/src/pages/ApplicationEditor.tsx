@@ -75,57 +75,12 @@ import { useAppBuilderEditorStore } from "@/stores/app-builder-editor.store";
 import type {
 	ApplicationDefinition as AppDefinitionType,
 	PageDefinition as FrontendPageDefinition,
-	LayoutContainer,
 	AppComponent,
 	WorkflowResult,
 	ExpressionContext,
 } from "@/lib/app-builder-helpers";
-import type { components } from "@/lib/v1";
 
-type ApiLayoutContainer = components["schemas"]["LayoutContainer"];
-type ApiComponentNode = components["schemas"]["AppComponentNode"];
-type ApiChildElement = ApiLayoutContainer["children"][number];
-
-/**
- * Convert API LayoutContainer (with null values) to frontend LayoutContainer (with undefined).
- * Recursively processes children.
- */
-function convertApiLayout(apiLayout: ApiLayoutContainer): LayoutContainer {
-	return {
-		id: apiLayout.id,
-		type: apiLayout.type,
-		gap: apiLayout.gap ?? undefined,
-		padding: apiLayout.padding ?? undefined,
-		align: apiLayout.align ?? undefined,
-		justify: apiLayout.justify ?? undefined,
-		columns: apiLayout.columns ?? undefined,
-		visible: apiLayout.visible ?? undefined,
-		className: apiLayout.class_name ?? undefined,
-		children: (apiLayout.children ?? []).map(
-			(child: ApiChildElement): LayoutContainer | AppComponent => {
-				// Check if it's a layout container (has type: row/column/grid and children)
-				if (
-					"children" in child &&
-					(child.type === "row" ||
-						child.type === "column" ||
-						child.type === "grid")
-				) {
-					return convertApiLayout(child as ApiLayoutContainer);
-				}
-				// It's a component node - cast through unknown to AppComponent
-				const component = child as ApiComponentNode;
-				return {
-					id: component.id,
-					type: component.type,
-					props: component.props ?? {},
-					visible: component.visible ?? undefined,
-					width: component.width ?? undefined,
-					loadingWorkflows: component.loading_workflows ?? undefined,
-				} as AppComponent;
-			},
-		),
-	};
-}
+// PageDefinition now has children directly (no nested layout)
 
 // Default empty application template
 const DEFAULT_APP_DEFINITION: AppDefinitionType = {
@@ -138,29 +93,27 @@ const DEFAULT_APP_DEFINITION: AppDefinitionType = {
 			id: "home",
 			title: "Home",
 			path: "/",
-			layout: {
-				id: "layout_home_root",
-				type: "column",
-				gap: 16,
-				padding: 24,
-				children: [
-					{
-						id: "heading-1",
-						type: "heading",
-						props: {
+			children: [
+				{
+					id: "layout_home_root",
+					type: "column",
+					gap: 16,
+					padding: 24,
+					children: [
+						{
+							id: "heading-1",
+							type: "heading",
 							text: "Welcome to your new application",
 							level: 1,
 						},
-					},
-					{
-						id: "text-1",
-						type: "text",
-						props: {
+						{
+							id: "text-1",
+							type: "text",
 							text: "Start building by editing the application definition.",
 						},
-					},
-				],
-			},
+					],
+				},
+			],
 		},
 	],
 };
@@ -403,13 +356,13 @@ export function ApplicationEditor() {
 				const loadedPages = await Promise.all(pagePromises);
 
 				// Build the ApplicationDefinition
-				// Convert API page format to frontend format, handling null -> undefined
+				// PageDefinition from API now has children directly (no nested layout)
 				const convertedPages: FrontendPageDefinition[] =
 					loadedPages.map((page: PageDefinition) => ({
 						id: page.id,
 						title: page.title,
 						path: page.path,
-						layout: convertApiLayout(page.layout),
+						children: (page.children ?? []) as AppComponent[],
 						variables: page.variables ?? {},
 						launch_workflow_id: page.launch_workflow_id ?? undefined,
 						launch_workflow_params:
@@ -707,30 +660,26 @@ export function ApplicationEditor() {
 						title: homePage.title,
 						path: homePage.path,
 						page_order: 0,
-						root_layout_type: homePage.layout.type,
-						root_layout_config: {
-							gap: homePage.layout.gap,
-							padding: homePage.layout.padding,
-						},
 					},
 				});
 
-				// Set the layout
-				await apiClient.PUT(
-					"/api/applications/{app_id}/pages/{page_id}/layout",
-					{
-						params: {
-							path: {
-								app_id: result.id,
-								page_id: homePage.id,
+				// Set the page children (layout components)
+				if (homePage.children && homePage.children.length > 0) {
+					await apiClient.PUT(
+						"/api/applications/{app_id}/pages/{page_id}/layout",
+						{
+							params: {
+								path: {
+									app_id: result.id,
+									page_id: homePage.id,
+								},
 							},
+							body: {
+								children: homePage.children,
+							} as unknown as Record<string, unknown>,
 						},
-						body: homePage.layout as unknown as Record<
-							string,
-							unknown
-						>,
-					},
-				);
+					);
+				}
 			}
 
 			toast.success("Application created");

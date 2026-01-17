@@ -29,13 +29,14 @@ import type { RegisteredComponentProps } from "../ComponentRegistry";
  * }
  */
 export function TextComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as TextComponent;
+	// In the unified model, props are at the top level of the component
+	const comp = component as TextComponent;
 	// Props are pre-evaluated by ComponentRegistry
-	const text = String(props?.text ?? "");
-	const label = props?.label ? String(props.label) : undefined;
+	const text = String(comp.text ?? "");
+	const label = comp.label ? String(comp.label) : undefined;
 
 	return (
-		<div className={cn("space-y-1", props?.class_name)}>
+		<div className={cn("space-y-1", comp.class_name)}>
 			{label && (
 				<p className="text-sm font-medium text-muted-foreground">
 					{label}

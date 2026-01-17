@@ -13,15 +13,16 @@ import type { RegisteredComponentProps } from "../ComponentRegistry";
 type BadgeComponent = components["schemas"]["BadgeComponent"];
 
 export function BadgeComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as BadgeComponent;
+	// In the unified model, props are at the top level of the component
+	const comp = component as BadgeComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
-	const text = String(props?.text ?? "");
+	const text = String(comp.text ?? "");
 
 	return (
 		<Badge
-			variant={props?.variant || "default"}
-			className={cn(props?.class_name)}
+			variant={comp.variant || "default"}
+			className={cn(comp.class_name)}
 		>
 			{text}
 		</Badge>

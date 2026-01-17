@@ -26,15 +26,16 @@ import type { RegisteredComponentProps } from "../ComponentRegistry";
  * }
  */
 export function DividerComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as DividerComponent;
-	const orientation = props?.orientation || "horizontal";
+	// In the unified model, props are at the top level of the component
+	const comp = component as DividerComponent;
+	const orientation = comp.orientation || "horizontal";
 
 	if (orientation === "vertical") {
 		return (
 			<div
 				className={cn(
 					"mx-2 h-full w-px shrink-0 bg-border",
-					props?.class_name,
+					comp.class_name,
 				)}
 				role="separator"
 				aria-orientation="vertical"
@@ -46,7 +47,7 @@ export function DividerComponent({ component }: RegisteredComponentProps) {
 		<div
 			className={cn(
 				"my-4 h-px w-full shrink-0 bg-border",
-				props?.class_name,
+				comp.class_name,
 			)}
 			role="separator"
 			aria-orientation="horizontal"

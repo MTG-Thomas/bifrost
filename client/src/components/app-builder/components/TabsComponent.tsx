@@ -7,8 +7,10 @@
 import { cn } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { components } from "@/lib/v1";
+import type { AppComponent } from "@/lib/app-builder-helpers";
 
-type TabsComponent = components["schemas"]["TabsComponent"];
+type TabsComponentType = components["schemas"]["TabsComponent"];
+type TabItemComponentType = components["schemas"]["TabItemComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { LayoutRenderer } from "../LayoutRenderer";
 
@@ -16,15 +18,23 @@ export function TabsComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as TabsComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as TabsComponentType;
 
-	// Guard against undefined props or items
-	const items = props?.items ?? [];
-	if (items.length === 0) {
+	// Guard against undefined props or children
+	// Filter to only TabItemComponent children
+	const children = props?.children ?? [];
+	const tabItems = children.filter(
+		(child): child is TabItemComponentType => child.type === "tab-item"
+	);
+	if (tabItems.length === 0) {
 		return null;
 	}
 
-	const defaultTab = props?.default_tab || items[0]?.id;
+	// Get tab value - prefer explicit value, fall back to id
+	const getTabValue = (item: TabItemComponentType) => item.value ?? item.id;
+
+	const defaultTab = props?.default_tab || getTabValue(tabItems[0]);
 	const isVertical = props?.orientation === "vertical";
 
 	return (
@@ -38,10 +48,10 @@ export function TabsComponent({
 					isVertical && "flex-col h-auto items-stretch"
 				)}
 			>
-				{items.map((item) => (
+				{tabItems.map((item) => (
 					<TabsTrigger
 						key={item.id}
-						value={item.id}
+						value={getTabValue(item)}
 						className={cn(isVertical && "justify-start")}
 					>
 						{item.label}
@@ -49,12 +59,16 @@ export function TabsComponent({
 				))}
 			</TabsList>
 			<div className={cn(isVertical ? "flex-1" : "")}>
-				{items.map((item) => (
-					<TabsContent key={item.id} value={item.id} className="mt-0 pt-4">
-						<LayoutRenderer
-							layout={item.content}
-							context={context}
-						/>
+				{tabItems.map((item) => (
+					<TabsContent key={item.id} value={getTabValue(item)} className="mt-0 pt-4">
+						{/* Render each child of the tab item */}
+						{(item.children ?? []).map((child) => (
+							<LayoutRenderer
+								key={child.id}
+								layout={child as AppComponent}
+								context={context}
+							/>
+						))}
 					</TabsContent>
 				))}
 			</div>

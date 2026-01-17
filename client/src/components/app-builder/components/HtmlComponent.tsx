@@ -81,8 +81,9 @@ export function HtmlComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as HtmlComponentType;
-	const content = props.content || "";
+	// In the unified model, props are at the top level of the component
+	const comp = component as HtmlComponentType;
+	const content = comp.content || "";
 
 	// Check if content looks like JSX (contains React-style attributes or JSX expressions)
 	const isJsxTemplate =
@@ -94,7 +95,7 @@ export function HtmlComponent({
 			<JsxTemplateRenderer
 				template={content}
 				context={adaptContext(context)}
-				className={cn(props.class_name)}
+				className={cn(comp.class_name)}
 			/>
 		);
 	}
@@ -104,7 +105,7 @@ export function HtmlComponent({
 
 	return (
 		<div
-			className={cn(props.class_name)}
+			className={cn(comp.class_name)}
 			dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
 		/>
 	);

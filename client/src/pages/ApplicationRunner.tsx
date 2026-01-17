@@ -38,23 +38,22 @@ import type {
 	PageDefinition,
 	WorkflowResult,
 	OnCompleteAction,
-	LayoutContainer,
 	ExpressionContext,
 } from "@/lib/app-builder-helpers";
 import { evaluateExpression } from "@/lib/expression-parser";
 
 /**
  * Convert API PageDefinition to frontend PageDefinition type.
- * The API returns camelCase JSON that should match frontend types,
- * but we cast to ensure type safety.
+ * The API returns snake_case JSON - pages now have children directly.
  */
 function convertApiPageToFrontend(apiPage: PageDefinitionAPI): PageDefinition {
 	// API returns snake_case - keep snake_case for frontend PageDefinition
+	// Pages now have children directly (no nested layout)
 	return {
 		id: apiPage.id,
 		title: apiPage.title,
 		path: apiPage.path,
-		layout: apiPage.layout as unknown as LayoutContainer,
+		children: apiPage.children ?? [],
 		variables: (apiPage.variables ?? {}) as Record<string, unknown>,
 		launch_workflow_id: apiPage.launch_workflow_id ?? undefined,
 		launch_workflow_params: apiPage.launch_workflow_params ?? undefined,

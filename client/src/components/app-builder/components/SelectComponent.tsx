@@ -62,7 +62,8 @@ export function SelectComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as SelectComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as SelectComponent;
 
 	// Props are pre-evaluated by ComponentRegistry
 	const defaultValue = props.default_value ? String(props.default_value) : "";

@@ -49,19 +49,20 @@ export function CheckboxComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as CheckboxComponent;
+	// In the unified model, props are at the top level of the component
+	const comp = component as CheckboxComponent;
 
 	// Get default checked state
-	const defaultChecked = props.default_checked ?? false;
+	const defaultChecked = comp.default_checked ?? false;
 
 	// Local state for the checked value
 	const [checked, setChecked] = useState(defaultChecked);
 
 	// Props are pre-evaluated by ComponentRegistry (disabled is now boolean)
-	const isDisabled = Boolean(props.disabled);
-	const label = String(props.label ?? "");
-	const description = props.description
-		? String(props.description)
+	const isDisabled = Boolean(comp.disabled);
+	const label = String(comp.label ?? "");
+	const description = comp.description
+		? String(comp.description)
 		: undefined;
 
 	// Get setFieldValue from context (stable reference)
@@ -70,16 +71,16 @@ export function CheckboxComponent({
 	// Update field value in context when value changes
 	useEffect(() => {
 		if (setFieldValue) {
-			setFieldValue(props.field_id, checked);
+			setFieldValue(comp.field_id, checked);
 		}
-	}, [props.field_id, checked, setFieldValue]);
+	}, [comp.field_id, checked, setFieldValue]);
 
 	// Initialize field value on mount
 	useEffect(() => {
 		if (setFieldValue) {
-			setFieldValue(props.field_id, defaultChecked);
+			setFieldValue(comp.field_id, defaultChecked);
 		}
-	}, [props.field_id, defaultChecked, setFieldValue]);
+	}, [comp.field_id, defaultChecked, setFieldValue]);
 
 	const handleChange = useCallback(
 		(newChecked: boolean | "indeterminate") => {
@@ -93,13 +94,13 @@ export function CheckboxComponent({
 	const inputId = `field-${component.id}`;
 
 	return (
-		<div className={cn("flex items-start space-x-3", props.class_name)}>
+		<div className={cn("flex items-start space-x-3", comp.class_name)}>
 			<Checkbox
 				id={inputId}
 				checked={checked}
 				onCheckedChange={handleChange}
 				disabled={isDisabled}
-				required={props.required ?? undefined}
+				required={comp.required ?? undefined}
 			/>
 			<div className="grid gap-1.5 leading-none">
 				<Label
@@ -107,7 +108,7 @@ export function CheckboxComponent({
 					className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
 				>
 					{label}
-					{props.required && (
+					{comp.required && (
 						<span className="text-destructive ml-1">*</span>
 					)}
 				</Label>

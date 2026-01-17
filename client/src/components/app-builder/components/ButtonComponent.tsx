@@ -62,10 +62,11 @@ export function ButtonComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as ButtonComponent;
+	// In the unified model, props are at the top level of the component
+	const comp = component as ButtonComponent;
 	// Support both 'label' and 'text' for button text
 	const labelValue =
-		props?.label ?? (props as Record<string, unknown>)?.text ?? "";
+		comp.label ?? (comp as Record<string, unknown>)?.text ?? "";
 	const label = String(
 		evaluateExpression(labelValue as string, context) ?? "",
 	);
@@ -73,11 +74,11 @@ export function ButtonComponent({
 	// Check if this button's workflow is currently executing
 	const isWorkflowLoading = useMemo(() => {
 		// Support both old format (action_type at top level) and new format (onClick object)
-		const onClick = (props as Record<string, unknown>)?.onClick as
+		const onClick = (comp as Record<string, unknown>)?.onClick as
 			| { type?: string; workflow_id?: string }
 			| undefined;
-		const actionType = props?.action_type || onClick?.type;
-		const workflowId = props?.workflow_id || onClick?.workflow_id;
+		const actionType = comp.action_type || onClick?.type;
+		const workflowId = comp.workflow_id || onClick?.workflow_id;
 
 		// Only check for workflow and submit action types
 		if (
@@ -88,23 +89,23 @@ export function ButtonComponent({
 			return context.activeWorkflows.has(workflowId);
 		}
 		return false;
-	}, [props, context.activeWorkflows]);
+	}, [comp, context.activeWorkflows]);
 
 	// Evaluate disabled state - can be boolean or expression string
 	const isDisabled = (() => {
-		if (props?.disabled === undefined || props?.disabled === null) {
+		if (comp.disabled === undefined || comp.disabled === null) {
 			return false;
 		}
-		if (typeof props.disabled === "boolean") {
-			return props.disabled;
+		if (typeof comp.disabled === "boolean") {
+			return comp.disabled;
 		}
 		// It's a string - evaluate as expression
-		return Boolean(evaluateExpression(props.disabled, context));
+		return Boolean(evaluateExpression(comp.disabled, context));
 	})();
 
 	const handleClick = useCallback(() => {
 		// Support both old format (action_type at top level) and new format (onClick object)
-		const onClick = (props as Record<string, unknown>)?.onClick as
+		const onClick = (comp as Record<string, unknown>)?.onClick as
 			| {
 					type?: string;
 					navigate_to?: string;
@@ -115,15 +116,15 @@ export function ButtonComponent({
 			  }
 			| undefined;
 
-		const actionType = props?.action_type || onClick?.type;
-		const navigateTo = props?.navigate_to || onClick?.navigate_to;
-		const workflowId = props?.workflow_id || onClick?.workflow_id;
-		const modalId = props?.modal_id;
-		const actionParams = props?.action_params || onClick?.action_params;
-		const onComplete = (props?.on_complete || onClick?.on_complete) as
+		const actionType = comp.action_type || onClick?.type;
+		const navigateTo = comp.navigate_to || onClick?.navigate_to;
+		const workflowId = comp.workflow_id || onClick?.workflow_id;
+		const modalId = comp.modal_id;
+		const actionParams = comp.action_params || onClick?.action_params;
+		const onComplete = (comp.on_complete || onClick?.on_complete) as
 			| OnCompleteAction[]
 			| undefined;
-		const onError = ((props as Record<string, unknown>)?.on_error ||
+		const onError = ((comp as Record<string, unknown>)?.on_error ||
 			onClick?.on_error) as OnCompleteAction[] | undefined;
 
 		// Evaluate expressions in actionParams before passing to workflows
@@ -180,15 +181,15 @@ export function ButtonComponent({
 				break;
 
 			case "custom":
-				if (props?.custom_action_id && context.onCustomAction) {
+				if (comp.custom_action_id && context.onCustomAction) {
 					context.onCustomAction(
-						props.custom_action_id,
+						comp.custom_action_id,
 						evaluatedParams,
 					);
 				}
 				break;
 		}
-	}, [props, context]);
+	}, [comp, context]);
 
 	// Render button with optional icon (or loading spinner)
 	const renderIcon = () => {
@@ -196,18 +197,18 @@ export function ButtonComponent({
 		if (isWorkflowLoading) {
 			return <Loader2 className="h-4 w-4 mr-2 animate-spin" />;
 		}
-		if (!props?.icon) return null;
-		const Icon = getIcon(props.icon);
+		if (!comp.icon) return null;
+		const Icon = getIcon(comp.icon);
 		return <Icon className="h-4 w-4 mr-2" />;
 	};
 
 	return (
 		<Button
-			variant={props?.variant || "default"}
-			size={props?.size || "default"}
+			variant={comp.variant || "default"}
+			size={comp.size || "default"}
 			disabled={isDisabled || isWorkflowLoading}
 			onClick={handleClick}
-			className={cn(props?.class_name)}
+			className={cn(comp.class_name)}
 		>
 			{renderIcon()}
 			{label}

@@ -20,18 +20,19 @@ import {
 } from "@/components/ui/dialog";
 import type { components } from "@/lib/v1";
 import type { ExpressionContext } from "@/types/app-builder";
+import type { AppComponent } from "@/lib/app-builder-helpers";
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import { evaluateExpression } from "@/lib/expression-parser";
 import { LayoutRenderer } from "../LayoutRenderer";
 import { useAppContext } from "@/contexts/AppContext";
 
-type ModalComponent = components["schemas"]["ModalComponent"];
+type ModalComponentType = components["schemas"]["ModalComponent"];
 
 /**
  * Get modal size classes
  */
 function getModalSizeClass(
-	size?: ModalComponent["props"]["size"],
+	size?: ModalComponentType["size"],
 ): string {
 	switch (size) {
 		case "sm":
@@ -52,7 +53,8 @@ export function ModalComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as ModalComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as ModalComponentType;
 	const { isModalOpen } = useAppContext();
 
 	// Determine if this modal has its own trigger button or is controlled externally
@@ -102,9 +104,7 @@ export function ModalComponent({
 	// Handle footer action click
 	const handleActionClick = useCallback(
 		async (
-			action: NonNullable<
-				ModalComponent["props"]["footer_actions"]
-			>[number],
+			action: NonNullable<ModalComponentType["footer_actions"]>[number],
 			index: number,
 		) => {
 			setLoadingAction(index);
@@ -234,12 +234,15 @@ export function ModalComponent({
 					)}
 				</DialogHeader>
 
-				{/* Modal Content - Render the layout */}
+				{/* Modal Content - Render children */}
 				<div className="py-4">
-					<LayoutRenderer
-						layout={props.content}
-						context={modalContext}
-					/>
+					{(props.children ?? []).map((child) => (
+						<LayoutRenderer
+							key={child.id}
+							layout={child as AppComponent}
+							context={modalContext}
+						/>
+					))}
 				</div>
 
 				{/* Footer Actions */}

@@ -41,7 +41,8 @@ export function StatCardComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as StatCardComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as StatCardComponent;
 
 	// Evaluate expressions - get raw values to check if undefined
 	const rawValue = evaluateExpression(props?.value ?? "", context);

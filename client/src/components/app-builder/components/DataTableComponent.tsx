@@ -115,7 +115,8 @@ export function DataTableComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as DataTableComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as DataTableComponent;
 
 	// Table cache from store
 	const cachedEntry = useTableCache(props.cache_key ?? undefined);
@@ -182,7 +183,6 @@ export function DataTableComponent({
 	}, [rawData, cachedEntry]);
 
 	const data = effectiveData;
-
 	// Update cache when fresh data arrives
 	useEffect(() => {
 		if (props.cache_key && Array.isArray(rawData) && rawData.length > 0) {
@@ -316,11 +316,9 @@ export function DataTableComponent({
 			props.on_row_click.type === "navigate" &&
 			props.on_row_click.navigate_to
 		) {
+			const evalContext = { ...context, row };
 			const path = String(
-				evaluateExpression(props.on_row_click.navigate_to, {
-					...context,
-					row,
-				}) ?? "",
+				evaluateExpression(props.on_row_click.navigate_to, evalContext) ?? "",
 			);
 			context.navigate?.(path);
 		} else if (props.on_row_click.type === "select" && props.selectable) {

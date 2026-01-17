@@ -51,12 +51,13 @@ function getHeadingClasses(level: HeadingLevel): string {
  * }
  */
 export function HeadingComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as HeadingComponentType;
-	const level = props?.level || 1;
+	// In the unified model, props are at the top level of the component
+	const comp = component as HeadingComponentType;
+	const level = comp.level || 1;
 	// Props are pre-evaluated by ComponentRegistry
-	const text = String(props?.text ?? "");
+	const text = String(comp.text ?? "");
 
-	const classes = cn(getHeadingClasses(level), props?.class_name);
+	const classes = cn(getHeadingClasses(level), comp.class_name);
 
 	// Render the appropriate heading element
 	switch (level) {

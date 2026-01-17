@@ -81,7 +81,8 @@ export function FormGroupComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as FormGroupComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as FormGroupComponent;
 	const direction = props.direction || "column";
 	const gap = props.gap ?? 16;
 
@@ -116,7 +117,7 @@ export function FormGroupComponent({
 
 			{/* Child form fields */}
 			<div style={containerStyles}>
-				{children.map((child: AppComponent | LayoutContainer) => {
+				{children.map((child) => {
 					// Both layouts and components now have id field
 					return (
 						<div
@@ -125,11 +126,11 @@ export function FormGroupComponent({
 						>
 							{isLayoutContainer(child) ? (
 								<LayoutRenderer
-									layout={child}
+									layout={child as LayoutContainer}
 									context={context}
 								/>
 							) : (
-								renderRegisteredComponent(child, context)
+								renderRegisteredComponent(child as AppComponent, context)
 							)}
 						</div>
 					);

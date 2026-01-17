@@ -46,6 +46,30 @@ import { NavigationEditor } from "./NavigationEditor";
 import { VariablePreview } from "./VariablePreview";
 
 /**
+ * Create a virtual root LayoutContainer from page children.
+ * This allows us to use tree manipulation functions that expect a LayoutContainer root.
+ */
+function createVirtualRoot(
+	pageId: string,
+	children: (LayoutContainer | AppComponent)[],
+): LayoutContainer {
+	return {
+		id: `__page_root_${pageId}`,
+		type: "column",
+		children,
+		gap: 16,
+		padding: 16,
+	};
+}
+
+/**
+ * Check if an ID is a virtual page root ID
+ */
+function isVirtualRootId(id: string): boolean {
+	return id.startsWith("__page_root_");
+}
+
+/**
  * Component data for save operations
  */
 export interface ComponentSaveData {
@@ -175,14 +199,22 @@ export function EditorShell({
 			return null;
 		}
 
-		return findComponent(currentPage.layout as unknown as LayoutContainer);
+		// Search through page children (the new model uses children array instead of layout)
+		const pageChildren = (currentPage.children || []) as (LayoutContainer | AppComponent)[];
+		for (const child of pageChildren) {
+			const found = findComponent(child);
+			if (found) return found;
+		}
+		return null;
 	}, [selectedComponentId, currentPage]);
 
-	// Update the definition with a new page layout
-	const updatePageLayout = useCallback(
-		(pageId: string, newLayout: LayoutContainer) => {
+	// Update the definition with new page children
+	// In the new unified model, pages have a `children` array instead of a single `layout` root
+	const updatePageChildren = useCallback(
+		(pageId: string, newChildren: (LayoutContainer | AppComponent)[]) => {
 			const updatedPages = definition.pages.map((p) =>
-				p.id === pageId ? { ...p, layout: newLayout } : p,
+				// Cast to PageDefinition['children'] type to match API schema
+				p.id === pageId ? { ...p, children: newChildren as PageDefinition['children'] } : p,
 			);
 			onDefinitionChange({ ...definition, pages: updatedPages });
 		},
@@ -203,14 +235,19 @@ export function EditorShell({
 			// Map position to insertIntoTree format
 			const insertPosition = position === "inside" ? "inside" : position;
 
+			// Create virtual root for tree manipulation
+			const pageChildren = (currentPage.children || []) as (LayoutContainer | AppComponent)[];
+			const virtualRoot = createVirtualRoot(currentPage.id, pageChildren);
+
 			const updatedLayout = insertIntoTree(
-				currentPage.layout as unknown as LayoutContainer,
+				virtualRoot,
 				elementToInsert,
 				parentId,
 				insertPosition,
 			);
 
-			updatePageLayout(currentPage.id, updatedLayout as LayoutContainer);
+			// Extract children from the updated virtual root
+			updatePageChildren(currentPage.id, updatedLayout.children ?? []);
 
 			// Select the newly added component (components have IDs, layouts don't need selection)
 			if (!isLayoutContainer(elementToInsert as unknown as LayoutContainer | AppComponent)) {
@@ -225,22 +262,22 @@ export function EditorShell({
 						componentId,
 					);
 					if (insertedInfo) {
+						// Convert virtual root parent path to null
+						const actualParentId = insertedInfo.parentPath === "" || isVirtualRootId(insertedInfo.parentPath)
+							? null
+							: insertedInfo.parentPath;
 						onComponentCreate({
 							componentId,
 							type: (elementToInsert as AppComponent).type,
-							props:
-								(elementToInsert as AppComponent).props || {},
-							parentId:
-								insertedInfo.parentPath === ""
-									? null
-									: insertedInfo.parentPath,
+							props: elementToInsert as unknown as Record<string, unknown>,
+							parentId: actualParentId,
 							order: insertedInfo.index,
 						});
 					}
 				}
 			}
 		},
-		[currentPage, updatePageLayout, onSelectComponent, onComponentCreate],
+		[currentPage, updatePageChildren, onSelectComponent, onComponentCreate],
 	);
 
 	// Handle moving a component within the StructureTree
@@ -252,15 +289,20 @@ export function EditorShell({
 		) => {
 			if (!currentPage) return;
 
+			// Create virtual root for tree manipulation
+			const pageChildren = (currentPage.children || []) as (LayoutContainer | AppComponent)[];
+			const virtualRoot = createVirtualRoot(currentPage.id, pageChildren);
+
 			const moveResult = moveInTree(
-				currentPage.layout as unknown as LayoutContainer,
+				virtualRoot,
 				sourceId,
 				targetId,
 				position,
 			);
 
 			if (moveResult.moved) {
-				updatePageLayout(currentPage.id, moveResult.layout as LayoutContainer);
+				// Extract children from the updated virtual root
+				updatePageChildren(currentPage.id, moveResult.layout.children ?? []);
 
 				// Call granular move callback if provided
 				if (onComponentMove) {
@@ -270,18 +312,20 @@ export function EditorShell({
 						sourceId,
 					);
 					if (movedInfo) {
+						// Convert virtual root parent path to null
+						const actualParentId = movedInfo.parentPath === "" || isVirtualRootId(movedInfo.parentPath)
+							? null
+							: movedInfo.parentPath;
 						onComponentMove(
 							sourceId,
-							movedInfo.parentPath === ""
-								? null
-								: movedInfo.parentPath,
+							actualParentId,
 							movedInfo.index,
 						);
 					}
 				}
 			}
 		},
-		[currentPage, updatePageLayout, onComponentMove],
+		[currentPage, updatePageChildren, onComponentMove],
 	);
 
 	// Handle duplicating a component
@@ -289,8 +333,12 @@ export function EditorShell({
 		(componentId: string) => {
 			if (!currentPage) return;
 
+			// Create virtual root for tree manipulation
+			const pageChildren = (currentPage.children || []) as (LayoutContainer | AppComponent)[];
+			const virtualRoot = createVirtualRoot(currentPage.id, pageChildren);
+
 			// Find the element to duplicate
-			const found = findElementInTree(currentPage.layout as unknown as LayoutContainer, componentId);
+			const found = findElementInTree(virtualRoot, componentId);
 			if (!found) return;
 
 			// Deep clone the element (and regenerate IDs)
@@ -305,7 +353,7 @@ export function EditorShell({
 						`comp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 				}
 				if (isLayoutContainer(el)) {
-					for (const child of el.children) {
+					for (const child of el.children ?? []) {
 						regenerateIds(child);
 					}
 				}
@@ -314,13 +362,14 @@ export function EditorShell({
 
 			// Insert after the original
 			const updatedLayout = insertIntoTree(
-				currentPage.layout as unknown as LayoutContainer,
+				virtualRoot,
 				cloned,
 				componentId,
 				"after",
 			);
 
-			updatePageLayout(currentPage.id, updatedLayout as LayoutContainer);
+			// Extract children from the updated virtual root
+			updatePageChildren(currentPage.id, updatedLayout.children ?? []);
 
 			// Select the new component
 			if (!isLayoutContainer(cloned as unknown as LayoutContainer | AppComponent)) {
@@ -334,21 +383,22 @@ export function EditorShell({
 						newComponentId,
 					);
 					if (insertedInfo) {
+						// Convert virtual root parent path to null
+						const actualParentId = insertedInfo.parentPath === "" || isVirtualRootId(insertedInfo.parentPath)
+							? null
+							: insertedInfo.parentPath;
 						onComponentCreate({
 							componentId: newComponentId,
 							type: (cloned as AppComponent).type,
-							props: (cloned as AppComponent).props || {},
-							parentId:
-								insertedInfo.parentPath === ""
-									? null
-									: insertedInfo.parentPath,
+							props: cloned as unknown as Record<string, unknown>,
+							parentId: actualParentId,
 							order: insertedInfo.index,
 						});
 					}
 				}
 			}
 		},
-		[currentPage, updatePageLayout, onSelectComponent, onComponentCreate],
+		[currentPage, updatePageChildren, onSelectComponent, onComponentCreate],
 	);
 
 	// Handle component deletion
@@ -356,8 +406,13 @@ export function EditorShell({
 		(componentId: string) => {
 			if (!currentPage) return;
 
-			const { layout } = removeFromTree(currentPage.layout as unknown as LayoutContainer, componentId);
-			updatePageLayout(currentPage.id, layout as LayoutContainer);
+			// Create virtual root for tree manipulation
+			const pageChildren = (currentPage.children || []) as (LayoutContainer | AppComponent)[];
+			const virtualRoot = createVirtualRoot(currentPage.id, pageChildren);
+
+			const { layout } = removeFromTree(virtualRoot, componentId);
+			// Extract children from the updated virtual root
+			updatePageChildren(currentPage.id, layout.children ?? []);
 
 			// Clear selection if deleted component was selected
 			if (selectedComponentId === componentId) {
@@ -369,7 +424,7 @@ export function EditorShell({
 		},
 		[
 			currentPage,
-			updatePageLayout,
+			updatePageChildren,
 			selectedComponentId,
 			onSelectComponent,
 			onComponentDelete,
@@ -389,11 +444,11 @@ export function EditorShell({
 				return;
 			}
 
-			// Delete/Backspace to delete selected component (but not the root layout)
+			// Delete/Backspace to delete selected component (but not the virtual root)
 			if (
 				(e.key === "Delete" || e.key === "Backspace") &&
 				selectedComponentId &&
-				selectedComponentId !== currentPage?.layout?.id
+				!isVirtualRootId(selectedComponentId)
 			) {
 				e.preventDefault();
 				handleDelete(selectedComponentId);
@@ -408,42 +463,36 @@ export function EditorShell({
 
 		document.addEventListener("keydown", handleKeyDown);
 		return () => document.removeEventListener("keydown", handleKeyDown);
-	}, [selectedComponentId, handleDelete, onSelectComponent, currentPage?.layout?.id]);
+	}, [selectedComponentId, handleDelete, onSelectComponent]);
 
-	// Check if selected component is the root layout
-	const isRootLayout =
-		currentPage?.layout?.id != null &&
-		selectedComponentId === currentPage.layout.id;
+	// Check if selected component is the virtual root (page-level layout)
+	// In the new model, pages don't have a single root layout, so this is always false
+	const isRootLayout = selectedComponentId != null && isVirtualRootId(selectedComponentId);
 
 	// Handle property changes from PropertyEditor
 	const handlePropertyChange = useCallback(
 		(updates: Partial<AppComponent | LayoutContainer>) => {
 			if (!selectedComponentId || !currentPage) return;
 
-			// Handle root layout updates
-			if (selectedComponentId === currentPage.layout.id) {
-				const updatedLayout = {
-					...currentPage.layout,
-					...updates,
-				} as LayoutContainer;
-				updatePageLayout(currentPage.id, updatedLayout);
-				return;
-			}
+			// Create virtual root for tree manipulation
+			const pageChildren = (currentPage.children || []) as (LayoutContainer | AppComponent)[];
+			const virtualRoot = createVirtualRoot(currentPage.id, pageChildren);
 
 			const updatedLayout = updateInTree(
-				currentPage.layout as unknown as LayoutContainer,
+				virtualRoot,
 				selectedComponentId,
 				updates,
 			);
-			updatePageLayout(currentPage.id, updatedLayout as LayoutContainer);
+			// Extract children from the updated virtual root
+			updatePageChildren(currentPage.id, updatedLayout.children ?? []);
 
 			// Call granular update callback if provided
-			// Only for non-layout components (layout containers don't have a component_id)
-			if (onComponentUpdate && "props" in updates && updates.props) {
-				onComponentUpdate(selectedComponentId, updates.props);
+			// In the new model, props are at the top level of the component
+			if (onComponentUpdate) {
+				onComponentUpdate(selectedComponentId, updates as Record<string, unknown>);
 			}
 		},
-		[selectedComponentId, currentPage, updatePageLayout, onComponentUpdate],
+		[selectedComponentId, currentPage, updatePageChildren, onComponentUpdate],
 	);
 
 	// Handle component deletion from PropertyEditor
@@ -470,17 +519,20 @@ export function EditorShell({
 	const handleAddPage = useCallback(() => {
 		const newPageId = generatePageId();
 		const pageNumber = definition.pages.length + 1;
+		// In the new model, pages have `children` array instead of a single `layout` root
+		// Start with a default column layout as the first child
+		const defaultColumn: LayoutContainer = {
+			id: generateComponentId(),
+			type: "column",
+			children: [],
+			gap: 16,
+			padding: 16,
+		};
 		const newPage: PageDefinition = {
 			id: newPageId,
 			title: `Page ${pageNumber}`,
 			path: `/page-${pageNumber}`,
-			layout: {
-				id: generateComponentId(),
-				type: "column",
-				children: [],
-				gap: 16,
-				padding: 16,
-			},
+			children: [defaultColumn] as PageDefinition['children'],
 		};
 
 		onDefinitionChange({

@@ -7,9 +7,9 @@
 
 import { cn } from "@/lib/utils";
 import type { components } from "@/lib/v1";
-import type { LayoutElement } from "@/lib/app-builder-helpers";
+import type { AppComponent } from "@/lib/app-builder-helpers";
 
-type CardComponent = components["schemas"]["CardComponent"];
+type CardComponentType = components["schemas"]["CardComponent"];
 import type { RegisteredComponentProps } from "../ComponentRegistry";
 import {
 	Card,
@@ -44,19 +44,20 @@ export function CardComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as CardComponent;
+	// In the unified model, props are at the top level of the component
+	const comp = component as CardComponentType;
 	// Props are pre-evaluated by ComponentRegistry
-	const title = props?.title ? String(props.title) : undefined;
-	const description = props?.description
-		? String(props.description)
+	const title = comp.title ? String(comp.title) : undefined;
+	const description = comp.description
+		? String(comp.description)
 		: undefined;
 
 	const hasHeader = title || description;
 
-	const hasChildren = props?.children && props.children.length > 0;
+	const hasChildren = comp.children && comp.children.length > 0;
 
 	return (
-		<Card className={cn("h-full", props?.class_name)}>
+		<Card className={cn("h-full", comp.class_name)}>
 			{hasHeader && (
 				<CardHeader>
 					{title && <CardTitle>{title}</CardTitle>}
@@ -68,12 +69,10 @@ export function CardComponent({
 			{hasChildren ? (
 				<CardContent>
 					<div className="flex flex-col gap-4">
-						{props.children!.map((child, index) => (
+						{comp.children!.map((child, index: number) => (
 							<LayoutRenderer
-								key={
-									"id" in child ? child.id : `child-${index}`
-								}
-								layout={child as LayoutElement}
+								key={child.id ?? `child-${index}`}
+								layout={child as AppComponent}
 								context={context}
 							/>
 						))}

@@ -241,7 +241,8 @@ export function FileViewerComponent({
 	component,
 	context,
 }: RegisteredComponentProps) {
-	const { props } = component as FileViewerComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as FileViewerComponent;
 	const [isModalOpen, setIsModalOpen] = useState(false);
 
 	// Evaluate expressions

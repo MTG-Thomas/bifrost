@@ -6,15 +6,17 @@
  */
 
 import type { components } from "./v1";
-import type { LayoutContainer } from "@/types/app-builder";
 import {
 	isLayoutContainer,
 	canHaveChildren,
 	getElementChildren,
 } from "./app-builder-utils";
 
-// Type aliases for generated API types
+// Type aliases for generated API types - unified model where all components are AppComponent
 type AppComponent =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"]
 	| components["schemas"]["HeadingComponent"]
 	| components["schemas"]["TextComponent"]
 	| components["schemas"]["HtmlComponent"]
@@ -28,6 +30,7 @@ type AppComponent =
 	| components["schemas"]["ProgressComponent"]
 	| components["schemas"]["DataTableComponent"]
 	| components["schemas"]["TabsComponent"]
+	| components["schemas"]["TabItemComponent"]
 	| components["schemas"]["FileViewerComponent"]
 	| components["schemas"]["ModalComponent"]
 	| components["schemas"]["TextInputComponent"]
@@ -36,6 +39,12 @@ type AppComponent =
 	| components["schemas"]["CheckboxComponent"]
 	| components["schemas"]["FormEmbedComponent"]
 	| components["schemas"]["FormGroupComponent"];
+
+// LayoutContainer is a subset of AppComponent that represents the row/column/grid types
+type LayoutContainer =
+	| components["schemas"]["RowComponent"]
+	| components["schemas"]["ColumnComponent"]
+	| components["schemas"]["GridComponent"];
 
 type ComponentType =
 	| "heading"
@@ -51,6 +60,7 @@ type ComponentType =
 	| "progress"
 	| "data-table"
 	| "tabs"
+	| "tab-item"
 	| "file-viewer"
 	| "modal"
 	| "text-input"
@@ -103,239 +113,194 @@ export function createDefaultComponent(
 		} as LayoutContainer;
 	}
 
-	// Component types
+	// Component types - props are now at the top level (flat), not nested in a `props` wrapper
 	switch (type) {
 		case "heading":
 			return {
 				id,
 				type: "heading",
-				props: {
-					text: "New Heading",
-					level: 2,
-				},
-			};
+				text: "New Heading",
+				level: 2,
+			} as AppComponent;
 		case "text":
 			return {
 				id,
 				type: "text",
-				props: {
-					text: "Enter your text here...",
-				},
-			};
+				text: "Enter your text here...",
+			} as AppComponent;
 		case "html":
 			return {
 				id,
 				type: "html",
-				props: {
-					content:
-						'<div className="p-4 bg-muted rounded-lg">\n  <p>Custom HTML or JSX content</p>\n</div>',
-				},
-			};
+				content:
+					'<div className="p-4 bg-muted rounded-lg">\n  <p>Custom HTML or JSX content</p>\n</div>',
+			} as AppComponent;
 		case "button":
 			return {
 				id,
 				type: "button",
-				props: {
-					label: "Click Me",
-					action_type: "navigate",
-					variant: "default",
-				},
-			};
+				label: "Click Me",
+				action_type: "navigate",
+				variant: "default",
+			} as AppComponent;
 		case "card":
 			return {
 				id,
 				type: "card",
-				props: {
-					title: "Card Title",
-					description: "Card description",
-				},
-			};
+				title: "Card Title",
+				description: "Card description",
+				children: [],
+				collapsible: false,
+				default_collapsed: false,
+			} as AppComponent;
 		case "stat-card":
 			return {
 				id,
 				type: "stat-card",
-				props: {
-					title: "Metric",
-					value: "0",
-				},
-			};
+				title: "Metric",
+				value: "0",
+			} as AppComponent;
 		case "image":
 			return {
 				id,
 				type: "image",
-				props: {
-					src: "https://via.placeholder.com/400x200",
-					alt: "Placeholder image",
-				},
-			};
+				src: "https://via.placeholder.com/400x200",
+				alt: "Placeholder image",
+			} as AppComponent;
 		case "divider":
 			return {
 				id,
 				type: "divider",
-				props: {
-					orientation: "horizontal",
-				},
-			};
+				orientation: "horizontal",
+			} as AppComponent;
 		case "spacer":
 			return {
 				id,
 				type: "spacer",
-				props: {
-					size: 24,
-				},
-			};
+				size: 24,
+			} as AppComponent;
 		case "badge":
 			return {
 				id,
 				type: "badge",
-				props: {
-					text: "Badge",
-					variant: "default",
-				},
-			};
+				text: "Badge",
+				variant: "default",
+			} as AppComponent;
 		case "progress":
 			return {
 				id,
 				type: "progress",
-				props: {
-					value: 50,
-					show_label: true,
-				},
-			};
+				value: 50,
+				show_label: true,
+			} as AppComponent;
 		case "data-table":
 			return {
 				id,
 				type: "data-table",
-				props: {
-					data_source: "tableName",
-					columns: [
-						{ key: "id", header: "ID" },
-						{ key: "name", header: "Name" },
-					],
-					paginated: true,
-					page_size: 10,
-				},
-			};
+				data_source: "tableName",
+				columns: [
+					{ key: "id", header: "ID" },
+					{ key: "name", header: "Name" },
+				],
+				paginated: true,
+				page_size: 10,
+			} as AppComponent;
 		case "tabs":
 			return {
 				id,
 				type: "tabs",
-				props: {
-					items: [
-						{
-							id: "tab1",
-							label: "Tab 1",
-							content: { id: `${id}_tab1_content`, type: "column", children: [], gap: 8 },
-						},
-						{
-							id: "tab2",
-							label: "Tab 2",
-							content: { id: `${id}_tab2_content`, type: "column", children: [], gap: 8 },
-						},
-					],
-					orientation: "horizontal",
-				},
-			};
+				children: [
+					{
+						id: `${id}_tab1`,
+						type: "tab-item",
+						label: "Tab 1",
+						children: [],
+					},
+					{
+						id: `${id}_tab2`,
+						type: "tab-item",
+						label: "Tab 2",
+						children: [],
+					},
+				],
+				orientation: "horizontal",
+			} as AppComponent;
 		case "text-input":
 			return {
 				id,
 				type: "text-input",
-				props: {
-					field_id: `field_${id.slice(-6)}`,
-					label: "Label",
-					placeholder: "Enter text...",
-				},
-			};
+				field_id: `field_${id.slice(-6)}`,
+				label: "Label",
+				placeholder: "Enter text...",
+			} as AppComponent;
 		case "number-input":
 			return {
 				id,
 				type: "number-input",
-				props: {
-					field_id: `field_${id.slice(-6)}`,
-					label: "Number",
-					placeholder: "0",
-				},
-			};
+				field_id: `field_${id.slice(-6)}`,
+				label: "Number",
+				placeholder: "0",
+			} as AppComponent;
 		case "select":
 			return {
 				id,
 				type: "select",
-				props: {
-					field_id: `field_${id.slice(-6)}`,
-					label: "Select",
-					placeholder: "Select an option",
-					options: [
-						{ value: "option1", label: "Option 1" },
-						{ value: "option2", label: "Option 2" },
-					],
-				},
-			};
+				field_id: `field_${id.slice(-6)}`,
+				label: "Select",
+				placeholder: "Select an option",
+				options: [
+					{ value: "option1", label: "Option 1" },
+					{ value: "option2", label: "Option 2" },
+				],
+			} as AppComponent;
 		case "checkbox":
 			return {
 				id,
 				type: "checkbox",
-				props: {
-					field_id: `field_${id.slice(-6)}`,
-					label: "Checkbox label",
-				},
-			};
+				field_id: `field_${id.slice(-6)}`,
+				label: "Checkbox label",
+			} as AppComponent;
 		case "file-viewer":
 			return {
 				id,
 				type: "file-viewer",
-				props: {
-					src: "https://example.com/file.pdf",
-					display_mode: "inline",
-				},
-			};
+				src: "https://example.com/file.pdf",
+				display_mode: "inline",
+			} as AppComponent;
 		case "modal":
 			return {
 				id,
 				type: "modal",
-				props: {
-					title: "Modal Title",
-					description: "Modal description",
-					trigger_label: "Open Modal",
-					content: {
-						id: `${id}_modal_content`,
-						type: "column",
-						children: [],
-						gap: 16,
-						padding: 16,
-					},
-					show_close_button: true,
-				},
-			};
+				title: "Modal Title",
+				description: "Modal description",
+				trigger_label: "Open Modal",
+				children: [],
+				show_close_button: true,
+			} as AppComponent;
 		case "form-embed":
 			return {
 				id,
 				type: "form-embed",
-				props: {
-					form_id: "",
-					show_title: true,
-					show_description: true,
-				},
-			};
+				form_id: "",
+				show_title: true,
+				show_description: true,
+			} as AppComponent;
 		case "form-group":
 			return {
 				id,
 				type: "form-group",
-				props: {
-					label: "Form Group",
-					direction: "column",
-					gap: 8,
-					children: [],
-				},
-			};
+				label: "Form Group",
+				direction: "column",
+				gap: 8,
+				children: [],
+			} as AppComponent;
 		default:
 			// Handle unknown component types
 			return {
 				id,
 				type: "text",
-				props: {
-					text: `Unknown component type: ${type}`,
-				},
-			};
+				text: `Unknown component type: ${type}`,
+			} as AppComponent;
 	}
 }
 
@@ -442,16 +407,17 @@ export function insertIntoTree(
 ): LayoutContainer {
 	// If target is this container itself, add to its children
 	if (targetId === layout.id) {
+		const existingChildren = layout.children ?? [];
 		if (position === "before") {
 			return {
 				...layout,
-				children: [newElement, ...layout.children],
+				children: [newElement, ...existingChildren],
 			};
 		}
 		// "after" or "inside" - add to end
 		return {
 			...layout,
-			children: [...layout.children, newElement],
+			children: [...existingChildren, newElement],
 		};
 	}
 
@@ -472,19 +438,13 @@ export function insertIntoTree(
 					newChildren.push(newElement);
 				} else if (position === "inside" && canHaveChildren(child)) {
 					// Add inside this child's children
+					// In the unified model, all container types (including Card, Modal, etc.)
+					// have children directly on the component, not in props.children
 					const childChildren = getElementChildren(child);
-					if (isLayoutContainer(child)) {
-						newChildren.push({
-							...child,
-							children: [...childChildren, newElement],
-						});
-					} else {
-						// Component like Card - add to props.children
-						newChildren.push({
-							...child,
-							props: { ...child.props, children: [...childChildren, newElement] },
-						} as AppComponent);
-					}
+					newChildren.push({
+						...child,
+						children: [...childChildren, newElement],
+					} as LayoutContainer | AppComponent);
 				} else {
 					// Can't add inside non-container, add after instead
 					newChildren.push(child);
@@ -499,14 +459,8 @@ export function insertIntoTree(
 		}
 
 		// Return updated element with new children in the right place
-		if (isLayoutContainer(element)) {
-			return { ...element, children: newChildren };
-		}
-		// For components like Card, children are in props.children
-		return {
-			...element,
-			props: { ...element.props, children: newChildren },
-		} as AppComponent;
+		// In the unified model, all container types have children directly on the element
+		return { ...element, children: newChildren } as LayoutContainer | AppComponent;
 	}
 
 	return insertIntoElement(layout) as LayoutContainer;
@@ -543,16 +497,8 @@ export function removeFromTree(
 		}
 
 		// Return updated element with new children in the right place
-		let updatedElement: LayoutContainer | AppComponent;
-		if (isLayoutContainer(element)) {
-			updatedElement = { ...element, children: newChildren };
-		} else {
-			// For components like Card, children are in props.children
-			updatedElement = {
-				...element,
-				props: { ...element.props, children: newChildren },
-			} as AppComponent;
-		}
+		// In the unified model, all container types have children directly on the element
+		const updatedElement = { ...element, children: newChildren } as LayoutContainer | AppComponent;
 
 		return { element: updatedElement, removed: localRemoved };
 	}
@@ -662,14 +608,8 @@ export function updateInTree(
 		}
 
 		// Return updated element with new children in the right place
-		if (isLayoutContainer(element)) {
-			return { ...element, children: newChildren };
-		}
-		// For components like Card, children are in props.children
-		return {
-			...element,
-			props: { ...element.props, children: newChildren },
-		} as AppComponent;
+		// In the unified model, all container types have children directly on the element
+		return { ...element, children: newChildren } as LayoutContainer | AppComponent;
 	}
 
 	return updateElement(layout) as LayoutContainer;
@@ -747,13 +687,17 @@ export function wrapInContainer(
 	}
 
 	// Create the wrapper container
-	const wrapper: LayoutContainer = {
+	const baseWrapper = {
 		id: generateComponentId(),
 		type: containerType,
 		children: [elementInfo.element],
 		gap: 16,
 		padding: 0,
 	};
+	// Add columns property for grid containers
+	const wrapper: LayoutContainer = containerType === "grid"
+		? { ...baseWrapper, columns: 2 } as LayoutContainer
+		: baseWrapper as LayoutContainer;
 
 	// Remove the original and insert the wrapper
 	const { layout: layoutWithoutOriginal } = removeFromTree(layout, targetId);
@@ -791,6 +735,7 @@ export function getComponentLabel(type: ComponentType | LayoutType): string {
 		progress: "Progress",
 		"data-table": "Data Table",
 		tabs: "Tabs",
+		"tab-item": "Tab Item",
 		"file-viewer": "File Viewer",
 		modal: "Modal",
 		row: "Row",
@@ -821,6 +766,7 @@ function getStringProp(props: unknown, key: string): string {
 
 /**
  * Get additional info text for a component (title, text, etc.)
+ * In the unified model, props are at the top level of the component, not nested in a `props` wrapper.
  */
 export function getComponentInfo(
 	element: LayoutContainer | AppComponent,
@@ -830,19 +776,18 @@ export function getComponentInfo(
 		return `${childCount} ${childCount === 1 ? "child" : "children"}`;
 	}
 
-	// TypeScript knows element is AppComponent here due to the type guard above
-	const props = element.props;
+	// In the unified model, props are directly on the element
 	switch (element.type) {
 		case "heading":
 		case "text":
-			return getStringProp(props, "text").slice(0, 30);
+			return getStringProp(element, "text").slice(0, 30);
 		case "button":
-			return getStringProp(props, "label");
+			return getStringProp(element, "label");
 		case "card":
 		case "stat-card":
-			return getStringProp(props, "title");
+			return getStringProp(element, "title");
 		case "data-table":
-			return getStringProp(props, "data_source");
+			return getStringProp(element, "data_source");
 		default:
 			return "";
 	}

@@ -62,7 +62,8 @@ type EmbedPhase =
  * }
  */
 export function FormEmbedComponent({ component }: RegisteredComponentProps) {
-	const { props } = component as FormEmbedComponent;
+	// In the unified model, props are at the top level of the component
+	const props = component as FormEmbedComponent;
 	const { context, setVariable, setWorkflowResult } = useAppContext();
 
 	// State machine for form → executing → complete phases
