@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 # -----------------------------------------------------------------------------
@@ -112,6 +112,109 @@ class RepeatFor(BaseModel):
         alias="as",
         description='Variable name to access current item in expressions (e.g., "client")',
     )
+
+
+# -----------------------------------------------------------------------------
+# Component Base (shared fields for all components)
+# -----------------------------------------------------------------------------
+
+
+class ComponentBase(BaseModel):
+    """Base fields shared by all components."""
+
+    model_config = ConfigDict(extra="forbid")  # Reject unknown fields
+
+    id: str = Field(description="Unique component identifier")
+    width: ComponentWidth | None = Field(default=None, description="Component width")
+    visible: str | None = Field(default=None, description="Visibility expression")
+    loading_workflows: list[str] | None = Field(
+        default=None, description="Workflow IDs that trigger loading state"
+    )
+    grid_span: int | None = Field(
+        default=None, description="Grid column span (for grid layouts)"
+    )
+    repeat_for: RepeatFor | None = Field(
+        default=None, description="Repeat configuration for rendering multiple instances"
+    )
+    class_name: str | None = Field(default=None, description="Additional CSS classes")
+    style: dict[str, Any] | None = Field(
+        default=None, description="Inline CSS styles (camelCase properties)"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Layout Components (containers with children)
+# Note: These use forward reference "AppComponent" which is resolved at the end
+# of the file via model_rebuild() calls.
+# -----------------------------------------------------------------------------
+
+
+class RowComponent(ComponentBase):
+    """Row layout component - horizontal flex container."""
+
+    type: Literal["row"] = Field(default="row", description="Component type")
+    children: list["AppComponent"] = Field(
+        default_factory=list, description="Child components"
+    )
+    gap: int | str | None = Field(default=None, description="Gap between children")
+    padding: int | str | None = Field(default=None, description="Container padding")
+    align: LayoutAlign | None = Field(default=None, description="Cross-axis alignment")
+    justify: LayoutJustify | None = Field(
+        default=None, description="Main-axis justification"
+    )
+    distribute: LayoutDistribute | None = Field(
+        default=None, description="Child distribution"
+    )
+    max_width: LayoutMaxWidth | None = Field(default=None, description="Maximum width")
+    max_height: int | None = Field(
+        default=None, description="Maximum height in pixels"
+    )
+    overflow: LayoutOverflow | None = Field(
+        default=None, description="Overflow behavior"
+    )
+    sticky: LayoutSticky | None = Field(
+        default=None, description="Sticky positioning"
+    )
+    sticky_offset: int | None = Field(
+        default=None, description="Sticky offset in pixels"
+    )
+
+
+class ColumnComponent(ComponentBase):
+    """Column layout component - vertical flex container."""
+
+    type: Literal["column"] = Field(default="column", description="Component type")
+    children: list["AppComponent"] = Field(
+        default_factory=list, description="Child components"
+    )
+    gap: int | str | None = Field(default=None, description="Gap between children")
+    padding: int | str | None = Field(default=None, description="Container padding")
+    align: LayoutAlign | None = Field(default=None, description="Cross-axis alignment")
+    max_width: LayoutMaxWidth | None = Field(default=None, description="Maximum width")
+    max_height: int | None = Field(
+        default=None, description="Maximum height in pixels"
+    )
+    overflow: LayoutOverflow | None = Field(
+        default=None, description="Overflow behavior"
+    )
+    sticky: LayoutSticky | None = Field(
+        default=None, description="Sticky positioning"
+    )
+    sticky_offset: int | None = Field(
+        default=None, description="Sticky offset in pixels"
+    )
+
+
+class GridComponent(ComponentBase):
+    """Grid layout component."""
+
+    type: Literal["grid"] = Field(default="grid", description="Component type")
+    children: list["AppComponent"] = Field(
+        default_factory=list, description="Child components"
+    )
+    columns: int | str = Field(default=3, description="Number of columns or template")
+    gap: int | str | None = Field(default=None, description="Gap between children")
+    padding: int | str | None = Field(default=None, description="Container padding")
 
 
 class OnCompleteAction(BaseModel):
@@ -820,6 +923,8 @@ class SpacerComponent(BaseModel):
 class ButtonComponent(BaseModel):
     """Button component."""
 
+    model_config = ConfigDict(extra="forbid")  # Reject unknown fields like children
+
     id: str = Field(description="Unique component identifier")
     type: Literal["button"] = Field(default="button", description="Component type")
     props: ButtonProps = Field(description="Component props")
@@ -1163,6 +1268,43 @@ class FormGroupComponent(BaseModel):
 
 
 # -----------------------------------------------------------------------------
+# Discriminated Union of All Components
+# -----------------------------------------------------------------------------
+
+AppComponent = Annotated[
+    Union[
+        # Layout containers (with children)
+        RowComponent,
+        ColumnComponent,
+        GridComponent,
+        # Leaf components (no children)
+        HeadingComponent,
+        TextComponent,
+        HtmlComponent,
+        CardComponent,
+        DividerComponent,
+        SpacerComponent,
+        ButtonComponent,
+        StatCardComponent,
+        ImageComponent,
+        BadgeComponent,
+        ProgressComponent,
+        DataTableComponent,
+        TabsComponent,
+        FileViewerComponent,
+        ModalComponent,
+        TextInputComponent,
+        NumberInputComponent,
+        SelectComponent,
+        CheckboxComponent,
+        FormEmbedComponent,
+        FormGroupComponent,
+    ],
+    Field(discriminator="type"),
+]
+
+
+# -----------------------------------------------------------------------------
 # Simple Component Node for Internal Tree Building
 # -----------------------------------------------------------------------------
 
@@ -1199,38 +1341,6 @@ class AppComponentNode(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# Discriminated Union of All Components
-# -----------------------------------------------------------------------------
-
-AppComponent = Annotated[
-    Union[
-        HeadingComponent,
-        TextComponent,
-        HtmlComponent,
-        CardComponent,
-        DividerComponent,
-        SpacerComponent,
-        ButtonComponent,
-        StatCardComponent,
-        ImageComponent,
-        BadgeComponent,
-        ProgressComponent,
-        DataTableComponent,
-        TabsComponent,
-        FileViewerComponent,
-        ModalComponent,
-        TextInputComponent,
-        NumberInputComponent,
-        SelectComponent,
-        CheckboxComponent,
-        FormEmbedComponent,
-        FormGroupComponent,
-    ],
-    Field(discriminator="type"),
-]
-
-
-# -----------------------------------------------------------------------------
 # Tab Item (needs LayoutContainer forward reference)
 # -----------------------------------------------------------------------------
 
@@ -1249,17 +1359,15 @@ class TabItem(BaseModel):
 # -----------------------------------------------------------------------------
 
 
-# Union for LayoutContainer children - includes both validated and simple component types
-LayoutContainerOrComponent = Union["LayoutContainer", AppComponent, AppComponentNode]
-
-# Alias for internal tree building (LayoutContainer or simple AppComponentNode)
-LayoutElement = Union["LayoutContainer", AppComponentNode]
+# Union for LayoutContainer children - LayoutContainer (nesting) or AppComponent (leaf)
+LayoutContainerOrComponent = Union["LayoutContainer", AppComponent]
 
 
 class LayoutContainer(BaseModel):
     """Layout container for organizing components."""
 
     id: str = Field(
+        default_factory=lambda: f"layout_{__import__('uuid').uuid4().hex[:8]}",
         description='Unique identifier for API operations (e.g., "layout_abc123")'
     )
     type: LayoutType = Field(description="Layout type")
@@ -1334,6 +1442,14 @@ CardProps.model_rebuild()
 ModalProps.model_rebuild()
 TabsProps.model_rebuild()
 FormGroupProps.model_rebuild()
+
+# Rebuild layout components that reference AppComponent
+RowComponent.model_rebuild()
+ColumnComponent.model_rebuild()
+GridComponent.model_rebuild()
+
+# Alias for internal tree building (LayoutContainer or simple AppComponentNode)
+LayoutElement = Union[LayoutContainer, AppComponentNode]
 
 
 # -----------------------------------------------------------------------------

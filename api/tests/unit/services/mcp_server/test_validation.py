@@ -106,16 +106,19 @@ class TestValidateLayout:
         assert is_valid is False
         assert error is not None
 
-    def test_invalid_layout_missing_id(self) -> None:
-        """Test invalid layout missing required 'id' field."""
+    def test_layout_missing_id_is_auto_generated(self) -> None:
+        """Test that layout without 'id' gets an auto-generated id.
+
+        LayoutContainer.id has a default_factory that auto-generates
+        a unique id when not provided, making validation pass.
+        """
         layout = {
             "type": "column",
             "children": [],
         }
         is_valid, error = validate_layout(layout)
-        assert is_valid is False
-        assert error is not None
-        assert "id" in error.lower()
+        assert is_valid is True
+        assert error is None
 
 
 class TestValidateComponentProps:
