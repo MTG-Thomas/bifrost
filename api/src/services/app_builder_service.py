@@ -8,6 +8,7 @@ Provides tree operations for the App Builder:
 """
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -212,7 +213,7 @@ BASE_FIELDS = frozenset(["id", "type", "children", "visible", "width", "loading_
 
 
 def flatten_components(
-    components: list[AppComponentModel],
+    components: Sequence[AppComponentModel],
     page_id: UUID,
     parent_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
@@ -283,9 +284,11 @@ def flatten_components(
         )
 
         # Recursively flatten children if this is a container component
-        if hasattr(component, "children") and component.children:
+        # Use getattr to safely check for children without pyright errors on leaf components
+        children = getattr(component, "children", None)
+        if children:
             child_rows = flatten_components(
-                component.children,  # type: ignore[arg-type]
+                children,
                 page_id,
                 parent_id=component_uuid,
             )
