@@ -789,73 +789,27 @@ class FormGroupProps(BaseModel):
 # -----------------------------------------------------------------------------
 
 
-class HeadingComponent(BaseModel):
-    """Heading component."""
+class HeadingComponent(ComponentBase):
+    """Heading text component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["heading"] = Field(default="heading", description="Component type")
-    props: HeadingProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
-    )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
-    )
+    text: str = Field(description="Heading text (supports expressions)")
+    level: HeadingLevel | None = Field(default=None, description="Heading level (1-6)")
 
 
-class TextComponent(BaseModel):
-    """Text component."""
+class TextComponent(ComponentBase):
+    """Text paragraph component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["text"] = Field(default="text", description="Component type")
-    props: TextProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
-    )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
-    )
+    text: str = Field(description="Text content (supports expressions)")
+    label: str | None = Field(default=None, description="Optional label above text")
 
 
-class HtmlComponent(BaseModel):
+class HtmlComponent(ComponentBase):
     """HTML component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["html"] = Field(default="html", description="Component type")
-    props: HtmlProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
-    )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
-    )
+    content: str = Field(description="HTML or JSX template content")
 
 
 class CardComponent(ComponentBase):
@@ -876,189 +830,147 @@ class CardComponent(ComponentBase):
     )
 
 
-class DividerComponent(BaseModel):
+class DividerComponent(ComponentBase):
     """Divider component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["divider"] = Field(default="divider", description="Component type")
-    props: DividerProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
-    )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    orientation: Orientation | None = Field(
+        default=None, description="Divider orientation"
     )
 
 
-class SpacerComponent(BaseModel):
+class SpacerComponent(ComponentBase):
     """Spacer component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["spacer"] = Field(default="spacer", description="Component type")
-    props: SpacerProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    size: int | str | None = Field(
+        default=None, description="Size in pixels or Tailwind spacing units"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    height: int | str | None = Field(
+        default=None, description="Alias for size - supports legacy definitions"
     )
 
 
-class ButtonComponent(BaseModel):
+class ButtonComponent(ComponentBase):
     """Button component."""
 
-    model_config = ConfigDict(extra="forbid")  # Reject unknown fields like children
-
-    id: str = Field(description="Unique component identifier")
     type: Literal["button"] = Field(default="button", description="Component type")
-    props: ButtonProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    label: str = Field(description="Button label (supports expressions)")
+    action_type: ButtonActionType = Field(description="Action type")
+    navigate_to: str | None = Field(
+        default=None, description="Navigation path for navigate action"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    workflow_id: str | None = Field(
+        default=None, description="Workflow ID for workflow action"
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
+    custom_action_id: str | None = Field(
+        default=None, description="Custom action ID"
     )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    modal_id: str | None = Field(
+        default=None, description="Modal ID to open (for open-modal action)"
+    )
+    action_params: dict[str, Any] | None = Field(
+        default=None, description="Parameters to pass to action"
+    )
+    on_complete: list[OnCompleteAction] | None = Field(
+        default=None, description="Action(s) to execute after workflow completes successfully"
+    )
+    on_error: list[OnCompleteAction] | None = Field(
+        default=None, description="Action(s) to execute if workflow fails"
+    )
+    variant: ButtonVariant | None = Field(default=None, description="Button variant")
+    size: ButtonSize | None = Field(default=None, description="Button size")
+    disabled: bool | str | None = Field(
+        default=None,
+        description="Disabled state (boolean or expression like \"{{ row.status == 'completed' }}\")",
+    )
+    icon: str | None = Field(
+        default=None, description="Icon name to display (from lucide-react)"
     )
 
+    @field_serializer("workflow_id")
+    def serialize_workflow_ref(self, value: str | None, info: Any) -> str | None:
+        """Transform UUID to portable ref using serialization context."""
+        if not value or not info.context:
+            return value
+        workflow_map = info.context.get("workflow_map", {})
+        return workflow_map.get(value, value)
 
-class StatCardComponent(BaseModel):
+
+class StatCardComponent(ComponentBase):
     """Stat card component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["stat-card"] = Field(default="stat-card", description="Component type")
-    props: StatCardProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
-    )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
-    )
+    title: str = Field(description="Card title")
+    value: str = Field(description="Value (supports expressions)")
+    description: str | None = Field(default=None, description="Optional description")
+    icon: str | None = Field(default=None, description="Icon name")
+    trend: StatCardTrend | None = Field(default=None, description="Trend indicator")
+    on_click: StatCardOnClick | None = Field(default=None, description="Click action")
 
 
-class ImageComponent(BaseModel):
+class ImageComponent(ComponentBase):
     """Image component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["image"] = Field(default="image", description="Component type")
-    props: ImageProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
-    )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    src: str = Field(description="Image source (URL or expression)")
+    alt: str | None = Field(default=None, description="Alt text")
+    max_width: int | str | None = Field(default=None, description="Max width")
+    max_height: int | str | None = Field(default=None, description="Max height")
+    object_fit: Literal["contain", "cover", "fill", "none"] | None = Field(
+        default=None, description="Object fit mode"
     )
 
 
-class BadgeComponent(BaseModel):
+class BadgeComponent(ComponentBase):
     """Badge component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["badge"] = Field(default="badge", description="Component type")
-    props: BadgeProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
-    )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
-    )
+    text: str = Field(description="Badge text (supports expressions)")
+    variant: BadgeVariant | None = Field(default=None, description="Badge variant")
 
 
-class ProgressComponent(BaseModel):
+class ProgressComponent(ComponentBase):
     """Progress component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["progress"] = Field(default="progress", description="Component type")
-    props: ProgressProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    value: str | int = Field(
+        description="Progress value (0-100, supports expressions)"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
-    )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    show_label: bool | None = Field(
+        default=None, description="Show percentage label"
     )
 
 
-class DataTableComponent(BaseModel):
+class DataTableComponent(ComponentBase):
     """Data table component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["data-table"] = Field(default="data-table", description="Component type")
-    props: DataTableProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    data_source: str = Field(description="Data source - ID of a page data source")
+    data_path: str | None = Field(
+        default=None,
+        description="Path to array within the data source result (e.g., 'clients' if result is { clients: [...] })",
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    columns: list[TableColumn] = Field(description="Column definitions")
+    selectable: bool | None = Field(default=None, description="Enable row selection")
+    searchable: bool | None = Field(default=None, description="Enable search")
+    paginated: bool | None = Field(default=None, description="Enable pagination")
+    page_size: int | None = Field(default=None, description="Page size")
+    row_actions: list[TableAction] | None = Field(
+        default=None, description="Row actions"
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
+    header_actions: list[TableAction] | None = Field(
+        default=None, description="Header actions (e.g., Add New button)"
     )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    on_row_click: RowClickHandler | None = Field(
+        default=None, description="Row click handler"
+    )
+    empty_message: str | None = Field(
+        default=None, description="Empty state message"
+    )
+    cache_key: str | None = Field(
+        default=None,
+        description="Cache key - if set, data persists across page navigations",
     )
 
 
@@ -1091,26 +1003,35 @@ class TabsComponent(ComponentBase):
     )
 
 
-class FileViewerComponent(BaseModel):
+class FileViewerComponent(ComponentBase):
     """File viewer component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["file-viewer"] = Field(default="file-viewer", description="Component type")
-    props: FileViewerProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    src: str = Field(description="File URL or path (supports expressions)")
+    file_name: str | None = Field(
+        default=None, description="File name for display and download"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    mime_type: str | None = Field(
+        default=None,
+        description="MIME type of the file (auto-detected if not provided)",
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
+    display_mode: FileViewerDisplayMode | None = Field(
+        default=None,
+        description="Display mode: inline (embed), modal (popup), or download (link)",
     )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    max_width: int | str | None = Field(
+        default=None, description="Max width for inline display"
+    )
+    max_height: int | str | None = Field(
+        default=None, description="Max height for inline display"
+    )
+    download_label: str | None = Field(
+        default=None,
+        description="Label for download button (when displayMode is 'download')",
+    )
+    show_download_button: bool | None = Field(
+        default=None,
+        description="Whether to show download button alongside inline/modal view",
     )
 
 
@@ -1141,118 +1062,114 @@ class ModalComponent(ComponentBase):
     )
 
 
-class TextInputComponent(BaseModel):
+class TextInputComponent(ComponentBase):
     """Text input component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["text-input"] = Field(default="text-input", description="Component type")
-    props: TextInputProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    field_id: str = Field(
+        description="Field ID for value tracking (used in {{ field.* }} expressions)"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    label: str | None = Field(default=None, description="Input label")
+    placeholder: str | None = Field(default=None, description="Placeholder text")
+    default_value: str | None = Field(
+        default=None, description="Default value (supports expressions)"
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
+    required: bool | None = Field(default=None, description="Required field")
+    disabled: bool | str | None = Field(
+        default=None, description="Disabled state (boolean or expression)"
     )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    input_type: TextInputType | None = Field(
+        default=None, description="Input type (text, email, password, url, tel)"
+    )
+    min_length: int | None = Field(default=None, description="Minimum length")
+    max_length: int | None = Field(default=None, description="Maximum length")
+    pattern: str | None = Field(
+        default=None, description="Regex pattern for validation"
     )
 
 
-class NumberInputComponent(BaseModel):
+class NumberInputComponent(ComponentBase):
     """Number input component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["number-input"] = Field(default="number-input", description="Component type")
-    props: NumberInputProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    field_id: str = Field(description="Field ID for value tracking")
+    label: str | None = Field(default=None, description="Input label")
+    placeholder: str | None = Field(default=None, description="Placeholder text")
+    default_value: int | str | None = Field(
+        default=None, description="Default value (supports expressions)"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    required: bool | None = Field(default=None, description="Required field")
+    disabled: bool | str | None = Field(
+        default=None, description="Disabled state (boolean or expression)"
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
-    )
+    min: int | None = Field(default=None, description="Minimum value")
+    max: int | None = Field(default=None, description="Maximum value")
+    step: int | None = Field(default=None, description="Step increment")
 
 
-class SelectComponent(BaseModel):
+class SelectComponent(ComponentBase):
     """Select component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["select"] = Field(default="select", description="Component type")
-    props: SelectProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    field_id: str = Field(description="Field ID for value tracking")
+    label: str | None = Field(default=None, description="Select label")
+    placeholder: str | None = Field(default=None, description="Placeholder text")
+    default_value: str | None = Field(
+        default=None, description="Default value (supports expressions)"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    required: bool | None = Field(default=None, description="Required field")
+    disabled: bool | str | None = Field(
+        default=None, description="Disabled state (boolean or expression)"
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
+    options: list[SelectOption] | str | None = Field(
+        default=None,
+        description='Static options or expression string like "{{ data.options }}".',
     )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    options_source: str | None = Field(
+        default=None, description="Data source name for dynamic options"
+    )
+    value_field: str | None = Field(
+        default=None, description="Field in data source for option value"
+    )
+    label_field: str | None = Field(
+        default=None, description="Field in data source for option label"
     )
 
 
-class CheckboxComponent(BaseModel):
+class CheckboxComponent(ComponentBase):
     """Checkbox component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["checkbox"] = Field(default="checkbox", description="Component type")
-    props: CheckboxProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    field_id: str = Field(description="Field ID for value tracking")
+    label: str = Field(description="Checkbox label")
+    description: str | None = Field(
+        default=None, description="Description text below label"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    default_checked: bool | None = Field(
+        default=None, description="Default checked state"
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
-    )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    required: bool | None = Field(default=None, description="Required field")
+    disabled: bool | str | None = Field(
+        default=None, description="Disabled state (boolean or expression)"
     )
 
 
-class FormEmbedComponent(BaseModel):
+class FormEmbedComponent(ComponentBase):
     """Form embed component."""
 
-    id: str = Field(description="Unique component identifier")
     type: Literal["form-embed"] = Field(default="form-embed", description="Component type")
-    props: FormEmbedProps = Field(description="Component props")
-    width: ComponentWidth | None = Field(default=None, description="Component width")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    loading_workflows: list[str] | None = Field(
-        default=None, description="Workflow IDs that trigger loading state"
+    form_id: str = Field(description="Form ID to embed")
+    show_title: bool | None = Field(
+        default=None, description="Whether to show the form title"
     )
-    grid_span: int | None = Field(
-        default=None, description="Grid column span (for grid layouts)"
+    show_description: bool | None = Field(
+        default=None, description="Whether to show the form description"
     )
-    repeat_for: RepeatFor | None = Field(
-        default=None, description="Repeat configuration for rendering multiple instances"
+    show_progress: bool | None = Field(
+        default=None, description="Whether to show form progress steps"
     )
-    class_name: str | None = Field(default=None, description="Additional CSS classes")
-    style: dict[str, Any] | None = Field(
-        default=None, description="Inline CSS styles (camelCase properties)"
+    on_submit: list[OnCompleteAction] | None = Field(
+        default=None, description="Actions to execute after form submission"
     )
 
 

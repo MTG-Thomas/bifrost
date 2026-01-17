@@ -42,24 +42,6 @@ from src.models.contracts.app_components import (
     CheckboxComponent,
     FormEmbedComponent,
     FormGroupComponent,
-    # Props types (for leaf components that still use props wrapper)
-    HeadingProps,
-    TextProps,
-    HtmlProps,
-    DividerProps,
-    SpacerProps,
-    ButtonProps,
-    StatCardProps,
-    ImageProps,
-    BadgeProps,
-    ProgressProps,
-    DataTableProps,
-    FileViewerProps,
-    TextInputProps,
-    NumberInputProps,
-    SelectProps,
-    CheckboxProps,
-    FormEmbedProps,
     # Supporting types
     TableColumn,
     TableAction,
@@ -80,78 +62,73 @@ from src.models.contracts.app_components import (
 class TestDiscriminatedUnion:
     """Test that discriminated union validates props correctly."""
 
-    def test_button_with_button_props_valid(self):
-        """Button component with ButtonProps is valid."""
+    def test_button_with_flat_props_valid(self):
+        """Button component with flat props is valid."""
         button = ButtonComponent(
             id="btn-1",
             type="button",
-            props=ButtonProps(
-                label="Click Me",
-                action_type="navigate",
-                navigate_to="/home",
-                variant="default",
-                size="lg",
-            ),
+            label="Click Me",
+            action_type="navigate",
+            navigate_to="/home",
+            variant="default",
+            size="lg",
         )
         assert button.id == "btn-1"
         assert button.type == "button"
-        assert button.props.label == "Click Me"
-        assert button.props.action_type == "navigate"
-        assert button.props.navigate_to == "/home"
+        assert button.label == "Click Me"
+        assert button.action_type == "navigate"
+        assert button.navigate_to == "/home"
 
     def test_button_with_workflow_action_valid(self):
         """Button with workflow action type is valid."""
         button = ButtonComponent(
             id="btn-workflow",
             type="button",
-            props=ButtonProps(
-                label="Run Workflow",
-                action_type="workflow",
-                workflow_id="wf-123",
-                action_params={"clientId": "{{ page.clientId }}"},
-                on_complete=[
-                    OnCompleteAction(
-                        type="navigate",
-                        navigate_to="/success",
-                    )
-                ],
-            ),
+            label="Run Workflow",
+            action_type="workflow",
+            workflow_id="wf-123",
+            action_params={"clientId": "{{ page.clientId }}"},
+            on_complete=[
+                OnCompleteAction(
+                    type="navigate",
+                    navigate_to="/success",
+                )
+            ],
         )
-        assert button.props.workflow_id == "wf-123"
-        assert button.props.on_complete is not None
-        assert button.props.on_complete[0].type == "navigate"
+        assert button.workflow_id == "wf-123"
+        assert button.on_complete is not None
+        assert button.on_complete[0].type == "navigate"
 
-    def test_data_table_with_data_table_props_valid(self):
-        """DataTable component with DataTableProps is valid."""
+    def test_data_table_with_flat_props_valid(self):
+        """DataTable component with flat props is valid."""
         table = DataTableComponent(
             id="table-1",
             type="data-table",
-            props=DataTableProps(
-                data_source="clients",
-                columns=[
-                    TableColumn(key="name", header="Name", sortable=True),
-                    TableColumn(
-                        key="status",
-                        header="Status",
-                        type="badge",
-                        badge_colors={"active": "green", "inactive": "gray"},
-                    ),
-                ],
-                searchable=True,
-                paginated=True,
-                page_size=10,
-            ),
+            data_source="clients",
+            columns=[
+                TableColumn(key="name", header="Name", sortable=True),
+                TableColumn(
+                    key="status",
+                    header="Status",
+                    type="badge",
+                    badge_colors={"active": "green", "inactive": "gray"},
+                ),
+            ],
+            searchable=True,
+            paginated=True,
+            page_size=10,
         )
         assert table.id == "table-1"
         assert table.type == "data-table"
-        assert len(table.props.columns) == 2
-        assert table.props.columns[0].key == "name"
+        assert len(table.columns) == 2
+        assert table.columns[0].key == "name"
 
     def test_data_table_requires_columns(self):
         """DataTable without columns fails validation."""
         # Test that missing columns field raises ValidationError
         with pytest.raises(ValidationError) as exc_info:
-            DataTableProps(
+            DataTableComponent(
+                id="table-1",
                 data_source="clients",
                 # columns is missing - should fail
             )  # type: ignore
@@ -159,45 +136,45 @@ class TestDiscriminatedUnion:
 
         # Test that columns must be provided when constructing via dict
         with pytest.raises(ValidationError):
-            DataTableProps.model_validate({"dataSource": "clients"})
+            DataTableComponent.model_validate(
+                {"id": "table-1", "type": "data-table", "data_source": "clients"}
+            )
 
     def test_data_table_with_row_actions(self):
         """DataTable with row actions validates correctly."""
         table = DataTableComponent(
             id="table-actions",
             type="data-table",
-            props=DataTableProps(
-                data_source="clients",
-                columns=[TableColumn(key="name", header="Name")],
-                row_actions=[
-                    TableAction(
-                        label="Edit",
-                        icon="Pencil",
-                        on_click=TableActionOnClick(
-                            type="navigate",
-                            navigate_to="/clients/{{ row.id }}/edit",
-                        ),
+            data_source="clients",
+            columns=[TableColumn(key="name", header="Name")],
+            row_actions=[
+                TableAction(
+                    label="Edit",
+                    icon="Pencil",
+                    on_click=TableActionOnClick(
+                        type="navigate",
+                        navigate_to="/clients/{{ row.id }}/edit",
                     ),
-                    TableAction(
-                        label="Delete",
-                        icon="Trash",
-                        variant="destructive",
-                        on_click=TableActionOnClick(
-                            type="workflow",
-                            workflow_id="delete-client",
-                            action_params={"clientId": "{{ row.id }}"},
-                        ),
-                        confirm=TableActionConfirm(
-                            title="Delete Client",
-                            message="Are you sure you want to delete {{ row.name }}?",
-                        ),
+                ),
+                TableAction(
+                    label="Delete",
+                    icon="Trash",
+                    variant="destructive",
+                    on_click=TableActionOnClick(
+                        type="workflow",
+                        workflow_id="delete-client",
+                        action_params={"clientId": "{{ row.id }}"},
                     ),
-                ],
-            ),
+                    confirm=TableActionConfirm(
+                        title="Delete Client",
+                        message="Are you sure you want to delete {{ row.name }}?",
+                    ),
+                ),
+            ],
         )
-        assert table.props.row_actions is not None
-        assert len(table.props.row_actions) == 2
-        assert table.props.row_actions[1].confirm is not None
+        assert table.row_actions is not None
+        assert len(table.row_actions) == 2
+        assert table.row_actions[1].confirm is not None
 
     def test_modal_with_content_layout(self):
         """Modal component with children is valid."""
@@ -211,11 +188,9 @@ class TestDiscriminatedUnion:
                 TextInputComponent(
                     id="input-name",
                     type="text-input",
-                    props=TextInputProps(
-                        field_id="name",
-                        label="Name",
-                        required=True,
-                    ),
+                    field_id="name",
+                    label="Name",
+                    required=True,
                 ),
             ],
             footer_actions=[
@@ -254,7 +229,8 @@ class TestDiscriminatedUnion:
                         HeadingComponent(
                             id="h1",
                             type="heading",
-                            props=HeadingProps(text="Overview", level=2),
+                            text="Overview",
+                            level=2,
                         ),
                     ],
                 ),
@@ -266,7 +242,7 @@ class TestDiscriminatedUnion:
                         TextComponent(
                             id="t1",
                             type="text",
-                            props=TextProps(text="Details content"),
+                            text="Details content",
                         ),
                     ],
                 ),
@@ -288,21 +264,17 @@ class TestDiscriminatedUnion:
                 TextInputComponent(
                     id="input-email",
                     type="text-input",
-                    props=TextInputProps(
-                        field_id="email",
-                        label="Email",
-                        input_type="email",
-                        required=True,
-                    ),
+                    field_id="email",
+                    label="Email",
+                    input_type="email",
+                    required=True,
                 ),
                 TextInputComponent(
                     id="input-phone",
                     type="text-input",
-                    props=TextInputProps(
-                        field_id="phone",
-                        label="Phone",
-                        input_type="tel",
-                    ),
+                    field_id="phone",
+                    label="Phone",
+                    input_type="tel",
                 ),
             ],
         )
@@ -318,19 +290,17 @@ class TestSnakeCaseSerialization:
         button = ButtonComponent(
             id="btn-1",
             type="button",
-            props=ButtonProps(
-                label="Submit",
-                action_type="workflow",
-                workflow_id="wf-123",
-                action_params={"userId": "123"},
-                on_complete=[
-                    OnCompleteAction(
-                        type="set-variable",
-                        variable_name="result",
-                        variable_value="{{ workflow.result }}",
-                    )
-                ],
-            ),
+            label="Submit",
+            action_type="workflow",
+            workflow_id="wf-123",
+            action_params={"userId": "123"},
+            on_complete=[
+                OnCompleteAction(
+                    type="set-variable",
+                    variable_name="result",
+                    variable_value="{{ workflow.result }}",
+                )
+            ],
             loading_workflows=["wf-123"],
             class_name="btn-primary",
         )
@@ -340,15 +310,15 @@ class TestSnakeCaseSerialization:
         assert "loading_workflows" in data
         assert "class_name" in data
 
-        # Check snake_case keys in props
-        assert "action_type" in data["props"]
-        assert "workflow_id" in data["props"]
-        assert "action_params" in data["props"]
-        assert "on_complete" in data["props"]
+        # Check snake_case keys directly on component (flat props)
+        assert "action_type" in data
+        assert "workflow_id" in data
+        assert "action_params" in data
+        assert "on_complete" in data
 
         # Check nested snake_case
-        assert "variable_name" in data["props"]["on_complete"][0]
-        assert "variable_value" in data["props"]["on_complete"][0]
+        assert "variable_name" in data["on_complete"][0]
+        assert "variable_value" in data["on_complete"][0]
 
     def test_layout_serializes_snakecase(self):
         """Layout container serializes with snake_case keys."""
@@ -364,7 +334,8 @@ class TestSnakeCaseSerialization:
                 HeadingComponent(
                     id="h1",
                     type="heading",
-                    props=HeadingProps(text="Hello", level=1, class_name="title"),
+                    text="Hello",
+                    level=1,
                     grid_span=2,
                     repeat_for=RepeatFor(
                         items="{{ data.items }}",
@@ -395,58 +366,55 @@ class TestSnakeCaseSerialization:
         table = DataTableComponent(
             id="table-1",
             type="data-table",
-            props=DataTableProps(
-                data_source="clients",
-                data_path="data.clients",
-                columns=[
-                    TableColumn(
-                        key="name",
-                        header="Name",
-                        badge_colors={"active": "green"},
-                    )
-                ],
-                row_actions=[
-                    TableAction(
-                        label="Delete",
-                        on_click=TableActionOnClick(
-                            type="workflow",
-                            workflow_id="delete",
-                            action_params={"id": "{{ row.id }}"},
-                        ),
-                        confirm=TableActionConfirm(
-                            title="Confirm",
-                            message="Delete?",
-                            confirm_label="Yes",
-                            cancel_label="No",
-                        ),
-                    )
-                ],
-                on_row_click=RowClickHandler(
-                    type="set-variable",
-                    variable_name="selectedRow",
-                ),
-                page_size=25,
-                cache_key="clients-table",
-                empty_message="No clients found",
+            data_source="clients",
+            data_path="data.clients",
+            columns=[
+                TableColumn(
+                    key="name",
+                    header="Name",
+                    badge_colors={"active": "green"},
+                )
+            ],
+            row_actions=[
+                TableAction(
+                    label="Delete",
+                    on_click=TableActionOnClick(
+                        type="workflow",
+                        workflow_id="delete",
+                        action_params={"id": "{{ row.id }}"},
+                    ),
+                    confirm=TableActionConfirm(
+                        title="Confirm",
+                        message="Delete?",
+                        confirm_label="Yes",
+                        cancel_label="No",
+                    ),
+                )
+            ],
+            on_row_click=RowClickHandler(
+                type="set-variable",
+                variable_name="selectedRow",
             ),
+            page_size=25,
+            cache_key="clients-table",
+            empty_message="No clients found",
         )
         data = table.model_dump(exclude_none=True)
-        props = data["props"]
 
-        # Check snake_case in props
-        assert "data_source" in props
-        assert "data_path" in props
-        assert "row_actions" in props
-        assert "on_row_click" in props
-        assert "page_size" in props
-        assert "cache_key" in props
-        assert "empty_message" in props
+        # Check snake_case at component level (flat props)
+        assert "data_source" in data
+        assert "data_path" in data
+        assert "row_actions" in data
+        assert "on_row_click" in data
+        assert "page_size" in data
+        assert "cache_key" in data
+        assert "empty_message" in data
 
         # Check nested column snake_case
-        assert "badge_colors" in props["columns"][0]
+        assert "badge_colors" in data["columns"][0]
 
         # Check row action snake_case
-        action = props["row_actions"][0]
+        action = data["row_actions"][0]
         assert "on_click" in action
         assert "workflow_id" in action["on_click"]
         assert "action_params" in action["on_click"]
@@ -454,57 +422,51 @@ class TestSnakeCaseSerialization:
         assert "cancel_label" in action["confirm"]
 
         # Check row click handler snake_case
-        assert "variable_name" in props["on_row_click"]
+        assert "variable_name" in data["on_row_click"]
 
     def test_stat_card_serializes_snakecase(self):
         """StatCard with trend and onClick serializes with snake_case."""
         stat = StatCardComponent(
             id="stat-1",
             type="stat-card",
-            props=StatCardProps(
-                title="Revenue",
-                value="{{ data.revenue }}",
-                trend=StatCardTrend(value="+15%", direction="up"),
-                on_click=StatCardOnClick(
-                    type="navigate",
-                    navigate_to="/revenue",
-                ),
-                class_name="revenue-card",
+            title="Revenue",
+            value="{{ data.revenue }}",
+            trend=StatCardTrend(value="+15%", direction="up"),
+            on_click=StatCardOnClick(
+                type="navigate",
+                navigate_to="/revenue",
             ),
+            class_name="revenue-card",
         )
         data = stat.model_dump(exclude_none=True)
-        props = data["props"]
 
-        assert "on_click" in props
-        assert "navigate_to" in props["on_click"]
-        assert "class_name" in props
+        assert "on_click" in data
+        assert "navigate_to" in data["on_click"]
+        assert "class_name" in data
 
     def test_file_viewer_serializes_snakecase(self):
         """FileViewer serializes with snake_case."""
         viewer = FileViewerComponent(
             id="viewer-1",
             type="file-viewer",
-            props=FileViewerProps(
-                src="{{ data.fileUrl }}",
-                file_name="document.pdf",
-                mime_type="application/pdf",
-                display_mode="modal",
-                max_width=800,
-                max_height=600,
-                download_label="Download PDF",
-                show_download_button=True,
-            ),
+            src="{{ data.fileUrl }}",
+            file_name="document.pdf",
+            mime_type="application/pdf",
+            display_mode="modal",
+            max_width=800,
+            max_height=600,
+            download_label="Download PDF",
+            show_download_button=True,
         )
         data = viewer.model_dump(exclude_none=True)
-        props = data["props"]
 
-        assert "file_name" in props
-        assert "mime_type" in props
-        assert "display_mode" in props
-        assert "max_width" in props
-        assert "max_height" in props
-        assert "download_label" in props
-        assert "show_download_button" in props
+        assert "file_name" in data
+        assert "mime_type" in data
+        assert "display_mode" in data
+        assert "max_width" in data
+        assert "max_height" in data
+        assert "download_label" in data
+        assert "show_download_button" in data
 
 
 class TestRoundTrip:
@@ -525,14 +487,14 @@ class TestRoundTrip:
                     HeadingComponent(
                         id="h1",
                         type="heading",
-                        props=HeadingProps(text="Welcome", level=1),
+                        text="Welcome",
+                        level=1,
                     ),
                     TextComponent(
                         id="t1",
                         type="text",
-                        props=TextProps(
-                            text="Welcome to the app", label="Greeting"
-                        ),
+                        text="Welcome to the app",
+                        label="Greeting",
                     ),
                 ],
             ),
@@ -580,21 +542,17 @@ class TestRoundTrip:
                             StatCardComponent(
                                 id="stat-clients",
                                 type="stat-card",
-                                props=StatCardProps(
-                                    title="Clients",
-                                    value="{{ dashboardData.clientCount }}",
-                                    icon="Users",
-                                ),
+                                title="Clients",
+                                value="{{ dashboardData.clientCount }}",
+                                icon="Users",
                             ),
                             StatCardComponent(
                                 id="stat-revenue",
                                 type="stat-card",
-                                props=StatCardProps(
-                                    title="Revenue",
-                                    value="{{ dashboardData.revenue }}",
-                                    trend=StatCardTrend(
-                                        value="+12%", direction="up"
-                                    ),
+                                title="Revenue",
+                                value="{{ dashboardData.revenue }}",
+                                trend=StatCardTrend(
+                                    value="+12%", direction="up"
                                 ),
                             ),
                         ],
@@ -614,32 +572,30 @@ class TestRoundTrip:
                                     DataTableComponent(
                                         id="clients-table",
                                         type="data-table",
-                                        props=DataTableProps(
-                                            data_source="dashboardData",
-                                            data_path="clients",
-                                            columns=[
-                                                TableColumn(
-                                                    key="name",
-                                                    header="Name",
+                                        data_source="dashboardData",
+                                        data_path="clients",
+                                        columns=[
+                                            TableColumn(
+                                                key="name",
+                                                header="Name",
+                                            ),
+                                            TableColumn(
+                                                key="status",
+                                                header="Status",
+                                                type="badge",
+                                            ),
+                                        ],
+                                        searchable=True,
+                                        paginated=True,
+                                        row_actions=[
+                                            TableAction(
+                                                label="Edit",
+                                                on_click=TableActionOnClick(
+                                                    type="navigate",
+                                                    navigate_to="/clients/{{ row.id }}",
                                                 ),
-                                                TableColumn(
-                                                    key="status",
-                                                    header="Status",
-                                                    type="badge",
-                                                ),
-                                            ],
-                                            searchable=True,
-                                            paginated=True,
-                                            row_actions=[
-                                                TableAction(
-                                                    label="Edit",
-                                                    on_click=TableActionOnClick(
-                                                        type="navigate",
-                                                        navigate_to="/clients/{{ row.id }}",
-                                                    ),
-                                                ),
-                                            ],
-                                        ),
+                                            ),
+                                        ],
                                     ),
                                 ],
                             ),
@@ -657,29 +613,25 @@ class TestRoundTrip:
                             TextInputComponent(
                                 id="client-name",
                                 type="text-input",
-                                props=TextInputProps(
-                                    field_id="clientName",
-                                    label="Client Name",
-                                    required=True,
-                                ),
+                                field_id="clientName",
+                                label="Client Name",
+                                required=True,
                             ),
                             SelectComponent(
                                 id="client-type",
                                 type="select",
-                                props=SelectProps(
-                                    field_id="clientType",
-                                    label="Type",
-                                    options=[
-                                        SelectOption(
-                                            value="enterprise",
-                                            label="Enterprise",
-                                        ),
-                                        SelectOption(
-                                            value="smb",
-                                            label="SMB",
-                                        ),
-                                    ],
-                                ),
+                                field_id="clientType",
+                                label="Type",
+                                options=[
+                                    SelectOption(
+                                        value="enterprise",
+                                        label="Enterprise",
+                                    ),
+                                    SelectOption(
+                                        value="smb",
+                                        label="SMB",
+                                    ),
+                                ],
                             ),
                         ],
                         footer_actions=[
@@ -749,7 +701,7 @@ class TestRoundTrip:
                     HeadingComponent(
                         id="h1",
                         type="heading",
-                        props=HeadingProps(text="Title"),
+                        text="Title",
                         # level, class_name, etc are None
                     ),
                 ],
@@ -769,50 +721,44 @@ class TestRoundTrip:
         assert "max_width" not in layout
 
         component = layout["children"][0]
-        assert "level" not in component["props"]
-        assert "class_name" not in component["props"]
+        assert "level" not in component  # flat props now
+        assert "class_name" not in component
 
 
 class TestAllComponentTypes:
     """Test each component type can be created and round-tripped."""
 
     @pytest.mark.parametrize(
-        "component_type,component_class,props_class,props_data",
+        "component_type,component_class,props_data",
         [
             (
                 "heading",
                 HeadingComponent,
-                HeadingProps,
-                {"text": "Hello World", "level": 2, "class_name": "title"},
+                {"text": "Hello World", "level": 2},
             ),
             (
                 "text",
                 TextComponent,
-                TextProps,
                 {"text": "Body text", "label": "Description"},
             ),
             (
                 "html",
                 HtmlComponent,
-                HtmlProps,
-                {"content": "<div>Custom HTML</div>", "class_name": "custom"},
+                {"content": "<div>Custom HTML</div>"},
             ),
             (
                 "divider",
                 DividerComponent,
-                DividerProps,
                 {"orientation": "horizontal"},
             ),
             (
                 "spacer",
                 SpacerComponent,
-                SpacerProps,
                 {"size": 24, "height": 16},
             ),
             (
                 "button",
                 ButtonComponent,
-                ButtonProps,
                 {
                     "label": "Click",
                     "action_type": "navigate",
@@ -825,7 +771,6 @@ class TestAllComponentTypes:
             (
                 "image",
                 ImageComponent,
-                ImageProps,
                 {
                     "src": "/image.png",
                     "alt": "Image",
@@ -836,19 +781,16 @@ class TestAllComponentTypes:
             (
                 "badge",
                 BadgeComponent,
-                BadgeProps,
                 {"text": "New", "variant": "secondary"},
             ),
             (
                 "progress",
                 ProgressComponent,
-                ProgressProps,
                 {"value": 75, "show_label": True},
             ),
             (
                 "file-viewer",
                 FileViewerComponent,
-                FileViewerProps,
                 {
                     "src": "/doc.pdf",
                     "file_name": "document.pdf",
@@ -858,7 +800,6 @@ class TestAllComponentTypes:
             (
                 "text-input",
                 TextInputComponent,
-                TextInputProps,
                 {
                     "field_id": "email",
                     "label": "Email",
@@ -870,7 +811,6 @@ class TestAllComponentTypes:
             (
                 "number-input",
                 NumberInputComponent,
-                NumberInputProps,
                 {
                     "field_id": "age",
                     "label": "Age",
@@ -882,7 +822,6 @@ class TestAllComponentTypes:
             (
                 "checkbox",
                 CheckboxComponent,
-                CheckboxProps,
                 {
                     "field_id": "agree",
                     "label": "I agree",
@@ -893,7 +832,6 @@ class TestAllComponentTypes:
             (
                 "form-embed",
                 FormEmbedComponent,
-                FormEmbedProps,
                 {
                     "form_id": "form-123",
                     "show_title": True,
@@ -902,19 +840,16 @@ class TestAllComponentTypes:
             ),
         ],
     )
-    def test_component_roundtrip(
-        self, component_type, component_class, props_class, props_data
-    ):
+    def test_component_roundtrip(self, component_type, component_class, props_data):
         """Each component type survives round-trip."""
-        # Create component with props
-        props = props_class(**props_data)
+        # Create component with flat props
         component = component_class(
             id=f"{component_type}-test",
             type=component_type,
-            props=props,
             width="1/2",
             visible="{{ data.show }}",
             class_name="test-class",
+            **props_data,
         )
 
         # Export to JSON
@@ -943,12 +878,13 @@ class TestAllComponentTypes:
                 HeadingComponent(
                     id="card-heading",
                     type="heading",
-                    props=HeadingProps(text="Inner Heading", level=3),
+                    text="Inner Heading",
+                    level=3,
                 ),
                 TextComponent(
                     id="card-text",
                     type="text",
-                    props=TextProps(text="Card body text"),
+                    text="Card body text",
                 ),
             ],
         )
@@ -971,16 +907,14 @@ class TestAllComponentTypes:
         stat = StatCardComponent(
             id="stat-1",
             type="stat-card",
-            props=StatCardProps(
-                title="Monthly Revenue",
-                value="{{ data.revenue }}",
-                description="Last 30 days",
-                icon="DollarSign",
-                trend=StatCardTrend(value="+15.3%", direction="up"),
-                on_click=StatCardOnClick(
-                    type="workflow",
-                    workflow_id="view-revenue-details",
-                ),
+            title="Monthly Revenue",
+            value="{{ data.revenue }}",
+            description="Last 30 days",
+            icon="DollarSign",
+            trend=StatCardTrend(value="+15.3%", direction="up"),
+            on_click=StatCardOnClick(
+                type="workflow",
+                workflow_id="view-revenue-details",
             ),
         )
 
@@ -989,28 +923,26 @@ class TestAllComponentTypes:
         imported_data = json.loads(json_str)
         imported = StatCardComponent.model_validate(imported_data)
 
-        assert imported.props.trend is not None
-        assert imported.props.trend.value == "+15.3%"
-        assert imported.props.trend.direction == "up"
-        assert imported.props.on_click is not None
-        assert imported.props.on_click.type == "workflow"
+        assert imported.trend is not None
+        assert imported.trend.value == "+15.3%"
+        assert imported.trend.direction == "up"
+        assert imported.on_click is not None
+        assert imported.on_click.type == "workflow"
 
     def test_select_with_static_options_roundtrip(self):
         """Select with static options survives round-trip."""
         select = SelectComponent(
             id="select-1",
             type="select",
-            props=SelectProps(
-                field_id="country",
-                label="Country",
-                placeholder="Select a country",
-                options=[
-                    SelectOption(value="us", label="United States"),
-                    SelectOption(value="uk", label="United Kingdom"),
-                    SelectOption(value="ca", label="Canada"),
-                ],
-                required=True,
-            ),
+            field_id="country",
+            label="Country",
+            placeholder="Select a country",
+            options=[
+                SelectOption(value="us", label="United States"),
+                SelectOption(value="uk", label="United Kingdom"),
+                SelectOption(value="ca", label="Canada"),
+            ],
+            required=True,
         )
 
         exported = select.model_dump(exclude_none=True)
@@ -1018,22 +950,20 @@ class TestAllComponentTypes:
         imported_data = json.loads(json_str)
         imported = SelectComponent.model_validate(imported_data)
 
-        assert imported.props.options is not None
-        assert len(imported.props.options) == 3  # type: ignore
-        assert imported.props.options[0].value == "us"  # type: ignore
+        assert imported.options is not None
+        assert len(imported.options) == 3  # type: ignore
+        assert imported.options[0].value == "us"  # type: ignore
 
     def test_select_with_dynamic_options_roundtrip(self):
         """Select with dynamic options source survives round-trip."""
         select = SelectComponent(
             id="select-dynamic",
             type="select",
-            props=SelectProps(
-                field_id="client",
-                label="Client",
-                options_source="clientsData",
-                value_field="id",
-                label_field="name",
-            ),
+            field_id="client",
+            label="Client",
+            options_source="clientsData",
+            value_field="id",
+            label_field="name",
         )
 
         exported = select.model_dump(exclude_none=True)
@@ -1041,89 +971,87 @@ class TestAllComponentTypes:
         imported_data = json.loads(json_str)
         imported = SelectComponent.model_validate(imported_data)
 
-        assert imported.props.options_source == "clientsData"
-        assert imported.props.value_field == "id"
-        assert imported.props.label_field == "name"
+        assert imported.options_source == "clientsData"
+        assert imported.value_field == "id"
+        assert imported.label_field == "name"
 
     def test_data_table_full_roundtrip(self):
         """DataTable with all features survives round-trip."""
         table = DataTableComponent(
             id="full-table",
             type="data-table",
-            props=DataTableProps(
-                data_source="apiData",
-                data_path="results.items",
-                columns=[
-                    TableColumn(
-                        key="name",
-                        header="Name",
-                        sortable=True,
-                        width=200,
-                    ),
-                    TableColumn(
-                        key="status",
-                        header="Status",
-                        type="badge",
-                        badge_colors={
-                            "active": "green",
-                            "pending": "yellow",
-                            "inactive": "gray",
-                        },
-                    ),
-                    TableColumn(
-                        key="createdAt",
-                        header="Created",
-                        type="date",
-                    ),
-                ],
-                selectable=True,
-                searchable=True,
-                paginated=True,
-                page_size=25,
-                row_actions=[
-                    TableAction(
-                        label="View",
-                        icon="Eye",
-                        on_click=TableActionOnClick(
-                            type="navigate",
-                            navigate_to="/items/{{ row.id }}",
-                        ),
-                    ),
-                    TableAction(
-                        label="Delete",
-                        icon="Trash",
-                        variant="destructive",
-                        on_click=TableActionOnClick(
-                            type="workflow",
-                            workflow_id="delete-item",
-                            action_params={"itemId": "{{ row.id }}"},
-                        ),
-                        confirm=TableActionConfirm(
-                            title="Delete Item",
-                            message="Are you sure?",
-                            confirm_label="Delete",
-                            cancel_label="Cancel",
-                        ),
-                        disabled="{{ row.isProtected }}",
-                    ),
-                ],
-                header_actions=[
-                    TableAction(
-                        label="Add New",
-                        icon="Plus",
-                        on_click=TableActionOnClick(
-                            type="navigate",
-                            navigate_to="/items/new",
-                        ),
-                    ),
-                ],
-                on_row_click=RowClickHandler(
-                    type="set-variable",
-                    variable_name="selectedItem",
+            data_source="apiData",
+            data_path="results.items",
+            columns=[
+                TableColumn(
+                    key="name",
+                    header="Name",
+                    sortable=True,
+                    width=200,
                 ),
-                empty_message="No items found",
-                cache_key="items-table",
+                TableColumn(
+                    key="status",
+                    header="Status",
+                    type="badge",
+                    badge_colors={
+                        "active": "green",
+                        "pending": "yellow",
+                        "inactive": "gray",
+                    },
+                ),
+                TableColumn(
+                    key="createdAt",
+                    header="Created",
+                    type="date",
+                ),
+            ],
+            selectable=True,
+            searchable=True,
+            paginated=True,
+            page_size=25,
+            row_actions=[
+                TableAction(
+                    label="View",
+                    icon="Eye",
+                    on_click=TableActionOnClick(
+                        type="navigate",
+                        navigate_to="/items/{{ row.id }}",
+                    ),
+                ),
+                TableAction(
+                    label="Delete",
+                    icon="Trash",
+                    variant="destructive",
+                    on_click=TableActionOnClick(
+                        type="workflow",
+                        workflow_id="delete-item",
+                        action_params={"itemId": "{{ row.id }}"},
+                    ),
+                    confirm=TableActionConfirm(
+                        title="Delete Item",
+                        message="Are you sure?",
+                        confirm_label="Delete",
+                        cancel_label="Cancel",
+                    ),
+                    disabled="{{ row.isProtected }}",
+                ),
+            ],
+            header_actions=[
+                TableAction(
+                    label="Add New",
+                    icon="Plus",
+                    on_click=TableActionOnClick(
+                        type="navigate",
+                        navigate_to="/items/new",
+                    ),
+                ),
+            ],
+            on_row_click=RowClickHandler(
+                type="set-variable",
+                variable_name="selectedItem",
             ),
+            empty_message="No items found",
+            cache_key="items-table",
         )
 
         exported = table.model_dump(exclude_none=True)
@@ -1131,15 +1059,15 @@ class TestAllComponentTypes:
         imported_data = json.loads(json_str)
         imported = DataTableComponent.model_validate(imported_data)
 
-        # Verify all features preserved
-        assert len(imported.props.columns) == 3
-        assert imported.props.columns[1].badge_colors is not None
-        assert imported.props.row_actions is not None
-        assert len(imported.props.row_actions) == 2
-        assert imported.props.row_actions[1].confirm is not None
-        assert imported.props.header_actions is not None
-        assert imported.props.on_row_click is not None
-        assert imported.props.cache_key == "items-table"
+        # Verify all features preserved (flat props now)
+        assert len(imported.columns) == 3
+        assert imported.columns[1].badge_colors is not None
+        assert imported.row_actions is not None
+        assert len(imported.row_actions) == 2
+        assert imported.row_actions[1].confirm is not None
+        assert imported.header_actions is not None
+        assert imported.on_row_click is not None
+        assert imported.cache_key == "items-table"
 
 
 class TestEdgeCases:
@@ -1190,12 +1118,10 @@ class TestEdgeCases:
         button = ButtonComponent(
             id="dynamic-btn",
             type="button",
-            props=ButtonProps(
-                label="{{ page.buttonLabel }}",
-                action_type="workflow",
-                workflow_id="{{ page.workflowId }}",
-                disabled="{{ page.isDisabled }}",
-            ),
+            label="{{ page.buttonLabel }}",
+            action_type="workflow",
+            workflow_id="{{ page.workflowId }}",
+            disabled="{{ page.isDisabled }}",
             visible="{{ data.showButton }}",
         )
 
@@ -1203,9 +1129,9 @@ class TestEdgeCases:
         json_str = json.dumps(exported)
         imported = ButtonComponent.model_validate(json.loads(json_str))
 
-        assert imported.props.label == "{{ page.buttonLabel }}"
-        assert imported.props.workflow_id == "{{ page.workflowId }}"
-        assert imported.props.disabled == "{{ page.isDisabled }}"
+        assert imported.label == "{{ page.buttonLabel }}"
+        assert imported.workflow_id == "{{ page.workflowId }}"
+        assert imported.disabled == "{{ page.isDisabled }}"
         assert imported.visible == "{{ data.showButton }}"
 
     def test_deeply_nested_layouts(self):
@@ -1230,9 +1156,8 @@ class TestEdgeCases:
                                         HeadingComponent(
                                             id="deep-heading",
                                             type="heading",
-                                            props=HeadingProps(
-                                                text="Deep nested", level=4
-                                            ),
+                                            text="Deep nested",
+                                            level=4,
                                         ),
                                     ],
                                 ),
@@ -1256,7 +1181,7 @@ class TestEdgeCases:
         assert level_4.type == "column"  # type: ignore
         heading = level_4.children[0]  # type: ignore
         assert heading.type == "heading"  # type: ignore
-        assert heading.props.text == "Deep nested"  # type: ignore
+        assert heading.text == "Deep nested"  # type: ignore
 
     def test_navigation_with_nested_items(self):
         """Navigation with nested section items survives round-trip."""
@@ -1314,7 +1239,7 @@ class TestEdgeCases:
                 HeadingComponent(
                     id="h1",
                     type="heading",
-                    props=HeadingProps(text="Title"),
+                    text="Title",
                 ),
                 LayoutContainer(
                     id="nested-row",
@@ -1323,19 +1248,21 @@ class TestEdgeCases:
                         ButtonComponent(
                             id="btn1",
                             type="button",
-                            props=ButtonProps(label="Left", action_type="navigate"),
+                            label="Left",
+                            action_type="navigate",
                         ),
                         ButtonComponent(
                             id="btn2",
                             type="button",
-                            props=ButtonProps(label="Right", action_type="navigate"),
+                            label="Right",
+                            action_type="navigate",
                         ),
                     ],
                 ),
                 TextComponent(
                     id="t1",
                     type="text",
-                    props=TextProps(text="Footer text"),
+                    text="Footer text",
                 ),
             ],
         )
