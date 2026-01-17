@@ -298,7 +298,101 @@ def flatten_components(
 
 
 # =============================================================================
-# Tree Reconstruction (Rows -> JSON)
+# Unified Tree Reconstruction (Rows -> AppComponent Models)
+# =============================================================================
+
+
+def build_unified_component_tree(
+    flat_components: list[Any],  # AppComponent ORM objects or any duck-typed object
+    parent_id: UUID | None = None,
+) -> list[AppComponentModel]:
+    """
+    Build nested AppComponent models from flat ORM rows.
+
+    This is the inverse of flatten_components. Takes flat database rows and
+    reconstructs the nested component tree using the unified AppComponent model.
+
+    The function returns actual Pydantic models (RowComponent, ColumnComponent,
+    HeadingComponent, etc.) - not legacy ComponentTreeNode.
+
+    Args:
+        flat_components: List of ORM objects with attributes:
+            - id: UUID (row primary key)
+            - component_id: str (user-facing ID like "col1", "btn_submit")
+            - type: str (component type like "column", "heading", "button")
+            - props: dict (component-specific properties)
+            - component_order: int (order among siblings)
+            - parent_id: UUID | None (parent row's UUID)
+            - visible: str | None (visibility expression)
+            - width: str | None (component width)
+            - loading_workflows: list[str] | None
+        parent_id: Filter to children of this parent (None for root level)
+
+    Returns:
+        List of validated AppComponent instances (discriminated union types)
+        with children populated recursively.
+    """
+    from pydantic import TypeAdapter
+
+    if not flat_components:
+        return []
+
+    adapter = TypeAdapter(AppComponentModel)
+
+    # Build lookup by UUID for parent resolution
+    by_uuid: dict[UUID, Any] = {comp.id: comp for comp in flat_components}
+
+    # Group children by parent_id
+    children_by_parent: dict[UUID | None, list[Any]] = {}
+    for comp in flat_components:
+        parent = comp.parent_id
+        if parent not in children_by_parent:
+            children_by_parent[parent] = []
+        children_by_parent[parent].append(comp)
+
+    # Sort each group by component_order
+    for group in children_by_parent.values():
+        group.sort(key=lambda c: c.component_order)
+
+    def build_subtree(comp: Any) -> AppComponentModel:
+        """Recursively build a component with its children."""
+        comp_type = comp.type
+        props = comp.props or {}
+
+        # Get children for this component
+        children_list = children_by_parent.get(comp.id, [])
+        child_models = [build_subtree(child) for child in children_list]
+
+        # Build component data for validation
+        # Start with props (component-specific fields)
+        component_data: dict[str, Any] = {
+            "id": comp.component_id,
+            "type": comp_type,
+            **props,
+        }
+
+        # Add base fields if present
+        if comp.visible is not None:
+            component_data["visible"] = comp.visible
+        if comp.width is not None:
+            component_data["width"] = comp.width
+        if comp.loading_workflows is not None:
+            component_data["loading_workflows"] = comp.loading_workflows
+
+        # Add children for container types
+        if child_models and comp_type in CONTAINER_TYPES:
+            component_data["children"] = child_models
+
+        # Validate through the discriminated union
+        return adapter.validate_python(component_data)
+
+    # Build root level components
+    root_components = children_by_parent.get(parent_id, [])
+    return [build_subtree(comp) for comp in root_components]
+
+
+# =============================================================================
+# Legacy Tree Reconstruction (Rows -> ComponentTreeNode)
 # =============================================================================
 
 
