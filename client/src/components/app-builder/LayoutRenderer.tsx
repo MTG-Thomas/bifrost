@@ -62,6 +62,7 @@ interface LayoutContainerProps {
 	overflow?: "auto" | "scroll" | "hidden" | "visible" | null;
 	sticky?: "top" | "bottom" | null;
 	sticky_offset?: number | null;
+	flex?: "grow" | "none" | null;
 	columns?: number | string;
 	class_name?: string | null;
 	visible?: string | null;
@@ -277,7 +278,7 @@ function getPaddingStyle(padding?: number): React.CSSProperties {
 }
 
 /**
- * Get combined layout styles including scrolling, sticky, and inline styles
+ * Get combined layout styles including scrolling, sticky, flex, and inline styles
  */
 function getLayoutStyles(layout: {
 	type: LayoutType;
@@ -287,6 +288,7 @@ function getLayoutStyles(layout: {
 	overflow?: string;
 	sticky?: string;
 	sticky_offset?: number;
+	flex?: string;
 	style?: React.CSSProperties;
 }): React.CSSProperties {
 	const styles: React.CSSProperties = {
@@ -311,6 +313,12 @@ function getLayoutStyles(layout: {
 			styles.bottom = `${layout.sticky_offset ?? 0}px`;
 		}
 		styles.zIndex = 10; // Ensure sticky elements stay on top
+	}
+
+	// Flex grow support - fills available space with min-height: 0 for contained scrolling
+	if (layout.flex === "grow") {
+		styles.flex = "1 1 0%";
+		styles.minHeight = 0;
 	}
 
 	// Merge inline styles (user-provided styles take precedence)
@@ -584,6 +592,7 @@ function renderLayoutContainer(
 		overflow: normalizedLayout.overflow ?? undefined,
 		sticky: normalizedLayout.sticky ?? undefined,
 		sticky_offset: normalizedLayout.sticky_offset ?? undefined,
+		flex: normalizedLayout.flex ?? undefined,
 		style: normalizedLayout.style as React.CSSProperties | undefined,
 	});
 

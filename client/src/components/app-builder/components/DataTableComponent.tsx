@@ -488,12 +488,16 @@ export function DataTableComponent({
 		);
 	};
 
+	// Determine if we should use sticky header
+	const useStickyHeader = props.sticky_header ?? props.contained ?? false;
+
 	// Don't show empty message when loading - skeleton will be shown instead
 	if (data.length === 0 && !props.empty_message && !isLoading) {
 		return (
 			<div
 				className={cn(
 					"text-center py-8 text-muted-foreground",
+					props.contained && "flex-1 flex items-center justify-center",
 					props.class_name,
 				)}
 			>
@@ -504,7 +508,12 @@ export function DataTableComponent({
 
 	return (
 		<TooltipProvider>
-			<div className={cn("space-y-4", props.class_name)}>
+			<div className={cn(
+				"space-y-4",
+				// When contained, fill available space with flex layout
+				props.contained && "flex-1 min-h-0 flex flex-col",
+				props.class_name,
+			)}>
 				{/* Header with search, refresh, and actions */}
 				{(props.searchable ||
 					props.header_actions?.length ||
@@ -599,54 +608,70 @@ export function DataTableComponent({
 				)}
 
 				{/* Table */}
-				<div className="rounded-md border">
-					<Table>
-						<TableHeader>
-							<TableRow>
-								{props.selectable && (
-									<TableHead className="w-12">
-										<Checkbox
-											checked={
-												paginatedData.length > 0 &&
-												selectedRows.size ===
-													paginatedData.length
+				<div className={cn(
+					"rounded-md border",
+					// When contained, make the border container flex and scrollable
+					props.contained && "flex-1 min-h-0 flex flex-col overflow-hidden",
+				)}>
+					{/* Scrollable wrapper when contained */}
+					<div className={cn(
+						props.contained && "flex-1 overflow-auto",
+					)}>
+						<Table>
+							<TableHeader className={cn(
+								// Sticky header when contained or sticky_header is true
+								useStickyHeader && "sticky top-0 bg-background z-10",
+							)}>
+								<TableRow>
+									{props.selectable && (
+										<TableHead className="w-12">
+											<Checkbox
+												checked={
+													paginatedData.length > 0 &&
+													selectedRows.size ===
+														paginatedData.length
+												}
+												onCheckedChange={handleSelectAll}
+											/>
+										</TableHead>
+									)}
+									{(props.columns ?? []).map((column) => (
+										<TableHead
+											key={column.key}
+											className={cn(
+												column.sortable &&
+													"cursor-pointer select-none",
+												// Ensure header cells have background when sticky
+												useStickyHeader && "bg-background",
+											)}
+											style={{
+												width:
+													column.width && column.width !== "auto"
+														? column.width
+														: undefined,
+											}}
+											onClick={() =>
+												column.sortable &&
+												handleSort(column.key)
 											}
-											onCheckedChange={handleSelectAll}
-										/>
-									</TableHead>
-								)}
-								{(props.columns ?? []).map((column) => (
-									<TableHead
-										key={column.key}
-										className={cn(
-											column.sortable &&
-												"cursor-pointer select-none",
-										)}
-										style={{
-											width:
-												column.width && column.width !== "auto"
-													? column.width
-													: undefined,
-										}}
-										onClick={() =>
-											column.sortable &&
-											handleSort(column.key)
-										}
-									>
-										<div className="flex items-center">
-											{column.header}
-											{column.sortable &&
-												getSortIcon(column.key)}
-										</div>
-									</TableHead>
-								))}
-								{props.row_actions?.length && (
-									<TableHead className="w-24 text-right">
-										Actions
-									</TableHead>
-								)}
-							</TableRow>
-						</TableHeader>
+										>
+											<div className="flex items-center">
+												{column.header}
+												{column.sortable &&
+													getSortIcon(column.key)}
+											</div>
+										</TableHead>
+									))}
+									{props.row_actions?.length && (
+										<TableHead className={cn(
+											"w-24 text-right",
+											useStickyHeader && "bg-background",
+										)}>
+											Actions
+										</TableHead>
+									)}
+								</TableRow>
+							</TableHeader>
 						<TableBody>
 							{isLoading ? (
 								// Show skeleton rows when loading
@@ -892,6 +917,7 @@ export function DataTableComponent({
 							)}
 						</TableBody>
 					</Table>
+					</div>
 				</div>
 
 				{/* Pagination */}

@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo } from "react";
 import { Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type {
 	ApplicationDefinition,
 	PageDefinition,
@@ -67,12 +68,14 @@ function PageRenderer({
 			type: "column" as const,
 			gap: 16,
 			children: page.children || [],
+			// Pass fill_height through to root layout via class_name
+			class_name: page.fill_height ? "h-full" : undefined,
 		}),
-		[page.id, page.children],
+		[page.id, page.children, page.fill_height],
 	);
 
 	return (
-		<div className="app-builder-page">
+		<div className={cn("app-builder-page", page.fill_height && "h-full")}>
 			{/* Inject page-level CSS styles */}
 			{page.styles && (
 				<style

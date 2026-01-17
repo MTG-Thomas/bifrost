@@ -3081,22 +3081,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -8308,6 +8308,16 @@ export interface components {
              * @description Header action buttons
              */
             header_actions?: components["schemas"]["TableAction"][] | null;
+            /**
+             * Flex
+             * @description Flex behavior. 'grow' fills available space (flex-1 min-h-0). Combine with overflow: auto for contained scrolling.
+             */
+            flex?: ("grow" | "none") | null;
+            /**
+             * Overflow
+             * @description Overflow behavior for card content. Use 'auto' with flex: 'grow' for internal scrolling.
+             */
+            overflow?: ("auto" | "scroll" | "hidden" | "visible") | null;
         };
         /**
          * ChatRequest
@@ -8596,6 +8606,11 @@ export interface components {
              * @description Sticky offset in pixels
              */
             sticky_offset?: number | null;
+            /**
+             * Flex
+             * @description Flex behavior. 'grow' fills available space (flex-1 min-h-0). Combine with overflow: auto for contained scrolling.
+             */
+            flex?: ("grow" | "none") | null;
         };
         /**
          * CommitHistoryResponse
@@ -9248,6 +9263,16 @@ export interface components {
              * @description Cache key - if set, data persists across page navigations
              */
             cache_key?: string | null;
+            /**
+             * Contained
+             * @description When true, table fills its container and scrolls internally. Header becomes sticky. Use with a parent that has flex: grow.
+             */
+            contained?: boolean | null;
+            /**
+             * Sticky Header
+             * @description Make header sticky during scroll. Defaults to true when contained is true.
+             */
+            sticky_header?: boolean | null;
         };
         /**
          * DeactivateWorkflowResponse
@@ -11901,6 +11926,11 @@ export interface components {
              * @description Container padding
              */
             padding?: number | string | null;
+            /**
+             * Flex
+             * @description Flex behavior. 'grow' fills available space (flex-1 min-h-0). Combine with overflow: auto for contained scrolling.
+             */
+            flex?: ("grow" | "none") | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -12038,7 +12068,7 @@ export interface components {
             type: "html";
             /**
              * Content
-             * @description HTML or JSX template content
+             * @description HTML/JSX template content that can include inline <style> tags for CSS. Access data via the 'context' object: context.workflow.<dataSourceId> (workflow results, where dataSourceId is configured when setting up the workflow - defaults to the workflow function name), context.workflow.user (current user info), context.field (form field values), context.query (URL query parameters). Example: <div className="p-4">Hello {context.workflow.user.name}!</div>
              */
             content: string;
         };
@@ -13164,20 +13194,11 @@ export interface components {
         };
         /**
          * MFAVerifyRequest
-         * @description Request to verify MFA code during login.
+         * @description Request to verify MFA code.
          */
         MFAVerifyRequest: {
-            /** Mfa Token */
-            mfa_token: string;
             /** Code */
             code: string;
-            /**
-             * Trust Device
-             * @default false
-             */
-            trust_device: boolean;
-            /** Device Name */
-            device_name?: string | null;
         };
         /**
          * MFAVerifyResponse
@@ -13553,6 +13574,11 @@ export interface components {
              * @description Brand color (hex)
              */
             brand_color?: string | null;
+            /**
+             * Page Transition
+             * @description Page transition animation. Defaults to 'fade'. Use 'none' to disable.
+             */
+            page_transition?: ("fade" | "slide" | "blur" | "none") | null;
         };
         /**
          * NavigationConfig
@@ -13584,6 +13610,11 @@ export interface components {
              * @description Brand color (hex)
              */
             brand_color?: string | null;
+            /**
+             * Page Transition
+             * @description Page transition animation. Defaults to 'fade'. Use 'none' to disable.
+             */
+            page_transition?: ("fade" | "slide" | "blur" | "none") | null;
         };
         /**
          * NotificationCategory
@@ -13792,29 +13823,15 @@ export interface components {
         };
         /**
          * OAuthCallbackRequest
-         * @description Request model for OAuth callback endpoint
+         * @description OAuth callback request (for when frontend handles callback).
          */
         OAuthCallbackRequest: {
-            /**
-             * Code
-             * @description Authorization code from OAuth provider
-             */
+            /** Provider */
+            provider: string;
+            /** Code */
             code: string;
-            /**
-             * State
-             * @description State parameter for CSRF protection
-             */
-            state?: string | null;
-            /**
-             * Redirect Uri
-             * @description Redirect URI used in authorization request
-             */
-            redirect_uri?: string | null;
-            /**
-             * Organization Id
-             * @description Organization ID for org-specific token storage (optional, for org overrides)
-             */
-            organization_id?: string | null;
+            /** State */
+            state: string;
         };
         /**
          * OAuthCallbackResponse
@@ -14678,11 +14695,16 @@ export interface components {
             launch_workflow?: components["schemas"]["LaunchWorkflowConfig"] | null;
             /**
              * Styles
-             * @description Page-level CSS styles (scoped to this page)
+             * @description Page-level vanilla CSS styles (scoped to this page). Write standard CSS syntax, NOT TypeScript/CSS-in-JS. Example: '.my-class { color: red; font-size: 16px; }'
              */
             styles?: string | null;
             /** @description Page-level permission configuration */
             permission?: components["schemas"]["PagePermission"] | null;
+            /**
+             * Fill Height
+             * @description When true, the page's root layout fills available viewport height. Enables children to use flex: grow with internal scrolling.
+             */
+            fill_height?: boolean | null;
         };
         /**
          * PagePermission
@@ -16115,6 +16137,11 @@ export interface components {
              * @description Sticky offset in pixels
              */
             sticky_offset?: number | null;
+            /**
+             * Flex
+             * @description Flex behavior. 'grow' fills available space (flex-1 min-h-0). Combine with overflow: auto for contained scrolling.
+             */
+            flex?: ("grow" | "none") | null;
         };
         /**
          * SDKDocumentCountRequest
@@ -19575,6 +19602,49 @@ export interface components {
             icon?: string | null;
         };
         /**
+         * OAuthCallbackRequest
+         * @description Request model for OAuth callback endpoint
+         */
+        src__models__contracts__oauth__OAuthCallbackRequest: {
+            /**
+             * Code
+             * @description Authorization code from OAuth provider
+             */
+            code: string;
+            /**
+             * State
+             * @description State parameter for CSRF protection
+             */
+            state?: string | null;
+            /**
+             * Redirect Uri
+             * @description Redirect URI used in authorization request
+             */
+            redirect_uri?: string | null;
+            /**
+             * Organization Id
+             * @description Organization ID for org-specific token storage (optional, for org overrides)
+             */
+            organization_id?: string | null;
+        };
+        /**
+         * MFAVerifyRequest
+         * @description Request to verify MFA code during login.
+         */
+        src__routers__auth__MFAVerifyRequest: {
+            /** Mfa Token */
+            mfa_token: string;
+            /** Code */
+            code: string;
+            /**
+             * Trust Device
+             * @default false
+             */
+            trust_device: boolean;
+            /** Device Name */
+            device_name?: string | null;
+        };
+        /**
          * UserCreate
          * @description User creation request model.
          */
@@ -19604,26 +19674,6 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
-        };
-        /**
-         * MFAVerifyRequest
-         * @description Request to verify MFA code.
-         */
-        src__routers__mfa__MFAVerifyRequest: {
-            /** Code */
-            code: string;
-        };
-        /**
-         * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
-         */
-        src__routers__oauth_sso__OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
-            /** Code */
-            code: string;
-            /** State */
-            state: string;
         };
     };
     responses: never;
@@ -19769,7 +19819,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MFAVerifyRequest"];
+                "application/json": components["schemas"]["src__routers__auth__MFAVerifyRequest"];
             };
         };
         responses: {
@@ -20186,7 +20236,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__mfa__MFAVerifyRequest"];
+                "application/json": components["schemas"]["MFAVerifyRequest"];
             };
         };
         responses: {
@@ -20436,7 +20486,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
+                "application/json": components["schemas"]["OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -24222,7 +24272,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__models__contracts__oauth__OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -24317,7 +24367,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -24350,7 +24400,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -24383,7 +24433,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -24416,7 +24466,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {

@@ -13,6 +13,7 @@
 import { useMemo, useCallback, useEffect, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, Loader2 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -486,6 +487,40 @@ export function ApplicationRunner({
 		return styles as React.CSSProperties;
 	}, [embedTheme]);
 
+	// Get page transition configuration (defaults to 'fade')
+	const pageTransition = appDefinition?.navigation?.page_transition;
+
+	// Get transition animation props based on configuration
+	const getTransitionProps = useCallback((transition: string | undefined | null) => {
+		const type = transition || "fade";
+		switch (type) {
+			case "none":
+				return {};
+			case "blur":
+				return {
+					initial: { opacity: 0, filter: "blur(8px)" },
+					animate: { opacity: 1, filter: "blur(0px)" },
+					exit: { opacity: 0, filter: "blur(8px)" },
+					transition: { duration: 0.3 },
+				};
+			case "slide":
+				return {
+					initial: { opacity: 0, x: 20 },
+					animate: { opacity: 1, x: 0 },
+					exit: { opacity: 0, x: -20 },
+					transition: { duration: 0.2 },
+				};
+			case "fade":
+			default:
+				return {
+					initial: { opacity: 0 },
+					animate: { opacity: 1 },
+					exit: { opacity: 0 },
+					transition: { duration: 0.2 },
+				};
+		}
+	}, []);
+
 	// Loading state
 	if (isLoadingApp || isLoadingDef) {
 		return (
@@ -630,19 +665,28 @@ export function ApplicationRunner({
 		);
 	}
 
-	// Render the application
+	// Render the application with page transitions
+	const transitionProps = getTransitionProps(pageTransition);
 	const appContent = (
-		<AppRenderer
-			definition={currentPage || appDefinition}
-			pageId={currentPage?.id}
-			onTriggerWorkflow={handleTriggerWorkflow}
-			executeWorkflow={executeWorkflow}
-			onRefreshTable={handleRefreshTable}
-			workflowResult={workflowResult}
-			navigate={appNavigate}
-			routeParams={routeParams}
-			activeWorkflows={activeWorkflowsSet}
-		/>
+		<AnimatePresence mode="wait">
+			<motion.div
+				key={currentPage?.id || "default"}
+				{...transitionProps}
+				className="h-full"
+			>
+				<AppRenderer
+					definition={currentPage || appDefinition}
+					pageId={currentPage?.id}
+					onTriggerWorkflow={handleTriggerWorkflow}
+					executeWorkflow={executeWorkflow}
+					onRefreshTable={handleRefreshTable}
+					workflowResult={workflowResult}
+					navigate={appNavigate}
+					routeParams={routeParams}
+					activeWorkflows={activeWorkflowsSet}
+				/>
+			</motion.div>
+		</AnimatePresence>
 	);
 
 	// In embed mode, use minimal shell

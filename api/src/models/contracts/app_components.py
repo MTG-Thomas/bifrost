@@ -72,6 +72,10 @@ LayoutOverflow = Literal["auto", "scroll", "hidden", "visible"]
 
 LayoutSticky = Literal["top", "bottom"]
 
+LayoutFlex = Literal["grow", "none"]
+
+PageTransition = Literal["fade", "slide", "blur", "none"]
+
 ButtonVariant = Literal["default", "destructive", "outline", "secondary", "ghost", "link"]
 
 ButtonSize = Literal["default", "sm", "lg"]
@@ -185,6 +189,13 @@ class RowComponent(ComponentBase):
     sticky_offset: int | None = Field(
         default=None, description="Sticky offset in pixels"
     )
+    flex: LayoutFlex | None = Field(
+        default=None,
+        description=(
+            "Flex behavior. 'grow' fills available space (flex-1 min-h-0). "
+            "Combine with overflow: auto for contained scrolling."
+        ),
+    )
 
 
 class ColumnComponent(ComponentBase):
@@ -210,6 +221,13 @@ class ColumnComponent(ComponentBase):
     sticky_offset: int | None = Field(
         default=None, description="Sticky offset in pixels"
     )
+    flex: LayoutFlex | None = Field(
+        default=None,
+        description=(
+            "Flex behavior. 'grow' fills available space (flex-1 min-h-0). "
+            "Combine with overflow: auto for contained scrolling."
+        ),
+    )
 
 
 class GridComponent(ComponentBase):
@@ -222,6 +240,13 @@ class GridComponent(ComponentBase):
     columns: int | str = Field(default=3, description="Number of columns or template")
     gap: int | str | None = Field(default=None, description="Gap between children")
     padding: int | str | None = Field(default=None, description="Container padding")
+    flex: LayoutFlex | None = Field(
+        default=None,
+        description=(
+            "Flex behavior. 'grow' fills available space (flex-1 min-h-0). "
+            "Combine with overflow: auto for contained scrolling."
+        ),
+    )
 
 
 class OnCompleteAction(BaseModel):
@@ -426,7 +451,17 @@ class TextProps(BaseModel):
 class HtmlProps(BaseModel):
     """Props for HTML component."""
 
-    content: str = Field(description="HTML or JSX template content")
+    content: str = Field(
+        description=(
+            "HTML/JSX template content that can include inline <style> tags for CSS. "
+            "Access data via the 'context' object: "
+            "context.workflow.<dataSourceId> (workflow results, where dataSourceId is configured when setting up the workflow - defaults to the workflow function name), "
+            "context.workflow.user (current user info), "
+            "context.field (form field values), "
+            "context.query (URL query parameters). "
+            "Example: <div className=\"p-4\">Hello {context.workflow.user.name}!</div>"
+        )
+    )
     class_name: str | None = Field(default=None, description="Additional CSS classes")
 
 
@@ -809,7 +844,17 @@ class HtmlComponent(ComponentBase):
     """HTML component."""
 
     type: Literal["html"] = Field(default="html", description="Component type")
-    content: str = Field(description="HTML or JSX template content")
+    content: str = Field(
+        description=(
+            "HTML/JSX template content that can include inline <style> tags for CSS. "
+            "Access data via the 'context' object: "
+            "context.workflow.<dataSourceId> (workflow results, where dataSourceId is configured when setting up the workflow - defaults to the workflow function name), "
+            "context.workflow.user (current user info), "
+            "context.field (form field values), "
+            "context.query (URL query parameters). "
+            "Example: <div className=\"p-4\">Hello {context.workflow.user.name}!</div>"
+        )
+    )
 
 
 class CardComponent(ComponentBase):
@@ -827,6 +872,17 @@ class CardComponent(ComponentBase):
     )
     header_actions: list[TableAction] | None = Field(
         default=None, description="Header action buttons"
+    )
+    flex: LayoutFlex | None = Field(
+        default=None,
+        description=(
+            "Flex behavior. 'grow' fills available space (flex-1 min-h-0). "
+            "Combine with overflow: auto for contained scrolling."
+        ),
+    )
+    overflow: LayoutOverflow | None = Field(
+        default=None,
+        description="Overflow behavior for card content. Use 'auto' with flex: 'grow' for internal scrolling.",
     )
 
 
@@ -971,6 +1027,17 @@ class DataTableComponent(ComponentBase):
     cache_key: str | None = Field(
         default=None,
         description="Cache key - if set, data persists across page navigations",
+    )
+    contained: bool | None = Field(
+        default=None,
+        description=(
+            "When true, table fills its container and scrolls internally. "
+            "Header becomes sticky. Use with a parent that has flex: grow."
+        ),
+    )
+    sticky_header: bool | None = Field(
+        default=None,
+        description="Make header sticky during scroll. Defaults to true when contained is true.",
     )
 
 
@@ -1499,10 +1566,22 @@ class PageDefinition(BaseModel):
         default=None, description="Alternative nested format for launch workflow configuration"
     )
     styles: str | None = Field(
-        default=None, description="Page-level CSS styles (scoped to this page)"
+        default=None,
+        description=(
+            "Page-level vanilla CSS styles (scoped to this page). "
+            "Write standard CSS syntax, NOT TypeScript/CSS-in-JS. "
+            "Example: '.my-class { color: red; font-size: 16px; }'"
+        ),
     )
     permission: PagePermission | None = Field(
         default=None, description="Page-level permission configuration"
+    )
+    fill_height: bool | None = Field(
+        default=None,
+        description=(
+            "When true, the page's root layout fills available viewport height. "
+            "Enables children to use flex: grow with internal scrolling."
+        ),
     )
 
     @field_serializer("launch_workflow_id")
@@ -1574,6 +1653,10 @@ class NavigationConfig(BaseModel):
     )
     logo_url: str | None = Field(default=None, description="Custom logo URL")
     brand_color: str | None = Field(default=None, description="Brand color (hex)")
+    page_transition: PageTransition | None = Field(
+        default=None,
+        description="Page transition animation. Defaults to 'fade'. Use 'none' to disable.",
+    )
 
 
 # -----------------------------------------------------------------------------

@@ -129,6 +129,7 @@ async def get_page(
                 "launch_workflow_id": str(page.launch_workflow_id) if page.launch_workflow_id else None,
                 "launch_workflow_params": page.launch_workflow_params,
                 "launch_workflow_data_source_id": page.launch_workflow_data_source_id,
+                "fill_height": page.fill_height,
                 "children": children_json,
             }
 
@@ -335,6 +336,10 @@ async def create_page(
                 "type": "object",
                 "description": "Parameters to pass to the launch workflow. Use {{ params.id }} for route parameters.",
             },
+            "fill_height": {
+                "type": "boolean",
+                "description": "When true, the page fills the available viewport height. Enables children to use flex: grow with internal scrolling.",
+            },
         },
         "required": ["app_id", "page_id"],
     },
@@ -350,6 +355,7 @@ async def update_page(
     launch_workflow_id: str | None = None,
     launch_workflow_data_source_id: str | None = None,
     launch_workflow_params: dict[str, Any] | None = None,
+    fill_height: bool | None = None,
 ) -> str:
     """Update a page's metadata or replace its children components."""
     from sqlalchemy import select
@@ -422,6 +428,10 @@ async def update_page(
             if launch_workflow_params is not None:
                 page.launch_workflow_params = launch_workflow_params
                 updates_made.append("launch_workflow_params")
+
+            if fill_height is not None:
+                page.fill_height = fill_height
+                updates_made.append("fill_height")
 
             # Replace children if provided (this is the heavy operation)
             if children is not None:

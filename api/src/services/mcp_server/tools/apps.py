@@ -599,18 +599,29 @@ async def get_app_schema(context: Any) -> str:  # noqa: ARG001
         # Container components
         RowComponent,
         ColumnComponent,
+        GridComponent,
         CardComponent,
         ModalComponent,
         TabsComponent,
+        TabItemComponent,
         FormGroupComponent,
         # Leaf components
         HeadingComponent,
         TextComponent,
+        HtmlComponent,
+        DividerComponent,
+        SpacerComponent,
         ButtonComponent,
         StatCardComponent,
+        ImageComponent,
+        BadgeComponent,
+        ProgressComponent,
         DataTableComponent,
+        FileViewerComponent,
         TextInputComponent,
+        NumberInputComponent,
         SelectComponent,
+        CheckboxComponent,
         FormEmbedComponent,
     )
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -636,20 +647,31 @@ async def get_app_schema(context: Any) -> str:  # noqa: ARG001
     container_components = models_to_markdown([
         (RowComponent, "RowComponent (horizontal layout)"),
         (ColumnComponent, "ColumnComponent (vertical layout)"),
+        (GridComponent, "GridComponent (CSS grid layout)"),
         (CardComponent, "CardComponent (container with header)"),
         (ModalComponent, "ModalComponent (dialog container)"),
         (TabsComponent, "TabsComponent (tabbed container)"),
+        (TabItemComponent, "TabItemComponent (single tab within tabs)"),
         (FormGroupComponent, "FormGroupComponent (form field group)"),
     ], "Container Components (can have children)")
 
     leaf_components = models_to_markdown([
         (HeadingComponent, "HeadingComponent (h1-h6)"),
         (TextComponent, "TextComponent (body text)"),
+        (HtmlComponent, "HtmlComponent (raw HTML content)"),
+        (DividerComponent, "DividerComponent (horizontal line)"),
+        (SpacerComponent, "SpacerComponent (vertical spacing)"),
         (ButtonComponent, "ButtonComponent (clickable button)"),
         (StatCardComponent, "StatCardComponent (metric display)"),
+        (ImageComponent, "ImageComponent (display images)"),
+        (BadgeComponent, "BadgeComponent (status indicator)"),
+        (ProgressComponent, "ProgressComponent (progress bar)"),
         (DataTableComponent, "DataTableComponent (data table)"),
+        (FileViewerComponent, "FileViewerComponent (document/image viewer)"),
         (TextInputComponent, "TextInputComponent (text field)"),
+        (NumberInputComponent, "NumberInputComponent (number field)"),
         (SelectComponent, "SelectComponent (dropdown)"),
+        (CheckboxComponent, "CheckboxComponent (boolean toggle)"),
         (FormEmbedComponent, "FormEmbedComponent (embedded form)"),
     ], "Leaf Components (no children)")
 
@@ -718,41 +740,6 @@ When reading components (from get_page), props are returned FLAT on the componen
 
 See the component type documentation above for all available properties per type.
 
-## Available Component Types
-
-### Container Components (can have children)
-| Type | Description |
-|------|-------------|
-| row | Horizontal flex container (layout) |
-| column | Vertical flex container (layout) |
-| grid | CSS grid container (layout) |
-| card | Container with optional header/title |
-| modal | Dialog/modal container |
-| tabs | Tabbed container |
-| tab-item | Single tab within tabs |
-| form-group | Group form fields with label |
-
-### Leaf Components (no children)
-| Type | Description |
-|------|-------------|
-| heading | Display heading text (h1-h6) |
-| text | Display text content |
-| html | Render raw HTML content |
-| divider | Horizontal dividing line |
-| spacer | Vertical spacing |
-| button | Clickable button with actions |
-| stat-card | Metric display with label and value |
-| image | Display images |
-| badge | Status indicator |
-| progress | Progress bar |
-| data-table | Data table with sorting/filtering |
-| file-viewer | Document/image viewer |
-| text-input | Text input field |
-| number-input | Number input field |
-| select | Dropdown selection |
-| checkbox | Boolean toggle |
-| form-embed | Embed a Bifrost form |
-
 ## Expression Syntax
 
 Use `{{ expression }}` for dynamic content:
@@ -774,7 +761,7 @@ Use `{{ expression }}` for dynamic content:
 
 """
 
-    return overview + app_models + "\n\n" + page_models + "\n\n" + component_models + "\n\n" + props_models + "\n\n" + component_types_doc
+    return overview + app_models + "\n\n" + page_models + "\n\n" + component_models + "\n\n" + container_components + "\n\n" + leaf_components + "\n\n" + component_types_doc
 
 
 # End of apps.py

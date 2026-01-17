@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -203,6 +203,9 @@ class AppPage(Base):
         JSONB, default=dict, server_default="{}"
     )
     page_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    # Layout options
+    fill_height: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
