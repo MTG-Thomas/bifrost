@@ -32,12 +32,13 @@ class TestValidateLayout:
                 {
                     "id": "heading1",
                     "type": "heading",
-                    "props": {"text": "Welcome", "level": 1},
+                    "text": "Welcome",
+                    "level": 1,
                 },
                 {
                     "id": "text1",
                     "type": "text",
-                    "props": {"text": "Hello world"},
+                    "text": "Hello world",
                 },
             ],
         }
@@ -59,12 +60,14 @@ class TestValidateLayout:
                         {
                             "id": "btn1",
                             "type": "button",
-                            "props": {"label": "Cancel", "action_type": "navigate"},
+                            "label": "Cancel",
+                            "action_type": "navigate",
                         },
                         {
                             "id": "btn2",
                             "type": "button",
-                            "props": {"label": "Save", "action_type": "submit"},
+                            "label": "Save",
+                            "action_type": "submit",
                         },
                     ],
                 },
@@ -257,7 +260,7 @@ class TestValidateComponentProps:
                 {
                     "id": "text1",
                     "type": "text",
-                    "props": {"text": "Card content"},
+                    "text": "Card content",
                 },
             ],
         }

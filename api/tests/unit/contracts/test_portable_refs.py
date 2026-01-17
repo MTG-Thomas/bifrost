@@ -510,7 +510,6 @@ class TestAppRoundTripSerialization:
             PageDefinition,
             LayoutContainer,
             ButtonComponent,
-            ButtonProps,
             DataSourceConfig,
         )
 
@@ -534,12 +533,9 @@ class TestAppRoundTripSerialization:
                 children=[
                     ButtonComponent(
                         id="btn_1",
-                        type="button",
-                        props=ButtonProps(
-                            label="Submit",
-                            action_type="workflow",
-                            workflow_id=button_workflow_uuid,
-                        ),
+                        label="Submit",
+                        action_type="workflow",
+                        workflow_id=button_workflow_uuid,
                     ),
                 ],
             ),
@@ -562,7 +558,7 @@ class TestAppRoundTripSerialization:
         exported = page.model_dump(mode="json", context={"workflow_map": workflow_map})
 
         # Verify portable refs in export
-        assert exported["layout"]["children"][0]["props"]["workflow_id"] == button_ref
+        assert exported["layout"]["children"][0]["workflow_id"] == button_ref
         assert exported["launch_workflow_id"] == launch_ref
         assert exported["data_sources"][0]["workflow_id"] == data_source_ref
 
@@ -573,14 +569,14 @@ class TestAppRoundTripSerialization:
             data_source_ref: data_source_workflow_uuid,
         }
         workflow_ref_fields = [
-            "layout.children.0.props.workflow_id",
+            "layout.children.0.workflow_id",
             "launch_workflow_id",
             "data_sources.0.workflow_id",
         ]
         transform_path_refs_to_uuids(exported, workflow_ref_fields, ref_to_uuid)
 
         # Verify UUIDs restored
-        assert exported["layout"]["children"][0]["props"]["workflow_id"] == button_workflow_uuid
+        assert exported["layout"]["children"][0]["workflow_id"] == button_workflow_uuid
         assert exported["launch_workflow_id"] == launch_workflow_uuid
         assert exported["data_sources"][0]["workflow_id"] == data_source_workflow_uuid
 
@@ -595,7 +591,6 @@ class TestAppRoundTripSerialization:
             PageDefinition,
             LayoutContainer,
             DataTableComponent,
-            DataTableProps,
             TableColumn,
             TableAction,
             TableActionOnClick,
@@ -614,22 +609,19 @@ class TestAppRoundTripSerialization:
                 children=[
                     DataTableComponent(
                         id="table_1",
-                        type="data-table",
-                        props=DataTableProps(
-                            data_source="items",
-                            columns=[
-                                TableColumn(key="name", header="Name"),
-                            ],
-                            row_actions=[
-                                TableAction(
-                                    label="Delete",
-                                    on_click=TableActionOnClick(
-                                        type="workflow",
-                                        workflow_id=action_workflow_uuid,
-                                    ),
+                        data_source="items",
+                        columns=[
+                            TableColumn(key="name", header="Name"),
+                        ],
+                        row_actions=[
+                            TableAction(
+                                label="Delete",
+                                on_click=TableActionOnClick(
+                                    type="workflow",
+                                    workflow_id=action_workflow_uuid,
                                 ),
-                            ],
-                        ),
+                            ),
+                        ],
                     ),
                 ],
             ),
@@ -639,16 +631,16 @@ class TestAppRoundTripSerialization:
         exported = page.model_dump(mode="json", context={"workflow_map": workflow_map})
 
         # Verify nested workflow ref transformed
-        assert exported["layout"]["children"][0]["props"]["row_actions"][0]["on_click"]["workflow_id"] == action_ref
+        assert exported["layout"]["children"][0]["row_actions"][0]["on_click"]["workflow_id"] == action_ref
 
         # Import back
         ref_to_uuid = {action_ref: action_workflow_uuid}
         workflow_ref_fields = [
-            "layout.children.0.props.row_actions.0.on_click.workflow_id",
+            "layout.children.0.row_actions.0.on_click.workflow_id",
         ]
         transform_path_refs_to_uuids(exported, workflow_ref_fields, ref_to_uuid)
 
-        assert exported["layout"]["children"][0]["props"]["row_actions"][0]["on_click"]["workflow_id"] == action_workflow_uuid
+        assert exported["layout"]["children"][0]["row_actions"][0]["on_click"]["workflow_id"] == action_workflow_uuid
 
     def test_page_with_stat_card_onclick(self):
         """Verify StatCard with onClick workflow exports/imports correctly."""
@@ -657,7 +649,6 @@ class TestAppRoundTripSerialization:
             PageDefinition,
             LayoutContainer,
             StatCardComponent,
-            StatCardProps,
             StatCardOnClick,
         )
 
@@ -674,14 +665,11 @@ class TestAppRoundTripSerialization:
                 children=[
                     StatCardComponent(
                         id="stat_1",
-                        type="stat-card",
-                        props=StatCardProps(
-                            title="Total Users",
-                            value="{{ data.user_count }}",
-                            on_click=StatCardOnClick(
-                                type="workflow",
-                                workflow_id=workflow_uuid,
-                            ),
+                        title="Total Users",
+                        value="{{ data.user_count }}",
+                        on_click=StatCardOnClick(
+                            type="workflow",
+                            workflow_id=workflow_uuid,
                         ),
                     ),
                 ],
@@ -691,13 +679,13 @@ class TestAppRoundTripSerialization:
         workflow_map = {workflow_uuid: workflow_ref}
         exported = page.model_dump(mode="json", context={"workflow_map": workflow_map})
 
-        assert exported["layout"]["children"][0]["props"]["on_click"]["workflow_id"] == workflow_ref
+        assert exported["layout"]["children"][0]["on_click"]["workflow_id"] == workflow_ref
 
         ref_to_uuid = {workflow_ref: workflow_uuid}
-        workflow_ref_fields = ["layout.children.0.props.on_click.workflow_id"]
+        workflow_ref_fields = ["layout.children.0.on_click.workflow_id"]
         transform_path_refs_to_uuids(exported, workflow_ref_fields, ref_to_uuid)
 
-        assert exported["layout"]["children"][0]["props"]["on_click"]["workflow_id"] == workflow_uuid
+        assert exported["layout"]["children"][0]["on_click"]["workflow_id"] == workflow_uuid
 
 
 class TestMissingRefsGracefulDegradation:
@@ -796,7 +784,6 @@ class TestMissingRefsGracefulDegradation:
             PageDefinition,
             LayoutContainer,
             ButtonComponent,
-            ButtonProps,
         )
 
         button1_uuid = str(uuid4())
@@ -814,21 +801,15 @@ class TestMissingRefsGracefulDegradation:
                 children=[
                     ButtonComponent(
                         id="btn_1",
-                        type="button",
-                        props=ButtonProps(
-                            label="Button 1",
-                            action_type="workflow",
-                            workflow_id=button1_uuid,
-                        ),
+                        label="Button 1",
+                        action_type="workflow",
+                        workflow_id=button1_uuid,
                     ),
                     ButtonComponent(
                         id="btn_2",
-                        type="button",
-                        props=ButtonProps(
-                            label="Button 2",
-                            action_type="workflow",
-                            workflow_id=button2_uuid,
-                        ),
+                        label="Button 2",
+                        action_type="workflow",
+                        workflow_id=button2_uuid,
                     ),
                 ],
             ),
@@ -841,17 +822,17 @@ class TestMissingRefsGracefulDegradation:
         ref_to_uuid = {ref1: button1_uuid}
 
         workflow_ref_fields = [
-            "layout.children.0.props.workflow_id",
-            "layout.children.1.props.workflow_id",
+            "layout.children.0.workflow_id",
+            "layout.children.1.workflow_id",
         ]
         unresolved = transform_path_refs_to_uuids(exported, workflow_ref_fields, ref_to_uuid)
 
         # button1 resolved, button2 stays as portable ref
-        assert exported["layout"]["children"][0]["props"]["workflow_id"] == button1_uuid
-        assert exported["layout"]["children"][1]["props"]["workflow_id"] == ref2
+        assert exported["layout"]["children"][0]["workflow_id"] == button1_uuid
+        assert exported["layout"]["children"][1]["workflow_id"] == ref2
 
         assert len(unresolved) == 1
-        assert unresolved[0].field == "layout.children.1.props.workflow_id"
+        assert unresolved[0].field == "layout.children.1.workflow_id"
         assert unresolved[0].ref == ref2
 
     def test_empty_ref_to_uuid_map(self):
