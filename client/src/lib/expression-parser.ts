@@ -64,11 +64,13 @@ function getNestedValue(obj: unknown, path: string): unknown {
  * - {{ workflow.<dataSourceId> }} - workflow result (e.g., workflow.get_client.clients for nested access)
  * - {{ row.id }} - current row in table row click handlers
  * - {{ params.id }} - route parameters from URL
+ * - {{ <repeat_var> }} - loop variable from repeat_for (e.g., {{ comment.author }})
  */
 function buildEvaluationContext(
 	context: ExpressionContext,
 ): Record<string, unknown> {
-	return {
+	// Start with known context keys
+	const evalContext: Record<string, unknown> = {
 		user: context.user,
 		variables: context.variables,
 		field: context.field,
@@ -76,6 +78,16 @@ function buildEvaluationContext(
 		row: context.row,
 		params: context.params,
 	};
+
+	// Include any additional keys from context (e.g., repeat_for loop variables)
+	// This allows expressions like {{ comment.author }} when repeat_for adds 'comment' to context
+	for (const key of Object.keys(context)) {
+		if (!(key in evalContext)) {
+			evalContext[key] = (context as unknown as Record<string, unknown>)[key];
+		}
+	}
+
+	return evalContext;
 }
 
 /**

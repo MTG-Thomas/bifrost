@@ -66,6 +66,11 @@ interface LayoutContainerProps {
 	class_name?: string | null;
 	visible?: string | null;
 	style?: Record<string, unknown> | null;
+	repeat_for?: {
+		items: string;
+		item_key: string;
+		as: string;
+	} | null;
 }
 
 type ComponentWidth = "auto" | "full" | "1/2" | "1/3" | "1/4" | "2/3" | "3/4";
@@ -504,6 +509,48 @@ function renderLayoutContainer(
 	// Type assertion is safe because normalizeLayoutObject converts all null values to undefined
 	// Cast to LayoutContainerProps to access optional properties across the union types
 	const normalizedLayout = normalizeLayoutObject(layout) as LayoutContainerProps;
+
+	// Handle layout container repetition (repeat_for on row/column/grid)
+	if (normalizedLayout.repeat_for) {
+		const items = evaluateExpression(normalizedLayout.repeat_for.items, context);
+
+		if (!Array.isArray(items)) {
+			console.error(
+				`repeat_for items must evaluate to an array. Got: ${typeof items}`,
+				{ layout: normalizedLayout.id, expression: normalizedLayout.repeat_for.items }
+			);
+			return null;
+		}
+
+		return (
+			<>
+				{items.map((item, index) => {
+					// Get unique key from item
+					const key = item[normalizedLayout.repeat_for!.item_key] ?? index;
+
+					// Extend context with loop variable
+					const extendedContext: ExpressionContext = {
+						...context,
+						[normalizedLayout.repeat_for!.as]: item,
+					};
+
+					// Render layout container for this item (without repeat_for to prevent infinite loop)
+					return (
+						<LayoutRenderer
+							key={key}
+							layout={{ ...normalizedLayout, repeat_for: undefined } as LayoutContainer}
+							context={extendedContext}
+							className={className}
+							parentKey={`${parentKey}-${key}`}
+							isPreview={previewContext?.isPreview}
+							selectedComponentId={previewContext?.selectedComponentId}
+							onSelectComponent={previewContext?.onSelectComponent}
+						/>
+					);
+				})}
+			</>
+		);
+	}
 
 	// Check visibility - use non-null assertion since we normalized the value
 	if (!evaluateVisibility(normalizedLayout.visible ?? undefined, context)) {
