@@ -61,19 +61,19 @@ def _serialize_app_to_json(
         "navigation": app.navigation or {},
         "permissions": app.permissions or {},
         "pages": serialized_pages,
-        "export_version": "1.0",
+        "export_version": "2.0",
     }
 
     # Add export metadata if we transformed refs
     if workflow_map:
         app_data["_export"] = {
             "workflow_refs": [
-                "pages.*.layout..*.props.workflow_id",
+                "pages.*.children..*.workflow_id",
                 "pages.*.data_sources.*.workflow_id",
                 "pages.*.launch_workflow_id",
                 "pages.*.launch_workflow.workflow_id",
             ],
-            "version": "1.0",
+            "version": "2.0",
         }
 
     return json.dumps(app_data, indent=2).encode("utf-8")

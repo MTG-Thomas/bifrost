@@ -27,7 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.models import Agent, Form
-from src.models.orm.applications import Application, AppVersion
+from src.models.orm.applications import Application, AppPage, AppVersion
+from src.services.app_builder_service import build_unified_component_tree
 from src.services.file_storage.file_ops import compute_git_blob_sha
 from src.services.file_storage.indexers.agent import _serialize_agent_to_json
 from src.services.file_storage.indexers.app import _serialize_app_to_json
@@ -184,6 +185,7 @@ class VirtualFileProvider:
             .options(
                 selectinload(Application.draft_version_ref)
                 .selectinload(AppVersion.pages)
+                .selectinload(AppPage.components)
             )
         )
         result = await self.db.execute(stmt)
@@ -201,6 +203,16 @@ class VirtualFileProvider:
                 for page in sorted(
                     app.draft_version_ref.pages, key=lambda p: p.page_order
                 ):
+                    # Build component tree from flat components
+                    children = []
+                    if page.components:
+                        component_models = build_unified_component_tree(
+                            page.components, parent_id=None
+                        )
+                        children = [
+                            c.model_dump(exclude_none=True) for c in component_models
+                        ]
+
                     page_data = {
                         "id": page.page_id,
                         "title": page.title,
@@ -208,12 +220,7 @@ class VirtualFileProvider:
                         "data_sources": page.data_sources or [],
                         "variables": page.variables or {},
                         "permission": page.permission or {},
-                        "layout": {
-                            "id": f"layout_{page.page_id}",
-                            "type": page.root_layout_type or "column",
-                            "children": [],  # Components would need additional query
-                            **(page.root_layout_config or {}),
-                        },
+                        "children": children,
                     }
 
                     if page.launch_workflow_id:
@@ -412,6 +419,7 @@ class VirtualFileProvider:
             .options(
                 selectinload(Application.draft_version_ref)
                 .selectinload(AppVersion.pages)
+                .selectinload(AppPage.components)
             )
             .where(Application.id == app_id)
         )
@@ -427,6 +435,16 @@ class VirtualFileProvider:
             for page in sorted(
                 app.draft_version_ref.pages, key=lambda p: p.page_order
             ):
+                # Build component tree from flat components
+                children = []
+                if page.components:
+                    component_models = build_unified_component_tree(
+                        page.components, parent_id=None
+                    )
+                    children = [
+                        c.model_dump(exclude_none=True) for c in component_models
+                    ]
+
                 page_data = {
                     "id": page.page_id,
                     "title": page.title,
@@ -434,12 +452,7 @@ class VirtualFileProvider:
                     "data_sources": page.data_sources or [],
                     "variables": page.variables or {},
                     "permission": page.permission or {},
-                    "layout": {
-                        "id": f"layout_{page.page_id}",
-                        "type": page.root_layout_type or "column",
-                        "children": [],
-                        **(page.root_layout_config or {}),
-                    },
+                    "children": children,
                 }
 
                 if page.launch_workflow_id:
