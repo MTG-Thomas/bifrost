@@ -474,30 +474,34 @@ class TestRoundTrip:
 
     def test_simple_page_roundtrip(self):
         """Simple page layout survives round-trip."""
+        from src.models.contracts.app_components import ColumnComponent
+
         page = PageDefinition(
             id="page-home",
             title="Home",
             path="/",
-            layout=LayoutContainer(
-                id="home-layout",
-                type="column",
-                gap=4,
-                padding=6,
-                children=[
-                    HeadingComponent(
-                        id="h1",
-                        type="heading",
-                        text="Welcome",
-                        level=1,
-                    ),
-                    TextComponent(
-                        id="t1",
-                        type="text",
-                        text="Welcome to the app",
-                        label="Greeting",
-                    ),
-                ],
-            ),
+            children=[
+                ColumnComponent(
+                    id="home-layout",
+                    type="column",
+                    gap=4,
+                    padding=6,
+                    children=[
+                        HeadingComponent(
+                            id="h1",
+                            type="heading",
+                            text="Welcome",
+                            level=1,
+                        ),
+                        TextComponent(
+                            id="t1",
+                            type="text",
+                            text="Welcome to the app",
+                            label="Greeting",
+                        ),
+                    ],
+                ),
+            ],
         )
 
         # Export to JSON
@@ -512,12 +516,19 @@ class TestRoundTrip:
         assert imported_page.id == page.id
         assert imported_page.title == "Home"
         assert imported_page.path == "/"
-        assert imported_page.layout.type == "column"
-        assert len(imported_page.layout.children) == 2
+        assert len(imported_page.children) == 1
+        assert imported_page.children[0].type == "column"
+        # Access nested children via the column component
+        column = imported_page.children[0]
+        assert len(column.children) == 2  # type: ignore
 
     def test_complex_nested_layout_roundtrip(self):
         """Complex nested layout survives round-trip."""
-        from src.models.contracts.app_components import TabItemComponent
+        from src.models.contracts.app_components import (
+            ColumnComponent,
+            RowComponent,
+            TabItemComponent,
+        )
 
         page = PageDefinition(
             id="page-dashboard",
@@ -527,130 +538,132 @@ class TestRoundTrip:
             launch_workflow_id="load-dashboard",
             launch_workflow_params={"includeStats": True},
             launch_workflow_data_source_id="dashboardData",
-            layout=LayoutContainer(
-                id="dashboard-layout",
-                type="column",
-                gap=6,
-                children=[
-                    # Header row with stats
-                    LayoutContainer(
-                        id="stats-row",
-                        type="row",
-                        gap=4,
-                        distribute="equal",
-                        children=[
-                            StatCardComponent(
-                                id="stat-clients",
-                                type="stat-card",
-                                title="Clients",
-                                value="{{ dashboardData.clientCount }}",
-                                icon="Users",
-                            ),
-                            StatCardComponent(
-                                id="stat-revenue",
-                                type="stat-card",
-                                title="Revenue",
-                                value="{{ dashboardData.revenue }}",
-                                trend=StatCardTrend(
-                                    value="+12%", direction="up"
+            children=[
+                ColumnComponent(
+                    id="dashboard-layout",
+                    type="column",
+                    gap=6,
+                    children=[
+                        # Header row with stats
+                        RowComponent(
+                            id="stats-row",
+                            type="row",
+                            gap=4,
+                            distribute="equal",
+                            children=[
+                                StatCardComponent(
+                                    id="stat-clients",
+                                    type="stat-card",
+                                    title="Clients",
+                                    value="{{ dashboardData.clientCount }}",
+                                    icon="Users",
                                 ),
-                            ),
-                        ],
-                    ),
-                    # Tabs with nested content (new structure: children with TabItemComponent)
-                    TabsComponent(
-                        id="main-tabs",
-                        type="tabs",
-                        default_tab="clients",
-                        children=[
-                            TabItemComponent(
-                                id="tab-clients",
-                                label="Clients",
-                                value="clients",
-                                icon="Users",
-                                children=[
-                                    DataTableComponent(
-                                        id="clients-table",
-                                        type="data-table",
-                                        data_source="dashboardData",
-                                        data_path="clients",
-                                        columns=[
-                                            TableColumn(
-                                                key="name",
-                                                header="Name",
-                                            ),
-                                            TableColumn(
-                                                key="status",
-                                                header="Status",
-                                                type="badge",
-                                            ),
-                                        ],
-                                        searchable=True,
-                                        paginated=True,
-                                        row_actions=[
-                                            TableAction(
-                                                label="Edit",
-                                                on_click=TableActionOnClick(
-                                                    type="navigate",
-                                                    navigate_to="/clients/{{ row.id }}",
+                                StatCardComponent(
+                                    id="stat-revenue",
+                                    type="stat-card",
+                                    title="Revenue",
+                                    value="{{ dashboardData.revenue }}",
+                                    trend=StatCardTrend(
+                                        value="+12%", direction="up"
+                                    ),
+                                ),
+                            ],
+                        ),
+                        # Tabs with nested content (new structure: children with TabItemComponent)
+                        TabsComponent(
+                            id="main-tabs",
+                            type="tabs",
+                            default_tab="clients",
+                            children=[
+                                TabItemComponent(
+                                    id="tab-clients",
+                                    label="Clients",
+                                    value="clients",
+                                    icon="Users",
+                                    children=[
+                                        DataTableComponent(
+                                            id="clients-table",
+                                            type="data-table",
+                                            data_source="dashboardData",
+                                            data_path="clients",
+                                            columns=[
+                                                TableColumn(
+                                                    key="name",
+                                                    header="Name",
                                                 ),
-                                            ),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                    # Modal component (new structure: children instead of props.content)
-                    ModalComponent(
-                        id="add-client-modal",
-                        type="modal",
-                        title="Add Client",
-                        trigger_label="Add New Client",
-                        trigger_variant="default",
-                        size="lg",
-                        children=[
-                            TextInputComponent(
-                                id="client-name",
-                                type="text-input",
-                                field_id="clientName",
-                                label="Client Name",
-                                required=True,
-                            ),
-                            SelectComponent(
-                                id="client-type",
-                                type="select",
-                                field_id="clientType",
-                                label="Type",
-                                options=[
-                                    SelectOption(
-                                        value="enterprise",
-                                        label="Enterprise",
-                                    ),
-                                    SelectOption(
-                                        value="smb",
-                                        label="SMB",
-                                    ),
-                                ],
-                            ),
-                        ],
-                        footer_actions=[
-                            ModalFooterAction(
-                                label="Create",
-                                action_type="submit",
-                                workflow_id="create-client",
-                                on_complete=[
-                                    OnCompleteAction(
-                                        type="refresh-table",
-                                        data_source_key="clients-table",
-                                    )
-                                ],
-                                close_on_click=True,
-                            ),
-                        ],
-                    ),
-                ],
-            ),
+                                                TableColumn(
+                                                    key="status",
+                                                    header="Status",
+                                                    type="badge",
+                                                ),
+                                            ],
+                                            searchable=True,
+                                            paginated=True,
+                                            row_actions=[
+                                                TableAction(
+                                                    label="Edit",
+                                                    on_click=TableActionOnClick(
+                                                        type="navigate",
+                                                        navigate_to="/clients/{{ row.id }}",
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        # Modal component (new structure: children instead of props.content)
+                        ModalComponent(
+                            id="add-client-modal",
+                            type="modal",
+                            title="Add Client",
+                            trigger_label="Add New Client",
+                            trigger_variant="default",
+                            size="lg",
+                            children=[
+                                TextInputComponent(
+                                    id="client-name",
+                                    type="text-input",
+                                    field_id="clientName",
+                                    label="Client Name",
+                                    required=True,
+                                ),
+                                SelectComponent(
+                                    id="client-type",
+                                    type="select",
+                                    field_id="clientType",
+                                    label="Type",
+                                    options=[
+                                        SelectOption(
+                                            value="enterprise",
+                                            label="Enterprise",
+                                        ),
+                                        SelectOption(
+                                            value="smb",
+                                            label="SMB",
+                                        ),
+                                    ],
+                                ),
+                            ],
+                            footer_actions=[
+                                ModalFooterAction(
+                                    label="Create",
+                                    action_type="submit",
+                                    workflow_id="create-client",
+                                    on_complete=[
+                                        OnCompleteAction(
+                                            type="refresh-table",
+                                            data_source_key="clients-table",
+                                        )
+                                    ],
+                                    close_on_click=True,
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
             permission=PagePermission(
                 allowed_roles=["admin", "manager"],
                 redirect_to="/unauthorized",
@@ -672,40 +685,46 @@ class TestRoundTrip:
         assert imported_page.permission is not None
         assert imported_page.permission.allowed_roles == ["admin", "manager"]
 
-        # Verify nested layout
-        layout = imported_page.layout
-        assert len(layout.children) == 3
+        # Verify page has one column child with nested content
+        assert len(imported_page.children) == 1
+        column = imported_page.children[0]
+        assert column.type == "column"
+        assert len(column.children) == 3  # type: ignore
 
         # Verify tabs with nested content (new structure)
-        tabs = layout.children[1]
+        tabs = column.children[1]  # type: ignore
         assert tabs.type == "tabs"  # type: ignore
         assert len(tabs.children) == 1  # type: ignore
 
         # Verify modal (new structure)
-        modal = layout.children[2]
+        modal = column.children[2]  # type: ignore
         assert modal.type == "modal"  # type: ignore
         assert modal.footer_actions is not None  # type: ignore
         assert modal.footer_actions[0].on_complete is not None  # type: ignore
 
     def test_export_excludes_none_values(self):
         """Export dict excludes None values."""
+        from src.models.contracts.app_components import ColumnComponent
+
         page = PageDefinition(
             id="page-1",
             title="Page",
             path="/",
-            layout=LayoutContainer(
-                id="layout-1",
-                type="column",
-                # gap, padding, etc are None
-                children=[
-                    HeadingComponent(
-                        id="h1",
-                        type="heading",
-                        text="Title",
-                        # level, class_name, etc are None
-                    ),
-                ],
-            ),
+            children=[
+                ColumnComponent(
+                    id="layout-1",
+                    type="column",
+                    # gap, padding, etc are None
+                    children=[
+                        HeadingComponent(
+                            id="h1",
+                            type="heading",
+                            text="Title",
+                            # level, class_name, etc are None
+                        ),
+                    ],
+                ),
+            ],
         )
 
         exported = page.model_dump(exclude_none=True)
@@ -715,12 +734,12 @@ class TestRoundTrip:
         assert "launch_workflow_id" not in exported
         assert "permission" not in exported
 
-        layout = exported["layout"]
-        assert "gap" not in layout
-        assert "padding" not in layout
-        assert "max_width" not in layout
+        column = exported["children"][0]
+        assert "gap" not in column
+        assert "padding" not in column
+        assert "max_width" not in column
 
-        component = layout["children"][0]
+        component = column["children"][0]
         assert "level" not in component  # flat props now
         assert "class_name" not in component
 

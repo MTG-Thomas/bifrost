@@ -1474,7 +1474,10 @@ class PageDefinition(BaseModel):
     id: str = Field(description="Page identifier")
     title: str = Field(description="Page title")
     path: str = Field(description="Page path/route")
-    layout: LayoutContainer = Field(description="Page layout")
+    children: list[AppComponent] = Field(
+        default_factory=list,
+        description="Page content - direct children like HTML body",
+    )
     data_sources: list[DataSourceConfig] = Field(
         default_factory=list, description="Data sources configured for this page"
     )

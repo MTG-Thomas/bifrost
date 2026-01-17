@@ -570,3 +570,41 @@ def test_discriminated_union_routes_leaf_types():
     table = adapter.validate_python(table_data)
     assert table.__class__.__name__ == "DataTableComponent"
     assert table.data_source == "data"  # type: ignore
+
+
+# ============================================================================
+# Task 1.4: AppComponent Union and PageDefinition Tests
+# ============================================================================
+
+
+def test_app_component_union_includes_layouts():
+    """AppComponent union should include row, column, grid."""
+    from pydantic import TypeAdapter
+
+    from src.models.contracts.app_components import AppComponent
+
+    adapter = TypeAdapter(AppComponent)
+
+    # All these should parse successfully
+    row = adapter.validate_python({"id": "r1", "type": "row", "children": []})
+    col = adapter.validate_python({"id": "c1", "type": "column", "children": []})
+    grid = adapter.validate_python({"id": "g1", "type": "grid", "children": []})
+
+    assert row.type == "row"
+    assert col.type == "column"
+    assert grid.type == "grid"
+
+
+def test_page_definition_has_children():
+    """PageDefinition should have children instead of layout."""
+    from src.models.contracts.app_components import ColumnComponent, PageDefinition
+
+    page = PageDefinition(
+        id="page1",
+        title="Home",
+        path="/",
+        children=[ColumnComponent(id="col1", children=[])],
+    )
+
+    assert len(page.children) == 1
+    assert page.children[0].type == "column"
