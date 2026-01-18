@@ -25,6 +25,7 @@ Structure:
 - tables.py       - table CRUD and schema
 - organizations.py - organization CRUD (restricted)
 - agents.py       - agent CRUD and schema
+- code_files.py   - code file CRUD for code engine apps
 """
 
 # Import all tool modules to trigger registration
@@ -43,3 +44,4 @@ from src.services.mcp_server.tools import tables  # noqa: F401
 from src.services.mcp_server.tools import organizations  # noqa: F401
 from src.services.mcp_server.tools import sdk  # noqa: F401
 from src.services.mcp_server.tools import agents  # noqa: F401
+from src.services.mcp_server.tools import code_files  # noqa: F401
