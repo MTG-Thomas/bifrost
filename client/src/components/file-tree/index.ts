@@ -45,7 +45,15 @@ export type {
 	EditorCallbacks,
 	FileTreeConfig,
 	FileTreeProps,
+	PathValidator,
+	PathValidationResult,
 } from "./types";
+
+// Validation
+export {
+	validateAppCodePath,
+	createRelativePathValidator,
+} from "./validation";
 
 // Icon resolvers
 export {

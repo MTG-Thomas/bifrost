@@ -146,6 +146,19 @@ export interface EditorCallbacks {
 }
 
 /**
+ * Result of path validation
+ */
+export interface PathValidationResult {
+	valid: boolean;
+	error?: string;
+}
+
+/**
+ * Path validator function type
+ */
+export type PathValidator = (path: string) => PathValidationResult;
+
+/**
  * Configuration for file tree behavior
  */
 export interface FileTreeConfig {
@@ -163,6 +176,13 @@ export interface FileTreeConfig {
 	emptyMessage?: string;
 	/** Custom loading message */
 	loadingMessage?: string;
+	/**
+	 * Optional path validator function
+	 *
+	 * When provided, validates paths before create/rename/move operations.
+	 * Used by code engine file trees to enforce path conventions.
+	 */
+	pathValidator?: PathValidator;
 }
 
 /**

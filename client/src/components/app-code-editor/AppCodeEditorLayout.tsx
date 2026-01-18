@@ -13,6 +13,7 @@ import {
 	FileTree,
 	createAppCodeOperations,
 	appCodeIconResolver,
+	validateAppCodePath,
 } from "@/components/file-tree";
 import { AppCodeEditor } from "./AppCodeEditor";
 import { AppCodePreview } from "./AppCodePreview";
@@ -356,6 +357,7 @@ export function AppCodeEditorLayout({
 								enableDelete: true,
 								emptyMessage: "No files yet",
 								loadingMessage: "Loading files...",
+								pathValidator: validateAppCodePath,
 							}}
 						/>
 					</div>

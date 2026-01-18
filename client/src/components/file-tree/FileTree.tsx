@@ -10,7 +10,7 @@
  * portable across different contexts.
  */
 
-import { useEffect, useCallback, useState, useRef } from "react";
+import { useEffect, useCallback, useState, useRef, useMemo } from "react";
 import {
 	ChevronRight,
 	ChevronDown,
@@ -54,14 +54,22 @@ import type {
 	EditorCallbacks,
 	FileTreeConfig,
 	FileOperations,
+	PathValidator,
 } from "./types";
 
 type CreatingItemType = "file" | "folder" | null;
 
 /**
+ * Resolved config type with pathValidator always present (but possibly undefined)
+ */
+type ResolvedConfig = Omit<Required<FileTreeConfig>, "pathValidator"> & {
+	pathValidator: PathValidator | undefined;
+};
+
+/**
  * Default configuration for file tree behavior
  */
-const DEFAULT_CONFIG: Required<FileTreeConfig> = {
+const DEFAULT_CONFIG: ResolvedConfig = {
 	enableUpload: false, // Disabled by default - workspace adapter enables it
 	enableDragMove: true,
 	enableCreate: true,
@@ -69,6 +77,7 @@ const DEFAULT_CONFIG: Required<FileTreeConfig> = {
 	enableDelete: true,
 	emptyMessage: "No files found",
 	loadingMessage: "Loading files...",
+	pathValidator: undefined,
 };
 
 /**
@@ -88,7 +97,11 @@ export function FileTree({
 	className,
 	refreshTrigger,
 }: FileTreeProps) {
-	const config = { ...DEFAULT_CONFIG, ...userConfig };
+	// Memoize config to avoid recreating on every render
+	const config: ResolvedConfig = useMemo(
+		() => ({ ...DEFAULT_CONFIG, ...userConfig }),
+		[userConfig],
+	);
 
 	const {
 		files,
@@ -208,12 +221,23 @@ export function FileTree({
 	const handleSaveNewItem = useCallback(async () => {
 		if (!newItemName.trim() || !creatingItem) return;
 
+		const fullPath = creatingInFolder
+			? `${creatingInFolder}/${newItemName}`
+			: newItemName;
+
+		// Validate path if validator is configured
+		if (config.pathValidator) {
+			const validation = config.pathValidator(fullPath);
+			if (!validation.valid) {
+				toast.error(`Invalid ${creatingItem} path`, {
+					description: validation.error,
+				});
+				return;
+			}
+		}
+
 		try {
 			setIsProcessing(true);
-
-			const fullPath = creatingInFolder
-				? `${creatingInFolder}/${newItemName}`
-				: newItemName;
 
 			if (creatingItem === "file") {
 				await operations.write(fullPath, "");
@@ -233,7 +257,7 @@ export function FileTree({
 		} finally {
 			setIsProcessing(false);
 		}
-	}, [newItemName, creatingItem, creatingInFolder, loadFiles, operations]);
+	}, [newItemName, creatingItem, creatingInFolder, loadFiles, operations, config]);
 
 	// Focus input when creating new item
 	useEffect(() => {
@@ -332,11 +356,23 @@ export function FileTree({
 			return;
 		}
 
+		const newPath = renamingFile.path.includes("/")
+			? renamingFile.path.replace(/[^/]+$/, renameValue)
+			: renameValue;
+
+		// Validate path if validator is configured
+		if (config.pathValidator) {
+			const validation = config.pathValidator(newPath);
+			if (!validation.valid) {
+				toast.error("Invalid path", {
+					description: validation.error,
+				});
+				return;
+			}
+		}
+
 		try {
 			setIsProcessing(true);
-			const newPath = renamingFile.path.includes("/")
-				? renamingFile.path.replace(/[^/]+$/, renameValue)
-				: renameValue;
 
 			const parentFolder = renamingFile.path.includes("/")
 				? renamingFile.path.substring(0, renamingFile.path.lastIndexOf("/"))
@@ -357,7 +393,7 @@ export function FileTree({
 		} finally {
 			setIsProcessing(false);
 		}
-	}, [renamingFile, renameValue, loadFiles, handleCancelRename, editor, operations]);
+	}, [renamingFile, renameValue, loadFiles, handleCancelRename, editor, operations, config]);
 
 	// Focus rename input when renaming starts
 	useEffect(() => {
@@ -461,6 +497,17 @@ export function FileTree({
 				// Don't do anything if the path hasn't changed
 				if (draggedPath === newPath) return;
 
+				// Validate path if validator is configured
+				if (config.pathValidator) {
+					const validation = config.pathValidator(newPath);
+					if (!validation.valid) {
+						toast.error("Cannot move here", {
+							description: validation.error,
+						});
+						return;
+					}
+				}
+
 				setIsProcessing(true);
 
 				const sourceFolder = draggedPath.includes("/")
@@ -488,7 +535,7 @@ export function FileTree({
 				setIsProcessing(false);
 			}
 		},
-		[loadFiles, editor, operations, config.enableDragMove],
+		[loadFiles, editor, operations, config],
 	);
 
 	return (
@@ -687,7 +734,7 @@ export function FileTree({
 interface FileTreeItemProps {
 	file: FileTreeNode;
 	iconResolver: FileIconResolver;
-	config: Required<FileTreeConfig>;
+	config: ResolvedConfig;
 	editor?: EditorCallbacks;
 	onFileClick: (file: FileNode) => void;
 	onFolderToggle: (folder: FileNode) => void;
