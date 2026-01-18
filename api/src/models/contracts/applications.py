@@ -501,5 +501,64 @@ class ComponentTreeNode(BaseModel):
     children: list["ComponentTreeNode"] = Field(default_factory=list)
 
 
+# ==================== JSX FILE MODELS ====================
+
+
+class JsxFileBase(BaseModel):
+    """Shared JSX file fields."""
+
+    path: str = Field(
+        min_length=1,
+        max_length=500,
+        description="File path within the app (e.g., 'pages/clients/[id]', 'components/Button')",
+    )
+
+
+class JsxFileCreate(JsxFileBase):
+    """Input for creating a JSX file."""
+
+    source: str = Field(
+        min_length=1,
+        description="Original JSX/TypeScript source code",
+    )
+
+
+class JsxFileUpdate(BaseModel):
+    """Input for updating a JSX file."""
+
+    source: str | None = Field(
+        default=None,
+        description="Updated JSX/TypeScript source code",
+    )
+    compiled: str | None = Field(
+        default=None,
+        description="Compiled JavaScript output (Babel)",
+    )
+
+
+class JsxFileResponse(JsxFileBase):
+    """Full JSX file response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    app_version_id: UUID = Field(description="ID of the version this file belongs to")
+    source: str = Field(description="Original JSX/TypeScript source code")
+    compiled: str | None = Field(default=None, description="Compiled JavaScript output")
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_dt(self, dt: datetime) -> str:
+        return dt.isoformat()
+
+
+class JsxFileListResponse(BaseModel):
+    """Response for listing JSX files."""
+
+    files: list[JsxFileResponse]
+    total: int
+
+
 # ==================== IMPORT MODELS ====================
 # Applications use file sync (like forms/agents), not a dedicated import endpoint
