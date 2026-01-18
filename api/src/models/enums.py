@@ -146,14 +146,3 @@ class ExecutionModel(str, Enum):
     - PROCESS: Process pool model (process_pool.py + simple_worker.py)
     """
     PROCESS = "process"
-
-
-class AppEngine(str, Enum):
-    """
-    App Builder rendering engine.
-
-    - COMPONENTS: JSON component tree (v1, default)
-    - CODE: Code-based engine with file-based components (v2)
-    """
-    COMPONENTS = "components"
-    CODE = "code"
