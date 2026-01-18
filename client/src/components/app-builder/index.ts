@@ -12,6 +12,9 @@ export { WorkflowStatusIndicator } from "./WorkflowStatusIndicator";
 export { AppUpdateIndicator } from "./AppUpdateIndicator";
 export { NewVersionBanner } from "./NewVersionBanner";
 
+// Modals
+export { CreateAppModal } from "./CreateAppModal";
+
 // Editor
 export {
 	EditorShell,

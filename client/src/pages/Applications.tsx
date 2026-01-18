@@ -19,7 +19,7 @@ import {
 	Table as TableIcon,
 	Eye,
 } from "lucide-react";
-import { AppEngineSelector } from "@/components/app-builder/AppEngineSelector";
+import { CreateAppModal } from "@/components/app-builder/CreateAppModal";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -110,8 +110,13 @@ export function Applications() {
 		setIsEngineSelectOpen(true);
 	};
 
-	const handleEdit = (appId: string) => {
-		navigate(`/apps/${appId}/edit`);
+	const handleEdit = (appSlug: string, engine?: string) => {
+		// Route to appropriate editor based on engine type
+		if (engine === "code" || engine === "jsx") {
+			navigate(`/apps/${appSlug}/edit/code`);
+		} else {
+			navigate(`/apps/${appSlug}/edit`);
+		}
 	};
 
 	const handlePreview = (appId: string) => {
@@ -369,7 +374,10 @@ export function Applications() {
 													variant="outline"
 													size="icon"
 													onClick={() =>
-														handleEdit(app.slug)
+														handleEdit(
+															app.slug,
+															(app as { engine?: string }).engine,
+														)
 													}
 													title="Edit application"
 												>
@@ -518,6 +526,7 @@ export function Applications() {
 															onClick={() =>
 																handleEdit(
 																	app.slug,
+																	(app as { engine?: string }).engine,
 																)
 															}
 															title="Edit application"
@@ -606,8 +615,8 @@ export function Applications() {
 				</AlertDialogContent>
 			</AlertDialog>
 
-			{/* Engine Selection Dialog */}
-			<AppEngineSelector
+			{/* Create Application Dialog */}
+			<CreateAppModal
 				open={isEngineSelectOpen}
 				onOpenChange={setIsEngineSelectOpen}
 			/>
