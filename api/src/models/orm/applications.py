@@ -1,12 +1,15 @@
 """
-Application, AppVersion, AppPage, and AppComponent ORM models.
+Application, AppVersion, AppPage, AppComponent, and JsxFile ORM models.
 
 Represents applications for the App Builder with:
-- applications: metadata, navigation, permissions
+- applications: metadata, navigation, permissions, engine type
 - app_versions: version snapshots (active = live, draft = current work)
-- app_pages: one row per page, linked to a version
-- app_components: one row per component with parent_id for tree structure
+- app_pages: one row per page, linked to a version (components engine)
+- app_components: one row per component with parent_id for tree structure (components engine)
+- app_jsx_files: JSX/TS source files for JSX engine apps
 """
+
+from __future__ import annotations
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -16,7 +19,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Te
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.models.enums import AppAccessLevel
+from src.models.enums import AppAccessLevel, AppEngine
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
@@ -50,6 +53,11 @@ class AppVersion(Base):
         back_populates="version_ref",
         cascade="all, delete-orphan",
         foreign_keys="AppPage.version_id",
+    )
+    jsx_files: Mapped[list["JsxFile"]] = relationship(
+        "JsxFile",
+        back_populates="version",
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
@@ -98,6 +106,11 @@ class Application(Base):
     # Access control (follows same pattern as forms)
     access_level: Mapped[str] = mapped_column(
         String(20), default=AppAccessLevel.AUTHENTICATED, server_default="'authenticated'"
+    )
+
+    # Engine type: 'components' (v1 JSON tree) or 'jsx' (v2 file-based)
+    engine: Mapped[str] = mapped_column(
+        String(20), default=AppEngine.COMPONENTS, server_default="'components'"
     )
 
     # Metadata
@@ -290,3 +303,44 @@ class AppComponent(Base):
     def is_layout(self) -> bool:
         """Check if this component is a layout container."""
         return self.type in ("row", "column", "grid")
+
+
+class JsxFile(Base):
+    """JSX/TypeScript source file for JSX engine apps.
+
+    Each file belongs to a version (via app_version_id).
+    Path is the unique identifier within a version (e.g., "pages/clients/[id]").
+    """
+
+    __tablename__ = "app_jsx_files"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    app_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("app_versions.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Identity (path is the key within a version)
+    path: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    # Content
+    source: Mapped[str] = mapped_column(Text, nullable=False)  # Original JSX/TS source
+    compiled: Mapped[str | None] = mapped_column(Text, default=None)  # Babel output
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        server_default=text("NOW()"),
+        onupdate=datetime.utcnow,
+    )
+
+    # Relationships
+    version: Mapped["AppVersion"] = relationship("AppVersion", back_populates="jsx_files")
+
+    __table_args__ = (
+        Index("ix_jsx_files_version", "app_version_id"),
+        Index("ix_jsx_files_path", "app_version_id", "path", unique=True),
+    )
