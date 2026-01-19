@@ -66,6 +66,11 @@ class SyncAction(BaseModel):
     action: SyncActionType = Field(..., description="Type of action")
     sha: str | None = Field(default=None, description="Git blob SHA (for pull actions)")
 
+    # Entity metadata for UI display
+    display_name: str | None = Field(default=None, description="Human-readable entity name")
+    entity_type: str | None = Field(default=None, description="Entity type: form, agent, app, app_file, workflow")
+    parent_slug: str | None = Field(default=None, description="For app_file: parent app slug")
+
     model_config = ConfigDict(from_attributes=True)
 
 
