@@ -7,6 +7,10 @@ import App from "./App.tsx";
 import { queryClient } from "./lib/queryClient";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { OrgScopeQueryInvalidator } from "./components/OrgScopeQueryInvalidator";
+import { configureMonaco } from "./lib/monaco-setup";
+
+// Configure Monaco editor before React renders (sets up CDN paths for workers)
+configureMonaco();
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>

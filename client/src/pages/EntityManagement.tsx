@@ -1220,9 +1220,9 @@ export function EntityManagement() {
 				<div className="lg:col-span-3 flex flex-col gap-4">
 					{/* Organizations Section */}
 					<div className="max-h-[50%] flex flex-col">
-						<div className="flex items-center gap-2 mb-2">
-							<Building2 className="h-4 w-4 text-muted-foreground" />
-							<h3 className="text-sm font-medium">Organizations</h3>
+						<div className="flex items-center gap-2 mb-3">
+							<Building2 className="h-5 w-5 text-muted-foreground" />
+							<h3 className="text-lg font-semibold">Organizations</h3>
 						</div>
 						<div className="space-y-1.5 overflow-y-auto">
 							<OrgDropTarget organization={null} onDrop={handleOrgDrop} />
@@ -1238,9 +1238,9 @@ export function EntityManagement() {
 
 					{/* Access Levels Section */}
 					<div className="max-h-[50%] flex flex-col">
-						<div className="flex items-center gap-2 mb-2">
-							<Shield className="h-4 w-4 text-muted-foreground" />
-							<h3 className="text-sm font-medium">Access Levels</h3>
+						<div className="flex items-center gap-2 mb-3">
+							<Shield className="h-5 w-5 text-muted-foreground" />
+							<h3 className="text-lg font-semibold">Access Levels</h3>
 						</div>
 						<div className="space-y-1.5 overflow-y-auto">
 							<RoleDropTarget role="authenticated" onDrop={handleRoleDrop} />

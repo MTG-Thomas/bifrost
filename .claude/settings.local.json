@@ -183,7 +183,8 @@
       "mcp__bifrost__code_update_file",
       "mcp__bifrost__code_get_file",
       "mcp__bifrost__code_list_files",
-      "mcp__bifrost__list_agents"
+      "mcp__bifrost__list_agents",
+      "Skill(superpowers:writing-plans)"
     ],
     "deny": [],
     "ask": [],
