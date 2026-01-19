@@ -29,6 +29,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.services.file_storage.file_ops import compute_git_blob_sha
+from src.services.github_sync_entity_metadata import extract_entity_metadata
 from src.services.github_sync_virtual_files import (
     SerializationError,
     VirtualFileProvider,
@@ -72,6 +73,24 @@ class SyncAction(BaseModel):
     parent_slug: str | None = Field(default=None, description="For app_file: parent app slug")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+def _enrich_sync_action(
+    path: str,
+    action: SyncActionType,
+    sha: str | None = None,
+    content: bytes | None = None,
+) -> SyncAction:
+    """Create a SyncAction enriched with entity metadata."""
+    metadata = extract_entity_metadata(path, content)
+    return SyncAction(
+        path=path,
+        action=action,
+        sha=sha,
+        display_name=metadata.display_name,
+        entity_type=metadata.entity_type,
+        parent_slug=metadata.parent_slug,
+    )
 
 
 class ConflictInfo(BaseModel):
@@ -740,10 +759,17 @@ class GitHubSyncService:
 
                 if local_sha is None:
                     # New file in remote - pull it
-                    to_pull.append(SyncAction(
+                    # Read content from clone for entity metadata extraction
+                    remote_content: bytes | None = None
+                    try:
+                        remote_content = (clone_path / path).read_bytes()
+                    except Exception:
+                        pass
+                    to_pull.append(_enrich_sync_action(
                         path=path,
                         action=SyncActionType.ADD,
                         sha=remote_sha,
+                        content=remote_content,
                     ))
                 elif local_sha != remote_sha:
                     # SHA differs - need to determine if it's a conflict or just pull/push
@@ -826,9 +852,17 @@ class GitHubSyncService:
                     ))
                 else:
                     # New local file (never synced) - push
-                    to_push.append(SyncAction(
+                    # Read local content for entity metadata extraction
+                    local_file_content: bytes | None = None
+                    try:
+                        file_storage = FileStorageService(self.db)
+                        local_file_content, _ = await file_storage.read_file(path)
+                    except Exception:
+                        pass
+                    to_push.append(_enrich_sync_action(
                         path=path,
                         action=SyncActionType.ADD,
+                        content=local_file_content,
                     ))
 
             # 5. Compare virtual files by entity ID
@@ -841,18 +875,26 @@ class GitHubSyncService:
             # Virtual files in local but not in remote -> push
             for entity_id, vf in local_virtual_by_id.items():
                 if entity_id not in remote_virtual_files:
-                    to_push.append(SyncAction(
+                    to_push.append(_enrich_sync_action(
                         path=vf.path,
                         action=SyncActionType.ADD,
+                        content=vf.content,
                     ))
 
             # Virtual files in remote but not in local -> pull
             for entity_id, (remote_path, remote_sha, _) in remote_virtual_files.items():
                 if entity_id not in local_virtual_by_id:
-                    to_pull.append(SyncAction(
+                    # Read content from clone for entity metadata extraction
+                    vf_remote_content: bytes | None = None
+                    try:
+                        vf_remote_content = (clone_path / remote_path).read_bytes()
+                    except Exception:
+                        pass
+                    to_pull.append(_enrich_sync_action(
                         path=remote_path,
                         action=SyncActionType.ADD,
                         sha=remote_sha,
+                        content=vf_remote_content,
                     ))
 
             # Both exist -> compare SHAs
@@ -1364,7 +1406,7 @@ class GitHubSyncService:
                 if resolution == "keep_local":
                     # Check if not already in push list
                     if not any(a.path == path for a in files_to_push):
-                        files_to_push.append(SyncAction(
+                        files_to_push.append(_enrich_sync_action(
                             path=path,
                             action=SyncActionType.MODIFY,
                         ))
