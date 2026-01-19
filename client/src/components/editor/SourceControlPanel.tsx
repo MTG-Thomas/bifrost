@@ -10,9 +10,6 @@ import {
 	Upload,
 	RefreshCw,
 	ArrowDownToLine,
-	Plus,
-	Minus,
-	Edit3,
 	AlertCircle,
 	FileWarning,
 	ChevronDown,
@@ -37,6 +34,8 @@ import {
 	type OrphanInfo,
 } from "@/hooks/useGitHub";
 import { useEditorStore } from "@/stores/editorStore";
+import { EntitySyncItem } from "./EntitySyncItem";
+import { groupSyncActions } from "./groupSyncActions";
 
 /**
  * Source Control panel for Git/GitHub integration
@@ -676,21 +675,7 @@ export function SourceControlPanel() {
 // =============================================================================
 
 /**
- * Get the appropriate icon for a sync action type
- */
-function getActionIcon(action: "add" | "modify" | "delete") {
-	switch (action) {
-		case "add":
-			return <Plus className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />;
-		case "modify":
-			return <Edit3 className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />;
-		case "delete":
-			return <Minus className="h-3.5 w-3.5 text-red-500 flex-shrink-0" />;
-	}
-}
-
-/**
- * List of sync actions (files to pull or push)
+ * List of sync actions (files to pull or push) - Entity-centric display
  */
 function SyncActionList({
 	title,
@@ -702,6 +687,7 @@ function SyncActionList({
 	actions: SyncAction[];
 }) {
 	const [expanded, setExpanded] = useState(true);
+	const groupedEntities = groupSyncActions(actions);
 
 	return (
 		<div className={cn("border-t flex flex-col min-h-0", expanded && "flex-1")}>
@@ -717,21 +703,17 @@ function SyncActionList({
 				{icon}
 				<span className="text-sm font-medium flex-1 truncate">{title}</span>
 				<span className="text-xs text-muted-foreground bg-muted w-10 text-center py-0.5 rounded-full flex-shrink-0">
-					{actions.length > 999 ? "999+" : actions.length}
+					{groupedEntities.length > 999 ? "999+" : groupedEntities.length}
 				</span>
 			</button>
 			{expanded && (
-				<div className="flex-1 overflow-y-auto px-4 pb-2 space-y-0.5 min-h-0">
-					{actions.map((action) => (
-						<div
-							key={action.path}
-							className="flex items-center gap-2 text-xs py-1 px-2 rounded hover:bg-muted/30"
-						>
-							{getActionIcon(action.action)}
-							<span className="truncate font-mono" title={action.path}>
-								{action.path}
-							</span>
-						</div>
+				<div className="flex-1 overflow-y-auto px-4 pb-2 min-h-0">
+					{groupedEntities.map((entity) => (
+						<EntitySyncItem
+							key={entity.action.path}
+							action={entity.action}
+							childFiles={entity.childFiles}
+						/>
 					))}
 				</div>
 			)}
@@ -740,7 +722,7 @@ function SyncActionList({
 }
 
 /**
- * List of conflicts with resolution buttons
+ * List of conflicts with resolution buttons - Entity-centric display
  */
 function ConflictList({
 	conflicts,
@@ -779,48 +761,31 @@ function ConflictList({
 				</span>
 			</button>
 			{expanded && (
-				<div className="flex-1 overflow-y-auto px-4 pb-2 space-y-2 min-h-0">
+				<div className="flex-1 overflow-y-auto px-4 pb-2 min-h-0">
 					{conflicts.map((conflict) => {
 						const resolution = resolutions[conflict.path];
+						// Extract entity metadata from path
+						const metadata: SyncAction = {
+							path: conflict.path,
+							action: "modify" as const,
+							display_name: conflict.path.split("/").pop() || conflict.path,
+							entity_type: conflict.path.endsWith(".form.json")
+								? "form"
+								: conflict.path.endsWith(".agent.json")
+									? "agent"
+									: conflict.path.startsWith("apps/")
+										? "app"
+										: "workflow",
+						};
+
 						return (
-							<div
+							<EntitySyncItem
 								key={conflict.path}
-								className="py-1"
-							>
-								<div className="flex items-center gap-2">
-									<AlertCircle className="h-3.5 w-3.5 text-orange-500 flex-shrink-0" />
-									<span
-										className="text-xs font-mono truncate"
-										title={conflict.path}
-									>
-										{conflict.path}
-									</span>
-								</div>
-								<div className="flex mt-1">
-									<button
-										onClick={() => onResolve(conflict.path, "keep_local")}
-										className={cn(
-											"flex-1 py-1 text-xs transition-colors",
-											resolution === "keep_local"
-												? "bg-primary text-primary-foreground"
-												: "bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted"
-										)}
-									>
-										Keep Local
-									</button>
-									<button
-										onClick={() => onResolve(conflict.path, "keep_remote")}
-										className={cn(
-											"flex-1 py-1 text-xs transition-colors",
-											resolution === "keep_remote"
-												? "bg-primary text-primary-foreground"
-												: "bg-muted/50 text-muted-foreground hover:text-foreground hover:bg-muted"
-										)}
-									>
-										Keep Remote
-									</button>
-								</div>
-							</div>
+								action={metadata}
+								isConflict
+								resolution={resolution}
+								onResolve={(res) => onResolve(conflict.path, res)}
+							/>
 						);
 					})}
 				</div>
