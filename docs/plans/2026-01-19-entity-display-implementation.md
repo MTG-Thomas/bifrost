@@ -10,6 +10,31 @@
 
 ---
 
+## Status
+
+| Task | Description | Status |
+|------|-------------|--------|
+| 1 | Extend SyncAction Model with Entity Metadata | ✅ Done |
+| 2 | Add Entity Metadata Extraction Utilities | ✅ Done |
+| 3 | Enrich SyncActions with Entity Metadata in get_sync_preview | ✅ Done |
+| 4 | Regenerate TypeScript Types | ✅ Done |
+| 5 | Create EntitySyncItem Component | ✅ Done |
+| 6 | Create Entity Grouping Utility | ✅ Done |
+| 7 | Update SourceControlPanel to Use Entity Display | ⏳ Pending |
+| 8 | Manual Testing | ⏳ Pending |
+| 9 | Create Migration to Delete workspace_files Entries | ⏳ Pending |
+| 10 | Remove S3 Write Functions from Forms Router | ⏳ Pending |
+| 11 | Remove S3 Write Functions from Agents Router | ⏳ Pending |
+| 12 | Remove S3 Writes from MCP Tools | ⏳ Pending |
+| 13 | Create Migration to Remove file_path Columns | ⏳ Pending |
+| 14 | Run Full Test Suite | ⏳ Pending |
+
+**Notes:**
+- Task 4 required updating both the service model AND the contract model (`api/src/models/contracts/github.py`), plus updating the router mapping to pass through the new fields
+- Fixed pre-existing TypeScript errors related to `clear_roles` and null `id` handling
+
+---
+
 ## Phase 1: Git Sync UI Enhancement
 
 ### Task 1: Extend SyncAction Model with Entity Metadata
