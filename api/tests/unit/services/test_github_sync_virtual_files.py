@@ -1,9 +1,11 @@
 """
 Unit tests for VirtualFileProvider.
 
-Tests the virtual file generation for platform entities (apps, forms, agents)
+Tests the virtual file generation for platform entities (forms, agents)
 in the GitHub sync flow. These virtual files enable platform entities to
 participate in sync by serializing them on-the-fly with portable workflow refs.
+
+Note: App handling has been removed from the platform.
 """
 
 import json
@@ -17,12 +19,6 @@ from src.services.file_storage.file_ops import compute_git_blob_sha
 # =============================================================================
 # Test Data Fixtures
 # =============================================================================
-
-
-@pytest.fixture
-def valid_app_uuid():
-    """A valid UUID for testing."""
-    return UUID("550e8400-e29b-41d4-a716-446655440000")
 
 
 @pytest.fixture
@@ -58,20 +54,6 @@ def mock_db_session():
 
 
 # Sample serialized content for mocking
-def make_app_content(workflow_map: dict | None = None) -> bytes:
-    """Generate sample app JSON content."""
-    data = {
-        "name": "Test App",
-        "slug": "test-app",
-        "description": "A test application",
-        "pages": [],
-        "export_version": "1.0",
-    }
-    if workflow_map:
-        data["_export"] = {"workflow_refs": [], "version": "1.0"}
-    return json.dumps(data, indent=2).encode("utf-8")
-
-
 def make_form_content(form_id: str, workflow_id: str | None = None, workflow_map: dict | None = None) -> bytes:
     """Generate sample form JSON content."""
     data = {
@@ -120,13 +102,13 @@ def make_agent_content(agent_id: str, tool_ids: list | None = None, workflow_map
 class TestExtractIdFromFilename:
     """Tests for extracting UUID from entity filenames."""
 
-    def test_extract_id_from_filename_valid_app(self):
-        """Test extracting UUID from valid app filename."""
+    def test_extract_id_from_filename_app_not_supported(self):
+        """Test that app filenames return None (app handling removed)."""
         from src.services.github_sync_virtual_files import VirtualFileProvider
 
         filename = "550e8400-e29b-41d4-a716-446655440000.app.json"
         result = VirtualFileProvider.extract_id_from_filename(filename)
-        assert result == "550e8400-e29b-41d4-a716-446655440000"
+        assert result is None
 
     def test_extract_id_from_filename_valid_form(self):
         """Test extracting UUID from valid form filename."""
@@ -144,11 +126,11 @@ class TestExtractIdFromFilename:
         result = VirtualFileProvider.extract_id_from_filename(filename)
         assert result == "550e8400-e29b-41d4-a716-446655440000"
 
-    def test_extract_id_from_filename_uppercase_uuid(self):
-        """Test extracting UUID handles case insensitivity."""
+    def test_extract_id_from_filename_uppercase_uuid_form(self):
+        """Test extracting UUID handles case insensitivity for forms."""
         from src.services.github_sync_virtual_files import VirtualFileProvider
 
-        filename = "550E8400-E29B-41D4-A716-446655440000.app.json"
+        filename = "550E8400-E29B-41D4-A716-446655440000.form.json"
         result = VirtualFileProvider.extract_id_from_filename(filename)
         # The regex is case insensitive, so it matches and returns the UUID as-is
         assert result == "550E8400-E29B-41D4-A716-446655440000"
@@ -256,85 +238,6 @@ class TestExtractIdFromContent:
 
 
 # =============================================================================
-# Test: get_app_virtual_files
-# =============================================================================
-
-
-class TestGetAppVirtualFiles:
-    """Tests for serializing apps as virtual files."""
-
-    @pytest.mark.asyncio
-    async def test_get_app_virtual_files(self, mock_db_session, valid_app_uuid):
-        """Test that apps are serialized as virtual files."""
-        from src.services.github_sync_virtual_files import (
-            VirtualFileProvider,
-            VirtualFile,
-            VirtualFileResult,
-        )
-
-        provider = VirtualFileProvider(mock_db_session)
-
-        # Create expected content and virtual file
-        expected_content = make_app_content()
-        expected_sha = compute_git_blob_sha(expected_content)
-
-        expected_file = VirtualFile(
-            path=f"apps/{valid_app_uuid}.app.json",
-            entity_type="app",
-            entity_id=str(valid_app_uuid),
-            content=expected_content,
-            computed_sha=expected_sha,
-        )
-
-        # Mock all internal methods to return controlled results (now return VirtualFileResult)
-        with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
-        ), patch.object(
-            provider, "_get_form_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
-            provider, "_get_agent_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch(
-            "src.services.github_sync_virtual_files.build_workflow_ref_map",
-            return_value={},
-        ):
-            result = await provider.get_all_virtual_files()
-
-        # Find app files
-        app_files = [f for f in result.files if f.entity_type == "app"]
-        assert len(app_files) == 1
-
-        app_file = app_files[0]
-        expected_path = f"apps/{valid_app_uuid}.app.json"
-        assert app_file.path == expected_path
-        assert app_file.entity_id == str(valid_app_uuid)
-        assert app_file.computed_sha is not None
-        assert app_file.content is not None
-
-    @pytest.mark.asyncio
-    async def test_get_app_virtual_files_empty_db(self, mock_db_session):
-        """Test that empty database returns empty list for apps."""
-        from src.services.github_sync_virtual_files import VirtualFileProvider, VirtualFileResult
-
-        provider = VirtualFileProvider(mock_db_session)
-
-        # Mock all internal methods to return empty
-        with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
-            provider, "_get_form_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
-            provider, "_get_agent_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch(
-            "src.services.github_sync_virtual_files.build_workflow_ref_map",
-            return_value={},
-        ):
-            result = await provider.get_all_virtual_files()
-
-        app_files = [f for f in result.files if f.entity_type == "app"]
-        assert len(app_files) == 0
-
-
-# =============================================================================
 # Test: get_form_virtual_files
 # =============================================================================
 
@@ -365,8 +268,6 @@ class TestGetFormVirtualFiles:
         )
 
         with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
             provider, "_get_form_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
         ), patch.object(
             provider, "_get_agent_files", return_value=VirtualFileResult(files=[], errors=[])
@@ -417,8 +318,6 @@ class TestGetAgentVirtualFiles:
         )
 
         with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
             provider, "_get_form_files", return_value=VirtualFileResult(files=[], errors=[])
         ), patch.object(
             provider, "_get_agent_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
@@ -481,8 +380,6 @@ class TestPortableRefsInVirtualContent:
         )
 
         with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
             provider, "_get_form_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
         ), patch.object(
             provider, "_get_agent_files", return_value=VirtualFileResult(files=[], errors=[])
@@ -542,8 +439,6 @@ class TestPortableRefsInVirtualContent:
         )
 
         with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
             provider, "_get_form_files", return_value=VirtualFileResult(files=[], errors=[])
         ), patch.object(
             provider, "_get_agent_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
@@ -579,7 +474,7 @@ class TestShaComputedFromSerializedContent:
     """Tests for SHA computation matching serialized content."""
 
     @pytest.mark.asyncio
-    async def test_sha_computed_from_serialized_content(self, mock_db_session, valid_app_uuid):
+    async def test_sha_computed_from_serialized_content(self, mock_db_session, valid_form_uuid):
         """Test SHA matches recomputed value from content."""
         from src.services.github_sync_virtual_files import (
             VirtualFileProvider,
@@ -589,21 +484,19 @@ class TestShaComputedFromSerializedContent:
 
         provider = VirtualFileProvider(mock_db_session)
 
-        expected_content = make_app_content()
+        expected_content = make_form_content(str(valid_form_uuid))
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"apps/{valid_app_uuid}.app.json",
-            entity_type="app",
-            entity_id=str(valid_app_uuid),
+            path=f"forms/{valid_form_uuid}.form.json",
+            entity_type="form",
+            entity_id=str(valid_form_uuid),
             content=expected_content,
             computed_sha=expected_sha,
         )
 
         with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
-        ), patch.object(
-            provider, "_get_form_files", return_value=VirtualFileResult(files=[], errors=[])
+            provider, "_get_form_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
         ), patch.object(
             provider, "_get_agent_files", return_value=VirtualFileResult(files=[], errors=[])
         ), patch(
@@ -612,16 +505,16 @@ class TestShaComputedFromSerializedContent:
         ):
             result = await provider.get_all_virtual_files()
 
-        app_files = [f for f in result.files if f.entity_type == "app"]
-        assert len(app_files) == 1
+        form_files = [f for f in result.files if f.entity_type == "form"]
+        assert len(form_files) == 1
 
-        app_file = app_files[0]
-        assert app_file.content is not None
-        assert app_file.computed_sha is not None
+        form_file = form_files[0]
+        assert form_file.content is not None
+        assert form_file.computed_sha is not None
 
         # Manually compute SHA and verify it matches
-        recomputed_sha = compute_git_blob_sha(app_file.content)
-        assert app_file.computed_sha == recomputed_sha
+        recomputed_sha = compute_git_blob_sha(form_file.content)
+        assert form_file.computed_sha == recomputed_sha
 
     @pytest.mark.asyncio
     async def test_sha_consistency_across_calls(self, mock_db_session, valid_form_uuid):
@@ -646,8 +539,6 @@ class TestShaComputedFromSerializedContent:
         )
 
         with patch.object(
-            provider, "_get_app_files", return_value=VirtualFileResult(files=[], errors=[])
-        ), patch.object(
             provider, "_get_form_files", return_value=VirtualFileResult(files=[expected_file], errors=[])
         ), patch.object(
             provider, "_get_agent_files", return_value=VirtualFileResult(files=[], errors=[])
@@ -675,38 +566,6 @@ class TestShaComputedFromSerializedContent:
 
 class TestGetVirtualFileById:
     """Tests for fetching specific virtual file by ID."""
-
-    @pytest.mark.asyncio
-    async def test_get_virtual_file_by_id_app(self, mock_db_session, valid_app_uuid):
-        """Test fetching specific app virtual file."""
-        from src.services.github_sync_virtual_files import VirtualFileProvider, VirtualFile
-
-        provider = VirtualFileProvider(mock_db_session)
-
-        expected_content = make_app_content()
-        expected_sha = compute_git_blob_sha(expected_content)
-
-        expected_file = VirtualFile(
-            path=f"apps/{valid_app_uuid}.app.json",
-            entity_type="app",
-            entity_id=str(valid_app_uuid),
-            content=expected_content,
-            computed_sha=expected_sha,
-        )
-
-        with patch.object(
-            provider, "_get_app_file_by_id", return_value=expected_file
-        ), patch(
-            "src.services.github_sync_virtual_files.build_workflow_ref_map",
-            return_value={},
-        ):
-            result = await provider.get_virtual_file_by_id("app", str(valid_app_uuid))
-
-        assert result is not None
-        assert result.entity_type == "app"
-        assert result.entity_id == str(valid_app_uuid)
-        assert result.computed_sha is not None
-        assert result.content is not None
 
     @pytest.mark.asyncio
     async def test_get_virtual_file_by_id_form(self, mock_db_session, valid_form_uuid):
@@ -776,12 +635,12 @@ class TestGetVirtualFileById:
         provider = VirtualFileProvider(mock_db_session)
 
         with patch.object(
-            provider, "_get_app_file_by_id", return_value=None
+            provider, "_get_form_file_by_id", return_value=None
         ), patch(
             "src.services.github_sync_virtual_files.build_workflow_ref_map",
             return_value={},
         ):
-            result = await provider.get_virtual_file_by_id("app", str(uuid4()))
+            result = await provider.get_virtual_file_by_id("form", str(uuid4()))
 
         assert result is None
 

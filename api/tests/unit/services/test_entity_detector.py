@@ -2,7 +2,7 @@
 Unit tests for entity_detector module.
 
 Tests the entity type detection for platform files including
-workflows, data providers, forms, apps, agents, and modules.
+workflows, data providers, forms, agents, and modules.
 """
 
 from src.services.file_storage.entity_detector import (
@@ -19,10 +19,10 @@ class TestDetectPlatformEntityType:
         result = detect_platform_entity_type("my_form.form.json", b"{}")
         assert result == "form"
 
-    def test_app_json_returns_app(self):
-        """Files ending with .app.json are detected as apps."""
+    def test_app_json_returns_none(self):
+        """Files ending with .app.json are not detected (app handling removed)."""
         result = detect_platform_entity_type("my_app.app.json", b"{}")
-        assert result == "app"
+        assert result is None
 
     def test_agent_json_returns_agent(self):
         """Files ending with .agent.json are detected as agents."""
