@@ -260,9 +260,9 @@ export function createOrgScopedFileOperations(
 			const oldRealPath = extractRealPath(oldPath);
 			const newRealPath = extractRealPath(newPath);
 
-			// Check if this is a cross-org move (drag to different org container)
-			if (oldOrgId !== newOrgId && newRealPath === "") {
-				// This is a drop onto an org container - need to update entity org
+			// Check if this is a cross-org move
+			if (oldOrgId !== newOrgId) {
+				// Cross-org move - need to update entity organization
 				// The file's metadata should have entityType and entityId
 				// We'll need to refetch the file info to get these
 				const files = await fileService.listFiles("", true);
