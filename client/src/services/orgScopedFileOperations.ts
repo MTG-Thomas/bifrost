@@ -190,15 +190,31 @@ export function createOrgScopedFileOperations(
 			const realPath = extractRealPath(path);
 			const dbOrgId = orgId === GLOBAL_ORG_ID ? null : orgId;
 
+			// Fetch all files recursively to determine which folders have content for this org
+			const allFilesRecursive = await fileService.listFiles("", true);
+
+			// Build a set of folder paths that contain files for this org
+			const foldersWithContent = new Set<string>();
+			for (const file of allFilesRecursive) {
+				if (file.type === "folder") continue;
+				const fileOrgId = file.organization_id ?? null;
+				if (fileOrgId !== dbOrgId) continue;
+
+				// Add all parent folder paths
+				const parts = file.path.split("/");
+				for (let i = 1; i < parts.length; i++) {
+					foldersWithContent.add(parts.slice(0, i).join("/"));
+				}
+			}
+
 			// Fetch files at this real path
 			const files = await fileService.listFiles(realPath);
 
-			// Filter to only files belonging to this org
-			// For folders, include if any descendant belongs to this org
+			// Filter to only files/folders belonging to this org
 			const filteredFiles = files.filter((file) => {
 				if (file.type === "folder") {
-					// Folders are always included - they'll be empty if no matching files
-					return true;
+					// Only include folders that have files for this org
+					return foldersWithContent.has(file.path);
 				}
 				// For files, check org match (null org = global)
 				const fileOrgId = file.organization_id ?? null;
