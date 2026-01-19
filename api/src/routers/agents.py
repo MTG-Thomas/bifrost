@@ -4,14 +4,11 @@ Agents Router
 CRUD operations for AI agents.
 Role-based access control following the forms pattern.
 
-Agents are persisted to BOTH database AND file system (S3):
-- Database: Fast queries, access control, relationships
-- S3/File system: Source control, deployment portability, workspace sync
+Agents are virtual entities stored only in the database.
+Git sync serializes agents on-the-fly from the database.
 """
 
-import json
 import logging
-import re
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -109,18 +106,6 @@ async def _validate_agent_references(
         )
 
 
-def _generate_agent_filename(agent_name: str, agent_id: str) -> str:
-    """
-    Generate filesystem-safe filename from agent name.
-
-    Format: {slugified-name}-{first-8-chars-of-uuid}.agent.json
-    Example: customer-support-a1b2c3d4.agent.json
-    """
-    slug = re.sub(r'[^a-z0-9]+', '-', agent_name.lower()).strip('-')
-    short_id = str(agent_id)[:8]
-    return f"{slug[:50]}-{short_id}.agent.json"
-
-
 def _agent_to_public(agent: Agent) -> AgentPublic:
     """Convert Agent ORM to AgentPublic with relationships."""
     return AgentPublic(
@@ -144,52 +129,6 @@ def _agent_to_public(agent: Agent) -> AgentPublic:
         knowledge_sources=agent.knowledge_sources or [],
         system_tools=agent.system_tools or [],
     )
-
-
-async def _write_agent_to_file(
-    db: DbSession,
-    agent: Agent,
-    tools: list[Workflow] | None = None,
-    delegated_agents: list[Agent] | None = None,
-) -> str:
-    """
-    Write agent to S3 file system.
-
-    Returns the file path.
-    """
-    from src.services.file_storage import FileStorageService
-
-    filename = _generate_agent_filename(agent.name, str(agent.id))
-    file_path = f"workspace/agents/{filename}"
-
-    # Use explicit None check - empty list [] is falsy but should still be used
-    tool_list = tools if tools is not None else agent.tools
-    delegate_list = delegated_agents if delegated_agents is not None else agent.delegated_agents
-
-    # Note: access_level and organization_id are NOT written to JSON
-    # These are environment-specific and should only be set in the database
-    agent_data = {
-        "id": str(agent.id),
-        "name": agent.name,
-        "description": agent.description,
-        "system_prompt": agent.system_prompt,
-        "channels": agent.channels,
-        "is_active": agent.is_active,
-        "tool_ids": [str(t.id) for t in tool_list],
-        "delegated_agent_ids": [str(a.id) for a in delegate_list],
-        "knowledge_sources": agent.knowledge_sources or [],
-        "created_at": agent.created_at.isoformat() if agent.created_at else None,
-        "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
-    }
-
-    storage = FileStorageService(db)
-    await storage.write_file(
-        path=file_path,
-        content=json.dumps(agent_data, indent=2).encode("utf-8"),
-    )
-    # Result not used - agent JSON files don't need ID injection
-
-    return file_path
 
 
 # =============================================================================
@@ -356,11 +295,6 @@ async def create_agent(
             except ValueError:
                 logger.warning(f"Invalid role ID: {role_id}")
 
-    await db.flush()
-
-    # Write to file system
-    file_path = await _write_agent_to_file(db, agent, tools, delegated_agents)
-    agent.file_path = file_path
     await db.flush()
 
     # Reload with relationships
@@ -549,13 +483,6 @@ async def update_agent(
                 logger.warning(f"Invalid role ID: {role_id}")
 
     await db.flush()
-
-    # Update file
-    await _write_agent_to_file(
-        db, agent,
-        tools if agent_data.tool_ids is not None else None,
-        delegated_agents if agent_data.delegated_agent_ids is not None else None,
-    )
 
     # Reload with relationships
     result = await db.execute(

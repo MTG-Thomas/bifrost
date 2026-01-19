@@ -464,16 +464,6 @@ async def create_agent(
 
             await db.flush()
 
-            # Write to file system (dual-write pattern)
-            try:
-                from src.routers.agents import _write_agent_to_file
-                file_path = await _write_agent_to_file(db, agent, tools, delegated_agents)
-                agent.file_path = file_path
-                await db.flush()
-            except Exception as e:
-                logger.error(f"Failed to write agent file for {agent.id}: {e}", exc_info=True)
-                # Continue - database write succeeded
-
             # Reload with relationships
             result = await db.execute(
                 select(Agent)
@@ -733,17 +723,6 @@ async def update_agent(
                 return json.dumps({"error": "No updates provided. Specify at least one field to update."})
 
             await db.flush()
-
-            # Update file
-            try:
-                from src.routers.agents import _write_agent_to_file
-                await _write_agent_to_file(
-                    db, agent,
-                    tools if tool_ids is not None else None,
-                    delegated_agents if delegated_agent_ids is not None else None,
-                )
-            except Exception as e:
-                logger.error(f"Failed to update agent file for {agent.id}: {e}", exc_info=True)
 
             # Reload with relationships
             result = await db.execute(
