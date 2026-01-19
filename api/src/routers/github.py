@@ -665,6 +665,9 @@ async def get_sync_preview(
                     path=a.path,
                     action=SyncActionType(a.action.value),
                     sha=a.sha,
+                    display_name=a.display_name,
+                    entity_type=a.entity_type,
+                    parent_slug=a.parent_slug,
                 )
                 for a in preview.to_pull
             ],
@@ -673,6 +676,9 @@ async def get_sync_preview(
                     path=a.path,
                     action=SyncActionType(a.action.value),
                     sha=a.sha,
+                    display_name=a.display_name,
+                    entity_type=a.entity_type,
+                    parent_slug=a.parent_slug,
                 )
                 for a in preview.to_push
             ],
