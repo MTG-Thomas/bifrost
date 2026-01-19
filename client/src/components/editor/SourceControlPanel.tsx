@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { webSocketService, type GitProgress } from "@/services/websocket";
 import {
@@ -331,6 +332,23 @@ export function SourceControlPanel() {
 
 				if (complete.status === "success") {
 					toast.success("Synced with GitHub");
+
+					// Check if there were incoming changes that may include new entities
+					const hadIncomingChanges = (syncPreview?.to_pull?.length ?? 0) > 0;
+					if (hadIncomingChanges) {
+						toast.info(
+							<div className="flex flex-col gap-1">
+								<span>New entities have restricted access by default.</span>
+								<Link
+									to="/entity-management"
+									className="text-primary underline hover:no-underline"
+								>
+									Go to Entity Management to assign access
+								</Link>
+							</div>,
+							{ duration: 8000 },
+						);
+					}
 
 					// Clear sync preview state
 					setSyncPreview(null);
