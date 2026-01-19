@@ -21,6 +21,7 @@ from src.models.enums import AppAccessLevel
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
+    from src.models.orm.app_file_dependencies import AppFileDependency
     from src.models.orm.app_roles import AppRole
     from src.models.orm.organizations import Organization
     from src.models.orm.tables import Table
@@ -191,6 +192,11 @@ class AppFile(Base):
 
     # Relationships
     version: Mapped["AppVersion"] = relationship("AppVersion", back_populates="files")
+    dependencies: Mapped[list["AppFileDependency"]] = relationship(
+        "AppFileDependency",
+        back_populates="app_file",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_app_files_version", "app_version_id"),

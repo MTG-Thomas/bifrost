@@ -9,6 +9,7 @@ For API schemas (Create/Update/Public), see schemas.py
 
 from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool, Conversation, Message
 from src.models.orm.ai_usage import AIModelPricing, AIUsage
+from src.models.orm.app_file_dependencies import AppFileDependency
 from src.models.orm.app_roles import AppRole
 from src.models.orm.applications import AppFile, Application, AppVersion
 from src.models.orm.audit import AuditLog
@@ -41,6 +42,7 @@ __all__ = [
     "Application",
     "AppVersion",
     "AppFile",
+    "AppFileDependency",
     "AppRole",
     # Users and Roles
     "User",

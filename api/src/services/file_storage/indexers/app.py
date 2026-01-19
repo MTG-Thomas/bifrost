@@ -13,13 +13,14 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import Application, AppFile, AppVersion
+from src.models import Application, AppFile, AppFileDependency, AppVersion
+from src.services.app_dependencies import parse_dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +230,9 @@ class AppIndexer:
         now = datetime.now(timezone.utc)
 
         # Upsert the file
+        file_id = uuid4()
         stmt = insert(AppFile).values(
-            id=uuid4(),
+            id=file_id,
             app_version_id=app.draft_version_id,
             path=relative_path,
             source=source,
@@ -244,8 +246,12 @@ class AppIndexer:
                 "compiled": None,  # Clear compiled on update
                 "updated_at": now,
             },
-        )
-        await self.db.execute(stmt)
+        ).returning(AppFile.id)
+        result = await self.db.execute(stmt)
+        actual_file_id = result.scalar_one()
+
+        # Sync dependencies for this file
+        await self._sync_file_dependencies(actual_file_id, source)
 
         logger.debug(f"Indexed app file: {relative_path} in app {slug}")
         return False
@@ -318,3 +324,31 @@ class AppIndexer:
         stmt = select(Application).where(Application.slug == slug)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def _sync_file_dependencies(self, file_id: UUID, source: str) -> None:
+        """
+        Parse source code and sync dependencies for a file.
+
+        Erase-and-replace pattern: delete existing dependencies, then insert new ones.
+        """
+        from sqlalchemy import delete as sql_delete
+
+        # Delete existing dependencies for this file
+        await self.db.execute(
+            sql_delete(AppFileDependency).where(AppFileDependency.app_file_id == file_id)
+        )
+
+        # Parse new dependencies from source
+        dependencies = parse_dependencies(source)
+
+        # Insert new dependencies
+        for dep_type, dep_id in dependencies:
+            dependency = AppFileDependency(
+                app_file_id=file_id,
+                dependency_type=dep_type,
+                dependency_id=dep_id,
+            )
+            self.db.add(dependency)
+
+        if dependencies:
+            logger.debug(f"Synced {len(dependencies)} dependencies for file {file_id}")

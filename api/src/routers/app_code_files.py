@@ -30,8 +30,10 @@ from src.models.contracts.applications import (
     AppFileResponse,
     AppFileUpdate,
 )
+from src.models.orm.app_file_dependencies import AppFileDependency
 from src.models.orm.applications import Application, AppFile
 from src.routers.applications import ApplicationRepository
+from src.services.app_dependencies import parse_dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +277,36 @@ def code_file_to_response(code_file: AppFile) -> AppFileResponse:
     )
 
 
+async def sync_file_dependencies(ctx: Context, code_file: AppFile) -> None:
+    """
+    Parse source code and sync dependencies for a file.
+
+    Erase-and-replace pattern: delete existing dependencies, then insert new ones.
+    Called after file create or update.
+    """
+    from sqlalchemy import delete as sql_delete
+
+    # Delete existing dependencies for this file
+    await ctx.db.execute(
+        sql_delete(AppFileDependency).where(AppFileDependency.app_file_id == code_file.id)
+    )
+
+    # Parse new dependencies from source
+    dependencies = parse_dependencies(code_file.source)
+
+    # Insert new dependencies
+    for dep_type, dep_id in dependencies:
+        dependency = AppFileDependency(
+            app_file_id=code_file.id,
+            dependency_type=dep_type,
+            dependency_id=dep_id,
+        )
+        ctx.db.add(dependency)
+
+    if dependencies:
+        logger.debug(f"Synced {len(dependencies)} dependencies for file {code_file.path}")
+
+
 # =============================================================================
 # Code File CRUD Endpoints
 # =============================================================================
@@ -375,6 +407,9 @@ async def create_code_file(
     await ctx.db.flush()
     await ctx.db.refresh(code_file)
 
+    # Sync dependencies (parse source and update dependency index)
+    await sync_file_dependencies(ctx, code_file)
+
     # Emit event for real-time updates with full content
     await publish_app_code_file_update(
         app_id=str(app_id),
@@ -410,6 +445,9 @@ async def update_code_file(
 
     code_file = await get_code_file_or_404(ctx, version_id, file_path)
 
+    # Track if source changed (for dependency sync)
+    source_changed = data.source is not None and data.source != code_file.source
+
     # Apply updates
     if data.source is not None:
         code_file.source = data.source
@@ -418,6 +456,10 @@ async def update_code_file(
 
     await ctx.db.flush()
     await ctx.db.refresh(code_file)
+
+    # Sync dependencies only if source changed
+    if source_changed:
+        await sync_file_dependencies(ctx, code_file)
 
     # Emit event for real-time updates with full content
     await publish_app_code_file_update(

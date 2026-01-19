@@ -215,8 +215,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 		}
 	}, [agent, isEditing, form, open, defaultOrgId]);
 
-	// Filter out current agent from delegation options
-	const delegationOptions = allAgents?.filter((a) => a.id !== agentId) ?? [];
+	// Filter out current agent from delegation options (and agents with null ids)
+	const delegationOptions = allAgents?.filter((a): a is typeof a & { id: string } => a.id !== null && a.id !== agentId) ?? [];
 
 	const handleClose = () => {
 		form.reset();

@@ -168,6 +168,7 @@ export function Forms() {
 				launch_workflow_id: null,
 				allowed_query_params: null,
 				default_launch_params: null,
+				clear_roles: false,
 			},
 		});
 		setIsDisableDialogOpen(false);

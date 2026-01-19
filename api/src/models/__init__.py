@@ -59,6 +59,7 @@ from src.models.orm import (
     Application,
     AppVersion,
     AppFile,
+    AppFileDependency,
     AppRole,
 )
 
@@ -124,6 +125,7 @@ __all__ = [
     "Application",
     "AppVersion",
     "AppFile",
+    "AppFileDependency",
     "AppRole",
     # Enums
     "ExecutionStatus",

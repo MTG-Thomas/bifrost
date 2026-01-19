@@ -19,6 +19,8 @@ from sqlalchemy.orm import selectinload
 from src.models.orm import (
     Agent,
     AgentTool,
+    AppFile,
+    AppFileDependency,
     Application,
     Form,
     Workflow,
@@ -225,16 +227,24 @@ class DependencyGraphService:
         """
         Check if an application uses a specific workflow.
 
-        Note: The component engine has been removed. Apps no longer reference
-        workflows through pages/components. Code engine apps reference workflows
-        through their code files, which is not tracked in the database.
-
-        This method now always returns False as there's no way to detect
-        workflow usage in code engine apps at the database level.
+        Uses the app_file_dependencies table to check if any file in the app's
+        active version references this workflow via useWorkflow() hook.
         """
-        # Component engine removed - apps no longer have pages/components
-        # that reference workflows in a trackable way
-        return False
+        if not app.active_version_id:
+            return False
+
+        # Query the dependencies table for this workflow reference
+        result = await self.db.execute(
+            select(AppFileDependency.id)
+            .join(AppFile, AppFileDependency.app_file_id == AppFile.id)
+            .where(
+                AppFile.app_version_id == app.active_version_id,
+                AppFileDependency.dependency_type == "workflow",
+                AppFileDependency.dependency_id == workflow_id,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def _fetch_entity_node(
         self,
@@ -380,11 +390,24 @@ class DependencyGraphService:
                         )
 
         elif entity_type == "app":
-            # Note: The component engine has been removed. Apps no longer reference
-            # workflows through pages/components. Code engine apps reference workflows
-            # through their code files, which is not tracked in the database.
-            # This section now returns no dependencies for apps.
-            pass
+            # Apps USE workflows via code file dependencies (useWorkflow hook)
+            result = await self.db.execute(
+                select(Application).where(Application.id == entity_id)
+            )
+            app = result.scalar_one_or_none()
+            if app and app.active_version_id:
+                # Query dependencies from files in the active version
+                deps_result = await self.db.execute(
+                    select(AppFileDependency.dependency_type, AppFileDependency.dependency_id)
+                    .join(AppFile, AppFileDependency.app_file_id == AppFile.id)
+                    .where(AppFile.app_version_id == app.active_version_id)
+                    .distinct()
+                )
+                for dep_type, dep_id in deps_result.all():
+                    if dep_type == "workflow":
+                        dependencies.append(("workflow", dep_id, "uses"))
+                    # Note: form and data_provider dependencies could be added here
+                    # if needed in the future
 
         elif entity_type == "agent":
             # Agents USE workflows (via agent_tools)

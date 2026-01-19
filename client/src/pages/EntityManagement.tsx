@@ -129,7 +129,7 @@ function normalizeEntities(
 	}
 
 	for (const a of agents) {
-		if (!a.is_active) continue;
+		if (!a.is_active || !a.id) continue;
 		entities.push({
 			id: a.id,
 			name: a.name,
@@ -909,7 +909,7 @@ export function EntityManagement() {
 						} else if (entity.entityType === "agent") {
 							await updateAgent.mutateAsync({
 								params: { path: { agent_id: entityId } },
-								body: { organization_id: orgId },
+								body: { organization_id: orgId, clear_roles: false },
 							});
 						}
 					} catch (error) {
@@ -957,13 +957,14 @@ export function EntityManagement() {
 									body: {
 										access_level: "role_based",
 										clear_roles: true,
-									} as Record<string, unknown>,
+									},
 								});
 							} else {
 								await updateForm.mutateAsync({
 									params: { path: { form_id: entityId } },
 									body: {
 										access_level: isAccessLevel ? "authenticated" : "role_based",
+										clear_roles: false,
 									},
 								});
 							}
@@ -974,13 +975,14 @@ export function EntityManagement() {
 									body: {
 										access_level: "role_based",
 										clear_roles: true,
-									} as Record<string, unknown>,
+									},
 								});
 							} else {
 								await updateAgent.mutateAsync({
 									params: { path: { agent_id: entityId } },
 									body: {
 										access_level: isAccessLevel ? "authenticated" : "role_based",
+										clear_roles: false,
 									},
 								});
 							}

@@ -112,7 +112,7 @@ export function Agents() {
 	const filteredAgents = useSearch(scopeFilteredAgents, searchTerm, [
 		"name",
 		"description",
-		(agent) => agent.id,
+		(agent) => agent.id ?? "",
 	]);
 
 	const handleCreate = () => {
@@ -131,7 +131,7 @@ export function Agents() {
 	};
 
 	const handleConfirmDelete = async () => {
-		if (!selectedAgent) return;
+		if (!selectedAgent || !selectedAgent.id) return;
 		await deleteAgent.mutateAsync({
 			params: { path: { agent_id: selectedAgent.id } },
 		});
@@ -140,9 +140,10 @@ export function Agents() {
 	};
 
 	const handleToggleActive = async (agent: AgentSummary) => {
+		if (!agent.id) return;
 		await updateAgent.mutateAsync({
 			params: { path: { agent_id: agent.id } },
-			body: { is_active: !agent.is_active },
+			body: { is_active: !agent.is_active, clear_roles: false },
 		});
 	};
 
@@ -366,7 +367,7 @@ export function Agents() {
 												size="sm"
 												className="flex-1"
 												onClick={() =>
-													handleEdit(agent.id)
+													agent.id && handleEdit(agent.id)
 												}
 											>
 												<Pencil className="h-3 w-3 mr-1" />
@@ -479,7 +480,7 @@ export function Agents() {
 													variant="ghost"
 													size="icon-sm"
 													onClick={() =>
-														handleEdit(agent.id)
+														agent.id && handleEdit(agent.id)
 													}
 												>
 													<Pencil className="h-4 w-4" />
