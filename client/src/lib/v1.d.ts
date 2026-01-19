@@ -6547,7 +6547,7 @@ export interface components {
          */
         AgentSummary: {
             /** Id */
-            id: string;
+            id: string | null;
             /** Name */
             name: string;
             /** Description */
@@ -6561,6 +6561,9 @@ export interface components {
              * @default false
              */
             is_coding_mode: boolean;
+            access_level: components["schemas"]["AgentAccessLevel"];
+            /** Organization Id */
+            organization_id?: string | null;
             /** Created At */
             created_at: string;
         };
@@ -6615,6 +6618,12 @@ export interface components {
              * @description List of system tool names enabled for this agent
              */
             system_tools?: string[] | null;
+            /**
+             * Clear Roles
+             * @description If true, clear all role assignments (sets to role_based with no roles)
+             * @default false
+             */
+            clear_roles: boolean;
         };
         /**
          * AppFileCreate
@@ -6974,7 +6983,7 @@ export interface components {
             /** Mfa Required For Password */
             mfa_required_for_password: boolean;
             /** Oauth Providers */
-            oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
+            oauth_providers: components["schemas"]["OAuthProviderInfo"][];
         };
         /**
          * AuthorizeResponse
@@ -9722,14 +9731,19 @@ export interface components {
             modified: string;
             /**
              * Entity Type
-             * @description Platform entity type if file is a platform entity (workflow, form, app, agent, module), null for regular files
+             * @description Platform entity type if file is a platform entity, null for regular files
              */
-            entity_type?: ("workflow" | "form" | "app" | "agent" | "module") | null;
+            entity_type?: ("workflow" | "form" | "agent" | "module") | null;
             /**
              * Entity Id
              * @description Platform entity ID if file is a platform entity, null for regular files
              */
             entity_id?: string | null;
+            /**
+             * Organization Id
+             * @description Organization ID for scoped entities, null for global or non-entity files
+             */
+            organization_id?: string | null;
         };
         /**
          * FileReadRequest
@@ -10199,6 +10213,11 @@ export interface components {
             /** Is Active */
             is_active?: boolean | null;
             access_level?: components["schemas"]["FormAccessLevel"] | null;
+            /**
+             * Clear Roles
+             * @default false
+             */
+            clear_roles: boolean;
         };
         /**
          * GenerateSDKRequest
@@ -11992,29 +12011,15 @@ export interface components {
         };
         /**
          * OAuthCallbackRequest
-         * @description Request model for OAuth callback endpoint
+         * @description OAuth callback request (for when frontend handles callback).
          */
         OAuthCallbackRequest: {
-            /**
-             * Code
-             * @description Authorization code from OAuth provider
-             */
+            /** Provider */
+            provider: string;
+            /** Code */
             code: string;
-            /**
-             * State
-             * @description State parameter for CSRF protection
-             */
-            state?: string | null;
-            /**
-             * Redirect Uri
-             * @description Redirect URI used in authorization request
-             */
-            redirect_uri?: string | null;
-            /**
-             * Organization Id
-             * @description Organization ID for org-specific token storage (optional, for org overrides)
-             */
-            organization_id?: string | null;
+            /** State */
+            state: string;
         };
         /**
          * OAuthCallbackResponse
@@ -12444,7 +12449,7 @@ export interface components {
         };
         /**
          * OAuthProviderInfo
-         * @description OAuth provider information.
+         * @description OAuth provider information for login page
          */
         OAuthProviderInfo: {
             /** Name */
@@ -12460,7 +12465,7 @@ export interface components {
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["OAuthProviderInfo"][];
+            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -15761,7 +15766,7 @@ export interface components {
         };
         /**
          * UserCreate
-         * @description Input for creating a user.
+         * @description User creation request model.
          */
         UserCreate: {
             /**
@@ -15769,22 +15774,10 @@ export interface components {
              * Format: email
              */
             email: string;
+            /** Password */
+            password: string;
             /** Name */
             name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** Organization Id */
-            organization_id?: string | null;
         };
         /**
          * UserFormsResponse
@@ -16630,6 +16623,12 @@ export interface components {
              * @description Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required)
              */
             access_level?: string | null;
+            /**
+             * Clear Roles
+             * @description If true, clear all role assignments for this workflow (sets to role_based with no roles)
+             * @default false
+             */
+            clear_roles: boolean;
         };
         /**
          * WorkflowUsage
@@ -16722,31 +16721,57 @@ export interface components {
             metadata?: components["schemas"]["WorkflowMetadata"] | null;
         };
         /**
-         * OAuthProviderInfo
-         * @description OAuth provider information for login page
+         * OAuthCallbackRequest
+         * @description Request model for OAuth callback endpoint
          */
-        src__models__contracts__auth__OAuthProviderInfo: {
-            /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
+        src__models__contracts__oauth__OAuthCallbackRequest: {
+            /**
+             * Code
+             * @description Authorization code from OAuth provider
+             */
+            code: string;
+            /**
+             * State
+             * @description State parameter for CSRF protection
+             */
+            state?: string | null;
+            /**
+             * Redirect Uri
+             * @description Redirect URI used in authorization request
+             */
+            redirect_uri?: string | null;
+            /**
+             * Organization Id
+             * @description Organization ID for org-specific token storage (optional, for org overrides)
+             */
+            organization_id?: string | null;
         };
         /**
          * UserCreate
-         * @description User creation request model.
+         * @description Input for creating a user.
          */
-        src__routers__auth__UserCreate: {
+        src__models__contracts__users__UserCreate: {
             /**
              * Email
              * Format: email
              */
             email: string;
-            /** Password */
-            password: string;
             /** Name */
             name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** Organization Id */
+            organization_id?: string | null;
         };
         /**
          * MFASetupResponse
@@ -16773,16 +16798,16 @@ export interface components {
             code: string;
         };
         /**
-         * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
+         * OAuthProviderInfo
+         * @description OAuth provider information.
          */
-        src__routers__oauth_sso__OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
-            /** Code */
-            code: string;
-            /** State */
-            state: string;
+        src__routers__oauth_sso__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
         };
     };
     responses: never;
@@ -17100,7 +17125,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__UserCreate"];
+                "application/json": components["schemas"]["UserCreate"];
             };
         };
         responses: {
@@ -17595,7 +17620,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
+                "application/json": components["schemas"]["OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -18046,7 +18071,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
             };
         };
         responses: {
@@ -21381,7 +21406,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__models__contracts__oauth__OAuthCallbackRequest"];
             };
         };
         responses: {

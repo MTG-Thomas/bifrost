@@ -244,6 +244,54 @@ async def file_exists(
 # =============================================================================
 
 
+async def _fetch_entity_org_ids(
+    db: AsyncSession,
+    entity_ids_by_type: dict[str, list[str]],
+) -> dict[str, str | None]:
+    """
+    Batch-fetch organization_id for entities grouped by type.
+
+    Returns a mapping of entity_id -> organization_id (or None for global).
+    """
+    from uuid import UUID
+    from sqlalchemy import select
+    from src.models.orm import Workflow, Form, Agent
+
+    org_map: dict[str, str | None] = {}
+
+    # Fetch workflow org IDs
+    workflow_ids = entity_ids_by_type.get("workflow", [])
+    if workflow_ids:
+        stmt = select(Workflow.id, Workflow.organization_id).where(
+            Workflow.id.in_([UUID(id) for id in workflow_ids])
+        )
+        result = await db.execute(stmt)
+        for row in result:
+            org_map[str(row.id)] = str(row.organization_id) if row.organization_id else None
+
+    # Fetch form org IDs
+    form_ids = entity_ids_by_type.get("form", [])
+    if form_ids:
+        stmt = select(Form.id, Form.organization_id).where(
+            Form.id.in_([UUID(id) for id in form_ids])
+        )
+        result = await db.execute(stmt)
+        for row in result:
+            org_map[str(row.id)] = str(row.organization_id) if row.organization_id else None
+
+    # Fetch agent org IDs
+    agent_ids = entity_ids_by_type.get("agent", [])
+    if agent_ids:
+        stmt = select(Agent.id, Agent.organization_id).where(
+            Agent.id.in_([UUID(id) for id in agent_ids])
+        )
+        result = await db.execute(stmt)
+        for row in result:
+            org_map[str(row.id)] = str(row.organization_id) if row.organization_id else None
+
+    return org_map
+
+
 @router.get(
     "/editor",
     response_model=list[FileMetadata],
@@ -265,10 +313,21 @@ async def list_files_editor(
         storage = FileStorageService(db)
         workspace_files = await storage.list_files(path, recursive=recursive)
 
+        # Collect entity IDs by type for batch org lookup
+        entity_ids_by_type: dict[str, list[str]] = {}
+        for wf in workspace_files:
+            if wf.entity_type and wf.entity_id:
+                entity_ids_by_type.setdefault(wf.entity_type, []).append(str(wf.entity_id))
+
+        # Batch-fetch organization IDs
+        org_map = await _fetch_entity_org_ids(db, entity_ids_by_type)
+
         files = []
         for wf in workspace_files:
             is_folder = wf.path.endswith("/")
             clean_path = wf.path.rstrip("/") if is_folder else wf.path
+            entity_id_str = str(wf.entity_id) if wf.entity_id else None
+
             files.append(FileMetadata(
                 path=clean_path,
                 name=clean_path.split("/")[-1],
@@ -276,8 +335,9 @@ async def list_files_editor(
                 size=wf.size_bytes if not is_folder else None,
                 extension=wf.path.split(".")[-1] if "." in wf.path and not is_folder else None,
                 modified=wf.updated_at.isoformat() if wf.updated_at else datetime.now(timezone.utc).isoformat(),
-                entity_type=wf.entity_type if not is_folder else None,
-                entity_id=str(wf.entity_id) if wf.entity_id and not is_folder else None,
+                entity_type=wf.entity_type if not is_folder else None,  # type: ignore[arg-type]
+                entity_id=entity_id_str if not is_folder else None,
+                organization_id=org_map.get(entity_id_str) if entity_id_str and not is_folder else None,
             ))
         return files
 
