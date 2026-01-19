@@ -5,6 +5,7 @@
  * Integrates with:
  * - useEditorStore for tab management and file opening
  * - fileService for workspace-specific operations
+ * - Organization-scoped file grouping (files grouped by org containers)
  *
  * Note: Desktop file upload functionality is handled separately in the
  * original FileTree component. This modular version focuses on the core
@@ -14,10 +15,11 @@
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
 import { FileTree } from "./FileTree";
-import { workspaceOperations } from "./adapters/workspaceOperations";
-import { defaultIconResolver } from "./icons";
+import { orgScopedIconResolver } from "./icons";
 import { useEditorStore } from "@/stores/editorStore";
 import { fileService, type FileMetadata } from "@/services/fileService";
+import { createOrgScopedFileOperations } from "@/services/orgScopedFileOperations";
+import { useOrganizations } from "@/hooks/useOrganizations";
 import { WorkflowIdConflictDialog } from "@/components/editor/WorkflowIdConflictDialog";
 import type { FileNode, FileContent, EditorCallbacks, FileTreeConfig } from "./types";
 import type { components } from "@/lib/v1";
@@ -26,10 +28,15 @@ type WorkflowIdConflict = components["schemas"]["WorkflowIdConflict"];
 
 /**
  * Convert a file node to FileMetadata for the editor store
+ * Handles virtual org-scoped paths by extracting the real path from metadata
  */
 function toFileMetadata(file: FileNode): FileMetadata {
+	// Use real path from metadata if available (for org-scoped files)
+	const realPath =
+		(file.metadata?.realPath as string | undefined) ?? file.path;
+
 	return {
-		path: file.path,
+		path: realPath,
 		name: file.name,
 		type: file.type,
 		size: file.size,
@@ -38,6 +45,8 @@ function toFileMetadata(file: FileNode): FileMetadata {
 		// Cast entityType to the expected union type
 		entity_type: (file.entityType as FileMetadata["entity_type"]) ?? null,
 		entity_id: file.entityId ?? null,
+		// Include organization_id from metadata if present
+		organization_id: (file.metadata?.organizationId as string | undefined) ?? null,
 	};
 }
 
@@ -54,6 +63,23 @@ export function WorkspaceFileTree({ className }: { className?: string }) {
 	const setLoadingFile = useEditorStore((state) => state.setLoadingFile);
 	const updateTabPath = useEditorStore((state) => state.updateTabPath);
 	const closeTabsByPath = useEditorStore((state) => state.closeTabsByPath);
+
+	// Fetch organizations for org-scoped file grouping
+	const { data: organizationsData } = useOrganizations();
+	const organizations = useMemo(
+		() =>
+			(organizationsData ?? []).map((org) => ({
+				id: org.id,
+				name: org.name,
+			})),
+		[organizationsData],
+	);
+
+	// Create org-scoped file operations adapter
+	const operations = useMemo(
+		() => createOrgScopedFileOperations(organizations),
+		[organizations],
+	);
 
 	// Get the currently open file path
 	const openFilePath = useMemo(() => {
@@ -115,8 +141,8 @@ export function WorkspaceFileTree({ className }: { className?: string }) {
 	return (
 		<>
 			<FileTree
-				operations={workspaceOperations}
-				iconResolver={defaultIconResolver}
+				operations={operations}
+				iconResolver={orgScopedIconResolver}
 				editor={editorCallbacks}
 				config={config}
 				className={className}
