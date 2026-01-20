@@ -5,10 +5,6 @@ import { ContentLayout } from "@/components/layout/ContentLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { EditorOverlay } from "@/components/editor/EditorOverlay";
-import {
-	AppViewerOverlay,
-	AppViewerNavigationListener,
-} from "@/components/app-viewer";
 import { UnifiedDock } from "@/components/layout/UnifiedDock";
 import { QuickAccess } from "@/components/quick-access/QuickAccess";
 import { PageLoader } from "@/components/PageLoader";
@@ -205,10 +201,7 @@ function AppRoutes() {
 			{/* Editor Overlay - Rendered globally on top of all pages */}
 			<EditorOverlay />
 
-			{/* App Viewer Navigation Listener - Handles navigation requests from overlay */}
-			<AppViewerNavigationListener />
-
-			{/* Unified Dock - Shows all minimized windows */}
+			{/* Unified Dock - Shows minimized editor */}
 			<UnifiedDock />
 
 			<Suspense fallback={<PageLoader />}>
@@ -232,7 +225,17 @@ function AppRoutes() {
 						element={<OAuthCallback />}
 					/>
 
-					{/* Application Runner - Published apps with own layout (no main sidebar) */}
+					{/* Application Preview - Full screen for developers */}
+					<Route
+						path="apps/:applicationId/preview/*"
+						element={
+							<ProtectedRoute requirePlatformAdmin>
+								<ApplicationPreview />
+							</ProtectedRoute>
+						}
+					/>
+
+					{/* Application Runner - Published apps (full screen) */}
 					<Route
 						path="apps/:applicationId/*"
 						element={
@@ -573,15 +576,6 @@ function AppRoutes() {
 
 					{/* ContentLayout - Pages without default padding */}
 					<Route path="/" element={<ContentLayout />}>
-						{/* Application Preview - Embedded in main layout for development */}
-						<Route
-							path="apps/:applicationId/preview/*"
-							element={
-								<ProtectedRoute requirePlatformAdmin>
-									<ApplicationPreview />
-								</ProtectedRoute>
-							}
-						/>
 						{/* Chat - All authenticated users */}
 						<Route
 							path="chat"
@@ -627,9 +621,6 @@ function AppRoutes() {
 function App() {
 	return (
 		<ErrorBoundary>
-			{/* App Viewer Overlay - Rendered OUTSIDE BrowserRouter for isolated MemoryRouter */}
-			<AppViewerOverlay />
-
 			<BrowserRouter>
 				<AuthProvider>
 					<OrgScopeProvider>

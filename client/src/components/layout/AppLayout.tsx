@@ -1,0 +1,30 @@
+/**
+ * App Layout
+ *
+ * Full-screen layout for App Builder applications (preview and published).
+ * No sidebar - just AppHeader + full content area.
+ */
+
+import { AppHeader } from "./AppHeader";
+
+interface AppLayoutProps {
+	/** App name to display in header */
+	appName: string;
+	/** Whether this is preview mode */
+	isPreview?: boolean;
+	/** Content to render */
+	children: React.ReactNode;
+}
+
+export function AppLayout({
+	appName,
+	isPreview = false,
+	children,
+}: AppLayoutProps) {
+	return (
+		<div className="h-screen flex flex-col bg-background overflow-hidden">
+			<AppHeader appName={appName} isPreview={isPreview} />
+			<main className="flex-1 overflow-auto">{children}</main>
+		</div>
+	);
+}

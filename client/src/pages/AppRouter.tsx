@@ -2,17 +2,15 @@
  * App Router
  *
  * Universal router for App Builder applications.
- * Renders JsxAppShell for file-based JSX apps.
+ * Renders JsxAppShell for file-based JSX apps with AppLayout wrapper.
  *
  * Routes:
  * - /apps/:slug/preview/* - Preview mode (uses draft_version_id)
  * - /apps/:slug/* - Published mode (uses active_version_id)
  */
 
-import { useEffect } from "react";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { AlertTriangle, ArrowLeft, Maximize2 } from "lucide-react";
-import { useAppViewerStore } from "@/stores/appViewerStore";
+import { useParams, useNavigate } from "react-router-dom";
+import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AppLoadingSkeleton } from "@/components/jsx-app/AppLoadingSkeleton";
 import {
@@ -24,6 +22,7 @@ import {
 } from "@/components/ui/card";
 import { useApplication } from "@/hooks/useApplications";
 import { JsxAppShell } from "@/components/jsx-app/JsxAppShell";
+import { AppLayout } from "@/components/layout/AppLayout";
 
 interface AppRouterProps {
 	/** Whether to render in preview mode (uses draft version) */
@@ -33,7 +32,6 @@ interface AppRouterProps {
 export function AppRouter({ preview = false }: AppRouterProps) {
 	const { applicationId: slugParam } = useParams();
 	const navigate = useNavigate();
-	const location = useLocation();
 
 	// Fetch application metadata
 	const {
@@ -42,32 +40,12 @@ export function AppRouter({ preview = false }: AppRouterProps) {
 		error,
 	} = useApplication(slugParam);
 
-	// Get maximize action (must be called before any early returns)
-	const maximize = useAppViewerStore((state) => state.maximize);
-
 	// Get the appropriate version ID
 	const versionId = application
 		? preview
 			? application.draft_version_id
 			: application.active_version_id
 		: null;
-
-	// Hydrate app viewer store for minimize/maximize support
-	useEffect(() => {
-		if (application && versionId) {
-			useAppViewerStore.getState().hydrateFromRoute({
-				appId: application.id,
-				appSlug: application.slug,
-				appName: application.name,
-				versionId,
-				isPreview: preview,
-			});
-		}
-	}, [application, versionId, preview]);
-
-	const handleMaximize = () => {
-		maximize(location.pathname);
-	};
 
 	// Loading state
 	if (isLoading) {
@@ -172,70 +150,16 @@ export function AppRouter({ preview = false }: AppRouterProps) {
 		);
 	}
 
-	// Render with maximize button and preview banner if in preview mode
-	if (preview) {
-		return (
-			<div className="h-full flex flex-col bg-background overflow-hidden">
-				{/* Header bar with controls */}
-				<div className="z-50 bg-amber-500 text-amber-950 px-4 py-2 text-center text-sm font-medium shrink-0 flex items-center justify-between">
-					<div className="flex-1" />
-					<span>
-						Preview Mode - This is the draft version
-						<Button
-							variant="link"
-							className="ml-2 text-amber-950 underline hover:no-underline p-0 h-auto"
-							onClick={() => navigate(`/apps/${slugParam}/code`)}
-						>
-							Back to Editor
-						</Button>
-					</span>
-					<div className="flex-1 flex justify-end">
-						<Button
-							variant="ghost"
-							size="icon"
-							className="h-6 w-6 text-amber-950 hover:bg-amber-600/20"
-							onClick={handleMaximize}
-							title="Maximize"
-						>
-							<Maximize2 className="h-4 w-4" />
-						</Button>
-					</div>
-				</div>
-				<div className="flex-1 overflow-auto">
-					<JsxAppShell
-						appId={application.id}
-						appSlug={application.slug}
-						versionId={versionId}
-						isPreview
-					/>
-				</div>
-			</div>
-		);
-	}
-
-	// Production mode with maximize button
+	// Render app with standard header layout
 	return (
-		<div className="h-full flex flex-col bg-background overflow-hidden">
-			{/* Minimal header with maximize */}
-			<div className="z-50 border-b bg-muted/30 px-4 py-1 flex items-center justify-end shrink-0">
-				<Button
-					variant="ghost"
-					size="icon"
-					className="h-6 w-6"
-					onClick={handleMaximize}
-					title="Maximize"
-				>
-					<Maximize2 className="h-4 w-4" />
-				</Button>
-			</div>
-			<div className="flex-1 overflow-auto">
-				<JsxAppShell
-					appId={application.id}
-					appSlug={application.slug}
-					versionId={versionId}
-				/>
-			</div>
-		</div>
+		<AppLayout appName={application.name} isPreview={preview}>
+			<JsxAppShell
+				appId={application.id}
+				appSlug={application.slug}
+				versionId={versionId}
+				isPreview={preview}
+			/>
+		</AppLayout>
 	);
 }
 

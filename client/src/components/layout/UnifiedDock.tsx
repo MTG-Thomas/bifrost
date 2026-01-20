@@ -1,15 +1,14 @@
 // client/src/components/layout/UnifiedDock.tsx
 
-import { Code, AppWindow } from "lucide-react";
+import { Code } from "lucide-react";
 import { WindowDock, type DockItem } from "@/components/window-management";
 import { useEditorStore } from "@/stores/editorStore";
-import { useAppViewerStore } from "@/stores/appViewerStore";
 import { useUploadStore } from "@/stores/uploadStore";
 import { useExecutionStreamStore } from "@/stores/executionStreamStore";
 
 /**
  * Unified dock that aggregates all minimized windows.
- * Renders both editor and app viewer dock items.
+ * Currently only renders the editor dock item (app viewer doesn't support minimize).
  */
 export function UnifiedDock() {
 	// Editor state
@@ -30,30 +29,8 @@ export function UnifiedDock() {
 	);
 	const editorIsLoading = isUploading || hasActiveExecution;
 
-	// App viewer state
-	const appId = useAppViewerStore((state) => state.appId);
-	const appSlug = useAppViewerStore((state) => state.appSlug);
-	const appName = useAppViewerStore((state) => state.appName);
-	const appLayoutMode = useAppViewerStore((state) => state.layoutMode);
-	const appIsPreview = useAppViewerStore((state) => state.isPreview);
-
 	// Build dock items
 	const items: DockItem[] = [];
-
-	// Add app viewer if minimized
-	if (appId && appSlug && appLayoutMode === "minimized") {
-		items.push({
-			id: `app-${appId}`,
-			icon: <AppWindow className="h-4 w-4" />,
-			label: appIsPreview ? `${appName} (Preview)` : appName || "App",
-			isLoading: false,
-			onRestore: () => {
-				// Restore from minimized to maximized overlay
-				// No navigation needed - overlay renders globally via AppViewerOverlay
-				useAppViewerStore.setState({ layoutMode: "maximized" });
-			},
-		});
-	}
 
 	// Add editor if minimized
 	if (editorIsOpen && editorLayoutMode === "minimized") {
