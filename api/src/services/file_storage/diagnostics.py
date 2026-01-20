@@ -231,3 +231,89 @@ class DiagnosticsService:
         if existing:
             await service.dismiss_notification(existing.id, user_id="system")
             logger.info(f"Cleared diagnostic notification for {path}")
+
+    async def scan_for_unresolved_refs(
+        self,
+        path: str,
+        entity_type: str,
+        unresolved_refs: list[str],
+    ) -> None:
+        """
+        Create or clear notification for unresolved workflow references.
+
+        Called after file processing to notify about portable refs that
+        couldn't be resolved to UUIDs.
+
+        Args:
+            path: Relative file path
+            entity_type: Type of entity ("app_file", "form", "agent")
+            unresolved_refs: List of unresolved portable refs
+        """
+        if not unresolved_refs:
+            # Clear any existing notification since issues are resolved
+            await self.clear_unresolved_refs_notification(path)
+            return
+
+        service = get_notification_service()
+
+        # Build title from file name
+        file_name = Path(path).name
+        title = f"Unresolved Workflow Refs: {file_name}"
+
+        # Check for existing notification to avoid duplicates
+        existing = await service.find_admin_notification_by_title(
+            title=title,
+            category=NotificationCategory.SYSTEM,
+        )
+        if existing:
+            logger.debug(f"Unresolved refs notification already exists for {path}")
+            return
+
+        # Build description with first few refs
+        ref_list = unresolved_refs[:3]
+        description = f"{len(unresolved_refs)} unresolved: {', '.join(ref_list)}"
+        if len(unresolved_refs) > 3:
+            description += "..."
+
+        await service.create_notification(
+            user_id="system",
+            request=NotificationCreate(
+                category=NotificationCategory.SYSTEM,
+                title=title,
+                description=description,
+                metadata={
+                    "action": "view_file",
+                    "file_path": path,
+                    "entity_type": entity_type,
+                    "unresolved_refs": unresolved_refs,
+                },
+            ),
+            for_admins=True,
+            initial_status=NotificationStatus.AWAITING_ACTION,
+        )
+
+        logger.info(f"Created unresolved refs notification for {path}: {len(unresolved_refs)} refs")
+
+    async def clear_unresolved_refs_notification(self, path: str) -> None:
+        """
+        Clear unresolved refs notification for a file when issues are resolved.
+
+        Called when a file is saved without unresolved refs to remove
+        any existing notification that was created for previous issues.
+
+        Args:
+            path: Relative file path
+        """
+        service = get_notification_service()
+
+        # Match the title format used in scan_for_unresolved_refs
+        file_name = Path(path).name
+        title = f"Unresolved Workflow Refs: {file_name}"
+
+        existing = await service.find_admin_notification_by_title(
+            title=title,
+            category=NotificationCategory.SYSTEM,
+        )
+        if existing:
+            await service.dismiss_notification(existing.id, user_id="system")
+            logger.info(f"Cleared unresolved refs notification for {path}")
