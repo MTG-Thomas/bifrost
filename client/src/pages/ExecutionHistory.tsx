@@ -552,28 +552,33 @@ export function ExecutionHistory() {
 				<SearchBox
 					value={searchTerm}
 					onChange={setSearchTerm}
-					placeholder="Search by workflow name, user, or execution ID..."
+					placeholder={viewMode === "logs"
+						? "Search by workflow name..."
+						: "Search by workflow name, user, or execution ID..."}
 					className="flex-1 max-w-2xl"
 				/>
 				<DateRangePicker
 					dateRange={dateRange}
 					onDateRangeChange={setDateRange}
 				/>
-				<div className="flex items-center gap-2">
-					<Checkbox
-						id="show-local"
-						checked={showLocal}
-						onCheckedChange={(checked) =>
-							setShowLocal(checked === true)
-						}
-					/>
-					<Label
-						htmlFor="show-local"
-						className="text-sm font-normal cursor-pointer whitespace-nowrap"
-					>
-						Show Local Executions
-					</Label>
-				</div>
+				{/* Show Local Executions - only for executions view */}
+				{viewMode === "executions" && (
+					<div className="flex items-center gap-2">
+						<Checkbox
+							id="show-local"
+							checked={showLocal}
+							onCheckedChange={(checked) =>
+								setShowLocal(checked === true)
+							}
+						/>
+						<Label
+							htmlFor="show-local"
+							className="text-sm font-normal cursor-pointer whitespace-nowrap"
+						>
+							Show Local Executions
+						</Label>
+					</div>
+				)}
 				{isPlatformAdmin && (
 					<div className="w-64">
 						<OrganizationSelect
@@ -589,7 +594,11 @@ export function ExecutionHistory() {
 
 			{/* Status Tabs or Logs View */}
 			{viewMode === "logs" ? (
-				<LogsView />
+				<LogsView
+					filterOrgId={filterOrgId}
+					dateRange={dateRange}
+					searchTerm={searchTerm}
+				/>
 			) : (
 				<Tabs
 					defaultValue="all"

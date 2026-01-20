@@ -1,44 +1,40 @@
 /**
  * LogsView Component
  *
- * Main orchestrating component for the admin logs view.
- * Combines filters, the logs table, and the execution drawer.
+ * Displays logs table with logs-specific filters.
+ * Receives shared filters (org, dateRange, searchTerm) from parent ExecutionHistory.
  */
 
 import { useState, useMemo, useCallback } from "react";
-import { ChevronDown, Filter, X } from "lucide-react";
 import type { DateRange } from "react-day-picker";
 
 import { useLogs, type LogFilters, type LogListEntry } from "@/hooks/useLogs";
 import { LogsTable } from "./LogsTable";
 import { ExecutionDrawer } from "./ExecutionDrawer";
 
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
-import {
-    Popover,
-    PopoverContent,
-    PopoverTrigger,
-} from "@/components/ui/popover";
-import { DateRangePicker } from "@/components/ui/date-range-picker";
-import { SearchBox } from "@/components/search/SearchBox";
-import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
-import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 
 const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] as const;
 type LogLevel = (typeof LOG_LEVELS)[number];
 
-export function LogsView() {
-    // Filter state
-    const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(
-        undefined,
-    );
-    const [workflowName, setWorkflowName] = useState("");
+interface LogsViewProps {
+    /** Organization ID filter from parent */
+    filterOrgId?: string | null;
+    /** Date range filter from parent */
+    dateRange?: DateRange;
+    /** Search term from parent (used for workflow name search) */
+    searchTerm?: string;
+}
+
+export function LogsView({
+    filterOrgId,
+    dateRange,
+    searchTerm,
+}: LogsViewProps) {
+    // Logs-specific filter state
     const [selectedLevels, setSelectedLevels] = useState<LogLevel[]>([]);
     const [messageSearch, setMessageSearch] = useState("");
-    const [dateRange, setDateRange] = useState<DateRange | undefined>();
 
     // Pagination state
     const [currentToken, setCurrentToken] = useState<string | undefined>();
@@ -50,19 +46,30 @@ export function LogsView() {
     >(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
 
-    // Build filters object
+    // Build filters object combining parent and local filters
     const filters: LogFilters = useMemo(() => {
         const result: LogFilters = {};
 
+        // From parent
         if (filterOrgId !== undefined) {
-            // When undefined, show all orgs. When null or string, use the value.
             result.organization_id = filterOrgId ?? undefined;
         }
 
-        if (workflowName.trim()) {
-            result.workflow_name = workflowName.trim();
+        if (searchTerm?.trim()) {
+            result.workflow_name = searchTerm.trim();
         }
 
+        if (dateRange?.from) {
+            const startDate = new Date(dateRange.from);
+            startDate.setHours(0, 0, 0, 0);
+            result.start_date = startDate.toISOString();
+
+            const endDate = new Date(dateRange.to || dateRange.from);
+            endDate.setHours(23, 59, 59, 999);
+            result.end_date = endDate.toISOString();
+        }
+
+        // Local logs-specific filters
         if (selectedLevels.length > 0) {
             result.levels = selectedLevels.join(",");
         }
@@ -71,20 +78,8 @@ export function LogsView() {
             result.message_search = messageSearch.trim();
         }
 
-        if (dateRange?.from) {
-            // Set start to beginning of day
-            const startDate = new Date(dateRange.from);
-            startDate.setHours(0, 0, 0, 0);
-            result.start_date = startDate.toISOString();
-
-            // Set end to end of day (use from date if no end date)
-            const endDate = new Date(dateRange.to || dateRange.from);
-            endDate.setHours(23, 59, 59, 999);
-            result.end_date = endDate.toISOString();
-        }
-
         return result;
-    }, [filterOrgId, workflowName, selectedLevels, messageSearch, dateRange]);
+    }, [filterOrgId, searchTerm, dateRange, selectedLevels, messageSearch]);
 
     // Fetch logs
     const { data, isLoading } = useLogs(filters, currentToken);
@@ -92,40 +87,20 @@ export function LogsView() {
     const logs = data?.logs ?? [];
     const continuationToken = data?.continuation_token;
 
-    // Reset pagination helper - called when filters change
+    // Reset pagination when filters change
     const resetPagination = useCallback(() => {
         setPageStack([]);
         setCurrentToken(undefined);
     }, []);
 
-    // Filter change handlers that also reset pagination
-    const handleFilterOrgChange = useCallback(
-        (value: string | null | undefined) => {
-            setFilterOrgId(value);
-            resetPagination();
-        },
-        [resetPagination],
-    );
-
-    const handleWorkflowChange = useCallback(
-        (value: string) => {
-            setWorkflowName(value);
-            resetPagination();
-        },
-        [resetPagination],
-    );
-
-    const handleMessageSearchChange = useCallback(
-        (value: string) => {
-            setMessageSearch(value);
-            resetPagination();
-        },
-        [resetPagination],
-    );
-
-    const handleDateRangeChange = useCallback(
-        (range: DateRange | undefined) => {
-            setDateRange(range);
+    // Level toggle handler
+    const toggleLevel = useCallback(
+        (level: LogLevel) => {
+            setSelectedLevels((prev) =>
+                prev.includes(level)
+                    ? prev.filter((l) => l !== level)
+                    : [...prev, level],
+            );
             resetPagination();
         },
         [resetPagination],
@@ -134,7 +109,6 @@ export function LogsView() {
     // Pagination handlers
     const handleNextPage = () => {
         if (continuationToken) {
-            // Push current token to stack for "back" navigation
             setPageStack((prev) => [...prev, currentToken || ""]);
             setCurrentToken(continuationToken);
         }
@@ -149,212 +123,72 @@ export function LogsView() {
         }
     };
 
-    // Log click handler - opens drawer with execution details
+    // Log click handler
     const handleLogClick = (log: LogListEntry) => {
         setSelectedExecutionId(log.execution_id);
         setDrawerOpen(true);
     };
 
-    // Level toggle handler - also resets pagination
-    const toggleLevel = useCallback(
-        (level: LogLevel) => {
-            setSelectedLevels((prev) =>
-                prev.includes(level)
-                    ? prev.filter((l) => l !== level)
-                    : [...prev, level],
-            );
+    // Handle message search change
+    const handleMessageSearchChange = useCallback(
+        (value: string) => {
+            setMessageSearch(value);
             resetPagination();
         },
         [resetPagination],
     );
 
-    // Clear all levels - also resets pagination
-    const clearLevels = useCallback(() => {
-        setSelectedLevels([]);
-        resetPagination();
-    }, [resetPagination]);
-
-    // Get display text for level filter button
-    const levelFilterText = useMemo(() => {
-        if (selectedLevels.length === 0) return "All levels";
-        if (selectedLevels.length === 1) return selectedLevels[0];
-        return `${selectedLevels.length} levels`;
-    }, [selectedLevels]);
-
     return (
-        <div className="space-y-4">
-            {/* Filters row */}
-            <div className="flex flex-wrap items-center gap-4">
-                {/* Organization select */}
-                <div className="w-56">
-                    <OrganizationSelect
-                        value={filterOrgId}
-                        onChange={handleFilterOrgChange}
-                        showAll={true}
-                        showGlobal={true}
-                        placeholder="All organizations"
-                    />
-                </div>
-
-                {/* Workflow name input */}
-                <div className="w-48">
-                    <Input
-                        placeholder="Workflow name..."
-                        value={workflowName}
-                        onChange={(e) => handleWorkflowChange(e.target.value)}
-                    />
-                </div>
-
-                {/* Level dropdown with checkboxes */}
-                <Popover>
-                    <PopoverTrigger asChild>
-                        <Button
-                            variant="outline"
-                            className="w-40 justify-between"
-                        >
-                            <div className="flex items-center gap-2">
-                                <Filter className="h-4 w-4" />
-                                <span>{levelFilterText}</span>
-                            </div>
-                            <ChevronDown className="h-4 w-4 opacity-50" />
-                        </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-56 p-3" align="start">
-                        <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                                <span className="text-sm font-medium">
-                                    Log Levels
-                                </span>
-                                {selectedLevels.length > 0 && (
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={clearLevels}
-                                        className="h-6 px-2 text-xs"
-                                    >
-                                        Clear
-                                    </Button>
-                                )}
-                            </div>
-                            <div className="space-y-2">
-                                {LOG_LEVELS.map((level) => (
-                                    <div
-                                        key={level}
-                                        className="flex items-center gap-2"
-                                    >
-                                        <Checkbox
-                                            id={`level-${level}`}
-                                            checked={selectedLevels.includes(
-                                                level,
-                                            )}
-                                            onCheckedChange={() =>
-                                                toggleLevel(level)
-                                            }
-                                        />
-                                        <Label
-                                            htmlFor={`level-${level}`}
-                                            className="text-sm font-normal cursor-pointer flex-1"
-                                        >
-                                            {level}
-                                        </Label>
-                                        <LevelBadge level={level} />
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    </PopoverContent>
-                </Popover>
-
-                {/* Date range picker */}
-                <DateRangePicker
-                    dateRange={dateRange}
-                    onDateRangeChange={handleDateRangeChange}
-                />
-
-                {/* Message search box */}
-                <SearchBox
-                    value={messageSearch}
-                    onChange={handleMessageSearchChange}
-                    placeholder="Search messages..."
-                    className="w-64"
-                />
-            </div>
-
-            {/* Active filters display */}
-            {(selectedLevels.length > 0 ||
-                workflowName ||
-                messageSearch ||
-                dateRange?.from ||
-                filterOrgId !== undefined) && (
-                <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm text-muted-foreground">
-                        Active filters:
-                    </span>
-                    {selectedLevels.map((level) => (
-                        <Badge
-                            key={level}
-                            variant="secondary"
-                            className="gap-1"
-                        >
-                            {level}
-                            <button
-                                onClick={() => toggleLevel(level)}
-                                className="ml-1 hover:text-destructive"
-                            >
-                                <X className="h-3 w-3" />
-                            </button>
-                        </Badge>
-                    ))}
-                    {workflowName && (
-                        <Badge variant="secondary" className="gap-1">
-                            Workflow: {workflowName}
-                            <button
-                                onClick={() => setWorkflowName("")}
-                                className="ml-1 hover:text-destructive"
-                            >
-                                <X className="h-3 w-3" />
-                            </button>
-                        </Badge>
-                    )}
-                    {messageSearch && (
-                        <Badge variant="secondary" className="gap-1">
-                            Message: {messageSearch}
-                            <button
-                                onClick={() => setMessageSearch("")}
-                                className="ml-1 hover:text-destructive"
-                            >
-                                <X className="h-3 w-3" />
-                            </button>
-                        </Badge>
-                    )}
+        <div className="flex flex-col flex-1 min-h-0 space-y-4">
+            {/* Logs-specific filters: Level buttons + Message search */}
+            <div className="flex items-center gap-4">
+                {/* Level filter buttons - similar to status tabs */}
+                <div className="flex items-center gap-1 p-1 bg-muted rounded-lg">
                     <Button
-                        variant="ghost"
+                        variant={selectedLevels.length === 0 ? "secondary" : "ghost"}
                         size="sm"
                         onClick={() => {
                             setSelectedLevels([]);
-                            setWorkflowName("");
-                            setMessageSearch("");
-                            setDateRange(undefined);
-                            setFilterOrgId(undefined);
                             resetPagination();
                         }}
-                        className="h-6 px-2 text-xs text-muted-foreground"
+                        className="h-8 px-3"
                     >
-                        Clear all
+                        All
                     </Button>
+                    {LOG_LEVELS.map((level) => (
+                        <Button
+                            key={level}
+                            variant={selectedLevels.includes(level) ? "secondary" : "ghost"}
+                            size="sm"
+                            onClick={() => toggleLevel(level)}
+                            className="h-8 px-3"
+                        >
+                            {level}
+                        </Button>
+                    ))}
                 </div>
-            )}
+
+                {/* Message search */}
+                <Input
+                    placeholder="Search in log messages..."
+                    value={messageSearch}
+                    onChange={(e) => handleMessageSearchChange(e.target.value)}
+                    className="max-w-xs"
+                />
+            </div>
 
             {/* Table */}
-            <LogsTable
-                logs={logs}
-                isLoading={isLoading}
-                continuationToken={continuationToken}
-                onNextPage={handleNextPage}
-                onPrevPage={handlePrevPage}
-                canGoBack={pageStack.length > 0}
-                onLogClick={handleLogClick}
-            />
+            <div className="flex-1 min-h-0 overflow-auto">
+                <LogsTable
+                    logs={logs}
+                    isLoading={isLoading}
+                    continuationToken={continuationToken}
+                    onNextPage={handleNextPage}
+                    onPrevPage={handlePrevPage}
+                    canGoBack={pageStack.length > 0}
+                    onLogClick={handleLogClick}
+                />
+            </div>
 
             {/* Execution Drawer */}
             <ExecutionDrawer
@@ -364,32 +198,4 @@ export function LogsView() {
             />
         </div>
     );
-}
-
-/**
- * Helper component to show colored badge for log level
- */
-function LevelBadge({ level }: { level: LogLevel }) {
-    const variant = getLevelVariant(level);
-    return (
-        <Badge variant={variant} className="text-xs px-1.5 py-0">
-            {level.charAt(0)}
-        </Badge>
-    );
-}
-
-function getLevelVariant(
-    level: LogLevel,
-): "default" | "secondary" | "destructive" | "outline" | "warning" {
-    switch (level) {
-        case "ERROR":
-        case "CRITICAL":
-            return "destructive";
-        case "WARNING":
-            return "warning";
-        case "DEBUG":
-            return "outline";
-        default:
-            return "default";
-    }
 }
