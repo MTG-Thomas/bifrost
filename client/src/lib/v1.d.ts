@@ -1487,6 +1487,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/executions/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List execution logs (admin only)
+         * @description List logs across all executions with filtering and pagination. Admin only.
+         */
+        get: operations["list_logs_api_executions_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/executions/{execution_id}": {
         parameters: {
             query?: never;
@@ -3081,22 +3101,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4890,6 +4910,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/maintenance/scan-app-dependencies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rebuild app dependencies
+         * @description Rebuild AppFileDependency table by parsing all app source files (Platform admin only)
+         */
+        post: operations["scan_app_dependencies_api_maintenance_scan_app_dependencies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/roi/settings": {
         parameters: {
             query?: never;
@@ -6522,8 +6562,6 @@ export interface components {
              * @default false
              */
             is_system: boolean;
-            /** File Path */
-            file_path?: string | null;
             /** Created By */
             created_by: string;
             /** Created At */
@@ -6624,6 +6662,42 @@ export interface components {
              * @default false
              */
             clear_roles: boolean;
+        };
+        /**
+         * AppDependencyIssue
+         * @description A missing dependency issue in an app.
+         */
+        AppDependencyIssue: {
+            /** App Id */
+            app_id: string;
+            /** App Name */
+            app_name: string;
+            /** App Slug */
+            app_slug: string;
+            /** File Path */
+            file_path: string;
+            /** Dependency Type */
+            dependency_type: string;
+            /** Dependency Id */
+            dependency_id: string;
+        };
+        /**
+         * AppDependencyScanResponse
+         * @description Response from app dependency scan.
+         */
+        AppDependencyScanResponse: {
+            /** Apps Scanned */
+            apps_scanned: number;
+            /** Files Scanned */
+            files_scanned: number;
+            /** Dependencies Rebuilt */
+            dependencies_rebuilt: number;
+            /** Issues Found */
+            issues_found: number;
+            /** Issues */
+            issues: components["schemas"]["AppDependencyIssue"][];
+            /** Notification Created */
+            notification_created: boolean;
         };
         /**
          * AppFileCreate
@@ -6983,7 +7057,7 @@ export interface components {
             /** Mfa Required For Password */
             mfa_required_for_password: boolean;
             /** Oauth Providers */
-            oauth_providers: components["schemas"]["OAuthProviderInfo"][];
+            oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
         };
         /**
          * AuthorizeResponse
@@ -10142,11 +10216,6 @@ export interface components {
             organization_id?: string | null;
             /** Is Active */
             is_active: boolean;
-            /**
-             * File Path
-             * @description Workspace-relative file path (e.g., 'forms/my-form-abc123.form.json')
-             */
-            file_path?: string | null;
             /** Created At */
             created_at?: string | null;
             /** Updated At */
@@ -11387,6 +11456,29 @@ export interface components {
             accounts: components["schemas"]["LinkedAccountResponse"][];
         };
         /**
+         * LogListEntry
+         * @description Single log entry for the logs list view.
+         */
+        LogListEntry: {
+            /** Id */
+            id: number;
+            /** Execution Id */
+            execution_id: string;
+            /** Organization Name */
+            organization_name: string | null;
+            /** Workflow Name */
+            workflow_name: string;
+            /** Level */
+            level: string;
+            /** Message */
+            message: string;
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp: string;
+        };
+        /**
          * LoginResponse
          * @description Unified login response that can be Token or MFA response.
          */
@@ -11435,6 +11527,16 @@ export interface components {
              * @default Logged out successfully
              */
             message: string;
+        };
+        /**
+         * LogsListResponse
+         * @description Response for paginated logs list.
+         */
+        LogsListResponse: {
+            /** Logs */
+            logs: components["schemas"]["LogListEntry"][];
+            /** Continuation Token */
+            continuation_token?: string | null;
         };
         /**
          * MCPConfigRequest
@@ -11598,6 +11700,11 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -11617,11 +11724,20 @@ export interface components {
         };
         /**
          * MFAVerifyRequest
-         * @description Request to verify MFA code.
+         * @description Request to verify MFA code during login.
          */
         MFAVerifyRequest: {
+            /** Mfa Token */
+            mfa_token: string;
             /** Code */
             code: string;
+            /**
+             * Trust Device
+             * @default false
+             */
+            trust_device: boolean;
+            /** Device Name */
+            device_name?: string | null;
         };
         /**
          * MFAVerifyResponse
@@ -12454,7 +12570,7 @@ export interface components {
         };
         /**
          * OAuthProviderInfo
-         * @description OAuth provider information for login page
+         * @description OAuth provider information.
          */
         OAuthProviderInfo: {
             /** Name */
@@ -12470,7 +12586,7 @@ export interface components {
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
+            providers: components["schemas"]["OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -16753,42 +16869,16 @@ export interface components {
             metadata?: components["schemas"]["WorkflowMetadata"] | null;
         };
         /**
-         * MFASetupResponse
-         * @description MFA setup response with secret.
+         * OAuthProviderInfo
+         * @description OAuth provider information for login page
          */
-        src__routers__auth__MFASetupResponse: {
-            /** Secret */
-            secret: string;
-            /** Qr Code Uri */
-            qr_code_uri: string;
-            /** Provisioning Uri */
-            provisioning_uri: string;
-            /** Issuer */
-            issuer: string;
-            /** Account Name */
-            account_name: string;
-            /**
-             * Is Existing
-             * @default false
-             */
-            is_existing: boolean;
-        };
-        /**
-         * MFAVerifyRequest
-         * @description Request to verify MFA code during login.
-         */
-        src__routers__auth__MFAVerifyRequest: {
-            /** Mfa Token */
-            mfa_token: string;
-            /** Code */
-            code: string;
-            /**
-             * Trust Device
-             * @default false
-             */
-            trust_device: boolean;
-            /** Device Name */
-            device_name?: string | null;
+        src__models__contracts__auth__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
         };
         /**
          * UserCreate
@@ -16806,6 +16896,30 @@ export interface components {
             name?: string | null;
         };
         /**
+         * MFASetupResponse
+         * @description MFA setup response with secret.
+         */
+        src__routers__mfa__MFASetupResponse: {
+            /** Secret */
+            secret: string;
+            /** Qr Code Uri */
+            qr_code_uri: string;
+            /** Provisioning Uri */
+            provisioning_uri: string;
+            /** Issuer */
+            issuer: string;
+            /** Account Name */
+            account_name: string;
+        };
+        /**
+         * MFAVerifyRequest
+         * @description Request to verify MFA code.
+         */
+        src__routers__mfa__MFAVerifyRequest: {
+            /** Code */
+            code: string;
+        };
+        /**
          * OAuthCallbackRequest
          * @description OAuth callback request (for when frontend handles callback).
          */
@@ -16816,18 +16930,6 @@ export interface components {
             code: string;
             /** State */
             state: string;
-        };
-        /**
-         * OAuthProviderInfo
-         * @description OAuth provider information.
-         */
-        src__routers__oauth_sso__OAuthProviderInfo: {
-            /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
         };
     };
     responses: never;
@@ -16930,7 +17032,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["src__routers__auth__MFASetupResponse"];
+                    "application/json": components["schemas"]["MFASetupResponse"];
                 };
             };
             /** @description Validation Error */
@@ -16973,7 +17075,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__MFAVerifyRequest"];
+                "application/json": components["schemas"]["MFAVerifyRequest"];
             };
         };
         responses: {
@@ -17376,7 +17478,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
                 };
             };
         };
@@ -17390,7 +17492,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MFAVerifyRequest"];
+                "application/json": components["schemas"]["src__routers__mfa__MFAVerifyRequest"];
             };
         };
         responses: {
@@ -18735,6 +18837,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutionsListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_logs_api_executions_logs_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by organization */
+                organization_id?: string | null;
+                /** @description Filter by workflow name (partial match) */
+                workflow_name?: string | null;
+                /** @description Comma-separated log levels (e.g., ERROR,WARNING) */
+                levels?: string | null;
+                /** @description Search in log message content */
+                message_search?: string | null;
+                /** @description Filter logs after this date (ISO format) */
+                start_date?: string | null;
+                /** @description Filter logs before this date (ISO format) */
+                end_date?: string | null;
+                /** @description Number of logs per page */
+                limit?: number;
+                /** @description Pagination token */
+                continuation_token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogsListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -21521,7 +21669,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -21554,7 +21702,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -21587,7 +21735,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -21620,7 +21768,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24900,6 +25048,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocsIndexResponse"];
+                };
+            };
+        };
+    };
+    scan_app_dependencies_api_maintenance_scan_app_dependencies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDependencyScanResponse"];
                 };
             };
         };
