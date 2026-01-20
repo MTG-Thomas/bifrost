@@ -1,8 +1,8 @@
 /**
  * LogsView Component
  *
- * Displays logs table with logs-specific filters.
- * Receives shared filters (org, dateRange, searchTerm) from parent ExecutionHistory.
+ * Displays logs table with the execution drawer.
+ * All filters are managed by the parent ExecutionHistory component.
  */
 
 import { useState, useMemo, useCallback } from "react";
@@ -12,51 +12,45 @@ import { useLogs, type LogFilters, type LogListEntry } from "@/hooks/useLogs";
 import { LogsTable } from "./LogsTable";
 import { ExecutionDrawer } from "./ExecutionDrawer";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-
-const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] as const;
-type LogLevel = (typeof LOG_LEVELS)[number];
-
 interface LogsViewProps {
     /** Organization ID filter from parent */
     filterOrgId?: string | null;
     /** Date range filter from parent */
     dateRange?: DateRange;
-    /** Search term from parent (used for workflow name search) */
+    /** Search term from parent (searches workflow name and message) */
     searchTerm?: string;
+    /** Selected log level from parent */
+    logLevel?: string;
 }
 
-export function LogsView({
+/**
+ * Internal component that handles the actual logs fetching and display.
+ * This is wrapped by LogsView which provides a key to reset state when filters change.
+ */
+function LogsViewInner({
     filterOrgId,
     dateRange,
     searchTerm,
+    logLevel,
 }: LogsViewProps) {
-    // Logs-specific filter state
-    const [selectedLevels, setSelectedLevels] = useState<LogLevel[]>([]);
-    const [messageSearch, setMessageSearch] = useState("");
-
-    // Pagination state
+    // Pagination state - resets when parent remounts us via key change
     const [currentToken, setCurrentToken] = useState<string | undefined>();
     const [pageStack, setPageStack] = useState<string[]>([]);
 
     // Drawer state
-    const [selectedExecutionId, setSelectedExecutionId] = useState<
-        string | null
-    >(null);
+    const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
 
-    // Build filters object combining parent and local filters
+    // Build filters object from props
     const filters: LogFilters = useMemo(() => {
         const result: LogFilters = {};
 
-        // From parent
-        if (filterOrgId !== undefined) {
-            result.organization_id = filterOrgId ?? undefined;
+        if (filterOrgId !== undefined && filterOrgId !== null) {
+            result.organization_id = filterOrgId;
         }
 
         if (searchTerm?.trim()) {
-            result.workflow_name = searchTerm.trim();
+            result.message_search = searchTerm.trim();
         }
 
         if (dateRange?.from) {
@@ -69,17 +63,12 @@ export function LogsView({
             result.end_date = endDate.toISOString();
         }
 
-        // Local logs-specific filters
-        if (selectedLevels.length > 0) {
-            result.levels = selectedLevels.join(",");
-        }
-
-        if (messageSearch.trim()) {
-            result.message_search = messageSearch.trim();
+        if (logLevel && logLevel !== "all") {
+            result.levels = logLevel;
         }
 
         return result;
-    }, [filterOrgId, searchTerm, dateRange, selectedLevels, messageSearch]);
+    }, [filterOrgId, searchTerm, dateRange, logLevel]);
 
     // Fetch logs
     const { data, isLoading } = useLogs(filters, currentToken);
@@ -87,98 +76,33 @@ export function LogsView({
     const logs = data?.logs ?? [];
     const continuationToken = data?.continuation_token;
 
-    // Reset pagination when filters change
-    const resetPagination = useCallback(() => {
-        setPageStack([]);
-        setCurrentToken(undefined);
-    }, []);
-
-    // Level toggle handler
-    const toggleLevel = useCallback(
-        (level: LogLevel) => {
-            setSelectedLevels((prev) =>
-                prev.includes(level)
-                    ? prev.filter((l) => l !== level)
-                    : [...prev, level],
-            );
-            resetPagination();
-        },
-        [resetPagination],
-    );
-
     // Pagination handlers
-    const handleNextPage = () => {
+    const handleNextPage = useCallback(() => {
         if (continuationToken) {
             setPageStack((prev) => [...prev, currentToken || ""]);
             setCurrentToken(continuationToken);
         }
-    };
+    }, [continuationToken, currentToken]);
 
-    const handlePrevPage = () => {
+    const handlePrevPage = useCallback(() => {
         if (pageStack.length > 0) {
             const newStack = [...pageStack];
             const previousToken = newStack.pop();
             setPageStack(newStack);
             setCurrentToken(previousToken || undefined);
         }
-    };
+    }, [pageStack]);
 
     // Log click handler
-    const handleLogClick = (log: LogListEntry) => {
+    const handleLogClick = useCallback((log: LogListEntry) => {
         setSelectedExecutionId(log.execution_id);
         setDrawerOpen(true);
-    };
-
-    // Handle message search change
-    const handleMessageSearchChange = useCallback(
-        (value: string) => {
-            setMessageSearch(value);
-            resetPagination();
-        },
-        [resetPagination],
-    );
+    }, []);
 
     return (
-        <div className="flex flex-col flex-1 min-h-0 space-y-4">
-            {/* Logs-specific filters: Level buttons + Message search */}
-            <div className="flex items-center gap-4">
-                {/* Level filter buttons - similar to status tabs */}
-                <div className="flex items-center gap-1 p-1 bg-muted rounded-lg">
-                    <Button
-                        variant={selectedLevels.length === 0 ? "secondary" : "ghost"}
-                        size="sm"
-                        onClick={() => {
-                            setSelectedLevels([]);
-                            resetPagination();
-                        }}
-                        className="h-8 px-3"
-                    >
-                        All
-                    </Button>
-                    {LOG_LEVELS.map((level) => (
-                        <Button
-                            key={level}
-                            variant={selectedLevels.includes(level) ? "secondary" : "ghost"}
-                            size="sm"
-                            onClick={() => toggleLevel(level)}
-                            className="h-8 px-3"
-                        >
-                            {level}
-                        </Button>
-                    ))}
-                </div>
-
-                {/* Message search */}
-                <Input
-                    placeholder="Search in log messages..."
-                    value={messageSearch}
-                    onChange={(e) => handleMessageSearchChange(e.target.value)}
-                    className="max-w-xs"
-                />
-            </div>
-
+        <>
             {/* Table */}
-            <div className="flex-1 min-h-0 overflow-auto">
+            <div className="flex-1 min-h-0 overflow-auto mt-4">
                 <LogsTable
                     logs={logs}
                     isLoading={isLoading}
@@ -196,6 +120,20 @@ export function LogsView({
                 open={drawerOpen}
                 onOpenChange={setDrawerOpen}
             />
-        </div>
+        </>
     );
+}
+
+/**
+ * LogsView wrapper that uses a key to reset pagination state when filters change.
+ * This is the React-idiomatic pattern for resetting child state on prop changes.
+ */
+export function LogsView(props: LogsViewProps) {
+    const { filterOrgId, dateRange, searchTerm, logLevel } = props;
+
+    // Generate a key from filter values - when this changes, the inner component remounts
+    // and all its internal state (pagination) resets to initial values
+    const filterKey = `${filterOrgId ?? "all"}-${searchTerm ?? ""}-${dateRange?.from?.toISOString() ?? "none"}-${logLevel ?? "all"}`;
+
+    return <LogsViewInner key={filterKey} {...props} />;
 }

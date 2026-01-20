@@ -113,6 +113,7 @@ export function ExecutionHistory() {
 	const [cleaningUp, setCleaningUp] = useState(false);
 	const [showLocal, setShowLocal] = useState(false);
 	const [viewMode, setViewMode] = useState<"executions" | "logs">("executions");
+	const [logLevelFilter, setLogLevelFilter] = useState<string>("all");
 	const isGlobalScope = useScopeStore((state) => state.isGlobalScope);
 	const orgId = useScopeStore((state) => state.scope.orgId);
 
@@ -592,13 +593,31 @@ export function ExecutionHistory() {
 				)}
 			</div>
 
-			{/* Status Tabs or Logs View */}
+			{/* Status/Level Tabs and Content */}
 			{viewMode === "logs" ? (
-				<LogsView
-					filterOrgId={filterOrgId}
-					dateRange={dateRange}
-					searchTerm={searchTerm}
-				/>
+				<Tabs
+					value={logLevelFilter}
+					onValueChange={setLogLevelFilter}
+					className="flex flex-col flex-1 min-h-0"
+				>
+					{/* Log Level Tabs */}
+					<TabsList className="w-fit">
+						<TabsTrigger value="all">All</TabsTrigger>
+						<TabsTrigger value="DEBUG">Debug</TabsTrigger>
+						<TabsTrigger value="INFO">Info</TabsTrigger>
+						<TabsTrigger value="WARNING">Warning</TabsTrigger>
+						<TabsTrigger value="ERROR">Error</TabsTrigger>
+						<TabsTrigger value="CRITICAL">Critical</TabsTrigger>
+					</TabsList>
+
+					{/* Logs View */}
+					<LogsView
+						filterOrgId={filterOrgId}
+						dateRange={dateRange}
+						searchTerm={searchTerm}
+						logLevel={logLevelFilter}
+					/>
+				</Tabs>
 			) : (
 				<Tabs
 					defaultValue="all"
