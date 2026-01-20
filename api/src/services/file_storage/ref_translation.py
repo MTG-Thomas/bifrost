@@ -10,7 +10,10 @@ Import (Git → DB): "workflows/my_module.py::my_function" → UUID
 
 import json
 import logging
+import re
 from typing import Any
+
+from uuid import UUID
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -91,6 +94,37 @@ async def build_ref_to_uuid_map(db: AsyncSession) -> dict[str, str]:
 
     logger.debug(f"Built ref-to-UUID map with {len(ref_map)} entries")
     return ref_map
+
+
+def resolve_workflow_ref(value: str | None, ref_to_uuid: dict[str, str] | None) -> str | None:
+    """
+    Resolve a workflow reference to UUID if needed.
+
+    Used by Pydantic field validators during deserialization to translate
+    portable refs (path::function_name) back to UUIDs.
+
+    Args:
+        value: Either a UUID string or a portable ref like "path::function"
+        ref_to_uuid: Mapping of portable refs to UUIDs (from build_ref_to_uuid_map)
+
+    Returns:
+        UUID string if resolved, original value otherwise
+    """
+    if not value:
+        return None
+
+    # Check if already a valid UUID
+    try:
+        UUID(value)
+        return value
+    except ValueError:
+        pass
+
+    # Try to resolve as portable ref
+    if ref_to_uuid and value in ref_to_uuid:
+        return ref_to_uuid[value]
+
+    return value  # Return original, let downstream validation handle errors
 
 
 # =============================================================================
@@ -323,3 +357,104 @@ def extract_export_metadata(data: dict[str, Any]) -> list[str]:
     """
     export_meta = data.pop("_export", {})
     return export_meta.get("workflow_refs", [])
+
+
+# =============================================================================
+# App Source Transformation Functions
+# =============================================================================
+
+# Pattern to match useWorkflow('...') or useWorkflow("...")
+# Captures the quote style and the argument
+USE_WORKFLOW_PATTERN = re.compile(r"useWorkflow\((['\"])([^'\"]+)\1\)")
+
+
+def transform_app_source_uuids_to_refs(
+    source: str,
+    workflow_map: dict[str, str],
+) -> tuple[str, list[str]]:
+    """
+    Transform useWorkflow('{uuid}') to useWorkflow('{ref}') in TSX source.
+
+    Scans source code for useWorkflow() calls and replaces UUIDs with
+    portable workflow references (path::function_name format).
+
+    Args:
+        source: TSX/TypeScript source code
+        workflow_map: Mapping of UUID string -> "path::function_name"
+
+    Returns:
+        Tuple of (transformed_source, list_of_transformed_uuids)
+    """
+    if not source or not workflow_map:
+        return source, []
+
+    transformed_uuids: list[str] = []
+
+    def replace_uuid(match: re.Match[str]) -> str:
+        quote = match.group(1)
+        arg = match.group(2)
+
+        if arg in workflow_map:
+            transformed_uuids.append(arg)
+            return f"useWorkflow({quote}{workflow_map[arg]}{quote})"
+        return match.group(0)
+
+    result = USE_WORKFLOW_PATTERN.sub(replace_uuid, source)
+    return result, transformed_uuids
+
+
+def transform_app_source_refs_to_uuids(
+    source: str,
+    ref_to_uuid: dict[str, str],
+) -> tuple[str, list[str]]:
+    """
+    Transform useWorkflow('{ref}') to useWorkflow('{uuid}') in TSX source.
+
+    Scans source code for useWorkflow() calls and resolves portable
+    workflow references back to UUIDs.
+
+    Args:
+        source: TSX/TypeScript source code
+        ref_to_uuid: Mapping of "path::function_name" -> UUID string
+
+    Returns:
+        Tuple of (transformed_source, list_of_unresolved_refs)
+    """
+    if not source:
+        return source, []
+
+    unresolved_refs: list[str] = []
+
+    def replace_ref(match: re.Match[str]) -> str:
+        quote = match.group(1)
+        arg = match.group(2)
+
+        # Check if already a UUID (skip transformation)
+        if _looks_like_uuid(arg):
+            return match.group(0)
+
+        # Check if it's a portable ref we can resolve
+        if arg in ref_to_uuid:
+            return f"useWorkflow({quote}{ref_to_uuid[arg]}{quote})"
+
+        # Unresolved ref - keep as-is but track it
+        if "::" in arg:  # Looks like a portable ref
+            unresolved_refs.append(arg)
+
+        return match.group(0)
+
+    result = USE_WORKFLOW_PATTERN.sub(replace_ref, source)
+    return result, unresolved_refs
+
+
+def _looks_like_uuid(value: str) -> bool:
+    """
+    Check if a string looks like a UUID.
+
+    Simple heuristic: 36 chars with hyphens in the right places.
+    """
+    if len(value) != 36:
+        return False
+    if value[8] != "-" or value[13] != "-" or value[18] != "-" or value[23] != "-":
+        return False
+    return True
