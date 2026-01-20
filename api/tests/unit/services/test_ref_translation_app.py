@@ -4,8 +4,6 @@ Unit tests for app source workflow reference transformation.
 Tests transform_app_source_uuids_to_refs and transform_app_source_refs_to_uuids.
 """
 
-import pytest
-
 from src.services.file_storage.ref_translation import (
     transform_app_source_uuids_to_refs,
     transform_app_source_refs_to_uuids,
