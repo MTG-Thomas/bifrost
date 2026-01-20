@@ -12,15 +12,12 @@ import { FileTabs } from "./FileTabs";
 import { useEditorSession } from "@/hooks/useEditorSession";
 import { useCmdCtrlShortcut } from "@/contexts/KeyboardContext";
 import { useUploadStore } from "@/stores/uploadStore";
-import { useExecutionStreamStore } from "@/stores/executionStreamStore";
 import {
 	X,
 	Save,
 	Minus,
-	Maximize2,
 	PanelLeftClose,
 	PanelLeft,
-	Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -50,7 +47,6 @@ export function EditorLayout() {
 		terminalHeight,
 		closeEditor,
 		minimizeEditor,
-		restoreEditor,
 		setTerminalHeight,
 		setSidebarPanel,
 	} = useEditorSession();
@@ -58,14 +54,9 @@ export function EditorLayout() {
 	// Auto-save and manual save
 	const { manualSave } = useAutoSave();
 
-	// Activity state for minimized indicator
+	// Upload state for close confirmation
 	const isUploading = useUploadStore((state) => state.isUploading);
 	const cancelUpload = useUploadStore((state) => state.cancelUpload);
-	const streams = useExecutionStreamStore((state) => state.streams);
-	const hasActiveExecution = Object.values(streams).some(
-		(s) => s.status === "Running" || s.status === "Pending",
-	);
-	const isActivityInProgress = isUploading || hasActiveExecution;
 
 	// Close confirmation dialog state
 	const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -185,38 +176,9 @@ export function EditorLayout() {
 		return undefined;
 	}, [isResizingTerminal, handleTerminalMouseMove, handleTerminalMouseUp]);
 
-	// Get label for minimized bar
-	const getMinimizedLabel = () => {
-		if (openFile) {
-			return openFile.name;
-		}
-		if (sidebarPanel === "files") return "File Browser";
-		if (sidebarPanel === "search") return "Search";
-		if (sidebarPanel === "sourceControl") return "Source Control";
-		if (sidebarPanel === "run") return "Execute";
-		if (sidebarPanel === "packages") return "Packages";
-		return "Editor";
-	};
-
-	// If minimized, show docked bar
+	// If minimized, don't render anything - the unified WindowDock handles this
 	if (layoutMode === "minimized") {
-		return (
-			<div className="fixed bottom-4 right-4 z-50">
-				<button
-					onClick={restoreEditor}
-					className="flex items-center gap-2 rounded-lg border bg-background px-4 py-2 shadow-lg hover:bg-muted transition-colors"
-				>
-					{isActivityInProgress ? (
-						<Loader2 className="h-4 w-4 animate-spin" />
-					) : (
-						<Maximize2 className="h-4 w-4" />
-					)}
-					<span className="text-sm font-medium">
-						{getMinimizedLabel()}
-					</span>
-				</button>
-			</div>
-		);
+		return null;
 	}
 
 	return (
