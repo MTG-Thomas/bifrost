@@ -5,7 +5,7 @@
  * Combines filters, the logs table, and the execution drawer.
  */
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { ChevronDown, Filter, X } from "lucide-react";
 import type { DateRange } from "react-day-picker";
 
@@ -92,11 +92,44 @@ export function LogsView() {
     const logs = data?.logs ?? [];
     const continuationToken = data?.continuation_token;
 
-    // Reset pagination when filters change
-    useEffect(() => {
+    // Reset pagination helper - called when filters change
+    const resetPagination = useCallback(() => {
         setPageStack([]);
         setCurrentToken(undefined);
-    }, [filterOrgId, workflowName, selectedLevels, messageSearch, dateRange]);
+    }, []);
+
+    // Filter change handlers that also reset pagination
+    const handleFilterOrgChange = useCallback(
+        (value: string | null | undefined) => {
+            setFilterOrgId(value);
+            resetPagination();
+        },
+        [resetPagination],
+    );
+
+    const handleWorkflowChange = useCallback(
+        (value: string) => {
+            setWorkflowName(value);
+            resetPagination();
+        },
+        [resetPagination],
+    );
+
+    const handleMessageSearchChange = useCallback(
+        (value: string) => {
+            setMessageSearch(value);
+            resetPagination();
+        },
+        [resetPagination],
+    );
+
+    const handleDateRangeChange = useCallback(
+        (range: DateRange | undefined) => {
+            setDateRange(range);
+            resetPagination();
+        },
+        [resetPagination],
+    );
 
     // Pagination handlers
     const handleNextPage = () => {
@@ -122,19 +155,24 @@ export function LogsView() {
         setDrawerOpen(true);
     };
 
-    // Level toggle handler
-    const toggleLevel = (level: LogLevel) => {
-        setSelectedLevels((prev) =>
-            prev.includes(level)
-                ? prev.filter((l) => l !== level)
-                : [...prev, level],
-        );
-    };
+    // Level toggle handler - also resets pagination
+    const toggleLevel = useCallback(
+        (level: LogLevel) => {
+            setSelectedLevels((prev) =>
+                prev.includes(level)
+                    ? prev.filter((l) => l !== level)
+                    : [...prev, level],
+            );
+            resetPagination();
+        },
+        [resetPagination],
+    );
 
-    // Clear all levels
-    const clearLevels = () => {
+    // Clear all levels - also resets pagination
+    const clearLevels = useCallback(() => {
         setSelectedLevels([]);
-    };
+        resetPagination();
+    }, [resetPagination]);
 
     // Get display text for level filter button
     const levelFilterText = useMemo(() => {
@@ -151,7 +189,7 @@ export function LogsView() {
                 <div className="w-56">
                     <OrganizationSelect
                         value={filterOrgId}
-                        onChange={setFilterOrgId}
+                        onChange={handleFilterOrgChange}
                         showAll={true}
                         showGlobal={true}
                         placeholder="All organizations"
@@ -163,7 +201,7 @@ export function LogsView() {
                     <Input
                         placeholder="Workflow name..."
                         value={workflowName}
-                        onChange={(e) => setWorkflowName(e.target.value)}
+                        onChange={(e) => handleWorkflowChange(e.target.value)}
                     />
                 </div>
 
@@ -230,13 +268,13 @@ export function LogsView() {
                 {/* Date range picker */}
                 <DateRangePicker
                     dateRange={dateRange}
-                    onDateRangeChange={setDateRange}
+                    onDateRangeChange={handleDateRangeChange}
                 />
 
                 {/* Message search box */}
                 <SearchBox
                     value={messageSearch}
-                    onChange={setMessageSearch}
+                    onChange={handleMessageSearchChange}
                     placeholder="Search messages..."
                     className="w-64"
                 />
@@ -298,6 +336,7 @@ export function LogsView() {
                             setMessageSearch("");
                             setDateRange(undefined);
                             setFilterOrgId(undefined);
+                            resetPagination();
                         }}
                         className="h-6 px-2 text-xs text-muted-foreground"
                     >
