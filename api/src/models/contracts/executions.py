@@ -25,6 +25,25 @@ class ExecutionLogPublic(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class LogListEntry(BaseModel):
+    """Single log entry for the logs list view."""
+    id: int
+    execution_id: str
+    organization_name: str | None
+    workflow_name: str
+    level: str
+    message: str
+    timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LogsListResponse(BaseModel):
+    """Response for paginated logs list."""
+    logs: list[LogListEntry]
+    continuation_token: str | None = None
+
+
 class AIUsagePublicSimple(BaseModel):
     """Simplified AI usage for embedding in execution responses."""
     provider: str
