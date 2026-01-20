@@ -35,7 +35,10 @@ from src.services.file_storage.file_ops import compute_git_blob_sha
 from src.services.file_storage.indexers.agent import _serialize_agent_to_json
 from src.services.file_storage.indexers.app import _serialize_app_to_json
 from src.services.file_storage.indexers.form import _serialize_form_to_json
-from src.services.file_storage.ref_translation import build_workflow_ref_map
+from src.services.file_storage.ref_translation import (
+    build_workflow_ref_map,
+    transform_app_source_uuids_to_refs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +296,11 @@ class VirtualFileProvider:
         - apps/{slug}/{path} - each code file (pages/*.tsx, components/*.tsx, etc.)
 
         Uses the app's active_version if published, otherwise draft_version.
+        Code files have useWorkflow UUIDs transformed to portable refs.
         """
+        # Build workflow ref map for transforming UUIDs to portable refs
+        workflow_map = await build_workflow_ref_map(self.db)
+
         # Query apps with their versions and files eagerly loaded
         stmt = (
             select(Application)
@@ -344,11 +351,15 @@ class VirtualFileProvider:
                 )
                 continue  # Skip files if app.json fails
 
-            # 2. Serialize each code file
+            # 2. Serialize each code file with UUID -> ref transformation
             for file in version.files:
                 file_path = f"{app_dir}/{file.path}"
                 try:
-                    content = file.source.encode("utf-8")
+                    # Transform UUIDs to portable refs
+                    transformed_source, _ = transform_app_source_uuids_to_refs(
+                        file.source, workflow_map
+                    )
+                    content = transformed_source.encode("utf-8")
                     computed_sha = compute_git_blob_sha(content)
 
                     virtual_files.append(
