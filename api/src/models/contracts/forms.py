@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from src.models.enums import FormAccessLevel, FormFieldType
 from src.models.contracts.base import DataProviderInputMode
@@ -107,42 +107,6 @@ class FormField(BaseModel):
 
         return self
 
-    @field_validator("data_provider_id", mode="before")
-    @classmethod
-    def deserialize_data_provider_ref(cls, value: Any, info: ValidationInfo) -> UUID | str | None:
-        """Transform portable ref to UUID using validation context."""
-        if value is None:
-            return None
-
-        value_str = str(value)
-
-        # Check if it's already a valid UUID
-        try:
-            UUID(value_str)
-            return value_str  # Let Pydantic handle the conversion
-        except ValueError:
-            pass
-
-        # It's a portable ref - try to resolve via context
-        if info.context:
-            ref_to_uuid = info.context.get("ref_to_uuid", {})
-            if value_str in ref_to_uuid:
-                return ref_to_uuid[value_str]
-
-        # Can't resolve - return as-is and let UUID validation fail with clear error
-        return value_str
-
-    @field_serializer("data_provider_id")
-    def serialize_data_provider_ref(self, value: UUID | None, info: Any) -> str | None:
-        """Transform UUID to portable ref using serialization context."""
-        if not value:
-            return None
-        value_str = str(value)
-        if not info.context:
-            return value_str
-        workflow_map = info.context.get("workflow_map", {})
-        return workflow_map.get(value_str, value_str)
-
 
 class FormSchema(BaseModel):
     """Form schema with field definitions"""
@@ -241,29 +205,6 @@ class FormCreate(BaseModel):
         default=None, description="Organization ID (null = global resource)"
     )
 
-    @field_validator("workflow_id", "launch_workflow_id", mode="before")
-    @classmethod
-    def deserialize_workflow_ref(cls, value: str | None, info: ValidationInfo) -> str | None:
-        """Transform portable ref to UUID using validation context."""
-        if not value or not info.context:
-            return value
-
-        from src.services.file_storage.ref_translation import resolve_workflow_ref
-        ref_to_uuid = info.context.get("ref_to_uuid", {})
-        return resolve_workflow_ref(value, ref_to_uuid)
-
-    @field_validator("form_schema", mode="before")
-    @classmethod
-    def validate_form_schema(cls, v: Any, info: ValidationInfo) -> FormSchema | dict | None:
-        """Validate and convert dict to FormSchema, forwarding validation context."""
-        if v is None:
-            raise ValueError("form_schema is required")
-        if isinstance(v, dict):
-            # Validate the dict conforms to FormSchema structure, forwarding context
-            return FormSchema.model_validate(v, context=info.context)
-        return v
-
-
 class FormUpdate(BaseModel):
     """Input for updating a form."""
     name: str | None = None
@@ -279,28 +220,6 @@ class FormUpdate(BaseModel):
         default=None, description="Organization ID (null = global resource)"
     )
     clear_roles: bool = False
-
-    @field_validator("workflow_id", "launch_workflow_id", mode="before")
-    @classmethod
-    def deserialize_workflow_ref(cls, value: str | None, info: ValidationInfo) -> str | None:
-        """Transform portable ref to UUID using validation context."""
-        if not value or not info.context:
-            return value
-
-        from src.services.file_storage.ref_translation import resolve_workflow_ref
-        ref_to_uuid = info.context.get("ref_to_uuid", {})
-        return resolve_workflow_ref(value, ref_to_uuid)
-
-    @field_validator("form_schema", mode="before")
-    @classmethod
-    def validate_form_schema(cls, v: Any, info: ValidationInfo) -> FormSchema | dict | None:
-        """Validate and convert dict to FormSchema, forwarding validation context."""
-        if v is None:
-            return None
-        if isinstance(v, dict):
-            # Validate the dict conforms to FormSchema structure, forwarding context
-            return FormSchema.model_validate(v, context=info.context)
-        return v
 
 
 class FormPublic(BaseModel):
@@ -377,36 +296,6 @@ class FormPublic(BaseModel):
 
         return data
 
-    @field_validator("workflow_id", "launch_workflow_id", mode="before")
-    @classmethod
-    def deserialize_workflow_ref(cls, value: str | None, info: ValidationInfo) -> str | None:
-        """Transform portable ref to UUID using validation context."""
-        if not value or not info.context:
-            return value
-
-        from src.services.file_storage.ref_translation import resolve_workflow_ref
-        ref_to_uuid = info.context.get("ref_to_uuid", {})
-        return resolve_workflow_ref(value, ref_to_uuid)
-
-    @field_validator("form_schema", mode="before")
-    @classmethod
-    def validate_form_schema(cls, v: Any, info: ValidationInfo) -> FormSchema | dict | None:
-        """Validate and convert dict to FormSchema, forwarding validation context."""
-        if v is None:
-            return None
-        if isinstance(v, dict):
-            # Validate the dict conforms to FormSchema structure, forwarding context
-            return FormSchema.model_validate(v, context=info.context)
-        return v
-
     @field_serializer("created_at", "updated_at")
     def serialize_dt(self, dt: datetime | None) -> str | None:
         return dt.isoformat() if dt else None
-
-    @field_serializer("workflow_id", "launch_workflow_id")
-    def serialize_workflow_ref(self, value: str | None, info: Any) -> str | None:
-        """Transform UUID to portable ref using serialization context."""
-        if not value or not info.context:
-            return value
-        workflow_map = info.context.get("workflow_map", {})
-        return workflow_map.get(value, value)
