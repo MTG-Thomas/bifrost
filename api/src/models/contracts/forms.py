@@ -310,16 +310,16 @@ class FormPublic(BaseModel):
     id: UUID
     name: str
     description: str | None = None
-    workflow_id: str | None = None
-    launch_workflow_id: str | None = None
+    workflow_id: Annotated[str | None, WorkflowRef()] = None
+    launch_workflow_id: Annotated[str | None, WorkflowRef()] = None
     default_launch_params: dict | None = None
     allowed_query_params: list[str] | None = None
     form_schema: dict | FormSchema | None = None
-    access_level: FormAccessLevel | None = None
-    organization_id: UUID | None = None
+    access_level: FormAccessLevel | None = Field(default=None, exclude=True)
+    organization_id: UUID | None = Field(default=None, exclude=True)
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: datetime | None = Field(default=None, exclude=True)
+    updated_at: datetime | None = Field(default=None, exclude=True)
 
     @model_validator(mode="before")
     @classmethod
