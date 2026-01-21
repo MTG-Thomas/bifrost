@@ -3,12 +3,12 @@ Agent and Chat contract models for Bifrost.
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_serializer, field_validator
 
-
+from src.models.contracts.refs import WorkflowRef
 from src.models.enums import AgentAccessLevel, AgentChannel, CodingModePermission, MessageRole
 
 
@@ -114,16 +114,16 @@ class AgentPublic(BaseModel):
     description: str | None = None
     system_prompt: str
     channels: list[str]
-    access_level: AgentAccessLevel
-    organization_id: UUID | None = None
+    access_level: AgentAccessLevel | None = Field(default=None, exclude=True)
+    organization_id: UUID | None = Field(default=None, exclude=True)
     is_active: bool
     is_coding_mode: bool = False
-    is_system: bool = False
-    created_by: str
-    created_at: datetime
-    updated_at: datetime
+    is_system: bool = Field(default=False, exclude=True)
+    created_by: str | None = Field(default=None, exclude=True)
+    created_at: datetime | None = Field(default=None, exclude=True)
+    updated_at: datetime | None = Field(default=None, exclude=True)
     # Populated from relationships
-    tool_ids: list[str] = Field(default_factory=list)
+    tool_ids: Annotated[list[str], WorkflowRef()] = Field(default_factory=list)
     delegated_agent_ids: list[str] = Field(default_factory=list)
     role_ids: list[str] = Field(default_factory=list)
     knowledge_sources: list[str] = Field(default_factory=list)
@@ -134,8 +134,19 @@ class AgentPublic(BaseModel):
         return str(v) if v else None
 
     @field_serializer("created_at", "updated_at")
-    def serialize_dt(self, dt: datetime) -> str:
-        return dt.isoformat()
+    def serialize_dt(self, dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    @field_validator("tool_ids", mode="before")
+    @classmethod
+    def deserialize_tool_refs(cls, value: list[str] | None, info: ValidationInfo) -> list[str] | None:
+        """Transform portable refs to UUIDs using validation context."""
+        if not value or not info.context:
+            return value
+
+        from src.services.file_storage.ref_translation import resolve_workflow_ref
+        ref_to_uuid = info.context.get("ref_to_uuid", {})
+        return [resolve_workflow_ref(v, ref_to_uuid) or v for v in value]
 
     @field_serializer("tool_ids")
     def serialize_tool_refs(self, value: list[str], info: Any) -> list[str]:
