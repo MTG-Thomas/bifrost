@@ -14,8 +14,15 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pydantic import ValidationError
+
 from src.models import Form, FormField as FormFieldORM, Workflow
-from src.models.contracts.forms import FormPublic
+from src.models.contracts.forms import FormField, FormPublic
+from src.models.contracts.refs import (
+    get_workflow_ref_paths,
+    transform_refs_for_export,
+    transform_refs_for_import,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,35 +32,30 @@ def _serialize_form_to_json(
     workflow_map: dict[str, str] | None = None
 ) -> bytes:
     """
-    Serialize a Form (with fields) to JSON bytes using Pydantic model_dump.
+    Serialize a Form to JSON bytes using Pydantic model_dump.
 
-    Uses FormPublic.model_dump() with serialization context to support
-    portable workflow refs (UUID → path::function_name transformation).
+    Uses FormPublic.model_dump() with exclude=True fields auto-excluded.
+    Transforms workflow refs via transform_refs_for_export().
 
     Args:
         form: Form ORM instance with fields relationship loaded
-        workflow_map: Optional mapping of workflow UUID → portable ref.
+        workflow_map: Optional mapping of workflow UUID -> portable ref.
                       If provided, workflow references are transformed.
 
     Returns:
         JSON serialized as UTF-8 bytes
     """
-    # Convert ORM to Pydantic model (triggers @model_validator to build form_schema)
     form_public = FormPublic.model_validate(form)
 
-    # Serialize with context for portable refs
-    context = {"workflow_map": workflow_map} if workflow_map else None
-    form_data = form_public.model_dump(mode="json", context=context, exclude_none=True)
+    # model_dump respects Field(exclude=True) automatically
+    form_data = form_public.model_dump(mode="json", exclude_none=True)
 
-    # Add export metadata if we transformed refs
+    # Transform refs if we have a workflow map
     if workflow_map:
+        form_data = transform_refs_for_export(form_data, FormPublic, workflow_map)
         form_data["_export"] = {
-            "workflow_refs": [
-                "workflow_id",
-                "launch_workflow_id",
-                "form_schema.fields.*.data_provider_id"
-            ],
-            "version": "1.0"
+            "workflow_refs": get_workflow_ref_paths(FormPublic),
+            "version": "1.0",
         }
 
     return json.dumps(form_data, indent=2).encode("utf-8")
@@ -131,17 +133,11 @@ class FormIndexer:
 
         # Check for portable refs from export and resolve them to UUIDs
         export_meta = form_data.pop("_export", None)
+        ref_to_uuid: dict[str, str] = {}
         if export_meta and "workflow_refs" in export_meta:
-            from src.services.file_storage.ref_translation import (
-                build_ref_to_uuid_map,
-                transform_path_refs_to_uuids,
-            )
+            from src.services.file_storage.ref_translation import build_ref_to_uuid_map
             ref_to_uuid = await build_ref_to_uuid_map(self.db)
-            unresolved = transform_path_refs_to_uuids(
-                form_data, export_meta["workflow_refs"], ref_to_uuid
-            )
-            if unresolved:
-                logger.warning(f"Unresolved portable refs in {path}: {unresolved}")
+            form_data = transform_refs_for_import(form_data, FormPublic, ref_to_uuid)
 
         name = form_data.get("name")
         if not name:
@@ -232,30 +228,44 @@ class FormIndexer:
                     delete(FormFieldORM).where(FormFieldORM.form_id == form_id)
                 )
 
-                # Create new fields from schema
-                for position, field in enumerate(fields_data):
-                    if not isinstance(field, dict) or not field.get("name"):
+                # Build validation context for Pydantic models to resolve portable refs
+                validation_context = {"ref_to_uuid": ref_to_uuid} if ref_to_uuid else None
+
+                # Create new fields from schema using Pydantic validation
+                for position, field_dict in enumerate(fields_data):
+                    if not isinstance(field_dict, dict) or not field_dict.get("name"):
+                        continue
+
+                    # Validate through Pydantic to trigger ref translation
+                    # (especially for data_provider_id portable refs)
+                    try:
+                        form_field = FormField.model_validate(field_dict, context=validation_context)
+                    except ValidationError as e:
+                        logger.warning(f"Invalid field in {path}: {e}")
                         continue
 
                     field_orm = FormFieldORM(
                         form_id=form_id,
-                        name=field.get("name"),
-                        label=field.get("label"),
-                        type=field.get("type", "text"),
-                        required=field.get("required", False),
+                        name=form_field.name,
+                        label=form_field.label,
+                        type=form_field.type,
+                        required=form_field.required,
                         position=position,
-                        placeholder=field.get("placeholder"),
-                        help_text=field.get("help_text"),
-                        default_value=field.get("default_value"),
-                        options=field.get("options"),
-                        data_provider_id=field.get("data_provider_id"),
-                        data_provider_inputs=field.get("data_provider_inputs"),
-                        visibility_expression=field.get("visibility_expression"),
-                        validation=field.get("validation"),
-                        allowed_types=field.get("allowed_types"),
-                        multiple=field.get("multiple"),
-                        max_size_mb=field.get("max_size_mb"),
-                        content=field.get("content"),
+                        placeholder=form_field.placeholder,
+                        help_text=form_field.help_text,
+                        default_value=form_field.default_value,
+                        options=form_field.options,
+                        data_provider_id=form_field.data_provider_id,
+                        data_provider_inputs=(
+                            {k: v.model_dump() for k, v in form_field.data_provider_inputs.items()}
+                            if form_field.data_provider_inputs else None
+                        ),
+                        visibility_expression=form_field.visibility_expression,
+                        validation=form_field.validation,
+                        allowed_types=form_field.allowed_types,
+                        multiple=form_field.multiple,
+                        max_size_mb=form_field.max_size_mb,
+                        content=form_field.content,
                     )
                     self.db.add(field_orm)
 
