@@ -86,6 +86,7 @@ class AgentIndexer:
         path: str,
         content: bytes,
         workspace_file: Any = None,
+        ref_to_uuid: dict[str, str] | None = None,
     ) -> bool:
         """
         Parse and index agent from .agent.json file.
@@ -102,6 +103,8 @@ class AgentIndexer:
             path: File path
             content: File content bytes
             workspace_file: WorkspaceFile ORM instance (optional, not currently used)
+            ref_to_uuid: Optional mapping of portable refs to UUIDs. If not provided,
+                         builds the map from the database.
 
         Returns:
             True if content was modified (ID alignment), False otherwise
@@ -120,8 +123,9 @@ class AgentIndexer:
 
         # Always transform portable refs to UUIDs
         # The model annotations tell us which fields contain workflow refs
-        from src.services.file_storage.ref_translation import build_ref_to_uuid_map
-        ref_to_uuid = await build_ref_to_uuid_map(self.db)
+        if ref_to_uuid is None:
+            from src.services.file_storage.ref_translation import build_ref_to_uuid_map
+            ref_to_uuid = await build_ref_to_uuid_map(self.db)
         agent_data = transform_refs_for_import(agent_data, AgentPublic, ref_to_uuid)
 
         name = agent_data.get("name")
