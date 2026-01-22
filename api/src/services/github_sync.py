@@ -173,6 +173,14 @@ class SyncPreview(BaseModel):
         default=False,
         description="True if no changes to sync"
     )
+    clone_path: str | None = Field(
+        default=None,
+        description="Path to temp clone dir (for caching between preview and execute)"
+    )
+    commit_sha: str | None = Field(
+        default=None,
+        description="Current HEAD SHA of the cloned branch"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -753,6 +761,32 @@ class GitHubSyncService:
                 raise
             raise SyncError(f"Git clone failed: {e}")
 
+    def _get_head_sha(self, clone_dir: str) -> str | None:
+        """
+        Get the HEAD SHA of a cloned repository.
+
+        Args:
+            clone_dir: Path to the cloned repository
+
+        Returns:
+            The HEAD SHA, or None if it could not be determined
+        """
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=clone_dir,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            logger.warning(f"Failed to get HEAD SHA: {result.stderr}")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to get HEAD SHA: {e}")
+            return None
+
     async def get_sync_preview(
         self,
         progress_callback: ProgressCallback | None = None,
@@ -797,6 +831,7 @@ class GitHubSyncService:
                 await log_callback(level, message)
 
         clone_dir: str | None = None
+        success = False  # Track if we complete successfully (for cleanup decision)
         try:
             # 1. Clone repo to temp directory
             await report("cloning", 0, 1)
@@ -1316,6 +1351,10 @@ class GitHubSyncService:
                 and len(conflicts) == 0
             )
 
+            # Get HEAD SHA for cache validation
+            commit_sha = self._get_head_sha(clone_dir) if clone_dir else None
+
+            success = True  # Mark success before return (don't clean up clone)
             return SyncPreview(
                 to_pull=to_pull,
                 to_push=to_push,
@@ -1324,14 +1363,17 @@ class GitHubSyncService:
                 unresolved_refs=unresolved_refs,
                 serialization_errors=serialization_errors,
                 is_empty=is_empty,
+                clone_path=clone_dir,
+                commit_sha=commit_sha,
             )
 
         finally:
-            # Clean up clone directory
-            if clone_dir:
+            # Only clean up clone directory on error
+            # On success, caller (scheduler) is responsible for cleanup after caching
+            if clone_dir and not success:
                 try:
                     shutil.rmtree(clone_dir, ignore_errors=True)
-                    logger.debug(f"Cleaned up preview clone directory: {clone_dir}")
+                    logger.debug(f"Cleaned up preview clone directory on error: {clone_dir}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up clone directory {clone_dir}: {e}")
 
