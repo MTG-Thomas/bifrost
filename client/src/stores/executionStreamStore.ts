@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { WaitReason } from "@/services/websocket";
 
 export interface StreamingLog {
+	id?: number; // Unique log ID for deduplication with API logs
 	level: string;
 	message: string;
 	timestamp: string;

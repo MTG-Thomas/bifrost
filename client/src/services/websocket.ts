@@ -73,9 +73,16 @@ export interface ExecutionUpdate {
 export type ExecutionLogMessage = components["schemas"]["ExecutionLogPublic"];
 
 // Frontend wrapper with execution context
-export interface ExecutionLog extends ExecutionLogMessage {
+// Note: id and sequence are optional for WebSocket logs (not yet persisted)
+// but required in API responses (persisted logs have database IDs)
+export interface ExecutionLog {
 	executionId: string;
-	sequence?: number;
+	id?: number; // Only present for persisted logs from API
+	timestamp: string;
+	level: string;
+	message: string;
+	data?: Record<string, unknown> | null;
+	sequence?: number; // Only present when sequencing is enabled
 }
 
 export interface NewExecution {
