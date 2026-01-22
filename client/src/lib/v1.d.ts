@@ -3121,22 +3121,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__get"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__get"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__get"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__get"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         options?: never;
         head?: never;
         patch?: never;
@@ -9455,6 +9455,8 @@ export interface components {
          * @description Single log entry from workflow execution (API response model)
          */
         ExecutionLogPublic: {
+            /** Id */
+            id: number;
             /** Timestamp */
             timestamp: string;
             /** Level */
@@ -9465,6 +9467,8 @@ export interface components {
             data?: {
                 [key: string]: unknown;
             } | null;
+            /** Sequence */
+            sequence: number;
         };
         /**
          * ExecutionStats
@@ -11720,6 +11724,11 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -16744,27 +16753,6 @@ export interface components {
             organization_id?: string | null;
         };
         /**
-         * MFASetupResponse
-         * @description MFA setup response with secret.
-         */
-        src__routers__auth__MFASetupResponse: {
-            /** Secret */
-            secret: string;
-            /** Qr Code Uri */
-            qr_code_uri: string;
-            /** Provisioning Uri */
-            provisioning_uri: string;
-            /** Issuer */
-            issuer: string;
-            /** Account Name */
-            account_name: string;
-            /**
-             * Is Existing
-             * @default false
-             */
-            is_existing: boolean;
-        };
-        /**
          * MFAVerifyRequest
          * @description Request to verify MFA code during login.
          */
@@ -16780,6 +16768,22 @@ export interface components {
             trust_device: boolean;
             /** Device Name */
             device_name?: string | null;
+        };
+        /**
+         * MFASetupResponse
+         * @description MFA setup response with secret.
+         */
+        src__routers__mfa__MFASetupResponse: {
+            /** Secret */
+            secret: string;
+            /** Qr Code Uri */
+            qr_code_uri: string;
+            /** Provisioning Uri */
+            provisioning_uri: string;
+            /** Issuer */
+            issuer: string;
+            /** Account Name */
+            account_name: string;
         };
         /**
          * OAuthCallbackRequest
@@ -16906,7 +16910,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["src__routers__auth__MFASetupResponse"];
+                    "application/json": components["schemas"]["MFASetupResponse"];
                 };
             };
             /** @description Validation Error */
@@ -17352,7 +17356,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
                 };
             };
         };
@@ -21576,7 +21580,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__get: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -21609,7 +21613,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__get: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -21642,7 +21646,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__get: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -21675,7 +21679,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__get: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
