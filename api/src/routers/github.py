@@ -34,8 +34,6 @@ from src.models import (
     SyncExecuteRequest,
     SyncExecuteResponse,
     SyncPreviewJobResponse,
-    SyncPreviewResponse,
-    SyncSerializationError,
     ValidateTokenRequest,
 )
 from src.services.github_api import GitHubAPIClient, GitHubAPIError
@@ -44,7 +42,6 @@ from src.services.github_config import (
     get_github_config,
     save_github_config,
 )
-from src.services.github_sync_entity_metadata import extract_entity_metadata
 
 logger = logging.getLogger(__name__)
 

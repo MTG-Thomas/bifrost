@@ -16,9 +16,12 @@ NOTE: File watching and DB sync has been moved to the Discovery container.
 import asyncio
 import json
 import logging
+import shutil
 import signal
 import sys
+import time
 from datetime import datetime
+from pathlib import Path
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -71,6 +74,10 @@ class Scheduler:
         self._redis: redis.Redis | None = None
         self._pubsub: redis.client.PubSub | None = None
         self._listener_task: asyncio.Task | None = None
+
+        # Clone cache for GitHub sync: org_id -> (clone_path, commit_sha, timestamp)
+        self._sync_clone_cache: dict[str, tuple[Path, str, float]] = {}
+        self._clone_cache_ttl = 300  # 5 minutes
 
     async def start(self) -> None:
         """Start the scheduler."""
@@ -461,14 +468,32 @@ class Scheduler:
                 async def log_callback(level: str, message: str) -> None:
                     await publish_git_sync_log(job_id, level, message)
 
+                # Check for cached clone
+                cached_clone_path: Path | None = None
+                if org_id and org_id in self._sync_clone_cache:
+                    path, sha, ts = self._sync_clone_cache[org_id]
+                    if time.time() - ts < self._clone_cache_ttl and path.exists():
+                        cached_clone_path = path
+                        logger.info(f"Using cached clone for org {org_id}")
+
                 # Execute the sync
-                sync_result = await sync_service.execute_sync(
-                    conflict_resolutions=conflict_resolutions,
-                    confirm_orphans=confirm_orphans,
-                    confirm_unresolved_refs=confirm_unresolved_refs,
-                    progress_callback=progress_callback,
-                    log_callback=log_callback,
-                )
+                try:
+                    sync_result = await sync_service.execute_sync(
+                        conflict_resolutions=conflict_resolutions,
+                        confirm_orphans=confirm_orphans,
+                        confirm_unresolved_refs=confirm_unresolved_refs,
+                        progress_callback=progress_callback,
+                        log_callback=log_callback,
+                        cached_clone_path=cached_clone_path,
+                    )
+                finally:
+                    # Clear cache after execute (regardless of success/failure)
+                    if org_id and org_id in self._sync_clone_cache:
+                        # Clean up the cached clone directory
+                        path, _, _ = self._sync_clone_cache.pop(org_id)
+                        if path.exists():
+                            shutil.rmtree(path, ignore_errors=True)
+                            logger.debug(f"Cleaned up cached clone for org {org_id}")
 
                 # Publish completion
                 if sync_result.success:
@@ -771,6 +796,15 @@ class Scheduler:
                     f"Git sync preview job {job_id} completed: "
                     f"to_pull={len(preview.to_pull)}, to_push={len(preview.to_push)}"
                 )
+
+                # Cache the clone path for potential execute
+                if preview.clone_path and org_id:
+                    self._sync_clone_cache[org_id] = (
+                        Path(preview.clone_path),
+                        preview.commit_sha or "",
+                        time.time(),
+                    )
+                    logger.debug(f"Cached clone for org {org_id}")
 
         except SyncError as e:
             logger.error(f"Git sync preview job {job_id} failed: {e}")
