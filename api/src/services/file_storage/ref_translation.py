@@ -1,16 +1,24 @@
 """
 Workflow reference translation utilities for git sync.
 
-Handles translation between workflow UUIDs and portable path::function_name references.
+Handles translation between workflow UUIDs and portable references.
 This enables forms, agents, and apps to be exported/imported across environments.
 
-Export (DB → Git): UUID → "workflows/my_module.py::my_function"
-Import (Git → DB): "workflows/my_module.py::my_function" → UUID
+Portable Ref Format: "workflow::path::function_name"
+Example: "workflow::workflows/my_module.py::my_function"
+
+The `portable_ref` column is a Postgres generated column that automatically
+computes this value from path and function_name. Direct lookups via this
+column eliminate O(n) map building on every sync.
+
+Export (DB → Git): UUID → portable_ref (via column lookup)
+Import (Git → DB): portable_ref → UUID (via column lookup)
 """
 
 import logging
 import re
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,30 +29,132 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Map Building Functions
+# Direct Lookup Functions (New - Use portable_ref Column)
+# =============================================================================
+
+
+async def get_portable_ref_for_workflow(db: AsyncSession, workflow_id: UUID | str) -> str | None:
+    """
+    Get the portable reference for a workflow by ID.
+
+    Uses the portable_ref generated column for O(1) lookup.
+
+    Args:
+        db: Database session
+        workflow_id: Workflow UUID
+
+    Returns:
+        Portable ref string (e.g., "workflow::path::function") or None if not found
+    """
+    if isinstance(workflow_id, str):
+        workflow_id = UUID(workflow_id)
+
+    stmt = select(Workflow.portable_ref).where(
+        Workflow.id == workflow_id,
+        Workflow.is_active == True,  # noqa: E712
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_workflow_id_for_ref(db: AsyncSession, portable_ref: str) -> str | None:
+    """
+    Get workflow UUID for a portable reference.
+
+    Uses the portable_ref column index for O(1) lookup.
+
+    Supports both formats for backward compatibility:
+    - New format: "workflow::path::function_name"
+    - Legacy format: "path::function_name" (auto-prefixed with "workflow::")
+
+    Args:
+        db: Database session
+        portable_ref: Portable reference string
+
+    Returns:
+        UUID string or None if not found
+    """
+    # Normalize to new format if needed
+    normalized_ref = normalize_portable_ref(portable_ref)
+
+    stmt = select(Workflow.id).where(
+        Workflow.portable_ref == normalized_ref,
+        Workflow.is_active == True,  # noqa: E712
+    )
+    result = await db.execute(stmt)
+    workflow_id = result.scalar_one_or_none()
+    return str(workflow_id) if workflow_id else None
+
+
+def normalize_portable_ref(ref: str) -> str:
+    """
+    Normalize a portable ref to the canonical format.
+
+    Converts legacy "path::function" format to "workflow::path::function".
+
+    Args:
+        ref: Portable reference (may be legacy or new format)
+
+    Returns:
+        Normalized portable ref with "workflow::" prefix
+    """
+    if ref.startswith("workflow::"):
+        return ref
+    # Legacy format - add prefix
+    return f"workflow::{ref}"
+
+
+def strip_portable_ref_prefix(ref: str) -> str:
+    """
+    Strip the "workflow::" prefix from a portable ref.
+
+    Used when displaying refs to users or in exported files
+    where the prefix may be redundant.
+
+    Args:
+        ref: Portable reference with or without prefix
+
+    Returns:
+        Reference without "workflow::" prefix
+    """
+    if ref.startswith("workflow::"):
+        return ref[10:]  # len("workflow::") == 10
+    return ref
+
+
+# =============================================================================
+# Map Building Functions (Legacy - Still Used During Transition)
 # =============================================================================
 
 
 async def build_workflow_ref_map(db: AsyncSession) -> dict[str, str]:
     """
-    Build mapping of workflow UUID -> path::function_name for export.
+    Build mapping of workflow UUID -> portable_ref for export.
 
-    Used when serializing entities to transform UUIDs to portable references.
+    Now uses the portable_ref column directly instead of computing refs.
+
+    Note: This function is kept for backward compatibility during the transition
+    to direct lookups. New code should use get_portable_ref_for_workflow() or
+    batch lookups via the portable_ref column.
 
     Args:
         db: Database session
 
     Returns:
-        Dict mapping UUID string -> "path::function_name"
+        Dict mapping UUID string -> portable_ref (without "workflow::" prefix for compatibility)
     """
-    stmt = select(Workflow).where(Workflow.is_active == True)  # noqa: E712
+    stmt = select(Workflow.id, Workflow.portable_ref).where(
+        Workflow.is_active == True,  # noqa: E712
+        Workflow.portable_ref.isnot(None),
+    )
     result = await db.execute(stmt)
-    workflows = result.scalars().all()
+    rows = result.all()
 
+    # Strip "workflow::" prefix for backward compatibility with existing code
     workflow_map = {
-        str(wf.id): f"{wf.path}::{wf.function_name}"
-        for wf in workflows
-        if wf.path and wf.function_name
+        str(row.id): strip_portable_ref_prefix(row.portable_ref)
+        for row in rows
+        if row.portable_ref
     }
 
     logger.debug(f"Built workflow ref map with {len(workflow_map)} entries")
@@ -53,25 +163,40 @@ async def build_workflow_ref_map(db: AsyncSession) -> dict[str, str]:
 
 async def build_ref_to_uuid_map(db: AsyncSession) -> dict[str, str]:
     """
-    Build mapping of path::function_name -> UUID for import.
+    Build mapping of portable_ref -> UUID for import.
 
-    Used when deserializing entities to resolve references back to UUIDs.
+    Now uses the portable_ref column directly instead of computing refs.
+
+    Note: This function is kept for backward compatibility during the transition
+    to direct lookups. New code should use get_workflow_id_for_ref().
+
+    The map includes both formats (with and without prefix) for compatibility:
+    - "workflow::path::function" -> UUID
+    - "path::function" -> UUID (legacy format still supported in imports)
 
     Args:
         db: Database session
 
     Returns:
-        Dict mapping "path::function_name" -> UUID string
+        Dict mapping portable_ref -> UUID string
     """
-    stmt = select(Workflow).where(Workflow.is_active == True)  # noqa: E712
+    stmt = select(Workflow.id, Workflow.portable_ref).where(
+        Workflow.is_active == True,  # noqa: E712
+        Workflow.portable_ref.isnot(None),
+    )
     result = await db.execute(stmt)
-    workflows = result.scalars().all()
+    rows = result.all()
 
-    ref_map = {
-        f"{wf.path}::{wf.function_name}": str(wf.id)
-        for wf in workflows
-        if wf.path and wf.function_name
-    }
+    ref_map: dict[str, str] = {}
+    for row in rows:
+        if row.portable_ref:
+            uuid_str = str(row.id)
+            # Add both formats for backward compatibility
+            ref_map[row.portable_ref] = uuid_str
+            # Also add without prefix (legacy format)
+            stripped = strip_portable_ref_prefix(row.portable_ref)
+            if stripped != row.portable_ref:
+                ref_map[stripped] = uuid_str
 
     logger.debug(f"Built ref-to-UUID map with {len(ref_map)} entries")
     return ref_map
@@ -188,9 +313,14 @@ def transform_app_source_refs_to_uuids(
         if _looks_like_uuid(arg):
             return match.group(0)
 
-        # Check if it's a portable ref we can resolve
+        # Check if it's a portable ref we can resolve (try both formats)
         if arg in ref_to_uuid:
             return f"useWorkflow({quote}{ref_to_uuid[arg]}{quote})"
+
+        # Try with workflow:: prefix if not present
+        normalized = normalize_portable_ref(arg)
+        if normalized in ref_to_uuid:
+            return f"useWorkflow({quote}{ref_to_uuid[normalized]}{quote})"
 
         # Unresolved ref - keep as-is but track it
         if "::" in arg:  # Looks like a portable ref

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Computed, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -114,6 +114,15 @@ class Workflow(Base):
         default=datetime.utcnow,
         server_default=text("NOW()"),
         onupdate=datetime.utcnow,
+    )
+
+    # Portable reference for GitHub sync
+    # Format: "workflow::path::function_name" (e.g., "workflow::workflows/my_module.py::my_function")
+    # Auto-computed by Postgres - no application code needed to maintain it
+    portable_ref: Mapped[str | None] = mapped_column(
+        String(512),
+        Computed("'workflow::' || path || '::' || function_name", persisted=True),
+        unique=True,
     )
 
     # Relationships
