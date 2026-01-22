@@ -675,6 +675,7 @@ class GitHubSyncService:
 
     async def _get_virtual_file_shas(
         self,
+        workflow_map: dict[str, str] | None = None,
     ) -> tuple[dict[str, str], list[SerializationError]]:
         """
         Get path -> computed_sha mapping for virtual platform files.
@@ -682,13 +683,17 @@ class GitHubSyncService:
         Virtual files are platform entities (apps, forms, agents) serialized
         to JSON with portable workflow refs.
 
+        Args:
+            workflow_map: Optional mapping of workflow UUID -> portable_ref for export.
+                If not provided, will be fetched from database (less efficient).
+
         Returns:
             Tuple of:
             - Dict mapping path to computed git blob SHA
             - List of serialization errors encountered
         """
         provider = VirtualFileProvider(self.db)
-        result = await provider.get_all_virtual_files()
+        result = await provider.get_all_virtual_files(workflow_map=workflow_map)
 
         shas = {
             vf.path: vf.computed_sha
@@ -893,9 +898,15 @@ class GitHubSyncService:
             await log("info", f"Found {len(local_shas)} files in local DB")
 
             # 3b. Get virtual platform file SHAs (and collect serialization errors)
+            # Build workflow_map once for all virtual file serialization
+            from src.services.file_storage.ref_translation import build_workflow_ref_map
+
             await report("serializing", 0, 0)
             await log("info", "Serializing virtual files...")
-            virtual_shas, serialization_errors = await self._get_virtual_file_shas()
+            workflow_map = await build_workflow_ref_map(self.db)
+            virtual_shas, serialization_errors = await self._get_virtual_file_shas(
+                workflow_map=workflow_map
+            )
             logger.info(f"Found {len(virtual_shas)} virtual platform files")
             await log("info", f"Found {len(virtual_shas)} virtual platform files")
             if serialization_errors:
@@ -1144,8 +1155,11 @@ class GitHubSyncService:
 
             # 5. Compare virtual files by entity ID
             # Virtual files use entity ID as stable identifier, not path
+            # Re-use workflow_map built above for consistency
             provider = VirtualFileProvider(self.db)
-            local_virtual_result = await provider.get_all_virtual_files()
+            local_virtual_result = await provider.get_all_virtual_files(
+                workflow_map=workflow_map
+            )
 
             # Build local map by entity ID for comparison
             local_virtual_by_id = {
@@ -1670,6 +1684,16 @@ class GitHubSyncService:
                 )
 
         try:
+            # Build reference maps once for all sync operations
+            # This avoids repeated DB queries when importing/exporting virtual files
+            from src.services.file_storage.ref_translation import (
+                build_ref_to_uuid_map,
+                build_workflow_ref_map,
+            )
+
+            ref_to_uuid = await build_ref_to_uuid_map(self.db)
+            workflow_map = await build_workflow_ref_map(self.db)
+
             # 1. Pull remote changes (read from local clone)
             for i, action in enumerate(preview.to_pull):
                 # Report progress before processing each file
@@ -1697,7 +1721,9 @@ class GitHubSyncService:
                         # Check if this is a virtual file (app, form, agent)
                         if VirtualFileProvider.is_virtual_file_path(action.path):
                             # Use indexer to import virtual file
-                            await self._import_virtual_file(action.path, content)
+                            await self._import_virtual_file(
+                                action.path, content, ref_to_uuid=ref_to_uuid
+                            )
                             # Virtual files don't need github_sha update (no workspace_file entry)
                         else:
                             # Regular file - use file storage
@@ -1742,7 +1768,9 @@ class GitHubSyncService:
                                 # Check if this is a virtual file (app, form, agent)
                                 if VirtualFileProvider.is_virtual_file_path(path):
                                     # Use indexer to import virtual file
-                                    await self._import_virtual_file(path, content)
+                                    await self._import_virtual_file(
+                                        path, content, ref_to_uuid=ref_to_uuid
+                                    )
                                 else:
                                     # Regular file - use file storage
                                     await file_storage.write_file(
@@ -1794,7 +1822,12 @@ class GitHubSyncService:
             commit_sha: str | None = None
             if files_to_push:
                 try:
-                    commit_sha = await self._push_changes(files_to_push, progress_callback, log_callback)
+                    commit_sha = await self._push_changes(
+                        files_to_push,
+                        progress_callback,
+                        log_callback,
+                        workflow_map=workflow_map,
+                    )
                     pushed = len(files_to_push)
                     logger.info(f"Pushed {pushed} files, commit: {commit_sha}")
                 except Exception as e:
@@ -1832,6 +1865,7 @@ class GitHubSyncService:
         to_push: list[SyncAction],
         progress_callback: ProgressCallback | None = None,
         log_callback: LogCallback | None = None,
+        workflow_map: dict[str, str] | None = None,
     ) -> str:
         """
         Push local changes to GitHub using Git Data API.
@@ -1840,6 +1874,8 @@ class GitHubSyncService:
             to_push: List of files to push
             progress_callback: Optional async callback for progress updates
             log_callback: Optional async callback for log messages
+            workflow_map: Optional mapping of workflow UUID -> portable_ref for export.
+                If not provided, will be fetched from database (less efficient).
 
         Returns:
             SHA of created commit
@@ -1879,7 +1915,7 @@ class GitHubSyncService:
         # 2. Pre-fetch all virtual files for efficient lookup
         # Virtual files include apps, app_files, forms, and agents
         vf_provider = VirtualFileProvider(self.db)
-        all_vf_result = await vf_provider.get_all_virtual_files()
+        all_vf_result = await vf_provider.get_all_virtual_files(workflow_map=workflow_map)
         virtual_files_by_path = {vf.path: vf for vf in all_vf_result.files}
 
         # 3. Create blobs for each file
@@ -2010,7 +2046,12 @@ class GitHubSyncService:
         await self.db.execute(stmt)
         logger.info(f"Marked workflow as orphaned: {workflow_id}")
 
-    async def _import_virtual_file(self, path: str, content: bytes) -> None:
+    async def _import_virtual_file(
+        self,
+        path: str,
+        content: bytes,
+        ref_to_uuid: dict[str, str] | None = None,
+    ) -> None:
         """
         Import a virtual file (app, form, agent) using the appropriate indexer.
 
@@ -2021,6 +2062,7 @@ class GitHubSyncService:
         Args:
             path: File path (e.g., "apps/my-app/app.json", "forms/{id}.form.json")
             content: File content bytes
+            ref_to_uuid: Optional mapping of portable_ref -> UUID for workflow resolution
         """
         from src.services.file_storage.indexers.agent import AgentIndexer
         from src.services.file_storage.indexers.app import AppIndexer
@@ -2030,11 +2072,11 @@ class GitHubSyncService:
 
         if entity_type == "form":
             indexer = FormIndexer(self.db)
-            await indexer.index_form(path, content)
+            await indexer.index_form(path, content, ref_to_uuid=ref_to_uuid)
             logger.debug(f"Imported form from {path}")
         elif entity_type == "agent":
             indexer = AgentIndexer(self.db)
-            await indexer.index_agent(path, content)
+            await indexer.index_agent(path, content, ref_to_uuid=ref_to_uuid)
             logger.debug(f"Imported agent from {path}")
         elif entity_type == "app":
             indexer = AppIndexer(self.db)
@@ -2042,7 +2084,7 @@ class GitHubSyncService:
             logger.debug(f"Imported app from {path}")
         elif entity_type == "app_file":
             indexer = AppIndexer(self.db)
-            await indexer.index_app_file(path, content)
+            await indexer.index_app_file(path, content, ref_to_uuid=ref_to_uuid)
             logger.debug(f"Imported app file from {path}")
         else:
             raise ValueError(f"Unknown virtual file type for path: {path}")
