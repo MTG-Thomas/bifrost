@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TabActions } from "@/components/ui/tab-actions";
 import { WorkflowKeys } from "@/pages/settings/WorkflowKeys";
 import { Branding } from "@/pages/settings/Branding";
 import { Email } from "@/pages/settings/Email";
@@ -15,7 +14,6 @@ import { Bot, Mail, Plug, Shield } from "lucide-react";
 export function Settings() {
 	const navigate = useNavigate();
 	const location = useLocation();
-	const [tabActions, setTabActions] = useState<React.ReactNode>(null);
 
 	// Parse the current tab from the URL path
 	const currentTab = location.pathname.split("/settings/")[1] || "ai";
@@ -43,36 +41,32 @@ export function Settings() {
 			</div>
 
 			<Tabs value={currentTab} onValueChange={handleTabChange}>
-				<div className="flex items-center justify-between">
-					<TabsList>
-						<TabsTrigger value="ai">
-							<Bot className="h-4 w-4 mr-1" />
-							AI
-						</TabsTrigger>
-						<TabsTrigger value="mcp">
-							<Plug className="h-4 w-4 mr-1" />
-							MCP
-						</TabsTrigger>
-						<TabsTrigger value="branding">Branding</TabsTrigger>
-						<TabsTrigger value="email">
-							<Mail className="h-4 w-4 mr-1" />
-							Email
-						</TabsTrigger>
-						<TabsTrigger value="sso">
-							<Shield className="h-4 w-4 mr-1" />
-							SSO
-						</TabsTrigger>
-						<TabsTrigger value="github">GitHub</TabsTrigger>
-						<TabsTrigger value="workflow-keys">
-							Workflow Keys
-						</TabsTrigger>
-						<TabsTrigger value="maintenance">
-							Maintenance
-						</TabsTrigger>
-					</TabsList>
-
-					{tabActions && <TabActions>{tabActions}</TabActions>}
-				</div>
+				<TabsList>
+					<TabsTrigger value="ai">
+						<Bot className="h-4 w-4 mr-1" />
+						AI
+					</TabsTrigger>
+					<TabsTrigger value="mcp">
+						<Plug className="h-4 w-4 mr-1" />
+						MCP
+					</TabsTrigger>
+					<TabsTrigger value="branding">Branding</TabsTrigger>
+					<TabsTrigger value="email">
+						<Mail className="h-4 w-4 mr-1" />
+						Email
+					</TabsTrigger>
+					<TabsTrigger value="sso">
+						<Shield className="h-4 w-4 mr-1" />
+						SSO
+					</TabsTrigger>
+					<TabsTrigger value="github">GitHub</TabsTrigger>
+					<TabsTrigger value="workflow-keys">
+						Workflow Keys
+					</TabsTrigger>
+					<TabsTrigger value="maintenance">
+						Maintenance
+					</TabsTrigger>
+				</TabsList>
 
 				<TabsContent value="ai" className="mt-6">
 					<LLMConfig />
@@ -83,7 +77,7 @@ export function Settings() {
 				</TabsContent>
 
 				<TabsContent value="branding" className="mt-6">
-					<Branding onActionsChange={setTabActions} />
+					<Branding />
 				</TabsContent>
 
 				<TabsContent value="email" className="mt-6">

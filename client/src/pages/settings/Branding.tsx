@@ -9,17 +9,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-	AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Loader2, Upload, Palette, RotateCcw } from "lucide-react";
 import {
@@ -27,18 +16,13 @@ import {
 	uploadLogo,
 	resetLogo,
 	resetColor,
-	resetAllBranding,
 	getBranding,
 } from "@/hooks/useBranding";
 import { applyBrandingTheme, type BrandingSettings } from "@/lib/branding";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
 import type { components } from "@/lib/v1";
 
-interface BrandingProps {
-	onActionsChange?: (actions: React.ReactNode) => void;
-}
-
-export function Branding({ onActionsChange }: BrandingProps) {
+export function Branding() {
 	const { refreshBranding } = useOrgScope();
 	const [branding, setBranding] = useState<
 		components["schemas"]["BrandingSettings"] | null
@@ -49,9 +33,8 @@ export function Branding({ onActionsChange }: BrandingProps) {
 		null,
 	);
 	const [resetting, setResetting] = useState<
-		"square" | "rectangle" | "color" | "all" | null
+		"square" | "rectangle" | "color" | null
 	>(null);
-	const [resetDialogOpen, setResetDialogOpen] = useState(false);
 	const [primaryColor, setPrimaryColor] = useState("#0066CC");
 
 	// Drag states
@@ -251,92 +234,6 @@ export function Branding({ onActionsChange }: BrandingProps) {
 			setResetting(null);
 		}
 	}, [refreshBranding]);
-
-	const handleResetAll = useCallback(async () => {
-		setResetting("all");
-		try {
-			const updated = await resetAllBranding();
-			setBranding(updated);
-			setPrimaryColor(updated.primary_color || "#0066CC");
-			applyBrandingTheme(updated as BrandingSettings);
-			refreshBranding();
-
-			toast.success("Branding reset", {
-				description: "All branding has been reset to defaults",
-			});
-			setResetDialogOpen(false);
-		} catch (err) {
-			toast.error("Error", {
-				description:
-					err instanceof Error
-						? err.message
-						: "Failed to reset branding",
-			});
-		} finally {
-			setResetting(null);
-		}
-	}, [refreshBranding]);
-
-	// Set tab actions
-	useEffect(() => {
-		if (onActionsChange) {
-			onActionsChange(
-				<AlertDialog
-					open={resetDialogOpen}
-					onOpenChange={setResetDialogOpen}
-				>
-					<AlertDialogTrigger asChild>
-						<Button
-							variant="outline"
-							size="sm"
-							disabled={resetting === "all"}
-						>
-							{resetting === "all" ? (
-								<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-							) : (
-								<RotateCcw className="mr-2 h-4 w-4" />
-							)}
-							Reset Branding
-						</Button>
-					</AlertDialogTrigger>
-					<AlertDialogContent>
-						<AlertDialogHeader>
-							<AlertDialogTitle>
-								Reset all branding?
-							</AlertDialogTitle>
-							<AlertDialogDescription>
-								This will reset all branding settings (logos and
-								primary color) back to platform defaults. This
-								action cannot be undone.
-							</AlertDialogDescription>
-						</AlertDialogHeader>
-						<AlertDialogFooter>
-							<AlertDialogCancel disabled={resetting === "all"}>
-								Cancel
-							</AlertDialogCancel>
-							<AlertDialogAction
-								onClick={handleResetAll}
-								disabled={resetting === "all"}
-								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-							>
-								{resetting === "all" ? (
-									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-								) : null}
-								Reset All
-							</AlertDialogAction>
-						</AlertDialogFooter>
-					</AlertDialogContent>
-				</AlertDialog>,
-			);
-		}
-
-		// Cleanup: remove actions when component unmounts
-		return () => {
-			if (onActionsChange) {
-				onActionsChange(null);
-			}
-		};
-	}, [onActionsChange, resetting, resetDialogOpen, handleResetAll]);
 
 	if (loading) {
 		return (
