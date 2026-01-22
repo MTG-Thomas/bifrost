@@ -1635,6 +1635,7 @@ class GitHubSyncService:
         confirm_unresolved_refs: bool = False,
         progress_callback: ProgressCallback | None = None,
         log_callback: LogCallback | None = None,
+        cached_clone_path: Path | None = None,
     ) -> SyncResult:
         """
         Execute the sync with user's conflict resolutions.
@@ -1645,6 +1646,9 @@ class GitHubSyncService:
             confirm_unresolved_refs: Whether user confirmed unresolved workflow refs
             progress_callback: Optional async callback for progress updates.
                 Called with {"phase": str, "current": int, "total": int, "path": str | None}
+            log_callback: Optional async callback for log messages.
+            cached_clone_path: Optional path to a cached clone from preview phase.
+                If provided and valid, skips cloning to save time.
 
         Returns:
             SyncResult with counts and status
@@ -1699,6 +1703,7 @@ class GitHubSyncService:
         pulled = 0
         pushed = 0
         clone_dir: str | None = None
+        using_cached_clone = False
 
         # Calculate totals for progress reporting
         total_pull = len(preview.to_pull)
@@ -1707,23 +1712,31 @@ class GitHubSyncService:
         # Clone repo for pulling (much faster than per-file API calls)
         need_clone = total_pull > 0 or total_conflicts > 0
         if need_clone:
-            if log_callback:
-                await log_callback("info", "Cloning repository...")
-            await report("cloning", 0, 1, None)
-            try:
-                clone_dir = self._clone_to_temp()
+            # Use cached clone if provided and valid
+            if cached_clone_path and cached_clone_path.exists():
+                clone_dir = str(cached_clone_path)
+                using_cached_clone = True
+                logger.info("Using cached clone from preview")
                 if log_callback:
-                    await log_callback("info", "Repository cloned successfully")
-            except SyncError as e:
-                logger.error(f"Failed to clone repository: {e}")
+                    await log_callback("info", "Using cached clone from preview")
+            else:
                 if log_callback:
-                    await log_callback("error", f"Failed to clone: {e}")
-                return SyncResult(
-                    success=False,
-                    pulled=0,
-                    pushed=0,
-                    error=str(e),
-                )
+                    await log_callback("info", "Cloning repository...")
+                await report("cloning", 0, 1, None)
+                try:
+                    clone_dir = self._clone_to_temp()
+                    if log_callback:
+                        await log_callback("info", "Repository cloned successfully")
+                except SyncError as e:
+                    logger.error(f"Failed to clone repository: {e}")
+                    if log_callback:
+                        await log_callback("error", f"Failed to clone: {e}")
+                    return SyncResult(
+                        success=False,
+                        pulled=0,
+                        pushed=0,
+                        error=str(e),
+                    )
 
         try:
             # Build reference maps once for all sync operations
@@ -1894,8 +1907,8 @@ class GitHubSyncService:
             )
 
         finally:
-            # Clean up the temporary clone directory
-            if clone_dir:
+            # Clean up the temporary clone directory (only if we created it, not if cached)
+            if clone_dir and not using_cached_clone:
                 try:
                     shutil.rmtree(clone_dir, ignore_errors=True)
                     logger.debug(f"Cleaned up clone directory: {clone_dir}")
