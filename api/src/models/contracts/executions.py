@@ -19,10 +19,12 @@ if TYPE_CHECKING:
 
 class ExecutionLogPublic(BaseModel):
     """Single log entry from workflow execution (API response model)"""
+    id: int  # Unique log ID for exact deduplication
     timestamp: str
     level: str  # debug, info, warning, error
     message: str
     data: dict[str, Any] | None = None
+    sequence: int  # For ordering and range-based deduplication
 
 
 class LogListEntry(BaseModel):

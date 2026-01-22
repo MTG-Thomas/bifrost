@@ -175,10 +175,12 @@ class ExecutionRepository:
 
         logs = [
             ExecutionLogPublic(
+                id=log.id,
                 timestamp=log.timestamp.isoformat() if log.timestamp else "",
                 level=log.level or "info",
                 message=log.message or "",
                 data=log.log_metadata,
+                sequence=log.sequence,
             )
             for log in log_entries
         ]
@@ -319,10 +321,12 @@ class ExecutionRepository:
         # Convert ORM models to Pydantic models
         logs = [
             ExecutionLogPublic(
+                id=log.id,
                 timestamp=log.timestamp.isoformat() if log.timestamp else "",
                 level=log.level or "info",
                 message=log.message or "",
                 data=log.log_metadata,
+                sequence=log.sequence,
             )
             for log in log_entries
         ]
