@@ -452,15 +452,9 @@ export function ExecutionDetails({
 			);
 			setShowRerunDialog(false);
 
-			// Navigate to the new execution with context to avoid 404 race condition
+			// Navigate to the new execution
 			if (result?.execution_id) {
-				navigate(`/history/${result.execution_id}`, {
-					state: {
-						workflow_name: execution.workflow_name,
-						workflow_id: workflow.id,
-						input_data: execution.input_data,
-					},
-				});
+				navigate(`/history/${result.execution_id}`);
 			}
 		} catch (error) {
 			toast.error(`Failed to rerun workflow: ${error}`);
