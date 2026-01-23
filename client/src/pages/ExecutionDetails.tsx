@@ -47,7 +47,10 @@ import { fileService } from "@/services/fileService";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useExecutionStream } from "@/hooks/useExecutionStream";
-import { useExecutionStreamStore } from "@/stores/executionStreamStore";
+import {
+	useExecutionStreamStore,
+	type StreamingLog,
+} from "@/stores/executionStreamStore";
 import { PrettyInputDisplay } from "@/components/execution/PrettyInputDisplay";
 import { SafeHTMLRenderer } from "@/components/execution/SafeHTMLRenderer";
 import { VariablesTreeView } from "@/components/ui/variables-tree-view";
@@ -99,6 +102,32 @@ interface ExecutionDetailsProps {
 	executionId?: string;
 	/** Embedded mode - hides navigation header for use in panels */
 	embedded?: boolean;
+}
+
+/**
+ * Deduplicate logs by ID.
+ * API logs are the baseline, streaming logs are filtered to exclude any with IDs already in API logs.
+ */
+function mergeLogsWithDedup(
+	apiLogs: ExecutionLogEntry[],
+	streamingLogs: StreamingLog[],
+): ExecutionLogEntry[] {
+	if (streamingLogs.length === 0) return apiLogs;
+	if (apiLogs.length === 0) return streamingLogs as ExecutionLogEntry[];
+
+	// Build Set of API log IDs for O(1) lookup
+	const apiLogIds = new Set(
+		apiLogs
+			.map((log) => log.id)
+			.filter((id): id is number => id !== undefined),
+	);
+
+	// Filter streaming logs to only those not already in API response
+	const newStreamingLogs = streamingLogs.filter(
+		(log) => log.id === undefined || !apiLogIds.has(log.id),
+	);
+
+	return [...apiLogs, ...newStreamingLogs];
 }
 
 export function ExecutionDetails({
@@ -857,14 +886,15 @@ export function ExecutionDetails({
 											executionStatus === "Pending" ||
 											executionStatus === "Cancelling"
 										) {
-											// Combine API logs with real-time streaming logs
+											// Merge API logs with streaming logs, deduplicating by ID
 											const existingLogs =
 												(logsData as ExecutionLogEntry[]) ||
 												[];
-											const logsToDisplay = [
-												...existingLogs,
-												...streamingLogs,
-											];
+											const logsToDisplay =
+												mergeLogsWithDedup(
+													existingLogs,
+													streamingLogs,
+												);
 
 											if (
 												logsToDisplay.length === 0 &&
