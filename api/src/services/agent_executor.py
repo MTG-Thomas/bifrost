@@ -93,8 +93,6 @@ class AgentExecutor:
 
         Yields:
             - agent_switch event (always)
-            - coding_mode_required if agent.is_coding_mode
-            - (future: other agent-specific signals)
         """
         # 1. Emit agent switch event
         yield ChatStreamChunk(
@@ -109,13 +107,6 @@ class AgentExecutor:
         # 2. Persist to conversation
         conversation.agent_id = new_agent.id
         await self.session.flush()
-
-        # 3. Check agent-specific rules
-        if new_agent.is_coding_mode:
-            yield ChatStreamChunk(
-                type="coding_mode_required",
-                content=f"Switching to {new_agent.name}. Coding mode required.",
-            )
 
     async def chat(
         self,
@@ -156,11 +147,9 @@ class AgentExecutor:
                 if mentioned_agent:
                     # Strip @mention from message for cleaner processing
                     user_message = router.strip_mention(user_message)
-                    # Switch to mentioned agent (handles events, persistence, and rule checks)
+                    # Switch to mentioned agent (handles events and persistence)
                     async for chunk in self._switch_agent(conversation, mentioned_agent, "@mention"):
                         yield chunk
-                        if chunk.type == "coding_mode_required":
-                            return  # Hand off to coding mode handler
                     agent = mentioned_agent
 
             # 2. AI-based routing for agentless chat (first message only)
@@ -172,11 +161,9 @@ class AgentExecutor:
                         user_message, is_platform_admin=is_platform_admin
                     )
                     if routed_agent:
-                        # Switch to routed agent (handles events, persistence, and rule checks)
+                        # Switch to routed agent (handles events and persistence)
                         async for chunk in self._switch_agent(conversation, routed_agent, "routed"):
                             yield chunk
-                            if chunk.type == "coding_mode_required":
-                                return  # Hand off to coding mode handler
                         agent = routed_agent
 
             # 3. Save user message
@@ -272,6 +259,11 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             total_input_tokens = 0
             total_output_tokens = 0
 
+            # Extract agent LLM overrides
+            model_override = agent.llm_model if agent else None
+            max_tokens_override = agent.llm_max_tokens if agent else None
+            temperature_override = agent.llm_temperature if agent else None
+
             while iteration < MAX_TOOL_ITERATIONS:
                 iteration += 1
 
@@ -284,6 +276,9 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 async for chunk in llm_client.stream(
                     messages=messages,
                     tools=tool_definitions if tool_definitions else None,
+                    model=model_override,
+                    max_tokens=max_tokens_override,
+                    temperature=temperature_override,
                 ):
                     if chunk.type == "delta" and chunk.content:
                         collected_content += chunk.content
@@ -1087,7 +1082,17 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             ]
 
             # Get response (non-streaming for delegation)
-            response = await llm_client.complete(messages=messages)
+            # Apply delegated agent's LLM overrides if set
+            delegate_model = delegated_agent.llm_model
+            delegate_max_tokens = delegated_agent.llm_max_tokens
+            delegate_temp = delegated_agent.llm_temperature
+
+            response = await llm_client.complete(
+                messages=messages,
+                model=delegate_model,
+                max_tokens=delegate_max_tokens,
+                temperature=delegate_temp,
+            )
 
             duration_ms = int((time.time() - start_time) * 1000)
 
