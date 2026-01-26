@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum as SQLAlchemyEnum, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import Boolean, DateTime, Enum as SQLAlchemyEnum, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,7 +45,6 @@ class Agent(Base):
         ForeignKey("organizations.id"), default=None
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_coding_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Knowledge namespaces this agent can search (RAG)
     knowledge_sources: Mapped[list[str]] = mapped_column(
@@ -55,6 +54,10 @@ class Agent(Base):
     system_tools: Mapped[list[str]] = mapped_column(
         ARRAY(String), nullable=False, default=list, server_default='{}'
     )
+    # LLM configuration overrides (null = use global config)
+    llm_model: Mapped[str | None] = mapped_column(String(100), default=None)
+    llm_max_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
+    llm_temperature: Mapped[float | None] = mapped_column(Float, default=None)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, server_default=text("NOW()")
