@@ -9,34 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from src.models.contracts.refs import WorkflowRef
-from src.models.enums import AgentAccessLevel, AgentChannel, CodingModePermission, MessageRole
-
-
-# ==================== CODING MODE MODELS (shared with coding agent) ====================
-
-
-class TodoItem(BaseModel):
-    """A todo item from the SDK's TodoWrite tool."""
-
-    content: str
-    status: Literal["pending", "in_progress", "completed"]
-    active_form: str
-
-
-class AskUserQuestionOption(BaseModel):
-    """Option for a user question from the SDK."""
-
-    label: str
-    description: str
-
-
-class AskUserQuestion(BaseModel):
-    """Question from SDK requiring user input."""
-
-    question: str
-    header: str
-    options: list[AskUserQuestionOption]
-    multi_select: bool = False
+from src.models.enums import AgentAccessLevel, AgentChannel, MessageRole
 
 
 # ==================== TOOL CALL MODELS ====================
@@ -71,15 +44,14 @@ class AgentCreate(BaseModel):
     organization_id: UUID | None = Field(
         default=None, description="Organization ID (null = global resource)"
     )
-    is_coding_mode: bool = Field(
-        default=False,
-        description="Enable Claude Agent SDK for coding tasks (requires Anthropic API key)"
-    )
     tool_ids: list[str] = Field(default_factory=list, description="List of workflow IDs to use as tools")
     delegated_agent_ids: list[str] = Field(default_factory=list, description="List of agent IDs this agent can delegate to")
     role_ids: list[str] = Field(default_factory=list, description="List of role IDs that can access this agent (for role_based access)")
     knowledge_sources: list[str] = Field(default_factory=list, description="List of knowledge namespaces this agent can search")
     system_tools: list[str] = Field(default_factory=list, description="List of system tool names enabled for this agent")
+    llm_model: str | None = Field(default=None, description="Override model (null=use global config)")
+    llm_max_tokens: int | None = Field(default=None, ge=1, le=200000, description="Override max tokens")
+    llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Override temperature")
 
 
 class AgentUpdate(BaseModel):
@@ -93,16 +65,15 @@ class AgentUpdate(BaseModel):
         default=None, description="Organization ID (null = global resource)"
     )
     is_active: bool | None = None
-    is_coding_mode: bool | None = Field(
-        default=None,
-        description="Enable Claude Agent SDK for coding tasks (requires Anthropic API key)"
-    )
     tool_ids: list[str] | None = Field(default=None, description="List of workflow IDs to use as tools")
     delegated_agent_ids: list[str] | None = Field(default=None, description="List of agent IDs this agent can delegate to")
     role_ids: list[str] | None = Field(default=None, description="List of role IDs that can access this agent (for role_based access)")
     knowledge_sources: list[str] | None = Field(default=None, description="List of knowledge namespaces this agent can search")
     system_tools: list[str] | None = Field(default=None, description="List of system tool names enabled for this agent")
     clear_roles: bool = Field(default=False, description="If true, clear all role assignments (sets to role_based with no roles)")
+    llm_model: str | None = Field(default=None, description="Override model (null=use global config)")
+    llm_max_tokens: int | None = Field(default=None, ge=1, le=200000, description="Override max tokens")
+    llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Override temperature")
 
 
 class AgentPublic(BaseModel):
@@ -117,7 +88,6 @@ class AgentPublic(BaseModel):
     access_level: AgentAccessLevel | None = None
     organization_id: UUID | None = None
     is_active: bool
-    is_coding_mode: bool = False
     is_system: bool = False
     created_by: str | None = None
     created_at: datetime | None = None
@@ -128,6 +98,9 @@ class AgentPublic(BaseModel):
     role_ids: list[str] = Field(default_factory=list)
     knowledge_sources: list[str] = Field(default_factory=list)
     system_tools: list[str] = Field(default_factory=list)
+    llm_model: str | None = None
+    llm_max_tokens: int | None = None
+    llm_temperature: float | None = None
 
     @field_serializer("id", "organization_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:
@@ -147,10 +120,10 @@ class AgentSummary(BaseModel):
     description: str | None = None
     channels: list[str]
     is_active: bool
-    is_coding_mode: bool = False
     access_level: AgentAccessLevel
     organization_id: UUID | None = None
     created_at: datetime
+    llm_model: str | None = None
 
     @field_serializer("id", "organization_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:
@@ -312,17 +285,7 @@ class ChatStreamChunk(BaseModel):
     """
     Unified streaming chat response chunk.
 
-    Used by both regular agents and coding agents. This is the single source
-    of truth for streaming chunk format.
-
-    Message boundary signals (coding mode):
-    - assistant_message_start: Emitted when an AssistantMessage begins
-    - assistant_message_end: Emitted when an AssistantMessage is complete
-      (all text and tool_call chunks for this message have been sent)
-
-    This allows the frontend to know when to finalize a message segment,
-    especially important for parallel tool execution where multiple tool_calls
-    belong to the same message.
+    This is the single source of truth for streaming chunk format.
     """
 
     type: Literal[
@@ -337,14 +300,6 @@ class ChatStreamChunk(BaseModel):
         "title_update",
         "done",
         "error",
-        # Coding agent types
-        "session_start",
-        "ask_user_question",
-        "assistant_message_start",
-        "assistant_message_end",
-        "todo_update",
-        "mode_changed",
-        "coding_mode_required",
     ]
 
     # Text content (for delta)
@@ -372,7 +327,6 @@ class ChatStreamChunk(BaseModel):
     token_count_input: int | None = None
     token_count_output: int | None = None
     duration_ms: int | None = None
-    cost_usd: float | None = Field(default=None, description="Cost in USD (coding mode)")
 
     # Error info
     error: str | None = None
@@ -380,21 +334,8 @@ class ChatStreamChunk(BaseModel):
     # Title update (for title_update type)
     title: str | None = None
 
-    # Coding mode session fields (for session_start)
-    session_id: str | None = None
-
-    # AskUserQuestion fields (for ask_user_question)
-    questions: list[AskUserQuestion] | None = None
-    request_id: str | None = None
-
     # Message boundary fields (for assistant_message_end)
     stop_reason: str | None = Field(default=None, description="Why message ended: 'tool_use' or 'end_turn'")
-
-    # Todo list fields (for todo_update)
-    todos: list[TodoItem] | None = None
-
-    # Permission mode fields (for mode_changed)
-    permission_mode: CodingModePermission | None = None
 
 
 # ==================== ROLE ASSIGNMENT MODELS ====================
