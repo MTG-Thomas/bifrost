@@ -1,16 +1,12 @@
 /**
  * Hooks for checking LLM configuration status
  *
- * Used to determine if AI chat and coding mode are available and configured.
+ * Used to determine if AI chat is available and configured.
  * Only works for platform admins (the config endpoint requires admin access).
  */
 
 import { $api } from "@/lib/api-client";
 import { useUserPermissions } from "@/hooks/useUserPermissions";
-import type { components } from "@/lib/v1";
-
-export type CodingConfigResponse =
-	components["schemas"]["CodingConfigResponse"];
 
 /**
  * Hook to check if LLM provider is configured
@@ -53,39 +49,26 @@ export function useLLMConfig() {
 }
 
 /**
- * Hook to check if coding mode is configured
- *
- * Returns:
- * - isConfigured: whether coding mode has a valid Anthropic API key (main LLM or override)
- * - isLoading: whether the query is in progress
- * - config: the full coding config response (for admins only)
+ * Hook to fetch available models from the configured LLM provider
  */
-export function useCodingConfig() {
+export function useLLMModels() {
 	const { isPlatformAdmin, isLoading: permissionsLoading } =
 		useUserPermissions();
 
 	const {
-		data: config,
-		isLoading: configLoading,
+		data,
+		isLoading: modelsLoading,
 		error,
-	} = $api.useQuery("get", "/api/admin/llm/coding-config", undefined, {
-		// Only fetch if user is a platform admin
+	} = $api.useQuery("get", "/api/admin/llm/models", undefined, {
 		enabled: isPlatformAdmin && !permissionsLoading,
-		// Cache for 5 minutes
-		staleTime: 5 * 60 * 1000,
-		// Don't retry on 404
+		staleTime: 10 * 60 * 1000, // Cache for 10 minutes
 		retry: false,
 	});
 
-	// For non-admins, we can't check config - assume it might work
-	// They'll get an error when trying to use coding mode if not configured
-	const isConfigured = isPlatformAdmin ? (config?.configured ?? false) : null; // null means "unknown" for non-admins
-
 	return {
-		isConfigured,
-		isPlatformAdmin,
-		isLoading: permissionsLoading || (isPlatformAdmin && configLoading),
-		config,
+		models: data?.models ?? [],
+		provider: data?.provider,
+		isLoading: permissionsLoading || modelsLoading,
 		error,
 	};
 }
