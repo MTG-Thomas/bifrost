@@ -3121,22 +3121,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4423,9 +4423,6 @@ export interface paths {
          *     Tests the currently saved configuration.
          *     Also refreshes the model ID -> display name mapping cache.
          *     Requires platform admin access.
-         *
-         *     Args:
-         *         mode: Which config to test - "main" (default) or "coding" (for coding mode override)
          */
         post: operations["test_saved_llm_connection_api_admin_llm_test_saved_post"];
         delete?: never;
@@ -4515,44 +4512,6 @@ export interface paths {
          */
         post: operations["test_embedding_connection_api_admin_llm_embedding_test_post"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/llm/coding-config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Coding Config Endpoint
-         * @description Get coding mode configuration.
-         *
-         *     Returns the effective configuration (combining main LLM with any overrides).
-         *     Requires platform admin access.
-         */
-        get: operations["get_coding_config_endpoint_api_admin_llm_coding_config_get"];
-        /**
-         * Update Coding Config Endpoint
-         * @description Update coding mode configuration overrides.
-         *
-         *     Set model and/or api_key to override main LLM settings.
-         *     Set clear_overrides=true to remove all overrides.
-         *     Requires platform admin access.
-         */
-        put: operations["update_coding_config_endpoint_api_admin_llm_coding_config_put"];
-        post?: never;
-        /**
-         * Delete Coding Config Endpoint
-         * @description Delete coding mode configuration overrides.
-         *
-         *     After deletion, coding mode will use main LLM config (if Anthropic).
-         *     Requires platform admin access.
-         */
-        delete: operations["delete_coding_config_endpoint_api_admin_llm_coding_config_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6521,12 +6480,6 @@ export interface components {
              */
             organization_id?: string | null;
             /**
-             * Is Coding Mode
-             * @description Enable Claude Agent SDK for coding tasks (requires Anthropic API key)
-             * @default false
-             */
-            is_coding_mode: boolean;
-            /**
              * Tool Ids
              * @description List of workflow IDs to use as tools
              */
@@ -6551,6 +6504,21 @@ export interface components {
              * @description List of system tool names enabled for this agent
              */
             system_tools?: string[];
+            /**
+             * Llm Model
+             * @description Override model (null=use global config)
+             */
+            llm_model?: string | null;
+            /**
+             * Llm Max Tokens
+             * @description Override max tokens
+             */
+            llm_max_tokens?: number | null;
+            /**
+             * Llm Temperature
+             * @description Override temperature
+             */
+            llm_temperature?: number | null;
         };
         /**
          * AgentPublic
@@ -6573,11 +6541,6 @@ export interface components {
             /** Is Active */
             is_active: boolean;
             /**
-             * Is Coding Mode
-             * @default false
-             */
-            is_coding_mode: boolean;
-            /**
              * Is System
              * @default false
              */
@@ -6598,6 +6561,12 @@ export interface components {
             knowledge_sources?: string[];
             /** System Tools */
             system_tools?: string[];
+            /** Llm Model */
+            llm_model?: string | null;
+            /** Llm Max Tokens */
+            llm_max_tokens?: number | null;
+            /** Llm Temperature */
+            llm_temperature?: number | null;
         };
         /**
          * AgentSummary
@@ -6614,16 +6583,13 @@ export interface components {
             channels: string[];
             /** Is Active */
             is_active: boolean;
-            /**
-             * Is Coding Mode
-             * @default false
-             */
-            is_coding_mode: boolean;
             access_level: components["schemas"]["AgentAccessLevel"];
             /** Organization Id */
             organization_id?: string | null;
             /** Created At */
             created_at: string;
+            /** Llm Model */
+            llm_model?: string | null;
         };
         /**
          * AgentUpdate
@@ -6646,11 +6612,6 @@ export interface components {
             organization_id?: string | null;
             /** Is Active */
             is_active?: boolean | null;
-            /**
-             * Is Coding Mode
-             * @description Enable Claude Agent SDK for coding tasks (requires Anthropic API key)
-             */
-            is_coding_mode?: boolean | null;
             /**
              * Tool Ids
              * @description List of workflow IDs to use as tools
@@ -6682,6 +6643,21 @@ export interface components {
              * @default false
              */
             clear_roles: boolean;
+            /**
+             * Llm Model
+             * @description Override model (null=use global config)
+             */
+            llm_model?: string | null;
+            /**
+             * Llm Max Tokens
+             * @description Override max tokens
+             */
+            llm_max_tokens?: number | null;
+            /**
+             * Llm Temperature
+             * @description Override temperature
+             */
+            llm_temperature?: number | null;
         };
         /**
          * AppDependencyIssue
@@ -7083,7 +7059,7 @@ export interface components {
             /** Mfa Required For Password */
             mfa_required_for_password: boolean;
             /** Oauth Providers */
-            oauth_providers: components["schemas"]["OAuthProviderInfo"][];
+            oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
         };
         /**
          * AuthorizeResponse
@@ -7836,61 +7812,6 @@ export interface components {
              * @description Number of executions that failed to clean up
              */
             failed: number;
-        };
-        /**
-         * CodingConfigResponse
-         * @description Coding mode configuration response.
-         */
-        CodingConfigResponse: {
-            /**
-             * Configured
-             * @description True if coding mode has both API key and model configured
-             */
-            configured: boolean;
-            /**
-             * Model
-             * @description Effective model (override or main LLM)
-             */
-            model?: string | null;
-            /**
-             * Model Override
-             * @description Explicit model override if set
-             */
-            model_override?: string | null;
-            /**
-             * Has Key Override
-             * @description True if using a dedicated coding API key instead of main LLM
-             * @default false
-             */
-            has_key_override: boolean;
-            /**
-             * Main Llm Is Anthropic
-             * @description True if main LLM config is Anthropic (can be used as fallback)
-             * @default false
-             */
-            main_llm_is_anthropic: boolean;
-        };
-        /**
-         * CodingConfigUpdate
-         * @description Request to update coding mode overrides.
-         */
-        CodingConfigUpdate: {
-            /**
-             * Model
-             * @description Model override. Set to override main LLM model.
-             */
-            model?: string | null;
-            /**
-             * Api Key
-             * @description API key override. Set to use a dedicated key instead of main LLM.
-             */
-            api_key?: string | null;
-            /**
-             * Clear Overrides
-             * @description Set true to remove all overrides and use main LLM config
-             * @default false
-             */
-            clear_overrides: boolean;
         };
         /**
          * CommitHistoryResponse
@@ -11730,11 +11651,6 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
-            /**
-             * Is Existing
-             * @default false
-             */
-            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -12600,7 +12516,7 @@ export interface components {
         };
         /**
          * OAuthProviderInfo
-         * @description OAuth provider information for login page
+         * @description OAuth provider information.
          */
         OAuthProviderInfo: {
             /** Name */
@@ -12616,7 +12532,7 @@ export interface components {
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
+            providers: components["schemas"]["OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -16753,6 +16669,39 @@ export interface components {
             metadata?: components["schemas"]["WorkflowMetadata"] | null;
         };
         /**
+         * OAuthProviderInfo
+         * @description OAuth provider information for login page
+         */
+        src__models__contracts__auth__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
+        };
+        /**
+         * MFASetupResponse
+         * @description MFA setup response with secret.
+         */
+        src__routers__auth__MFASetupResponse: {
+            /** Secret */
+            secret: string;
+            /** Qr Code Uri */
+            qr_code_uri: string;
+            /** Provisioning Uri */
+            provisioning_uri: string;
+            /** Issuer */
+            issuer: string;
+            /** Account Name */
+            account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
+        };
+        /**
          * UserCreate
          * @description User creation request model.
          */
@@ -16766,22 +16715,6 @@ export interface components {
             password: string;
             /** Name */
             name?: string | null;
-        };
-        /**
-         * MFASetupResponse
-         * @description MFA setup response with secret.
-         */
-        src__routers__mfa__MFASetupResponse: {
-            /** Secret */
-            secret: string;
-            /** Qr Code Uri */
-            qr_code_uri: string;
-            /** Provisioning Uri */
-            provisioning_uri: string;
-            /** Issuer */
-            issuer: string;
-            /** Account Name */
-            account_name: string;
         };
         /**
          * MFAVerifyRequest
@@ -16802,18 +16735,6 @@ export interface components {
             code: string;
             /** State */
             state: string;
-        };
-        /**
-         * OAuthProviderInfo
-         * @description OAuth provider information.
-         */
-        src__routers__oauth_sso__OAuthProviderInfo: {
-            /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
         };
     };
     responses: never;
@@ -16916,7 +16837,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__auth__MFASetupResponse"];
                 };
             };
             /** @description Validation Error */
@@ -17362,7 +17283,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
+                    "application/json": components["schemas"]["MFASetupResponse"];
                 };
             };
         };
@@ -21586,7 +21507,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -21619,7 +21540,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -21652,7 +21573,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -21685,7 +21606,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -23975,9 +23896,7 @@ export interface operations {
     };
     test_saved_llm_connection_api_admin_llm_test_saved_post: {
         parameters: {
-            query?: {
-                mode?: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -23991,15 +23910,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LLMTestResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -24125,79 +24035,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
-            };
-        };
-    };
-    get_coding_config_endpoint_api_admin_llm_coding_config_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CodingConfigResponse"];
-                };
-            };
-        };
-    };
-    update_coding_config_endpoint_api_admin_llm_coding_config_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CodingConfigUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_coding_config_endpoint_api_admin_llm_coding_config_delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
