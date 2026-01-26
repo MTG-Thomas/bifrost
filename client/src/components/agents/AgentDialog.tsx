@@ -63,7 +63,6 @@ import { useToolsGrouped } from "@/hooks/useTools";
 import { useRoles } from "@/hooks/useRoles";
 import { useKnowledgeNamespaces } from "@/hooks/useKnowledge";
 import { useAuth } from "@/contexts/AuthContext";
-import { useCodingConfig } from "@/hooks/useLLMConfig";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import type { components } from "@/lib/v1";
 
@@ -106,12 +105,14 @@ const formSchema = z.object({
 	channels: z.array(z.enum(["chat", "voice", "teams", "slack"])),
 	access_level: z.enum(["authenticated", "role_based"]),
 	organization_id: z.string().nullable(),
-	is_coding_mode: z.boolean(),
 	tool_ids: z.array(z.string()),
 	system_tools: z.array(z.string()),
 	delegated_agent_ids: z.array(z.string()),
 	role_ids: z.array(z.string()),
 	knowledge_sources: z.array(z.string()),
+	llm_model: z.string().nullable(),
+	llm_max_tokens: z.number().min(1).max(200000).nullable(),
+	llm_temperature: z.number().min(0).max(2).nullable(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -131,10 +132,6 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 	const { data: allAgents } = useAgents();
 	const { data: toolsGrouped } = useToolsGrouped();
 	const { data: roles } = useRoles();
-	const {
-		isConfigured: isCodingConfigured,
-		isLoading: isCodingConfigLoading,
-	} = useCodingConfig();
 	const createAgent = useCreateAgent();
 	const updateAgent = useUpdateAgent();
 
@@ -158,12 +155,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 			channels: ["chat"],
 			access_level: "role_based",
 			organization_id: defaultOrgId,
-			is_coding_mode: false,
 			tool_ids: [],
 			system_tools: [],
 			delegated_agent_ids: [],
 			role_ids: [],
 			knowledge_sources: [],
+			llm_model: null,
+			llm_max_tokens: null,
+			llm_temperature: null,
 		},
 	});
 
@@ -187,6 +186,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 			const agentWithOrg = agent as typeof agent & {
 				organization_id?: string | null;
 				system_tools?: string[];
+				llm_model?: string | null;
+				llm_max_tokens?: number | null;
+				llm_temperature?: number | null;
 			};
 			form.reset({
 				name: agent.name,
@@ -197,12 +199,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 					| "authenticated"
 					| "role_based",
 				organization_id: agentWithOrg.organization_id ?? null,
-				is_coding_mode: agent.is_coding_mode ?? false,
 				tool_ids: agent.tool_ids ?? [],
 				system_tools: agentWithOrg.system_tools ?? [],
 				delegated_agent_ids: agent.delegated_agent_ids ?? [],
 				role_ids: agent.role_ids ?? [],
 				knowledge_sources: agent.knowledge_sources ?? [],
+				llm_model: agentWithOrg.llm_model ?? null,
+				llm_max_tokens: agentWithOrg.llm_max_tokens ?? null,
+				llm_temperature: agentWithOrg.llm_temperature ?? null,
 			});
 		} else if (!isEditing && open) {
 			form.reset({
@@ -212,12 +216,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				channels: ["chat"],
 				access_level: "role_based",
 				organization_id: defaultOrgId,
-				is_coding_mode: false,
 				tool_ids: [],
 				system_tools: [],
 				delegated_agent_ids: [],
 				role_ids: [],
 				knowledge_sources: [],
+				llm_model: null,
+				llm_max_tokens: null,
+				llm_temperature: null,
 			});
 		}
 	}, [agent, isEditing, form, open, defaultOrgId]);
@@ -240,12 +246,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				channels: values.channels,
 				access_level: values.access_level,
 				organization_id: values.organization_id,
-				is_coding_mode: values.is_coding_mode,
 				tool_ids: values.tool_ids,
 				system_tools: values.system_tools,
 				delegated_agent_ids: values.delegated_agent_ids,
 				role_ids: values.role_ids,
 				knowledge_sources: values.knowledge_sources,
+				llm_model: values.llm_model,
+				llm_max_tokens: values.llm_max_tokens,
+				llm_temperature: values.llm_temperature,
 			} as Parameters<typeof createAgent.mutateAsync>[0]["body"];
 
 			if (isEditing && agentId) {
@@ -630,87 +638,6 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 													</SelectContent>
 												</Select>
 												<FormMessage />
-											</FormItem>
-										)}
-									/>
-
-									{/* Coding Mode */}
-									<FormField
-										control={form.control}
-										name="is_coding_mode"
-										render={({ field }) => (
-											<FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
-												<FormControl>
-													<Checkbox
-														checked={field.value}
-														disabled={
-															isCodingConfigLoading ||
-															isCodingConfigured ===
-																false
-														}
-														onCheckedChange={(
-															checked,
-														) => {
-															field.onChange(
-																checked,
-															);
-															// Auto-select all system tools (including restricted) when enabling coding mode
-															if (
-																checked &&
-																toolsGrouped
-															) {
-																const allSystemToolIds =
-																	[
-																		...(toolsGrouped.system?.map(
-																			(
-																				t,
-																			) =>
-																				t.id,
-																		) ||
-																			[]),
-																		...(toolsGrouped.restricted?.map(
-																			(
-																				t,
-																			) =>
-																				t.id,
-																		) ||
-																			[]),
-																	];
-																form.setValue(
-																	"system_tools",
-																	allSystemToolIds,
-																);
-															}
-														}}
-													/>
-												</FormControl>
-												<div className="space-y-1 leading-none">
-													<FormLabel className="flex items-center gap-2">
-														Coding Mode
-														{isCodingConfigured && (
-															<Badge
-																variant="secondary"
-																className="text-xs"
-															>
-																Powered by
-																Claude
-															</Badge>
-														)}
-													</FormLabel>
-													<FormDescription>
-														{isCodingConfigured ===
-														false ? (
-															<span className="text-destructive">
-																Requires
-																Anthropic API
-																configuration in
-																Settings → LLM
-															</span>
-														) : (
-															"Enables file access (read, write, edit) for workflow development. Uses Claude Agent SDK."
-														)}
-													</FormDescription>
-												</div>
 											</FormItem>
 										)}
 									/>
