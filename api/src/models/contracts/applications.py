@@ -145,6 +145,13 @@ class ApplicationUpdate(BaseModel):
     """Input for updating application metadata."""
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    slug: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[a-z][a-z0-9-]*$",
+        description="URL-friendly slug. Warning: changing this will change the app's URL.",
+    )
     description: str | None = None
     icon: str | None = Field(default=None, max_length=50)
     scope: str | None = Field(
@@ -163,6 +170,17 @@ class ApplicationUpdate(BaseModel):
         default=None,
         description="Navigation configuration (sidebar items, header settings)",
     )
+
+    @field_validator("slug")
+    @classmethod
+    def validate_slug(cls, v: str | None) -> str | None:
+        """Validate slug format."""
+        if v is not None and not re.match(r"^[a-z][a-z0-9-]*$", v):
+            raise ValueError(
+                "Slug must start with a letter and contain only lowercase letters, "
+                "numbers, and hyphens"
+            )
+        return v
 
     @field_validator("access_level")
     @classmethod
@@ -314,7 +332,7 @@ class AppFileCreate(AppFileBase):
     """Input for creating a code file."""
 
     source: str = Field(
-        min_length=1,
+        default="",
         description="Original source code",
     )
 

@@ -459,6 +459,12 @@ def handle_run(args: list[str]) -> int:
     # Get absolute path
     abs_file_path = os.path.abspath(workflow_file)
 
+    # Add current working directory to sys.path for workspace imports
+    # This allows workflows to import from their workspace (e.g., `from features.x import y`)
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+
     # Load the workflow file
     try:
         spec = importlib.util.spec_from_file_location("workflow_module", abs_file_path)
@@ -491,7 +497,7 @@ def handle_run(args: list[str]) -> int:
         )
         return 1
 
-    # If --params is provided with --workflow, run in standalone mode (no API required)
+    # If --params is provided with --workflow, run in standalone mode
     if inline_params is not None:
         if not selected_workflow:
             # If only one workflow, use it; otherwise require --workflow
@@ -500,6 +506,14 @@ def handle_run(args: list[str]) -> int:
             else:
                 print("Error: --params requires --workflow when multiple workflows exist", file=sys.stderr)
                 return 1
+
+        # Ensure auth is available (triggers interactive login if needed)
+        # This allows workflows to use SDK features like knowledge, ai, etc.
+        try:
+            BifrostClient.get_instance(require_auth=True)
+        except RuntimeError as e:
+            print(f"Authentication required: {e}", file=sys.stderr)
+            return 1
 
         print(f"Running in standalone mode: {selected_workflow}")
         workflow_fn = workflows[selected_workflow]

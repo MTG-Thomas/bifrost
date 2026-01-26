@@ -138,6 +138,79 @@ class TestApplicationCRUD:
             headers=platform_admin.headers,
         )
 
+    def test_update_application_slug(self, e2e_client, platform_admin):
+        """Update application slug."""
+        # Create app
+        e2e_client.post(
+            "/api/applications",
+            headers=platform_admin.headers,
+            json={
+                "name": "Slug Update App",
+                "slug": "slug-update-original",
+            },
+        )
+
+        # Update slug
+        response = e2e_client.patch(
+            "/api/applications/slug-update-original",
+            headers=platform_admin.headers,
+            json={
+                "slug": "slug-update-new",
+            },
+        )
+        assert response.status_code == 200, f"Update slug failed: {response.text}"
+        app = response.json()
+
+        assert app["slug"] == "slug-update-new"
+        assert app["name"] == "Slug Update App"  # Name unchanged
+
+        # Old slug should not exist
+        response = e2e_client.get(
+            "/api/applications/slug-update-original",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 404, "Old slug should return 404"
+
+        # New slug should work
+        response = e2e_client.get(
+            "/api/applications/slug-update-new",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200, f"New slug should work: {response.text}"
+
+        # Cleanup
+        e2e_client.delete(
+            "/api/applications/slug-update-new",
+            headers=platform_admin.headers,
+        )
+
+    def test_update_application_slug_duplicate_rejected(self, e2e_client, platform_admin):
+        """Updating to an existing slug is rejected."""
+        # Create two apps
+        e2e_client.post(
+            "/api/applications",
+            headers=platform_admin.headers,
+            json={"name": "First App", "slug": "slug-dup-first"},
+        )
+        e2e_client.post(
+            "/api/applications",
+            headers=platform_admin.headers,
+            json={"name": "Second App", "slug": "slug-dup-second"},
+        )
+
+        # Try to update second app to use first app's slug
+        response = e2e_client.patch(
+            "/api/applications/slug-dup-second",
+            headers=platform_admin.headers,
+            json={"slug": "slug-dup-first"},
+        )
+        assert response.status_code == 409, \
+            f"Expected 409 Conflict for duplicate slug update, got {response.status_code}"
+
+        # Cleanup
+        e2e_client.delete("/api/applications/slug-dup-first", headers=platform_admin.headers)
+        e2e_client.delete("/api/applications/slug-dup-second", headers=platform_admin.headers)
+
     def test_update_application_navigation(self, e2e_client, platform_admin):
         """Update application navigation configuration."""
         # Create app

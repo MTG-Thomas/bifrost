@@ -14,7 +14,6 @@ NOTE: File watching and DB sync has been moved to the Discovery container.
 """
 
 import asyncio
-import json
 import logging
 import shutil
 import signal
@@ -22,7 +21,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-import redis.asyncio as redis
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -35,6 +34,7 @@ from src.core.pubsub import (
     publish_git_sync_progress,
     publish_git_sync_completed,
 )
+from src.core.redis_reconnect import ResilientPubSubListener
 from src.jobs.schedulers.cron_scheduler import process_scheduled_workflows
 from src.jobs.schedulers.execution_cleanup import cleanup_stuck_executions
 
@@ -71,9 +71,7 @@ class Scheduler:
         self.running = False
         self._shutdown_event = asyncio.Event()
         self._scheduler: AsyncIOScheduler | None = None
-        self._redis: redis.Redis | None = None
-        self._pubsub: redis.client.PubSub | None = None
-        self._listener_task: asyncio.Task | None = None
+        self._pubsub_listener: ResilientPubSubListener | None = None
 
         # Clone cache for GitHub sync: org_id -> (clone_path, commit_sha, timestamp)
         self._sync_clone_cache: dict[str, tuple[Path, str, float]] = {}
@@ -238,43 +236,17 @@ class Scheduler:
 
     async def _start_pubsub_listener(self) -> None:
         """Start Redis pub/sub listener for on-demand requests."""
-        try:
-            self._redis = redis.from_url(self.settings.redis_url)
-            self._pubsub = self._redis.pubsub()
-
-            # Subscribe to scheduler channels
-            await self._pubsub.subscribe("bifrost:scheduler:reindex")
-            await self._pubsub.subscribe("bifrost:scheduler:git-sync")
-            await self._pubsub.subscribe("bifrost:scheduler:git-sync-preview")
-
-            # Start listener task
-            self._listener_task = asyncio.create_task(self._pubsub_listener())
-            logger.info("Redis pub/sub listener started")
-        except Exception as e:
-            logger.warning(f"Failed to start Redis pub/sub listener: {e}")
-
-    async def _pubsub_listener(self) -> None:
-        """Listen for messages on scheduler channels."""
-        if not self._pubsub:
-            return
-
-        try:
-            while self.running:
-                message = await self._pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=0.5
-                )
-                if message and message["type"] == "message":
-                    channel = message["channel"].decode()
-                    try:
-                        data = json.loads(message["data"])
-                        await self._handle_pubsub_message(channel, data)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON in message: {message['data']}")
-        except asyncio.CancelledError:
-            logger.debug("Pub/sub listener cancelled")
-        except Exception as e:
-            logger.error(f"Pub/sub listener error: {e}")
+        self._pubsub_listener = ResilientPubSubListener(
+            redis_url=self.settings.redis_url,
+            channels=[
+                "bifrost:scheduler:reindex",
+                "bifrost:scheduler:git-sync",
+                "bifrost:scheduler:git-sync-preview",
+            ],
+            on_message=self._handle_pubsub_message,
+        )
+        await self._pubsub_listener.start()
+        logger.info("Redis pub/sub listener started (with auto-reconnect)")
 
     async def _handle_pubsub_message(self, channel: str, data: dict) -> None:
         """Handle incoming pub/sub message."""
@@ -828,19 +800,9 @@ class Scheduler:
         self.running = False
 
         # Stop pub/sub listener
-        if self._listener_task:
-            self._listener_task.cancel()
-            try:
-                await self._listener_task
-            except asyncio.CancelledError:
-                pass
+        if self._pubsub_listener:
+            await self._pubsub_listener.stop()
             logger.info("Pub/sub listener stopped")
-
-        if self._pubsub:
-            await self._pubsub.close()
-
-        if self._redis:
-            await self._redis.close()
 
         # Stop scheduler
         if self._scheduler:

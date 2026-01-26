@@ -1062,130 +1062,102 @@ export function FileTree() {
 			</div>
 
 			{/* File list */}
-			<ContextMenu>
-				<ContextMenuTrigger asChild>
-					<div
-						className={cn(
-							"flex-1 overflow-auto",
-							dragOverFolder === "" &&
-								"bg-primary/10 outline outline-2 outline-primary outline-dashed",
-						)}
-						onDragOver={(e) => handleDragOver(e)}
-						onDragLeave={handleDragLeave}
-						onDrop={(e) => handleDrop(e)}
-					>
-						{isLoading && files.length === 0 && !creatingItem ? (
-							<div className="flex h-full items-center justify-center">
-								<div className="text-sm text-muted-foreground">
-									Loading files...
-								</div>
-							</div>
-						) : files.length === 0 && !creatingItem ? (
-							<div className="flex h-full items-center justify-center p-4">
-								<div className="text-center text-sm text-muted-foreground">
-									<p>No files found</p>
-									<p className="mt-2 text-xs">
-										Right-click to create files and folders
-									</p>
-								</div>
-							</div>
-						) : (
-							<div className="space-y-1 p-2">
-								{/* Inline new item editor */}
-								{creatingItem && !creatingInFolder && (
-									<div className="flex items-center gap-2 rounded px-2 py-1 bg-muted/50">
-										<div className="w-4" />
-										{isProcessing ? (
-											<Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-primary" />
-										) : creatingItem === "folder" ? (
-											<Folder className="h-4 w-4 flex-shrink-0 text-primary" />
-										) : (
-											<File className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-										)}
-										<input
-											ref={inputRef}
-											type="text"
-											value={newItemName}
-											onChange={(e) =>
-												setNewItemName(e.target.value)
-											}
-											onKeyDown={handleNewItemKeyDown}
-											onMouseDown={handleInputMouseDown}
-											placeholder={
-												creatingItem === "folder"
-													? "Folder name"
-													: "File name"
-											}
-											disabled={isProcessing}
-											className="flex-1 bg-transparent text-sm outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-										/>
-									</div>
-								)}
-
-								{/* Existing files */}
-								{files.map((file) => (
-									<FileTreeItem
-										key={file.path}
-										file={file}
-										onFileClick={handleFileClick}
-										onFolderToggle={handleFolderToggle}
-										onDelete={handleDelete}
-										onRename={handleRename}
-										onCreateFile={handleCreateFile}
-										onCreateFolder={handleCreateFolder}
-										isExpanded={isFolderExpanded(file.path)}
-										isSelected={
-											openFile?.path === file.path
-										}
-										onDragStart={handleDragStart}
-										onDragOver={handleDragOver}
-										onDragLeave={handleDragLeave}
-										onDrop={handleDrop}
-										isDragOver={
-											dragOverFolder === file.path
-										}
-										creatingItem={creatingItem}
-										creatingInFolder={creatingInFolder}
-										newItemName={newItemName}
-										setNewItemName={setNewItemName}
-										inputRef={inputRef}
-										handleNewItemKeyDown={
-											handleNewItemKeyDown
-										}
-										handleInputMouseDown={
-											handleInputMouseDown
-										}
-										handleCancelNewItem={
-											handleCancelNewItem
-										}
-										renamingFile={renamingFile}
-										renameValue={renameValue}
-										setRenameValue={setRenameValue}
-										renameInputRef={renameInputRef}
-										handleRenameKeyDown={
-											handleRenameKeyDown
-										}
-										handleRenameInputMouseDown={
-											handleRenameInputMouseDown
-										}
-										isProcessing={isProcessing}
-									/>
-								))}
-							</div>
-						)}
+			<div
+				className={cn(
+					"flex-1 overflow-auto",
+					dragOverFolder === "" &&
+						"bg-primary/10 outline outline-2 outline-primary outline-dashed",
+				)}
+				onDragOver={(e) => handleDragOver(e)}
+				onDragLeave={handleDragLeave}
+				onDrop={(e) => handleDrop(e)}
+			>
+				{isLoading && files.length === 0 && !creatingItem ? (
+					<div className="flex h-full items-center justify-center">
+						<div className="text-sm text-muted-foreground">
+							Loading files...
+						</div>
 					</div>
-				</ContextMenuTrigger>
-				<ContextMenuContent>
-					<ContextMenuItem onClick={() => handleCreateFile()}>
-						<FilePlus className="mr-2 h-4 w-4" />
-						New File
-					</ContextMenuItem>
-					<ContextMenuItem onClick={() => handleCreateFolder()}>
-						<FolderPlus className="mr-2 h-4 w-4" />
-						New Folder
-					</ContextMenuItem>
-				</ContextMenuContent>
-			</ContextMenu>
+				) : files.length === 0 && !creatingItem ? (
+					<div className="flex h-full items-center justify-center p-4">
+						<div className="text-center text-sm text-muted-foreground">
+							<p>No files found</p>
+							<p className="mt-2 text-xs">
+								Use the toolbar to create files and folders
+							</p>
+						</div>
+					</div>
+				) : (
+					<div className="space-y-1 p-2">
+						{/* Inline new item editor */}
+						{creatingItem && !creatingInFolder && (
+							<div className="flex items-center gap-2 rounded px-2 py-1 bg-muted/50">
+								<div className="w-4" />
+								{isProcessing ? (
+									<Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-primary" />
+								) : creatingItem === "folder" ? (
+									<Folder className="h-4 w-4 flex-shrink-0 text-primary" />
+								) : (
+									<File className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+								)}
+								<input
+									ref={inputRef}
+									type="text"
+									value={newItemName}
+									onChange={(e) =>
+										setNewItemName(e.target.value)
+									}
+									onKeyDown={handleNewItemKeyDown}
+									onMouseDown={handleInputMouseDown}
+									placeholder={
+										creatingItem === "folder"
+											? "Folder name"
+											: "File name"
+									}
+									disabled={isProcessing}
+									className="flex-1 bg-transparent text-sm outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+								/>
+							</div>
+						)}
+
+						{/* Existing files */}
+						{files.map((file) => (
+							<FileTreeItem
+								key={file.path}
+								file={file}
+								onFileClick={handleFileClick}
+								onFolderToggle={handleFolderToggle}
+								onDelete={handleDelete}
+								onRename={handleRename}
+								onCreateFile={handleCreateFile}
+								onCreateFolder={handleCreateFolder}
+								isExpanded={isFolderExpanded(file.path)}
+								isSelected={openFile?.path === file.path}
+								onDragStart={handleDragStart}
+								onDragOver={handleDragOver}
+								onDragLeave={handleDragLeave}
+								onDrop={handleDrop}
+								isDragOver={dragOverFolder === file.path}
+								creatingItem={creatingItem}
+								creatingInFolder={creatingInFolder}
+								newItemName={newItemName}
+								setNewItemName={setNewItemName}
+								inputRef={inputRef}
+								handleNewItemKeyDown={handleNewItemKeyDown}
+								handleInputMouseDown={handleInputMouseDown}
+								handleCancelNewItem={handleCancelNewItem}
+								renamingFile={renamingFile}
+								renameValue={renameValue}
+								setRenameValue={setRenameValue}
+								renameInputRef={renameInputRef}
+								handleRenameKeyDown={handleRenameKeyDown}
+								handleRenameInputMouseDown={handleRenameInputMouseDown}
+								isProcessing={isProcessing}
+							/>
+						))}
+					</div>
+				)}
+			</div>
 
 			{/* Delete Confirmation Dialog */}
 			<AlertDialog
@@ -1413,11 +1385,13 @@ function FileTreeItem({
 					<ContextMenuTrigger asChild>
 						<button
 							draggable
-							onClick={() =>
-								isFolder
-									? onFolderToggle(file)
-									: onFileClick(file)
-							}
+							onClick={() => {
+								if (isFolder) {
+									onFolderToggle(file);
+								} else {
+									onFileClick(file);
+								}
+							}}
 							onDragStart={(e) => onDragStart(e, file)}
 							onDragOver={(e) => {
 								if (isFolder) {
@@ -1437,9 +1411,7 @@ function FileTreeItem({
 								isSelected && !isDragOver
 									? "bg-accent text-accent-foreground"
 									: "",
-								!isDragOver && !isSelected
-									? "hover:bg-muted"
-									: "",
+								!isDragOver && !isSelected ? "hover:bg-muted" : "",
 								isDragOver &&
 									isFolder &&
 									"bg-primary/30 border-2 border-primary",
@@ -1458,11 +1430,10 @@ function FileTreeItem({
 							)}
 							{!isFolder &&
 								(() => {
-									const { icon: FileIcon, className } =
-										getFileIcon(
-											file.entity_type,
-											file.extension,
-										);
+									const { icon: FileIcon, className } = getFileIcon(
+										file.entity_type,
+										file.extension,
+									);
 									return (
 										<>
 											<div className="w-4" />

@@ -58,6 +58,11 @@ export function OrganizationSelect({
 		value === undefined ? ALL_VALUE : value === null ? GLOBAL_VALUE : value;
 
 	const handleValueChange = (newValue: string) => {
+		// Ignore empty string - Radix Select's BubbleInput fires onChange('')
+		// during mount which would incorrectly clear the selected value
+		if (newValue === "") {
+			return;
+		}
 		// Convert our special values back to null/undefined
 		if (newValue === ALL_VALUE) {
 			onChange(undefined);
@@ -98,6 +103,11 @@ export function OrganizationSelect({
 								<Building2 className="h-4 w-4 text-muted-foreground" />
 							)}
 							<span>{selectedOrg.name}</span>
+						</div>
+					) : value ? (
+						<div className="flex items-center gap-2">
+							<Building2 className="h-4 w-4 text-muted-foreground animate-pulse" />
+							<span className="text-muted-foreground">Loading...</span>
 						</div>
 					) : (
 						placeholder

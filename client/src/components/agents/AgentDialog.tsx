@@ -446,12 +446,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					>
 																						{channel?.label ||
 																							channelValue}
-																						<X
-																							className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
+																						<span
+																							role="button"
+																							tabIndex={0}
 																							onClick={(
 																								e,
 																							) => {
 																								e.stopPropagation();
+																								e.preventDefault();
 																								field.onChange(
 																									field.value.filter(
 																										(
@@ -462,7 +464,32 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																									),
 																								);
 																							}}
-																						/>
+																							onKeyDown={(
+																								e,
+																							) => {
+																								if (
+																									e.key ===
+																										"Enter" ||
+																									e.key ===
+																										" "
+																								) {
+																									e.stopPropagation();
+																									e.preventDefault();
+																									field.onChange(
+																										field.value.filter(
+																											(
+																												v,
+																											) =>
+																												v !==
+																												channelValue,
+																										),
+																									);
+																								}
+																							}}
+																							className="ml-1 rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors cursor-pointer"
+																						>
+																							<X className="h-3 w-3" />
+																						</span>
 																					</Badge>
 																				);
 																			},
@@ -839,9 +866,13 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																		>
 																			{role?.name ||
 																				roleId}
-																			<X
-																				className="h-3 w-3 cursor-pointer"
-																				onClick={() =>
+																			<button
+																				type="button"
+																				onClick={(
+																					e,
+																				) => {
+																					e.stopPropagation();
+																					e.preventDefault();
 																					field.onChange(
 																						field.value.filter(
 																							(
@@ -850,9 +881,12 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																								id !==
 																								roleId,
 																						),
-																					)
-																				}
-																			/>
+																					);
+																				}}
+																				className="rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors"
+																			>
+																				<X className="h-3 w-3" />
+																			</button>
 																		</Badge>
 																	);
 																},
@@ -923,12 +957,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																		>
 																			{tool?.name ||
 																				toolId}
-																			<X
-																				className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
+																			<span
+																				role="button"
+																				tabIndex={0}
 																				onClick={(
 																					e,
 																				) => {
 																					e.stopPropagation();
+																					e.preventDefault();
 																					form.setValue(
 																						"system_tools",
 																						systemTools?.filter(
@@ -941,7 +977,34 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																							[],
 																					);
 																				}}
-																			/>
+																				onKeyDown={(
+																					e,
+																				) => {
+																					if (
+																						e.key ===
+																							"Enter" ||
+																						e.key ===
+																							" "
+																					) {
+																						e.stopPropagation();
+																						e.preventDefault();
+																						form.setValue(
+																							"system_tools",
+																							systemTools?.filter(
+																								(
+																									id,
+																								) =>
+																									id !==
+																									toolId,
+																							) ||
+																								[],
+																						);
+																					}
+																				}}
+																				className="ml-1 rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors cursor-pointer"
+																			>
+																				<X className="h-3 w-3" />
+																			</span>
 																		</Badge>
 																	);
 																},
@@ -967,12 +1030,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																		>
 																			{tool?.name ||
 																				toolId}
-																			<X
-																				className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
+																			<span
+																				role="button"
+																				tabIndex={0}
 																				onClick={(
 																					e,
 																				) => {
 																					e.stopPropagation();
+																					e.preventDefault();
 																					form.setValue(
 																						"tool_ids",
 																						toolIds?.filter(
@@ -985,7 +1050,34 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																							[],
 																					);
 																				}}
-																			/>
+																				onKeyDown={(
+																					e,
+																				) => {
+																					if (
+																						e.key ===
+																							"Enter" ||
+																						e.key ===
+																							" "
+																					) {
+																						e.stopPropagation();
+																						e.preventDefault();
+																						form.setValue(
+																							"tool_ids",
+																							toolIds?.filter(
+																								(
+																									id,
+																								) =>
+																									id !==
+																									toolId,
+																							) ||
+																								[],
+																						);
+																					}
+																				}}
+																				className="ml-1 rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors cursor-pointer"
+																			>
+																				<X className="h-3 w-3" />
+																			</span>
 																		</Badge>
 																	);
 																},
@@ -1296,12 +1388,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					>
 																						{delegateAgent?.name ||
 																							agentIdValue}
-																						<X
-																							className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
+																						<span
+																							role="button"
+																							tabIndex={0}
 																							onClick={(
 																								e,
 																							) => {
 																								e.stopPropagation();
+																								e.preventDefault();
 																								field.onChange(
 																									field.value.filter(
 																										(
@@ -1312,7 +1406,32 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																									),
 																								);
 																							}}
-																						/>
+																							onKeyDown={(
+																								e,
+																							) => {
+																								if (
+																									e.key ===
+																										"Enter" ||
+																									e.key ===
+																										" "
+																								) {
+																									e.stopPropagation();
+																									e.preventDefault();
+																									field.onChange(
+																										field.value.filter(
+																											(
+																												id,
+																											) =>
+																												id !==
+																												agentIdValue,
+																										),
+																									);
+																								}
+																							}}
+																							className="ml-1 rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors cursor-pointer"
+																						>
+																							<X className="h-3 w-3" />
+																						</span>
 																					</Badge>
 																				);
 																			},
@@ -1463,12 +1582,14 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																					{
 																						namespace
 																					}
-																					<X
-																						className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
+																					<span
+																						role="button"
+																						tabIndex={0}
 																						onClick={(
 																							e,
 																						) => {
 																							e.stopPropagation();
+																							e.preventDefault();
 																							field.onChange(
 																								field.value.filter(
 																									(
@@ -1479,7 +1600,32 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																								),
 																							);
 																						}}
-																					/>
+																						onKeyDown={(
+																							e,
+																						) => {
+																							if (
+																								e.key ===
+																									"Enter" ||
+																								e.key ===
+																									" "
+																							) {
+																								e.stopPropagation();
+																								e.preventDefault();
+																								field.onChange(
+																									field.value.filter(
+																										(
+																											ns,
+																										) =>
+																											ns !==
+																											namespace,
+																									),
+																								);
+																							}
+																						}}
+																						className="ml-1 rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors cursor-pointer"
+																					>
+																						<X className="h-3 w-3" />
+																					</span>
 																				</Badge>
 																			),
 																		)}

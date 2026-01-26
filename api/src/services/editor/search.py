@@ -245,7 +245,6 @@ async def search_files_db(
                 "name": row.Agent.name,
                 "description": row.Agent.description,
                 "system_prompt": row.Agent.system_prompt,
-                "model": row.Agent.model,
             }, indent=2)
             results = _search_content(
                 agent_json,

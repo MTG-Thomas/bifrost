@@ -1734,7 +1734,16 @@ class GitHubSyncService:
             workflow_map = await build_workflow_ref_map(self.db)
 
             # 1. Pull remote changes (read from local clone)
-            for i, action in enumerate(preview.to_pull):
+            # Sort to_pull to ensure app.json files are processed before other app files
+            # This prevents "App not found" errors when _layout.tsx is processed before app.json
+            def app_import_order(action: SyncAction) -> tuple[int, str]:
+                """Sort key: app.json first (0), then other files (1), alphabetically within each."""
+                if action.path.startswith("apps/") and action.path.endswith("/app.json"):
+                    return (0, action.path)
+                return (1, action.path)
+
+            sorted_to_pull = sorted(preview.to_pull, key=app_import_order)
+            for i, action in enumerate(sorted_to_pull):
                 # Report progress before processing each file
                 await report("pulling", i + 1, total_pull, action.path)
                 await log_milestone("Pulling", i + 1, total_pull)

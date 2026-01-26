@@ -1,10 +1,8 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, XCircle, Code2 } from "lucide-react";
+import { ArrowLeft, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import { FormRenderer } from "@/components/forms/FormRenderer";
 import { useForm } from "@/hooks/useForms";
 import { useAuth } from "@/contexts/AuthContext";
@@ -77,10 +75,20 @@ export function RunForm() {
 
 	return (
 		<div className="space-y-6">
+			{/* Header with back button on left, centered title/description */}
 			<div className="flex justify-center">
 				<div className="w-full max-w-2xl">
-					<div className="flex items-center justify-between">
-						<div>
+					<div className="flex items-start gap-4">
+						<Button
+							variant="outline"
+							size="icon"
+							onClick={() => navigate("/forms")}
+							title="Back to Forms"
+							className="shrink-0 mt-1"
+						>
+							<ArrowLeft className="h-4 w-4" />
+						</Button>
+						<div className="flex-1 text-center">
 							<h1 className="text-4xl font-extrabold tracking-tight">
 								{form.name}
 							</h1>
@@ -90,38 +98,17 @@ export function RunForm() {
 								</p>
 							)}
 						</div>
-						<div className="flex items-center gap-3">
-							{/* Developer Mode Toggle - Platform Admins Only */}
-							{isPlatformAdmin && (
-								<div className="flex items-center gap-2">
-									<Switch
-										id="dev-mode"
-										checked={devMode}
-										onCheckedChange={setDevMode}
-									/>
-									<Label
-										htmlFor="dev-mode"
-										className="flex items-center gap-1.5 text-sm cursor-pointer"
-									>
-										<Code2 className="h-3.5 w-3.5" />
-										Dev
-									</Label>
-								</div>
-							)}
-							<Button
-								variant="outline"
-								size="icon"
-								onClick={() => navigate("/forms")}
-								title="Back to Forms"
-							>
-								<ArrowLeft className="h-4 w-4" />
-							</Button>
-						</div>
+						{/* Spacer to balance the back button for true centering */}
+						<div className="w-9 shrink-0" />
 					</div>
 				</div>
 			</div>
 
-			<FormRenderer form={form} devMode={isPlatformAdmin && devMode} />
+			<FormRenderer
+				form={form}
+				devMode={isPlatformAdmin && devMode}
+				onDevModeChange={isPlatformAdmin ? setDevMode : undefined}
+			/>
 		</div>
 	);
 }

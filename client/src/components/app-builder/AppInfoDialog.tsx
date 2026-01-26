@@ -192,6 +192,9 @@ export function AppInfoDialog({
 	const onSubmit = async (values: FormValues) => {
 		try {
 			if (isEditing && appId) {
+				// Check if slug changed - we'll need to update the URL
+				const slugChanged = existingApp && values.slug !== existingApp.slug;
+
 				await updateApplication.mutateAsync({
 					params: {
 						path: { slug: appId },
@@ -201,13 +204,22 @@ export function AppInfoDialog({
 					},
 					body: {
 						name: values.name,
+						slug: values.slug,
 						description: values.description || null,
 						access_level: values.access_level,
 						role_ids: values.role_ids,
-						// Note: scope can only be changed by platform admins, handled by backend
+						// scope is passed via query params for platform admins
+						scope: isPlatformAdmin
+							? (values.organization_id ?? "global")
+							: undefined,
 					},
 				});
 				handleClose();
+
+				// If slug changed, trigger navigation callback with new slug
+				if (slugChanged) {
+					onCreated?.(values.slug);
+				}
 			} else {
 				const result = await createApplication.mutateAsync({
 					body: {
@@ -291,12 +303,11 @@ export function AppInfoDialog({
 													value={field.value}
 													onChange={field.onChange}
 													showGlobal={true}
-													disabled={isEditing}
 												/>
 											</FormControl>
 											<FormDescription>
 												{isEditing
-													? "Organization cannot be changed after creation"
+													? "Warning: Changing the organization will move the app to a different scope"
 													: "Global apps are available to all organizations"}
 											</FormDescription>
 											<FormMessage />
@@ -340,12 +351,11 @@ export function AppInfoDialog({
 												onChange={(e) =>
 													handleSlugChange(e.target.value)
 												}
-												disabled={isEditing}
 											/>
 										</FormControl>
 										<FormDescription>
 											{isEditing
-												? "Slug cannot be changed after creation"
+												? "Warning: Changing the slug will change the app's URL"
 												: `Your app will be accessible at /apps/${field.value || "..."}`}
 										</FormDescription>
 										<FormMessage />

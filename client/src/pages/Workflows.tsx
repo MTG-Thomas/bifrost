@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
 	PlayCircle,
 	Code,
+	Code2,
 	RefreshCw,
 	Webhook,
 	AlertTriangle,
@@ -17,6 +18,7 @@ import {
 	Unlink,
 	Shield,
 	Users,
+	Loader2,
 } from "lucide-react";
 import { useIsDesktop } from "@/hooks/useMediaQuery";
 import type { CategoryCount } from "@/components/workflows/WorkflowSidebar";
@@ -44,7 +46,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useWorkflowsFiltered } from "@/hooks/useWorkflows";
+import { useWorkflowsFiltered, useWorkflowsMetadata } from "@/hooks/useWorkflows";
 import { useWorkflowKeys } from "@/hooks/useWorkflowKeys";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -56,6 +58,9 @@ import { WorkflowSidebar } from "@/components/workflows/WorkflowSidebar";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
+import { useEditorStore } from "@/stores/editorStore";
+import { fileService } from "@/services/fileService";
+import { toast } from "sonner";
 import type { components } from "@/lib/v1";
 
 // Extend WorkflowMetadata with fields that may not be in generated types yet
@@ -104,6 +109,16 @@ export function Workflows() {
 	const [selectedFormId, setSelectedFormId] = useState<string | null>(null);
 	const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
 	const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+
+	// Open in editor state
+	const [openingWorkflowId, setOpeningWorkflowId] = useState<string | null>(null);
+	const openFileInTab = useEditorStore((state) => state.openFileInTab);
+	const openEditor = useEditorStore((state) => state.openEditor);
+	const setSidebarPanel = useEditorStore((state) => state.setSidebarPanel);
+
+	// Fetch workflow metadata (for file paths)
+	const { data: metadataData } = useWorkflowsMetadata();
+	const metadata = metadataData as { workflows: BaseWorkflow[] } | undefined;
 
 	// Fetch organizations for org name lookup (platform admins only)
 	const { data: organizations } = useOrganizations({
@@ -191,6 +206,51 @@ export function Workflows() {
 	const handleOpenOrphanedDialog = (workflow: Workflow) => {
 		setOrphanedWorkflow(workflow);
 		setOrphanedDialogOpen(true);
+	};
+
+	const handleOpenInEditor = async (workflow: Workflow) => {
+		const workflowMeta = metadata?.workflows?.find(
+			(w) => w.name === workflow.name,
+		);
+		const relativeFilePath = workflowMeta?.relative_file_path;
+
+		if (!relativeFilePath) {
+			toast.error("Cannot open in editor: source file not found");
+			return;
+		}
+
+		setOpeningWorkflowId(workflow.id ?? workflow.name ?? null);
+		try {
+			const fileResponse = await fileService.readFile(relativeFilePath);
+			const fileName = relativeFilePath.split("/").pop() || relativeFilePath;
+			const extension = fileName.includes(".") ? fileName.split(".").pop()! : null;
+
+			const fileMetadata = {
+				name: fileName,
+				path: relativeFilePath,
+				type: "file" as const,
+				size: 0,
+				extension,
+				modified: new Date().toISOString(),
+				entity_type: null,
+				entity_id: null,
+			};
+
+			openEditor();
+			openFileInTab(
+				fileMetadata,
+				fileResponse.content,
+				fileResponse.encoding as "utf-8" | "base64",
+				fileResponse.etag,
+			);
+			setSidebarPanel("run");
+			toast.success("Opened in editor");
+		} catch (error) {
+			console.error("Failed to open in editor:", error);
+			toast.error("Failed to open file in editor");
+		} finally {
+			setOpeningWorkflowId(null);
+		}
 	};
 
 	return (
@@ -350,7 +410,7 @@ export function Workflows() {
 							<div className={`grid gap-4 ${sidebarOpen ? "lg:grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3" : "lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"}`}>
 								{filteredWorkflows.map((workflow) => (
 									<Card
-										key={workflow.name}
+										key={workflow.id ?? workflow.name}
 										className="hover:border-primary transition-colors flex flex-col"
 									>
 										<CardHeader className="pb-2">
@@ -388,18 +448,38 @@ export function Workflows() {
 														</Badge>
 													)}
 												</div>
-												{isPlatformAdmin && (
-													<Button
-														variant="ghost"
-														size="icon-sm"
-														onClick={() =>
-															handleEditWorkflow(workflow)
-														}
-														title="Edit organization scope"
-													>
-														<Pencil className="h-3.5 w-3.5" />
-													</Button>
-												)}
+												<div className="flex items-center gap-1">
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="outline"
+																size="icon-sm"
+																onClick={() => handleOpenInEditor(workflow)}
+																disabled={openingWorkflowId === (workflow.id ?? workflow.name)}
+																title="Open in editor"
+															>
+																{openingWorkflowId === (workflow.id ?? workflow.name) ? (
+																	<Loader2 className="h-3.5 w-3.5 animate-spin" />
+																) : (
+																	<Code2 className="h-3.5 w-3.5" />
+																)}
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent>Open in editor</TooltipContent>
+													</Tooltip>
+													{isPlatformAdmin && (
+														<Button
+															variant="outline"
+															size="icon-sm"
+															onClick={() =>
+																handleEditWorkflow(workflow)
+															}
+															title="Edit organization scope"
+														>
+															<Pencil className="h-3.5 w-3.5" />
+														</Button>
+													)}
+												</div>
 											</div>
 
 											{/* Title and description */}
@@ -584,7 +664,7 @@ export function Workflows() {
 									</DataTableHeader>
 									<DataTableBody>
 										{filteredWorkflows.map((workflow) => (
-											<DataTableRow key={workflow.name}>
+											<DataTableRow key={workflow.id ?? workflow.name}>
 												{isPlatformAdmin && (
 													<DataTableCell>
 														{workflow.organization_id ? (
@@ -745,6 +825,24 @@ export function Workflows() {
 												</DataTableCell>
 												<DataTableCell className="text-right">
 													<div className="flex items-center justify-end gap-1">
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<Button
+																	variant="outline"
+																	size="sm"
+																	onClick={() => handleOpenInEditor(workflow)}
+																	disabled={openingWorkflowId === (workflow.id ?? workflow.name)}
+																	title="Open in editor"
+																>
+																	{openingWorkflowId === (workflow.id ?? workflow.name) ? (
+																		<Loader2 className="h-4 w-4 animate-spin" />
+																	) : (
+																		<Code2 className="h-4 w-4" />
+																	)}
+																</Button>
+															</TooltipTrigger>
+															<TooltipContent>Open in editor</TooltipContent>
+														</Tooltip>
 														{isPlatformAdmin && (
 															<Button
 																variant="outline"

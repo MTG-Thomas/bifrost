@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
 	ArrowLeft,
@@ -137,11 +137,23 @@ export function ExecutionDetails({
 	const { executionId: urlExecutionId } = useParams();
 	const executionId = propExecutionId || urlExecutionId;
 	const navigate = useNavigate();
+	const location = useLocation();
 	const { isPlatformAdmin } = useAuth();
 	const queryClient = useQueryClient();
 
-	// Always fetch immediately - React Query handles retries for new executions
-	const [signalrEnabled, setSignalrEnabled] = useState(true);
+	// Check if we came from an execution trigger (has navigation state)
+	// If so, we defer the GET until WebSocket confirms the execution exists
+	const hasNavigationState = location.state != null;
+
+	// WebSocket streaming enabled state - starts enabled only for new executions from triggers
+	const [signalrEnabled, setSignalrEnabled] = useState(false);
+
+	// Fallback timer - enable fetch after 5s if WebSocket hasn't received updates
+	// FIX: Initialize based on hasNavigationState to avoid first-render delay on direct links
+	const [fetchFallbackEnabled, setFetchFallbackEnabled] = useState(
+		!hasNavigationState,
+	);
+
 	const logsEndRef = useRef<HTMLDivElement>(null);
 	const logsContainerRef = useRef<HTMLDivElement>(null);
 	const [autoScroll, setAutoScroll] = useState(true);
@@ -152,6 +164,28 @@ export function ExecutionDetails({
 		executionId ? state.streams[executionId] : undefined,
 	);
 	const streamingLogs = streamState?.streamingLogs ?? [];
+
+	// Fallback timer effect - reset on ID change and set 5s fallback for navigation state
+	useEffect(() => {
+		// Reset fallback when execution ID changes (important for rerun navigation)
+		setFetchFallbackEnabled(!hasNavigationState);
+
+		// If we have navigation state (from trigger), wait 5s as fallback in case WebSocket fails
+		if (hasNavigationState) {
+			const timer = setTimeout(() => setFetchFallbackEnabled(true), 5000);
+			return () => clearTimeout(timer);
+		}
+		// No timer needed for direct links - fetchFallbackEnabled is already true
+		return undefined;
+	}, [executionId, hasNavigationState]);
+
+	// Determine if we should fetch from API
+	// Fetch when:
+	// - Stream received update (confirms DB write), OR
+	// - Fallback timer expired (5s after navigation), OR
+	// - No navigation state (direct link/refresh - fetch immediately!)
+	const hasReceivedUpdate = streamState?.hasReceivedUpdate ?? false;
+	const shouldFetchExecution = hasReceivedUpdate || fetchFallbackEnabled;
 
 	// State for confirmation dialogs
 	const [showCancelDialog, setShowCancelDialog] = useState(false);
@@ -172,13 +206,35 @@ export function ExecutionDetails({
 	const { data: metadataData } = useWorkflowsMetadata();
 	const metadata = metadataData as WorkflowsMetadataResponse | undefined;
 
-	// Fetch execution data immediately - React Query handles retries
+	// Wrap onComplete in useCallback to prevent infinite loop
+	const handleStreamComplete = useCallback(() => {
+		// Refetch full execution data when complete
+		queryClient.invalidateQueries({
+			queryKey: [
+				"get",
+				"/api/executions/{execution_id}",
+				{ params: { path: { execution_id: executionId } } },
+			],
+		});
+	}, [queryClient, executionId]);
+
+	// Real-time updates via WebSocket (only for running/pending/cancelling executions)
+	const { isConnected } = useExecutionStream({
+		executionId: executionId || "",
+		enabled: !!executionId && signalrEnabled,
+		onComplete: handleStreamComplete,
+	});
+
+	// Fetch execution data - deferred until stream confirms DB write or fallback expires
 	const {
 		data: executionData,
 		isLoading,
-		isFetching,
 		error,
-	} = useExecution(executionId, signalrEnabled);
+	} = useExecution(shouldFetchExecution ? executionId : undefined, {
+		// Disable polling when WebSocket is connected AND execution is not complete
+		// This prevents duplicate API calls while streaming
+		disablePolling: isConnected && signalrEnabled,
+	});
 
 	// Cast execution data to the correct type
 	const execution = executionData as WorkflowExecution | undefined;
@@ -206,36 +262,41 @@ export function ExecutionDetails({
 	const isLoadingLogs = isLoading;
 	const isLoadingVariables = isLoading;
 
-	// Disable streaming when execution is complete (from API or stream)
+	// Enable WebSocket for running executions
+	// Only disable when stream explicitly completes (not when status changes in cache)
+	// This prevents race condition where we disconnect before completion callback fires
 	useEffect(() => {
-		if (isComplete || streamState?.isComplete) {
+		// If we came from an execution trigger (has navigation state), start WebSocket immediately
+		// We know the execution is fresh and will be Pending/Running
+		if (hasNavigationState) {
+			setSignalrEnabled(true);
+			return;
+		}
+		// Otherwise, enable streaming if execution is in a running state
+		if (
+			executionStatus === "Pending" ||
+			executionStatus === "Running" ||
+			executionStatus === "Cancelling"
+		) {
+			setSignalrEnabled(true);
+		}
+		// Only disable on initial load if already complete (not from stream updates)
+		// The stream's onComplete callback will handle cleanup for live executions
+	}, [executionStatus, hasNavigationState]);
+
+	// Disable streaming when stream reports completion
+	useEffect(() => {
+		if (streamState?.isComplete) {
 			setSignalrEnabled(false);
 		}
-	}, [isComplete, streamState?.isComplete]);
-
-	// Wrap onComplete in useCallback to prevent infinite loop
-	const handleStreamComplete = useCallback(() => {
-		// Refetch full execution data when complete
-		// Use openapi-react-query's query key format
-		queryClient.invalidateQueries({
-			queryKey: [
-				"get",
-				"/api/executions/{execution_id}",
-				{ params: { path: { execution_id: executionId } } },
-			],
-		});
-	}, [queryClient, executionId]);
-
-	// Real-time updates via Web PubSub (only for running/pending/cancelling executions)
-	const { isConnected } = useExecutionStream({
-		executionId: executionId || "",
-		enabled: !!executionId && signalrEnabled,
-		onComplete: handleStreamComplete,
-	});
+	}, [streamState?.isComplete]);
 
 	// Update execution status optimistically from stream
+	// Only depend on status, not the entire streamState object, to avoid running
+	// on every log message (which would trigger setQueryData unnecessarily)
+	const streamStatus = streamState?.status;
 	useEffect(() => {
-		if (streamState && executionId) {
+		if (streamStatus && executionId) {
 			// Use openapi-react-query's query key format
 			queryClient.setQueryData(
 				[
@@ -247,12 +308,12 @@ export function ExecutionDetails({
 					if (!old || typeof old !== "object") return old;
 					return {
 						...(old as Record<string, unknown>),
-						status: streamState.status,
+						status: streamStatus,
 					};
 				},
 			);
 		}
-	}, [streamState, executionId, queryClient]);
+	}, [streamStatus, executionId, queryClient]);
 
 	// Auto-scroll to bottom when new streaming logs arrive
 	useEffect(() => {
@@ -452,9 +513,15 @@ export function ExecutionDetails({
 			);
 			setShowRerunDialog(false);
 
-			// Navigate to the new execution
+			// Navigate to the new execution with context to avoid 404 race condition
 			if (result?.execution_id) {
-				navigate(`/history/${result.execution_id}`);
+				navigate(`/history/${result.execution_id}`, {
+					state: {
+						workflow_name: execution.workflow_name,
+						workflow_id: workflow.id,
+						input_data: execution.input_data,
+					},
+				});
 			}
 		} catch (error) {
 			toast.error(`Failed to rerun workflow: ${error}`);
@@ -528,9 +595,21 @@ export function ExecutionDetails({
 		}
 	};
 
-	// Show loading state during initial load or background fetches/retries
-	// This prevents the "Waiting for execution" message from flashing on refresh
-	if (isLoading || isFetching) {
+	// Show "waiting" state when we came from trigger and haven't received data yet
+	// This happens before shouldFetchExecution becomes true (waiting for WebSocket or 5s fallback)
+	if (!shouldFetchExecution && !execution) {
+		if (embedded) {
+			return (
+				<div className="flex items-center justify-center h-full p-8">
+					<Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+				</div>
+			);
+		}
+		return <PageLoader message="Waiting for execution to start..." />;
+	}
+
+	// Show loading state during initial load
+	if (isLoading) {
 		if (embedded) {
 			return (
 				<div className="flex items-center justify-center h-full p-8">

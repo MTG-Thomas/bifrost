@@ -186,7 +186,7 @@ export function ToolExecutionCard({
 	// Fetch execution data from API (disabled during streaming)
 	const { data: apiExecution, isLoading: isLoadingExecution } = useExecution(
 		resolvedExecutionId,
-		isStreaming, // Disable polling during streaming
+		{ disablePolling: isStreaming }, // Disable polling during streaming
 	);
 
 	// Determine status: streaming state > API data > legacy execution > has result > pending

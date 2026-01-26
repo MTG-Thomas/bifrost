@@ -1,8 +1,9 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState } from "react";
 import { VariablesTreeView } from "@/components/ui/variables-tree-view";
 import { useFormContext } from "@/contexts/FormContext";
 import { cn } from "@/lib/utils";
-import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Loader2, Maximize2, Minimize2 } from "lucide-react";
 
 interface FormContextPanelProps {
 	className?: string;
@@ -12,25 +13,49 @@ interface FormContextPanelProps {
  * Developer panel showing form context variables
  * Displays workflow results, query params, and field values in a tree view
  * Only visible to platform admins when Developer Mode is enabled
+ *
+ * Designed to be embedded in a drawer - no Card wrapper
  */
 export function FormContextPanel({ className }: FormContextPanelProps) {
 	const { context, isLoadingLaunchWorkflow } = useFormContext();
+	const [expanded, setExpanded] = useState(false);
 
 	const hasWorkflow = Object.keys(context.workflow).length > 0;
 	const hasQuery = Object.keys(context.query).length > 0;
 	const hasField = Object.keys(context.field).length > 0;
 
 	return (
-		<Card className={cn("h-fit", className)}>
-			<CardHeader className="pb-3">
-				<CardTitle className="text-sm font-medium flex items-center gap-2">
+		<div className={cn("flex flex-col h-full", className)}>
+			{/* Header */}
+			<div className="flex items-center justify-between pb-3 shrink-0">
+				<h3 className="text-sm font-medium flex items-center gap-2">
 					Form Context
 					{isLoadingLaunchWorkflow && (
 						<Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
 					)}
-				</CardTitle>
-			</CardHeader>
-			<CardContent className="space-y-4">
+				</h3>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-6 w-6"
+					onClick={() => setExpanded(!expanded)}
+					title={expanded ? "Collapse" : "Expand"}
+				>
+					{expanded ? (
+						<Minimize2 className="h-3.5 w-3.5" />
+					) : (
+						<Maximize2 className="h-3.5 w-3.5" />
+					)}
+				</Button>
+			</div>
+
+			{/* Scrollable content */}
+			<div
+				className={cn(
+					"overflow-y-auto space-y-4 pr-1",
+					expanded ? "max-h-none" : "max-h-[500px]"
+				)}
+			>
 				{/* Workflow Results */}
 				<ContextSection
 					title="context.workflow"
@@ -61,8 +86,8 @@ export function FormContextPanel({ className }: FormContextPanelProps) {
 				>
 					<VariablesTreeView data={context.field} />
 				</ContextSection>
-			</CardContent>
-		</Card>
+			</div>
+		</div>
 	);
 }
 

@@ -296,6 +296,14 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         if data.access_level is not None:
             application.access_level = data.access_level
 
+        # Handle slug change with uniqueness check
+        if data.slug is not None and data.slug != application.slug:
+            # Check if new slug already exists in the same scope
+            existing = await self.get_by_slug_strict(data.slug)
+            if existing and existing.id != application.id:
+                raise ValueError(f"Application with slug '{data.slug}' already exists")
+            application.slug = data.slug
+
         # Handle scope change (platform admin only)
         if data.scope is not None and is_platform_admin:
             if data.scope == "global":
@@ -831,12 +839,19 @@ async def update_application(
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
     )
-    application = await repo.update_application(
-        slug,
-        data,
-        updated_by=ctx.user.email,
-        is_platform_admin=user.is_platform_admin,
-    )
+
+    try:
+        application = await repo.update_application(
+            slug,
+            data,
+            updated_by=ctx.user.email,
+            is_platform_admin=user.is_platform_admin,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
 
     if not application:
         raise HTTPException(

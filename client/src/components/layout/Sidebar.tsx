@@ -8,7 +8,6 @@ import {
 	FileCode,
 	Key,
 	UserCog,
-	BookOpen,
 	Clock,
 	Settings as SettingsIcon,
 	X,
@@ -56,7 +55,7 @@ const navSections: NavSection[] = [
 		],
 	},
 	{
-		title: "Automation",
+		title: "Hub",
 		items: [
 			{
 				title: "Chat",
@@ -67,25 +66,11 @@ const navSections: NavSection[] = [
 				title: "Apps",
 				href: "/apps",
 				icon: AppWindow,
-				requiresPlatformAdmin: true,
 			},
 			{
 				title: "Forms",
 				href: "/forms",
 				icon: FileCode,
-			},
-			{
-				title: "Agents",
-				href: "/agents",
-				icon: Bot,
-				requiresPlatformAdmin: true,
-				dividerBefore: true,
-			},
-			{
-				title: "Workflows",
-				href: "/workflows",
-				icon: Workflow,
-				requiresPlatformAdmin: true,
 			},
 			{
 				title: "History",
@@ -95,15 +80,27 @@ const navSections: NavSection[] = [
 		],
 	},
 	{
-		title: "Configuration",
+		title: "Automation",
 		requiresPlatformAdmin: true,
 		items: [
 			{
-				title: "Settings",
-				href: "/settings",
-				icon: SettingsIcon,
+				title: "Agents",
+				href: "/agents",
+				icon: Bot,
 				requiresPlatformAdmin: true,
 			},
+			{
+				title: "Workflows",
+				href: "/workflows",
+				icon: Workflow,
+				requiresPlatformAdmin: true,
+			},
+		],
+	},
+	{
+		title: "Data",
+		requiresPlatformAdmin: true,
+		items: [
 			{
 				title: "Config",
 				href: "/config",
@@ -111,7 +108,7 @@ const navSections: NavSection[] = [
 				requiresPlatformAdmin: true,
 			},
 			{
-				title: "Data Tables",
+				title: "Tables",
 				href: "/tables",
 				icon: Database,
 				requiresPlatformAdmin: true,
@@ -136,14 +133,14 @@ const navSections: NavSection[] = [
 			},
 			{
 				title: "Entity Management",
-				href: "/dependencies",
+				href: "/entity-management",
 				icon: Network,
 				requiresPlatformAdmin: true,
 			},
 		],
 	},
 	{
-		title: "Administration",
+		title: "Platform",
 		requiresPlatformAdmin: true,
 		items: [
 			{
@@ -162,6 +159,12 @@ const navSections: NavSection[] = [
 				title: "Roles",
 				href: "/roles",
 				icon: UserCog,
+				requiresPlatformAdmin: true,
+			},
+			{
+				title: "Settings",
+				href: "/settings",
+				icon: SettingsIcon,
 				requiresPlatformAdmin: true,
 			},
 			{
@@ -186,18 +189,6 @@ const navSections: NavSection[] = [
 				title: "Usage",
 				href: "/reports/usage",
 				icon: Activity,
-				requiresPlatformAdmin: true,
-			},
-		],
-	},
-	{
-		title: "Resources",
-		requiresPlatformAdmin: true,
-		items: [
-			{
-				title: "Docs",
-				href: "/docs",
-				icon: BookOpen,
 				requiresPlatformAdmin: true,
 			},
 		],

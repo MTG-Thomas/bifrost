@@ -14,7 +14,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Loader2 } from "lucide-react";
+import { Loader2, Code2 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import DOMPurify from "dompurify";
 import ReactMarkdown from "react-markdown";
 import type { components } from "@/lib/v1";
@@ -38,6 +39,8 @@ interface FormRendererProps {
 	form: Form;
 	/** Show developer context panel (platform admin only) */
 	devMode?: boolean;
+	/** Callback to toggle dev mode (only provided for platform admins) */
+	onDevModeChange?: (enabled: boolean) => void;
 	/** Callback when execution starts (called with execution ID) */
 	onExecutionStart?: (executionId: string) => void;
 	/** If true, don't navigate after submission (for embedded forms) */
@@ -73,6 +76,7 @@ function isFormSchema(schema: unknown): schema is FormSchema {
 function FormRendererInner({
 	form,
 	devMode,
+	onDevModeChange,
 	onExecutionStart,
 	preventNavigation,
 }: FormRendererProps) {
@@ -1126,18 +1130,38 @@ function FormRendererInner({
 		isLoadingLaunchWorkflow ||
 		(!hasCompletedInitialLoad && isAnyDataProviderLoading);
 
+	// Dev toggle component - positioned absolutely so it doesn't affect layout
+	const devToggle = onDevModeChange && (
+		<div className="absolute top-4 right-4 flex items-center gap-2">
+			<Switch
+				id="dev-mode"
+				checked={devMode}
+				onCheckedChange={onDevModeChange}
+			/>
+			<Label
+				htmlFor="dev-mode"
+				className="flex items-center gap-1.5 text-sm cursor-pointer"
+			>
+				<Code2 className="h-3.5 w-3.5" />
+				Dev
+			</Label>
+		</div>
+	);
+
 	if (showLoadingState) {
 		return (
-			<div className={devMode ? "flex gap-6" : ""}>
-				<div
+			<div className="flex justify-center">
+				<Card
 					className={
 						devMode
-							? "flex-1 flex justify-center"
-							: "flex justify-center"
+							? "w-full max-w-[calc(42rem+320px)] relative"
+							: "w-full max-w-2xl relative"
 					}
 				>
-					<Card className="w-full max-w-2xl">
-						<CardContent className="pt-6">
+					{devToggle}
+					<div className="flex">
+						{/* Form content */}
+						<CardContent className="pt-6 flex-1 min-w-0 max-w-2xl">
 							<div className="space-y-6">
 								{/* Loading indicator */}
 								<div className="flex items-center gap-3 p-4 bg-muted/50 rounded-lg">
@@ -1166,26 +1190,40 @@ function FormRendererInner({
 								</div>
 							</div>
 						</CardContent>
-					</Card>
-				</div>
-				{devMode && (
-					<FormContextPanel className="w-80 shrink-0 sticky top-4" />
-				)}
+
+						{/* Dev mode drawer */}
+						<motion.div
+							initial={false}
+							animate={{
+								width: devMode ? 320 : 0,
+								opacity: devMode ? 1 : 0,
+							}}
+							transition={{ duration: 0.2, ease: "easeInOut" }}
+							className="overflow-hidden shrink-0"
+						>
+							<div className="w-80 h-full border-l p-4">
+								<FormContextPanel />
+							</div>
+						</motion.div>
+					</div>
+				</Card>
 			</div>
 		);
 	}
 
 	return (
-		<div className={devMode ? "flex gap-6" : ""}>
-			<div
+		<div className="flex justify-center">
+			<Card
 				className={
 					devMode
-						? "flex-1 flex justify-center"
-						: "flex justify-center"
+						? "w-full max-w-[calc(42rem+320px)] relative"
+						: "w-full max-w-2xl relative"
 				}
 			>
-				<Card className="w-full max-w-2xl">
-					<CardContent className="pt-6">
+				{devToggle}
+				<div className="flex">
+					{/* Form content */}
+					<CardContent className="pt-6 flex-1 min-w-0 max-w-2xl">
 						<form
 							onSubmit={handleSubmit(onSubmit)}
 							className="space-y-4"
@@ -1245,11 +1283,23 @@ function FormRendererInner({
 							</div>
 						</form>
 					</CardContent>
-				</Card>
-			</div>
-			{devMode && (
-				<FormContextPanel className="w-80 shrink-0 sticky top-4" />
-			)}
+
+					{/* Dev mode drawer */}
+					<motion.div
+						initial={false}
+						animate={{
+							width: devMode ? 320 : 0,
+							opacity: devMode ? 1 : 0,
+						}}
+						transition={{ duration: 0.2, ease: "easeInOut" }}
+						className="overflow-hidden shrink-0"
+					>
+						<div className="w-80 h-full border-l p-4">
+							<FormContextPanel />
+						</div>
+					</motion.div>
+				</div>
+			</Card>
 		</div>
 	);
 }
@@ -1261,6 +1311,7 @@ function FormRendererInner({
 export function FormRenderer({
 	form,
 	devMode,
+	onDevModeChange,
 	onExecutionStart,
 	preventNavigation,
 }: FormRendererProps) {
@@ -1280,6 +1331,7 @@ export function FormRenderer({
 			<FormRendererInner
 				form={form}
 				devMode={devMode}
+				onDevModeChange={onDevModeChange}
 				onExecutionStart={onExecutionStart}
 				preventNavigation={preventNavigation}
 			/>

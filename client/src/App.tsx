@@ -74,9 +74,6 @@ const IntegrationDetail = lazy(() =>
 		default: m.IntegrationDetail,
 	})),
 );
-const Docs = lazy(() =>
-	import("@/pages/Docs").then((m) => ({ default: m.Docs })),
-);
 const Schedules = lazy(() =>
 	import("@/pages/Schedules").then((m) => ({ default: m.Schedules })),
 );
@@ -371,11 +368,11 @@ function AppRoutes() {
 							}
 						/>
 
-						{/* Applications List & Editor - PlatformAdmin only (with sidebar) */}
+						{/* Applications List - OrgUser access (with sidebar) */}
 						<Route
 							path="apps"
 							element={
-								<ProtectedRoute requirePlatformAdmin>
+								<ProtectedRoute requireOrgUser>
 									<Applications />
 								</ProtectedRoute>
 							}
@@ -409,7 +406,7 @@ function AppRoutes() {
 
 						{/* Entity Management - PlatformAdmin only */}
 						<Route
-							path="dependencies"
+							path="entity-management"
 							element={
 								<ProtectedRoute requirePlatformAdmin>
 									<EntityManagement />
@@ -435,15 +432,6 @@ function AppRoutes() {
 							}
 						/>
 
-						{/* Docs - PlatformAdmin only */}
-						<Route
-							path="docs/*"
-							element={
-								<ProtectedRoute requirePlatformAdmin>
-									<Docs />
-								</ProtectedRoute>
-							}
-						/>
 
 						{/* Scheduled Workflows - PlatformAdmin only */}
 						<Route

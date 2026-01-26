@@ -206,16 +206,15 @@ class _LazyClient:
     """
     Module-level proxy that auto-initializes from Bifrost integration.
     Provides zero-config authentication experience.
+
+    Note: Client is NOT cached - always fetches fresh credentials to ensure
+    token refreshes are picked up immediately.
     """
 
-    _client: Optional[_{{ class_name }}Client] = None
     _integration_name: str = "{{ integration_name }}"
     _auth_type: str = "{{ auth_type }}"
 
     async def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-
         from bifrost import integrations
 
         integration = await integrations.get(self._integration_name)
@@ -262,7 +261,7 @@ class _LazyClient:
         base_backoff = float(config.get("base_backoff", 1.0))
         max_backoff = float(config.get("max_backoff", 60.0))
 
-        self._client = _{{ class_name }}Client(
+        return _{{ class_name }}Client(
             base_url,
             session,
             timeout=timeout,
@@ -270,7 +269,6 @@ class _LazyClient:
             base_backoff=base_backoff,
             max_backoff=max_backoff,
         )
-        return self._client
 
     def __getattr__(self, name: str):
         """Proxy attribute access to the real client."""

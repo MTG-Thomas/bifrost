@@ -668,117 +668,101 @@ export function FileTree({
 			</div>
 
 			{/* File list */}
-			<ContextMenu>
-				<ContextMenuTrigger asChild>
-					<div
-						className={cn(
-							"flex-1 overflow-auto",
-							dragOverFolder === "" &&
-								"bg-primary/10 outline outline-2 outline-primary outline-dashed",
-						)}
-						onDragOver={(e) => handleDragOver(e)}
-						onDragLeave={handleDragLeave}
-						onDrop={(e) => handleDrop(e)}
-					>
-						{isLoading && files.length === 0 && !creatingItem ? (
-							<div className="flex h-full items-center justify-center">
-								<div className="text-sm text-muted-foreground">
-									{config.loadingMessage}
-								</div>
-							</div>
-						) : files.length === 0 && !creatingItem ? (
-							<div className="flex h-full items-center justify-center p-4">
-								<div className="text-center text-sm text-muted-foreground">
-									<p>{config.emptyMessage}</p>
-									{config.enableCreate && (
-										<p className="mt-2 text-xs">
-											Right-click to create files and folders
-										</p>
-									)}
-								</div>
-							</div>
-						) : (
-							<div className="space-y-1 p-2">
-								{/* Inline new item editor at root */}
-								{creatingItem && !creatingInFolder && (
-									<div className="flex items-center gap-2 rounded px-2 py-1 bg-muted/50">
-										<div className="w-4" />
-										{isProcessing ? (
-											<Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-primary" />
-										) : creatingItem === "folder" ? (
-											<Folder className="h-4 w-4 flex-shrink-0 text-primary" />
-										) : (
-											<File className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-										)}
-										<input
-											ref={inputRef}
-											type="text"
-											value={newItemName}
-											onChange={(e) => setNewItemName(e.target.value)}
-											onKeyDown={handleNewItemKeyDown}
-											onMouseDown={handleInputMouseDown}
-											placeholder={
-												creatingItem === "folder" ? "Folder name" : "File name"
-											}
-											disabled={isProcessing}
-											className="flex-1 bg-transparent text-sm outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-										/>
-									</div>
-								)}
-
-								{/* Existing files */}
-								{files.map((file) => (
-									<FileTreeItem
-										key={file.path}
-										file={file}
-										iconResolver={iconResolver}
-										config={config}
-										editor={editor}
-										onFileClick={handleFileClick}
-										onFolderToggle={handleFolderToggle}
-										onDelete={handleDelete}
-										onRename={handleRename}
-										onCreateFile={handleCreateFile}
-										onCreateFolder={handleCreateFolder}
-										isExpanded={isFolderExpanded(file.path)}
-										onDragStart={handleDragStart}
-										onDragOver={handleDragOver}
-										onDragLeave={handleDragLeave}
-										onDrop={handleDrop}
-										isDragOver={dragOverFolder === file.path}
-										creatingItem={creatingItem}
-										creatingInFolder={creatingInFolder}
-										newItemName={newItemName}
-										setNewItemName={setNewItemName}
-										inputRef={inputRef}
-										handleNewItemKeyDown={handleNewItemKeyDown}
-										handleInputMouseDown={handleInputMouseDown}
-										renamingFile={renamingFile}
-										renameValue={renameValue}
-										setRenameValue={setRenameValue}
-										renameInputRef={renameInputRef}
-										handleRenameKeyDown={handleRenameKeyDown}
-										handleRenameInputMouseDown={handleRenameInputMouseDown}
-										isProcessing={isProcessing}
-									/>
-								))}
-							</div>
-						)}
-					</div>
-				</ContextMenuTrigger>
-				{config.enableCreate && (
-					<ContextMenuContent>
-						<ContextMenuItem onClick={() => handleCreateFile()}>
-							<FilePlus className="mr-2 h-4 w-4" />
-							New File
-						</ContextMenuItem>
-						<ContextMenuItem onClick={() => handleCreateFolder()}>
-							<FolderPlus className="mr-2 h-4 w-4" />
-							New Folder
-						</ContextMenuItem>
-					</ContextMenuContent>
+			<div
+				className={cn(
+					"flex-1 overflow-auto",
+					dragOverFolder === "" &&
+						"bg-primary/10 outline outline-2 outline-primary outline-dashed",
 				)}
-			</ContextMenu>
+				onDragOver={(e) => handleDragOver(e)}
+				onDragLeave={handleDragLeave}
+				onDrop={(e) => handleDrop(e)}
+			>
+				{isLoading && files.length === 0 && !creatingItem ? (
+					<div className="flex h-full items-center justify-center">
+						<div className="text-sm text-muted-foreground">
+							{config.loadingMessage}
+						</div>
+					</div>
+				) : files.length === 0 && !creatingItem ? (
+					<div className="flex h-full items-center justify-center p-4">
+						<div className="text-center text-sm text-muted-foreground">
+							<p>{config.emptyMessage}</p>
+							{config.enableCreate && (
+								<p className="mt-2 text-xs">
+									Use the toolbar to create files and folders
+								</p>
+							)}
+						</div>
+					</div>
+				) : (
+					<div className="space-y-1 p-2">
+						{/* Inline new item editor at root */}
+						{creatingItem && !creatingInFolder && (
+							<div className="flex items-center gap-2 rounded px-2 py-1 bg-muted/50">
+								<div className="w-4" />
+								{isProcessing ? (
+									<Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-primary" />
+								) : creatingItem === "folder" ? (
+									<Folder className="h-4 w-4 flex-shrink-0 text-primary" />
+								) : (
+									<File className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+								)}
+								<input
+									ref={inputRef}
+									type="text"
+									value={newItemName}
+									onChange={(e) => setNewItemName(e.target.value)}
+									onKeyDown={handleNewItemKeyDown}
+									onMouseDown={handleInputMouseDown}
+									placeholder={
+										creatingItem === "folder" ? "Folder name" : "File name"
+									}
+									disabled={isProcessing}
+									className="flex-1 bg-transparent text-sm outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+								/>
+							</div>
+						)}
+
+						{/* Existing files */}
+						{files.map((file) => (
+							<FileTreeItem
+								key={file.path}
+								file={file}
+								iconResolver={iconResolver}
+								config={config}
+								editor={editor}
+								onFileClick={handleFileClick}
+								onFolderToggle={handleFolderToggle}
+								onDelete={handleDelete}
+								onRename={handleRename}
+								onCreateFile={handleCreateFile}
+								onCreateFolder={handleCreateFolder}
+								isExpanded={isFolderExpanded(file.path)}
+								onDragStart={handleDragStart}
+								onDragOver={handleDragOver}
+								onDragLeave={handleDragLeave}
+								onDrop={handleDrop}
+								isDragOver={dragOverFolder === file.path}
+								creatingItem={creatingItem}
+								creatingInFolder={creatingInFolder}
+								newItemName={newItemName}
+								setNewItemName={setNewItemName}
+								inputRef={inputRef}
+								handleNewItemKeyDown={handleNewItemKeyDown}
+								handleInputMouseDown={handleInputMouseDown}
+								renamingFile={renamingFile}
+								renameValue={renameValue}
+								setRenameValue={setRenameValue}
+								renameInputRef={renameInputRef}
+								handleRenameKeyDown={handleRenameKeyDown}
+								handleRenameInputMouseDown={handleRenameInputMouseDown}
+								isProcessing={isProcessing}
+							/>
+						))}
+					</div>
+				)}
+			</div>
 
 			{/* Delete Confirmation Dialog */}
 			<AlertDialog
@@ -954,7 +938,13 @@ function FileTreeItem({
 					<ContextMenuTrigger asChild>
 						<button
 							draggable={canDrag}
-							onClick={() => (isFolder ? onFolderToggle(file) : onFileClick(file))}
+							onClick={() => {
+								if (isFolder) {
+									onFolderToggle(file);
+								} else {
+									onFileClick(file);
+								}
+							}}
 							onDragStart={canDrag ? (e) => onDragStart(e, file) : undefined}
 							onDragOver={(e) => {
 								if (isFolder) {
@@ -995,7 +985,7 @@ function FileTreeItem({
 							<span className="flex-1 truncate">{file.name}</span>
 						</button>
 					</ContextMenuTrigger>
-					<ContextMenuContent>
+					<ContextMenuContent className="z-[101]">
 						{isFolder && config.enableCreate && !isOrgContainer && (
 							<>
 								<ContextMenuItem onClick={() => onCreateFile(file.path)}>

@@ -82,10 +82,6 @@ export function ConfigDialog({ config, open, onClose }: ConfigDialogProps) {
 
 	useEffect(() => {
 		if (config) {
-			// Cast config to access org_id which may exist on the response
-			const configWithOrg = config as typeof config & {
-				org_id?: string | null;
-			};
 			form.reset({
 				key: config.key,
 				// For secrets, we don't show the actual value - user must enter new value to update
@@ -93,7 +89,7 @@ export function ConfigDialog({ config, open, onClose }: ConfigDialogProps) {
 					config.type === "secret" ? "" : String(config.value ?? ""),
 				type: config.type,
 				description: config.description ?? "",
-				organization_id: configWithOrg.org_id ?? null,
+				organization_id: config.org_id ?? null,
 			});
 		} else {
 			form.reset({

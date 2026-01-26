@@ -51,10 +51,22 @@ export function useExecutions(
 	});
 }
 
+/**
+ * Hook to fetch a single execution by ID
+ * @param executionId - The execution ID to fetch
+ * @param options - Options object with optional disablePolling flag
+ *
+ * Polling behavior:
+ * - Polls every 2s while execution is Pending/Running and polling is not disabled
+ * - Pass disablePolling: true when WebSocket is connected and execution is running
+ *   to avoid duplicate requests
+ */
 export function useExecution(
 	executionId: string | undefined,
-	disablePolling = false,
+	options: { disablePolling?: boolean } = {},
 ) {
+	const { disablePolling = false } = options;
+
 	return $api.useQuery(
 		"get",
 		"/api/executions/{execution_id}",
@@ -68,7 +80,23 @@ export function useExecution(
 			// The execution may be in Redis pending but not yet in PostgreSQL
 			retry: (failureCount, error) => {
 				// Only retry 404s up to 5 times (10 seconds total with 2s interval)
+				// Check for 404 in multiple error formats:
+				// - Error instance with message containing "404"
+				// - FastAPI HTTPException format: { detail: "...not found..." }
+				// - Generic object with detail property
+				let is404 = false;
 				if (error instanceof Error && error.message.includes("404")) {
+					is404 = true;
+				} else if (error && typeof error === "object" && "detail" in error) {
+					const detail = (error as Record<string, unknown>).detail;
+					if (
+						typeof detail === "string" &&
+						detail.toLowerCase().includes("not found")
+					) {
+						is404 = true;
+					}
+				}
+				if (is404) {
 					return failureCount < 5;
 				}
 				// Don't retry other errors
@@ -76,7 +104,7 @@ export function useExecution(
 			},
 			retryDelay: 2000, // Retry every 2 seconds
 			refetchInterval: (query) => {
-				// Disable polling if Web PubSub is handling updates
+				// Disable polling if WebSocket is handling updates
 				if (disablePolling) {
 					return false;
 				}

@@ -9,7 +9,6 @@ Provides real-time updates for:
 Uses Redis pub/sub for scalability across multiple API instances.
 """
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -20,6 +19,7 @@ import redis.asyncio as redis
 from fastapi import WebSocket
 
 from src.config import get_settings
+from src.core.redis_reconnect import ResilientPubSubListener
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,10 @@ class ConnectionManager:
 
     # Active WebSocket connections per channel
     connections: dict[str, set[WebSocket]] = field(default_factory=dict)
-    # Redis pub/sub connection
+    # Redis connection for publishing
     _redis: redis.Redis | None = None
-    _pubsub: redis.client.PubSub | None = None
-    _listener_task: asyncio.Task | None = None
+    # Resilient pub/sub listener for receiving messages
+    _pubsub_listener: ResilientPubSubListener | None = None
 
     async def connect(self, websocket: WebSocket, channels: list[str]) -> None:
         """
@@ -133,53 +133,30 @@ class ConnectionManager:
         """Initialize Redis connection and start listener."""
         settings = get_settings()
         try:
+            # Create Redis connection for publishing
             self._redis = redis.from_url(settings.redis_url)
-            pubsub = self._redis.pubsub()
-            self._pubsub = pubsub
 
-            # Subscribe to all bifrost channels
-            await pubsub.psubscribe("bifrost:*")
+            # Create resilient listener for receiving messages
+            async def on_message(channel: str, data: dict) -> None:
+                # Strip "bifrost:" prefix from channel
+                local_channel = channel.replace("bifrost:", "")
+                await self._send_local(local_channel, data)
 
-            # Start listener task
-            self._listener_task = asyncio.create_task(self._redis_listener())
-            logger.info("Redis pub/sub initialized")
+            self._pubsub_listener = ResilientPubSubListener(
+                redis_url=settings.redis_url,
+                patterns=["bifrost:*"],
+                on_message=on_message,
+            )
+            await self._pubsub_listener.start()
+            logger.info("Redis pub/sub initialized (with auto-reconnect)")
         except Exception as e:
             logger.warning(f"Failed to connect to Redis: {e}")
             self._redis = None
 
-    async def _redis_listener(self) -> None:
-        """Listen for messages from Redis and forward to local connections."""
-        if not self._pubsub:
-            return
-
-        try:
-            while True:
-                # Use get_message with timeout instead of blocking listen()
-                # This allows the task to check for cancellation periodically
-                message = await self._pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=0.5  # Check for cancellation every 500ms
-                )
-                if message and message["type"] == "pmessage":
-                    channel = message["channel"].decode().replace("bifrost:", "")
-                    data = json.loads(message["data"])
-                    await self._send_local(channel, data)
-        except asyncio.CancelledError:
-            logger.debug("Redis listener cancelled")
-        except Exception as e:
-            logger.error(f"Redis listener error: {e}")
-
     async def close(self) -> None:
         """Clean up connections."""
-        if self._listener_task:
-            self._listener_task.cancel()
-            try:
-                await self._listener_task
-            except asyncio.CancelledError:
-                pass
-
-        if self._pubsub:
-            await self._pubsub.close()
+        if self._pubsub_listener:
+            await self._pubsub_listener.stop()
 
         if self._redis:
             await self._redis.close()

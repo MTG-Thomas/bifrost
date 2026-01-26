@@ -45,11 +45,6 @@ import type { components } from "@/lib/v1";
 type ConfigType = components["schemas"]["ConfigResponse"];
 type Organization = components["schemas"]["OrganizationPublic"];
 
-// Extended type to include organization_id (supported by backend, pending type regeneration)
-type ConfigWithOrg = ConfigType & {
-	organization_id?: string | null;
-};
-
 export function Config() {
 	const { scope, isGlobalScope } = useOrgScope();
 	const { isPlatformAdmin } = useAuth();
@@ -61,7 +56,7 @@ export function Config() {
 	>();
 	const [isDialogOpen, setIsDialogOpen] = useState(false);
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-	const [configToDelete, setConfigToDelete] = useState<ConfigWithOrg | null>(
+	const [configToDelete, setConfigToDelete] = useState<ConfigType | null>(
 		null,
 	);
 	const [searchTerm, setSearchTerm] = useState("");
@@ -87,11 +82,8 @@ export function Config() {
 		return org?.name || orgId;
 	};
 
-	// Cast to extended type that includes organization_id (pending type regeneration)
-	const configsWithOrg = (configs || []) as ConfigWithOrg[];
-
 	// Apply search filter
-	const filteredConfigs = useSearch(configsWithOrg, searchTerm, [
+	const filteredConfigs = useSearch(configs || [], searchTerm, [
 		"key",
 		"value",
 		"type",
@@ -110,7 +102,7 @@ export function Config() {
 		setIsDialogOpen(true);
 	};
 
-	const handleDelete = (config: ConfigWithOrg) => {
+	const handleDelete = (config: ConfigType) => {
 		setConfigToDelete(config);
 		setDeleteDialogOpen(true);
 	};
@@ -263,15 +255,13 @@ export function Config() {
 								>
 									{isPlatformAdmin && (
 										<DataTableCell>
-											{config.organization_id ? (
+											{config.org_id ? (
 												<Badge
 													variant="outline"
 													className="text-xs"
 												>
 													<Building2 className="mr-1 h-3 w-3" />
-													{getOrgName(
-														config.organization_id,
-													)}
+													{getOrgName(config.org_id)}
 												</Badge>
 											) : (
 												<Badge
