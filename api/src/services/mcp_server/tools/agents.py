@@ -127,8 +127,8 @@ async def list_agents(context: Any) -> str:
                         "name": agent.name,
                         "description": agent.description,
                         "channels": agent.channels,
-                        "is_coding_mode": agent.is_coding_mode,
                         "is_active": agent.is_active,
+                        "llm_model": agent.llm_model,
                     }
                     for agent in agents
                 ],
@@ -239,7 +239,6 @@ async def get_agent(
                 "access_level": agent.access_level.value if agent.access_level else "role_based",
                 "organization_id": str(agent.organization_id) if agent.organization_id else None,
                 "is_active": agent.is_active,
-                "is_coding_mode": agent.is_coding_mode,
                 "is_system": agent.is_system,
                 "created_by": agent.created_by,
                 "created_at": agent.created_at.isoformat() if agent.created_at else None,
@@ -249,6 +248,9 @@ async def get_agent(
                 "role_ids": [str(r.id) for r in agent.roles] if agent.roles else [],
                 "knowledge_sources": agent.knowledge_sources or [],
                 "system_tools": agent.system_tools or [],
+                "llm_model": agent.llm_model,
+                "llm_max_tokens": agent.llm_max_tokens,
+                "llm_temperature": agent.llm_temperature,
             })
 
     except Exception as e:
@@ -274,7 +276,6 @@ async def get_agent(
                 "items": {"type": "string", "enum": ["chat", "voice", "teams", "slack"]},
                 "description": "Communication channels (default: ['chat'])",
             },
-            "is_coding_mode": {"type": "boolean", "description": "Enable coding mode with Claude Agent SDK"},
             "tool_ids": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -304,6 +305,18 @@ async def get_agent(
                 "type": "string",
                 "description": "Organization UUID (overrides context.org_id when scope='organization')",
             },
+            "llm_model": {
+                "type": "string",
+                "description": "Override model (leave empty for global config)",
+            },
+            "llm_max_tokens": {
+                "type": "integer",
+                "description": "Override max tokens (leave empty for global config)",
+            },
+            "llm_temperature": {
+                "type": "number",
+                "description": "Override temperature 0.0-2.0 (leave empty for global config)",
+            },
         },
         "required": ["name", "system_prompt"],
     },
@@ -314,13 +327,15 @@ async def create_agent(
     system_prompt: str,
     description: str | None = None,
     channels: list[str] | None = None,
-    is_coding_mode: bool = False,
     tool_ids: list[str] | None = None,
     delegated_agent_ids: list[str] | None = None,
     knowledge_sources: list[str] | None = None,
     system_tools: list[str] | None = None,
     scope: str = "organization",
     organization_id: str | None = None,
+    llm_model: str | None = None,
+    llm_max_tokens: int | None = None,
+    llm_temperature: float | None = None,
 ) -> str:
     """Create a new agent.
 
@@ -330,7 +345,6 @@ async def create_agent(
         system_prompt: System prompt that defines the agent's behavior
         description: Optional description of what the agent does
         channels: Communication channels (default: ['chat'])
-        is_coding_mode: Enable coding mode with Claude Agent SDK
         tool_ids: List of workflow IDs to assign as tools
         delegated_agent_ids: List of agent IDs this agent can delegate to
         knowledge_sources: List of knowledge namespaces this agent can search
@@ -405,9 +419,11 @@ async def create_agent(
                 access_level=AgentAccessLevel.ROLE_BASED,
                 organization_id=effective_org_id,
                 is_active=True,
-                is_coding_mode=is_coding_mode,
                 knowledge_sources=knowledge_sources or [],
                 system_tools=system_tools or [],
+                llm_model=llm_model,
+                llm_max_tokens=llm_max_tokens,
+                llm_temperature=llm_temperature,
                 created_by=context.user_email,
                 created_at=now,
                 updated_at=now,
@@ -483,7 +499,6 @@ async def create_agent(
                 "name": agent.name,
                 "description": agent.description,
                 "channels": agent.channels,
-                "is_coding_mode": agent.is_coding_mode,
                 "tool_count": len(tools),
                 "delegated_agent_count": len(delegated_agents),
             })
@@ -513,7 +528,6 @@ async def create_agent(
                 "description": "New communication channels",
             },
             "is_active": {"type": "boolean", "description": "Enable/disable the agent"},
-            "is_coding_mode": {"type": "boolean", "description": "Enable/disable coding mode"},
             "tool_ids": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -534,6 +548,18 @@ async def create_agent(
                 "items": {"type": "string"},
                 "description": "New list of system tool names",
             },
+            "llm_model": {
+                "type": "string",
+                "description": "Override model (empty string to clear)",
+            },
+            "llm_max_tokens": {
+                "type": "integer",
+                "description": "Override max tokens (0 to clear)",
+            },
+            "llm_temperature": {
+                "type": "number",
+                "description": "Override temperature 0.0-2.0 (-1 to clear)",
+            },
         },
         "required": ["agent_id"],
     },
@@ -546,11 +572,13 @@ async def update_agent(
     system_prompt: str | None = None,
     channels: list[str] | None = None,
     is_active: bool | None = None,
-    is_coding_mode: bool | None = None,
     tool_ids: list[str] | None = None,
     delegated_agent_ids: list[str] | None = None,
     knowledge_sources: list[str] | None = None,
     system_tools: list[str] | None = None,
+    llm_model: str | None = None,
+    llm_max_tokens: int | None = None,
+    llm_temperature: float | None = None,
 ) -> str:
     """Update an existing agent.
 
@@ -562,7 +590,6 @@ async def update_agent(
         system_prompt: New system prompt
         channels: New communication channels
         is_active: Enable/disable the agent
-        is_coding_mode: Enable/disable coding mode
         tool_ids: New list of workflow IDs (replaces existing)
         delegated_agent_ids: New list of delegated agent IDs (replaces existing)
         knowledge_sources: New list of knowledge namespaces
@@ -652,10 +679,6 @@ async def update_agent(
                 agent.is_active = is_active
                 updates_made.append("is_active")
 
-            if is_coding_mode is not None:
-                agent.is_coding_mode = is_coding_mode
-                updates_made.append("is_coding_mode")
-
             if knowledge_sources is not None:
                 agent.knowledge_sources = knowledge_sources
                 updates_made.append("knowledge_sources")
@@ -663,6 +686,18 @@ async def update_agent(
             if system_tools is not None:
                 agent.system_tools = system_tools
                 updates_made.append("system_tools")
+
+            if llm_model is not None:
+                agent.llm_model = llm_model if llm_model else None
+                updates_made.append("llm_model")
+
+            if llm_max_tokens is not None:
+                agent.llm_max_tokens = llm_max_tokens if llm_max_tokens > 0 else None
+                updates_made.append("llm_max_tokens")
+
+            if llm_temperature is not None:
+                agent.llm_temperature = llm_temperature if llm_temperature >= 0 else None
+                updates_made.append("llm_temperature")
 
             agent.updated_at = datetime.now(tz=timezone.utc)
 
