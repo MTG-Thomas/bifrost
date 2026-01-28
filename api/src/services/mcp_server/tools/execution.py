@@ -4,14 +4,16 @@ Execution MCP Tools
 Tools for listing and viewing workflow execution history.
 """
 
-import json
 import logging
 from typing import Any
 from uuid import UUID
 
+from mcp.types import CallToolResult
+
 from src.core.auth import UserPrincipal
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
 
@@ -69,7 +71,7 @@ async def list_executions(
     workflow_name: str | None = None,
     status: str | None = None,
     limit: int = 20,
-) -> str:
+) -> CallToolResult:
     """List recent workflow executions."""
     from src.core.database import get_db_context
     from src.repositories.executions import ExecutionRepository
@@ -98,7 +100,7 @@ async def list_executions(
             )
 
             if not executions:
-                return json.dumps({"executions": [], "count": 0})
+                return success_result("No executions found", {"executions": [], "count": 0})
 
             execution_list = []
             for ex in executions:
@@ -112,11 +114,12 @@ async def list_executions(
                 }
                 execution_list.append(execution_data)
 
-            return json.dumps({"executions": execution_list, "count": len(execution_list)})
+            display_text = f"Found {len(execution_list)} execution(s)"
+            return success_result(display_text, {"executions": execution_list, "count": len(execution_list)})
 
     except Exception as e:
         logger.exception(f"Error listing executions via MCP: {e}")
-        return json.dumps({"error": f"Error listing executions: {str(e)}"})
+        return error_result(f"Error listing executions: {str(e)}")
 
 
 @system_tool(
@@ -137,7 +140,7 @@ async def list_executions(
         "required": ["execution_id"],
     },
 )
-async def get_execution(context: Any, execution_id: str) -> str:
+async def get_execution(context: Any, execution_id: str) -> CallToolResult:
     """Get details and logs for a specific workflow execution."""
     from src.core.database import get_db_context
     from src.repositories.executions import ExecutionRepository
@@ -145,7 +148,7 @@ async def get_execution(context: Any, execution_id: str) -> str:
     logger.info(f"MCP get_execution called with id={execution_id}")
 
     if not execution_id:
-        return json.dumps({"error": "execution_id is required"})
+        return error_result("execution_id is required")
 
     try:
         async with get_db_context() as db:
@@ -161,11 +164,11 @@ async def get_execution(context: Any, execution_id: str) -> str:
             )
 
             if error_code == "NotFound":
-                return json.dumps({"error": f"Execution not found: {execution_id}"})
+                return error_result(f"Execution not found: {execution_id}")
             if error_code == "Forbidden":
-                return json.dumps({"error": "Access denied"})
+                return error_result("Access denied")
             if not execution:
-                return json.dumps({"error": f"Execution not found: {execution_id}"})
+                return error_result(f"Execution not found: {execution_id}")
 
             # Build execution data from WorkflowExecution pydantic model
             execution_data: dict[str, Any] = {
@@ -188,8 +191,11 @@ async def get_execution(context: Any, execution_id: str) -> str:
             else:
                 execution_data["logs"] = []
 
-            return json.dumps(execution_data, default=str)
+            workflow_name = execution.workflow_name or "Unknown"
+            status_str = execution.status.value if hasattr(execution.status, "value") else str(execution.status)
+            display_text = f"Execution: {workflow_name} ({status_str})"
+            return success_result(display_text, execution_data)
 
     except Exception as e:
         logger.exception(f"Error getting execution via MCP: {e}")
-        return json.dumps({"error": f"Error getting execution: {str(e)}"})
+        return error_result(f"Error getting execution: {str(e)}")

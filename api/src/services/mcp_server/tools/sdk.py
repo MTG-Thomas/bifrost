@@ -9,8 +9,11 @@ import inspect
 import logging
 from typing import Any
 
+from mcp.types import CallToolResult
+
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +296,7 @@ def _generate_models_docs() -> str:
     is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def get_sdk_schema(context: Any) -> str:  # noqa: ARG001
+async def get_sdk_schema(context: Any) -> CallToolResult:  # noqa: ARG001
     """Get SDK documentation generated from actual SDK source code."""
     try:
         # Import SDK modules
@@ -358,8 +361,9 @@ async def get_sdk_schema(context: Any) -> str:  # noqa: ARG001
         # Generate models docs
         lines.append(_generate_models_docs())
 
-        return "\n".join(lines)
+        schema_doc = "\n".join(lines)
+        return success_result("Bifrost SDK documentation", {"schema": schema_doc})
 
     except ImportError as e:
         logger.exception(f"Error importing SDK modules: {e}")
-        return f"Error generating SDK documentation: {e}"
+        return error_result(f"Error generating SDK documentation: {e}")

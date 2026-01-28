@@ -7,13 +7,15 @@ plus schema documentation.
 Applications use code-based files (TSX/TypeScript) stored in app_files table.
 """
 
-import json
 import logging
 from typing import Any
+
+from mcp.types import CallToolResult
 
 from src.core.pubsub import publish_app_draft_update, publish_app_published
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
     default_enabled_for_coding_agent=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def list_apps(context: Any) -> str:
+async def list_apps(context: Any) -> CallToolResult:
     """List all applications with file summaries."""
     from sqlalchemy import func, select
 
@@ -75,11 +77,12 @@ async def list_apps(context: Any) -> str:
                     "url": f"/apps/{app.slug}",
                 })
 
-            return json.dumps({"apps": apps_data, "count": len(apps_data)})
+            display_text = f"Found {len(apps_data)} application(s)"
+            return success_result(display_text, {"apps": apps_data, "count": len(apps_data)})
 
     except Exception as e:
         logger.exception(f"Error listing apps via MCP: {e}")
-        return json.dumps({"error": f"Error listing apps: {str(e)}"})
+        return error_result(f"Error listing apps: {str(e)}")
 
 
 @system_tool(
@@ -121,7 +124,7 @@ async def create_app(
     slug: str | None = None,
     scope: str = "organization",
     organization_id: str | None = None,
-) -> str:
+) -> CallToolResult:
     """
     Create a new application with scaffold files.
 
@@ -133,7 +136,7 @@ async def create_app(
         organization_id: Override context.org_id when scope='organization'
 
     Returns:
-        Success message with app details, or error message
+        CallToolResult with app details
     """
     import re
     from uuid import UUID, uuid4
@@ -146,11 +149,11 @@ async def create_app(
     logger.info(f"MCP create_app called with name={name}, scope={scope}")
 
     if not name:
-        return json.dumps({"error": "name is required"})
+        return error_result("name is required")
 
     # Validate scope parameter
     if scope not in ("global", "organization"):
-        return json.dumps({"error": "scope must be 'global' or 'organization'"})
+        return error_result("scope must be 'global' or 'organization'")
 
     # Determine effective organization_id based on scope
     effective_org_id: UUID | None = None
@@ -163,11 +166,11 @@ async def create_app(
             try:
                 effective_org_id = UUID(organization_id)
             except ValueError:
-                return json.dumps({"error": f"organization_id '{organization_id}' is not a valid UUID"})
+                return error_result(f"organization_id '{organization_id}' is not a valid UUID")
         elif context.org_id:
             effective_org_id = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
         else:
-            return json.dumps({"error": "organization_id is required when scope='organization' and no context org_id is set"})
+            return error_result("organization_id is required when scope='organization' and no context org_id is set")
 
     # Generate slug from name if not provided
     if not slug:
@@ -184,7 +187,7 @@ async def create_app(
 
             existing = await db.execute(query)
             if existing.scalar_one_or_none():
-                return json.dumps({"error": f"Application with slug '{slug}' already exists"})
+                return error_result(f"Application with slug '{slug}' already exists")
 
             # Create application
             app = Application(
@@ -249,7 +252,8 @@ export default function RootLayout() {
 
             await db.commit()
 
-            return json.dumps({
+            display_text = f"Created application: {app.name}"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(app.id),
                 "name": app.name,
@@ -261,7 +265,7 @@ export default function RootLayout() {
 
     except Exception as e:
         logger.exception(f"Error creating app via MCP: {e}")
-        return json.dumps({"error": f"Error creating app: {str(e)}"})
+        return error_result(f"Error creating app: {str(e)}")
 
 
 @system_tool(
@@ -286,7 +290,7 @@ async def get_app(
     context: Any,
     app_id: str | None = None,
     app_slug: str | None = None,
-) -> str:
+) -> CallToolResult:
     """
     Get application metadata and file list.
 
@@ -302,7 +306,7 @@ async def get_app(
     logger.info(f"MCP get_app called with id={app_id}, slug={app_slug}")
 
     if not app_id and not app_slug:
-        return json.dumps({"error": "Either app_id or app_slug is required"})
+        return error_result("Either app_id or app_slug is required")
 
     try:
         async with get_db_context() as db:
@@ -312,7 +316,7 @@ async def get_app(
                 try:
                     query = query.where(Application.id == UUID(app_id))
                 except ValueError:
-                    return json.dumps({"error": f"Invalid app_id format: {app_id}"})
+                    return error_result(f"Invalid app_id format: {app_id}")
             else:
                 query = query.where(Application.slug == app_slug)
 
@@ -327,7 +331,7 @@ async def get_app(
             app = result.scalar_one_or_none()
 
             if not app:
-                return json.dumps({"error": f"Application not found: {app_id or app_slug}"})
+                return error_result(f"Application not found: {app_id or app_slug}")
 
             # List files from draft version
             files = []
@@ -340,7 +344,7 @@ async def get_app(
                 files_result = await db.execute(files_query)
                 files = list(files_result.scalars().all())
 
-            return json.dumps({
+            app_data = {
                 "id": str(app.id),
                 "name": app.name,
                 "slug": app.slug,
@@ -357,11 +361,14 @@ async def get_app(
                     }
                     for f in files
                 ],
-            })
+            }
+
+            display_text = f"Application: {app.name}"
+            return success_result(display_text, app_data)
 
     except Exception as e:
         logger.exception(f"Error getting app via MCP: {e}")
-        return json.dumps({"error": f"Error getting app: {str(e)}"})
+        return error_result(f"Error getting app: {str(e)}")
 
 
 @system_tool(
@@ -391,7 +398,7 @@ async def update_app(
     name: str | None = None,
     description: str | None = None,
     navigation: dict[str, Any] | None = None,
-) -> str:
+) -> CallToolResult:
     """
     Update application metadata.
 
@@ -402,7 +409,7 @@ async def update_app(
         navigation: Navigation configuration dict
 
     Returns:
-        Success message with updated fields, or error message
+        CallToolResult with updated fields
     """
     from uuid import UUID
 
@@ -416,7 +423,7 @@ async def update_app(
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
+        return error_result(f"Invalid app_id format: {app_id}")
 
     try:
         async with get_db_context() as db:
@@ -432,7 +439,7 @@ async def update_app(
             app = result.scalar_one_or_none()
 
             if not app:
-                return json.dumps({"error": f"Application not found: {app_id}"})
+                return error_result(f"Application not found: {app_id}")
 
             updates_made = []
 
@@ -456,12 +463,10 @@ async def update_app(
                     app.navigation = validated_nav.model_dump(exclude_none=True)
                     updates_made.append("navigation")
                 except ValidationError as e:
-                    return json.dumps({
-                        "error": f"Invalid navigation configuration: {e}"
-                    })
+                    return error_result(f"Invalid navigation configuration: {e}")
 
             if not updates_made:
-                return json.dumps({"error": "No updates specified"})
+                return error_result("No updates specified")
 
             await db.commit()
 
@@ -474,7 +479,8 @@ async def update_app(
                 entity_id=app_id,
             )
 
-            return json.dumps({
+            display_text = f"Updated application: {app.name} ({', '.join(updates_made)})"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(app.id),
                 "name": app.name,
@@ -483,7 +489,7 @@ async def update_app(
 
     except Exception as e:
         logger.exception(f"Error updating app via MCP: {e}")
-        return json.dumps({"error": f"Error updating app: {str(e)}"})
+        return error_result(f"Error updating app: {str(e)}")
 
 
 @system_tool(
@@ -501,7 +507,7 @@ async def update_app(
         "required": ["app_id"],
     },
 )
-async def publish_app(context: Any, app_id: str) -> str:
+async def publish_app(context: Any, app_id: str) -> CallToolResult:
     """Publish all draft files to live.
 
     Creates a new version by copying all files from the draft version,
@@ -521,7 +527,7 @@ async def publish_app(context: Any, app_id: str) -> str:
     try:
         app_uuid = UUID(app_id)
     except ValueError:
-        return json.dumps({"error": f"Invalid app_id format: {app_id}"})
+        return error_result(f"Invalid app_id format: {app_id}")
 
     try:
         async with get_db_context() as db:
@@ -534,10 +540,10 @@ async def publish_app(context: Any, app_id: str) -> str:
             app = result.scalar_one_or_none()
 
             if not app:
-                return json.dumps({"error": f"Application not found: {app_id}"})
+                return error_result(f"Application not found: {app_id}")
 
             if not app.draft_version_id:
-                return json.dumps({"error": "Application has no draft version to publish"})
+                return error_result("Application has no draft version to publish")
 
             # Get draft version with files
             draft_version_query = (
@@ -549,7 +555,7 @@ async def publish_app(context: Any, app_id: str) -> str:
             draft_version = draft_result.scalar_one_or_none()
 
             if not draft_version or not draft_version.files:
-                return json.dumps({"error": "No files in draft version to publish"})
+                return error_result("No files in draft version to publish")
 
             # Create new version for the published copy
             new_version = AppVersion(application_id=app.id)
@@ -580,7 +586,8 @@ async def publish_app(context: Any, app_id: str) -> str:
                 new_version_id=str(new_version.id),
             )
 
-            return json.dumps({
+            display_text = f"Published application: {app.name} ({len(draft_version.files)} files)"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(app.id),
                 "name": app.name,
@@ -591,7 +598,7 @@ async def publish_app(context: Any, app_id: str) -> str:
 
     except Exception as e:
         logger.exception(f"Error publishing app via MCP: {e}")
-        return json.dumps({"error": f"Error publishing app: {str(e)}"})
+        return error_result(f"Error publishing app: {str(e)}")
 
 
 @system_tool(
@@ -603,7 +610,7 @@ async def publish_app(context: Any, app_id: str) -> str:
     is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def get_app_schema(context: Any) -> str:  # noqa: ARG001
+async def get_app_schema(context: Any) -> CallToolResult:  # noqa: ARG001
     """Get application schema documentation for code-based apps."""
     from src.models.contracts.applications import (
         AppFileCreate,
@@ -810,7 +817,8 @@ export default function ClientsPage() {
 
 """
 
-    return overview + app_models + "\n\n" + file_models
+    schema_doc = overview + app_models + "\n\n" + file_models
+    return success_result("App Builder schema documentation", {"schema": schema_doc})
 
 
 # End of apps.py

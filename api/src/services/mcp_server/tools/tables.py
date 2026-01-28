@@ -5,13 +5,15 @@ Tools for listing, getting, creating, and updating tables.
 Tables are flexible document stores scoped to global, organization, or application level.
 """
 
-import json
 import logging
 from typing import Any
 from uuid import UUID, uuid4
 
+from mcp.types import CallToolResult
+
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,7 @@ logger = logging.getLogger(__name__)
 async def list_tables(
     context: Any,
     scope: str | None = None,
-) -> str:
+) -> CallToolResult:
     """List tables with org filtering for non-admins."""
     from sqlalchemy import select
 
@@ -91,11 +93,12 @@ async def list_tables(
                     "created_at": table.created_at.isoformat() if table.created_at else None,
                 })
 
-            return json.dumps({"tables": tables_data, "count": len(tables_data)})
+            display_text = f"Found {len(tables_data)} table(s)"
+            return success_result(display_text, {"tables": tables_data, "count": len(tables_data)})
 
     except Exception as e:
         logger.exception(f"Error listing tables via MCP: {e}")
-        return json.dumps({"error": f"Error listing tables: {str(e)}"})
+        return error_result(f"Error listing tables: {str(e)}")
 
 
 @system_tool(
@@ -116,7 +119,7 @@ async def list_tables(
 async def get_table(
     context: Any,
     table_id: str | None = None,
-) -> str:
+) -> CallToolResult:
     """Get table details including schema."""
     from sqlalchemy import func, select
 
@@ -126,12 +129,12 @@ async def get_table(
     logger.info(f"MCP get_table called with id={table_id}")
 
     if not table_id:
-        return json.dumps({"error": "table_id is required"})
+        return error_result("table_id is required")
 
     try:
         table_uuid = UUID(table_id)
     except ValueError:
-        return json.dumps({"error": f"Invalid table_id format: {table_id}"})
+        return error_result(f"Invalid table_id format: {table_id}")
 
     try:
         async with get_db_context() as db:
@@ -148,7 +151,7 @@ async def get_table(
             table = result.scalar_one_or_none()
 
             if not table:
-                return json.dumps({"error": f"Table not found: {table_id}"})
+                return error_result(f"Table not found: {table_id}")
 
             # Get document count
             count_query = (
@@ -172,7 +175,7 @@ async def get_table(
             if table.schema and isinstance(table.schema, dict):
                 columns = table.schema.get("columns", [])
 
-            return json.dumps({
+            table_data = {
                 "id": str(table.id),
                 "name": table.name,
                 "description": table.description,
@@ -185,11 +188,14 @@ async def get_table(
                 "created_at": table.created_at.isoformat() if table.created_at else None,
                 "updated_at": table.updated_at.isoformat() if table.updated_at else None,
                 "created_by": table.created_by,
-            })
+            }
+
+            display_text = f"Table: {table.name} ({document_count} documents)"
+            return success_result(display_text, table_data)
 
     except Exception as e:
         logger.exception(f"Error getting table via MCP: {e}")
-        return json.dumps({"error": f"Error getting table: {str(e)}"})
+        return error_result(f"Error getting table: {str(e)}")
 
 
 @system_tool(
@@ -201,7 +207,7 @@ async def get_table(
     is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def get_table_schema(context: Any) -> str:  # noqa: ARG001
+async def get_table_schema(context: Any) -> CallToolResult:  # noqa: ARG001
     """Return markdown documentation about table structure generated from Pydantic models."""
     from src.models.contracts.tables import TableCreate, TableUpdate
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -264,7 +270,8 @@ Each column can have these properties:
 When creating: Set `scope` to 'global', 'organization', or 'application'
 """
 
-    return model_docs + context_docs
+    schema_doc = model_docs + context_docs
+    return success_result("Table schema documentation", {"schema": schema_doc})
 
 
 @system_tool(
@@ -319,7 +326,7 @@ async def create_table(
     organization_id: str | None = None,
     application_id: str | None = None,
     columns: list[dict[str, Any]] | None = None,
-) -> str:
+) -> CallToolResult:
     """Create a new table with explicit scope."""
     from sqlalchemy import select
 
@@ -329,7 +336,7 @@ async def create_table(
     logger.info(f"MCP create_table called with name={name}, scope={scope}")
 
     if not name:
-        return json.dumps({"error": "name is required"})
+        return error_result("name is required")
 
     # Validate scope parameters
     if scope == "organization":
@@ -338,16 +345,16 @@ async def create_table(
             if context.org_id:
                 organization_id = str(context.org_id)
             else:
-                return json.dumps({"error": "organization_id is required for organization scope"})
+                return error_result("organization_id is required for organization scope")
     elif scope == "application":
         if not application_id:
-            return json.dumps({"error": "application_id is required for application scope"})
+            return error_result("application_id is required for application scope")
         if not organization_id:
-            return json.dumps({"error": "organization_id is required for application scope"})
+            return error_result("organization_id is required for application scope")
     elif scope == "global":
         # Global tables can only be created by platform admins
         if not context.is_platform_admin:
-            return json.dumps({"error": "Only platform admins can create global tables"})
+            return error_result("Only platform admins can create global tables")
         organization_id = None
         application_id = None
 
@@ -359,18 +366,18 @@ async def create_table(
         try:
             org_uuid = UUID(organization_id)
         except ValueError:
-            return json.dumps({"error": f"Invalid organization_id format: {organization_id}"})
+            return error_result(f"Invalid organization_id format: {organization_id}")
 
     if application_id:
         try:
             app_uuid = UUID(application_id)
         except ValueError:
-            return json.dumps({"error": f"Invalid application_id format: {application_id}"})
+            return error_result(f"Invalid application_id format: {application_id}")
 
     # Non-admins can only create tables in their own org
     if not context.is_platform_admin and context.org_id:
         if org_uuid and org_uuid != context.org_id:
-            return json.dumps({"error": "Cannot create tables in other organizations"})
+            return error_result("Cannot create tables in other organizations")
 
     try:
         async with get_db_context() as db:
@@ -388,7 +395,7 @@ async def create_table(
 
             existing = await db.execute(query)
             if existing.scalar_one_or_none():
-                return json.dumps({"error": f"Table with name '{name}' already exists in this scope"})
+                return error_result(f"Table with name '{name}' already exists in this scope")
 
             # Build schema from columns
             schema: dict[str, Any] | None = None
@@ -408,7 +415,8 @@ async def create_table(
             db.add(table)
             await db.commit()
 
-            return json.dumps({
+            display_text = f"Created table: {table.name}"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(table.id),
                 "name": table.name,
@@ -419,7 +427,7 @@ async def create_table(
 
     except Exception as e:
         logger.exception(f"Error creating table via MCP: {e}")
-        return json.dumps({"error": f"Error creating table: {str(e)}"})
+        return error_result(f"Error creating table: {str(e)}")
 
 
 @system_tool(
@@ -469,7 +477,7 @@ async def update_table(
     scope: str | None = None,
     organization_id: str | None = None,
     columns: list[dict[str, Any]] | None = None,
-) -> str:
+) -> CallToolResult:
     """Update table properties."""
     from sqlalchemy import select
 
@@ -479,12 +487,12 @@ async def update_table(
     logger.info(f"MCP update_table called with id={table_id}")
 
     if not table_id:
-        return json.dumps({"error": "table_id is required"})
+        return error_result("table_id is required")
 
     try:
         table_uuid = UUID(table_id)
     except ValueError:
-        return json.dumps({"error": f"Invalid table_id format: {table_id}"})
+        return error_result(f"Invalid table_id format: {table_id}")
 
     try:
         async with get_db_context() as db:
@@ -501,7 +509,7 @@ async def update_table(
             table = result.scalar_one_or_none()
 
             if not table:
-                return json.dumps({"error": f"Table not found: {table_id}"})
+                return error_result(f"Table not found: {table_id}")
 
             updates_made = []
 
@@ -517,7 +525,7 @@ async def update_table(
             if scope is not None:
                 # Validate scope change permissions
                 if scope == "global" and not context.is_platform_admin:
-                    return json.dumps({"error": "Only platform admins can set global scope"})
+                    return error_result("Only platform admins can set global scope")
 
                 if scope == "global":
                     table.organization_id = None
@@ -528,17 +536,17 @@ async def update_table(
                         try:
                             table.organization_id = UUID(organization_id)
                         except ValueError:
-                            return json.dumps({"error": f"Invalid organization_id format: {organization_id}"})
+                            return error_result(f"Invalid organization_id format: {organization_id}")
                     elif not table.organization_id:
                         # Default to context org_id
                         if context.org_id:
                             table.organization_id = context.org_id
                         else:
-                            return json.dumps({"error": "organization_id required for organization scope"})
+                            return error_result("organization_id required for organization scope")
                     table.application_id = None
                     updates_made.append("scope")
                 elif scope == "application":
-                    return json.dumps({"error": "Cannot change to application scope via update_table. Create a new table instead."})
+                    return error_result("Cannot change to application scope via update_table. Create a new table instead.")
 
             if columns is not None:
                 if table.schema is None:
@@ -547,7 +555,7 @@ async def update_table(
                 updates_made.append("columns")
 
             if not updates_made:
-                return json.dumps({"error": "No updates specified"})
+                return error_result("No updates specified")
 
             await db.commit()
 
@@ -559,7 +567,8 @@ async def update_table(
             else:
                 current_scope = "global"
 
-            return json.dumps({
+            display_text = f"Updated table: {table.name} ({', '.join(updates_made)})"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(table.id),
                 "name": table.name,
@@ -569,4 +578,4 @@ async def update_table(
 
     except Exception as e:
         logger.exception(f"Error updating table via MCP: {e}")
-        return json.dumps({"error": f"Error updating table: {str(e)}"})
+        return error_result(f"Error updating table: {str(e)}")

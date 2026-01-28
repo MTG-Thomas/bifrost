@@ -4,15 +4,17 @@ Agent MCP Tools
 Tools for listing, creating, updating, and managing AI agents.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 from uuid import uuid4
 
+from mcp.types import CallToolResult
+
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
 
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
     is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def get_agent_schema(context: Any) -> str:  # noqa: ARG001
+async def get_agent_schema(context: Any) -> CallToolResult:  # noqa: ARG001
     """Get agent schema documentation generated from Pydantic models."""
     from src.models.contracts.agents import AgentCreate, AgentUpdate
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -70,7 +72,8 @@ async def get_agent_schema(context: Any) -> str:  # noqa: ARG001
 - `delete_agent` - Soft-delete an agent (deactivate)
 """
 
-    return model_docs + channels_doc
+    schema_doc = model_docs + channels_doc
+    return success_result("Agent schema documentation", {"schema": schema_doc})
 
 
 # ==================== LIST/GET TOOLS ====================
@@ -84,7 +87,7 @@ async def get_agent_schema(context: Any) -> str:  # noqa: ARG001
     default_enabled_for_coding_agent=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def list_agents(context: Any) -> str:
+async def list_agents(context: Any) -> CallToolResult:
     """List all agents."""
     from src.core.database import get_db_context
     from src.core.org_filter import OrgFilterType
@@ -120,24 +123,24 @@ async def list_agents(context: Any) -> str:
                 # Regular users use list_agents with built-in cascade + role-based access
                 agents = await repo.list_agents(active_only=True)
 
-            return json.dumps({
-                "agents": [
-                    {
-                        "id": str(agent.id),
-                        "name": agent.name,
-                        "description": agent.description,
-                        "channels": agent.channels,
-                        "is_active": agent.is_active,
-                        "llm_model": agent.llm_model,
-                    }
-                    for agent in agents
-                ],
-                "count": len(agents),
-            })
+            agents_data = [
+                {
+                    "id": str(agent.id),
+                    "name": agent.name,
+                    "description": agent.description,
+                    "channels": agent.channels,
+                    "is_active": agent.is_active,
+                    "llm_model": agent.llm_model,
+                }
+                for agent in agents
+            ]
+
+            display_text = f"Found {len(agents_data)} agent(s)"
+            return success_result(display_text, {"agents": agents_data, "count": len(agents_data)})
 
     except Exception as e:
         logger.exception(f"Error listing agents via MCP: {e}")
-        return json.dumps({"error": f"Error listing agents: {str(e)}"})
+        return error_result(f"Error listing agents: {str(e)}")
 
 
 @system_tool(
@@ -159,7 +162,7 @@ async def get_agent(
     context: Any,
     agent_id: str | None = None,
     agent_name: str | None = None,
-) -> str:
+) -> CallToolResult:
     """Get detailed information about a specific agent.
 
     Args:
@@ -168,7 +171,7 @@ async def get_agent(
         agent_name: Agent name (alternative to ID)
 
     Returns:
-        JSON with agent details
+        CallToolResult with agent details
     """
     from sqlalchemy import or_, select
     from sqlalchemy.orm import selectinload
@@ -179,7 +182,7 @@ async def get_agent(
     logger.info(f"MCP get_agent called: agent_id={agent_id}, agent_name={agent_name}")
 
     if not agent_id and not agent_name:
-        return json.dumps({"error": "Either agent_id or agent_name is required"})
+        return error_result("Either agent_id or agent_name is required")
 
     try:
         async with get_db_context() as db:
@@ -195,7 +198,7 @@ async def get_agent(
                 try:
                     uuid_id = UUID(agent_id)
                 except ValueError:
-                    return json.dumps({"error": f"'{agent_id}' is not a valid UUID"})
+                    return error_result(f"'{agent_id}' is not a valid UUID")
                 query = query.where(Agent.id == uuid_id)
                 # Apply org scoping for non-admins (cascade filter for ID lookups)
                 if not context.is_platform_admin and context.org_id:
@@ -228,9 +231,9 @@ async def get_agent(
 
             if not agent:
                 identifier = agent_id or agent_name
-                return json.dumps({"error": f"Agent '{identifier}' not found. Use list_agents to see available agents."})
+                return error_result(f"Agent '{identifier}' not found. Use list_agents to see available agents.")
 
-            return json.dumps({
+            agent_data = {
                 "id": str(agent.id),
                 "name": agent.name,
                 "description": agent.description,
@@ -251,11 +254,14 @@ async def get_agent(
                 "llm_model": agent.llm_model,
                 "llm_max_tokens": agent.llm_max_tokens,
                 "llm_temperature": agent.llm_temperature,
-            })
+            }
+
+            display_text = f"Agent: {agent.name}"
+            return success_result(display_text, agent_data)
 
     except Exception as e:
         logger.exception(f"Error getting agent via MCP: {e}")
-        return json.dumps({"error": f"Error getting agent: {str(e)}"})
+        return error_result(f"Error getting agent: {str(e)}")
 
 
 @system_tool(
@@ -336,7 +342,7 @@ async def create_agent(
     llm_model: str | None = None,
     llm_max_tokens: int | None = None,
     llm_temperature: float | None = None,
-) -> str:
+) -> CallToolResult:
     """Create a new agent.
 
     Args:
@@ -353,7 +359,7 @@ async def create_agent(
         organization_id: Override context.org_id when scope='organization'
 
     Returns:
-        JSON with created agent details
+        CallToolResult with created agent details
     """
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
@@ -366,24 +372,24 @@ async def create_agent(
 
     # Validate inputs
     if not name:
-        return json.dumps({"error": "name is required"})
+        return error_result("name is required")
     if not system_prompt:
-        return json.dumps({"error": "system_prompt is required"})
+        return error_result("system_prompt is required")
     if len(name) > 255:
-        return json.dumps({"error": "name must be 255 characters or less"})
+        return error_result("name must be 255 characters or less")
     if len(system_prompt) > 50000:
-        return json.dumps({"error": "system_prompt must be 50000 characters or less"})
+        return error_result("system_prompt must be 50000 characters or less")
 
     # Validate scope parameter
     if scope not in ("global", "organization"):
-        return json.dumps({"error": "scope must be 'global' or 'organization'"})
+        return error_result("scope must be 'global' or 'organization'")
 
     # Validate channels if provided
     valid_channels = {"chat", "voice", "teams", "slack"}
     if channels:
         invalid_channels = set(channels) - valid_channels
         if invalid_channels:
-            return json.dumps({"error": f"Invalid channels: {list(invalid_channels)}. Valid options: {list(valid_channels)}"})
+            return error_result(f"Invalid channels: {list(invalid_channels)}. Valid options: {list(valid_channels)}")
     else:
         channels = ["chat"]
 
@@ -398,11 +404,11 @@ async def create_agent(
             try:
                 effective_org_id = UUID(organization_id)
             except ValueError:
-                return json.dumps({"error": f"organization_id '{organization_id}' is not a valid UUID"})
+                return error_result(f"organization_id '{organization_id}' is not a valid UUID")
         elif context.org_id:
             effective_org_id = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
         else:
-            return json.dumps({"error": "organization_id is required when scope='organization' and no context org_id is set"})
+            return error_result("organization_id is required when scope='organization' and no context org_id is set")
 
     try:
         async with get_db_context() as db:
@@ -493,7 +499,8 @@ async def create_agent(
 
             logger.info(f"Created agent {agent.id}: {agent.name}")
 
-            return json.dumps({
+            display_text = f"Created agent: {agent.name}"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(agent.id),
                 "name": agent.name,
@@ -505,7 +512,7 @@ async def create_agent(
 
     except Exception as e:
         logger.exception(f"Error creating agent via MCP: {e}")
-        return json.dumps({"error": f"Error creating agent: {str(e)}"})
+        return error_result(f"Error creating agent: {str(e)}")
 
 
 @system_tool(
@@ -579,7 +586,7 @@ async def update_agent(
     llm_model: str | None = None,
     llm_max_tokens: int | None = None,
     llm_temperature: float | None = None,
-) -> str:
+) -> CallToolResult:
     """Update an existing agent.
 
     Args:
@@ -596,7 +603,7 @@ async def update_agent(
         system_tools: New list of system tool names
 
     Returns:
-        JSON with update confirmation
+        CallToolResult with update confirmation
     """
     from sqlalchemy import delete, select
     from sqlalchemy.orm import selectinload
@@ -607,20 +614,20 @@ async def update_agent(
     logger.info(f"MCP update_agent called: agent_id={agent_id}")
 
     if not agent_id:
-        return json.dumps({"error": "agent_id is required"})
+        return error_result("agent_id is required")
 
     # Validate agent_id is a valid UUID
     try:
         uuid_id = UUID(agent_id)
     except ValueError:
-        return json.dumps({"error": f"'{agent_id}' is not a valid UUID"})
+        return error_result(f"'{agent_id}' is not a valid UUID")
 
     # Validate channels if provided
     valid_channels = {"chat", "voice", "teams", "slack"}
     if channels:
         invalid_channels = set(channels) - valid_channels
         if invalid_channels:
-            return json.dumps({"error": f"Invalid channels: {list(invalid_channels)}. Valid options: {list(valid_channels)}"})
+            return error_result(f"Invalid channels: {list(invalid_channels)}. Valid options: {list(valid_channels)}")
 
     try:
         async with get_db_context() as db:
@@ -637,27 +644,27 @@ async def update_agent(
             agent = result.scalar_one_or_none()
 
             if not agent:
-                return json.dumps({"error": f"Agent '{agent_id}' not found. Use list_agents to see available agents."})
+                return error_result(f"Agent '{agent_id}' not found. Use list_agents to see available agents.")
 
             # Check access for non-admins
             if not context.is_platform_admin:
                 if agent.organization_id:
                     if context.org_id and str(agent.organization_id) != str(context.org_id):
-                        return json.dumps({"error": "You don't have permission to update this agent."})
+                        return error_result("You don't have permission to update this agent.")
                 # Global agents can only be updated by admins
                 if agent.organization_id is None:
-                    return json.dumps({"error": "Only platform admins can update global agents."})
+                    return error_result("Only platform admins can update global agents.")
 
             # Check if system agent
             if agent.is_system:
-                return json.dumps({"error": "System agents cannot be updated."})
+                return error_result("System agents cannot be updated.")
 
             updates_made = []
 
             # Apply updates
             if name is not None:
                 if len(name) > 255:
-                    return json.dumps({"error": "name must be 255 characters or less"})
+                    return error_result("name must be 255 characters or less")
                 agent.name = name
                 updates_made.append("name")
 
@@ -667,7 +674,7 @@ async def update_agent(
 
             if system_prompt is not None:
                 if len(system_prompt) > 50000:
-                    return json.dumps({"error": "system_prompt must be 50000 characters or less"})
+                    return error_result("system_prompt must be 50000 characters or less")
                 agent.system_prompt = system_prompt
                 updates_made.append("system_prompt")
 
@@ -753,7 +760,7 @@ async def update_agent(
                 updates_made.append("delegated_agent_ids")
 
             if not updates_made:
-                return json.dumps({"error": "No updates provided. Specify at least one field to update."})
+                return error_result("No updates provided. Specify at least one field to update.")
 
             await db.flush()
 
@@ -771,7 +778,8 @@ async def update_agent(
 
             logger.info(f"Updated agent {agent.id}: {', '.join(updates_made)}")
 
-            return json.dumps({
+            display_text = f"Updated agent: {agent.name} ({', '.join(updates_made)})"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(agent.id),
                 "name": agent.name,
@@ -780,7 +788,7 @@ async def update_agent(
 
     except Exception as e:
         logger.exception(f"Error updating agent via MCP: {e}")
-        return json.dumps({"error": f"Error updating agent: {str(e)}"})
+        return error_result(f"Error updating agent: {str(e)}")
 
 
 @system_tool(
@@ -801,7 +809,7 @@ async def update_agent(
 async def delete_agent(
     context: Any,
     agent_id: str,
-) -> str:
+) -> CallToolResult:
     """Delete an agent (soft delete).
 
     Args:
@@ -809,7 +817,7 @@ async def delete_agent(
         agent_id: Agent UUID
 
     Returns:
-        JSON with deletion confirmation
+        CallToolResult with deletion confirmation
     """
     from sqlalchemy import select
 
@@ -819,13 +827,13 @@ async def delete_agent(
     logger.info(f"MCP delete_agent called: agent_id={agent_id}")
 
     if not agent_id:
-        return json.dumps({"error": "agent_id is required"})
+        return error_result("agent_id is required")
 
     # Validate agent_id is a valid UUID
     try:
         uuid_id = UUID(agent_id)
     except ValueError:
-        return json.dumps({"error": f"'{agent_id}' is not a valid UUID"})
+        return error_result(f"'{agent_id}' is not a valid UUID")
 
     try:
         async with get_db_context() as db:
@@ -835,20 +843,20 @@ async def delete_agent(
             agent = result.scalar_one_or_none()
 
             if not agent:
-                return json.dumps({"error": f"Agent '{agent_id}' not found. Use list_agents to see available agents."})
+                return error_result(f"Agent '{agent_id}' not found. Use list_agents to see available agents.")
 
             # Check access for non-admins
             if not context.is_platform_admin:
                 if agent.organization_id:
                     if context.org_id and str(agent.organization_id) != str(context.org_id):
-                        return json.dumps({"error": "You don't have permission to delete this agent."})
+                        return error_result("You don't have permission to delete this agent.")
                 # Global agents can only be deleted by admins
                 if agent.organization_id is None:
-                    return json.dumps({"error": "Only platform admins can delete global agents."})
+                    return error_result("Only platform admins can delete global agents.")
 
             # Prevent deletion of system agents
             if agent.is_system:
-                return json.dumps({"error": "System agents cannot be deleted."})
+                return error_result("System agents cannot be deleted.")
 
             # Soft delete
             agent.is_active = False
@@ -857,7 +865,8 @@ async def delete_agent(
 
             logger.info(f"Deleted (soft) agent {agent.id}: {agent.name}")
 
-            return json.dumps({
+            display_text = f"Deleted agent: {agent.name}"
+            return success_result(display_text, {
                 "success": True,
                 "id": str(agent.id),
                 "name": agent.name,
@@ -866,4 +875,4 @@ async def delete_agent(
 
     except Exception as e:
         logger.exception(f"Error deleting agent via MCP: {e}")
-        return json.dumps({"error": f"Error deleting agent: {str(e)}"})
+        return error_result(f"Error deleting agent: {str(e)}")

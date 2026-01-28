@@ -17,7 +17,6 @@ These tools mirror Claude Code's precision editing workflow:
 7. delete_content - Delete a file
 """
 
-import json
 import logging
 import re
 from typing import Any
@@ -34,7 +33,13 @@ from src.models.orm.workspace import WorkspaceFile
 from src.services.file_storage import FileStorageService
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
-from src.services.mcp_server.tool_result import error_result, format_diff, format_grep_matches, success_result
+from src.services.mcp_server.tool_result import (
+    error_result,
+    format_diff,
+    format_file_content,
+    format_grep_matches,
+    success_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -493,21 +498,19 @@ async def list_content(
     app_id: str | None = None,
     organization_id: str | None = None,
     path_prefix: str | None = None,
-) -> str:
+) -> CallToolResult:
     """List files by entity type."""
     logger.info(f"MCP list_content: entity_type={entity_type}")
 
     # Validate entity_type if provided
     valid_types = ("app_file", "workflow", "module", "text")
     if entity_type is not None and entity_type not in valid_types:
-        return json.dumps(
-            {
-                "error": f"Invalid entity_type: {entity_type}. Must be one of: app_file, workflow, module, text"
-            }
+        return error_result(
+            f"Invalid entity_type: {entity_type}. Must be one of: app_file, workflow, module, text"
         )
 
     if entity_type == "app_file" and not app_id:
-        return json.dumps({"error": "app_id is required for app_file entity type"})
+        return error_result("app_id is required for app_file entity type")
 
     try:
         async with get_db_context() as db:
@@ -546,18 +549,27 @@ async def list_content(
                         f["entity_type"] = "text"
                     all_files.extend(files)
 
-        result: dict[str, Any] = {
+        # Format display
+        if not all_files:
+            display = "No files found"
+        else:
+            lines = [f"Found {len(all_files)} file(s):", ""]
+            for f in all_files:
+                lines.append(f"  {f['path']} ({f.get('entity_type', 'unknown')})")
+            display = "\n".join(lines)
+
+        result_data: dict[str, Any] = {
             "files": all_files,
             "count": len(all_files),
         }
         if entity_type:
-            result["entity_type"] = entity_type
+            result_data["entity_type"] = entity_type
 
-        return json.dumps(result)
+        return success_result(display, result_data)
 
     except Exception as e:
         logger.exception(f"Error in list_content: {e}")
-        return json.dumps({"error": f"List failed: {str(e)}"})
+        return error_result(f"List failed: {str(e)}")
 
 
 async def _list_app_files(
@@ -1134,29 +1146,29 @@ async def read_content_lines(
     organization_id: str | None = None,
     start_line: int = 1,
     end_line: int | None = None,
-) -> str:
+) -> CallToolResult:
     """Read a specific range of lines from a file."""
     logger.info(
         f"MCP read_content_lines: entity_type={entity_type}, path={path}, lines={start_line}-{end_line}"
     )
 
     if not path:
-        return json.dumps({"error": "path is required"})
+        return error_result("path is required")
 
     if entity_type not in ("app_file", "workflow", "module", "text"):
-        return json.dumps({"error": f"Invalid entity_type: {entity_type}"})
+        return error_result(f"Invalid entity_type: {entity_type}")
 
     if entity_type == "app_file" and not app_id:
-        return json.dumps({"error": "app_id is required for app_file entity type"})
+        return error_result("app_id is required for app_file entity type")
 
     content_result, metadata_result, error = await _get_content_by_entity(
         entity_type, path, app_id, organization_id, context
     )
 
     if error:
-        return json.dumps({"error": error})
+        return error_result(error)
     if content_result is None or metadata_result is None:
-        return json.dumps({"error": "Failed to retrieve content"})
+        return error_result("Failed to retrieve content")
 
     # Now we know these are not None
     content_str = _normalize_line_endings(content_result)
@@ -1172,12 +1184,22 @@ async def read_content_lines(
         end_line = total_lines
 
     # Extract requested lines (1-indexed)
-    selected_lines = []
+    selected_lines_raw: list[str] = []
+    selected_lines_numbered: list[str] = []
     for i in range(start_line - 1, end_line):
         if i < len(lines):
-            selected_lines.append(f"{i + 1}: {lines[i]}")
+            selected_lines_raw.append(lines[i])
+            selected_lines_numbered.append(f"{i + 1}: {lines[i]}")
 
-    return json.dumps(
+    # Format display with line numbers
+    display = format_file_content(
+        metadata_result["path"],
+        "\n".join(selected_lines_raw),
+        start_line,
+    )
+
+    return success_result(
+        display,
         {
             "path": metadata_result["path"],
             "organization_id": metadata_result.get("organization_id"),
@@ -1185,8 +1207,8 @@ async def read_content_lines(
             "start_line": start_line,
             "end_line": end_line,
             "total_lines": total_lines,
-            "content": "\n".join(selected_lines),
-        }
+            "content": "\n".join(selected_lines_numbered),
+        },
     )
 
 
@@ -1231,27 +1253,27 @@ async def get_content(
     path: str,
     app_id: str | None = None,
     organization_id: str | None = None,
-) -> str:
+) -> CallToolResult:
     """Get the entire content of a file."""
     logger.info(f"MCP get_content: entity_type={entity_type}, path={path}")
 
     if not path:
-        return json.dumps({"error": "path is required"})
+        return error_result("path is required")
 
     if entity_type not in ("app_file", "workflow", "module", "text"):
-        return json.dumps({"error": f"Invalid entity_type: {entity_type}"})
+        return error_result(f"Invalid entity_type: {entity_type}")
 
     if entity_type == "app_file" and not app_id:
-        return json.dumps({"error": "app_id is required for app_file entity type"})
+        return error_result("app_id is required for app_file entity type")
 
     content_result, metadata_result, error = await _get_content_by_entity(
         entity_type, path, app_id, organization_id, context
     )
 
     if error:
-        return json.dumps({"error": error})
+        return error_result(error)
     if content_result is None or metadata_result is None:
-        return json.dumps({"error": "Failed to retrieve content"})
+        return error_result("Failed to retrieve content")
 
     content_str = _normalize_line_endings(content_result)
     lines = content_str.split("\n")
@@ -1277,7 +1299,12 @@ async def get_content(
             f"Use read_content_lines with start_line/end_line for specific sections."
         )
 
-    result: dict[str, Any] = {
+    # Format display with line numbers
+    display = format_file_content(metadata_result["path"], content_str)
+    if warning:
+        display = f"{warning}\n\n{display}"
+
+    result_data: dict[str, Any] = {
         "path": metadata_result["path"],
         "organization_id": metadata_result.get("organization_id"),
         "app_id": metadata_result.get("app_id"),
@@ -1287,10 +1314,10 @@ async def get_content(
     }
 
     if truncated:
-        result["truncated"] = True
-        result["warning"] = warning
+        result_data["truncated"] = True
+        result_data["warning"] = warning
 
-    return json.dumps(result)
+    return success_result(display, result_data)
 
 
 # =============================================================================
@@ -1466,18 +1493,18 @@ async def replace_content(
     content: str,
     app_id: str | None = None,
     organization_id: str | None = None,
-) -> str:
+) -> CallToolResult:
     """Replace entire file content or create a new file."""
     logger.info(f"MCP replace_content: entity_type={entity_type}, path={path}")
 
     if not path:
-        return json.dumps({"error": "path is required"})
+        return error_result("path is required")
     if not content:
-        return json.dumps({"error": "content is required"})
+        return error_result("content is required")
     if entity_type not in ("app_file", "workflow", "module", "text"):
-        return json.dumps({"error": f"Invalid entity_type: {entity_type}"})
+        return error_result(f"Invalid entity_type: {entity_type}")
     if entity_type == "app_file" and not app_id:
-        return json.dumps({"error": "app_id is required for app_file entity type"})
+        return error_result("app_id is required for app_file entity type")
 
     content = _normalize_line_endings(content)
 
@@ -1493,30 +1520,28 @@ async def replace_content(
             # Validate entity_type matches content before writing (workflow/module)
             validation_error = _validate_entity_type_match(entity_type, content)
             if validation_error:
-                return json.dumps({
-                    "success": False,
-                    "error": validation_error,
-                })
+                return error_result(validation_error)
 
             created = await _replace_workspace_file(
                 context, entity_type, path, content, organization_id
             )
 
-        return json.dumps({
-            "success": True,
-            "path": path,
-            "entity_type": entity_type,
-            "organization_id": organization_id,
-            "app_id": app_id,
-            "created": created,
-        })
+        action = "Created" if created else "Updated"
+        return success_result(
+            f"{action} {path}",
+            {
+                "success": True,
+                "path": path,
+                "entity_type": entity_type,
+                "organization_id": organization_id,
+                "app_id": app_id,
+                "created": created,
+            },
+        )
 
     except Exception as e:
         logger.exception(f"Error in replace_content: {e}")
-        return json.dumps({
-            "success": False,
-            "error": str(e),
-        })
+        return error_result(str(e))
 
 
 # =============================================================================

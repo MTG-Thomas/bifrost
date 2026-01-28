@@ -11,13 +11,25 @@ Tests the precision editing tools:
 - delete_content: Delete files
 """
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from mcp.types import CallToolResult
 
 from src.services.mcp_server.server import MCPContext
+
+
+def get_result_data(result: CallToolResult) -> dict:
+    """Extract structured data from a CallToolResult."""
+    return result.structuredContent or {}
+
+
+def get_result_text(result: CallToolResult) -> str:
+    """Extract display text from a CallToolResult."""
+    if result.content and len(result.content) > 0:
+        return result.content[0].text
+    return ""
 
 
 @pytest.fixture
@@ -73,7 +85,8 @@ class TestListContent:
                 entity_type="workflow",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 2
             assert data["files"][0]["path"] == "workflows/sync_tickets.py"
@@ -88,7 +101,9 @@ class TestListContent:
             entity_type="app_file",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
 
@@ -102,7 +117,9 @@ class TestListContent:
             entity_type="invalid",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "Invalid entity_type" in data["error"]
 
@@ -130,7 +147,8 @@ class TestListContent:
                 entity_type="module",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 2
             assert data["files"][0]["path"] == "modules/helpers.py"
@@ -168,7 +186,8 @@ class TestListContent:
                 app_id=app_id,
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 2
             assert data["files"][0]["path"] == "components/Header.tsx"
@@ -197,7 +216,8 @@ class TestListContent:
                 path_prefix="workflows/",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert data["count"] == 1
 
     @pytest.mark.asyncio
@@ -232,7 +252,8 @@ class TestListContent:
                 entity_type="workflow",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 1
             # Should have scopes array with org name
@@ -275,7 +296,8 @@ async def sync_tickets(client_id: str) -> dict:
                 entity_type="workflow",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert "matches" in data
             assert len(data["matches"]) == 1
             assert data["matches"][0]["line_number"] == 4
@@ -292,7 +314,9 @@ async def sync_tickets(client_id: str) -> dict:
             entity_type="",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
 
     @pytest.mark.asyncio
@@ -306,7 +330,9 @@ async def sync_tickets(client_id: str) -> dict:
             entity_type="workflow",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "Invalid regex" in data["error"]
 
@@ -350,7 +376,8 @@ line 10"""
                 end_line=6,
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert data["start_line"] == 3
             assert data["end_line"] == 6
             assert data["total_lines"] == 10
@@ -369,7 +396,9 @@ line 10"""
             path="",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "path" in data["error"]
 
@@ -402,7 +431,8 @@ class TestGetContent:
                 path="workflows/sync.py",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert data["path"] == "workflows/sync.py"
             assert data["total_lines"] == 3
             assert "line 1" in data["content"]
@@ -427,7 +457,9 @@ class TestGetContent:
                 path="workflows/nonexistent.py",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            assert result.isError is True
+            data = get_result_data(result)
             assert "error" in data
             assert "not found" in data["error"].lower()
 
@@ -472,7 +504,8 @@ class TestPatchContent:
                     new_string='return {"status": "new"}',
                 )
 
-                data = json.loads(result)
+                assert isinstance(result, CallToolResult)
+                data = get_result_data(result)
                 assert data["success"] is True
 
     @pytest.mark.asyncio
@@ -507,8 +540,9 @@ def func2():
                 new_string='return "new_value"',
             )
 
-            data = json.loads(result)
-            assert data["success"] is False
+            assert isinstance(result, CallToolResult)
+            assert result.isError is True
+            data = get_result_data(result)
             assert "match_locations" in data or "matches" in data["error"].lower()
 
     @pytest.mark.asyncio
@@ -538,8 +572,9 @@ def func2():
                 new_string="replacement",
             )
 
-            data = json.loads(result)
-            assert data["success"] is False
+            assert isinstance(result, CallToolResult)
+            assert result.isError is True
+            data = get_result_data(result)
             assert "not found" in data["error"]
 
     @pytest.mark.asyncio
@@ -555,7 +590,9 @@ def func2():
             new_string="replacement",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "old_string" in data["error"]
 
@@ -572,7 +609,9 @@ def func2():
             new_string="new code",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
 
@@ -619,7 +658,8 @@ async def sync():
 ''',
                 )
 
-                data = json.loads(result)
+                assert isinstance(result, CallToolResult)
+                data = get_result_data(result)
                 assert data["success"] is True
                 assert data["entity_type"] == "workflow"
 
@@ -641,8 +681,9 @@ async def oops():
 ''',
         )
 
-        data = json.loads(result)
-        assert data["success"] is False
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "mismatch" in data["error"].lower()
 
     @pytest.mark.asyncio
@@ -657,7 +698,9 @@ async def oops():
             content="",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "content" in data["error"]
 
@@ -673,7 +716,9 @@ async def oops():
             content="some content",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "path" in data["error"]
 
@@ -689,7 +734,9 @@ async def oops():
             content="export default function Button() { return <button>Click</button>; }",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
 
@@ -705,7 +752,9 @@ async def oops():
             content="content",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "Invalid entity_type" in data["error"]
 
@@ -724,8 +773,9 @@ async def oops():
 ''',
         )
 
-        data = json.loads(result)
-        assert data["success"] is False
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "mismatch" in data["error"].lower()
 
     @pytest.mark.asyncio
@@ -763,7 +813,8 @@ async def oops():
                     content="export default function NewComponent() { return <div>New</div>; }",
                 )
 
-                data = json.loads(result)
+                assert isinstance(result, CallToolResult)
+                data = get_result_data(result)
                 assert data["success"] is True
                 assert data["created"] is True
                 assert data["app_id"] == app_id
@@ -797,7 +848,8 @@ class TestDeleteContent:
                 path="workflows/old_sync.py",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert data["success"] is True
             assert data["path"] == "workflows/old_sync.py"
             assert data["entity_type"] == "workflow"
@@ -829,7 +881,8 @@ class TestDeleteContent:
                 path="modules/old_helpers.py",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert data["success"] is True
             assert data["path"] == "modules/old_helpers.py"
             assert data["entity_type"] == "module"
@@ -874,7 +927,8 @@ class TestDeleteContent:
                     path="components/OldButton.tsx",
                 )
 
-                data = json.loads(result)
+                assert isinstance(result, CallToolResult)
+                data = get_result_data(result)
                 assert data["success"] is True
                 assert data["path"] == "components/OldButton.tsx"
                 assert data["entity_type"] == "app_file"
@@ -907,8 +961,9 @@ class TestDeleteContent:
                 path="workflows/nonexistent.py",
             )
 
-            data = json.loads(result)
-            assert data["success"] is False
+            assert isinstance(result, CallToolResult)
+            assert result.isError is True
+            data = get_result_data(result)
             assert "not found" in data["error"].lower()
 
     @pytest.mark.asyncio
@@ -922,7 +977,9 @@ class TestDeleteContent:
             path="",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "path" in data["error"]
 
@@ -937,7 +994,9 @@ class TestDeleteContent:
             path="components/Button.tsx",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
 
@@ -952,7 +1011,9 @@ class TestDeleteContent:
             path="some/path.py",
         )
 
-        data = json.loads(result)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = get_result_data(result)
         assert "error" in data
         assert "Invalid entity_type" in data["error"]
 
@@ -981,7 +1042,8 @@ class TestDeleteContent:
                 path="workflows/org_sync.py",
             )
 
-            data = json.loads(result)
+            assert isinstance(result, CallToolResult)
+            data = get_result_data(result)
             assert data["success"] is True
             # Query should have been filtered by org_id
             mock_session.execute.assert_called_once()

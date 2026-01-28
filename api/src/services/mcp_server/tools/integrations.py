@@ -4,12 +4,14 @@ Integration MCP Tools
 Tools for listing available integrations.
 """
 
-import json
 import logging
 from typing import Any
 
+from mcp.types import CallToolResult
+
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
 
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
     is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def list_integrations(context: Any) -> str:
+async def list_integrations(context: Any) -> CallToolResult:
     """List all available integrations."""
     from sqlalchemy import select
 
@@ -62,10 +64,11 @@ async def list_integrations(context: Any) -> str:
                 for integration in integrations
             ]
 
-            return json.dumps(
-                {"integrations": integration_list, "count": len(integration_list)}
+            display_text = f"Found {len(integration_list)} integration(s)"
+            return success_result(
+                display_text, {"integrations": integration_list, "count": len(integration_list)}
             )
 
     except Exception as e:
         logger.exception(f"Error listing integrations via MCP: {e}")
-        return json.dumps({"error": f"Error listing integrations: {str(e)}"})
+        return error_result(f"Error listing integrations: {str(e)}")

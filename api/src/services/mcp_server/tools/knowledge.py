@@ -4,12 +4,14 @@ Knowledge MCP Tools
 Tools for searching the Bifrost knowledge base.
 """
 
-import json
 import logging
 from typing import Any
 
+from mcp.types import CallToolResult
+
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
 
@@ -47,7 +49,7 @@ async def search_knowledge(
     query: str,
     namespace: str | None = None,
     limit: int = 5,
-) -> str:
+) -> CallToolResult:
     """Search the knowledge base.
 
     Args:
@@ -63,20 +65,23 @@ async def search_knowledge(
     logger.info(f"MCP search_knowledge called with query={query}, namespace={namespace}")
 
     if not query:
-        return json.dumps({"error": "query is required"})
+        return error_result("query is required")
 
     # Validate namespace access
     accessible = context.accessible_namespaces
     if not accessible:
-        return json.dumps({
-            "results": [],
-            "count": 0,
-            "message": "No knowledge sources available. No agents with knowledge access configured.",
-        })
+        return success_result(
+            "No knowledge sources available",
+            {
+                "results": [],
+                "count": 0,
+                "message": "No knowledge sources available. No agents with knowledge access configured.",
+            },
+        )
 
     if namespace:
         if namespace not in accessible:
-            return json.dumps({"error": f"Access denied: namespace '{namespace}' is not accessible."})
+            return error_result(f"Access denied: namespace '{namespace}' is not accessible.")
         namespaces_to_search = [namespace]
     else:
         namespaces_to_search = accessible
@@ -99,11 +104,14 @@ async def search_knowledge(
             )
 
             if not results:
-                return json.dumps({
-                    "results": [],
-                    "count": 0,
-                    "message": f"No results found for query: '{query}'",
-                })
+                return success_result(
+                    f"No results found for '{query}'",
+                    {
+                        "results": [],
+                        "count": 0,
+                        "message": f"No results found for query: '{query}'",
+                    },
+                )
 
             result_data = []
             for doc in results:
@@ -113,11 +121,9 @@ async def search_knowledge(
                     "score": doc.score,
                 })
 
-            return json.dumps({
-                "results": result_data,
-                "count": len(result_data),
-            })
+            display_text = f"Found {len(result_data)} result(s) for '{query}'"
+            return success_result(display_text, {"results": result_data, "count": len(result_data)})
 
     except Exception as e:
         logger.exception(f"Error searching knowledge via MCP: {e}")
-        return json.dumps({"error": f"Error searching knowledge: {str(e)}"})
+        return error_result(f"Error searching knowledge: {str(e)}")

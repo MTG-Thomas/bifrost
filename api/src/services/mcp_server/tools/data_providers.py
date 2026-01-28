@@ -9,8 +9,11 @@ Use list_workflows to see data providers.
 import logging
 from typing import Any
 
+from mcp.types import CallToolResult
+
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import success_result
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +27,7 @@ logger = logging.getLogger(__name__)
     is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def get_data_provider_schema(context: Any) -> str:  # noqa: ARG001
+async def get_data_provider_schema(context: Any) -> CallToolResult:  # noqa: ARG001
     """Get documentation about data provider structure and decorators generated from Pydantic models."""
     from src.models.contracts.workflows import DataProviderMetadata, WorkflowParameter
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -73,4 +76,5 @@ Use `list_workflows` with type filter to see all available data providers.
 For `@data_provider` decorator documentation and examples, use `get_sdk_schema`.
 """
 
-    return model_docs + usage_docs
+    schema_doc = model_docs + usage_docs
+    return success_result("Data provider schema documentation", {"schema": schema_doc})
