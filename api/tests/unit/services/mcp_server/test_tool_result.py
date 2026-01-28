@@ -285,6 +285,105 @@ class TestDeleteContentResult:
         assert "not found" in content.text.lower()  # type: ignore[union-attr]
 
 
+class TestSearchContentResult:
+    """Tests for search_content tool returning CallToolResult."""
+
+    @pytest.mark.asyncio
+    async def test_matches_return_grep_format(self):
+        """search_content should return grep-style format for matches."""
+        from unittest.mock import AsyncMock, patch
+        from uuid import uuid4
+
+        from mcp.types import CallToolResult
+
+        from src.services.mcp_server.server import MCPContext
+        from src.services.mcp_server.tools.code_editor import search_content
+
+        context = MCPContext(
+            user_id=uuid4(),
+            org_id=None,
+            is_platform_admin=True,
+            user_email="test@test.com",
+            user_name="Test",
+        )
+
+        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.services.mcp_server.tools.code_editor._search_workflows"
+            ) as mock_search:
+                mock_search.return_value = [
+                    {
+                        "path": "features/auth.py",
+                        "line_number": 42,
+                        "match": "def get_user(id):",
+                        "context_before": ["41: # Get user by ID"],
+                        "context_after": ["43:     return db.get(id)"],
+                    }
+                ]
+
+                result = await search_content(
+                    context=context,
+                    pattern="get_user",
+                    entity_type="workflow",
+                )
+
+        assert isinstance(result, CallToolResult)
+        assert result.isError is False
+        # Type narrow to TextContent for .text access
+        content = result.content[0]
+        assert hasattr(content, "text")
+        assert "Found 1 match" in content.text  # type: ignore[union-attr]
+        assert "features/auth.py:42:" in content.text  # type: ignore[union-attr]
+        assert result.structuredContent is not None
+        assert result.structuredContent["total_matches"] == 1
+
+    @pytest.mark.asyncio
+    async def test_no_matches_returns_not_found(self):
+        """search_content should return 'No matches' message when nothing found."""
+        from unittest.mock import AsyncMock, patch
+        from uuid import uuid4
+
+        from mcp.types import CallToolResult
+
+        from src.services.mcp_server.server import MCPContext
+        from src.services.mcp_server.tools.code_editor import search_content
+
+        context = MCPContext(
+            user_id=uuid4(),
+            org_id=None,
+            is_platform_admin=True,
+            user_email="test@test.com",
+            user_name="Test",
+        )
+
+        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.services.mcp_server.tools.code_editor._search_workflows"
+            ) as mock_search:
+                mock_search.return_value = []
+
+                result = await search_content(
+                    context=context,
+                    pattern="nonexistent_function",
+                    entity_type="workflow",
+                )
+
+        assert isinstance(result, CallToolResult)
+        assert result.isError is False  # No matches is not an error
+        # Type narrow to TextContent for .text access
+        content = result.content[0]
+        assert hasattr(content, "text")
+        assert "No matches found" in content.text  # type: ignore[union-attr]
+
+
 class TestPatchContentResult:
     """Tests for patch_content tool returning CallToolResult."""
 

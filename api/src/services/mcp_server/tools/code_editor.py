@@ -34,7 +34,7 @@ from src.models.orm.workspace import WorkspaceFile
 from src.services.file_storage import FileStorageService
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
-from src.services.mcp_server.tool_result import error_result, format_diff, success_result
+from src.services.mcp_server.tool_result import error_result, format_diff, format_grep_matches, success_result
 
 logger = logging.getLogger(__name__)
 
@@ -778,29 +778,27 @@ async def search_content(
     organization_id: str | None = None,
     context_lines: int = 3,
     max_results: int = 20,
-) -> str:
+) -> CallToolResult:
     """Search for regex patterns in code content."""
     logger.info(f"MCP search_content: pattern={pattern}, entity_type={entity_type}")
 
     if not pattern:
-        return json.dumps({"error": "pattern is required"})
+        return error_result("pattern is required")
 
     # Validate entity_type if provided
     valid_types = ("app_file", "workflow", "module", "text")
     if entity_type is not None and entity_type not in valid_types:
-        return json.dumps(
-            {
-                "error": f"Invalid entity_type: {entity_type}. Must be one of: app_file, workflow, module, text"
-            }
+        return error_result(
+            f"Invalid entity_type: {entity_type}. Must be one of: app_file, workflow, module, text"
         )
 
     if entity_type == "app_file" and not app_id:
-        return json.dumps({"error": "app_id is required for app_file entity type"})
+        return error_result("app_id is required for app_file entity type")
 
     try:
         regex = re.compile(pattern)
     except re.error as e:
-        return json.dumps({"error": f"Invalid regex pattern: {e}"})
+        return error_result(f"Invalid regex pattern: {e}")
 
     matches: list[dict[str, Any]] = []
     truncated = False
@@ -856,17 +854,21 @@ async def search_content(
                 matches = matches[:max_results]
                 truncated = True
 
-        return json.dumps(
+        # Format grep-style display
+        display = format_grep_matches(matches, pattern)
+
+        return success_result(
+            display,
             {
                 "matches": matches,
                 "total_matches": len(matches),
                 "truncated": truncated,
-            }
+            },
         )
 
     except Exception as e:
         logger.exception(f"Error in search_content: {e}")
-        return json.dumps({"error": f"Search failed: {str(e)}"})
+        return error_result(f"Search failed: {str(e)}")
 
 
 async def _search_app_files(
