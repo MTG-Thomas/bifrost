@@ -7,8 +7,11 @@ Tools for executing, listing, validating, and creating workflows.
 import logging
 from typing import Any
 
+from mcp.types import CallToolResult
+
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
 
@@ -39,9 +42,8 @@ logger = logging.getLogger(__name__)
 )
 async def execute_workflow(
     context: Any, workflow_id: str, params: dict[str, Any] | None = None
-) -> str:
+) -> CallToolResult:
     """Execute a workflow by ID and return results."""
-    import json
     from uuid import UUID
 
     from src.core.database import get_db_context
@@ -49,12 +51,12 @@ async def execute_workflow(
     from src.services.execution.service import execute_tool
 
     if not workflow_id:
-        return json.dumps({"error": "workflow_id is required"})
+        return error_result("workflow_id is required")
 
     try:
         workflow_uuid = UUID(workflow_id)
     except ValueError:
-        return json.dumps({"error": f"'{workflow_id}' is not a valid UUID. Use list_workflows to get workflow IDs."})
+        return error_result(f"'{workflow_id}' is not a valid UUID. Use list_workflows to get workflow IDs.")
 
     params = params or {}
     logger.info(f"MCP execute_workflow: {workflow_id} with params: {params}")
@@ -72,7 +74,7 @@ async def execute_workflow(
             workflow = await repo.get(id=workflow_uuid)
 
             if not workflow:
-                return json.dumps({"error": f"Workflow with ID '{workflow_id}' not found. Use list_workflows to see available workflows."})
+                return error_result(f"Workflow with ID '{workflow_id}' not found. Use list_workflows to see available workflows.")
 
             result = await execute_tool(
                 workflow_id=str(workflow.id),
@@ -85,8 +87,9 @@ async def execute_workflow(
                 is_platform_admin=context.is_platform_admin,
             )
 
-            return json.dumps({
-                "success": result.status.value == "Success",
+            success = result.status.value == "Success"
+            data = {
+                "success": success,
                 "execution_id": result.execution_id,
                 "workflow_id": str(workflow.id),
                 "workflow_name": workflow.name,
@@ -95,11 +98,18 @@ async def execute_workflow(
                 "result": result.result,
                 "error": result.error,
                 "error_type": result.error_type,
-            }, default=str)
+            }
+
+            if success:
+                display_text = f"Workflow '{workflow.name}' completed successfully ({result.duration_ms}ms)"
+                return success_result(display_text, data)
+            else:
+                display_text = f"Workflow '{workflow.name}' failed: {result.error}"
+                return error_result(display_text, data)
 
     except Exception as e:
         logger.exception(f"Error executing workflow via MCP: {e}")
-        return json.dumps({"error": f"Error executing workflow: {str(e)}"})
+        return error_result(f"Error executing workflow: {str(e)}")
 
 
 @system_tool(
@@ -126,9 +136,9 @@ async def execute_workflow(
 )
 async def list_workflows(
     context: Any, query: str | None = None, category: str | None = None
-) -> str:
+) -> CallToolResult:
     """List all registered workflows."""
-    import json
+    from uuid import UUID
 
     from src.core.database import get_db_context
     from src.repositories.workflows import WorkflowRepository
@@ -137,7 +147,6 @@ async def list_workflows(
 
     try:
         async with get_db_context() as db:
-            from uuid import UUID
             ctx_org_id = UUID(str(context.org_id)) if context.org_id else None
             ctx_user_id = UUID(str(context.user_id)) if context.user_id else None
             repo = WorkflowRepository(
@@ -149,27 +158,42 @@ async def list_workflows(
             workflows = await repo.search(query=query, category=category, limit=100)
             total_count = await repo.count_active()
 
-            return json.dumps({
-                "workflows": [
-                    {
-                        "id": str(w.id),
-                        "name": w.name,
-                        "description": w.description,
-                        "type": w.type,
-                        "category": w.category,
-                        "schedule": w.schedule,
-                        "endpoint_enabled": w.endpoint_enabled,
-                        "path": w.path,
-                    }
-                    for w in workflows
-                ],
+            workflow_list = [
+                {
+                    "id": str(w.id),
+                    "name": w.name,
+                    "description": w.description,
+                    "type": w.type,
+                    "category": w.category,
+                    "schedule": w.schedule,
+                    "endpoint_enabled": w.endpoint_enabled,
+                    "path": w.path,
+                }
+                for w in workflows
+            ]
+
+            data = {
+                "workflows": workflow_list,
                 "count": len(workflows),
                 "total_count": total_count,
-            })
+            }
+
+            if not workflows:
+                return success_result("No workflows found", data)
+
+            # Build display text showing first 10 workflows
+            display_lines = [f"Found {len(workflows)} workflow(s):"]
+            for w in workflows[:10]:
+                desc = f" - {w.description}" if w.description else ""
+                display_lines.append(f"  - {w.name} ({w.type}){desc}")
+            if len(workflows) > 10:
+                display_lines.append(f"  ... and {len(workflows) - 10} more")
+
+            return success_result("\n".join(display_lines), data)
 
     except Exception as e:
         logger.exception(f"Error listing workflows via MCP: {e}")
-        return json.dumps({"error": f"Error listing workflows: {str(e)}"})
+        return error_result(f"Error listing workflows: {str(e)}")
 
 
 @system_tool(
@@ -190,10 +214,9 @@ async def list_workflows(
         "required": ["file_path"],
     },
 )
-async def validate_workflow(context: Any, file_path: str) -> str:
+async def validate_workflow(context: Any, file_path: str) -> CallToolResult:
     """Validate a workflow Python file for syntax and decorator issues."""
     import ast
-    import json
 
     from src.core.database import get_db_context
     from src.services.file_storage import FileStorageService
@@ -205,19 +228,20 @@ async def validate_workflow(context: Any, file_path: str) -> str:
             service = FileStorageService(db)
             content = await service.read_file(file_path)
 
-            errors: list[str] = []
+            errors: list[str | dict[str, Any]] = []
             warnings: list[str] = []
 
             # Check Python syntax
             try:
                 tree = ast.parse(content)
             except SyntaxError as e:
-                return json.dumps({
+                data = {
                     "valid": False,
                     "errors": [{"type": "syntax", "line": e.lineno, "message": e.msg}],
                     "warnings": [],
                     "workflow_functions": [],
-                })
+                }
+                return error_result(f"Syntax error at line {e.lineno}: {e.msg}", data)
 
             # Check for @workflow decorator
             has_workflow_decorator = False
@@ -247,18 +271,28 @@ async def validate_workflow(context: Any, file_path: str) -> str:
             if not has_bifrost_import:
                 warnings.append("No bifrost import found. You may need `from bifrost import workflow`.")
 
-            return json.dumps({
-                "valid": len(errors) == 0,
+            is_valid = len(errors) == 0
+            data = {
+                "valid": is_valid,
                 "errors": errors,
                 "warnings": warnings,
                 "workflow_functions": workflow_funcs,
-            })
+            }
+
+            if is_valid:
+                funcs_str = ", ".join(workflow_funcs) if workflow_funcs else "none"
+                warning_str = f" ({len(warnings)} warning(s))" if warnings else ""
+                display_text = f"Workflow '{file_path}' is valid{warning_str}. Functions: {funcs_str}"
+                return success_result(display_text, data)
+            else:
+                error_msgs = "; ".join(str(e) for e in errors)
+                return error_result(f"Workflow '{file_path}' has errors: {error_msgs}", data)
 
     except FileNotFoundError:
-        return json.dumps({"error": f"File not found: {file_path}"})
+        return error_result(f"File not found: {file_path}")
     except Exception as e:
         logger.exception(f"Error validating workflow via MCP: {e}")
-        return json.dumps({"error": f"Error validating workflow: {str(e)}"})
+        return error_result(f"Error validating workflow: {str(e)}")
 
 
 @system_tool(
@@ -283,10 +317,9 @@ async def validate_workflow(context: Any, file_path: str) -> str:
         "required": ["file_path", "code"],
     },
 )
-async def create_workflow(context: Any, file_path: str, code: str) -> str:
+async def create_workflow(context: Any, file_path: str, code: str) -> CallToolResult:
     """Create a new workflow file after validation."""
     import ast
-    import json
 
     from src.core.database import get_db_context
     from src.services.file_storage import FileStorageService
@@ -294,25 +327,22 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
     logger.info(f"MCP create_workflow called with file_path={file_path}")
 
     if not file_path:
-        return json.dumps({"error": "file_path is required"})
+        return error_result("file_path is required")
     if not code:
-        return json.dumps({"error": "code is required"})
+        return error_result("code is required")
 
     # Validate syntax first
     try:
         ast.parse(code)
     except SyntaxError as e:
-        return json.dumps({
-            "error": "Syntax error in code",
-            "line": e.lineno,
-            "message": e.msg,
-        })
+        return error_result(
+            f"Syntax error in code at line {e.lineno}: {e.msg}",
+            {"line": e.lineno, "message": e.msg},
+        )
 
     # Check for workflow decorator
     if "@workflow" not in code:
-        return json.dumps({
-            "error": "Missing @workflow decorator. Your code must include a function decorated with @workflow."
-        })
+        return error_result("Missing @workflow decorator. Your code must include a function decorated with @workflow.")
 
     # Ensure .py extension
     if not file_path.endswith(".py"):
@@ -326,24 +356,23 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
             try:
                 existing = await service.read_file(file_path)
                 if existing:
-                    return json.dumps({
-                        "error": f"File already exists: {file_path}. Use file tools to update it or choose a different path."
-                    })
+                    return error_result(f"File already exists: {file_path}. Use file tools to update it or choose a different path.")
             except FileNotFoundError:
                 pass  # Good - file doesn't exist
 
             # Write the file (encode string to bytes)
             await service.write_file(file_path, code.encode('utf-8'))
 
-            return json.dumps({
+            data = {
                 "success": True,
                 "file_path": file_path,
                 "message": "Workflow created and registered.",
-            })
+            }
+            return success_result(f"Workflow created at '{file_path}'", data)
 
     except Exception as e:
         logger.exception(f"Error creating workflow via MCP: {e}")
-        return json.dumps({"error": f"Error creating workflow: {str(e)}"})
+        return error_result(f"Error creating workflow: {str(e)}")
 
 
 @system_tool(
@@ -355,7 +384,7 @@ async def create_workflow(context: Any, file_path: str, code: str) -> str:
     is_restricted=True,
     input_schema={"type": "object", "properties": {}, "required": []},
 )
-async def get_workflow_schema(context: Any) -> str:  # noqa: ARG001
+async def get_workflow_schema(context: Any) -> CallToolResult:  # noqa: ARG001
     """Get workflow schema documentation generated from Pydantic models."""
     from src.models.contracts.workflows import WorkflowMetadata, WorkflowParameter
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -382,7 +411,12 @@ For complete SDK documentation including decorators, modules, and examples, use 
 - `get_sdk_schema` - Get full SDK documentation
 """
 
-    return model_docs + sdk_reference
+    full_docs = model_docs + sdk_reference
+    data = {
+        "documentation": full_docs,
+        "models": ["WorkflowMetadata", "WorkflowParameter"],
+    }
+    return success_result(full_docs, data)
 
 
 @system_tool(
@@ -411,9 +445,8 @@ async def get_workflow(
     context: Any,
     workflow_id: str | None = None,
     workflow_name: str | None = None,
-) -> str:
+) -> CallToolResult:
     """Get detailed workflow metadata."""
-    import json
     from uuid import UUID
 
     from src.core.database import get_db_context
@@ -422,7 +455,7 @@ async def get_workflow(
     logger.info(f"MCP get_workflow called with id={workflow_id}, name={workflow_name}")
 
     if not workflow_id and not workflow_name:
-        return json.dumps({"error": "Either workflow_id or workflow_name is required"})
+        return error_result("Either workflow_id or workflow_name is required")
 
     try:
         async with get_db_context() as db:
@@ -439,14 +472,14 @@ async def get_workflow(
                 try:
                     workflow = await repo.get(id=UUID(workflow_id))
                 except ValueError:
-                    return json.dumps({"error": f"Invalid workflow_id format: {workflow_id}"})
+                    return error_result(f"Invalid workflow_id format: {workflow_id}")
             else:
                 workflow = await repo.get_by_name(workflow_name)  # type: ignore
 
             if not workflow:
-                return json.dumps({"error": f"Workflow not found: {workflow_id or workflow_name}"})
+                return error_result(f"Workflow not found: {workflow_id or workflow_name}")
 
-            return json.dumps({
+            data = {
                 "id": str(workflow.id),
                 "name": workflow.name,
                 "description": workflow.description,
@@ -458,8 +491,12 @@ async def get_workflow(
                 "endpoint_enabled": workflow.endpoint_enabled,
                 "tool_description": workflow.tool_description if workflow.type == "tool" else None,
                 "parameters": workflow.parameters_schema,
-            })
+            }
+
+            desc = f" - {workflow.description}" if workflow.description else ""
+            display_text = f"Workflow: {workflow.name} ({workflow.type}){desc}"
+            return success_result(display_text, data)
 
     except Exception as e:
         logger.exception(f"Error getting workflow via MCP: {e}")
-        return json.dumps({"error": f"Error getting workflow: {str(e)}"})
+        return error_result(f"Error getting workflow: {str(e)}")

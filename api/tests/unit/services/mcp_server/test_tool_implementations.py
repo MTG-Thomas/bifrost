@@ -96,8 +96,11 @@ class TestValidateWorkflowImpl:
         from src.services.mcp_server.tools.workflow import validate_workflow
 
         result = await validate_workflow(context, "")
-        # The implementation returns an error when path is empty
-        assert "Error" in result or "error" in result.lower()
+        # The implementation returns a CallToolResult with isError=True when path is empty
+        assert result.isError is True
+        # Check that the content contains error info
+        assert result.content[0].text is not None
+        assert "Error" in result.content[0].text or "error" in result.content[0].text.lower()
 
 
 class TestGetWorkflowSchemaImpl:
@@ -110,15 +113,19 @@ class TestGetWorkflowSchemaImpl:
 
         result = await get_workflow_schema(context)
 
+        # Result is now a CallToolResult
+        assert result.isError is False
+        text = result.content[0].text
+
         # Check for key sections (generated from Pydantic models)
-        assert "# Workflow Schema Documentation" in result
-        assert "WorkflowMetadata" in result
-        assert "WorkflowParameter" in result
+        assert "# Workflow Schema Documentation" in text
+        assert "WorkflowMetadata" in text
+        assert "WorkflowParameter" in text
         # Check for markdown table format
-        assert "| Field | Type | Required | Description |" in result
+        assert "| Field | Type | Required | Description |" in text
         # Check for SDK reference section
-        assert "SDK Documentation" in result
-        assert "get_sdk_schema" in result
+        assert "SDK Documentation" in text
+        assert "get_sdk_schema" in text
 
 
 class TestGetWorkflowImpl:
@@ -126,15 +133,15 @@ class TestGetWorkflowImpl:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_no_id_or_name(self, context):
-        """Should return JSON error when neither ID nor name provided."""
-        import json
-
+        """Should return error when neither ID nor name provided."""
         from src.services.mcp_server.tools.workflow import get_workflow
 
         result = await get_workflow(context, None, None)
-        parsed = json.loads(result)
-        assert "error" in parsed
-        assert "workflow_id or workflow_name" in parsed["error"]
+        # Result is now a CallToolResult
+        assert result.isError is True
+        assert result.structuredContent is not None
+        assert "error" in result.structuredContent
+        assert "workflow_id or workflow_name" in result.structuredContent["error"]
 
 
 class TestGetExecutionImpl:
