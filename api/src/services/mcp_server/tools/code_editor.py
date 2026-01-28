@@ -23,6 +23,7 @@ import re
 from typing import Any
 from uuid import UUID
 
+from mcp.types import CallToolResult
 from sqlalchemy import select
 
 from src.core.database import get_db_context
@@ -33,6 +34,7 @@ from src.models.orm.workspace import WorkspaceFile
 from src.services.file_storage import FileStorageService
 from src.services.mcp_server.tool_decorator import system_tool
 from src.services.mcp_server.tool_registry import ToolCategory
+from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
 
@@ -1663,49 +1665,46 @@ async def delete_content(
     path: str,
     app_id: str | None = None,
     organization_id: str | None = None,
-) -> str:
+) -> CallToolResult:
     """Delete a file."""
     logger.info(f"MCP delete_content: entity_type={entity_type}, path={path}")
 
     if not path:
-        return json.dumps({"error": "path is required"})
+        return error_result("path is required")
     if entity_type not in ("app_file", "workflow", "module", "text"):
-        return json.dumps({"error": f"Invalid entity_type: {entity_type}"})
+        return error_result(f"Invalid entity_type: {entity_type}")
     if entity_type == "app_file" and not app_id:
-        return json.dumps({"error": "app_id is required for app_file entity type"})
+        return error_result("app_id is required for app_file entity type")
 
     try:
         async with get_db_context() as db:
             if entity_type == "app_file":
                 # app_id is validated above, assert for type narrowing
                 assert app_id is not None
-                success = await _delete_app_file(db, context, app_id, path)
+                deleted = await _delete_app_file(db, context, app_id, path)
             elif entity_type == "workflow":
-                success = await _delete_workflow(db, context, path, organization_id)
+                deleted = await _delete_workflow(db, context, path, organization_id)
             elif entity_type == "module":
-                success = await _delete_module(db, context, path)
+                deleted = await _delete_module(db, context, path)
             elif entity_type == "text":
-                success = await _delete_text_file(db, context, path)
+                deleted = await _delete_text_file(db, context, path)
             else:
-                success = False
+                deleted = False
 
-            if not success:
-                return json.dumps({
-                    "success": False,
-                    "error": f"File not found: {path}",
-                })
+            if not deleted:
+                return error_result(f"File not found: {path}")
 
             await db.commit()
 
-        return json.dumps({
-            "success": True,
-            "path": path,
-            "entity_type": entity_type,
-        })
+        return success_result(
+            f"Deleted {path}",
+            {
+                "success": True,
+                "path": path,
+                "entity_type": entity_type,
+            },
+        )
 
     except Exception as e:
         logger.exception(f"Error in delete_content: {e}")
-        return json.dumps({
-            "success": False,
-            "error": str(e),
-        })
+        return error_result(str(e))

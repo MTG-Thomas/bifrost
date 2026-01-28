@@ -184,3 +184,95 @@ class TestFormatFileContent:
         # Line 1 should be padded, line 100 should not need padding
         assert "  1: line" in result
         assert "100: line" in result
+
+
+# =============================================================================
+# Integration Tests for Code Editor Tools
+# =============================================================================
+
+import pytest
+
+
+class TestDeleteContentResult:
+    """Tests for delete_content tool returning CallToolResult."""
+
+    @pytest.mark.asyncio
+    async def test_success_returns_call_tool_result(self):
+        """delete_content should return CallToolResult on success."""
+        from unittest.mock import AsyncMock, patch
+        from uuid import uuid4
+
+        from mcp.types import CallToolResult
+
+        from src.services.mcp_server.server import MCPContext
+        from src.services.mcp_server.tools.code_editor import delete_content
+
+        context = MCPContext(
+            user_id=uuid4(),
+            org_id=None,
+            is_platform_admin=True,
+            user_email="test@test.com",
+            user_name="Test",
+        )
+
+        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.services.mcp_server.tools.code_editor._delete_workflow"
+            ) as mock_delete:
+                mock_delete.return_value = True
+
+                result = await delete_content(
+                    context=context,
+                    entity_type="workflow",
+                    path="features/test.py",
+                )
+
+        assert isinstance(result, CallToolResult)
+        assert result.isError is False
+        assert "Deleted features/test.py" in result.content[0].text
+        assert result.structuredContent["success"] is True
+        assert result.structuredContent["path"] == "features/test.py"
+
+    @pytest.mark.asyncio
+    async def test_not_found_returns_error_result(self):
+        """delete_content should return error CallToolResult when file not found."""
+        from unittest.mock import AsyncMock, patch
+        from uuid import uuid4
+
+        from mcp.types import CallToolResult
+
+        from src.services.mcp_server.server import MCPContext
+        from src.services.mcp_server.tools.code_editor import delete_content
+
+        context = MCPContext(
+            user_id=uuid4(),
+            org_id=None,
+            is_platform_admin=True,
+            user_email="test@test.com",
+            user_name="Test",
+        )
+
+        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.services.mcp_server.tools.code_editor._delete_workflow"
+            ) as mock_delete:
+                mock_delete.return_value = False
+
+                result = await delete_content(
+                    context=context,
+                    entity_type="workflow",
+                    path="features/nonexistent.py",
+                )
+
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        assert "Error:" in result.content[0].text
+        assert "not found" in result.content[0].text.lower()
