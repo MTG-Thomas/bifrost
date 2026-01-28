@@ -3,7 +3,13 @@
 
 from mcp.types import CallToolResult, TextContent
 
-from src.services.mcp_server.tool_result import error_result, success_result
+from src.services.mcp_server.tool_result import (
+    error_result,
+    format_diff,
+    format_file_content,
+    format_grep_matches,
+    success_result,
+)
 
 
 class TestSuccessResult:
@@ -72,3 +78,109 @@ class TestErrorResult:
         result = error_result("Oops")
 
         assert result.isError is True
+
+
+class TestFormatGrepMatches:
+    """Tests for format_grep_matches helper."""
+
+    def test_empty_matches_returns_not_found_message(self):
+        """Should return 'No matches' for empty list."""
+        result = format_grep_matches([], "def foo")
+
+        assert "No matches found" in result
+        assert "def foo" in result
+
+    def test_single_match_format(self):
+        """Should format single match in grep style."""
+        matches = [{"path": "src/auth.py", "line_number": 45, "match": "def get_user(id):"}]
+        result = format_grep_matches(matches, "get_user")
+
+        assert "Found 1 match" in result
+        assert "src/auth.py:45:" in result
+        assert "def get_user(id):" in result
+
+    def test_multiple_matches_format(self):
+        """Should format multiple matches in grep style."""
+        matches = [
+            {"path": "src/auth.py", "line_number": 45, "match": "def get_user(id):"},
+            {"path": "src/models.py", "line_number": 12, "match": "  user = get_user(uid)"},
+        ]
+        result = format_grep_matches(matches, "get_user")
+
+        assert "Found 2 match" in result
+        assert "src/auth.py:45:" in result
+        assert "src/models.py:12:" in result
+
+    def test_strips_match_whitespace(self):
+        """Should strip leading/trailing whitespace from match."""
+        matches = [{"path": "test.py", "line_number": 1, "match": "    indented code    "}]
+        result = format_grep_matches(matches, "code")
+
+        assert "indented code" in result
+        assert "    indented code    " not in result
+
+
+class TestFormatDiff:
+    """Tests for format_diff helper."""
+
+    def test_shows_path_header(self):
+        """Should start with 'Updated path'."""
+        result = format_diff("src/auth.py", ["old"], ["new"])
+
+        assert result.startswith("Updated src/auth.py")
+
+    def test_old_lines_prefixed_with_minus(self):
+        """Should prefix removed lines with '-'."""
+        result = format_diff("test.py", ["return None"], ["return value"])
+
+        assert "-  return None" in result
+
+    def test_new_lines_prefixed_with_plus(self):
+        """Should prefix added lines with '+'."""
+        result = format_diff("test.py", ["return None"], ["return value"])
+
+        assert "+  return value" in result
+
+    def test_multiple_lines(self):
+        """Should handle multiple old and new lines."""
+        old = ["def foo():", "    pass"]
+        new = ["def foo(x):", "    return x"]
+        result = format_diff("test.py", old, new)
+
+        assert "-  def foo():" in result
+        assert "-      pass" in result
+        assert "+  def foo(x):" in result
+        assert "+      return x" in result
+
+
+class TestFormatFileContent:
+    """Tests for format_file_content helper."""
+
+    def test_shows_path_header(self):
+        """Should show path at top."""
+        result = format_file_content("src/main.py", "print('hello')")
+
+        assert result.startswith("src/main.py")
+
+    def test_adds_line_numbers(self):
+        """Should add line numbers to each line."""
+        result = format_file_content("test.py", "line1\nline2\nline3")
+
+        assert "1: line1" in result
+        assert "2: line2" in result
+        assert "3: line3" in result
+
+    def test_custom_start_line(self):
+        """Should support custom start line number."""
+        result = format_file_content("test.py", "code here", start_line=45)
+
+        assert "45: code here" in result
+
+    def test_pads_line_numbers(self):
+        """Should right-align line numbers."""
+        content = "\n".join(["line"] * 100)
+        result = format_file_content("test.py", content)
+
+        # Line 1 should be padded, line 100 should not need padding
+        assert "  1: line" in result
+        assert "100: line" in result
