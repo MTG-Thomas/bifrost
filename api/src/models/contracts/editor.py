@@ -32,7 +32,7 @@ class FileMetadata(BaseModel):
     size: int | None = Field(default=None, description="Size in bytes (null for folders)")
     extension: str | None = Field(default=None, description="File extension (null for folders)")
     modified: str = Field(..., description="Last modified timestamp (ISO 8601)")
-    entity_type: Literal["workflow", "form", "agent", "module"] | None = Field(
+    entity_type: Literal["workflow", "form", "agent", "module", "text"] | None = Field(
         default=None,
         description="Platform entity type if file is a platform entity, null for regular files"
     )

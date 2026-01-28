@@ -1,10 +1,9 @@
 """
 MCP Tool Generators
 
-Generate SDK and FastMCP tool wrappers from the central registry.
+Generate FastMCP tool wrappers from the central registry.
 """
 
 from src.services.mcp_server.generators.fastmcp_generator import register_fastmcp_tools
-from src.services.mcp_server.generators.sdk_generator import create_sdk_tools
 
-__all__ = ["create_sdk_tools", "register_fastmcp_tools"]
+__all__ = ["register_fastmcp_tools"]

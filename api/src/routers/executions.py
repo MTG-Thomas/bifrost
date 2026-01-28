@@ -5,7 +5,7 @@ Provides access to workflow execution history with filtering capabilities.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -362,7 +362,9 @@ class ExecutionRepository:
     ) -> tuple[WorkflowExecution | None, str | None]:
         """Cancel a pending or running execution."""
         result = await self.db.execute(
-            select(ExecutionModel).where(ExecutionModel.id == execution_id)
+            select(ExecutionModel)
+            .options(selectinload(ExecutionModel.organization))
+            .where(ExecutionModel.id == execution_id)
         )
         execution = result.scalar_one_or_none()
 
@@ -380,8 +382,14 @@ class ExecutionRepository:
         if execution.status not in [ExecutionStatus.PENDING.value, ExecutionStatus.RUNNING.value]:
             return None, "BadRequest"
 
-        # Update status
-        execution.status = ExecutionStatus.CANCELLING.value  # type: ignore[assignment]
+        # For PENDING executions, cancel immediately - no worker has started it yet
+        # For RUNNING executions, set to CANCELLING and let the worker handle it
+        if execution.status == ExecutionStatus.PENDING.value:
+            new_status = ExecutionStatus.CANCELLED.value
+        else:
+            new_status = ExecutionStatus.CANCELLING.value
+
+        execution.status = new_status  # type: ignore[assignment]
 
         await self.db.flush()
         await self.db.refresh(execution)
@@ -389,11 +397,11 @@ class ExecutionRepository:
         # Publish update
         await publish_execution_update(
             execution_id=execution_id,
-            status=ExecutionStatus.CANCELLING.value,
+            status=new_status,
         )
         await publish_history_update(
             execution_id=execution_id,
-            status=ExecutionStatus.CANCELLING.value,
+            status=new_status,
             executed_by=execution.executed_by,
             executed_by_name=execution.executed_by_name,
             workflow_name=execution.workflow_name,
@@ -744,12 +752,17 @@ async def cancel_execution(
             detail=f"Cannot cancel execution {execution_id} - must be Pending or Running",
         )
     elif execution is not None:
-        # Found in PostgreSQL and status is cancellable
-        # Set Redis cancel flag so the execution pool can terminate the worker
-        await redis_client.set_cancel_flag(str(execution_id))
-        # Publish cancel event via pub/sub for immediate process termination
-        await redis_client.publish_cancel_event(str(execution_id))
-        logger.info(f"Set cancel flag and published event for execution: {execution_id}")
+        # Found in PostgreSQL and status was updated
+        # Only publish cancel event if execution is CANCELLING (was RUNNING)
+        # PENDING executions are directly set to CANCELLED - no worker to notify
+        if execution.status == ExecutionStatus.CANCELLING:
+            # Set Redis cancel flag so the execution pool can terminate the worker
+            await redis_client.set_cancel_flag(str(execution_id))
+            # Publish cancel event via pub/sub for immediate process termination
+            await redis_client.publish_cancel_event(str(execution_id))
+            logger.info(f"Set cancel flag and published event for execution: {execution_id}")
+        else:
+            logger.info(f"Execution {execution_id} was PENDING, cancelled directly in DB")
         return execution
 
     # Not found in PostgreSQL - check if it's still pending in Redis
@@ -782,7 +795,7 @@ async def cancel_execution(
     "/cleanup/stuck",
     response_model=StuckExecutionsResponse,
     summary="Get stuck executions",
-    description="Get executions that have been running or pending too long (Platform admin only)",
+    description="Get executions that have been running, pending, or cancelling too long (Platform admin only)",
 )
 async def get_stuck_executions(
     ctx: Context,
@@ -795,14 +808,15 @@ async def get_stuck_executions(
             detail="Platform admin privileges required",
         )
 
-    # Find executions that have been pending/running for too long
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    # Find executions that have been pending/running/cancelling for too long
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
 
     query = select(ExecutionModel).where(
         and_(
             ExecutionModel.status.in_([
                 ExecutionStatus.PENDING.value,
                 ExecutionStatus.RUNNING.value,
+                ExecutionStatus.CANCELLING.value,
             ]),
             ExecutionModel.started_at < cutoff,
         )
@@ -824,7 +838,7 @@ async def get_stuck_executions(
     "/cleanup/trigger",
     response_model=CleanupTriggeredResponse,
     summary="Trigger execution cleanup",
-    description="Clean up stuck executions by marking them as timed out (Platform admin only)",
+    description="Clean up stuck executions by marking them as timed out or cancelled (Platform admin only)",
 )
 async def trigger_cleanup(
     ctx: Context,
@@ -838,7 +852,7 @@ async def trigger_cleanup(
         )
 
     # Find stuck executions
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
 
     # Count pending
     pending_query = select(ExecutionModel).where(
@@ -860,24 +874,48 @@ async def trigger_cleanup(
     running_result = await ctx.db.execute(running_query)
     running_executions = running_result.scalars().all()
 
-    # Update all stuck executions to FAILED with timeout message
+    # Count cancelling (stuck in cancelling state)
+    cancelling_query = select(ExecutionModel).where(
+        and_(
+            ExecutionModel.status == ExecutionStatus.CANCELLING.value,
+            ExecutionModel.started_at < cutoff,
+        )
+    )
+    cancelling_result = await ctx.db.execute(cancelling_query)
+    cancelling_executions = cancelling_result.scalars().all()
+
+    # Update all stuck executions
     failed_count = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # PENDING and RUNNING -> FAILED with timeout message
     for execution in list(pending_executions) + list(running_executions):
         try:
             execution.status = ExecutionStatus.FAILED.value  # type: ignore[assignment]
             execution.error_message = f"Execution timed out after {hours} hours"
-            execution.completed_at = datetime.utcnow()
+            execution.completed_at = now
         except Exception as e:
             logger.error(f"Failed to cleanup execution {execution.id}: {e}")
             failed_count += 1
 
+    # CANCELLING -> CANCELLED (they were being cancelled but got stuck)
+    for execution in cancelling_executions:
+        try:
+            execution.status = ExecutionStatus.CANCELLED.value  # type: ignore[assignment]
+            execution.error_message = "Cancellation completed by cleanup job"
+            execution.completed_at = now
+        except Exception as e:
+            logger.error(f"Failed to cleanup cancelling execution {execution.id}: {e}")
+            failed_count += 1
+
     await ctx.db.flush()
 
-    total_cleaned = len(pending_executions) + len(running_executions) - failed_count
+    total_cleaned = len(pending_executions) + len(running_executions) + len(cancelling_executions) - failed_count
 
     logger.info(
         f"Cleanup triggered: {total_cleaned} executions cleaned "
-        f"({len(pending_executions)} pending, {len(running_executions)} running, {failed_count} failed)"
+        f"({len(pending_executions)} pending, {len(running_executions)} running, "
+        f"{len(cancelling_executions)} cancelling, {failed_count} failed)"
     )
 
     return CleanupTriggeredResponse(

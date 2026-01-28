@@ -56,6 +56,11 @@ def detect_platform_entity_type(path: str, content: bytes) -> str | None:
     if path.endswith(".py"):
         return detect_python_entity_type(content)
 
+    # Text/documentation files - stored in workspace_files.content
+    text_extensions = (".md", ".txt", ".rst", ".yaml", ".yml", ".toml", ".ini", ".cfg")
+    if path.endswith(text_extensions):
+        return "text"
+
     # Regular file - goes to S3
     return None
 

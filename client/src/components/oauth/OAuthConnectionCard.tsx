@@ -335,6 +335,29 @@ export function OAuthConnectionCard({
 						</Button>
 					)}
 
+					{/* For client_credentials with not_connected/failed status, show Get Token button */}
+					{needsReconnection && !canConnect && (
+						<Button
+							onClick={() => onRefresh(connection.connection_name)}
+							disabled={isRefreshing}
+							className="flex-1"
+						>
+							{isRefreshing ? (
+								<>
+									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+									Getting Token...
+								</>
+							) : (
+								<>
+									<RefreshCw className="mr-2 h-4 w-4" />
+									{connection.status === "failed"
+										? "Retry"
+										: "Get Token"}
+								</>
+							)}
+						</Button>
+					)}
+
 					{connection.status === "completed" && canConnect && (
 						<Button
 							onClick={handleAuthorizeClick}

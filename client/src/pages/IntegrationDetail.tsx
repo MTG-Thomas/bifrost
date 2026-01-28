@@ -1033,10 +1033,11 @@ export function IntegrationDetail() {
 									</div>
 								)}
 
-								{/* No refresh token warning */}
+								{/* No refresh token warning - only show for authorization_code flow */}
 								{isOAuthConnected &&
 									oauthConfig &&
-									oauthConfig.has_refresh_token === false && (
+									oauthConfig.has_refresh_token === false &&
+									canUseAuthCodeFlow && (
 										<div className="flex items-center gap-2 p-2 rounded bg-yellow-50 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300 text-sm">
 											<AlertCircle className="h-4 w-4" />
 											No refresh token - manual
@@ -1106,6 +1107,34 @@ export function IntegrationDetail() {
 											)}
 										</Button>
 									)}
+									{/* For client_credentials flow when not connected, show Get Token button */}
+									{!canUseAuthCodeFlow &&
+										!isOAuthConnected &&
+										oauthConfig && (
+											<Button
+												variant="default"
+												size="sm"
+												className="flex-1"
+												onClick={
+													handleIntegrationOAuthRefresh
+												}
+												disabled={
+													refreshMutation.isPending
+												}
+											>
+												{refreshMutation.isPending ? (
+													<>
+														<Loader2 className="mr-2 h-3 w-3 animate-spin" />
+														Getting Token...
+													</>
+												) : oauthConfig?.status ===
+												  "failed" ? (
+													"Retry"
+												) : (
+													"Get Token"
+												)}
+											</Button>
+										)}
 									{isOAuthConnected &&
 										oauthConfig?.expires_at && (
 											<Button

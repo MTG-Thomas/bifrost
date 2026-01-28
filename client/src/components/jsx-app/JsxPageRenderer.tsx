@@ -164,7 +164,7 @@ export function JsxPageRenderer({
 	}
 
 	return (
-		<JsxErrorBoundary filePath={file.path}>
+		<JsxErrorBoundary filePath={file.path} resetKey={file.updated_at}>
 			<PageComponent />
 		</JsxErrorBoundary>
 	);

@@ -5,27 +5,48 @@ Database operations for workflow executions.
 Handles CRUD operations for Execution and ExecutionLog tables.
 """
 
+import json
 import logging
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from decimal import Decimal
-
 from sqlalchemy import desc, func, select, update
 
+from src.core.auth import UserPrincipal
 from src.models import (
+    AIUsage,
     AIUsagePublicSimple,
     AIUsageTotalsSimple,
-    ExecutionLog as ExecutionLogSchema,
+    Execution,
+    ExecutionLog,
+    ExecutionLogPublic,
     WorkflowExecution,
 )
 from src.models.enums import ExecutionStatus
-from src.core.auth import UserPrincipal
-from src.models import AIUsage, Execution, ExecutionLog
 from src.repositories.base import BaseRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _make_json_safe(value: Any) -> Any:
+    """
+    Convert a value to be JSON-safe for JSONB storage.
+
+    Handles datetime, UUID, Decimal, and other non-serializable types
+    by converting them to their string representations.
+
+    Args:
+        value: Any value that may contain non-JSON-serializable types
+
+    Returns:
+        JSON-safe value with all non-serializable types converted to strings
+    """
+    if value is None:
+        return None
+    # Round-trip through JSON with default=str to handle any non-serializable types
+    return json.loads(json.dumps(value, default=str))
 
 
 class ExecutionRepository(BaseRepository[Execution]):
@@ -151,7 +172,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         }
 
         if result is not None:
-            update_values["result"] = result
+            update_values["result"] = _make_json_safe(result)
             # Normalize result_type to frontend-friendly values
             python_type = type(result).__name__
             if python_type in ("dict", "list"):
@@ -173,7 +194,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             update_values["completed_at"] = datetime.utcnow()
 
         if variables is not None:
-            update_values["variables"] = variables
+            update_values["variables"] = _make_json_safe(variables)
 
         # Resource metrics
         if metrics is not None:
@@ -324,11 +345,13 @@ class ExecutionRepository(BaseRepository[Execution]):
         log_entries = logs_result.scalars().all()
 
         logs = [
-            ExecutionLogSchema(
+            ExecutionLogPublic(
+                id=log.id,
                 timestamp=log.timestamp.isoformat() if log.timestamp else "",
                 level=log.level or "info",
                 message=log.message or "",
                 data=log.log_metadata,
+                sequence=log.sequence or 0,
             )
             for log in log_entries
         ]
@@ -432,7 +455,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         self,
         execution_id: UUID,
         user: UserPrincipal,
-    ) -> tuple[list[ExecutionLogSchema] | None, str | None]:
+    ) -> tuple[list[ExecutionLogPublic] | None, str | None]:
         """Get execution logs from the execution_logs table."""
         # First check if execution exists and user has access
         result = await self.session.execute(
@@ -462,11 +485,13 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         # Convert ORM models to Pydantic models
         logs = [
-            ExecutionLogSchema(
+            ExecutionLogPublic(
+                id=log.id,
                 timestamp=log.timestamp.isoformat() if log.timestamp else "",
                 level=log.level or "info",
                 message=log.message or "",
                 data=log.log_metadata,
+                sequence=log.sequence or 0,
             )
             for log in log_entries
         ]

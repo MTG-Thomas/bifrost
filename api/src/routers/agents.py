@@ -30,6 +30,7 @@ from src.models.contracts.agents import (
 )
 from src.models.orm import Agent, AgentDelegation, AgentRole, AgentTool, Role, Workflow
 from src.repositories.agents import AgentRepository
+from src.services.mcp_server.tool_registry import get_all_tool_ids
 from src.services.workflow_role_service import sync_agent_roles_to_workflows
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,15 @@ async def _validate_agent_references(
 
 
 def _agent_to_public(agent: Agent) -> AgentPublic:
-    """Convert Agent ORM to AgentPublic with relationships."""
+    """Convert Agent ORM to AgentPublic with relationships.
+
+    Filters out orphaned references:
+    - tool_ids: Only includes active workflows
+    - system_tools: Only includes tools that exist in the registry
+    """
+    # Get valid system tool IDs from registry
+    valid_system_tool_ids = set(get_all_tool_ids())
+
     return AgentPublic(
         id=agent.id,
         name=agent.name,
@@ -121,11 +130,11 @@ def _agent_to_public(agent: Agent) -> AgentPublic:
         created_by=agent.created_by,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
-        tool_ids=[str(t.id) for t in agent.tools],
+        tool_ids=[str(t.id) for t in agent.tools if t.is_active],
         delegated_agent_ids=[str(a.id) for a in agent.delegated_agents],
         role_ids=[str(r.id) for r in agent.roles],
         knowledge_sources=agent.knowledge_sources or [],
-        system_tools=agent.system_tools or [],
+        system_tools=[t for t in (agent.system_tools or []) if t in valid_system_tool_ids],
         llm_model=agent.llm_model,
         llm_max_tokens=agent.llm_max_tokens,
         llm_temperature=agent.llm_temperature,
@@ -515,7 +524,11 @@ async def delete_agent(
     db: DbSession,
     user: CurrentSuperuser,
 ) -> None:
-    """Soft delete an agent (platform admin only)."""
+    """Soft delete an agent (platform admin only).
+
+    System agents can be deleted - they will be recreated on next startup
+    if they are still defined in the system agent definitions.
+    """
     result = await db.execute(
         select(Agent).where(Agent.id == agent_id)
     )
@@ -525,13 +538,6 @@ async def delete_agent(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
-        )
-
-    # Prevent deletion of system agents
-    if agent.is_system:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="System agents cannot be deleted",
         )
 
     # Soft delete

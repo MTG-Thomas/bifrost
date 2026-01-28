@@ -92,8 +92,7 @@ async def global_agent(db_session: AsyncSession) -> AsyncGenerator[Agent, None]:
         access_level=AgentAccessLevel.ROLE_BASED,
         organization_id=None,  # Global
         is_active=True,
-        is_coding_mode=False,
-        is_system=False,
+                is_system=False,
         knowledge_sources=[],
         system_tools=[],
         created_by="test@example.com",
@@ -125,7 +124,6 @@ async def org_agent(
         access_level=AgentAccessLevel.ROLE_BASED,
         organization_id=test_org_id,  # Org-scoped
         is_active=True,
-        is_coding_mode=False,
         is_system=False,
         knowledge_sources=[],
         system_tools=[],
@@ -156,8 +154,7 @@ async def global_only_agent(db_session: AsyncSession) -> AsyncGenerator[Agent, N
         access_level=AgentAccessLevel.ROLE_BASED,
         organization_id=None,  # Global
         is_active=True,
-        is_coding_mode=False,
-        is_system=False,
+                is_system=False,
         knowledge_sources=[],
         system_tools=[],
         created_by="test@example.com",

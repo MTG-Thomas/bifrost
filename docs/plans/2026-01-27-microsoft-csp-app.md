@@ -99,30 +99,61 @@ Future: Support adding custom APIs by enterprise application ID.
 3. Consent button → runs consent workflow with selected permissions
 4. Status shows consent state per tenant
 
-### Consent Workflow (Enhanced)
+### Required Delegated Permissions (Bootstrap)
 
-When user clicks "Consent" on a tenant:
+These delegated permissions are **required** and non-optional - they're needed to install application permissions:
+
+- `Directory.ReadWrite.All` - Find/manage service principals in customer tenant
+- `AppRoleAssignment.ReadWrite.All` - Assign app roles to partner app's service principal
+
+These must always be included when consenting to customer tenants.
+
+### Partner Tenant Flow (One-time Setup)
+
+Before rolling out to customers, install app permissions on your own partner tenant:
+
+1. **Select permissions** in the UI (delegated + application)
+2. **No Partner Center consent needed** - app is already registered in your tenant
+3. **Authenticate to partner tenant** - use existing delegated token
+4. **Grant application permissions** via Graph API:
+   - Find partner app's service principal in partner tenant
+   - For each selected app permission, assign app role to service principal
+
+### Customer Tenant Flow (Per-customer Consent)
+
+When user clicks "Consent" on a customer tenant:
 
 1. **Read selected permissions** from `microsoft_selected_permissions` table
 
-2. **Grant delegated permissions** via Partner Center API:
+2. **Grant delegated permissions** via Partner Center API (installs app + grants delegated):
    ```
    POST https://api.partnercenter.microsoft.com/v1/customers/{tenant_id}/applicationconsents
    {
      "applicationId": "{partner_app_id}",
      "applicationGrants": [{
        "enterpriseApplicationId": "00000003-0000-0000-c000-000000000000",
-       "scope": "Directory.Read.All,User.Read.All,..."
+       "scope": "Directory.ReadWrite.All,AppRoleAssignment.ReadWrite.All,User.Read.All,..."
      }]
    }
    ```
+   Note: Always includes required bootstrap permissions + user-selected delegated permissions.
 
-3. **Grant application permissions** via Graph API:
-   - Connect to customer tenant using CSP delegated access
+3. **Exchange token for customer tenant** - refresh against customer's tenant ID
+
+4. **Grant application permissions** via Graph API (using delegated access):
    - Find partner app's service principal in customer tenant
-   - For each app permission, assign app role to service principal
+   - For each selected app permission, assign app role to service principal
+   ```python
+   # For each app permission:
+   POST /servicePrincipals/{resource_sp_id}/appRoleAssignedTo
+   {
+     "principalId": "{partner_app_sp_id}",
+     "resourceId": "{resource_sp_id}",
+     "appRoleId": "{app_role_id}"
+   }
+   ```
 
-4. **Create IntegrationMapping** for "Microsoft" integration:
+5. **Create IntegrationMapping** for "Microsoft" integration:
    ```python
    await integrations.upsert_mapping(
        "Microsoft",
@@ -132,7 +163,7 @@ When user clicks "Consent" on a tenant:
    )
    ```
 
-5. **Update consent status** in `csp_tenant_status` table
+6. **Update consent status** in `csp_tenant_status` table
 
 ### App UI Structure
 
@@ -169,11 +200,12 @@ When user clicks "Consent" on a tenant:
 3. Ensure "Microsoft CSP" integration exists with delegated OAuth
 
 #### Phase 2b: Workflows
-1. `check_microsoft_setup` - Returns status of both integrations
-2. `list_available_permissions` - Fetches permissions from Microsoft service principals
-3. `save_selected_permissions` - Persists to table
-4. `get_selected_permissions` - Reads from table
-5. Update `consent_tenant` - Use selected permissions, grant both delegated and app permissions, create IntegrationMapping
+1. `check_microsoft_setup` - Returns status of both integrations ✅
+2. `list_available_permissions` - Fetches permissions from Microsoft service principals ✅
+3. `save_selected_permissions` - Persists to table (marks required permissions)
+4. `get_selected_permissions` - Reads from table (includes required flag)
+5. `apply_partner_permissions` - Grants app permissions to partner app in own tenant
+6. Update `consent_tenant` - Two-step: Partner Center consent (delegated) → Graph API (app permissions), create IntegrationMapping
 
 #### Phase 2c: App UI
 1. Refactor page with three status cards header
@@ -1274,3 +1306,120 @@ refresh_token = integration.oauth.refresh_token
 - [x] Update MCP app schema documentation (no imports, use workflow IDs, use Outlet)
 - [x] Update Platform Assistant system prompt with code-based app building guidance
 - [x] Update bifrost-integrations-docs with code-based app documentation
+
+---
+
+## Phase 2 Progress
+
+### Session: 2026-01-27
+
+#### Completed Tasks
+
+- [x] **Task 1: Auto-Refresh Token for Templated URLs**
+  - Added `should_auto_refresh_token()` helper to `api/src/routers/cli.py`
+  - Modified `_build_oauth_data()` to fetch fresh tokens when URL contains `{entity_id}`
+  - Created `api/tests/unit/routers/test_cli_auto_refresh.py` with 9 passing unit tests
+  - Committed: `feat: auto-refresh tokens when token_url contains {entity_id}`
+
+- [x] **Task 2: Create check_microsoft_setup Workflow**
+  - Created via Bifrost MCP: `features/microsoft_csp/workflows/check_setup.py`
+  - Workflow ID: `ec165a28-94ef-4fef-9779-e32c1ce48979`
+  - Checks both Microsoft CSP (needs refresh_token) and Microsoft (needs client credentials) integrations
+
+- [x] **Task 3: Create list_available_permissions Workflow**
+  - Created via Bifrost MCP: `features/microsoft_csp/workflows/list_permissions.py`
+  - Workflow ID: `94d8419c-44f2-4e86-bf5f-2df92b9ef933`
+  - Fetches permissions from Graph, Exchange, SharePoint, Defender APIs
+  - **Note:** Requires `Application.Read.All` delegated permission on the Microsoft CSP integration
+  - Successfully returned: 735 Graph, 52 Exchange, 27 SharePoint, 32 Defender permissions
+
+- [x] **Task 4: Create Permission Selection Workflows**
+  - Created via Bifrost MCP: `features/microsoft_csp/workflows/save_permissions.py`
+    - Workflow ID: `7aa4065e-9c69-4056-a7ff-33145d78e70d`
+    - **Always includes required bootstrap permissions** (Directory.ReadWrite.All, AppRoleAssignment.ReadWrite.All)
+    - These required permissions cannot be deselected in the UI
+  - Created via Bifrost MCP: `features/microsoft_csp/workflows/get_permissions.py`
+    - Workflow ID: `b6317462-15cc-413c-afa7-dc0e8e1f3342`
+    - Returns permissions with `required` flag for UI display
+
+- [x] **Task 9 (added): Create apply_partner_permissions Workflow**
+  - Created via Bifrost MCP: `features/microsoft_csp/workflows/apply_partner_permissions.py`
+  - Workflow ID: `07a5f9d5-48df-472d-b427-793eb6da2f45`
+  - Grants app permissions to partner app in MSP's own tenant
+  - Uses Graph API appRoleAssignedTo endpoint
+  - **Status:** Created and tested, received expected "Insufficient privileges" error
+  - **Next step:** User needs Cloud Application Administrator role to test successfully
+
+#### Bug Fixes During Session
+
+- **Fixed `get_execution` MCP tool TypeError**: The tool was using `ExecutionLog` (SQLAlchemy model) instead of `ExecutionLogPublic` (Pydantic model), causing `'data' is an invalid keyword argument` errors. Fixed in `api/src/repositories/executions.py`.
+
+### Session: 2026-01-27 (continued) - Two-App Architecture
+
+#### Architecture Decision
+
+Split into two separate Azure AD app registrations:
+
+| App | Purpose | OAuth Flow | Where Installed |
+|-----|---------|------------|-----------------|
+| **Bifrost CSP** | Partner Center API, GDAP delegation | Authorization Code (delegated) | Partner tenant only |
+| **Bifrost Microsoft** | Graph/Exchange/SharePoint/Defender APIs | Client Credentials | Partner tenant + customer tenants |
+
+**Key insight:** The Microsoft app (client credentials) should NOT have self-management permissions (`AppRoleAssignment.ReadWrite.All` as application permission). Instead:
+- Partner tenant: PIM elevation + GDAP delegated token to grant app permissions
+- Customer tenants: GDAP delegated token (with Cloud App Admin role) to grant app permissions
+
+#### Completed Tasks (this session)
+
+- [x] **Updated `modules/microsoft/auth.py`**
+  - Added `MicrosoftAppCredentials` class
+  - Added `get_microsoft_app_credentials()` function to get credentials from "Microsoft" integration
+  - Renamed constants to `CSP_INTEGRATION_NAME` and `MICROSOFT_INTEGRATION_NAME`
+
+- [x] **Updated `apply_partner_permissions` workflow**
+  - Now uses "Microsoft" app ID (not CSP app)
+  - Added documentation about PIM elevation requirement
+  - Uses GDAP delegated token to grant app roles to Microsoft app's service principal
+
+- [x] **Updated `consent_tenant` workflow**
+  - Two-step flow: Partner Center consent → Graph API app role assignment
+  - Uses "Microsoft" app ID for Partner Center consent (installs the right app)
+  - Uses GDAP delegated token to grant application permissions
+  - Creates IntegrationMapping for "Microsoft" integration on success
+
+- [x] **Updated `link_tenant` workflow**
+  - Creates IntegrationMapping for "Microsoft" integration when linking
+
+#### Pending Tasks
+
+- [ ] **Task 6: Update App UI with Status Cards**
+  - Add three status cards header (Microsoft CSP, Microsoft, Permissions)
+  - Conditional rendering based on setup state
+
+- [ ] **Task 7: Add Permission Configuration Dialog**
+  - Fetch available permissions via `list_available_permissions`
+  - Show current selections from `get_selected_permissions`
+  - Allow toggling permissions per API (except required ones)
+  - Save via `save_selected_permissions`
+
+- [ ] **Test apply_partner_permissions with PIM elevation**
+  - User needs to PIM elevate to Cloud Application Administrator
+  - Re-test after elevation
+
+- [ ] **Test consent_tenant on a customer tenant**
+  - Verify two-step flow works end-to-end
+
+#### Key Clarifications
+
+1. **Two-app architecture** separates concerns:
+   - CSP app: delegated access for Partner Center and GDAP
+   - Microsoft app: client credentials for customer tenant APIs
+
+2. **Partner tenant flow** requires PIM elevation because your GDAP user doesn't have admin rights in your own tenant by default.
+
+3. **Customer tenant flow** uses GDAP roles - your user needs Cloud Application Administrator (or similar) as a GDAP role assignment to customer tenants.
+
+4. **No self-management permissions** on the Microsoft app means:
+   - App cannot escalate its own privileges
+   - All permission grants are done by your user (auditable)
+   - Customer can revoke GDAP to cut off your management access

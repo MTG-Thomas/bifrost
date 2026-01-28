@@ -126,18 +126,6 @@ class EventDeliveryStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-class CodingModePermission(str, Enum):
-    """
-    Permission mode for coding mode sessions (Claude Agent SDK).
-
-    Controls what actions the agent can take:
-    - PLAN: Read-only planning mode, no file writes or tool execution
-    - EXECUTE: Full execution mode with file writes and tool execution
-    """
-    PLAN = "plan"
-    EXECUTE = "acceptEdits"
-
-
 class ExecutionModel(str, Enum):
     """
     Execution model used for workflow execution.

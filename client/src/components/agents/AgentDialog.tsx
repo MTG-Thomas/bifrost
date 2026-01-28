@@ -878,6 +878,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																				t.id ===
 																				toolId,
 																		);
+																	// Skip non-existent tools (orphaned references)
+																	if (!tool)
+																		return null;
 																	return (
 																		<Badge
 																			key={
@@ -886,8 +889,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																			variant="secondary"
 																			className="mr-1 font-mono text-xs"
 																		>
-																			{tool?.name ||
-																				toolId}
+																			{
+																				tool.name
+																			}
 																			<span
 																				role="button"
 																				tabIndex={0}
@@ -951,6 +955,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																				t.id ===
 																				toolId,
 																		);
+																	// Skip non-existent tools (orphaned references)
+																	if (!tool)
+																		return null;
 																	return (
 																		<Badge
 																			key={
@@ -959,8 +966,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																			variant="secondary"
 																			className="mr-1"
 																		>
-																			{tool?.name ||
-																				toolId}
+																			{
+																				tool.name
+																			}
 																			<span
 																				role="button"
 																				tabIndex={0}

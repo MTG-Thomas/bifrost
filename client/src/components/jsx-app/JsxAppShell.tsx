@@ -27,6 +27,7 @@ import { AppLoadingSkeleton } from "./AppLoadingSkeleton";
 import { JsxErrorBoundary } from "./JsxErrorBoundary";
 import { JsxPageRenderer } from "./JsxPageRenderer";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
+import { useAppCodeUpdates } from "@/hooks/useAppCodeUpdates";
 
 type AppFileListResponse = components["schemas"]["AppFileListResponse"];
 
@@ -190,7 +191,7 @@ function LayoutWrapper({
 	}
 
 	return (
-		<JsxErrorBoundary filePath={file.path}>
+		<JsxErrorBoundary filePath={file.path} resetKey={file.updated_at}>
 			<LayoutComponent />
 		</JsxErrorBoundary>
 	);
@@ -292,7 +293,7 @@ function ProvidersWrapper({
 	}
 
 	return (
-		<JsxErrorBoundary filePath={file.path}>
+		<JsxErrorBoundary filePath={file.path} resetKey={file.updated_at}>
 			<ProvidersComponent>{children}</ProvidersComponent>
 		</JsxErrorBoundary>
 	);
@@ -440,6 +441,12 @@ export function JsxAppShell({
 	const [isLoading, setIsLoading] = useState(true);
 	const setAppContext = useAppBuilderStore((state) => state.setAppContext);
 
+	// Real-time updates via WebSocket (only in preview mode)
+	const { updateCounter } = useAppCodeUpdates({
+		appId,
+		enabled: isPreview,
+	});
+
 	// Set app context for navigation path transformation
 	useEffect(() => {
 		setAppContext(appSlug, isPreview);
@@ -482,7 +489,7 @@ export function JsxAppShell({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, versionId]);
+	}, [appId, versionId, updateCounter]);
 
 	// Compute user component names from files list (memoized)
 	// Must be called before any conditional returns to satisfy React Hooks rules

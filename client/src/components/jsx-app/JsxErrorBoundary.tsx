@@ -26,12 +26,16 @@ interface JsxErrorBoundaryProps {
 	onReset?: () => void;
 	/** Custom fallback UI */
 	fallback?: ReactNode;
+	/** Key that triggers automatic reset when changed (e.g., updateCounter) */
+	resetKey?: number | string;
 }
 
 interface JsxErrorBoundaryState {
 	hasError: boolean;
 	error: Error | null;
 	errorInfo: ErrorInfo | null;
+	/** Track the resetKey to detect changes */
+	prevResetKey?: number | string;
 }
 
 /**
@@ -118,7 +122,24 @@ export class JsxErrorBoundary extends Component<
 			hasError: false,
 			error: null,
 			errorInfo: null,
+			prevResetKey: props.resetKey,
 		};
+	}
+
+	static getDerivedStateFromProps(
+		props: JsxErrorBoundaryProps,
+		state: JsxErrorBoundaryState,
+	): Partial<JsxErrorBoundaryState> | null {
+		// Reset error state when resetKey changes
+		if (props.resetKey !== state.prevResetKey) {
+			return {
+				hasError: false,
+				error: null,
+				errorInfo: null,
+				prevResetKey: props.resetKey,
+			};
+		}
+		return null;
 	}
 
 	static getDerivedStateFromError(error: Error): Partial<JsxErrorBoundaryState> {

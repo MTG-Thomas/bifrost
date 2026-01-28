@@ -1,21 +1,14 @@
 """
 Bifrost MCP Server
 
-MCP server for Bifrost platform capabilities with dual-mode support:
-- Internal mode: Uses Claude Agent SDK's in-process MCP for Coding Agent
-- External mode: Uses FastMCP for HTTP access (Claude Desktop, etc.)
+MCP server for Bifrost platform capabilities using FastMCP for HTTP access.
 
 Architecture:
     - MCPContext: Holds user/org context for permission-scoped tool execution
     - BifrostMCPServer: Creates MCP servers with registered tools
-    - Supports both SDK in-process (internal) and FastMCP HTTP (external)
+    - Uses FastMCP for HTTP access (Claude Desktop, etc.)
 
 Usage:
-    # For Coding Agent (SDK in-process)
-    server = BifrostMCPServer(context)
-    sdk_server = server.get_sdk_server()
-    options = ClaudeAgentOptions(mcp_servers={"bifrost": sdk_server})
-
     # For external access (FastMCP HTTP)
     server = BifrostMCPServer(context)
     fastmcp_server = server.get_fastmcp_server()
@@ -33,28 +26,12 @@ if TYPE_CHECKING:
 # Import tools module to trigger registration via @system_tool decorators
 import src.services.mcp_server.tools  # noqa: F401
 
-from src.services.mcp_server.generators import create_sdk_tools, register_fastmcp_tools
+from src.services.mcp_server.generators import register_fastmcp_tools
 from src.services.mcp_server.tool_registry import get_all_tool_ids
 
 logger = logging.getLogger(__name__)
 
-# Claude Agent SDK for internal MCP (Coding Agent)
-try:
-    from claude_agent_sdk import create_sdk_mcp_server  # type: ignore[import-not-found]
-
-    HAS_CLAUDE_SDK = True
-except ImportError:
-    HAS_CLAUDE_SDK = False
-
-    def create_sdk_mcp_server(*args: Any, **kwargs: Any) -> Any:
-        """Stub when SDK not installed."""
-        raise ImportError(
-            "claude-agent-sdk is required for coding mode. "
-            "Install it with: pip install claude-agent-sdk"
-        )
-
-
-# FastMCP for external HTTP access - runtime import check
+# FastMCP for HTTP access - runtime import check
 HAS_FASTMCP = False
 _FastMCP: type["FastMCP"] | None = None
 _Icon: type | None = None
@@ -255,23 +232,17 @@ async def _get_context_with_namespaces() -> MCPContext:
 
 class BifrostMCPServer:
     """
-    Bifrost MCP Server with dual-mode support.
+    Bifrost MCP Server using FastMCP.
 
     Creates MCP servers with tools registered based on user context and
-    permissions. Supports both:
-    - SDK mode: In-process MCP for Claude Agent SDK (Coding Agent)
-    - FastMCP mode: HTTP server for external access (Claude Desktop)
+    permissions. Uses FastMCP for HTTP access (Claude Desktop, etc.).
 
     Usage:
         # Create server with context
         context = MCPContext(user_id=user.id, org_id=user.org_id)
         server = BifrostMCPServer(context)
 
-        # For SDK in-process use (Coding Agent)
-        sdk_server = server.get_sdk_server()
-        options = ClaudeAgentOptions(mcp_servers={"bifrost": sdk_server})
-
-        # For FastMCP HTTP use (external)
+        # For FastMCP HTTP use
         fastmcp_server = server.get_fastmcp_server()
     """
 
@@ -296,30 +267,8 @@ class BifrostMCPServer:
         if context.enabled_system_tools:
             self._enabled_tools = set(context.enabled_system_tools)
 
-        # SDK server (lazy initialized)
-        self._sdk_server: Any = None
-
         # FastMCP server (lazy initialized)
         self._fastmcp: Any = None
-
-    def get_sdk_server(self) -> Any:
-        """
-        Get Claude Agent SDK compatible MCP server.
-
-        The SDK server is cached for reuse across multiple calls.
-
-        Returns:
-            MCP server instance for ClaudeAgentOptions.mcp_servers
-        """
-        if self._sdk_server is None:
-            tools = create_sdk_tools(self.context, self._enabled_tools)
-            self._sdk_server = create_sdk_mcp_server(
-                name=self._name,
-                version="1.0.0",
-                tools=tools,
-            )
-            logger.info(f"Created SDK MCP server with {len(tools)} tools")
-        return self._sdk_server
 
     def get_fastmcp_server(self, auth: Any = None) -> "FastMCP":
         """
@@ -337,7 +286,7 @@ class BifrostMCPServer:
         """
         if not HAS_FASTMCP:
             raise ImportError(
-                "fastmcp is required for external MCP access. "
+                "fastmcp is required for MCP access. "
                 "Install it with: pip install 'fastmcp>=2.0,<3'"
             )
 
@@ -359,7 +308,7 @@ class BifrostMCPServer:
             try:
                 return _get_context_from_token()
             except Exception:
-                # Not in FastMCP request context, use provided context (SDK mode)
+                # Not in FastMCP request context, use provided context
                 return default_context
 
         # If auth is provided, always create a new server with auth

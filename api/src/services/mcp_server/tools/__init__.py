@@ -13,7 +13,6 @@ To add a new tool:
 Structure:
 - workflow.py     - execute, list, validate, create workflows
 - forms.py        - form CRUD and schema
-- files.py        - workspace file operations
 - knowledge.py    - knowledge base search
 - integrations.py - list integrations
 - execution.py    - execution history
@@ -23,14 +22,13 @@ Structure:
 - tables.py       - table CRUD and schema
 - organizations.py - organization CRUD (restricted)
 - agents.py       - agent CRUD and schema
-- app_files.py    - app file CRUD for code engine apps
+- code_editor.py  - precision editing tools for code content
 """
 
 # Import all tool modules to trigger registration
 # The @system_tool decorator registers each function in the global registry
 from src.services.mcp_server.tools import workflow  # noqa: F401
 from src.services.mcp_server.tools import forms  # noqa: F401
-from src.services.mcp_server.tools import files  # noqa: F401
 from src.services.mcp_server.tools import knowledge  # noqa: F401
 from src.services.mcp_server.tools import integrations  # noqa: F401
 from src.services.mcp_server.tools import execution  # noqa: F401
@@ -40,4 +38,4 @@ from src.services.mcp_server.tools import tables  # noqa: F401
 from src.services.mcp_server.tools import organizations  # noqa: F401
 from src.services.mcp_server.tools import sdk  # noqa: F401
 from src.services.mcp_server.tools import agents  # noqa: F401
-from src.services.mcp_server.tools import app_files  # noqa: F401
+from src.services.mcp_server.tools import code_editor  # noqa: F401

@@ -11,22 +11,22 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.constants import PROVIDER_ORG_ID
 from src.models.enums import AgentAccessLevel
 from src.models.orm import Agent
 from src.routers.tools import get_system_tool_ids
 
 logger = logging.getLogger(__name__)
 
-# System coding agent definition
-CODING_AGENT_NAME = "Coding Assistant"
+# System assistant definition
+CODING_AGENT_NAME = "Platform Assistant"
 CODING_AGENT_DESCRIPTION = (
-    "AI-powered workflow development assistant. Helps create workflows, "
-    "tools, and integrations using the Bifrost SDK. Uses Claude's coding "
-    "capabilities with access to platform documentation and examples."
+    "AI-powered platform assistant. Helps create workflows, "
+    "tools, and integrations. Has access to platform documentation and examples."
 )
 
 # System prompt will be in prompts.py - this is just the database record
-CODING_AGENT_SYSTEM_PROMPT = """You are Bifrost's Coding Assistant.
+CODING_AGENT_SYSTEM_PROMPT = """You are Bifrost's Platform Assistant.
 
 Your role is to help platform administrators create and modify Bifrost workflows, tools, and integrations.
 
@@ -87,11 +87,30 @@ async def my_workflow(param1: str) -> dict:
 
 **You have MCP tools available for all file operations.** Use these tools instead of trying to access the filesystem directly:
 
-- `list_files` - List files in the workspace
-- `read_file` - Read file contents
-- `write_file` - Create or update files
-- `delete_file` - Delete files
-- `search_files` - Search across file contents
+### Precision Editing Workflow
+
+When editing code, follow this workflow for accurate, surgical changes:
+
+1. **Search** - Use `search_content` to find relevant patterns (regex supported)
+2. **Read Range** - Use `read_content_lines` to read specific line ranges with context
+3. **Patch** - Use `patch_content` for surgical string replacements (preferred)
+4. **Replace** - Use `replace_content` only for new files or complete rewrites
+
+### Available Code Editing Tools
+
+- `list_content` - List files by entity type (app_file, workflow, module)
+- `search_content` - Search for patterns with regex, returns matches with context
+- `read_content_lines` - Read specific line ranges from a file
+- `get_content` - Get entire file content (use sparingly for large files)
+- `patch_content` - Surgical edit: replace old_string with new_string (must be unique)
+- `replace_content` - Replace entire file content or create new file
+- `delete_content` - Delete a file
+
+### Entity Types
+
+- `app_file` - TSX/TypeScript files in App Builder (requires `app_id`)
+- `workflow` - Python workflow code (can filter by `organization_id`)
+- `module` - Python helper modules in workspace files
 
 The workspace is organized as follows:
 ```
@@ -153,28 +172,59 @@ Before declaring any artifact complete, you MUST test it:
 1. Create via `create_form` (validates automatically)
 2. Verify referenced `workflow_id` exists and works
 
-### App Building (Granular Approach)
-Apps are built in pieces, NOT as a single JSON blob:
-1. `create_app` - Create app metadata (name, description)
-2. `create_page` - Add pages one at a time (validates automatically)
-3. `create_component` - Add components to pages (validates automatically)
-4. `update_component` - Modify individual components
-5. Preview and test in draft mode (apps stay in draft until published)
+### Code-Based App Building
+
+Apps use TSX files, NOT JSON. Use `get_app_schema` to see full documentation.
+
+**CRITICAL RULES:**
+1. **NO IMPORT STATEMENTS** - All modules are auto-provided (React hooks, UI components, icons, etc.)
+2. **USE WORKFLOW IDs** - Always use UUIDs, not names: `useWorkflow("uuid-here")` not `useWorkflow("name")`
+3. **USE `<Outlet />`** - Layouts must use `<Outlet />` for routing, NOT `{children}` prop
+
+**Building Steps:**
+1. `create_app` - Create app metadata (name, slug, description)
+2. `list_workflows` - Get workflow IDs you'll need
+3. Create `_layout.tsx` with `<Outlet />` for routing
+4. Create `pages/index.tsx` with your UI (no imports!)
+5. Preview at `/apps/{slug}` (draft mode is automatic)
 6. Only `publish_app` when user explicitly requests it
 
+**Layout Pattern:**
+```tsx
+// _layout.tsx
+export default function RootLayout() {
+  return (
+    <div className="h-full bg-background overflow-hidden">
+      <Outlet />
+    </div>
+  );
+}
+```
+
+**Page Pattern:**
+```tsx
+// pages/index.tsx - NO IMPORTS
+export default function MyPage() {
+  const workflow = useWorkflow("uuid-from-list_workflows");
+
+  useEffect(() => { workflow.execute(); }, []);
+
+  return (
+    <div className="flex flex-col h-full p-6 overflow-hidden">
+      <h1 className="shrink-0">Title</h1>
+      <Card className="flex flex-col min-h-0 flex-1">
+        <CardContent className="flex-1 min-h-0 overflow-auto">
+          <Table>...</Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+```
+
+**Scrolling:** Use `h-full overflow-hidden` on layout, `flex flex-col h-full` on page, `shrink-0` on headers, `flex-1 min-h-0 overflow-auto` on scrollable content.
+
 DO NOT publish automatically - let the user preview and test first.
-
-### App Testing
-1. Verify `launchWorkflowId` is configured and the workflow exists
-2. Check that DataTable `dataSource` props match the workflow's `dataSourceId`
-3. Test workflow execution and data binding
-4. Test component layout (use `width` and `autoSize` for proper alignment)
-5. Test in draft mode via `/apps/{slug}?draft=true`
-
-**Workflow Data Pattern:**
-- Pages load data via `launchWorkflowId` (a workflow that returns data sources)
-- Data is accessed via `{{ workflow.<dataSourceId>.result }}` expressions
-- DataTable components use `dataSource` prop to reference the `dataSourceId`
 
 ### CRUD Testing (when building CRUD functionality)
 1. Test CREATE - execute, verify record created
@@ -228,47 +278,53 @@ async def ensure_system_agents(db: AsyncSession) -> None:
 
 async def ensure_coding_agent(db: AsyncSession) -> Agent:
     """
-    Ensure the Coding Assistant system agent exists.
+    Ensure the Platform Assistant system agent exists.
 
     Creates it if it doesn't exist, updates it if the system prompt has changed.
 
     Returns:
-        The Coding Assistant agent
+        The Platform Assistant agent
     """
-    # Look for existing coding agent by is_coding_mode flag
+    # Look for existing system agent by name
     result = await db.execute(
-        select(Agent).where(Agent.is_coding_mode == True)  # noqa: E712
+        select(Agent).where(Agent.name == CODING_AGENT_NAME, Agent.is_system == True)  # noqa: E712
     )
     agent = result.scalars().first()
 
     if agent:
-        logger.info(f"Coding Assistant agent already exists: {agent.id}")
+        logger.info(f"Platform Assistant agent already exists: {agent.id}")
         needs_update = False
 
         # Update system prompt if changed
         if agent.system_prompt != CODING_AGENT_SYSTEM_PROMPT:
             agent.system_prompt = CODING_AGENT_SYSTEM_PROMPT
             needs_update = True
-            logger.info("Updated Coding Assistant system prompt")
+            logger.info("Updated Platform Assistant system prompt")
 
         # Backfill system_tools if empty (existing agents from before this feature)
         if not agent.system_tools:
             agent.system_tools = get_system_tool_ids()
             needs_update = True
-            logger.info(f"Backfilled Coding Assistant system_tools: {agent.system_tools}")
+            logger.info(f"Backfilled Platform Assistant system_tools: {agent.system_tools}")
 
         # Ensure bifrost-docs is in knowledge_sources for platform documentation access
         if not agent.knowledge_sources or "bifrost-docs" not in agent.knowledge_sources:
             agent.knowledge_sources = list(agent.knowledge_sources or []) + ["bifrost-docs"]
             needs_update = True
-            logger.info("Added bifrost-docs to Coding Assistant knowledge_sources")
+            logger.info("Added bifrost-docs to Platform Assistant knowledge_sources")
+
+        # Ensure organization_id is set to PROVIDER_ORG_ID
+        if agent.organization_id != PROVIDER_ORG_ID:
+            agent.organization_id = PROVIDER_ORG_ID
+            needs_update = True
+            logger.info("Updated Platform Assistant organization_id to PROVIDER_ORG_ID")
 
         if needs_update:
             await db.commit()
 
         return agent
 
-    # Create new coding agent
+    # Create new system agent
     agent = Agent(
         name=CODING_AGENT_NAME,
         description=CODING_AGENT_DESCRIPTION,
@@ -276,9 +332,8 @@ async def ensure_coding_agent(db: AsyncSession) -> Agent:
         channels=["chat"],
         # Role-based with no roles = platform admins only
         access_level=AgentAccessLevel.ROLE_BASED,
-        organization_id=None,  # Global agent (no org restriction)
+        organization_id=PROVIDER_ORG_ID,  # Provider org only
         is_active=True,
-        is_coding_mode=True,
         is_system=True,  # Can't be deleted
         system_tools=get_system_tool_ids(),  # Enable all system tools
         knowledge_sources=["bifrost-docs"],  # Platform documentation access
@@ -288,26 +343,26 @@ async def ensure_coding_agent(db: AsyncSession) -> Agent:
     await db.commit()
     await db.refresh(agent)
 
-    logger.info(f"Created Coding Assistant system agent: {agent.id}")
+    logger.info(f"Created Platform Assistant system agent: {agent.id}")
     return agent
 
 
 async def get_coding_agent(db: AsyncSession) -> Agent | None:
     """
-    Get the Coding Assistant agent.
+    Get the Platform Assistant agent.
 
     Returns:
-        The Coding Assistant agent, or None if not found
+        The Platform Assistant agent, or None if not found
     """
     result = await db.execute(
-        select(Agent).where(Agent.is_coding_mode == True)  # noqa: E712
+        select(Agent).where(Agent.name == CODING_AGENT_NAME, Agent.is_system == True)  # noqa: E712
     )
     return result.scalars().first()
 
 
 async def get_coding_agent_id(db: AsyncSession) -> UUID | None:
     """
-    Get the Coding Assistant agent ID.
+    Get the Platform Assistant agent ID.
 
     Returns:
         The agent ID, or None if not found

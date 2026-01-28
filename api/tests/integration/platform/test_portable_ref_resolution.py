@@ -681,7 +681,6 @@ class TestRoundTripSHAConsistency:
             system_prompt="You are a test agent.",
             channels=["chat"],
             is_active=True,
-            is_coding_mode=False,
             created_by="test",
         )
         db_session.add(agent)

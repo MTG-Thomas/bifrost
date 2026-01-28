@@ -719,14 +719,18 @@ async def cancel_authorization(
     "/connections/{connection_name}/refresh",
     response_model=RefreshTokenResponse,
     summary="Refresh OAuth token",
-    description="Manually refresh the OAuth access token using the refresh token",
+    description="Refresh the OAuth access token. For client_credentials flow, fetches a new token. For authorization_code flow, uses the refresh token.",
 )
 async def refresh_token(
     connection_name: str,
     ctx: Context,
     user: CurrentSuperuser,
 ) -> RefreshTokenResponse:
-    """Refresh OAuth token using refresh token."""
+    """Refresh OAuth token.
+
+    For client_credentials flow: Fetches a new token using client credentials.
+    For authorization_code flow: Uses the stored refresh token.
+    """
     from src.core.security import decrypt_secret, encrypt_secret
     from src.services.oauth_provider import OAuthProviderClient
 
@@ -747,27 +751,6 @@ async def refresh_token(
             detail="No token URL configured for this connection",
         )
 
-    token = await repo.get_token(connection_name, org_id)
-
-    if not token or not token.encrypted_refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No refresh token available for this connection",
-        )
-
-    # Decrypt secrets
-    try:
-        refresh_token_value = decrypt_secret(token.encrypted_refresh_token.decode())
-        client_secret = None
-        if provider.encrypted_client_secret:
-            client_secret = decrypt_secret(provider.encrypted_client_secret.decode())
-    except Exception as e:
-        logger.error(f"Failed to decrypt credentials: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to decrypt credentials",
-        )
-
     # Resolve URL template placeholders (e.g., {entity_id} -> actual tenant ID)
     defaults = await get_url_resolution_defaults(ctx.db, provider)
     resolved_token_url = resolve_url_template(
@@ -775,41 +758,122 @@ async def refresh_token(
         defaults=defaults,
     )
 
-    # Call OAuth provider to refresh token
     oauth_client = OAuthProviderClient()
-    success, result = await oauth_client.refresh_access_token(
-        token_url=resolved_token_url,
-        refresh_token=refresh_token_value,
-        client_id=provider.client_id,
-        client_secret=client_secret,
-    )
 
-    if not success:
-        error_msg = result.get("error_description", result.get("error", "Refresh failed"))
-        provider.status = "failed"
-        provider.status_message = error_msg
-        await ctx.db.flush()
-        return RefreshTokenResponse(
-            success=False,
-            message=error_msg,
-            expires_at=None,
+    # Handle client_credentials flow differently - no refresh token needed
+    if provider.oauth_flow_type == "client_credentials":
+        # Decrypt client secret (required for client_credentials)
+        if not provider.encrypted_client_secret:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Client secret is required for client_credentials flow",
+            )
+
+        try:
+            client_secret = decrypt_secret(provider.encrypted_client_secret.decode())
+        except Exception as e:
+            logger.error(f"Failed to decrypt client secret: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to decrypt credentials",
+            )
+
+        # Get scopes
+        scopes = " ".join(provider.scopes) if provider.scopes else ""
+
+        # Fetch new token using client credentials
+        success, result = await oauth_client.get_client_credentials_token(
+            token_url=resolved_token_url,
+            client_id=provider.client_id,
+            client_secret=client_secret,
+            scopes=scopes,
         )
 
-    # Update token in database
-    token.encrypted_access_token = encrypt_secret(result["access_token"]).encode()
-    if result.get("refresh_token"):
-        token.encrypted_refresh_token = encrypt_secret(result["refresh_token"]).encode()
-    new_expires_at = result.get("expires_at")
-    token.expires_at = new_expires_at
+        if not success:
+            error_msg = result.get("error_description", result.get("error", "Token fetch failed"))
+            provider.status = "failed"
+            provider.status_message = error_msg
+            await ctx.db.flush()
+            return RefreshTokenResponse(
+                success=False,
+                message=error_msg,
+                expires_at=None,
+            )
 
-    # Update provider
-    provider.status = "completed"
-    provider.status_message = None
-    provider.last_token_refresh = datetime.utcnow()
+        # Store or update token
+        new_expires_at = result.get("expires_at")
+        if not new_expires_at:
+            # Default to 1 hour from now if no expiry provided
+            new_expires_at = datetime.utcnow() + timedelta(hours=1)
 
-    await ctx.db.flush()
+        await repo.store_token(
+            connection_name=connection_name,
+            org_id=org_id,
+            access_token=result["access_token"],
+            refresh_token=None,  # client_credentials doesn't have refresh tokens
+            expires_at=new_expires_at,
+            scopes=provider.scopes,
+        )
 
-    logger.info(f"Token refreshed successfully for {connection_name}")
+        logger.info(f"Client credentials token acquired for {connection_name}")
+
+    else:
+        # authorization_code flow - use refresh token
+        token = await repo.get_token(connection_name, org_id)
+
+        if not token or not token.encrypted_refresh_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No refresh token available for this connection",
+            )
+
+        # Decrypt secrets
+        try:
+            refresh_token_value = decrypt_secret(token.encrypted_refresh_token.decode())
+            client_secret = None
+            if provider.encrypted_client_secret:
+                client_secret = decrypt_secret(provider.encrypted_client_secret.decode())
+        except Exception as e:
+            logger.error(f"Failed to decrypt credentials: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to decrypt credentials",
+            )
+
+        # Call OAuth provider to refresh token
+        success, result = await oauth_client.refresh_access_token(
+            token_url=resolved_token_url,
+            refresh_token=refresh_token_value,
+            client_id=provider.client_id,
+            client_secret=client_secret,
+        )
+
+        if not success:
+            error_msg = result.get("error_description", result.get("error", "Refresh failed"))
+            provider.status = "failed"
+            provider.status_message = error_msg
+            await ctx.db.flush()
+            return RefreshTokenResponse(
+                success=False,
+                message=error_msg,
+                expires_at=None,
+            )
+
+        # Update token in database
+        token.encrypted_access_token = encrypt_secret(result["access_token"]).encode()
+        if result.get("refresh_token"):
+            token.encrypted_refresh_token = encrypt_secret(result["refresh_token"]).encode()
+        new_expires_at = result.get("expires_at")
+        token.expires_at = new_expires_at
+
+        # Update provider
+        provider.status = "completed"
+        provider.status_message = None
+        provider.last_token_refresh = datetime.utcnow()
+
+        await ctx.db.flush()
+
+        logger.info(f"Token refreshed successfully for {connection_name}")
 
     # Invalidate cache (token was updated)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_oauth_token:
@@ -819,7 +883,7 @@ async def refresh_token(
     expires_at_str = new_expires_at.isoformat() if new_expires_at else None
     return RefreshTokenResponse(
         success=True,
-        message="Token refreshed successfully",
+        message="Token acquired successfully" if provider.oauth_flow_type == "client_credentials" else "Token refreshed successfully",
         expires_at=expires_at_str,
     )
 

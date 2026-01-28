@@ -568,7 +568,7 @@ async def publish_app(context: Any, app_id: str) -> str:
 
             # Update application to point to new active version
             app.active_version_id = new_version.id
-            app.published_at = datetime.now(timezone.utc)
+            app.published_at = datetime.utcnow()
 
             await db.commit()
 
@@ -679,40 +679,130 @@ modules/
 - Modules: `modules/*.ts` - utilities and helpers
 - Dynamic routes: `[param].tsx` syntax
 
-## Available Imports
+## CRITICAL: No Import Statements
+
+**App files must NOT contain import statements.** The Bifrost runtime automatically provides all necessary modules in scope:
+
+- **React hooks**: `useState`, `useEffect`, `useMemo`, `useCallback`, etc.
+- **Bifrost hooks**: `useWorkflow`, `useUser`, `useNavigate`, `useLocation`, `useParams`
+- **Routing**: `Outlet`, `Link`
+- **UI components**: `Button`, `Card`, `Table`, `Select`, `Badge`, `Input`, `Skeleton`, etc.
+- **Icons**: All lucide-react icons (`Loader2`, `RefreshCw`, `Check`, `X`, `Building2`, etc.)
+- **Utilities**: `cn` (for className merging)
+
+If you add import statements, you will get: `Cannot use import statement outside a module`
+
+## useWorkflow Hook
+
+**CRITICAL: Always use workflow IDs, not names.**
 
 ```tsx
-// Bifrost SDK
-import { useWorkflow, useUser, Outlet } from "bifrost";
+// CORRECT - use the workflow UUID
+const workflow = useWorkflow("ef8cf1f2-b451-47f4-aee8-336f7cb21d33");
 
-// UI Components (shadcn/ui)
-import { Button, Card, Input, Select } from "@/components/ui";
-
-// React
-import { useState, useEffect } from "react";
+// WRONG - names don't work
+const workflow = useWorkflow("list_csp_tenants");
 ```
+
+Get workflow IDs using `list_workflows` before building the app.
+
+The hook returns: `{ result, loading, error, execute }`
+
+## Layout Pattern
+
+The root `_layout.tsx` must use `<Outlet />` for routing:
+
+```tsx
+// _layout.tsx - CORRECT
+export default function RootLayout() {
+  return (
+    <div className="h-full bg-background overflow-hidden">
+      <Outlet />
+    </div>
+  );
+}
+```
+
+**Do NOT use `{children}` prop pattern** - it doesn't work with Bifrost routing.
+
+## Scrolling and Layout
+
+For pages with scrollable content, use flex layout with overflow control:
+
+```tsx
+// Page with scrollable table
+export default function MyPage() {
+  return (
+    <div className="flex flex-col h-full p-6 overflow-hidden">
+      {/* Header - fixed */}
+      <div className="shrink-0 mb-4">
+        <h1>Title</h1>
+      </div>
+
+      {/* Content - scrollable */}
+      <Card className="flex flex-col min-h-0 flex-1">
+        <CardHeader className="shrink-0">...</CardHeader>
+        <CardContent className="flex-1 min-h-0 overflow-auto">
+          <Table>...</Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+```
+
+Key classes:
+- `h-full overflow-hidden` on layout root
+- `flex flex-col h-full overflow-hidden` on page root
+- `shrink-0` on fixed headers
+- `flex-1 min-h-0 overflow-auto` on scrollable content
 
 ## Example Page
 
 ```tsx
-import { useWorkflow } from "bifrost";
-import { Button, Card } from "@/components/ui";
-
+// pages/index.tsx - NO IMPORTS NEEDED
 export default function ClientsPage() {
-  const { data: clients, loading } = useWorkflow("list-clients");
+  // Use workflow ID, not name
+  const clientsWorkflow = useWorkflow("a1b2c3d4-0001-0001-0001-000000000001");
 
-  if (loading) return <div>Loading...</div>;
+  useEffect(() => {
+    clientsWorkflow.execute();
+  }, []);
+
+  if (clientsWorkflow.loading) {
+    return (
+      <div className="p-8">
+        <Skeleton className="h-8 w-48 mb-4" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  const clients = clientsWorkflow.result?.clients || [];
 
   return (
-    <div className="p-8">
-      <h1 className="text-2xl font-bold mb-4">Clients</h1>
-      <div className="grid gap-4">
-        {clients?.map(client => (
-          <Card key={client.id}>
-            <h3>{client.name}</h3>
-          </Card>
-        ))}
-      </div>
+    <div className="flex flex-col h-full p-6 overflow-hidden">
+      <h1 className="text-2xl font-bold mb-4 shrink-0">Clients</h1>
+      <Card className="flex flex-col min-h-0 flex-1">
+        <CardContent className="flex-1 min-h-0 overflow-auto p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Email</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {clients.map(client => (
+                <TableRow key={client.id}>
+                  <TableCell>{client.name}</TableCell>
+                  <TableCell>{client.email}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }

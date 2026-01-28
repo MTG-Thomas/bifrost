@@ -484,13 +484,14 @@ class TestSystemToolMetadata:
             "list_forms",
             "get_form_schema",
             "search_knowledge",
-            # File operation tools
-            "read_file",
-            "write_file",
-            "list_files",
-            "delete_file",
-            "search_files",
-            "create_folder",
+            # Code editor tools (precision editing)
+            "list_content",
+            "search_content",
+            "read_content_lines",
+            "get_content",
+            "patch_content",
+            "replace_content",
+            "delete_content",
             # Workflow and execution tools
             "validate_workflow",
             "get_workflow_schema",

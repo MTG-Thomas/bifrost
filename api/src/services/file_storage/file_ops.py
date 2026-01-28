@@ -171,6 +171,12 @@ class FileOperationsService:
                     return file_record.content.encode("utf-8"), file_record
                 raise FileNotFoundError(f"Module content not found: {path}")
 
+            # Text: fetch from workspace_files.content (no entity_id needed)
+            elif entity_type == "text":
+                if file_record.content is not None:
+                    return file_record.content.encode("utf-8"), file_record
+                raise FileNotFoundError(f"Text file content not found: {path}")
+
         # Default: fetch from S3 (entity_type is NULL or unknown)
         logger.info(f"read_file({path}): falling through to S3 (file_record={file_record is not None})")
         async with self._s3_client.get_client() as s3:
@@ -262,12 +268,12 @@ class FileOperationsService:
         # Use UTC datetime without timezone info to match SQLAlchemy model defaults
         now = datetime.utcnow()
 
-        # For modules, store content directly in workspace_files.content
+        # For modules and text files, store content directly in workspace_files.content
         # Other entity types store content in their respective tables
-        module_content: str | None = None
-        if platform_entity_type == "module":
+        inline_content: str | None = None
+        if platform_entity_type in ("module", "text"):
             # Reuse cached decoded string if available (avoids another decode)
-            module_content = cached_content_str or content.decode("utf-8")
+            inline_content = cached_content_str or content.decode("utf-8")
 
         stmt = insert(WorkspaceFile).values(
             path=path,
@@ -280,7 +286,7 @@ class FileOperationsService:
             created_at=now,
             updated_at=now,
             entity_type=platform_entity_type,
-            content=module_content,
+            content=inline_content,
         ).on_conflict_do_update(
             index_elements=[WorkspaceFile.path],
             set_={
@@ -292,7 +298,7 @@ class FileOperationsService:
                 "is_deleted": False,
                 "updated_at": now,
                 "entity_type": platform_entity_type,
-                "content": module_content,
+                "content": inline_content,
             },
         ).returning(WorkspaceFile)
 
@@ -302,11 +308,11 @@ class FileOperationsService:
         logger.info(f"write_file({path}): upserted record entity_type={file_record.entity_type}, content_len={len(file_record.content) if file_record.content else None}")
 
         # Update module cache in Redis for immediate availability in virtual imports
-        if platform_entity_type == "module" and module_content:
-            await set_module(path, module_content, content_hash)
+        if platform_entity_type == "module" and inline_content:
+            await set_module(path, inline_content, content_hash)
             logger.info(f"write_file({path}): cached module in Redis")
             # Release the decoded string copy - can be 4MB+ for large modules
-            del module_content
+            del inline_content
 
         # Extract metadata for workflows/forms/agents
         # Pass cached AST and content_str to avoid re-parsing large Python files

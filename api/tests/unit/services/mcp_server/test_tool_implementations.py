@@ -2,7 +2,7 @@
 Unit tests for MCP tool implementations.
 
 Tests the actual tool implementation functions that handle
-file operations, workflow validation, and execution tracking.
+workflow validation, execution tracking, and knowledge search.
 """
 
 from uuid import uuid4
@@ -39,78 +39,7 @@ def admin_context():
     )
 
 
-# ==================== File Operation Tool Tests ====================
-
-
-class TestReadFileImpl:
-    """Tests for read_file tool."""
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_path_empty(self, context):
-        """Should return JSON error when path is empty."""
-        import json
-
-        from src.services.mcp_server.tools.files import read_file
-
-        result = await read_file(context, "")
-        parsed = json.loads(result)
-        assert parsed["error"] == "path is required"
-
-
-class TestWriteFileImpl:
-    """Tests for write_file tool."""
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_path_empty(self, context):
-        """Should return JSON error when path is empty."""
-        import json
-
-        from src.services.mcp_server.tools.files import write_file
-
-        result = await write_file(context, "", "content")
-        parsed = json.loads(result)
-        assert parsed["error"] == "path is required"
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_content_none(self, context):
-        """Should return JSON error when content is None."""
-        import json
-
-        from src.services.mcp_server.tools.files import write_file
-
-        result = await write_file(context, "test.txt", None)  # type: ignore[arg-type]
-        parsed = json.loads(result)
-        assert parsed["error"] == "content is required"
-
-
-class TestDeleteFileImpl:
-    """Tests for delete_file tool."""
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_path_empty(self, context):
-        """Should return JSON error when path is empty."""
-        import json
-
-        from src.services.mcp_server.tools.files import delete_file
-
-        result = await delete_file(context, "")
-        parsed = json.loads(result)
-        assert parsed["error"] == "path is required"
-
-
-class TestSearchFilesImpl:
-    """Tests for search_files tool."""
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_query_empty(self, context):
-        """Should return JSON error when query is empty."""
-        import json
-
-        from src.services.mcp_server.tools.files import search_files
-
-        result = await search_files(context, "")
-        parsed = json.loads(result)
-        assert parsed["error"] == "query is required"
+# ==================== Knowledge Tool Tests ====================
 
 
 class TestSearchKnowledgeImpl:
@@ -153,21 +82,6 @@ class TestSearchKnowledgeImpl:
         parsed = json.loads(result)
         assert "Access denied" in parsed["error"]
         assert "forbidden-ns" in parsed["error"]
-
-
-class TestCreateFolderImpl:
-    """Tests for create_folder tool."""
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_path_empty(self, context):
-        """Should return JSON error when path is empty."""
-        import json
-
-        from src.services.mcp_server.tools.files import create_folder
-
-        result = await create_folder(context, "")
-        parsed = json.loads(result)
-        assert parsed["error"] == "path is required"
 
 
 # ==================== Workflow Tool Tests ====================
@@ -306,13 +220,14 @@ class TestSystemToolsRegistry:
         assert "get_form" in tool_ids
         assert "update_form" in tool_ids
 
-        # File operations
-        assert "read_file" in tool_ids
-        assert "write_file" in tool_ids
-        assert "list_files" in tool_ids
-        assert "delete_file" in tool_ids
-        assert "search_files" in tool_ids
-        assert "create_folder" in tool_ids
+        # Code editor tools (precision editing)
+        assert "list_content" in tool_ids
+        assert "search_content" in tool_ids
+        assert "read_content_lines" in tool_ids
+        assert "get_content" in tool_ids
+        assert "patch_content" in tool_ids
+        assert "replace_content" in tool_ids
+        assert "delete_content" in tool_ids
 
         # Execution tools
         assert "list_executions" in tool_ids
@@ -325,12 +240,6 @@ class TestSystemToolsRegistry:
         assert "update_app" in tool_ids
         assert "publish_app" in tool_ids
         assert "get_app_schema" in tool_ids
-        # App file tools for code-based app builder
-        assert "list_app_files" in tool_ids
-        assert "get_app_file" in tool_ids
-        assert "create_app_file" in tool_ids
-        assert "update_app_file" in tool_ids
-        assert "delete_app_file" in tool_ids
 
         # Other tools
         assert "list_integrations" in tool_ids
@@ -339,17 +248,17 @@ class TestSystemToolsRegistry:
 
         # Total count - verify we have a reasonable number of tools
         # (exact count may change as tools are added)
-        # Reduced from 46 to 36 after removing component engine tools
-        assert len(tool_ids) >= 36, f"Expected at least 36 tools, got {len(tool_ids)}: {sorted(tool_ids)}"
+        # After removing old file tools and app_file tools, replaced by code_editor tools
+        assert len(tool_ids) >= 30, f"Expected at least 30 tools, got {len(tool_ids)}: {sorted(tool_ids)}"
 
-    def test_file_operations_disabled_for_coding_agent(self):
-        """File operation tools should be disabled by default for coding agent."""
+    def test_code_editor_tools_enabled_for_coding_agent(self):
+        """Code editor tools should be enabled by default for coding agent."""
         from src.routers.tools import SYSTEM_TOOLS
 
-        file_tools = ["read_file", "write_file", "list_files", "delete_file", "search_files", "create_folder"]
+        code_editor_tools = ["list_content", "search_content", "read_content_lines", "get_content", "patch_content", "replace_content", "delete_content"]
         for tool in SYSTEM_TOOLS:
-            if tool.id in file_tools:
-                assert tool.default_enabled_for_coding_agent is False, f"{tool.id} should be disabled for coding agent"
+            if tool.id in code_editor_tools:
+                assert tool.default_enabled_for_coding_agent is True, f"{tool.id} should be enabled for coding agent"
 
     def test_workflow_execution_tools_enabled_for_coding_agent(self):
         """Workflow and execution tools should be enabled by default for coding agent."""
@@ -385,12 +294,12 @@ class TestBifrostMCPServer:
         tool_names = server.get_tool_names()
 
         # Should have at least 18 tools prefixed with mcp__bifrost__
-        # (forms, workflows, data providers, apps, file ops, etc.)
+        # (forms, workflows, data providers, apps, code editor, etc.)
         assert len(tool_names) >= 18
 
         # Check a few are properly prefixed
         assert "mcp__bifrost__execute_workflow" in tool_names
-        assert "mcp__bifrost__read_file" in tool_names
+        assert "mcp__bifrost__search_content" in tool_names
         assert "mcp__bifrost__validate_workflow" in tool_names
 
     def test_get_tool_names_filters_by_enabled(self, context):
@@ -404,4 +313,4 @@ class TestBifrostMCPServer:
         assert len(tool_names) == 2
         assert "mcp__bifrost__execute_workflow" in tool_names
         assert "mcp__bifrost__list_workflows" in tool_names
-        assert "mcp__bifrost__read_file" not in tool_names
+        assert "mcp__bifrost__search_content" not in tool_names

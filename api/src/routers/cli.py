@@ -87,6 +87,37 @@ router = APIRouter(prefix="/api/cli", tags=["CLI"])
 
 
 # =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def should_auto_refresh_token(provider: Any, entity_id: str | None) -> bool:
+    """
+    Determine if we should auto-fetch a fresh token instead of using stored token.
+
+    Auto-refresh when:
+    1. Token URL contains {entity_id} placeholder (per-tenant endpoint)
+    2. OAuth flow is client_credentials (not authorization_code)
+    3. entity_id is provided
+
+    This enables multi-tenant client credentials where each tenant
+    requires hitting a different token endpoint.
+    """
+    if not provider or not entity_id:
+        return False
+
+    if not provider.token_url:
+        return False
+
+    # Only auto-refresh for client_credentials flow
+    if provider.oauth_flow_type != "client_credentials":
+        return False
+
+    # Check if URL has {entity_id} placeholder
+    return "{entity_id}" in provider.token_url
+
+
+# =============================================================================
 # Pydantic Models (Developer Context)
 # =============================================================================
 
@@ -610,7 +641,7 @@ async def _build_oauth_data(
     decrypt_secret: Any,
 ) -> SDKIntegrationsOAuthData:
     """Build OAuth data dict from provider and token for CLI response."""
-    # Decrypt secrets
+    # Decrypt client secret (needed for both stored tokens and auto-refresh)
     client_secret = None
     if provider.encrypted_client_secret:
         try:
@@ -621,11 +652,53 @@ async def _build_oauth_data(
         except Exception:
             logger.warning("Failed to decrypt client_secret")
 
+    # Resolve token_url with entity_id first (needed for auto-refresh check)
+    resolved_token_url = None
+    if provider.token_url and entity_id:
+        resolved_token_url = resolve_url_template(
+            url=provider.token_url,
+            entity_id=entity_id,
+            defaults=provider.token_url_defaults,
+        )
+
     access_token = None
     refresh_token = None
     expires_at = None
 
-    if token:
+    # Check if we should auto-fetch a fresh token
+    if should_auto_refresh_token(provider, entity_id):
+        logger.info(f"Auto-refreshing token for templated URL (entity_id={entity_id})")
+
+        if client_secret and resolved_token_url:
+            from src.services.oauth_provider import OAuthProviderClient
+
+            oauth_client = OAuthProviderClient()
+            scopes = " ".join(provider.scopes) if provider.scopes else ""
+
+            success, result = await oauth_client.get_client_credentials_token(
+                token_url=resolved_token_url,
+                client_id=provider.client_id,
+                client_secret=client_secret,
+                scopes=scopes,
+            )
+
+            if success:
+                access_token = result.get("access_token")
+                expires_at_dt = result.get("expires_at")
+                if expires_at_dt:
+                    expires_at = (
+                        expires_at_dt.isoformat()
+                        if hasattr(expires_at_dt, "isoformat")
+                        else str(expires_at_dt)
+                    )
+                logger.info("Auto-refresh token successful")
+            else:
+                error_msg = result.get("error_description", result.get("error", "Unknown error"))
+                logger.error(f"Auto-refresh token failed: {error_msg}")
+        else:
+            logger.warning("Cannot auto-refresh: missing client_secret or resolved_token_url")
+    elif token:
+        # Use stored token (existing behavior)
         if token.encrypted_access_token:
             try:
                 raw = token.encrypted_access_token
@@ -646,15 +719,6 @@ async def _build_oauth_data(
 
         if token.expires_at:
             expires_at = token.expires_at.isoformat()
-
-    # Resolve token_url with entity_id
-    resolved_token_url = None
-    if provider.token_url and entity_id:
-        resolved_token_url = resolve_url_template(
-            url=provider.token_url,
-            entity_id=entity_id,
-            defaults=provider.token_url_defaults,
-        )
 
     return SDKIntegrationsOAuthData(
         connection_name=provider.provider_name,

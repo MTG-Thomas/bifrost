@@ -361,8 +361,7 @@ class Settings(BaseSettings):
 
         NOTE: We no longer pre-create /tmp/bifrost/workspace. Purpose-specific
         paths are created on-demand by the services that need them:
-        - /tmp/bifrost/coding-agent - Created by coding_mode/client.py
-        - /tmp/bifrost/temp - Created here for SDK temp operations
+        - /tmp/bifrost/temp - Created here for temp operations
         """
         # Create temp location if it doesn't exist
         temp = Path(self.temp_location)

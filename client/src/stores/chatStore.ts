@@ -72,7 +72,7 @@ interface ChatState {
 
 	// Streaming state
 	isStreaming: boolean;
-	/** Completed streaming messages (for multi-message responses like coding mode) */
+	/** Completed streaming messages (for multi-message responses with tool calls) */
 	completedStreamingMessages: StreamingMessage[];
 	/** Currently building streaming message */
 	streamingMessage: StreamingMessage | null;
@@ -85,7 +85,7 @@ interface ChatState {
 	isConnected: boolean;
 	error: string | null;
 
-	// Todo list from coding mode (SDK's TodoWrite tool)
+	// Todo list from agent tools (e.g., TodoWrite tool)
 	todos: TodoItem[];
 
 	// Real message ID for streaming message (from assistant_message_id in message_start)

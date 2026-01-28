@@ -14,7 +14,7 @@ class ToolCategory(str, Enum):
     """Categories for grouping system tools."""
 
     WORKFLOW = "workflow"
-    FILE = "file"
+    CODE_EDITOR = "code_editor"
     FORM = "form"
     AGENT = "agent"
     APP_BUILDER = "app_builder"

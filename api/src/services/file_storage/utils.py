@@ -104,7 +104,6 @@ def serialize_agent_to_json(agent: "Agent") -> bytes:
         "channels": agent.channels,
         "access_level": agent.access_level.value if agent.access_level else None,
         "is_active": agent.is_active,
-        "is_coding_mode": agent.is_coding_mode,
         "is_system": agent.is_system,
         "knowledge_sources": agent.knowledge_sources,
         "system_tools": agent.system_tools,

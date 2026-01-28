@@ -71,7 +71,7 @@ async def list_forms(context: Any) -> str:
                         "id": str(form.id),
                         "name": form.name,
                         "description": form.description,
-                        "workflow_id": form.workflow_id,
+                        "workflow_id": str(form.workflow_id) if form.workflow_id else None,
                         "url": f"/forms/{form.id}",
                     }
                     for form in forms

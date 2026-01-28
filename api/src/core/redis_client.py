@@ -344,7 +344,8 @@ class RedisClient:
         try:
             # Push result to list
             # Cast needed: redis-py returns Union[Awaitable[int], int] but we're async
-            await cast(Awaitable[int], redis_client.rpush(key, json.dumps(payload)))
+            # Use default=str to handle datetime, UUID, Decimal, etc.
+            await cast(Awaitable[int], redis_client.rpush(key, json.dumps(payload, default=str)))
             # Set TTL for auto-cleanup
             await cast(Awaitable[bool], redis_client.expire(key, RESULT_TTL_SECONDS))
             logger.debug(f"Pushed result to Redis: {key}")
