@@ -9,38 +9,17 @@ import logging
 from typing import Any
 from uuid import UUID, uuid4
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="list_tables",
-    name="List Tables",
-    description="List tables in the platform. Platform admin only.",
-    category=ToolCategory.DATA_PROVIDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "scope": {
-                "type": "string",
-                "enum": ["global", "organization", "application"],
-                "description": "Filter by scope: 'global' (platform-wide), 'organization' (org-specific), 'application' (app-specific)",
-            },
-        },
-        "required": [],
-    },
-)
 async def list_tables(
     context: Any,
     scope: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """List tables with org filtering for non-admins."""
     from sqlalchemy import select
 
@@ -101,25 +80,10 @@ async def list_tables(
         return error_result(f"Error listing tables: {str(e)}")
 
 
-@system_tool(
-    id="get_table",
-    name="Get Table",
-    description="Get table details including schema by ID. Platform admin only.",
-    category=ToolCategory.DATA_PROVIDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "table_id": {"type": "string", "description": "Table UUID"},
-        },
-        "required": [],
-    },
-)
 async def get_table(
     context: Any,
     table_id: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Get table details including schema."""
     from sqlalchemy import func, select
 
@@ -198,16 +162,7 @@ async def get_table(
         return error_result(f"Error getting table: {str(e)}")
 
 
-@system_tool(
-    id="get_table_schema",
-    name="Get Table Schema Documentation",
-    description="Get documentation about table structure, column types, and scope options.",
-    category=ToolCategory.DATA_PROVIDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def get_table_schema(context: Any) -> CallToolResult:  # noqa: ARG001
+async def get_table_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Return markdown documentation about table structure generated from Pydantic models."""
     from src.models.contracts.tables import TableCreate, TableUpdate
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -274,50 +229,6 @@ When creating: Set `scope` to 'global', 'organization', or 'application'
     return success_result("Table schema documentation", {"schema": schema_doc})
 
 
-@system_tool(
-    id="create_table",
-    name="Create Table",
-    description="Create a new table with specified scope. Requires platform admin for global scope.",
-    category=ToolCategory.DATA_PROVIDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Table name"},
-            "description": {"type": "string", "description": "Table description"},
-            "scope": {
-                "type": "string",
-                "enum": ["global", "organization", "application"],
-                "description": "Table scope: 'global' (platform-wide), 'organization' (org-specific), 'application' (app-specific)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "Organization UUID (required for 'organization' and 'application' scope)",
-            },
-            "application_id": {
-                "type": "string",
-                "description": "Application UUID (required for 'application' scope)",
-            },
-            "columns": {
-                "type": "array",
-                "description": "Column definitions for the table schema",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "type": {"type": "string"},
-                        "required": {"type": "boolean"},
-                        "description": {"type": "string"},
-                        "default": {},
-                        "enum": {"type": "array"},
-                    },
-                },
-            },
-        },
-        "required": ["name"],
-    },
-)
 async def create_table(
     context: Any,
     name: str,
@@ -326,7 +237,7 @@ async def create_table(
     organization_id: str | None = None,
     application_id: str | None = None,
     columns: list[dict[str, Any]] | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Create a new table with explicit scope."""
     from sqlalchemy import select
 
@@ -430,45 +341,6 @@ async def create_table(
         return error_result(f"Error creating table: {str(e)}")
 
 
-@system_tool(
-    id="update_table",
-    name="Update Table",
-    description="Update table properties including name, description, scope, and columns.",
-    category=ToolCategory.DATA_PROVIDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "table_id": {"type": "string", "description": "Table UUID (required)"},
-            "name": {"type": "string", "description": "New table name"},
-            "description": {"type": "string", "description": "New description"},
-            "scope": {
-                "type": "string",
-                "enum": ["global", "organization", "application"],
-                "description": "New scope (changing scope affects visibility)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "New organization UUID (for scope changes)",
-            },
-            "columns": {
-                "type": "array",
-                "description": "Updated column definitions (replaces existing)",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "type": {"type": "string"},
-                        "required": {"type": "boolean"},
-                        "description": {"type": "string"},
-                    },
-                },
-            },
-        },
-        "required": ["table_id"],
-    },
-)
 async def update_table(
     context: Any,
     table_id: str,
@@ -477,7 +349,7 @@ async def update_table(
     scope: str | None = None,
     organization_id: str | None = None,
     columns: list[dict[str, Any]] | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Update table properties."""
     from sqlalchemy import select
 
@@ -579,3 +451,29 @@ async def update_table(
     except Exception as e:
         logger.exception(f"Error updating table via MCP: {e}")
         return error_result(f"Error updating table: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("list_tables", "List Tables", "List tables in the platform. Platform admin only."),
+    ("get_table", "Get Table", "Get table details including schema by ID. Platform admin only."),
+    ("get_table_schema", "Get Table Schema Documentation", "Get documentation about table structure, column types, and scope options."),
+    ("create_table", "Create Table", "Create a new table with specified scope. Requires platform admin for global scope."),
+    ("update_table", "Update Table", "Update table properties including name, description, scope, and columns."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all tables tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "list_tables": list_tables,
+        "get_table": get_table,
+        "get_table_schema": get_table_schema,
+        "create_table": create_table,
+        "update_table": update_table,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

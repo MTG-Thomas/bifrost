@@ -9,25 +9,14 @@ Use list_workflows to see data providers.
 import logging
 from typing import Any
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import success_result
 
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="get_data_provider_schema",
-    name="Get Data Provider Schema",
-    description="Get documentation about data provider structure, decorators, and examples.",
-    category=ToolCategory.DATA_PROVIDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def get_data_provider_schema(context: Any) -> CallToolResult:  # noqa: ARG001
+async def get_data_provider_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Get documentation about data provider structure and decorators generated from Pydantic models."""
     from src.models.contracts.workflows import DataProviderMetadata, WorkflowParameter
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -78,3 +67,25 @@ For `@data_provider` decorator documentation and examples, use `get_sdk_schema`.
 
     schema_doc = model_docs + usage_docs
     return success_result("Data provider schema documentation", {"schema": schema_doc})
+
+
+# Tool metadata for registration
+TOOLS = [
+    (
+        "get_data_provider_schema",
+        "Get Data Provider Schema",
+        "Get documentation about data provider structure, decorators, and examples.",
+    ),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all data_providers tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "get_data_provider_schema": get_data_provider_schema,
+    }
+
+    for tool_id, name, description in TOOLS:  # noqa: B007
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

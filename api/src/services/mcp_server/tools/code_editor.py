@@ -22,7 +22,7 @@ import re
 from typing import Any
 from uuid import UUID
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 from sqlalchemy import select
 
 from src.core.database import get_db_context
@@ -31,8 +31,6 @@ from src.models.orm.organizations import Organization
 from src.models.orm.workflows import Workflow
 from src.models.orm.workspace import WorkspaceFile
 from src.services.file_storage import FileStorageService
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import (
     error_result,
     format_diff,
@@ -462,43 +460,13 @@ async def _persist_content(
 # =============================================================================
 
 
-@system_tool(
-    id="list_content",
-    name="List Content",
-    description="List files by entity type. Returns paths without content. Use to discover what files exist before searching or reading.",
-    category=ToolCategory.CODE_EDITOR,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "entity_type": {
-                "type": "string",
-                "enum": ["app_file", "workflow", "module", "text"],
-                "description": "Type of entity to list. Optional - omit to search all types (except app_file which requires app_id)",
-            },
-            "app_id": {
-                "type": "string",
-                "description": "For app_file: the app UUID (required for app_file, optional for others)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "For workflow: limit to this organization (optional). Not applicable to modules or text.",
-            },
-            "path_prefix": {
-                "type": "string",
-                "description": "Filter to paths starting with this prefix (optional)",
-            },
-        },
-        "required": [],
-    },
-)
 async def list_content(
     context: Any,
     entity_type: str | None = None,
     app_id: str | None = None,
     organization_id: str | None = None,
     path_prefix: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """List files by entity type."""
     logger.info(f"MCP list_content: entity_type={entity_type}")
 
@@ -739,48 +707,6 @@ async def _list_text_files(
 # =============================================================================
 
 
-@system_tool(
-    id="search_content",
-    name="Search Content",
-    description="Search for patterns in code files. Returns matching lines with context. Use to find functions, imports, or usages before making edits.",
-    category=ToolCategory.CODE_EDITOR,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "pattern": {
-                "type": "string",
-                "description": "Regex pattern to search for (e.g., 'def get_.*agent', 'useWorkflow')",
-            },
-            "entity_type": {
-                "type": "string",
-                "enum": ["app_file", "workflow", "module", "text"],
-                "description": "Type of entity to search. Optional - omit to search all types (except app_file which requires app_id)",
-            },
-            "app_id": {
-                "type": "string",
-                "description": "For app_file: the app UUID (required for app_file, optional for others)",
-            },
-            "path": {
-                "type": "string",
-                "description": "Filter to a specific file path (optional - searches all if omitted)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "For workflow: limit to this organization (optional). Not applicable to modules or text.",
-            },
-            "context_lines": {
-                "type": "integer",
-                "description": "Number of lines to show before and after each match (default: 3)",
-            },
-            "max_results": {
-                "type": "integer",
-                "description": "Maximum number of matches to return (default: 20)",
-            },
-        },
-        "required": ["pattern"],
-    },
-)
 async def search_content(
     context: Any,
     pattern: str,
@@ -790,7 +716,7 @@ async def search_content(
     organization_id: str | None = None,
     context_lines: int = 3,
     max_results: int = 20,
-) -> CallToolResult:
+) -> ToolResult:
     """Search for regex patterns in code content."""
     logger.info(f"MCP search_content: pattern={pattern}, entity_type={entity_type}")
 
@@ -1100,44 +1026,6 @@ async def _search_text_files(
 # =============================================================================
 
 
-@system_tool(
-    id="read_content_lines",
-    name="Read Content Lines",
-    description="Read specific line range from a file. Use to get context around a search match without loading entire file.",
-    category=ToolCategory.CODE_EDITOR,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "entity_type": {
-                "type": "string",
-                "enum": ["app_file", "workflow", "module", "text"],
-                "description": "Type of entity",
-            },
-            "app_id": {
-                "type": "string",
-                "description": "For app_file: the app UUID (required)",
-            },
-            "path": {
-                "type": "string",
-                "description": "File path (required)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "For workflow: the organization UUID (optional for global). Not applicable to modules.",
-            },
-            "start_line": {
-                "type": "integer",
-                "description": "First line to read (1-indexed, default: 1)",
-            },
-            "end_line": {
-                "type": "integer",
-                "description": "Last line to read (defaults to start_line + 100)",
-            },
-        },
-        "required": ["entity_type", "path"],
-    },
-)
 async def read_content_lines(
     context: Any,
     entity_type: str,
@@ -1146,7 +1034,7 @@ async def read_content_lines(
     organization_id: str | None = None,
     start_line: int = 1,
     end_line: int | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Read a specific range of lines from a file."""
     logger.info(
         f"MCP read_content_lines: entity_type={entity_type}, path={path}, lines={start_line}-{end_line}"
@@ -1217,43 +1105,13 @@ async def read_content_lines(
 # =============================================================================
 
 
-@system_tool(
-    id="get_content",
-    name="Get Content",
-    description="Get entire file content. Prefer search_content + read_content_lines for large files. Use this for small files or when you need the complete picture.",
-    category=ToolCategory.CODE_EDITOR,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "entity_type": {
-                "type": "string",
-                "enum": ["app_file", "workflow", "module", "text"],
-                "description": "Type of entity",
-            },
-            "app_id": {
-                "type": "string",
-                "description": "For app_file: the app UUID (required)",
-            },
-            "path": {
-                "type": "string",
-                "description": "File path (required)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "For workflow: the organization UUID (optional for global). Not applicable to modules.",
-            },
-        },
-        "required": ["entity_type", "path"],
-    },
-)
 async def get_content(
     context: Any,
     entity_type: str,
     path: str,
     app_id: str | None = None,
     organization_id: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Get the entire content of a file."""
     logger.info(f"MCP get_content: entity_type={entity_type}, path={path}")
 
@@ -1325,45 +1183,6 @@ async def get_content(
 # =============================================================================
 
 
-@system_tool(
-    id="patch_content",
-    name="Patch Content",
-    description="Surgical edit: replace old_string with new_string. The old_string must be unique in the file. Include enough context to ensure uniqueness. Use replace_content if patch fails due to syntax issues.",
-    category=ToolCategory.CODE_EDITOR,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "entity_type": {
-                "type": "string",
-                "enum": ["app_file", "workflow", "module", "text"],
-                "description": "Type of entity",
-            },
-            "app_id": {
-                "type": "string",
-                "description": "For app_file: the app UUID (required)",
-            },
-            "path": {
-                "type": "string",
-                "description": "File path (required)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "For workflow: the organization UUID (optional for global). Not applicable to modules.",
-            },
-            "old_string": {
-                "type": "string",
-                "description": "Exact string to find and replace (must be unique in file)",
-            },
-            "new_string": {
-                "type": "string",
-                "description": "Replacement string",
-            },
-        },
-        "required": ["entity_type", "path", "old_string", "new_string"],
-    },
-)
 async def patch_content(
     context: Any,
     entity_type: str,
@@ -1372,7 +1191,7 @@ async def patch_content(
     new_string: str,
     app_id: str | None = None,
     organization_id: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Make a surgical edit by replacing a unique string."""
     logger.info(f"MCP patch_content: entity_type={entity_type}, path={path}")
 
@@ -1451,41 +1270,6 @@ async def patch_content(
 # =============================================================================
 
 
-@system_tool(
-    id="replace_content",
-    name="Replace Content",
-    description="Replace entire file content or create new file. For workflows/modules: validates syntax and confirms entity_type matches content (e.g., workflow must have @workflow decorator). Use when: (1) creating new files, (2) patch_content fails due to syntax issues, (3) file is small and full replacement is simpler. Prefer patch_content for targeted edits.",
-    category=ToolCategory.CODE_EDITOR,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "entity_type": {
-                "type": "string",
-                "enum": ["app_file", "workflow", "module", "text"],
-                "description": "Type of entity. Must match content (e.g., workflow code must have @workflow decorator)",
-            },
-            "app_id": {
-                "type": "string",
-                "description": "For app_file: the app UUID (required)",
-            },
-            "path": {
-                "type": "string",
-                "description": "File path (required)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "For workflow: the organization UUID. Omit for global scope. Not applicable to modules.",
-            },
-            "content": {
-                "type": "string",
-                "description": "New file content",
-            },
-        },
-        "required": ["entity_type", "path", "content"],
-    },
-)
 async def replace_content(
     context: Any,
     entity_type: str,
@@ -1493,7 +1277,7 @@ async def replace_content(
     content: str,
     app_id: str | None = None,
     organization_id: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Replace entire file content or create a new file."""
     logger.info(f"MCP replace_content: entity_type={entity_type}, path={path}")
 
@@ -1658,44 +1442,13 @@ async def _delete_text_file(db, context: Any, path: str) -> bool:
 # =============================================================================
 
 
-@system_tool(
-    id="delete_content",
-    name="Delete Content",
-    description="Delete a file. For workflows, this deactivates the workflow. For modules, marks as deleted. For app files, removes from the draft version.",
-    category=ToolCategory.CODE_EDITOR,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "entity_type": {
-                "type": "string",
-                "enum": ["app_file", "workflow", "module", "text"],
-                "description": "Type of entity to delete",
-            },
-            "app_id": {
-                "type": "string",
-                "description": "For app_file: the app UUID (required)",
-            },
-            "path": {
-                "type": "string",
-                "description": "File path to delete (required)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "For workflow: the organization UUID (optional). Not applicable to modules.",
-            },
-        },
-        "required": ["entity_type", "path"],
-    },
-)
 async def delete_content(
     context: Any,
     entity_type: str,
     path: str,
     app_id: str | None = None,
     organization_id: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Delete a file."""
     logger.info(f"MCP delete_content: entity_type={entity_type}, path={path}")
 
@@ -1738,3 +1491,37 @@ async def delete_content(
     except Exception as e:
         logger.exception(f"Error in delete_content: {e}")
         return error_result(str(e))
+
+
+# =============================================================================
+# Tool Registration
+# =============================================================================
+
+# Tool metadata for registration
+TOOLS = [
+    ("list_content", "List Content", "List files by entity type. Returns paths without content."),
+    ("search_content", "Search Content", "Search for patterns in code files. Returns matching lines with context."),
+    ("read_content_lines", "Read Content Lines", "Read specific line range from a file."),
+    ("get_content", "Get Content", "Get entire file content."),
+    ("patch_content", "Patch Content", "Surgical edit: replace old_string with new_string."),
+    ("replace_content", "Replace Content", "Replace entire file content or create new file."),
+    ("delete_content", "Delete Content", "Delete a file."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all code editor tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "list_content": list_content,
+        "search_content": search_content,
+        "read_content_lines": read_content_lines,
+        "get_content": get_content,
+        "patch_content": patch_content,
+        "replace_content": replace_content,
+        "delete_content": delete_content,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

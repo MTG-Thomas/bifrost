@@ -21,16 +21,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-# Import tools module to trigger registration via @system_tool decorators
-import src.services.mcp_server.tools  # noqa: F401
-
-from src.services.mcp_server.generators import register_fastmcp_tools
-from src.services.mcp_server.tool_registry import get_all_tool_ids
+from src.services.mcp_server.tools import TOOL_MODULES, register_all_tools
 from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
@@ -325,8 +321,8 @@ class BifrostMCPServer:
                 website_url=BIFROST_WEBSITE_URL,
                 icons=icons,
             )
-            register_fastmcp_tools(mcp, self.context, self._enabled_tools, get_context_fn)
-            tool_count = len(self._enabled_tools) if self._enabled_tools else len(get_all_tool_ids())
+            register_all_tools(mcp, get_context_fn)
+            tool_count = sum(len(m.TOOLS) for m in TOOL_MODULES)
             logger.info(f"Created FastMCP server with {tool_count} tools and auth")
             return mcp
 
@@ -339,19 +335,38 @@ class BifrostMCPServer:
                 website_url=BIFROST_WEBSITE_URL,
                 icons=icons,
             )
-            register_fastmcp_tools(self._fastmcp, self.context, self._enabled_tools, get_context_fn)
-            tool_count = len(self._enabled_tools) if self._enabled_tools else len(get_all_tool_ids())
+            register_all_tools(self._fastmcp, get_context_fn)
+            tool_count = sum(len(m.TOOLS) for m in TOOL_MODULES)
             logger.info(f"Created FastMCP server with {tool_count} tools")
         return self._fastmcp
 
     def get_tool_names(self) -> list[str]:
         """Get list of registered tool names (prefixed for SDK use)."""
-        all_tools = get_all_tool_ids()
+        all_tools = [tool_id for m in TOOL_MODULES for tool_id, _, _ in m.TOOLS]
         if self._enabled_tools:
             tools = [t for t in all_tools if t in self._enabled_tools]
         else:
             tools = all_tools
         return [f"mcp__{self._name}__{t}" for t in tools]
+
+
+def get_system_tools() -> list[dict[str, str]]:
+    """
+    Get system tool metadata from tool modules.
+
+    Returns list of dicts with id, name, description for each tool.
+    Used by /api/tools endpoint.
+    """
+    tools = []
+    for module in TOOL_MODULES:
+        if hasattr(module, "TOOLS"):
+            for tool_id, name, description in module.TOOLS:
+                tools.append({
+                    "id": tool_id,
+                    "name": name,
+                    "description": description,
+                })
+    return tools
 
 
 # =============================================================================
@@ -416,8 +431,8 @@ if HAS_FASTMCP:
         The execution context is retrieved dynamically from the authenticated
         token at runtime via _get_context_from_token().
 
-        Results are auto-wrapped in CallToolResult:
-        - If result is already CallToolResult, pass through
+        Results are auto-wrapped in ToolResult:
+        - If result is already ToolResult, pass through
         - If result is a JSON string, parse and wrap
         - If result has {"error": ...}, return error_result
         - Otherwise format as display text with structured data
@@ -428,8 +443,8 @@ if HAS_FASTMCP:
 
         model_config = {"arbitrary_types_allowed": True}
 
-        async def run(self, arguments: dict[str, Any]) -> CallToolResult:
-            """Execute the workflow and wrap result in CallToolResult."""
+        async def run(self, arguments: dict[str, Any]) -> ToolResult:
+            """Execute the workflow and wrap result in ToolResult."""
             try:
                 context = _get_context_from_token()
             except Exception as e:
@@ -443,8 +458,8 @@ if HAS_FASTMCP:
                     **arguments,
                 )
 
-                # If user returned CallToolResult, pass through unchanged
-                if isinstance(result, CallToolResult):
+                # If user returned ToolResult, pass through unchanged
+                if isinstance(result, ToolResult):
                     return result
 
                 # Parse JSON string if needed (legacy workflow returns)

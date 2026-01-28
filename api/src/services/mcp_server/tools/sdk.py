@@ -9,10 +9,8 @@ import inspect
 import logging
 from typing import Any
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
@@ -287,16 +285,7 @@ def _generate_models_docs() -> str:
         return ""
 
 
-@system_tool(
-    id="get_sdk_schema",
-    name="Get SDK Schema",
-    description="Get documentation about the Bifrost SDK modules, decorators, and features. Generated from actual SDK source code.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def get_sdk_schema(context: Any) -> CallToolResult:  # noqa: ARG001
+async def get_sdk_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Get SDK documentation generated from actual SDK source code."""
     try:
         # Import SDK modules
@@ -367,3 +356,25 @@ async def get_sdk_schema(context: Any) -> CallToolResult:  # noqa: ARG001
     except ImportError as e:
         logger.exception(f"Error importing SDK modules: {e}")
         return error_result(f"Error generating SDK documentation: {e}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    (
+        "get_sdk_schema",
+        "Get SDK Schema",
+        "Get documentation about the Bifrost SDK modules, decorators, and features. Generated from actual SDK source code.",
+    ),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all SDK tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "get_sdk_schema": get_sdk_schema,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

@@ -2,52 +2,51 @@
 """
 MCP Tool Result Helpers
 
-Standard helpers for building CallToolResult objects with proper
-content (human-readable) and structuredContent (machine-parseable).
+Helpers for building FastMCP ToolResult objects with proper
+content (human-readable) and structured_content (machine-parseable).
 """
 
 from typing import Any
 
-from mcp.types import CallToolResult, TextContent
+from fastmcp.tools.tool import ToolResult
 
 
-def success_result(display_text: str, data: dict[str, Any]) -> CallToolResult:
+def success_result(display_text: str, data: dict[str, Any] | None = None) -> ToolResult:
     """
     Create a successful tool result with display text and structured data.
 
     Args:
         display_text: Human-readable text for display in CLI/UI
-        data: Structured data dict for LLM parsing
+        data: Optional structured data dict for LLM parsing
 
     Returns:
-        CallToolResult with content and structuredContent
+        ToolResult with content and structured_content per MCP spec.
     """
-    return CallToolResult(
-        content=[TextContent(type="text", text=display_text)],
-        structuredContent=data,
-        isError=False,
+    return ToolResult(
+        content=display_text,
+        structured_content=data,
     )
 
 
-def error_result(error_message: str, extra_data: dict[str, Any] | None = None) -> CallToolResult:
+def error_result(error_message: str, extra_data: dict[str, Any] | None = None) -> ToolResult:
     """
     Create an error tool result.
 
     Args:
         error_message: Human-readable error description
-        extra_data: Optional additional data to include in structuredContent
+        extra_data: Optional additional data to include in structured_content
 
     Returns:
-        CallToolResult with isError=True
+        ToolResult with error information.
     """
+    display_text = f"Error: {error_message}"
     data = {"error": error_message}
     if extra_data:
         data.update(extra_data)
 
-    return CallToolResult(
-        content=[TextContent(type="text", text=f"Error: {error_message}")],
-        structuredContent=data,
-        isError=True,
+    return ToolResult(
+        content=display_text,
+        structured_content=data,
     )
 
 

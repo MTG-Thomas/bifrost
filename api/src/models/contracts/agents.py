@@ -379,10 +379,6 @@ class ToolInfo(BaseModel):
         default=False,
         description="Whether this tool is enabled by default for coding agents"
     )
-    is_restricted: bool = Field(
-        default=False,
-        description="Platform-admin only tool regardless of agent assignment"
-    )
 
 
 class ToolsResponse(BaseModel):

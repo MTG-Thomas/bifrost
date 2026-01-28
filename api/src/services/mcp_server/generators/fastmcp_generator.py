@@ -1,112 +1,70 @@
+# api/src/services/mcp_server/generators/fastmcp_generator.py
 """
-FastMCP Tool Generator
+FastMCP Tool Registration
 
-Generates FastMCP compatible tools from the registry.
+Minimal helper for registering tools with context injection.
 """
 
 import inspect
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
-from src.services.mcp_server.tool_registry import get_all_system_tools
+from fastmcp.tools.tool import ToolResult
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-    from src.services.mcp_server.server import MCPContext
-
 logger = logging.getLogger(__name__)
 
 
-def register_fastmcp_tools(
+def register_tool_with_context(
     mcp: "FastMCP",
-    context: "MCPContext",
-    enabled_tools: set[str] | None,
-    get_context_fn: Callable[[], "MCPContext"],
+    func: Callable[..., Any],
+    name: str,
+    description: str,
+    get_context_fn: Callable[[], Any],
 ) -> None:
     """
-    Register all system tools from the registry with a FastMCP server.
+    Register a tool with automatic context injection.
+
+    The tool function should have `context` as its first parameter.
+    This wrapper removes that parameter from the FastMCP-visible signature
+    and injects the context at runtime from get_context_fn().
 
     Args:
         mcp: FastMCP server instance
-        context: Default MCP context (used for SDK mode fallback)
-        enabled_tools: Set of tool IDs to enable (None = all)
-        get_context_fn: Function to get current context (for HTTP mode auth)
+        func: Tool function with context as first param
+        name: Tool name for MCP
+        description: Tool description for LLM
+        get_context_fn: Function to get context at runtime
     """
-    registered_count = 0
-
-    for metadata in get_all_system_tools():
-        # Skip if no implementation
-        if metadata.implementation is None:
-            continue
-
-        # Check if tool should be enabled
-        if enabled_tools is not None and metadata.id not in enabled_tools:
-            continue
-
-        # Register with FastMCP
-        _register_single_tool(mcp, metadata, get_context_fn)
-        registered_count += 1
-        logger.debug(f"Registered FastMCP tool: {metadata.id}")
-
-    logger.info(f"Registered {registered_count} FastMCP tools from registry")
-
-
-def _register_single_tool(
-    mcp: "FastMCP",
-    metadata: Any,
-    get_context_fn: Callable[[], Any],
-) -> None:
-    """Register a single tool with FastMCP using its implementation signature."""
-    if metadata.implementation is None:
-        return
-
-    impl = metadata.implementation
-
-    # Get the implementation's signature (excluding 'context' parameter)
-    sig = inspect.signature(impl)
+    sig = inspect.signature(func)
     params = list(sig.parameters.items())
 
-    # Skip the first parameter (context)
+    # Skip first param (context) for FastMCP's signature
     impl_params = params[1:] if params else []
 
-    # Create and register the wrapper
-    wrapper = _create_sync_wrapper(impl, impl_params, sig, metadata, get_context_fn)
-
-    # Register with FastMCP
-    mcp.tool(name=metadata.id, description=metadata.description)(wrapper)
-
-
-def _create_sync_wrapper(
-    impl: Callable[..., Any],
-    impl_params: list[tuple[str, Any]],
-    sig: inspect.Signature,
-    metadata: Any,
-    get_context_fn: Callable[[], Any],
-) -> Callable[..., Any]:
-    """Create a wrapper function synchronously."""
-
-    async def wrapper(**kwargs: Any) -> str:
+    async def wrapper(**kwargs: Any) -> ToolResult:
         ctx = get_context_fn()
-        return await impl(ctx, **kwargs)
+        return await func(ctx, **kwargs)
 
-    # Copy metadata
-    wrapper.__name__ = metadata.id
-    wrapper.__qualname__ = metadata.id
-    wrapper.__doc__ = metadata.description
+    # Set function metadata for FastMCP
+    wrapper.__name__ = name
+    wrapper.__qualname__ = name
+    wrapper.__doc__ = description
 
-    # Build new signature without context parameter
+    # Build signature without context param
     new_params = [param for _, param in impl_params]
     wrapper.__signature__ = sig.replace(parameters=new_params)  # type: ignore[attr-defined]
 
-    # Build annotations for Pydantic type adapter (FastMCP uses this for introspection)
+    # Copy annotations (except context)
     annotations: dict[str, Any] = {}
     for param_name, param in impl_params:
         if param.annotation != inspect.Parameter.empty:
             annotations[param_name] = param.annotation
-        else:
-            annotations[param_name] = str  # Default to str if no annotation
-    annotations["return"] = str
+    annotations["return"] = ToolResult
     wrapper.__annotations__ = annotations
 
-    return wrapper
+    # Register with FastMCP
+    mcp.tool(name=name, description=description)(wrapper)
+    logger.debug(f"Registered tool: {name}")

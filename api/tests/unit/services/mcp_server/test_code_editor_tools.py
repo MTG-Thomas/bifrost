@@ -15,21 +15,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
 from src.services.mcp_server.server import MCPContext
 
 
-def get_result_data(result: CallToolResult) -> dict:
-    """Extract structured data from a CallToolResult."""
-    return result.structuredContent or {}
+def get_result_data(result: ToolResult) -> dict:
+    """Extract structured data from a ToolResult."""
+    return result.structured_content or {}
 
 
-def get_result_text(result: CallToolResult) -> str:
-    """Extract display text from a CallToolResult."""
-    if result.content and len(result.content) > 0:
-        return result.content[0].text
-    return ""
+def get_result_text(result: ToolResult) -> str:
+    """Extract display text from a ToolResult."""
+    return result.content or ""
+
+
+def is_error_result(result: ToolResult) -> bool:
+    """Check if a ToolResult represents an error."""
+    if result.structured_content and "error" in result.structured_content:
+        return True
+    if result.content and isinstance(result.content, str) and result.content.startswith("Error:"):
+        return True
+    return False
 
 
 @pytest.fixture
@@ -85,7 +92,7 @@ class TestListContent:
                 entity_type="workflow",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 2
@@ -101,8 +108,8 @@ class TestListContent:
             entity_type="app_file",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
@@ -117,8 +124,8 @@ class TestListContent:
             entity_type="invalid",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "Invalid entity_type" in data["error"]
@@ -147,7 +154,7 @@ class TestListContent:
                 entity_type="module",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 2
@@ -186,7 +193,7 @@ class TestListContent:
                 app_id=app_id,
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 2
@@ -216,7 +223,7 @@ class TestListContent:
                 path_prefix="workflows/",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert data["count"] == 1
 
@@ -252,7 +259,7 @@ class TestListContent:
                 entity_type="workflow",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert "files" in data
             assert len(data["files"]) == 1
@@ -296,7 +303,7 @@ async def sync_tickets(client_id: str) -> dict:
                 entity_type="workflow",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert "matches" in data
             assert len(data["matches"]) == 1
@@ -314,8 +321,8 @@ async def sync_tickets(client_id: str) -> dict:
             entity_type="",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
 
@@ -330,8 +337,8 @@ async def sync_tickets(client_id: str) -> dict:
             entity_type="workflow",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "Invalid regex" in data["error"]
@@ -376,7 +383,7 @@ line 10"""
                 end_line=6,
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert data["start_line"] == 3
             assert data["end_line"] == 6
@@ -396,8 +403,8 @@ line 10"""
             path="",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "path" in data["error"]
@@ -431,7 +438,7 @@ class TestGetContent:
                 path="workflows/sync.py",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert data["path"] == "workflows/sync.py"
             assert data["total_lines"] == 3
@@ -457,8 +464,8 @@ class TestGetContent:
                 path="workflows/nonexistent.py",
             )
 
-            assert isinstance(result, CallToolResult)
-            assert result.isError is True
+            assert isinstance(result, ToolResult)
+            assert is_error_result(result)
             data = get_result_data(result)
             assert "error" in data
             assert "not found" in data["error"].lower()
@@ -504,7 +511,7 @@ class TestPatchContent:
                     new_string='return {"status": "new"}',
                 )
 
-                assert isinstance(result, CallToolResult)
+                assert isinstance(result, ToolResult)
                 data = get_result_data(result)
                 assert data["success"] is True
 
@@ -540,8 +547,8 @@ def func2():
                 new_string='return "new_value"',
             )
 
-            assert isinstance(result, CallToolResult)
-            assert result.isError is True
+            assert isinstance(result, ToolResult)
+            assert is_error_result(result)
             data = get_result_data(result)
             assert "match_locations" in data or "matches" in data["error"].lower()
 
@@ -572,8 +579,8 @@ def func2():
                 new_string="replacement",
             )
 
-            assert isinstance(result, CallToolResult)
-            assert result.isError is True
+            assert isinstance(result, ToolResult)
+            assert is_error_result(result)
             data = get_result_data(result)
             assert "not found" in data["error"]
 
@@ -590,8 +597,8 @@ def func2():
             new_string="replacement",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "old_string" in data["error"]
@@ -609,8 +616,8 @@ def func2():
             new_string="new code",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
@@ -658,7 +665,7 @@ async def sync():
 ''',
                 )
 
-                assert isinstance(result, CallToolResult)
+                assert isinstance(result, ToolResult)
                 data = get_result_data(result)
                 assert data["success"] is True
                 assert data["entity_type"] == "workflow"
@@ -681,8 +688,8 @@ async def oops():
 ''',
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "mismatch" in data["error"].lower()
 
@@ -698,8 +705,8 @@ async def oops():
             content="",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "content" in data["error"]
@@ -716,8 +723,8 @@ async def oops():
             content="some content",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "path" in data["error"]
@@ -734,8 +741,8 @@ async def oops():
             content="export default function Button() { return <button>Click</button>; }",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
@@ -752,8 +759,8 @@ async def oops():
             content="content",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "Invalid entity_type" in data["error"]
@@ -773,8 +780,8 @@ async def oops():
 ''',
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "mismatch" in data["error"].lower()
 
@@ -813,7 +820,7 @@ async def oops():
                     content="export default function NewComponent() { return <div>New</div>; }",
                 )
 
-                assert isinstance(result, CallToolResult)
+                assert isinstance(result, ToolResult)
                 data = get_result_data(result)
                 assert data["success"] is True
                 assert data["created"] is True
@@ -848,7 +855,7 @@ class TestDeleteContent:
                 path="workflows/old_sync.py",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert data["success"] is True
             assert data["path"] == "workflows/old_sync.py"
@@ -881,7 +888,7 @@ class TestDeleteContent:
                 path="modules/old_helpers.py",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert data["success"] is True
             assert data["path"] == "modules/old_helpers.py"
@@ -927,7 +934,7 @@ class TestDeleteContent:
                     path="components/OldButton.tsx",
                 )
 
-                assert isinstance(result, CallToolResult)
+                assert isinstance(result, ToolResult)
                 data = get_result_data(result)
                 assert data["success"] is True
                 assert data["path"] == "components/OldButton.tsx"
@@ -961,8 +968,8 @@ class TestDeleteContent:
                 path="workflows/nonexistent.py",
             )
 
-            assert isinstance(result, CallToolResult)
-            assert result.isError is True
+            assert isinstance(result, ToolResult)
+            assert is_error_result(result)
             data = get_result_data(result)
             assert "not found" in data["error"].lower()
 
@@ -977,8 +984,8 @@ class TestDeleteContent:
             path="",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "path" in data["error"]
@@ -994,8 +1001,8 @@ class TestDeleteContent:
             path="components/Button.tsx",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "app_id" in data["error"]
@@ -1011,8 +1018,8 @@ class TestDeleteContent:
             path="some/path.py",
         )
 
-        assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert isinstance(result, ToolResult)
+        assert is_error_result(result)
         data = get_result_data(result)
         assert "error" in data
         assert "Invalid entity_type" in data["error"]
@@ -1042,7 +1049,7 @@ class TestDeleteContent:
                 path="workflows/org_sync.py",
             )
 
-            assert isinstance(result, CallToolResult)
+            assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert data["success"] is True
             # Query should have been filtered by org_id

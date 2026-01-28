@@ -7,10 +7,8 @@ Tools for executing, listing, validating, and creating workflows.
 import logging
 from typing import Any
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
@@ -18,31 +16,9 @@ from src.services.mcp_server.tool_result import error_result, success_result
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="execute_workflow",
-    name="Execute Workflow",
-    description="Execute a Bifrost workflow by ID and return the results. Use list_workflows to get workflow IDs.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "workflow_id": {
-                "type": "string",
-                "description": "UUID of the workflow to execute",
-            },
-            "params": {
-                "type": "object",
-                "description": "Input parameters for the workflow",
-            },
-        },
-        "required": ["workflow_id"],
-    },
-)
 async def execute_workflow(
     context: Any, workflow_id: str, params: dict[str, Any] | None = None
-) -> CallToolResult:
+) -> ToolResult:
     """Execute a workflow by ID and return results."""
     from uuid import UUID
 
@@ -112,31 +88,9 @@ async def execute_workflow(
         return error_result(f"Error executing workflow: {str(e)}")
 
 
-@system_tool(
-    id="list_workflows",
-    name="List Workflows",
-    description="List workflows registered in Bifrost.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Optional search query to filter workflows",
-            },
-            "category": {
-                "type": "string",
-                "description": "Optional category to filter workflows",
-            },
-        },
-        "required": [],
-    },
-)
 async def list_workflows(
     context: Any, query: str | None = None, category: str | None = None
-) -> CallToolResult:
+) -> ToolResult:
     """List all registered workflows."""
     from uuid import UUID
 
@@ -196,25 +150,7 @@ async def list_workflows(
         return error_result(f"Error listing workflows: {str(e)}")
 
 
-@system_tool(
-    id="validate_workflow",
-    name="Validate Workflow",
-    description="Validate a workflow Python file for syntax and decorator issues.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "Path to the workflow file to validate",
-            },
-        },
-        "required": ["file_path"],
-    },
-)
-async def validate_workflow(context: Any, file_path: str) -> CallToolResult:
+async def validate_workflow(context: Any, file_path: str) -> ToolResult:
     """Validate a workflow Python file for syntax and decorator issues."""
     import ast
 
@@ -295,29 +231,7 @@ async def validate_workflow(context: Any, file_path: str) -> CallToolResult:
         return error_result(f"Error validating workflow: {str(e)}")
 
 
-@system_tool(
-    id="create_workflow",
-    name="Create Workflow",
-    description="Create a new workflow by validating Python code and writing to workspace.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "Path for the new workflow file (e.g., 'workflows/my_task.py')",
-            },
-            "code": {
-                "type": "string",
-                "description": "Python code for the workflow",
-            },
-        },
-        "required": ["file_path", "code"],
-    },
-)
-async def create_workflow(context: Any, file_path: str, code: str) -> CallToolResult:
+async def create_workflow(context: Any, file_path: str, code: str) -> ToolResult:
     """Create a new workflow file after validation."""
     import ast
 
@@ -375,16 +289,7 @@ async def create_workflow(context: Any, file_path: str, code: str) -> CallToolRe
         return error_result(f"Error creating workflow: {str(e)}")
 
 
-@system_tool(
-    id="get_workflow_schema",
-    name="Get Workflow Schema",
-    description="Get documentation about workflow structure, decorators, and SDK features.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def get_workflow_schema(context: Any) -> CallToolResult:  # noqa: ARG001
+async def get_workflow_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Get workflow schema documentation generated from Pydantic models."""
     from src.models.contracts.workflows import WorkflowMetadata, WorkflowParameter
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -419,33 +324,11 @@ For complete SDK documentation including decorators, modules, and examples, use 
     return success_result(full_docs, data)
 
 
-@system_tool(
-    id="get_workflow",
-    name="Get Workflow",
-    description="Get detailed metadata for a specific workflow by ID or name.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "workflow_id": {
-                "type": "string",
-                "description": "UUID of the workflow",
-            },
-            "workflow_name": {
-                "type": "string",
-                "description": "Name of the workflow (alternative to ID)",
-            },
-        },
-        "required": [],
-    },
-)
 async def get_workflow(
     context: Any,
     workflow_id: str | None = None,
     workflow_name: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Get detailed workflow metadata."""
     from uuid import UUID
 
@@ -500,3 +383,31 @@ async def get_workflow(
     except Exception as e:
         logger.exception(f"Error getting workflow via MCP: {e}")
         return error_result(f"Error getting workflow: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("execute_workflow", "Execute Workflow", "Execute a Bifrost workflow by ID and return the results. Use list_workflows to get workflow IDs."),
+    ("list_workflows", "List Workflows", "List workflows registered in Bifrost."),
+    ("validate_workflow", "Validate Workflow", "Validate a workflow Python file for syntax and decorator issues."),
+    ("create_workflow", "Create Workflow", "Create a new workflow by validating Python code and writing to workspace."),
+    ("get_workflow_schema", "Get Workflow Schema", "Get documentation about workflow structure, decorators, and SDK features."),
+    ("get_workflow", "Get Workflow", "Get detailed metadata for a specific workflow by ID or name."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all workflow tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "execute_workflow": execute_workflow,
+        "list_workflows": list_workflows,
+        "validate_workflow": validate_workflow,
+        "create_workflow": create_workflow,
+        "get_workflow_schema": get_workflow_schema,
+        "get_workflow": get_workflow,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

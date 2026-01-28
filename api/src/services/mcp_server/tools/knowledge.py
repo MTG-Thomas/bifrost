@@ -7,10 +7,8 @@ Tools for searching the Bifrost knowledge base.
 import logging
 from typing import Any
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
@@ -18,38 +16,12 @@ from src.services.mcp_server.tool_result import error_result, success_result
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="search_knowledge",
-    name="Search Knowledge",
-    description="Search the Bifrost knowledge base.",
-    category=ToolCategory.KNOWLEDGE,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query text",
-            },
-            "namespace": {
-                "type": "string",
-                "description": "Optional specific namespace to search (must be accessible)",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of results (default: 5)",
-                "default": 5,
-            },
-        },
-        "required": ["query"],
-    },
-)
 async def search_knowledge(
     context: Any,
     query: str,
     namespace: str | None = None,
     limit: int = 5,
-) -> CallToolResult:
+) -> ToolResult:
     """Search the knowledge base.
 
     Args:
@@ -127,3 +99,21 @@ async def search_knowledge(
     except Exception as e:
         logger.exception(f"Error searching knowledge via MCP: {e}")
         return error_result(f"Error searching knowledge: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("search_knowledge", "Search Knowledge", "Search the Bifrost knowledge base."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all knowledge tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "search_knowledge": search_knowledge,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

@@ -7,10 +7,8 @@ Tools for listing available integrations.
 import logging
 from typing import Any
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
@@ -18,16 +16,7 @@ from src.services.mcp_server.tool_result import error_result, success_result
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="list_integrations",
-    name="List Integrations",
-    description="List available integrations that can be used in workflows.",
-    category=ToolCategory.INTEGRATION,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def list_integrations(context: Any) -> CallToolResult:
+async def list_integrations(context: Any) -> ToolResult:
     """List all available integrations."""
     from sqlalchemy import select
 
@@ -72,3 +61,21 @@ async def list_integrations(context: Any) -> CallToolResult:
     except Exception as e:
         logger.exception(f"Error listing integrations via MCP: {e}")
         return error_result(f"Error listing integrations: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("list_integrations", "List Integrations", "List available integrations that can be used in workflows."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all integrations tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "list_integrations": list_integrations,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

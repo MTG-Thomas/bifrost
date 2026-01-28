@@ -10,28 +10,17 @@ import re
 from typing import Any
 from uuid import UUID, uuid4
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 from sqlalchemy import select
 
 from src.core.database import get_db_context
 from src.models.orm.organizations import Organization
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="list_organizations",
-    name="List Organizations",
-    description="List all organizations in the platform.",
-    category=ToolCategory.ORGANIZATION,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def list_organizations(context: Any) -> CallToolResult:
+async def list_organizations(context: Any) -> ToolResult:
     """List all organizations.
 
     Platform admin only. Returns id, name, domain, is_active for each org.
@@ -62,33 +51,11 @@ async def list_organizations(context: Any) -> CallToolResult:
         return error_result(f"Error listing organizations: {str(e)}")
 
 
-@system_tool(
-    id="get_organization",
-    name="Get Organization",
-    description="Get organization details by ID or domain.",
-    category=ToolCategory.ORGANIZATION,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "organization_id": {
-                "type": "string",
-                "description": "Organization UUID",
-            },
-            "domain": {
-                "type": "string",
-                "description": "Organization domain (alternative to ID)",
-            },
-        },
-        "required": [],
-    },
-)
 async def get_organization(
     context: Any,
     organization_id: str | None = None,
     domain: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Get organization details by ID or domain.
 
     Platform admin only. Must provide at least one of organization_id or domain.
@@ -136,33 +103,11 @@ async def get_organization(
         return error_result(f"Error getting organization: {str(e)}")
 
 
-@system_tool(
-    id="create_organization",
-    name="Create Organization",
-    description="Create a new organization.",
-    category=ToolCategory.ORGANIZATION,
-    default_enabled_for_coding_agent=False,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Organization name (required)",
-            },
-            "domain": {
-                "type": "string",
-                "description": "Organization domain (optional, auto-generated from name if not provided)",
-            },
-        },
-        "required": ["name"],
-    },
-)
 async def create_organization(
     context: Any,
     name: str,
     domain: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Create a new organization.
 
     Platform admin only.
@@ -173,7 +118,7 @@ async def create_organization(
         domain: Organization domain (optional, auto-generated from name if not provided)
 
     Returns:
-        CallToolResult with created organization details
+        ToolResult with created organization details
     """
     logger.info(f"MCP create_organization called with name={name}")
 
@@ -226,3 +171,25 @@ async def create_organization(
     except Exception as e:
         logger.exception(f"Error creating organization via MCP: {e}")
         return error_result(f"Error creating organization: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("list_organizations", "List Organizations", "List all organizations in the platform."),
+    ("get_organization", "Get Organization", "Get organization details by ID or domain."),
+    ("create_organization", "Create Organization", "Create a new organization."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all organizations tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "list_organizations": list_organizations,
+        "get_organization": get_organization,
+        "create_organization": create_organization,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

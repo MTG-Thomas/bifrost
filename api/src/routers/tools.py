@@ -17,9 +17,7 @@ from src.core.org_filter import resolve_org_filter
 from src.models.contracts.agents import ToolInfo, ToolsResponse
 from src.models.orm import Workflow
 
-# Import tools package to trigger registration of all @system_tool decorated functions
-import src.services.mcp_server.tools  # noqa: F401
-from src.services.mcp_server.tool_registry import get_all_system_tools, get_all_tool_ids
+from src.services.mcp_server.server import get_system_tools as get_system_tools_from_server
 
 logger = logging.getLogger(__name__)
 
@@ -33,27 +31,24 @@ router = APIRouter(prefix="/api/tools", tags=["Tools"])
 
 def get_system_tools() -> list[ToolInfo]:
     """
-    Get the list of system tools from the registry.
+    Get the list of system tools from the server module.
 
-    Tools are automatically registered via @system_tool decorator.
+    Tools are defined in each tool module's TOOLS list.
     """
     return [
         ToolInfo(
-            id=meta.id,
-            name=meta.name,
-            description=meta.description,
+            id=tool["id"],
+            name=tool["name"],
+            description=tool["description"],
             type="system",
-            category=meta.category.value if meta.category else None,
-            default_enabled_for_coding_agent=meta.default_enabled_for_coding_agent,
-            is_restricted=meta.is_restricted,
         )
-        for meta in get_all_system_tools()
+        for tool in get_system_tools_from_server()
     ]
 
 
 def get_system_tool_ids() -> list[str]:
     """Get list of all system tool IDs."""
-    return get_all_tool_ids()
+    return [tool["id"] for tool in get_system_tools_from_server()]
 
 
 # Backwards compatibility - some code imports SYSTEM_TOOLS directly

@@ -10,10 +10,8 @@ from typing import Any
 from uuid import UUID
 from uuid import uuid4
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
@@ -24,16 +22,7 @@ logger = logging.getLogger(__name__)
 # ==================== SCHEMA TOOL ====================
 
 
-@system_tool(
-    id="get_agent_schema",
-    name="Get Agent Schema",
-    description="Get documentation for AI agent structure, channels, and configuration.",
-    category=ToolCategory.AGENT,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def get_agent_schema(context: Any) -> CallToolResult:  # noqa: ARG001
+async def get_agent_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Get agent schema documentation generated from Pydantic models."""
     from src.models.contracts.agents import AgentCreate, AgentUpdate
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -79,15 +68,7 @@ async def get_agent_schema(context: Any) -> CallToolResult:  # noqa: ARG001
 # ==================== LIST/GET TOOLS ====================
 
 
-@system_tool(
-    id="list_agents",
-    name="List Agents",
-    description="List all AI agents accessible to the current user.",
-    category=ToolCategory.AGENT,
-    default_enabled_for_coding_agent=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def list_agents(context: Any) -> CallToolResult:
+async def list_agents(context: Any) -> ToolResult:
     """List all agents."""
     from src.core.database import get_db_context
     from src.core.org_filter import OrgFilterType
@@ -143,26 +124,11 @@ async def list_agents(context: Any) -> CallToolResult:
         return error_result(f"Error listing agents: {str(e)}")
 
 
-@system_tool(
-    id="get_agent",
-    name="Get Agent",
-    description="Get detailed information about a specific agent including assigned tools and delegation targets.",
-    category=ToolCategory.AGENT,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Agent UUID"},
-            "agent_name": {"type": "string", "description": "Agent name (alternative to ID)"},
-        },
-        "required": [],
-    },
-)
 async def get_agent(
     context: Any,
     agent_id: str | None = None,
     agent_name: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Get detailed information about a specific agent.
 
     Args:
@@ -171,7 +137,7 @@ async def get_agent(
         agent_name: Agent name (alternative to ID)
 
     Returns:
-        CallToolResult with agent details
+        ToolResult with agent details
     """
     from sqlalchemy import or_, select
     from sqlalchemy.orm import selectinload
@@ -264,69 +230,6 @@ async def get_agent(
         return error_result(f"Error getting agent: {str(e)}")
 
 
-@system_tool(
-    id="create_agent",
-    name="Create Agent",
-    description="Create a new AI agent with system prompt and configuration.",
-    category=ToolCategory.AGENT,
-    default_enabled_for_coding_agent=False,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Agent name (1-255 chars)"},
-            "system_prompt": {"type": "string", "description": "System prompt that defines the agent's behavior"},
-            "description": {"type": "string", "description": "Optional description of what the agent does"},
-            "channels": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["chat", "voice", "teams", "slack"]},
-                "description": "Communication channels (default: ['chat'])",
-            },
-            "tool_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of workflow IDs to assign as tools",
-            },
-            "delegated_agent_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of agent IDs this agent can delegate to",
-            },
-            "knowledge_sources": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of knowledge namespaces this agent can search",
-            },
-            "system_tools": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of system tool names enabled for this agent",
-            },
-            "scope": {
-                "type": "string",
-                "enum": ["global", "organization"],
-                "description": "Resource scope: 'global' (visible to all orgs) or 'organization' (default)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "Organization UUID (overrides context.org_id when scope='organization')",
-            },
-            "llm_model": {
-                "type": "string",
-                "description": "Override model (leave empty for global config)",
-            },
-            "llm_max_tokens": {
-                "type": "integer",
-                "description": "Override max tokens (leave empty for global config)",
-            },
-            "llm_temperature": {
-                "type": "number",
-                "description": "Override temperature 0.0-2.0 (leave empty for global config)",
-            },
-        },
-        "required": ["name", "system_prompt"],
-    },
-)
 async def create_agent(
     context: Any,
     name: str,
@@ -342,7 +245,7 @@ async def create_agent(
     llm_model: str | None = None,
     llm_max_tokens: int | None = None,
     llm_temperature: float | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Create a new agent.
 
     Args:
@@ -359,7 +262,7 @@ async def create_agent(
         organization_id: Override context.org_id when scope='organization'
 
     Returns:
-        CallToolResult with created agent details
+        ToolResult with created agent details
     """
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
@@ -515,62 +418,6 @@ async def create_agent(
         return error_result(f"Error creating agent: {str(e)}")
 
 
-@system_tool(
-    id="update_agent",
-    name="Update Agent",
-    description="Update an existing agent's properties.",
-    category=ToolCategory.AGENT,
-    default_enabled_for_coding_agent=False,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Agent UUID (required)"},
-            "name": {"type": "string", "description": "New agent name"},
-            "description": {"type": "string", "description": "New description"},
-            "system_prompt": {"type": "string", "description": "New system prompt"},
-            "channels": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["chat", "voice", "teams", "slack"]},
-                "description": "New communication channels",
-            },
-            "is_active": {"type": "boolean", "description": "Enable/disable the agent"},
-            "tool_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "New list of workflow IDs (replaces existing)",
-            },
-            "delegated_agent_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "New list of delegated agent IDs (replaces existing)",
-            },
-            "knowledge_sources": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "New list of knowledge namespaces",
-            },
-            "system_tools": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "New list of system tool names",
-            },
-            "llm_model": {
-                "type": "string",
-                "description": "Override model (empty string to clear)",
-            },
-            "llm_max_tokens": {
-                "type": "integer",
-                "description": "Override max tokens (0 to clear)",
-            },
-            "llm_temperature": {
-                "type": "number",
-                "description": "Override temperature 0.0-2.0 (-1 to clear)",
-            },
-        },
-        "required": ["agent_id"],
-    },
-)
 async def update_agent(
     context: Any,
     agent_id: str,
@@ -586,7 +433,7 @@ async def update_agent(
     llm_model: str | None = None,
     llm_max_tokens: int | None = None,
     llm_temperature: float | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Update an existing agent.
 
     Args:
@@ -603,7 +450,7 @@ async def update_agent(
         system_tools: New list of system tool names
 
     Returns:
-        CallToolResult with update confirmation
+        ToolResult with update confirmation
     """
     from sqlalchemy import delete, select
     from sqlalchemy.orm import selectinload
@@ -791,25 +638,10 @@ async def update_agent(
         return error_result(f"Error updating agent: {str(e)}")
 
 
-@system_tool(
-    id="delete_agent",
-    name="Delete Agent",
-    description="Delete an agent (soft delete - sets is_active to false).",
-    category=ToolCategory.AGENT,
-    default_enabled_for_coding_agent=False,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Agent UUID"},
-        },
-        "required": ["agent_id"],
-    },
-)
 async def delete_agent(
     context: Any,
     agent_id: str,
-) -> CallToolResult:
+) -> ToolResult:
     """Delete an agent (soft delete).
 
     Args:
@@ -817,7 +649,7 @@ async def delete_agent(
         agent_id: Agent UUID
 
     Returns:
-        CallToolResult with deletion confirmation
+        ToolResult with deletion confirmation
     """
     from sqlalchemy import select
 
@@ -876,3 +708,31 @@ async def delete_agent(
     except Exception as e:
         logger.exception(f"Error deleting agent via MCP: {e}")
         return error_result(f"Error deleting agent: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("get_agent_schema", "Get Agent Schema", "Get documentation for AI agent structure, channels, and configuration."),
+    ("list_agents", "List Agents", "List all AI agents accessible to the current user."),
+    ("get_agent", "Get Agent", "Get detailed information about a specific agent including assigned tools and delegation targets."),
+    ("create_agent", "Create Agent", "Create a new AI agent with system prompt and configuration."),
+    ("update_agent", "Update Agent", "Update an existing agent's properties."),
+    ("delete_agent", "Delete Agent", "Delete an agent (soft delete - sets is_active to false)."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all agents tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "get_agent_schema": get_agent_schema,
+        "list_agents": list_agents,
+        "get_agent": get_agent,
+        "create_agent": create_agent,
+        "update_agent": update_agent,
+        "delete_agent": delete_agent,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

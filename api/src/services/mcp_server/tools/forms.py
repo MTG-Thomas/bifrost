@@ -8,10 +8,8 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
@@ -19,15 +17,7 @@ from src.services.mcp_server.tool_result import error_result, success_result
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="list_forms",
-    name="List Forms",
-    description="List all forms with their URLs.",
-    category=ToolCategory.FORM,
-    default_enabled_for_coding_agent=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def list_forms(context: Any) -> CallToolResult:
+async def list_forms(context: Any) -> ToolResult:
     """List all forms."""
     from src.core.database import get_db_context
     from src.repositories.forms import FormRepository
@@ -85,16 +75,7 @@ async def list_forms(context: Any) -> CallToolResult:
         return error_result(f"Error listing forms: {str(e)}")
 
 
-@system_tool(
-    id="get_form_schema",
-    name="Get Form Schema",
-    description="Get documentation about form structure and field types.",
-    category=ToolCategory.FORM,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def get_form_schema(context: Any) -> CallToolResult:
+async def get_form_schema(context: Any) -> ToolResult:
     """Get form schema documentation generated from Pydantic models."""
     from src.models.contracts.forms import FormCreate, FormUpdate, FormField, FormSchema
     from src.services.mcp_server.schema_utils import models_to_markdown
@@ -109,54 +90,6 @@ async def get_form_schema(context: Any) -> CallToolResult:
     return success_result("Form schema documentation", {"schema": schema_doc})
 
 
-@system_tool(
-    id="create_form",
-    name="Create Form",
-    description="Create a new form with fields linked to a workflow.",
-    category=ToolCategory.FORM,
-    default_enabled_for_coding_agent=False,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Form name (1-200 chars)"},
-            "workflow_id": {"type": "string", "description": "UUID of workflow to execute on form submit"},
-            "fields": {
-                "type": "array",
-                "description": "Array of field definitions",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "type": {"type": "string", "enum": ["text", "email", "number", "select", "checkbox", "textarea", "radio", "datetime", "file", "markdown", "html"]},
-                        "label": {"type": "string", "description": "Display label (required except for markdown/html)"},
-                        "required": {"type": "boolean"},
-                        "placeholder": {"type": "string"},
-                        "help_text": {"type": "string"},
-                        "options": {"type": "array", "items": {"type": "object"}, "description": "For select/radio fields"},
-                        "allowed_types": {"type": "array", "items": {"type": "string"}, "description": "For file fields: allowed MIME types (e.g., 'image/*', '.pdf', 'application/json')"},
-                        "multiple": {"type": "boolean", "description": "For file fields: allow multiple file uploads"},
-                        "max_size_mb": {"type": "integer", "description": "For file fields: maximum file size in MB"},
-                        "content": {"type": "string", "description": "For markdown/html fields: static content to display"}
-                    },
-                    "required": ["name", "type"]
-                }
-            },
-            "description": {"type": "string", "description": "Optional form description"},
-            "launch_workflow_id": {"type": "string", "description": "Optional UUID of workflow to run before form display"},
-            "scope": {
-                "type": "string",
-                "enum": ["global", "organization"],
-                "description": "Resource scope: 'global' (visible to all orgs) or 'organization' (default)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "Organization UUID (overrides context.org_id when scope='organization')",
-            },
-        },
-        "required": ["name", "workflow_id", "fields"],
-    },
-)
 async def create_form(
     context: Any,
     name: str,
@@ -166,7 +99,7 @@ async def create_form(
     launch_workflow_id: str | None = None,
     scope: str = "organization",
     organization_id: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Create a new form with fields linked to a workflow.
 
     Args:
@@ -180,7 +113,7 @@ async def create_form(
         organization_id: Override context.org_id when scope='organization'
 
     Returns:
-        CallToolResult with form details
+        ToolResult with form details
     """
     from datetime import datetime
     from uuid import UUID as UUID_TYPE
@@ -328,26 +261,11 @@ async def create_form(
         return error_result(f"Error creating form: {str(e)}")
 
 
-@system_tool(
-    id="get_form",
-    name="Get Form",
-    description="Get detailed information about a specific form including all fields.",
-    category=ToolCategory.FORM,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "form_id": {"type": "string", "description": "Form UUID"},
-            "form_name": {"type": "string", "description": "Form name (alternative to ID)"},
-        },
-        "required": [],
-    },
-)
 async def get_form(
     context: Any,
     form_id: str | None = None,
     form_name: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Get detailed information about a specific form.
 
     Args:
@@ -356,7 +274,7 @@ async def get_form(
         form_name: Form name (alternative to ID)
 
     Returns:
-        CallToolResult with form details
+        ToolResult with form details
     """
     from uuid import UUID as UUID_TYPE
 
@@ -485,27 +403,6 @@ async def get_form(
         return error_result(f"Error getting form: {str(e)}")
 
 
-@system_tool(
-    id="update_form",
-    name="Update Form",
-    description="Update an existing form's properties or fields.",
-    category=ToolCategory.FORM,
-    default_enabled_for_coding_agent=False,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "form_id": {"type": "string", "description": "Form UUID (required)"},
-            "name": {"type": "string", "description": "New form name"},
-            "description": {"type": "string", "description": "New description"},
-            "workflow_id": {"type": "string", "description": "New workflow UUID"},
-            "launch_workflow_id": {"type": "string", "description": "New launch workflow UUID (empty string to clear)"},
-            "fields": {"type": "array", "description": "New field definitions (replaces all fields)"},
-            "is_active": {"type": "boolean", "description": "Enable/disable the form"},
-        },
-        "required": ["form_id"],
-    },
-)
 async def update_form(
     context: Any,
     form_id: str,
@@ -515,7 +412,7 @@ async def update_form(
     launch_workflow_id: str | None = None,
     fields: list[dict[str, Any]] | None = None,
     is_active: bool | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """Update an existing form.
 
     Args:
@@ -529,7 +426,7 @@ async def update_form(
         is_active: Enable/disable the form
 
     Returns:
-        CallToolResult with update confirmation
+        ToolResult with update confirmation
     """
     from datetime import datetime
     from uuid import UUID as UUID_TYPE
@@ -690,3 +587,29 @@ async def update_form(
     except Exception as e:
         logger.exception(f"Error updating form via MCP: {e}")
         return error_result(f"Error updating form: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("list_forms", "List Forms", "List all forms with their URLs."),
+    ("get_form_schema", "Get Form Schema", "Get documentation about form structure and field types."),
+    ("create_form", "Create Form", "Create a new form with fields linked to a workflow."),
+    ("get_form", "Get Form", "Get detailed information about a specific form including all fields."),
+    ("update_form", "Update Form", "Update an existing form's properties or fields."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all forms tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "list_forms": list_forms,
+        "get_form_schema": get_form_schema,
+        "create_form": create_form,
+        "get_form": get_form,
+        "update_form": update_form,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

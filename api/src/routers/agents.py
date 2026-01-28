@@ -30,7 +30,7 @@ from src.models.contracts.agents import (
 )
 from src.models.orm import Agent, AgentDelegation, AgentRole, AgentTool, Role, Workflow
 from src.repositories.agents import AgentRepository
-from src.services.mcp_server.tool_registry import get_all_tool_ids
+from src.routers.tools import get_system_tool_ids
 from src.services.workflow_role_service import sync_agent_roles_to_workflows
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ def _agent_to_public(agent: Agent) -> AgentPublic:
     - system_tools: Only includes tools that exist in the registry
     """
     # Get valid system tool IDs from registry
-    valid_system_tool_ids = set(get_all_tool_ids())
+    valid_system_tool_ids = set(get_system_tool_ids())
 
     return AgentPublic(
         id=agent.id,

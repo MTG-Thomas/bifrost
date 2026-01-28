@@ -8,11 +8,9 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
 from src.core.auth import UserPrincipal
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 # MCPContext is imported where needed to avoid circular imports
@@ -39,39 +37,12 @@ def _context_to_user_principal(context: Any) -> UserPrincipal:
     )
 
 
-@system_tool(
-    id="list_executions",
-    name="List Executions",
-    description="List recent workflow executions.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "workflow_name": {
-                "type": "string",
-                "description": "Optional workflow name to filter by",
-            },
-            "status": {
-                "type": "string",
-                "description": "Optional status to filter by (Success, Failed, Running, Pending)",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of executions to return (default: 20)",
-                "default": 20,
-            },
-        },
-        "required": [],
-    },
-)
 async def list_executions(
     context: Any,
     workflow_name: str | None = None,
     status: str | None = None,
     limit: int = 20,
-) -> CallToolResult:
+) -> ToolResult:
     """List recent workflow executions."""
     from src.core.database import get_db_context
     from src.repositories.executions import ExecutionRepository
@@ -122,25 +93,7 @@ async def list_executions(
         return error_result(f"Error listing executions: {str(e)}")
 
 
-@system_tool(
-    id="get_execution",
-    name="Get Execution",
-    description="Get details and logs for a specific workflow execution.",
-    category=ToolCategory.WORKFLOW,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "execution_id": {
-                "type": "string",
-                "description": "Execution UUID",
-            },
-        },
-        "required": ["execution_id"],
-    },
-)
-async def get_execution(context: Any, execution_id: str) -> CallToolResult:
+async def get_execution(context: Any, execution_id: str) -> ToolResult:
     """Get details and logs for a specific workflow execution."""
     from src.core.database import get_db_context
     from src.repositories.executions import ExecutionRepository
@@ -199,3 +152,23 @@ async def get_execution(context: Any, execution_id: str) -> CallToolResult:
     except Exception as e:
         logger.exception(f"Error getting execution via MCP: {e}")
         return error_result(f"Error getting execution: {str(e)}")
+
+
+# Tool metadata for registration
+TOOLS = [
+    ("list_executions", "List Executions", "List recent workflow executions."),
+    ("get_execution", "Get Execution", "Get details and logs for a specific workflow execution."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all execution tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "list_executions": list_executions,
+        "get_execution": get_execution,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

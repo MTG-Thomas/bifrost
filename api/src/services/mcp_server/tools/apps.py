@@ -10,25 +10,15 @@ Applications use code-based files (TSX/TypeScript) stored in app_files table.
 import logging
 from typing import Any
 
-from mcp.types import CallToolResult
+from fastmcp.tools.tool import ToolResult
 
 from src.core.pubsub import publish_app_draft_update, publish_app_published
-from src.services.mcp_server.tool_decorator import system_tool
-from src.services.mcp_server.tool_registry import ToolCategory
 from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
 
 
-@system_tool(
-    id="list_apps",
-    name="List Applications",
-    description="List all App Builder applications with file counts and URLs.",
-    category=ToolCategory.APP_BUILDER,
-    default_enabled_for_coding_agent=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def list_apps(context: Any) -> CallToolResult:
+async def list_apps(context: Any) -> ToolResult:
     """List all applications with file summaries."""
     from sqlalchemy import func, select
 
@@ -85,38 +75,6 @@ async def list_apps(context: Any) -> CallToolResult:
         return error_result(f"Error listing apps: {str(e)}")
 
 
-@system_tool(
-    id="create_app",
-    name="Create Application",
-    description="Create a new App Builder application with scaffold files.",
-    category=ToolCategory.APP_BUILDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Application name"},
-            "description": {
-                "type": "string",
-                "description": "Application description",
-            },
-            "slug": {
-                "type": "string",
-                "description": "URL slug (auto-generated from name if not provided)",
-            },
-            "scope": {
-                "type": "string",
-                "enum": ["global", "organization"],
-                "description": "Resource scope: 'global' (visible to all orgs) or 'organization' (default)",
-            },
-            "organization_id": {
-                "type": "string",
-                "description": "Organization UUID (overrides context.org_id when scope='organization')",
-            },
-        },
-        "required": ["name"],
-    },
-)
 async def create_app(
     context: Any,
     name: str,
@@ -124,7 +82,7 @@ async def create_app(
     slug: str | None = None,
     scope: str = "organization",
     organization_id: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """
     Create a new application with scaffold files.
 
@@ -136,7 +94,7 @@ async def create_app(
         organization_id: Override context.org_id when scope='organization'
 
     Returns:
-        CallToolResult with app details
+        ToolResult with app details
     """
     import re
     from uuid import UUID, uuid4
@@ -268,29 +226,11 @@ export default function RootLayout() {
         return error_result(f"Error creating app: {str(e)}")
 
 
-@system_tool(
-    id="get_app",
-    name="Get Application",
-    description="Get application metadata and file list.",
-    category=ToolCategory.APP_BUILDER,
-    default_enabled_for_coding_agent=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "app_id": {"type": "string", "description": "Application UUID"},
-            "app_slug": {
-                "type": "string",
-                "description": "Application slug (alternative to ID)",
-            },
-        },
-        "required": [],
-    },
-)
 async def get_app(
     context: Any,
     app_id: str | None = None,
     app_slug: str | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """
     Get application metadata and file list.
 
@@ -371,34 +311,13 @@ async def get_app(
         return error_result(f"Error getting app: {str(e)}")
 
 
-@system_tool(
-    id="update_app",
-    name="Update Application",
-    description="Update application metadata (name, description, navigation).",
-    category=ToolCategory.APP_BUILDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "app_id": {"type": "string", "description": "Application UUID (required)"},
-            "name": {"type": "string", "description": "New application name"},
-            "description": {"type": "string", "description": "New description"},
-            "navigation": {
-                "type": "string",
-                "description": "Navigation config as JSON string",
-            },
-        },
-        "required": ["app_id"],
-    },
-)
 async def update_app(
     context: Any,
     app_id: str,
     name: str | None = None,
     description: str | None = None,
     navigation: dict[str, Any] | None = None,
-) -> CallToolResult:
+) -> ToolResult:
     """
     Update application metadata.
 
@@ -409,7 +328,7 @@ async def update_app(
         navigation: Navigation configuration dict
 
     Returns:
-        CallToolResult with updated fields
+        ToolResult with updated fields
     """
     from uuid import UUID
 
@@ -492,22 +411,7 @@ async def update_app(
         return error_result(f"Error updating app: {str(e)}")
 
 
-@system_tool(
-    id="publish_app",
-    name="Publish Application",
-    description="Publish all draft files to live.",
-    category=ToolCategory.APP_BUILDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "app_id": {"type": "string", "description": "Application UUID"},
-        },
-        "required": ["app_id"],
-    },
-)
-async def publish_app(context: Any, app_id: str) -> CallToolResult:
+async def publish_app(context: Any, app_id: str) -> ToolResult:
     """Publish all draft files to live.
 
     Creates a new version by copying all files from the draft version,
@@ -601,16 +505,7 @@ async def publish_app(context: Any, app_id: str) -> CallToolResult:
         return error_result(f"Error publishing app: {str(e)}")
 
 
-@system_tool(
-    id="get_app_schema",
-    name="Get App Schema",
-    description="Get documentation about App Builder application structure and code-based files.",
-    category=ToolCategory.APP_BUILDER,
-    default_enabled_for_coding_agent=True,
-    is_restricted=True,
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-async def get_app_schema(context: Any) -> CallToolResult:  # noqa: ARG001
+async def get_app_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Get application schema documentation for code-based apps."""
     from src.models.contracts.applications import (
         AppFileCreate,
@@ -821,4 +716,29 @@ export default function ClientsPage() {
     return success_result("App Builder schema documentation", {"schema": schema_doc})
 
 
-# End of apps.py
+# Tool metadata for registration
+TOOLS = [
+    ("list_apps", "List Applications", "List all App Builder applications with file counts and URLs."),
+    ("create_app", "Create Application", "Create a new App Builder application with scaffold files."),
+    ("get_app", "Get Application", "Get application metadata and file list."),
+    ("update_app", "Update Application", "Update application metadata (name, description, navigation)."),
+    ("publish_app", "Publish Application", "Publish all draft files to live."),
+    ("get_app_schema", "Get App Schema", "Get documentation about App Builder application structure and code-based files."),
+]
+
+
+def register_tools(mcp: Any, get_context_fn: Any) -> None:
+    """Register all apps tools with FastMCP."""
+    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+
+    tool_funcs = {
+        "list_apps": list_apps,
+        "create_app": create_app,
+        "get_app": get_app,
+        "update_app": update_app,
+        "publish_app": publish_app,
+        "get_app_schema": get_app_schema,
+    }
+
+    for tool_id, name, description in TOOLS:
+        register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)

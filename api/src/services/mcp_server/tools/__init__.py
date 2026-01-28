@@ -1,41 +1,41 @@
 """
 MCP System Tools
 
-All system tool implementations live in this package.
-Each tool has the @system_tool decorator which registers it automatically.
-
-To add a new tool:
-1. Add your function to the appropriate file (or create a new one)
-2. Add the @system_tool decorator with metadata
-3. Import the module in this __init__.py
-4. Done - it's automatically available everywhere
-
-Structure:
-- workflow.py     - execute, list, validate, create workflows
-- forms.py        - form CRUD and schema
-- knowledge.py    - knowledge base search
-- integrations.py - list integrations
-- execution.py    - execution history
-- data_providers.py - data provider tools
-- sdk.py          - SDK documentation (generated from source)
-- apps.py         - application CRUD
-- tables.py       - table CRUD and schema
-- organizations.py - organization CRUD (restricted)
-- agents.py       - agent CRUD and schema
-- code_editor.py  - precision editing tools for code content
+Each module provides a register_tools(mcp, get_context_fn) function.
 """
 
-# Import all tool modules to trigger registration
-# The @system_tool decorator registers each function in the global registry
-from src.services.mcp_server.tools import workflow  # noqa: F401
-from src.services.mcp_server.tools import forms  # noqa: F401
-from src.services.mcp_server.tools import knowledge  # noqa: F401
-from src.services.mcp_server.tools import integrations  # noqa: F401
-from src.services.mcp_server.tools import execution  # noqa: F401
-from src.services.mcp_server.tools import data_providers  # noqa: F401
-from src.services.mcp_server.tools import apps  # noqa: F401
-from src.services.mcp_server.tools import tables  # noqa: F401
-from src.services.mcp_server.tools import organizations  # noqa: F401
-from src.services.mcp_server.tools import sdk  # noqa: F401
-from src.services.mcp_server.tools import agents  # noqa: F401
-from src.services.mcp_server.tools import code_editor  # noqa: F401
+from src.services.mcp_server.tools import (
+    agents,
+    apps,
+    code_editor,
+    data_providers,
+    execution,
+    forms,
+    integrations,
+    knowledge,
+    organizations,
+    sdk,
+    tables,
+    workflow,
+)
+
+TOOL_MODULES = [
+    agents,
+    apps,
+    code_editor,
+    data_providers,
+    execution,
+    forms,
+    integrations,
+    knowledge,
+    organizations,
+    sdk,
+    tables,
+    workflow,
+]
+
+
+def register_all_tools(mcp, get_context_fn) -> None:
+    """Register all system tools with FastMCP."""
+    for module in TOOL_MODULES:
+        module.register_tools(mcp, get_context_fn)
