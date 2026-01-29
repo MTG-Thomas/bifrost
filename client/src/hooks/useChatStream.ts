@@ -110,14 +110,41 @@ export function useChatStream({
 			switch (chunk.type) {
 				case "message_start": {
 					const convId = currentConversationIdRef.current;
-					if (convId && chunk.assistant_message_id) {
-						// NOTE: We do NOT clear optimistic messages here.
-						// Let integrateMessages() handle deduplication when React Query fetches server data.
-						// Clearing here causes a race condition where the optimistic message disappears
-						// before the server message arrives, causing visible flicker.
+					if (!convId) break;
 
-						// Create assistant message now (with server-provided ID and current timestamp)
-						// This ensures assistant message has a later timestamp than the user message
+					// Get local_id from chunk (echoed back from server)
+					const localId = chunk.local_id;
+
+					// If we have a localId and user_message_id, update the optimistic message with server ID
+					if (localId && chunk.user_message_id) {
+						const messages =
+							useChatStore.getState().messagesByConversation[convId] || [];
+						const optimistic = messages.find(
+							(m) =>
+								(m as UnifiedMessage).localId === localId &&
+								(m as UnifiedMessage).isOptimistic,
+						);
+						if (optimistic) {
+							// Replace optimistic with server-confirmed version
+							const confirmed: UnifiedMessage = {
+								...(optimistic as UnifiedMessage),
+								id: chunk.user_message_id,
+								isOptimistic: false,
+								localId: localId, // Keep localId for reference
+							};
+							// Update in store - replace by localId match
+							const updated = messages.map((m) =>
+								(m as UnifiedMessage).localId === localId &&
+								(m as UnifiedMessage).isOptimistic
+									? confirmed
+									: m,
+							);
+							useChatStore.getState().setMessages(convId, updated);
+						}
+					}
+
+					// Create assistant message (with server-provided ID and current timestamp)
+					if (chunk.assistant_message_id) {
 						const assistantMessage: UnifiedMessage = {
 							id: chunk.assistant_message_id,
 							conversation_id: convId,
@@ -140,20 +167,17 @@ export function useChatStream({
 					}
 
 					// Invalidate to fetch user message (server-confirmed)
-					const convIdForInvalidate = currentConversationIdRef.current;
-					if (convIdForInvalidate) {
-						queryClient.invalidateQueries({
-							queryKey: [
-								"get",
-								"/api/chat/conversations/{conversation_id}/messages",
-								{
-									params: {
-										path: { conversation_id: convIdForInvalidate },
-									},
+					queryClient.invalidateQueries({
+						queryKey: [
+							"get",
+							"/api/chat/conversations/{conversation_id}/messages",
+							{
+								params: {
+									path: { conversation_id: convId },
 								},
-							],
-						});
-					}
+							},
+						],
+					});
 					break;
 				}
 
@@ -269,17 +293,6 @@ export function useChatStream({
 						queryClient.invalidateQueries({
 							queryKey: ["get", "/api/chat/conversations"],
 						});
-
-						// Safety net: Clear any stale optimistic user messages after React Query settles.
-						// Normally integrateMessages() handles deduplication, but this catches edge cases.
-						const convIdCaptured = convId;
-						setTimeout(() => {
-							const msgs = (useChatStore.getState().messagesByConversation[convIdCaptured] || []) as UnifiedMessage[];
-							const cleaned = msgs.filter(m => !(m.isOptimistic && m.role === "user"));
-							if (cleaned.length !== msgs.length) {
-								useChatStore.getState().setMessages(convIdCaptured, cleaned);
-							}
-						}, 500);
 					}
 					break;
 				}
@@ -390,6 +403,7 @@ export function useChatStream({
 				sequence: Date.now(),
 				created_at: now,
 				isOptimistic: true,
+				localId: userMessageId, // Use same ID as localId for dedup
 			};
 			addMessage(conversationId, userMessage);
 

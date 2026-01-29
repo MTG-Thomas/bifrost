@@ -286,6 +286,8 @@ export interface ChatStreamChunk {
 	stop_reason?: "tool_use" | "end_turn" | null;
 	// Todo list fields (for todo_update)
 	todos?: TodoItem[] | null;
+	// Client-generated ID echoed back for dedup
+	local_id?: string | null;
 }
 
 // Pool/worker message types for real-time diagnostics

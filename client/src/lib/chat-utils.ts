@@ -14,6 +14,11 @@ export interface UnifiedMessage extends MessagePublic {
   isStreaming?: boolean;
   isOptimistic?: boolean;
   isFinal?: boolean;
+  localId?: string; // Client-generated ID for dedup
+  // Tool call fields (for role: "tool_call")
+  tool_state?: "running" | "completed" | "error";
+  tool_result?: unknown;
+  tool_input?: Record<string, unknown>;
 }
 
 /**
@@ -21,6 +26,15 @@ export interface UnifiedMessage extends MessagePublic {
  */
 export function generateMessageId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * Normalize content for comparison (trim whitespace, collapse multiple spaces)
+ * Helps match optimistic messages to server messages even with minor formatting differences
+ */
+export function normalizeContent(content: string | null | undefined): string {
+  if (!content) return "";
+  return content.trim().replace(/\s+/g, " ");
 }
 
 /**
@@ -59,47 +73,53 @@ export function mergeMessages(
 
 /**
  * Integrate incoming messages into existing array
- * - Handles optimistic -> server message replacement
- * - Merges by ID
+ * - Uses localId for optimistic -> server message reconciliation
+ * - Merges by ID for updates
  * - Maintains stable sort order
  */
 export function integrateMessages(
   existing: UnifiedMessage[],
   incoming: UnifiedMessage[]
 ): UnifiedMessage[] {
-  const map = new Map<string, UnifiedMessage>();
+  const byId = new Map<string, UnifiedMessage>();
+  const byLocalId = new Map<string, UnifiedMessage>();
 
-  // 1. Load existing by stable ID
-  existing.forEach((m) => map.set(m.id, m));
-
-  // 2. Process incoming messages
-  incoming.forEach((m) => {
-    // Check for optimistic replacement (same content, user role)
-    if (!m.isOptimistic && m.role === "user") {
-      // Find and remove matching optimistic message
-      for (const [key, existingMsg] of map) {
-        if (
-          existingMsg.isOptimistic &&
-          existingMsg.role === "user" &&
-          existingMsg.content === m.content
-        ) {
-          map.delete(key);
-          break;
-        }
-      }
-    }
-
-    // 3. Merge with existing by ID
-    const existingMsg = map.get(m.id);
-    if (existingMsg) {
-      map.set(m.id, mergeMessages(existingMsg, m));
-    } else {
-      map.set(m.id, m);
+  // 1. Index existing messages
+  existing.forEach((m) => {
+    byId.set(m.id, m);
+    if (m.localId) {
+      byLocalId.set(m.localId, m);
     }
   });
 
-  // 4. Sort by createdAt + ID for stability
-  return Array.from(map.values()).sort((a, b) => {
+  // 2. Process incoming messages
+  incoming.forEach((m) => {
+    // If incoming has localId matching an existing optimistic message,
+    // this is server confirming our optimistic message - remove the optimistic
+    if (m.localId && !m.isOptimistic) {
+      const optimistic = byLocalId.get(m.localId);
+      if (optimistic && optimistic.isOptimistic) {
+        byId.delete(optimistic.id); // Remove optimistic by its temporary ID
+        byLocalId.delete(m.localId);
+      }
+    }
+
+    // Merge or add
+    const existingMsg = byId.get(m.id);
+    if (existingMsg) {
+      byId.set(m.id, mergeMessages(existingMsg, m));
+    } else {
+      byId.set(m.id, m);
+    }
+
+    // Track by localId for future dedup
+    if (m.localId) {
+      byLocalId.set(m.localId, m);
+    }
+  });
+
+  // 3. Sort by createdAt + ID for stability
+  return Array.from(byId.values()).sort((a, b) => {
     const timeDiff =
       new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id);
