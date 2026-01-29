@@ -91,6 +91,24 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # Call parent stop
         await super().stop()
 
+    async def _ensure_module_cache(self) -> None:
+        """
+        Verify module cache exists, re-warm if empty.
+
+        Called before dispatching to worker to ensure modules are available.
+        Uses O(1) Redis SCARD to check if index has any members.
+        """
+        redis_conn = await self._redis_client._get_redis()
+
+        # O(1) check - does index have any members?
+        count = await redis_conn.scard("bifrost:module:index")
+
+        if count == 0:
+            logger.warning("Module cache empty, re-warming from DB")
+            from src.core.module_cache import warm_cache_from_db
+            await warm_cache_from_db()
+            logger.info("Module cache re-warmed")
+
     async def _handle_result(self, result: dict[str, Any]) -> None:
         """
         Handle result from process pool.
@@ -681,6 +699,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
             except Exception as e:
                 # Log but don't fail - SDK will fall back gracefully
                 logger.warning(f"Failed to pre-warm SDK cache: {e}")
+
+            # Ensure module cache is warm before dispatching to worker
+            await self._ensure_module_cache()
 
             # Route to process pool
             # Results are handled asynchronously via _handle_result callback
