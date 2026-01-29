@@ -296,6 +296,7 @@ class ChatStreamChunk(BaseModel):
         # Regular agent types
         "message_start",
         "delta",
+        "assistant_message_end",
         "tool_call",
         "tool_progress",
         "tool_result",
