@@ -1616,7 +1616,7 @@ export interface paths {
         };
         /**
          * Get stuck executions
-         * @description Get executions that have been running or pending too long (Platform admin only)
+         * @description Get executions that have been running, pending, or cancelling too long (Platform admin only)
          */
         get: operations["get_stuck_executions_api_executions_cleanup_stuck_get"];
         put?: never;
@@ -1638,7 +1638,7 @@ export interface paths {
         put?: never;
         /**
          * Trigger execution cleanup
-         * @description Clean up stuck executions by marking them as timed out (Platform admin only)
+         * @description Clean up stuck executions by marking them as timed out or cancelled (Platform admin only)
          */
         post: operations["trigger_cleanup_api_executions_cleanup_trigger_post"];
         delete?: never;
@@ -3021,7 +3021,7 @@ export interface paths {
         put?: never;
         /**
          * Refresh OAuth token
-         * @description Manually refresh the OAuth access token using the refresh token
+         * @description Refresh the OAuth access token. For client_credentials flow, fetches a new token. For authorization_code flow, uses the refresh token.
          */
         post: operations["refresh_token_api_oauth_connections__connection_name__refresh_post"];
         delete?: never;
@@ -4177,6 +4177,9 @@ export interface paths {
         /**
          * Delete Agent
          * @description Soft delete an agent (platform admin only).
+         *
+         *     System agents can be deleted - they will be recreated on next startup
+         *     if they are still defined in the system agent definitions.
          */
         delete: operations["delete_agent_api_agents__agent_id__delete"];
         options?: never;
@@ -7059,7 +7062,7 @@ export interface components {
             /** Mfa Required For Password */
             mfa_required_for_password: boolean;
             /** Oauth Providers */
-            oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
+            oauth_providers: components["schemas"]["OAuthProviderInfo"][];
         };
         /**
          * AuthorizeResponse
@@ -9758,7 +9761,7 @@ export interface components {
              * Entity Type
              * @description Platform entity type if file is a platform entity, null for regular files
              */
-            entity_type?: ("workflow" | "form" | "agent" | "module") | null;
+            entity_type?: ("workflow" | "form" | "agent" | "module" | "text") | null;
             /**
              * Entity Id
              * @description Platform entity ID if file is a platform entity, null for regular files
@@ -11651,6 +11654,11 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -11670,20 +11678,11 @@ export interface components {
         };
         /**
          * MFAVerifyRequest
-         * @description Request to verify MFA code during login.
+         * @description Request to verify MFA code.
          */
         MFAVerifyRequest: {
-            /** Mfa Token */
-            mfa_token: string;
             /** Code */
             code: string;
-            /**
-             * Trust Device
-             * @default false
-             */
-            trust_device: boolean;
-            /** Device Name */
-            device_name?: string | null;
         };
         /**
          * MFAVerifyResponse
@@ -11747,6 +11746,23 @@ export interface components {
              * @description Execution ID for tool results (for fetching logs)
              */
             execution_id?: string | null;
+            /**
+             * Tool State
+             * @description Tool execution state
+             */
+            tool_state?: ("running" | "completed" | "error") | null;
+            /**
+             * Tool Result
+             * @description Result from tool execution
+             */
+            tool_result?: unknown | null;
+            /**
+             * Tool Input
+             * @description Input arguments for tool call
+             */
+            tool_input?: {
+                [key: string]: unknown;
+            } | null;
             /** Token Count Input */
             token_count_input?: number | null;
             /** Token Count Output */
@@ -11765,7 +11781,7 @@ export interface components {
          * @description Message roles in chat conversations
          * @enum {string}
          */
-        MessageRole: "user" | "assistant" | "system" | "tool";
+        MessageRole: "user" | "assistant" | "system" | "tool" | "tool_call";
         /**
          * MicrosoftOAuthConfigRequest
          * @description Request model for configuring Microsoft OAuth SSO.
@@ -12516,7 +12532,7 @@ export interface components {
         };
         /**
          * OAuthProviderInfo
-         * @description OAuth provider information.
+         * @description OAuth provider information for login page
          */
         OAuthProviderInfo: {
             /** Name */
@@ -12532,7 +12548,7 @@ export interface components {
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["OAuthProviderInfo"][];
+            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -15426,12 +15442,6 @@ export interface components {
              * @default false
              */
             default_enabled_for_coding_agent: boolean;
-            /**
-             * Is Restricted
-             * @description Platform-admin only tool regardless of agent assignment
-             * @default false
-             */
-            is_restricted: boolean;
         };
         /**
          * ToolsResponse
@@ -15702,7 +15712,7 @@ export interface components {
         };
         /**
          * UserCreate
-         * @description Input for creating a user.
+         * @description User creation request model.
          */
         UserCreate: {
             /**
@@ -15710,22 +15720,10 @@ export interface components {
              * Format: email
              */
             email: string;
+            /** Password */
+            password: string;
             /** Name */
             name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** Organization Id */
-            organization_id?: string | null;
         };
         /**
          * UserFormsResponse
@@ -16669,22 +16667,54 @@ export interface components {
             metadata?: components["schemas"]["WorkflowMetadata"] | null;
         };
         /**
-         * OAuthProviderInfo
-         * @description OAuth provider information for login page
+         * UserCreate
+         * @description Input for creating a user.
          */
-        src__models__contracts__auth__OAuthProviderInfo: {
+        src__models__contracts__users__UserCreate: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
             /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
+            name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /**
+         * MFAVerifyRequest
+         * @description Request to verify MFA code during login.
+         */
+        src__routers__auth__MFAVerifyRequest: {
+            /** Mfa Token */
+            mfa_token: string;
+            /** Code */
+            code: string;
+            /**
+             * Trust Device
+             * @default false
+             */
+            trust_device: boolean;
+            /** Device Name */
+            device_name?: string | null;
         };
         /**
          * MFASetupResponse
          * @description MFA setup response with secret.
          */
-        src__routers__auth__MFASetupResponse: {
+        src__routers__mfa__MFASetupResponse: {
             /** Secret */
             secret: string;
             /** Qr Code Uri */
@@ -16695,34 +16725,6 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
-            /**
-             * Is Existing
-             * @default false
-             */
-            is_existing: boolean;
-        };
-        /**
-         * UserCreate
-         * @description User creation request model.
-         */
-        src__routers__auth__UserCreate: {
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Password */
-            password: string;
-            /** Name */
-            name?: string | null;
-        };
-        /**
-         * MFAVerifyRequest
-         * @description Request to verify MFA code.
-         */
-        src__routers__mfa__MFAVerifyRequest: {
-            /** Code */
-            code: string;
         };
         /**
          * OAuthCallbackRequest
@@ -16735,6 +16737,18 @@ export interface components {
             code: string;
             /** State */
             state: string;
+        };
+        /**
+         * OAuthProviderInfo
+         * @description OAuth provider information.
+         */
+        src__routers__oauth_sso__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
         };
     };
     responses: never;
@@ -16837,7 +16851,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["src__routers__auth__MFASetupResponse"];
+                    "application/json": components["schemas"]["MFASetupResponse"];
                 };
             };
             /** @description Validation Error */
@@ -16880,7 +16894,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MFAVerifyRequest"];
+                "application/json": components["schemas"]["src__routers__auth__MFAVerifyRequest"];
             };
         };
         responses: {
@@ -17052,7 +17066,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__auth__UserCreate"];
+                "application/json": components["schemas"]["UserCreate"];
             };
         };
         responses: {
@@ -17283,7 +17297,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
                 };
             };
         };
@@ -17297,7 +17311,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__routers__mfa__MFAVerifyRequest"];
+                "application/json": components["schemas"]["MFAVerifyRequest"];
             };
         };
         responses: {
@@ -17998,7 +18012,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
             };
         };
         responses: {
