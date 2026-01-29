@@ -184,19 +184,29 @@ export function useChatStream({
 				case "delta":
 					if (chunk.content) {
 						const convId = currentConversationIdRef.current;
-						const streamingId = convId
-							? useChatStore.getState().streamingMessageIds[convId]
-							: null;
+						if (!convId) break;
 
-						if (convId && streamingId) {
-							const currentMessages =
-								useChatStore.getState().messagesByConversation[
-									convId
-								] || [];
-							const currentMsg = currentMessages.find(
-								(m) => m.id === streamingId,
-							);
+						let streamingId = useChatStore.getState().streamingMessageIds[convId];
 
+						// If no streaming message exists (after assistant_message_end), create new one
+						if (!streamingId) {
+							const newMessageId = generateMessageId();
+							const newAssistantMessage: UnifiedMessage = {
+								id: newMessageId,
+								conversation_id: convId,
+								role: "assistant",
+								content: chunk.content,
+								sequence: Date.now(),
+								created_at: new Date().toISOString(),
+								isStreaming: true,
+								isOptimistic: false,
+							};
+							addMessage(convId, newAssistantMessage);
+							useChatStore.getState().setStreamingMessageIdForConversation(convId, newMessageId);
+						} else {
+							// Append to existing streaming message
+							const currentMessages = useChatStore.getState().messagesByConversation[convId] || [];
+							const currentMsg = currentMessages.find((m) => m.id === streamingId);
 							useChatStore.getState().updateMessage(convId, streamingId, {
 								content: (currentMsg?.content || "") + chunk.content,
 							});
@@ -252,9 +262,22 @@ export function useChatStream({
 					// Message segment is starting - nothing to do, message is already being built
 					break;
 
-				case "assistant_message_end":
-					// Message segment complete - nothing needed since we track via unified model
+				case "assistant_message_end": {
+					// Text segment complete - finalize current message
+					// Next delta will create a NEW message
+					const convId = currentConversationIdRef.current;
+					if (convId) {
+						const streamingId = useChatStore.getState().streamingMessageIds[convId];
+						if (streamingId) {
+							useChatStore.getState().updateMessage(convId, streamingId, {
+								isStreaming: false,
+								isFinal: true,
+							});
+							useChatStore.getState().setStreamingMessageIdForConversation(convId, null);
+						}
+					}
 					break;
+				}
 
 				case "done": {
 					const convId = currentConversationIdRef.current;
