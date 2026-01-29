@@ -52,8 +52,8 @@ def get_module_sync(path: str) -> CachedModule | None:
 
     Called by VirtualModuleFinder.find_spec() during import resolution.
 
-    Falls back to database if not in cache, providing self-healing
-    behavior when cache entries expire or are evicted.
+    If module is not in Redis cache, returns None. The consumer is responsible
+    for ensuring the cache is warm before dispatching to workers.
 
     Args:
         path: Module path relative to workspace
@@ -68,68 +68,12 @@ def get_module_sync(path: str) -> CachedModule | None:
         if data:
             return json.loads(data)
 
-        # Cache miss - try database fallback
-        return _fetch_and_cache_from_db_sync(path, client)
+        # No DB fallback - consumer ensures cache is warm
+        logger.debug(f"Module not in cache: {path}")
+        return None
 
     except redis.RedisError as e:
         logger.warning(f"Redis error fetching module {path}: {e}")
-        return None
-
-
-def _fetch_and_cache_from_db_sync(path: str, client: Any) -> CachedModule | None:
-    """
-    Fetch module from database and re-cache it.
-
-    Uses SQLAlchemy sync engine since the import hook is synchronous.
-    This provides self-healing cache behavior when entries expire.
-
-    Args:
-        path: Module path relative to workspace
-        client: Sync Redis client instance
-
-    Returns:
-        CachedModule dict if found in DB, None otherwise
-    """
-    from sqlalchemy import create_engine, select
-    from sqlalchemy.orm import Session
-
-    from src.config import get_settings
-    from src.models import WorkspaceFile
-
-    try:
-        settings = get_settings()
-        engine = create_engine(settings.database_url_sync)
-
-        with Session(engine) as session:
-            stmt = select(WorkspaceFile).where(
-                WorkspaceFile.path == path,
-                WorkspaceFile.entity_type == "module",
-                WorkspaceFile.is_deleted == False,  # noqa: E712
-                WorkspaceFile.content.isnot(None),
-            )
-            file = session.execute(stmt).scalar_one_or_none()
-
-        if not file:
-            return None
-
-        cached: CachedModule = {
-            "content": file.content or "",
-            "path": path,
-            "hash": file.content_hash or "",
-        }
-
-        # Re-cache with TTL
-        key = f"{MODULE_KEY_PREFIX}{path}"
-        client.setex(key, MODULE_CACHE_TTL, json.dumps(cached))
-
-        # Update the index
-        client.sadd(MODULE_INDEX_KEY, path)
-
-        logger.info(f"Re-cached module from DB: {path}")
-        return cached
-
-    except Exception as e:
-        logger.warning(f"DB fallback failed for {path}: {e}")
         return None
 
 

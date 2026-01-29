@@ -169,44 +169,16 @@ class TestModuleCacheSync:
             assert result["content"] == "print('hello')"
             mock_sync_redis.get.assert_called_once_with("bifrost:module:shared/test.py")
 
-    def test_get_module_sync_not_found_no_db_fallback(self, mock_sync_redis):
-        """Test fetching a nonexistent module synchronously when DB also has no module."""
+    def test_get_module_sync_not_found_returns_none(self, mock_sync_redis):
+        """Test fetching a nonexistent module returns None (no DB fallback)."""
         mock_sync_redis.get.return_value = None
 
-        # Mock the DB fallback to return None (module not in DB either)
-        with (
-            patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis),
-            patch(
-                "src.core.module_cache_sync._fetch_and_cache_from_db_sync",
-                return_value=None,
-            ),
-        ):
+        with patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis):
             from src.core.module_cache_sync import get_module_sync
 
             result = get_module_sync("nonexistent.py")
 
             assert result is None
-
-    def test_get_module_sync_cache_miss_db_fallback_succeeds(self, mock_sync_redis):
-        """Test that cache miss triggers DB fallback and re-caches the module."""
-        mock_sync_redis.get.return_value = None  # Cache miss
-        db_module = {"content": "db_content", "path": "shared/test.py", "hash": "dbhash"}
-
-        with (
-            patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis),
-            patch(
-                "src.core.module_cache_sync._fetch_and_cache_from_db_sync",
-                return_value=db_module,
-            ) as mock_db_fallback,
-        ):
-            from src.core.module_cache_sync import get_module_sync
-
-            result = get_module_sync("shared/test.py")
-
-            assert result is not None
-            assert result["content"] == "db_content"
-            assert result["path"] == "shared/test.py"
-            mock_db_fallback.assert_called_once_with("shared/test.py", mock_sync_redis)
 
     def test_get_module_sync_handles_redis_error(self, mock_sync_redis):
         """Test that Redis errors return None instead of crashing."""
@@ -282,147 +254,6 @@ class TestCachedModuleTypedDict:
         assert module["content"] == "print('test')"
         assert module["path"] == "shared/test.py"
         assert module["hash"] == "abc123def456"
-
-
-class TestDBFallback:
-    """Tests for the database fallback mechanism in module_cache_sync."""
-
-    @pytest.fixture
-    def mock_sync_redis(self):
-        """Create a mock sync Redis client."""
-        mock = MagicMock()
-        return mock
-
-    @pytest.fixture
-    def mock_workspace_file(self):
-        """Create a mock WorkspaceFile."""
-        mock_file = MagicMock()
-        mock_file.content = "# module content"
-        mock_file.content_hash = "abc123hash"
-        mock_file.path = "features/test/module.py"
-        return mock_file
-
-    def test_fetch_and_cache_from_db_sync_found(self, mock_sync_redis, mock_workspace_file):
-        """Test DB fallback finds module and re-caches it."""
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=None)
-        mock_session.execute.return_value.scalar_one_or_none.return_value = mock_workspace_file
-
-        mock_engine = MagicMock()
-
-        with (
-            patch("sqlalchemy.create_engine", return_value=mock_engine),
-            patch("sqlalchemy.orm.Session", return_value=mock_session),
-            patch("src.config.get_settings") as mock_settings,
-        ):
-            mock_settings.return_value.database_url_sync = "postgresql://test"
-
-            from src.core.module_cache_sync import _fetch_and_cache_from_db_sync
-
-            result = _fetch_and_cache_from_db_sync("features/test/module.py", mock_sync_redis)
-
-            assert result is not None
-            assert result["content"] == "# module content"
-            assert result["path"] == "features/test/module.py"
-            assert result["hash"] == "abc123hash"
-
-            # Verify re-caching occurred
-            mock_sync_redis.setex.assert_called_once()
-            mock_sync_redis.sadd.assert_called_once()
-
-    def test_fetch_and_cache_from_db_sync_not_found(self, mock_sync_redis):
-        """Test DB fallback returns None when module not in database."""
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=None)
-        mock_session.execute.return_value.scalar_one_or_none.return_value = None
-
-        mock_engine = MagicMock()
-
-        with (
-            patch("sqlalchemy.create_engine", return_value=mock_engine),
-            patch("sqlalchemy.orm.Session", return_value=mock_session),
-            patch("src.config.get_settings") as mock_settings,
-        ):
-            mock_settings.return_value.database_url_sync = "postgresql://test"
-
-            from src.core.module_cache_sync import _fetch_and_cache_from_db_sync
-
-            result = _fetch_and_cache_from_db_sync("nonexistent/module.py", mock_sync_redis)
-
-            assert result is None
-            mock_sync_redis.setex.assert_not_called()
-            mock_sync_redis.sadd.assert_not_called()
-
-    def test_fetch_and_cache_from_db_sync_handles_db_error(self, mock_sync_redis):
-        """Test DB fallback handles database errors gracefully."""
-        with (
-            patch(
-                "sqlalchemy.create_engine",
-                side_effect=Exception("Connection failed"),
-            ),
-            patch("src.config.get_settings") as mock_settings,
-        ):
-            mock_settings.return_value.database_url_sync = "postgresql://test"
-
-            from src.core.module_cache_sync import _fetch_and_cache_from_db_sync
-
-            result = _fetch_and_cache_from_db_sync("features/test.py", mock_sync_redis)
-
-            assert result is None
-
-    def test_fetch_and_cache_from_db_sync_caches_with_correct_ttl(
-        self, mock_sync_redis, mock_workspace_file
-    ):
-        """Test that re-cached modules use the correct TTL."""
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=None)
-        mock_session.execute.return_value.scalar_one_or_none.return_value = mock_workspace_file
-
-        mock_engine = MagicMock()
-
-        with (
-            patch("sqlalchemy.create_engine", return_value=mock_engine),
-            patch("sqlalchemy.orm.Session", return_value=mock_session),
-            patch("src.config.get_settings") as mock_settings,
-        ):
-            mock_settings.return_value.database_url_sync = "postgresql://test"
-
-            from src.core.module_cache_sync import _fetch_and_cache_from_db_sync
-
-            _fetch_and_cache_from_db_sync("features/test/module.py", mock_sync_redis)
-
-            # Verify TTL is 24 hours (86400 seconds)
-            call_args = mock_sync_redis.setex.call_args
-            assert call_args[0][1] == 86400
-
-    def test_fetch_and_cache_from_db_sync_updates_index(
-        self, mock_sync_redis, mock_workspace_file
-    ):
-        """Test that re-caching also updates the module index."""
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=None)
-        mock_session.execute.return_value.scalar_one_or_none.return_value = mock_workspace_file
-
-        mock_engine = MagicMock()
-
-        with (
-            patch("sqlalchemy.create_engine", return_value=mock_engine),
-            patch("sqlalchemy.orm.Session", return_value=mock_session),
-            patch("src.config.get_settings") as mock_settings,
-        ):
-            mock_settings.return_value.database_url_sync = "postgresql://test"
-
-            from src.core.module_cache_sync import _fetch_and_cache_from_db_sync
-
-            _fetch_and_cache_from_db_sync("features/test/module.py", mock_sync_redis)
-
-            mock_sync_redis.sadd.assert_called_once_with(
-                "bifrost:module:index", "features/test/module.py"
-            )
 
 
 class TestKeyPatterns:
