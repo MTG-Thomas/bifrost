@@ -222,6 +222,12 @@ class Message(Base):
     tool_name: Mapped[str | None] = mapped_column(String(255), default=None)
     # Execution ID for fetching logs from tool executions
     execution_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    # Client-generated ID for optimistic update reconciliation
+    local_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    # Tool call state tracking (for TOOL_CALL role)
+    tool_state: Mapped[str | None] = mapped_column(String(20), default=None)  # running, completed, error
+    tool_result: Mapped[dict | None] = mapped_column(JSONB, default=None)  # Result data from tool execution
+    tool_input: Mapped[dict | None] = mapped_column(JSONB, default=None)  # Input arguments for tool call
     # Token usage metrics
     token_count_input: Mapped[int | None] = mapped_column(Integer, default=None)
     token_count_output: Mapped[int | None] = mapped_column(Integer, default=None)
