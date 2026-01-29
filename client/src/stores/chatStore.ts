@@ -23,30 +23,10 @@ import type { TodoItem } from "@/services/websocket";
 type AgentSummary = components["schemas"]["AgentSummary"];
 type ConversationSummary = components["schemas"]["ConversationSummary"];
 type MessagePublic = components["schemas"]["MessagePublic"];
-type ToolCall = components["schemas"]["ToolCall"];
 
 // Re-export types for external use
 export type { ToolExecutionState, ToolExecutionStatus, ToolExecutionLog };
 
-// Client-only type for streaming tool results (legacy, kept for compatibility)
-interface ToolResult {
-	tool_call_id: string;
-	tool_name: string;
-	result: unknown;
-	error?: string | null;
-	duration_ms?: number | null;
-}
-
-// Streaming message state (building up response)
-export interface StreamingMessage {
-	content: string;
-	toolCalls: ToolCall[];
-	toolResults: ToolResult[];
-	/** Tool executions with full state (status, logs, results) */
-	toolExecutions: Record<string, ToolExecutionState>;
-	isComplete: boolean;
-	error?: string;
-}
 
 interface ChatState {
 	// Active selections
@@ -72,10 +52,6 @@ interface ChatState {
 
 	// Streaming state
 	isStreaming: boolean;
-	/** Completed streaming messages (for multi-message responses with tool calls) */
-	completedStreamingMessages: StreamingMessage[];
-	/** Currently building streaming message */
-	streamingMessage: StreamingMessage | null;
 
 	// Studio mode (admin feature for debugging)
 	isStudioMode: boolean;
@@ -88,9 +64,8 @@ interface ChatState {
 	// Todo list from agent tools (e.g., TodoWrite tool)
 	todos: TodoItem[];
 
-	// Real message ID for streaming message (from assistant_message_id in message_start)
-	// Used for seamless handoff from streaming to API message
-	streamingMessageId: string | null;
+	/** Currently streaming message ID per conversation */
+	streamingMessageIds: Record<string, string | null>;
 }
 
 interface ChatActions {
@@ -108,6 +83,15 @@ interface ChatActions {
 	// Message actions
 	setMessages: (conversationId: string, messages: MessagePublic[]) => void;
 	addMessage: (conversationId: string, message: MessagePublic) => void;
+	updateMessage: (
+		conversationId: string,
+		messageId: string,
+		updates: Partial<MessagePublic> & {
+			isStreaming?: boolean;
+			isFinal?: boolean;
+			toolExecutions?: Record<string, ToolExecutionState>;
+		},
+	) => void;
 	clearMessages: (conversationId: string) => void;
 
 	// System event actions
@@ -126,21 +110,9 @@ interface ChatActions {
 
 	// Streaming actions
 	startStreaming: () => void;
-	appendStreamContent: (content: string) => void;
-	addStreamToolCall: (toolCall: ToolCall, executionId?: string) => void;
-	updateToolExecutionStatus: (
-		toolCallId: string,
-		status: ToolExecutionStatus,
-	) => void;
-	setToolExecutionId: (toolCallId: string, executionId: string) => void;
-	addToolExecutionLog: (toolCallId: string, log: ToolExecutionLog) => void;
-	addStreamToolResult: (toolResult: ToolResult) => void;
-	/** Complete current streaming message and start a new one (for multi-message responses) */
-	completeCurrentStreamingMessage: () => void;
-	completeStream: (messageId?: string) => void;
+	completeStream: () => void;
 	setStreamError: (error: string) => void;
 	resetStream: () => void;
-	clearCompletedStreamingMessages: () => void;
 
 	// Studio mode actions
 	toggleStudioMode: () => void;
@@ -155,8 +127,11 @@ interface ChatActions {
 	setTodos: (todos: TodoItem[]) => void;
 	clearTodos: () => void;
 
-	// Streaming message ID (for seamless handoff to API message)
-	setStreamingMessageId: (id: string | null) => void;
+	// Streaming message ID per conversation
+	setStreamingMessageIdForConversation: (
+		conversationId: string,
+		messageId: string | null,
+	) => void;
 
 	// Reset
 	reset: () => void;
@@ -173,14 +148,12 @@ const initialState: ChatState = {
 	toolExecutionsByConversation: {},
 	messagesByConversation: {},
 	isStreaming: false,
-	completedStreamingMessages: [],
-	streamingMessage: null,
 	isStudioMode: false,
 	selectedToolCallId: null,
 	isConnected: false,
 	error: null,
 	todos: [],
-	streamingMessageId: null,
+	streamingMessageIds: {},
 };
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -194,7 +167,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 		if (get().isStreaming) {
 			set({
 				isStreaming: false,
-				streamingMessage: null,
 			});
 		}
 	},
@@ -266,6 +238,28 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 		}));
 	},
 
+	updateMessage: (conversationId, messageId, updates) => {
+		set((state) => {
+			const messages = state.messagesByConversation[conversationId] || [];
+			const index = messages.findIndex((m) => m.id === messageId);
+
+			if (index === -1) return {};
+
+			const updatedMessages = [...messages];
+			updatedMessages[index] = {
+				...updatedMessages[index],
+				...updates,
+			};
+
+			return {
+				messagesByConversation: {
+					...state.messagesByConversation,
+					[conversationId]: updatedMessages,
+				},
+			};
+		});
+	},
+
 	clearMessages: (conversationId) => {
 		set((state) => {
 			const { [conversationId]: _, ...remaining } =
@@ -315,314 +309,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
 	// Streaming actions
 	startStreaming: () => {
-		set({
-			isStreaming: true,
-			completedStreamingMessages: [],
-			streamingMessage: {
-				content: "",
-				toolCalls: [],
-				toolResults: [],
-				toolExecutions: {},
-				isComplete: false,
-			},
-		});
+		set({ isStreaming: true });
 	},
 
-	appendStreamContent: (content) => {
-		set((state) => ({
-			streamingMessage: state.streamingMessage
-				? {
-						...state.streamingMessage,
-						content: state.streamingMessage.content + content,
-					}
-				: null,
-		}));
+	completeStream: () => {
+		set({ isStreaming: false });
 	},
 
-	addStreamToolCall: (toolCall, executionId) => {
-		set((state) => {
-			if (!state.streamingMessage) return {};
-
-			// Create tool execution state
-			const toolExecution: ToolExecutionState = {
-				toolCall,
-				status: "pending",
-				executionId,
-				logs: [],
-				startedAt: new Date().toISOString(),
-			};
-
-			return {
-				streamingMessage: {
-					...state.streamingMessage,
-					toolCalls: [...state.streamingMessage.toolCalls, toolCall],
-					toolExecutions: {
-						...state.streamingMessage.toolExecutions,
-						[toolCall.id]: toolExecution,
-					},
-				},
-			};
-		});
-	},
-
-	updateToolExecutionStatus: (toolCallId, status) => {
-		set((state) => {
-			// First, try to find in current streaming message
-			if (state.streamingMessage) {
-				const execution =
-					state.streamingMessage.toolExecutions[toolCallId];
-				if (execution) {
-					return {
-						streamingMessage: {
-							...state.streamingMessage,
-							toolExecutions: {
-								...state.streamingMessage.toolExecutions,
-								[toolCallId]: {
-									...execution,
-									status,
-								},
-							},
-						},
-					};
-				}
-			}
-
-			// If not found, search in completed streaming messages
-			const completedIndex = state.completedStreamingMessages.findIndex(
-				(msg) => msg.toolExecutions[toolCallId],
-			);
-
-			if (completedIndex >= 0) {
-				const completedMessages = [...state.completedStreamingMessages];
-				const msg = completedMessages[completedIndex];
-				const execution = msg.toolExecutions[toolCallId];
-
-				completedMessages[completedIndex] = {
-					...msg,
-					toolExecutions: {
-						...msg.toolExecutions,
-						[toolCallId]: {
-							...execution,
-							status,
-						},
-					},
-				};
-
-				return { completedStreamingMessages: completedMessages };
-			}
-
-			// Tool not found anywhere
-			return {};
-		});
-	},
-
-	setToolExecutionId: (toolCallId, executionId) => {
-		set((state) => {
-			// First, try to find in current streaming message
-			if (state.streamingMessage) {
-				const execution =
-					state.streamingMessage.toolExecutions[toolCallId];
-				if (execution) {
-					return {
-						streamingMessage: {
-							...state.streamingMessage,
-							toolExecutions: {
-								...state.streamingMessage.toolExecutions,
-								[toolCallId]: {
-									...execution,
-									executionId,
-								},
-							},
-						},
-					};
-				}
-			}
-
-			// If not found, search in completed streaming messages
-			const completedIndex = state.completedStreamingMessages.findIndex(
-				(msg) => msg.toolExecutions[toolCallId],
-			);
-
-			if (completedIndex >= 0) {
-				const completedMessages = [...state.completedStreamingMessages];
-				const msg = completedMessages[completedIndex];
-				const execution = msg.toolExecutions[toolCallId];
-
-				completedMessages[completedIndex] = {
-					...msg,
-					toolExecutions: {
-						...msg.toolExecutions,
-						[toolCallId]: {
-							...execution,
-							executionId,
-						},
-					},
-				};
-
-				return { completedStreamingMessages: completedMessages };
-			}
-
-			// Tool not found anywhere
-			return {};
-		});
-	},
-
-	addToolExecutionLog: (toolCallId, log) => {
-		set((state) => {
-			// First, try to find in current streaming message
-			if (state.streamingMessage) {
-				const execution =
-					state.streamingMessage.toolExecutions[toolCallId];
-				if (execution) {
-					return {
-						streamingMessage: {
-							...state.streamingMessage,
-							toolExecutions: {
-								...state.streamingMessage.toolExecutions,
-								[toolCallId]: {
-									...execution,
-									status: "running", // Auto-set to running when logs come in
-									logs: [...execution.logs, log],
-								},
-							},
-						},
-					};
-				}
-			}
-
-			// If not found, search in completed streaming messages
-			const completedIndex = state.completedStreamingMessages.findIndex(
-				(msg) => msg.toolExecutions[toolCallId],
-			);
-
-			if (completedIndex >= 0) {
-				const completedMessages = [...state.completedStreamingMessages];
-				const msg = completedMessages[completedIndex];
-				const execution = msg.toolExecutions[toolCallId];
-
-				completedMessages[completedIndex] = {
-					...msg,
-					toolExecutions: {
-						...msg.toolExecutions,
-						[toolCallId]: {
-							...execution,
-							status: "running", // Auto-set to running when logs come in
-							logs: [...execution.logs, log],
-						},
-					},
-				};
-
-				return { completedStreamingMessages: completedMessages };
-			}
-
-			// Tool not found anywhere
-			return {};
-		});
-	},
-
-	addStreamToolResult: (toolResult) => {
-		set((state) => {
-			if (!state.streamingMessage) return {};
-
-			// Update toolExecutions with result
-			const execution =
-				state.streamingMessage.toolExecutions[toolResult.tool_call_id];
-			const updatedExecutions = execution
-				? {
-						...state.streamingMessage.toolExecutions,
-						[toolResult.tool_call_id]: {
-							...execution,
-							status: toolResult.error ? "failed" : "success",
-							result: toolResult.result,
-							error: toolResult.error ?? undefined,
-							durationMs: toolResult.duration_ms ?? undefined,
-						} as ToolExecutionState,
-					}
-				: state.streamingMessage.toolExecutions;
-
-			return {
-				streamingMessage: {
-					...state.streamingMessage,
-					toolResults: [
-						...state.streamingMessage.toolResults,
-						toolResult,
-					],
-					toolExecutions: updatedExecutions,
-				},
-			};
-		});
-	},
-
-	completeCurrentStreamingMessage: () => {
-		set((state) => {
-			// Only complete if there's content or tools in the current message
-			if (
-				!state.streamingMessage ||
-				(!state.streamingMessage.content &&
-					state.streamingMessage.toolCalls.length === 0)
-			) {
-				return {};
-			}
-
-			// Mark current message as complete and add to completed list
-			const completedMessage: StreamingMessage = {
-				...state.streamingMessage,
-				isComplete: true,
-			};
-
-			return {
-				completedStreamingMessages: [
-					...state.completedStreamingMessages,
-					completedMessage,
-				],
-				// Start fresh streaming message
-				streamingMessage: {
-					content: "",
-					toolCalls: [],
-					toolResults: [],
-					toolExecutions: {},
-					isComplete: false,
-				},
-			};
-		});
-	},
-
-	completeStream: (_messageId) => {
-		set((state) => ({
-			isStreaming: false,
-			streamingMessage: state.streamingMessage
-				? {
-						...state.streamingMessage,
-						isComplete: true,
-					}
-				: null,
-		}));
-	},
-
-	setStreamError: (error) => {
-		set((state) => ({
-			isStreaming: false,
-			streamingMessage: state.streamingMessage
-				? {
-						...state.streamingMessage,
-						isComplete: true,
-						error,
-					}
-				: null,
-		}));
+	setStreamError: (_error) => {
+		set({ isStreaming: false });
 	},
 
 	resetStream: () => {
-		set({
-			isStreaming: false,
-			completedStreamingMessages: [],
-			streamingMessage: null,
-			streamingMessageId: null,
-		});
-	},
-
-	clearCompletedStreamingMessages: () => {
-		set({ completedStreamingMessages: [] });
+		set({ isStreaming: false });
 	},
 
 	// Studio mode actions
@@ -656,9 +355,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 		set({ todos: [] });
 	},
 
-	// Streaming message ID (for seamless handoff to API message)
-	setStreamingMessageId: (id) => {
-		set({ streamingMessageId: id });
+	// Streaming message ID per conversation
+	setStreamingMessageIdForConversation: (conversationId, messageId) => {
+		set((state) => ({
+			streamingMessageIds: {
+				...state.streamingMessageIds,
+				[conversationId]: messageId,
+			},
+		}));
 	},
 
 	// Reset
@@ -673,10 +377,6 @@ export const useActiveConversation = () =>
 export const useActiveAgent = () =>
 	useChatStore((state) => state.activeAgentId);
 export const useIsStreaming = () => useChatStore((state) => state.isStreaming);
-export const useCompletedStreamingMessages = () =>
-	useChatStore((state) => state.completedStreamingMessages);
-export const useStreamingMessage = () =>
-	useChatStore((state) => state.streamingMessage);
 export const useIsStudioMode = () =>
 	useChatStore((state) => state.isStudioMode);
 export const useTodos = () => useChatStore((state) => state.todos);

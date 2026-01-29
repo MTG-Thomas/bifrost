@@ -15,17 +15,12 @@ import { ToolExecutionGroup } from "./ToolExecutionGroup";
 import { ChatSystemEvent, type SystemEvent } from "./ChatSystemEvent";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { TodoList } from "./TodoList";
-import {
-	useChatStore,
-	useStreamingMessage,
-	useCompletedStreamingMessages,
-	useTodos,
-	type StreamingMessage,
-} from "@/stores/chatStore";
+import { useChatStore, useTodos } from "@/stores/chatStore";
 import { useMessages } from "@/hooks/useChat";
 import { useChatStream } from "@/hooks/useChatStream";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { components } from "@/lib/v1";
+import { integrateMessages, type UnifiedMessage } from "@/lib/chat-utils";
 
 type MessagePublic = components["schemas"]["MessagePublic"];
 type ToolCall = components["schemas"]["ToolCall"];
@@ -34,90 +29,24 @@ type ToolCall = components["schemas"]["ToolCall"];
 const EMPTY_MESSAGES: MessagePublic[] = [];
 const EMPTY_EVENTS: SystemEvent[] = [];
 
-/** Helper component to render streaming message without Date.now() in render */
-function StreamingMessageDisplay({
-	conversationId,
-	streamingMessage,
-	onToolCallClick,
-}: {
-	conversationId: string;
-	streamingMessage: StreamingMessage;
-	onToolCallClick?: (toolCall: ToolCall) => void;
-}) {
-	// Use state to hold stable timestamp values
-	const [timestamp] = useState(() => ({
-		sequence: Date.now(),
-		created_at: new Date().toISOString(),
-	}));
-
-	const hasContent =
-		streamingMessage.content && streamingMessage.content.trim().length > 0;
-	const toolExecutions = Object.values(streamingMessage.toolExecutions);
-	const hasToolExecutions = toolExecutions.length > 0;
-
-	// Create message for text content (without tool_calls - we render those separately)
-	const message: MessagePublic = {
-		id: "streaming",
-		conversation_id: conversationId,
-		role: "assistant",
-		content: streamingMessage.content || (hasToolExecutions ? "" : "..."),
-		sequence: timestamp.sequence,
-		created_at: timestamp.created_at,
-	};
-
-	return (
-		<div className="space-y-1">
-			{/* Text Content first (to match completed message layout) */}
-			{(hasContent || !hasToolExecutions) && (
-				<ChatMessage
-					message={message}
-					isStreaming={
-						!streamingMessage.isComplete &&
-						(!hasToolExecutions || !streamingMessage.content)
-					}
-					onToolCallClick={onToolCallClick}
-					hideToolBadges={true} // We render tool badges separately below
-				/>
-			)}
-
-			{/* Tool Execution Badges (streaming) - with vertical connecting line */}
-			{hasToolExecutions && (
-				<>
-					{/* Small spacer when tools appear without preceding text */}
-					{!hasContent && <div className="h-2" />}
-					<ToolExecutionGroup>
-						{toolExecutions.map((execution) => (
-							<ToolExecutionBadge
-								key={execution.toolCall.id}
-								toolCall={execution.toolCall}
-								status={execution.status}
-								result={execution.result}
-								error={execution.error}
-								durationMs={execution.durationMs}
-								logs={execution.logs}
-							/>
-						))}
-					</ToolExecutionGroup>
-				</>
-			)}
-		</div>
-	);
-}
-
 /** Helper component to render a message with its tool execution cards */
-function MessageWithToolCards({
-	message,
-	toolResultMessages,
-	conversationId,
-	onToolCallClick,
-}: {
+interface MessageWithToolCardsProps {
 	message: MessagePublic;
 	/** Map of tool_call_id -> tool result message (for getting execution_id) */
 	toolResultMessages: Map<string, MessagePublic>;
 	/** Conversation ID for retrieving saved tool execution state */
 	conversationId: string;
 	onToolCallClick?: (toolCall: ToolCall) => void;
-}) {
+	isStreaming?: boolean;
+}
+
+function MessageWithToolCards({
+	message,
+	toolResultMessages,
+	conversationId,
+	onToolCallClick,
+	isStreaming,
+}: MessageWithToolCardsProps) {
 	// Get saved tool executions for this conversation
 	const getToolExecution = useChatStore((state) => state.getToolExecution);
 
@@ -125,7 +54,11 @@ function MessageWithToolCards({
 	const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
 	if (!hasToolCalls) {
 		return (
-			<ChatMessage message={message} onToolCallClick={onToolCallClick} />
+			<ChatMessage
+				message={message}
+				onToolCallClick={onToolCallClick}
+				isStreaming={isStreaming}
+			/>
 		);
 	}
 
@@ -198,6 +131,7 @@ function MessageWithToolCards({
 					message={message}
 					onToolCallClick={onToolCallClick}
 					hideToolBadges={true}
+					isStreaming={isStreaming && !hasToolCalls}
 				/>
 			)}
 		</div>
@@ -251,10 +185,8 @@ export function ChatWindow({
 				state.systemEventsByConversation[conversationId]) ||
 			EMPTY_EVENTS,
 	);
-	const completedStreamingMessages = useCompletedStreamingMessages();
-	const streamingMessage = useStreamingMessage();
-	const streamingMessageId = useChatStore(
-		(state) => state.streamingMessageId,
+	const streamingMessageId = useChatStore((state) =>
+		conversationId ? state.streamingMessageIds[conversationId] : null,
 	);
 	const todos = useTodos();
 
@@ -272,43 +204,12 @@ export function ChatWindow({
 		},
 	});
 
-	// Merge API and local messages, avoiding duplicates
+	// Merge API and local messages using unified message model
 	const messages = useMemo(() => {
-		// If we have API messages, use those as the source of truth
-		if (apiMessages && apiMessages.length > 0) {
-			// Only keep local messages that are:
-			// 1. Still pending (temp-*) AND not yet in API (by content match)
-			// 2. Have a completed-* ID not yet in API (rare race condition)
-			const apiIds = new Set(apiMessages.map((m) => m.id));
+		const apiMsgs = (apiMessages || []) as UnifiedMessage[];
+		const localMsgs = localMessages as UnifiedMessage[];
 
-			// Create a content+role hash for deduplication
-			const apiContentHashes = new Set(
-				apiMessages.map(
-					(m) => `${m.role}:${m.content?.slice(0, 100) || ""}`,
-				),
-			);
-
-			const localOnly = localMessages.filter((m) => {
-				// If it's already in API by ID, skip it
-				if (apiIds.has(m.id)) {
-					return false;
-				}
-
-				// For temp/completed messages, check if content already exists in API
-				if (m.id.startsWith("temp-") || m.id.startsWith("completed-")) {
-					const contentHash = `${m.role}:${m.content?.slice(0, 100) || ""}`;
-					// If same content already in API, skip (it's a duplicate)
-					if (apiContentHashes.has(contentHash)) {
-						return false;
-					}
-				}
-
-				return true;
-			});
-
-			return [...apiMessages, ...localOnly];
-		}
-		return localMessages;
+		return integrateMessages(apiMsgs, localMsgs);
 	}, [apiMessages, localMessages]);
 
 	// Build a map of tool_call_id -> tool result message for reconstructing state
@@ -363,73 +264,12 @@ export function ChatWindow({
 		return items;
 	}, [messages, systemEvents]);
 
-	// Clean up local messages once API has the authoritative data
-	// This prevents accumulation of temp-*/completed-* messages that could cause ordering issues
-	const clearMessages = useChatStore((state) => state.clearMessages);
-	const setMessages = useChatStore((state) => state.setMessages);
-	useEffect(() => {
-		if (!conversationId || !apiMessages || apiMessages.length === 0) return;
-
-		// Only keep local messages that are:
-		// 1. Currently being streamed (temp-* for user input not yet confirmed)
-		// 2. Not matching any API message content
-		const apiContentHashes = new Set(
-			apiMessages.map(
-				(m) => `${m.role}:${m.content?.slice(0, 100) || ""}`,
-			),
-		);
-
-		const pendingMessages = localMessages.filter((m) => {
-			// Keep temp messages that are NOT in API yet (user just sent)
-			if (m.id.startsWith("temp-")) {
-				const contentHash = `${m.role}:${m.content?.slice(0, 100) || ""}`;
-				return !apiContentHashes.has(contentHash);
-			}
-			// Discard all completed-* messages (they should be in API now)
-			if (m.id.startsWith("completed-")) {
-				return false;
-			}
-			// Keep any other local messages
-			return true;
-		});
-
-		// Only update if there's something to clean up
-		if (pendingMessages.length !== localMessages.length) {
-			setMessages(conversationId, pendingMessages);
-		}
-	}, [
-		conversationId,
-		apiMessages,
-		localMessages,
-		setMessages,
-		clearMessages,
-	]);
-
-	// Clear streaming message once API returns the authoritative data
-	// This prevents the streaming message from lingering after the API message arrives
-	// Uses ID-based matching for reliable handoff (no flashing)
-	const resetStream = useChatStore((state) => state.resetStream);
-	useEffect(() => {
-		if (!streamingMessage?.isComplete || !streamingMessageId || !apiMessages)
-			return;
-
-		// Check if API now has the message with matching ID
-		const apiHasMessage = apiMessages.some(
-			(m) => m.id === streamingMessageId,
-		);
-
-		if (apiHasMessage) {
-			// API has the message - clear the streaming state
-			resetStream();
-		}
-	}, [streamingMessage, streamingMessageId, apiMessages, resetStream]);
-
 	// Auto-scroll to bottom on new messages or events (only if user is at bottom)
 	useEffect(() => {
 		if (isAtBottom) {
 			messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 		}
-	}, [timeline, streamingMessage?.content, pendingQuestion, isAtBottom]);
+	}, [messages, systemEvents, pendingQuestion, isAtBottom]);
 
 	// Handle send message
 	const handleSendMessage = (message: string) => {
@@ -473,8 +313,9 @@ export function ChatWindow({
 		);
 	}
 
-	// Empty conversation
-	if (timeline.length === 0 && !streamingMessage) {
+	// Empty conversation - check if no messages to display (excluding tool results)
+	const hasDisplayableMessages = messages.some((msg) => !msg.tool_call_id);
+	if (!hasDisplayableMessages && systemEvents.length === 0) {
 		return (
 			<div className="flex-1 flex flex-col">
 				<div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-8">
@@ -507,6 +348,7 @@ export function ChatWindow({
 				className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent"
 			>
 				<div className="max-w-4xl mx-auto pt-8">
+					{/* Unified message and event rendering */}
 					{timeline.map((item) =>
 						item.type === "message" ? (
 							<MessageWithToolCards
@@ -515,6 +357,10 @@ export function ChatWindow({
 								toolResultMessages={toolResultMessages}
 								conversationId={conversationId}
 								onToolCallClick={onToolCallClick}
+								isStreaming={
+									(item.data as UnifiedMessage).isStreaming ||
+									item.data.id === streamingMessageId
+								}
 							/>
 						) : (
 							<ChatSystemEvent
@@ -523,44 +369,6 @@ export function ChatWindow({
 							/>
 						),
 					)}
-
-					{/* Completed Streaming Messages - messages that have finished streaming but API hasn't returned yet */}
-					{completedStreamingMessages.map((msg, index) => (
-						<StreamingMessageDisplay
-							key={`completed-streaming-${index}`}
-							conversationId={conversationId}
-							streamingMessage={msg}
-							onToolCallClick={onToolCallClick}
-						/>
-					))}
-
-					{/* Current Streaming Message - show while streaming OR while waiting for API to return the final message */}
-					{streamingMessage &&
-						(() => {
-							// Still actively streaming - always show if has content or tools
-							if (!streamingMessage.isComplete) {
-								return (
-									streamingMessage.content ||
-									streamingMessage.toolCalls.length > 0
-								);
-							}
-							// Streaming complete - show until API returns the message with matching ID
-							// Using ID-based matching for reliable handoff (no flashing)
-							const apiHasMessage =
-								streamingMessageId &&
-								apiMessages?.some(
-									(m) => m.id === streamingMessageId,
-								);
-							return !apiHasMessage;
-						})() && (
-							<StreamingMessageDisplay
-								conversationId={conversationId}
-								streamingMessage={streamingMessage}
-								onToolCallClick={onToolCallClick}
-							/>
-						)}
-
-					{/* Streaming Error - now shown inline via system events */}
 
 					{/* Todo List - persistent checklist from SDK */}
 					{todos.length > 0 && (

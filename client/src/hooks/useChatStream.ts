@@ -9,15 +9,13 @@ import { useCallback, useRef, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useChatStore } from "@/stores/chatStore";
-import type { components } from "@/lib/v1";
 import {
 	webSocketService,
 	type ChatStreamChunk,
 	type ChatAgentSwitch,
 	type AskUserQuestion,
 } from "@/services/websocket";
-
-type MessagePublic = components["schemas"]["MessagePublic"];
+import { generateMessageId, type UnifiedMessage } from "@/lib/chat-utils";
 
 export interface PendingQuestion {
 	questions: AskUserQuestion[];
@@ -62,22 +60,12 @@ export function useChatStream({
 	const {
 		isStreaming,
 		startStreaming,
-		appendStreamContent,
-		addStreamToolCall,
-		updateToolExecutionStatus,
-		setToolExecutionId,
-		addToolExecutionLog,
-		addStreamToolResult,
-		completeCurrentStreamingMessage,
 		completeStream,
 		setStreamError,
 		resetStream,
-		clearCompletedStreamingMessages,
 		addSystemEvent,
-		saveToolExecutions,
 		addMessage,
 		setTodos,
-		setStreamingMessageId,
 	} = useChatStore();
 
 	// Update ref when conversationId changes
@@ -121,22 +109,56 @@ export function useChatStream({
 
 			switch (chunk.type) {
 				case "message_start": {
-					// Backend has saved the user message and generated real IDs
-					// Store the assistant message ID for seamless handoff when streaming completes
-					if (chunk.assistant_message_id) {
-						setStreamingMessageId(chunk.assistant_message_id);
+					const convId = currentConversationIdRef.current;
+					if (convId && chunk.assistant_message_id) {
+						const currentStreamingId =
+							useChatStore.getState().streamingMessageIds[convId];
+
+						if (currentStreamingId) {
+							// Update the message with the real ID from backend
+							const messages =
+								useChatStore.getState().messagesByConversation[
+									convId
+								] || [];
+							const msgIndex = messages.findIndex(
+								(m) => m.id === currentStreamingId,
+							);
+
+							if (msgIndex >= 0) {
+								const updatedMessages = [
+									...messages,
+								] as UnifiedMessage[];
+								updatedMessages[msgIndex] = {
+									...updatedMessages[msgIndex],
+									id: chunk.assistant_message_id,
+									isOptimistic: false,
+								};
+								useChatStore
+									.getState()
+									.setMessages(
+										convId,
+										updatedMessages as typeof messages,
+									);
+								useChatStore
+									.getState()
+									.setStreamingMessageIdForConversation(
+										convId,
+										chunk.assistant_message_id,
+									);
+							}
+						}
 					}
 
-					// Invalidate messages query to fetch the real user message from DB
-					const convId = currentConversationIdRef.current;
-					if (convId) {
+					// Invalidate to fetch user message
+					const convIdForInvalidate = currentConversationIdRef.current;
+					if (convIdForInvalidate) {
 						queryClient.invalidateQueries({
 							queryKey: [
 								"get",
 								"/api/chat/conversations/{conversation_id}/messages",
 								{
 									params: {
-										path: { conversation_id: convId },
+										path: { conversation_id: convIdForInvalidate },
 									},
 								},
 							],
@@ -147,44 +169,55 @@ export function useChatStream({
 
 				case "delta":
 					if (chunk.content) {
-						appendStreamContent(chunk.content);
-					}
-					break;
+						const convId = currentConversationIdRef.current;
+						const streamingId = convId
+							? useChatStore.getState().streamingMessageIds[convId]
+							: null;
 
-				case "tool_call":
-					if (chunk.tool_call) {
-						addStreamToolCall(
-							chunk.tool_call,
-							chunk.execution_id ?? undefined,
-						);
-					}
-					break;
+						if (convId && streamingId) {
+							const currentMessages =
+								useChatStore.getState().messagesByConversation[
+									convId
+								] || [];
+							const currentMsg = currentMessages.find(
+								(m) => m.id === streamingId,
+							);
 
-				case "tool_progress":
-					if (chunk.tool_progress) {
-						const { tool_call_id, execution_id, status, log } =
-							chunk.tool_progress;
-						if (execution_id) {
-							setToolExecutionId(tool_call_id, execution_id);
-						}
-						if (status) {
-							updateToolExecutionStatus(tool_call_id, status);
-						}
-						if (log) {
-							addToolExecutionLog(tool_call_id, {
-								level: log.level,
-								message: log.message,
-								timestamp: new Date().toISOString(),
+							useChatStore.getState().updateMessage(convId, streamingId, {
+								content: (currentMsg?.content || "") + chunk.content,
 							});
 						}
 					}
 					break;
 
-				case "tool_result":
-					// Just update tool state - message completion is signaled by assistant_message_end
-					if (chunk.tool_result) {
-						addStreamToolResult(chunk.tool_result);
+				case "tool_call":
+					if (chunk.tool_call) {
+						const convId = currentConversationIdRef.current;
+						const streamingId = convId
+							? useChatStore.getState().streamingMessageIds[convId]
+							: null;
+
+						if (convId && streamingId) {
+							const messages =
+								useChatStore.getState().messagesByConversation[convId] || [];
+							const msg = messages.find((m) => m.id === streamingId);
+
+							if (msg) {
+								useChatStore.getState().updateMessage(convId, streamingId, {
+									tool_calls: [...(msg.tool_calls || []), chunk.tool_call],
+								});
+							}
+						}
 					}
+					break;
+
+				case "tool_progress":
+					// Tool progress events are handled via the tool execution persistence system
+					// They update toolExecutionsByConversation directly
+					break;
+
+				case "tool_result":
+					// Tool results are reflected in the API messages when done
 					break;
 
 				case "assistant_message_start":
@@ -192,40 +225,28 @@ export function useChatStream({
 					break;
 
 				case "assistant_message_end":
-					// Message segment complete (all text and tool_calls for this message have been sent)
-					// This is the deterministic signal to finalize the current streaming message
-					completeCurrentStreamingMessage();
+					// Message segment complete - nothing needed since we track via unified model
 					break;
 
 				case "done": {
 					const convId = currentConversationIdRef.current;
-					const storeState = useChatStore.getState();
-					const streamState = storeState.streamingMessage;
-					const completedMessages =
-						storeState.completedStreamingMessages;
+					const streamingId = convId
+						? useChatStore.getState().streamingMessageIds[convId]
+						: null;
 
-					if (convId) {
-						// Save tool executions from current streaming message
-						if (
-							streamState &&
-							Object.keys(streamState.toolExecutions).length > 0
-						) {
-							saveToolExecutions(
-								convId,
-								streamState.toolExecutions,
-							);
-						}
-						// Save tool executions from completed streaming messages
-						for (const msg of completedMessages) {
-							if (Object.keys(msg.toolExecutions).length > 0) {
-								saveToolExecutions(convId, msg.toolExecutions);
-							}
-						}
+					// Mark message as no longer streaming in unified model
+					if (convId && streamingId) {
+						useChatStore.getState().updateMessage(convId, streamingId, {
+							isStreaming: false,
+							isFinal: true,
+						});
+
+						// Clear streaming ID
+						useChatStore
+							.getState()
+							.setStreamingMessageIdForConversation(convId, null);
 					}
 
-					// Clear completed messages (fixes coding agent duplicate)
-					// but keep streamingMessage visible with isComplete=true
-					clearCompletedStreamingMessages();
 					completeStream();
 
 					// Refresh messages from API - this is the source of truth
@@ -312,23 +333,13 @@ export function useChatStream({
 		},
 		[
 			queryClient,
-			appendStreamContent,
-			addStreamToolCall,
-			updateToolExecutionStatus,
-			setToolExecutionId,
-			addToolExecutionLog,
-			addStreamToolResult,
-			completeCurrentStreamingMessage,
 			completeStream,
 			setStreamError,
 			resetStream,
-			clearCompletedStreamingMessages,
 			onError,
 			onAgentSwitch,
 			addSystemEvent,
-			saveToolExecutions,
 			setTodos,
-			setStreamingMessageId,
 		],
 	);
 
@@ -345,21 +356,50 @@ export function useChatStream({
 				return;
 			}
 
-			// Ensure connected (subscription is handled by the useEffect below)
+			// Ensure connected
 			if (!webSocketService.isConnected()) {
 				await webSocketService.connectToChat(conversationId);
 			}
 
-			// Add optimistic user message for immediate display
-			const userMessage: MessagePublic = {
-				id: `temp-${Date.now()}`,
+			// Generate stable ID for user message
+			const userMessageId = generateMessageId();
+			const now = new Date().toISOString();
+
+			// Add optimistic user message with stable ID
+			const userMessage: UnifiedMessage = {
+				id: userMessageId,
 				conversation_id: conversationId,
 				role: "user",
 				content: message,
 				sequence: Date.now(),
-				created_at: new Date().toISOString(),
+				created_at: now,
+				isOptimistic: true,
 			};
 			addMessage(conversationId, userMessage);
+
+			// Generate ID for assistant message (will be replaced by backend ID on message_start)
+			const assistantMessageId = generateMessageId();
+
+			// Add placeholder streaming message for assistant
+			const assistantMessage: UnifiedMessage = {
+				id: assistantMessageId,
+				conversation_id: conversationId,
+				role: "assistant",
+				content: "",
+				sequence: Date.now() + 1,
+				created_at: now,
+				isStreaming: true,
+				isOptimistic: true,
+			};
+			addMessage(conversationId, assistantMessage);
+
+			// Track which message is streaming
+			useChatStore
+				.getState()
+				.setStreamingMessageIdForConversation(
+					conversationId,
+					assistantMessageId,
+				);
 
 			// Start streaming state
 			startStreaming();
@@ -370,7 +410,6 @@ export function useChatStream({
 				message,
 			);
 			if (!sent) {
-				// Retry after connecting
 				try {
 					await webSocketService.connectToChat(conversationId);
 					webSocketService.sendChatMessage(conversationId, message);
