@@ -86,6 +86,7 @@ async def update_daily_metrics(
 
                 await session.commit()
         else:
+            # Use provided session - caller manages commit
             await _upsert_daily_metrics(
                 db,
                 today,
@@ -109,8 +110,6 @@ async def update_daily_metrics(
                 time_saved,
                 value,
             )
-
-            await db.commit()
 
     except Exception as e:
         logger.error(f"Error updating daily metrics: {e}", exc_info=True)
@@ -377,6 +376,7 @@ async def update_workflow_roi_daily(
                 )
                 await session.commit()
         else:
+            # Use provided session - caller manages commit
             await _upsert_workflow_roi(
                 db,
                 today,
@@ -386,7 +386,6 @@ async def update_workflow_roi_daily(
                 add_time_saved,
                 add_value,
             )
-            await db.commit()
 
     except IntegrityError as e:
         orig = getattr(e, "orig", None)

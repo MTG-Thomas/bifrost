@@ -24,7 +24,10 @@ Execution Model:
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Awaitable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, cast
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
@@ -115,15 +118,34 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
         This callback is invoked by the pool when a worker reports
         a result (success or failure, including timeouts and crashes).
+
+        All DB operations are batched into a single transaction.
         """
+        from src.core.database import get_session_factory
+
         execution_id = result.get("execution_id", "")
 
-        if result.get("success"):
-            await self._process_success(execution_id, result)
-        else:
-            await self._process_failure(execution_id, result)
+        # Single session for all DB operations
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            try:
+                if result.get("success"):
+                    await self._process_success(execution_id, result, session)
+                else:
+                    await self._process_failure(execution_id, result, session)
 
-    async def _process_success(self, execution_id: str, result: dict[str, Any]) -> None:
+                await session.commit()
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Failed to process result for {execution_id}: {e}")
+                raise
+
+    async def _process_success(
+        self,
+        execution_id: str,
+        result: dict[str, Any],
+        session: "AsyncSession",
+    ) -> None:
         """
         Process a successful execution result.
 
@@ -137,6 +159,11 @@ class WorkflowExecutionConsumer(BaseConsumer):
         - result["variables"]: Runtime variables
         - result["metrics"]: Resource metrics
         - result["duration_ms"]: Execution duration
+
+        Args:
+            execution_id: The execution ID
+            result: Result dict from worker process
+            session: Database session (caller manages commit)
         """
         from src.core.metrics import update_daily_metrics, update_workflow_roi_daily
         from src.models.enums import ExecutionStatus
@@ -184,12 +211,13 @@ class WorkflowExecutionConsumer(BaseConsumer):
             metrics=result.get("metrics"),
             time_saved=roi_time_saved,
             value=roi_value,
+            session=session,
         )
 
         # Update event delivery status if this execution was triggered by an event
         try:
             from src.services.events.processor import update_delivery_from_execution
-            await update_delivery_from_execution(execution_id, status.value)
+            await update_delivery_from_execution(execution_id, status.value, session=session)
         except Exception as e:
             # Don't fail the execution result if delivery update fails
             logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
@@ -198,7 +226,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # This ensures data is in PostgreSQL when client refetches after receiving update
         try:
             from bifrost._sync import flush_pending_changes
-            changes_count = await flush_pending_changes(execution_id)
+            changes_count = await flush_pending_changes(execution_id, session=session)
             if changes_count > 0:
                 logger.info(f"Flushed {changes_count} pending changes for {execution_id[:8]}...")
         except Exception as e:
@@ -208,7 +236,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # This ensures logs are in PostgreSQL when client refetches after receiving update
         try:
             from bifrost._logging import flush_logs_to_postgres
-            logs_count = await flush_logs_to_postgres(execution_id)
+            logs_count = await flush_logs_to_postgres(execution_id, session=session)
             if logs_count > 0:
                 logger.debug(f"Flushed {logs_count} logs for {execution_id[:8]}...")
         except Exception as e:
@@ -216,6 +244,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
         # Publish updates AFTER flushing data to PostgreSQL
         # Client will refetch and get the complete data including logs
+        # (pubsub operations don't need the session)
         await publish_execution_update(
             execution_id,
             status.value,
@@ -266,6 +295,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             time_saved=roi_time_saved,
             value=roi_value,
             workflow_id=workflow_id,
+            db=session,
         )
 
         if workflow_id:
@@ -275,6 +305,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 status=status.value,
                 time_saved=roi_time_saved,
                 value=roi_value,
+                db=session,
             )
 
         logger.info(
@@ -288,11 +319,21 @@ class WorkflowExecutionConsumer(BaseConsumer):
             },
         )
 
-    async def _process_failure(self, execution_id: str, result: dict[str, Any]) -> None:
+    async def _process_failure(
+        self,
+        execution_id: str,
+        result: dict[str, Any],
+        session: "AsyncSession",
+    ) -> None:
         """
         Process a failed execution result.
 
         Handles various failure types (timeout, crash, execution error).
+
+        Args:
+            execution_id: The execution ID
+            result: Result dict from worker process
+            session: Database session (caller manages commit)
         """
         from src.core.metrics import update_daily_metrics
         from src.models.enums import ExecutionStatus
@@ -330,12 +371,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
             error_message=error,
             error_type=error_type,
             duration_ms=duration_ms,
+            session=session,
         )
 
         # Update event delivery status if this execution was triggered by an event
         try:
             from src.services.events.processor import update_delivery_from_execution
-            await update_delivery_from_execution(execution_id, status.value, error_message=error)
+            await update_delivery_from_execution(
+                execution_id, status.value, error_message=error, session=session
+            )
         except Exception as e:
             # Don't fail the execution result if delivery update fails
             logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
@@ -345,7 +389,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # This ensures data is in PostgreSQL when client refetches after receiving update
         try:
             from bifrost._sync import flush_pending_changes
-            changes_count = await flush_pending_changes(execution_id)
+            changes_count = await flush_pending_changes(execution_id, session=session)
             if changes_count > 0:
                 logger.info(f"Flushed {changes_count} pending changes for failed {execution_id[:8]}...")
         except Exception as e:
@@ -355,7 +399,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # This ensures logs are in PostgreSQL when client refetches after receiving update
         try:
             from bifrost._logging import flush_logs_to_postgres
-            logs_count = await flush_logs_to_postgres(execution_id)
+            logs_count = await flush_logs_to_postgres(execution_id, session=session)
             if logs_count > 0:
                 logger.debug(f"Flushed {logs_count} logs for failed {execution_id[:8]}...")
         except Exception as e:
@@ -363,6 +407,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
         # Publish updates AFTER flushing data to PostgreSQL
         # Client will refetch and get the complete data including logs
+        # (pubsub operations don't need the session)
         await publish_execution_update(
             execution_id,
             status.value,
@@ -407,6 +452,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             status=status.value,
             duration_ms=duration_ms,
             workflow_id=workflow_id,
+            db=session,
         )
 
         logger.warning(
