@@ -36,7 +36,7 @@ Usage in workspace/adapters/my_adapter.py:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, TypeVar
 
 import hashlib
@@ -347,7 +347,7 @@ class WebhookAdapter(ABC):
         Returns:
             ISO8601 datetime string
         """
-        dt = datetime.now(timezone.utc) + timedelta(
+        dt = datetime.utcnow() + timedelta(
             days=days, hours=hours, minutes=minutes
         )
         return dt.isoformat()
