@@ -8,7 +8,7 @@ Ported from Azure Functions timer trigger: functions/timer/oauth_refresh_timer.p
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -60,7 +60,7 @@ async def run_refresh_job(
     Returns:
         Dictionary with job results
     """
-    start_time = datetime.now(timezone.utc)
+    start_time = datetime.utcnow()
     logger.info(f"▶ OAuth token refresh starting (trigger={trigger_type})")
 
     results: dict[str, Any] = {
@@ -87,7 +87,7 @@ async def run_refresh_job(
             results["total_connections"] = len(all_tokens)
 
             # Determine which tokens need refresh
-            now = datetime.now(timezone.utc)
+            now = datetime.utcnow()
 
             if refresh_threshold_minutes is not None:
                 # Automatic: only refresh tokens expiring within threshold
@@ -139,7 +139,7 @@ async def run_refresh_job(
             await db.commit()
 
         # Calculate duration
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.utcnow()
         duration_seconds = (end_time - start_time).total_seconds()
         results["duration_seconds"] = duration_seconds
         results["start_time"] = start_time.isoformat()
