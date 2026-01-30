@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSystemLogs } from "@/hooks/useSystemLogs";
 import { getErrorMessage } from "@/lib/api-error";
-import { LogDetailsDialog } from "@/components/logs/LogDetailsDialog";
 import {
 	DataTable,
 	DataTableBody,
@@ -59,8 +58,6 @@ export default function SystemLogs() {
 	const [searchText, setSearchText] = useState("");
 	const [startDate, setStartDate] = useState("");
 	const [endDate, setEndDate] = useState("");
-	const [selectedLog, setSelectedLog] = useState<SystemLog | null>(null);
-	const [dialogOpen, setDialogOpen] = useState(false);
 	const [continuationTokens, setContinuationTokens] = useState<string[]>([]);
 	const [currentPage, setCurrentPage] = useState(0);
 
@@ -117,11 +114,6 @@ export default function SystemLogs() {
 			</div>
 		);
 	}
-
-	const handleRowClick = (log: SystemLog) => {
-		setSelectedLog(log);
-		setDialogOpen(true);
-	};
 
 	const handleNextPage = () => {
 		if (data?.continuation_token) {
@@ -305,10 +297,6 @@ export default function SystemLogs() {
 											(log: SystemLog, index: number) => (
 												<DataTableRow
 													key={`${log.category}_${log.event_id}_${index}`}
-													clickable
-													onClick={() =>
-														handleRowClick(log)
-													}
 												>
 													<DataTableCell className="font-mono text-sm">
 														{new Date(
@@ -394,12 +382,6 @@ export default function SystemLogs() {
 				</TabsContent>
 			</Tabs>
 
-			{/* Details Dialog */}
-			<LogDetailsDialog
-				log={selectedLog}
-				open={dialogOpen}
-				onOpenChange={setDialogOpen}
-			/>
-		</div>
+			</div>
 	);
 }

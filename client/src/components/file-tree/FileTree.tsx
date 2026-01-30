@@ -10,7 +10,7 @@
  * portable across different contexts.
  */
 
-import { useEffect, useCallback, useState, useRef, useMemo } from "react";
+import { useEffect, useCallback, useState, useRef, useMemo, memo } from "react";
 import {
 	ChevronRight,
 	ChevronDown,
@@ -128,6 +128,10 @@ export function FileTree({
 
 	const inputRef = useRef<HTMLInputElement>(null);
 	const renameInputRef = useRef<HTMLInputElement>(null);
+
+	// Ref for stable access to files without including in dependency arrays
+	const filesRef = useRef(files);
+	filesRef.current = files;
 
 	// Load root directory on mount
 	useEffect(() => {
@@ -249,7 +253,21 @@ export function FileTree({
 				await operations.createFolder(fullPath);
 			}
 
-			await loadFiles(creatingInFolder || "");
+			// Reload the parent folder to show the new item
+			let parentPath = creatingInFolder || "";
+
+			// If creating at root level and first item is an org container,
+			// reload that container instead (org-scoped file tree)
+			// Use filesRef.current for stable access without triggering callback recreation
+			if (!creatingInFolder && filesRef.current.length > 0 && filesRef.current[0].path.startsWith("org:")) {
+				// Find the first expanded org container, or default to first one
+				const expandedOrg = filesRef.current.find(
+					(f) => f.path.startsWith("org:") && isFolderExpanded(f.path)
+				);
+				parentPath = expandedOrg?.path || filesRef.current[0].path;
+			}
+
+			await loadFiles(parentPath);
 
 			setCreatingItem(null);
 			setNewItemName("");
@@ -261,7 +279,7 @@ export function FileTree({
 		} finally {
 			setIsProcessing(false);
 		}
-	}, [newItemName, creatingItem, creatingInFolder, loadFiles, operations, config]);
+	}, [newItemName, creatingItem, creatingInFolder, loadFiles, operations, config, isFolderExpanded]);
 
 	// Focus input when creating new item
 	useEffect(() => {
@@ -621,17 +639,7 @@ export function FileTree({
 	}, [pendingOrgMove, operations, refreshAll]);
 
 	return (
-		<div className={cn("flex h-full flex-col relative", className)}>
-			{/* Loading overlay */}
-			{isProcessing && (
-				<div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
-					<div className="flex flex-col items-center gap-2">
-						<Loader2 className="h-8 w-8 animate-spin text-primary" />
-						<p className="text-sm text-muted-foreground">Processing...</p>
-					</div>
-				</div>
-			)}
-
+		<div className={cn("flex h-full flex-col", className)}>
 			{/* Toolbar */}
 			<div className="flex items-center gap-1 border-b p-2">
 				{config.enableCreate && (
@@ -642,6 +650,7 @@ export function FileTree({
 							onClick={() => handleCreateFile()}
 							title="New File"
 							className="h-7 px-2"
+							disabled={isProcessing}
 						>
 							<FilePlus className="h-4 w-4" />
 						</Button>
@@ -651,6 +660,7 @@ export function FileTree({
 							onClick={() => handleCreateFolder()}
 							title="New Folder"
 							className="h-7 px-2"
+							disabled={isProcessing}
 						>
 							<FolderPlus className="h-4 w-4" />
 						</Button>
@@ -662,8 +672,9 @@ export function FileTree({
 					onClick={handleRefresh}
 					title="Refresh"
 					className="h-7 px-2"
+					disabled={isProcessing}
 				>
-					<RefreshCw className="h-4 w-4" />
+					<RefreshCw className={cn("h-4 w-4", isProcessing && "animate-spin")} />
 				</Button>
 			</div>
 
@@ -855,7 +866,7 @@ interface FileTreeItemProps {
 	isProcessing: boolean;
 }
 
-function FileTreeItem({
+const FileTreeItem = memo(function FileTreeItem({
 	file,
 	iconResolver,
 	config,
@@ -1050,7 +1061,7 @@ function FileTreeItem({
 			)}
 		</div>
 	);
-}
+});
 
 // Re-export types for convenience
 export type { FileNode, FileTreeNode, FileOperations, EditorCallbacks, FileTreeConfig };

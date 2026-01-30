@@ -183,6 +183,7 @@ export function createOrgScopedFileOperations(
 
 			// Build a set of folder paths that contain files for this org
 			const foldersWithContent = new Set<string>();
+
 			for (const file of allFilesRecursive) {
 				if (file.type === "folder") continue;
 				const fileOrgId = file.organization_id ?? null;
@@ -201,8 +202,13 @@ export function createOrgScopedFileOperations(
 			// Filter to only files/folders belonging to this org
 			const filteredFiles = files.filter((file) => {
 				if (file.type === "folder") {
-					// Only include folders that have files for this org
-					return foldersWithContent.has(file.path);
+					// Include folders that either:
+					// 1. Have files for this org, OR
+					// 2. Are explicit empty folders in Global (organization_id is null)
+					if (foldersWithContent.has(file.path)) return true;
+					// Folders with null organization_id belong to Global scope
+					if (dbOrgId === null && file.organization_id === null) return true;
+					return false;
 				}
 				// For files, check org match (null org = global)
 				const fileOrgId = file.organization_id ?? null;
