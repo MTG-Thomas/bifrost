@@ -35,7 +35,7 @@ class User(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     is_registered: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    mfa_enforced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    mfa_enforced_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
     organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id"), nullable=True
     )

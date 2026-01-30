@@ -211,7 +211,7 @@ class KnowledgeStorageDaily(Base):
     document_count: Mapped[int] = mapped_column(Integer, default=0)
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()")
+        DateTime(), server_default=text("NOW()")
     )
 
     # Relationship to organization (optional for global entries)

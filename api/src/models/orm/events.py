@@ -65,10 +65,10 @@ class EventSource(Base):
     # Audit
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        DateTime(),
         default=datetime.utcnow,
         server_default=text("NOW()"),
         onupdate=datetime.utcnow,
@@ -128,14 +128,14 @@ class WebhookSource(Base):
     state: Mapped[dict] = mapped_column(
         JSONB, default=dict
     )  # Adapter-managed (secrets, tokens)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
 
     # Audit
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        DateTime(),
         default=datetime.utcnow,
         server_default=text("NOW()"),
         onupdate=datetime.utcnow,
@@ -187,10 +187,10 @@ class EventSubscription(Base):
     # Audit
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        DateTime(),
         default=datetime.utcnow,
         server_default=text("NOW()"),
         onupdate=datetime.utcnow,
@@ -236,7 +236,7 @@ class Event(Base):
         String(255), default=None
     )  # e.g., "ticket.created"
     received_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
     )
 
     # Payload
@@ -261,7 +261,7 @@ class Event(Base):
 
     # Audit
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
     )
 
     # Relationships
@@ -326,12 +326,12 @@ class EventDelivery(Base):
 
     # Retry tracking (for future use)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
-    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
 
     # Audit
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
     )
 
     # Relationships
