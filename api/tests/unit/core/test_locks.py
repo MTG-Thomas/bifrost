@@ -6,7 +6,7 @@ Tests the Redis-based distributed locking for exclusive operations.
 
 import json
 import pytest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 
@@ -17,7 +17,7 @@ class TestLockInfo:
         """Test converting LockInfo to dict."""
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         expires = now + timedelta(seconds=300)
 
         lock_info = LockInfo(
@@ -40,7 +40,7 @@ class TestLockInfo:
         """Test creating LockInfo from dict."""
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         expires = now + timedelta(seconds=300)
 
         data = {
@@ -113,7 +113,7 @@ class TestDistributedLockService:
         mock_redis.setnx.return_value = False
 
         # Set up existing lock info
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         existing_lock = LockInfo(
             owner_user_id="other-user",
             owner_email="other@example.com",
@@ -140,7 +140,7 @@ class TestDistributedLockService:
         from datetime import datetime, timedelta, timezone
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         lock_info = LockInfo(
             owner_user_id="user-123",
             owner_email="user@example.com",
@@ -164,7 +164,7 @@ class TestDistributedLockService:
         from datetime import datetime, timedelta, timezone
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         lock_info = LockInfo(
             owner_user_id="other-user",
             owner_email="other@example.com",
@@ -198,7 +198,7 @@ class TestDistributedLockService:
         from datetime import datetime, timedelta, timezone
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         lock_info = LockInfo(
             owner_user_id="user-123",
             owner_email="user@example.com",
@@ -222,7 +222,7 @@ class TestDistributedLockService:
         from datetime import datetime, timedelta, timezone
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         lock_info = LockInfo(
             owner_user_id="other-user",
             owner_email="other@example.com",
@@ -246,7 +246,7 @@ class TestDistributedLockService:
         from datetime import datetime, timedelta, timezone
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         lock_info = LockInfo(
             owner_user_id="user-123",
             owner_email="user@example.com",
@@ -275,7 +275,7 @@ class TestDistributedLockService:
         from datetime import datetime, timedelta, timezone
         from src.core.locks import LockInfo
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         lock_info = LockInfo(
             owner_user_id="user-123",
             owner_email="user@example.com",
