@@ -129,7 +129,7 @@ class Scheduler:
             id="execution_cleanup",
             name="Cleanup stuck executions",
             replace_existing=True,
-            next_run_time=datetime.now(),  # Run immediately at startup
+            next_run_time=datetime.utcnow(),  # Run immediately at startup
             **misfire_options,
         )
 
@@ -142,7 +142,7 @@ class Scheduler:
                 id="oauth_token_refresh",
                 name="Refresh expiring OAuth tokens",
                 replace_existing=True,
-                next_run_time=datetime.now(),  # Run immediately at startup
+                next_run_time=datetime.utcnow(),  # Run immediately at startup
                 **misfire_options,
             )
             logger.info("OAuth token refresh job scheduled (every 15 min)")
@@ -158,7 +158,7 @@ class Scheduler:
                 id="metrics_refresh",
                 name="Refresh platform metrics snapshot",
                 replace_existing=True,
-                next_run_time=datetime.now(),  # Run immediately at startup
+                next_run_time=datetime.utcnow(),  # Run immediately at startup
                 **misfire_options,
             )
             logger.info("Metrics snapshot refresh job scheduled (every 60 min)")
@@ -176,7 +176,7 @@ class Scheduler:
                 id="knowledge_storage_refresh",
                 name="Refresh knowledge storage daily metrics",
                 replace_existing=True,
-                next_run_time=datetime.now(),  # Run immediately at startup
+                next_run_time=datetime.utcnow(),  # Run immediately at startup
                 **misfire_options,
             )
             logger.info("Knowledge storage refresh job scheduled (daily at 2:00 AM)")
@@ -192,7 +192,7 @@ class Scheduler:
                 id="webhook_renewal",
                 name="Renew expiring webhook subscriptions",
                 replace_existing=True,
-                next_run_time=datetime.now(),  # Run immediately at startup
+                next_run_time=datetime.utcnow(),  # Run immediately at startup
                 **misfire_options,
             )
             logger.info("Webhook renewal job scheduled (every 6 hours)")
@@ -223,7 +223,7 @@ class Scheduler:
                 id="stuck_event_cleanup",
                 name="Cleanup stuck event deliveries",
                 replace_existing=True,
-                next_run_time=datetime.now(),  # Run immediately at startup
+                next_run_time=datetime.utcnow(),  # Run immediately at startup
                 **misfire_options,
             )
             logger.info("Stuck event cleanup job scheduled (every 5 min)")
