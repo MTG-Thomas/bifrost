@@ -207,8 +207,7 @@ async def create_form(
                 return error_result(f"Error validating form schema: {str(e)}")
 
             # Create form record
-            from datetime import timezone
-            now = datetime.now(timezone.utc)
+            now = datetime.utcnow()
 
             form = FormORM(
                 name=name,
@@ -562,8 +561,7 @@ async def update_form(
             if not updates_made:
                 return error_result("No updates provided. Specify at least one field to update.")
 
-            from datetime import timezone
-            form.updated_at = datetime.now(timezone.utc)
+            form.updated_at = datetime.utcnow()
             await db.flush()
 
             # Reload form with fields
