@@ -91,19 +91,23 @@ router = APIRouter(prefix="/api/cli", tags=["CLI"])
 # =============================================================================
 
 
-def should_auto_refresh_token(provider: Any, entity_id: str | None) -> bool:
+def should_auto_refresh_token(
+    provider: Any, entity_id: str | None, oauth_scope: str | None = None
+) -> bool:
     """
     Determine if we should auto-fetch a fresh token instead of using stored token.
 
     Auto-refresh when:
-    1. Token URL contains {entity_id} placeholder (per-tenant endpoint)
-    2. OAuth flow is client_credentials (not authorization_code)
-    3. entity_id is provided
+    1. OAuth flow is client_credentials (not authorization_code)
+    2. AND one of:
+       a. Token URL contains {entity_id} placeholder AND entity_id is provided
+       b. oauth_scope override is provided (different resource audience)
 
-    This enables multi-tenant client credentials where each tenant
-    requires hitting a different token endpoint.
+    This enables:
+    - Multi-tenant client credentials where each tenant requires a different token endpoint
+    - Same credentials used for different resources (Graph vs Exchange vs SharePoint)
     """
-    if not provider or not entity_id:
+    if not provider:
         return False
 
     if not provider.token_url:
@@ -113,8 +117,15 @@ def should_auto_refresh_token(provider: Any, entity_id: str | None) -> bool:
     if provider.oauth_flow_type != "client_credentials":
         return False
 
-    # Check if URL has {entity_id} placeholder
-    return "{entity_id}" in provider.token_url
+    # Trigger auto-refresh if oauth_scope override is provided
+    if oauth_scope:
+        return True
+
+    # Trigger auto-refresh if URL has {entity_id} placeholder and entity_id is provided
+    if entity_id and "{entity_id}" in provider.token_url:
+        return True
+
+    return False
 
 
 # =============================================================================
@@ -595,7 +606,8 @@ async def sdk_integrations_get(
                 if not token:
                     token = await repo.get_provider_org_token(integration.oauth_provider.id)
                 response_data["oauth"] = await _build_oauth_data(
-                    integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret
+                    integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
+                    oauth_scope=request.oauth_scope,
                 )
 
             logger.info(f"SDK retrieved integration '{request.name}' (org mapping) for user {current_user.email}")
@@ -622,7 +634,8 @@ async def sdk_integrations_get(
         if integration.oauth_provider:
             token = await repo.get_provider_org_token(integration.oauth_provider.id)
             response_data["oauth"] = await _build_oauth_data(
-                integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret
+                integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
+                oauth_scope=request.oauth_scope,
             )
 
         logger.info(f"SDK retrieved integration '{request.name}' (defaults) for user {current_user.email}")
@@ -639,8 +652,18 @@ async def _build_oauth_data(
     entity_id: str | None,
     resolve_url_template: Any,
     decrypt_secret: Any,
+    oauth_scope: str | None = None,
 ) -> SDKIntegrationsOAuthData:
-    """Build OAuth data dict from provider and token for CLI response."""
+    """Build OAuth data dict from provider and token for CLI response.
+
+    Args:
+        provider: OAuth provider configuration
+        token: Stored OAuth token (may be None)
+        entity_id: External entity ID for URL templating
+        resolve_url_template: Function to resolve {entity_id} in URLs
+        decrypt_secret: Function to decrypt encrypted values
+        oauth_scope: Override scope for token request (triggers fresh token fetch)
+    """
     # Decrypt client secret (needed for both stored tokens and auto-refresh)
     client_secret = None
     if provider.encrypted_client_secret:
@@ -652,8 +675,8 @@ async def _build_oauth_data(
         except Exception:
             logger.warning("Failed to decrypt client_secret")
 
-    # Resolve token_url with entity_id first (needed for auto-refresh check)
-    resolved_token_url = None
+    # Resolve token_url with entity_id if provided
+    resolved_token_url = provider.token_url
     if provider.token_url and entity_id:
         resolved_token_url = resolve_url_template(
             url=provider.token_url,
@@ -666,14 +689,18 @@ async def _build_oauth_data(
     expires_at = None
 
     # Check if we should auto-fetch a fresh token
-    if should_auto_refresh_token(provider, entity_id):
-        logger.info(f"Auto-refreshing token for templated URL (entity_id={entity_id})")
+    if should_auto_refresh_token(provider, entity_id, oauth_scope):
+        scope_info = f"oauth_scope={oauth_scope}" if oauth_scope else f"entity_id={entity_id}"
+        logger.info(f"Auto-refreshing token ({scope_info})")
 
         if client_secret and resolved_token_url:
             from src.services.oauth_provider import OAuthProviderClient
 
             oauth_client = OAuthProviderClient()
-            scopes = " ".join(provider.scopes) if provider.scopes else ""
+            # Use oauth_scope override if provided, otherwise use provider's default
+            scopes = oauth_scope if oauth_scope else (
+                " ".join(provider.scopes) if provider.scopes else ""
+            )
 
             success, result = await oauth_client.get_client_credentials_token(
                 token_url=resolved_token_url,

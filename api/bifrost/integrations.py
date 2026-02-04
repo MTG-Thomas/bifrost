@@ -35,7 +35,7 @@ class integrations:
 
     @staticmethod
     async def get(
-        name: str, scope: str | None = None
+        name: str, scope: str | None = None, oauth_scope: str | None = None
     ) -> IntegrationData | None:
         """
         Get integration configuration for an organization.
@@ -52,6 +52,10 @@ class integrations:
                 - None: Use execution context default org
                 - org UUID string: Target specific organization
                 - "global": Bypass org resolution, use integration defaults
+            oauth_scope: Override OAuth scope for token request. When provided,
+                triggers a fresh token fetch for client_credentials flows.
+                Useful for accessing different resources with the same credentials.
+                Example: "https://outlook.office365.com/.default" for Exchange API.
 
         Returns:
             IntegrationData | None: Integration data with attributes:
@@ -83,12 +87,20 @@ class integrations:
             >>> global_int = await integrations.get("GlobalAPI", scope="global")
             >>> # Get integration for specific org
             >>> org_int = await integrations.get("HaloPSA", scope="org-uuid-here")
+            >>> # Get Exchange token (different scope than default Graph)
+            >>> exchange = await integrations.get(
+            ...     "Microsoft", scope="org-uuid",
+            ...     oauth_scope="https://outlook.office365.com/.default"
+            ... )
         """
         client = get_client()
         effective_scope = _resolve_scope(scope)
+        request_data = {"name": name, "scope": effective_scope}
+        if oauth_scope:
+            request_data["oauth_scope"] = oauth_scope
         response = await client.post(
             "/api/cli/integrations/get",
-            json={"name": name, "scope": effective_scope}
+            json=request_data
         )
 
         if response.status_code == 200:

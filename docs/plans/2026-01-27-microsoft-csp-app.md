@@ -1423,3 +1423,88 @@ Split into two separate Azure AD app registrations:
    - App cannot escalate its own privileges
    - All permission grants are done by your user (auditable)
    - Customer can revoke GDAP to cut off your management access
+
+---
+
+### Session: 2026-02-04 - Token Flow Verification & Exchange Module
+
+#### Completed
+
+- [x] **Verified Graph token flow end-to-end**
+  - Created `test_graph_token` workflow
+  - Successfully called `/organization` on Covi Development tenant
+  - Auto-refresh mechanism works: `{entity_id}` in token URL triggers fresh client credentials token
+  - IntegrationMapping correctly resolves org → tenant ID
+
+- [x] **Created Exchange module** (`modules/microsoft/exchange.py`)
+  - `ExchangeClient` class with `invoke()` for any PowerShell cmdlet
+  - Helper methods: `get_mailboxes()`, `get_mailbox()`
+  - Factory function: `create_exchange_client(org_id=...)`
+
+- [x] **Tested Exchange with GDAP token** (temporary approach)
+  - `test_exchange_token` workflow successfully called `Get-Mailbox`
+  - Returned "App Services" shared mailbox from Covi Development
+
+---
+
+### Session: 2026-02-04 (continued) - oauth_scope Parameter & Dual Auth Modes
+
+#### Completed
+
+- [x] **Added `oauth_scope` parameter to `integrations.get()`**
+  - Modified `api/src/models/contracts/cli.py`: Added `oauth_scope: str | None` to `SDKIntegrationsGetRequest`
+  - Modified `api/src/routers/cli.py`:
+    - Updated `should_auto_refresh_token()` to trigger on `oauth_scope` (not just templated URLs)
+    - Updated `_build_oauth_data()` to use `oauth_scope` override for token requests
+  - Modified `api/bifrost/integrations.py`: Added `oauth_scope` parameter to SDK `integrations.get()`
+  - Added 5 new unit tests in `api/tests/unit/routers/test_cli_auto_refresh.py`
+
+- [x] **Updated Graph and Exchange modules with dual auth modes**
+  - Both `create_graph_client()` and `create_exchange_client()` now support:
+    - **Default (application permissions)**: Uses client credentials via `integrations.get("Microsoft")`
+    - **`use_delegated=True`**: Uses GDAP token exchange via Microsoft CSP integration
+  - Exchange module uses `oauth_scope="https://outlook.office365.com/.default"` for client credentials
+
+- [x] **Created comprehensive test workflow** (`test_microsoft_auth`)
+  - Workflow ID: `ebd5336b-cd54-4931-8313-f72b74bdfbc5`
+  - Tests all 4 combinations: Graph/Exchange × Application/Delegated
+  - Located at: `features/microsoft_csp/workflows/test_microsoft_auth.py`
+
+#### Test Results (API restart required for full test)
+
+Ran `test_microsoft_auth` against Covi Development tenant:
+
+| Mode | API | Result |
+|------|-----|--------|
+| Application | Graph | ✅ Success - returned "Covi Development" |
+| Delegated | Graph | ✅ Success - returned "Covi Development" |
+| Application | Exchange | ❌ Failed - API needs restart to pick up `oauth_scope` changes |
+| Delegated | Exchange | ✅ Success - returned mailbox "App Services" |
+
+**Next step:** Restart API container to test Exchange with application permissions:
+```bash
+docker compose -f docker-compose.dev.yml restart api
+```
+
+#### Usage Examples
+
+```python
+from modules.microsoft.graph import create_graph_client
+from modules.microsoft.exchange import create_exchange_client
+
+# Application permissions (default) - for automation
+graph = await create_graph_client(org_id="org-uuid")
+exchange = await create_exchange_client(org_id="org-uuid")
+
+# Delegated permissions (GDAP) - when app permissions not yet granted
+graph = await create_graph_client(org_id="org-uuid", use_delegated=True)
+exchange = await create_exchange_client(org_id="org-uuid", use_delegated=True)
+```
+
+#### Pending
+
+- [ ] Restart API and re-run `test_microsoft_auth` to verify Exchange application permissions work
+- [ ] Task 6: Update App UI with Status Cards (already implemented, needs verification)
+- [ ] Task 7: Permission Configuration Dialog (already implemented, needs verification)
+- [ ] Test apply_partner_permissions with PIM elevation
+- [ ] Test consent_tenant on a customer tenant

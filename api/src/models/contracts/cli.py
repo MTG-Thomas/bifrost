@@ -217,6 +217,11 @@ class SDKIntegrationsGetRequest(BaseModel):
         default=None,
         description="Organization scope: None=context default, UUID=specific org, 'global'=global scope"
     )
+    oauth_scope: str | None = Field(
+        default=None,
+        description="Override OAuth scope for token request (e.g., 'https://outlook.office365.com/.default'). "
+        "When provided, triggers fresh token fetch for client_credentials flows."
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

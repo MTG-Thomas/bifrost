@@ -54,8 +54,8 @@ class TestAutoRefreshTokenForTemplatedUrl:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_no_auto_refresh_when_no_entity_id(self):
-        """Should not auto-refresh when entity_id is not provided."""
+    async def test_no_auto_refresh_when_no_entity_id_and_no_oauth_scope(self):
+        """Should not auto-refresh when neither entity_id nor oauth_scope is provided."""
         from src.routers.cli import should_auto_refresh_token
 
         provider = MagicMock()
@@ -63,6 +63,46 @@ class TestAutoRefreshTokenForTemplatedUrl:
         provider.oauth_flow_type = "client_credentials"
 
         result = should_auto_refresh_token(provider, None)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auto_refresh_when_oauth_scope_provided(self):
+        """Should auto-refresh when oauth_scope is provided, even without entity_id."""
+        from src.routers.cli import should_auto_refresh_token
+
+        provider = MagicMock()
+        provider.token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        provider.oauth_flow_type = "client_credentials"
+
+        # No entity_id but oauth_scope is provided
+        result = should_auto_refresh_token(provider, None, oauth_scope="https://outlook.office365.com/.default")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_auto_refresh_when_oauth_scope_and_entity_id_provided(self):
+        """Should auto-refresh when both oauth_scope and entity_id are provided."""
+        from src.routers.cli import should_auto_refresh_token
+
+        provider = MagicMock()
+        provider.token_url = "https://login.microsoftonline.com/{entity_id}/oauth2/v2.0/token"
+        provider.oauth_flow_type = "client_credentials"
+
+        result = should_auto_refresh_token(provider, "customer-tenant-123", oauth_scope="https://outlook.office365.com/.default")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_no_auto_refresh_with_oauth_scope_for_authorization_code_flow(self):
+        """oauth_scope should not trigger auto-refresh for authorization_code flow."""
+        from src.routers.cli import should_auto_refresh_token
+
+        provider = MagicMock()
+        provider.token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        provider.oauth_flow_type = "authorization_code"
+
+        result = should_auto_refresh_token(provider, None, oauth_scope="https://outlook.office365.com/.default")
 
         assert result is False
 
@@ -237,3 +277,109 @@ class TestBuildOAuthDataAutoRefresh:
             # But other data should still be populated
             assert result.client_id == "test-client-id"
             assert result.client_secret == "decrypted-client-secret"
+
+    @pytest.mark.asyncio
+    async def test_build_oauth_data_uses_oauth_scope_override(self):
+        """_build_oauth_data should use oauth_scope instead of provider.scopes when provided."""
+        from src.routers.cli import _build_oauth_data
+
+        # Mock provider with default Graph scopes
+        provider = MagicMock()
+        provider.provider_name = "Microsoft"
+        provider.client_id = "test-client-id"
+        provider.token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        provider.token_url_defaults = {}
+        provider.oauth_flow_type = "client_credentials"
+        provider.authorization_url = None
+        provider.scopes = ["https://graph.microsoft.com/.default"]  # Default scope
+        provider.encrypted_client_secret = "encrypted-secret"
+
+        token = None
+        entity_id = None  # No entity_id
+
+        def resolve_url_template(url, entity_id, defaults):
+            return url
+
+        def decrypt_secret(value):
+            return "decrypted-client-secret"
+
+        mock_token_response = {
+            "access_token": "exchange-access-token",
+            "expires_at": datetime.utcnow() + timedelta(hours=1),
+        }
+
+        with patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class:
+            mock_instance = MagicMock()
+            mock_instance.get_client_credentials_token = AsyncMock(
+                return_value=(True, mock_token_response)
+            )
+            mock_client_class.return_value = mock_instance
+
+            # Call with oauth_scope override for Exchange
+            result = await _build_oauth_data(
+                provider, token, entity_id, resolve_url_template, decrypt_secret,
+                oauth_scope="https://outlook.office365.com/.default"
+            )
+
+            # Verify OAuthProviderClient was called with the OVERRIDE scope
+            mock_instance.get_client_credentials_token.assert_called_once_with(
+                token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+                client_id="test-client-id",
+                client_secret="decrypted-client-secret",
+                scopes="https://outlook.office365.com/.default",  # Override, not provider.scopes
+            )
+
+            assert result.access_token == "exchange-access-token"
+
+    @pytest.mark.asyncio
+    async def test_build_oauth_data_with_oauth_scope_and_entity_id(self):
+        """_build_oauth_data should use oauth_scope and resolve entity_id in token URL."""
+        from src.routers.cli import _build_oauth_data
+
+        # Mock provider with templated URL
+        provider = MagicMock()
+        provider.provider_name = "Microsoft"
+        provider.client_id = "test-client-id"
+        provider.token_url = "https://login.microsoftonline.com/{entity_id}/oauth2/v2.0/token"
+        provider.token_url_defaults = {}
+        provider.oauth_flow_type = "client_credentials"
+        provider.authorization_url = None
+        provider.scopes = ["https://graph.microsoft.com/.default"]  # Default scope
+        provider.encrypted_client_secret = "encrypted-secret"
+
+        token = None
+        entity_id = "customer-tenant-456"
+
+        def resolve_url_template(url, entity_id, defaults):
+            return url.replace("{entity_id}", entity_id)
+
+        def decrypt_secret(value):
+            return "decrypted-client-secret"
+
+        mock_token_response = {
+            "access_token": "exchange-customer-token",
+            "expires_at": datetime.utcnow() + timedelta(hours=1),
+        }
+
+        with patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class:
+            mock_instance = MagicMock()
+            mock_instance.get_client_credentials_token = AsyncMock(
+                return_value=(True, mock_token_response)
+            )
+            mock_client_class.return_value = mock_instance
+
+            # Call with both entity_id and oauth_scope override
+            result = await _build_oauth_data(
+                provider, token, entity_id, resolve_url_template, decrypt_secret,
+                oauth_scope="https://outlook.office365.com/.default"
+            )
+
+            # Verify token URL was resolved with entity_id AND scope was overridden
+            mock_instance.get_client_credentials_token.assert_called_once_with(
+                token_url="https://login.microsoftonline.com/customer-tenant-456/oauth2/v2.0/token",
+                client_id="test-client-id",
+                client_secret="decrypted-client-secret",
+                scopes="https://outlook.office365.com/.default",
+            )
+
+            assert result.access_token == "exchange-customer-token"
