@@ -955,3 +955,185 @@ class TestDeliveryRetry:
                 headers=platform_admin.headers,
             )
             assert response.status_code == 400, f"Expected 400 for non-failed delivery: {response.text}"
+
+
+# =============================================================================
+# TestScheduleSourceCRUD - Schedule Event Source Management
+# =============================================================================
+
+
+@pytest.fixture
+def schedule_source(e2e_client, platform_admin):
+    """Create a schedule event source for testing."""
+    source_name = f"E2E Schedule {uuid.uuid4().hex[:8]}"
+
+    response = e2e_client.post(
+        "/api/events/sources",
+        headers=platform_admin.headers,
+        json={
+            "name": source_name,
+            "source_type": "schedule",
+            "schedule": {
+                "cron_expression": "0 9 * * *",
+                "timezone": "UTC",
+                "enabled": True,
+            },
+        },
+    )
+    assert response.status_code == 201, f"Failed to create schedule source: {response.text}"
+    source = response.json()
+
+    yield source
+
+    # Cleanup
+    e2e_client.delete(
+        f"/api/events/sources/{source['id']}",
+        headers=platform_admin.headers,
+    )
+
+
+@pytest.mark.e2e
+class TestScheduleSourceCRUD:
+    """Test schedule event source CRUD operations."""
+
+    def test_create_schedule_source(self, e2e_client, platform_admin):
+        """Create a schedule event source with cron expression."""
+        source_name = f"E2E Schedule Create {uuid.uuid4().hex[:8]}"
+
+        response = e2e_client.post(
+            "/api/events/sources",
+            headers=platform_admin.headers,
+            json={
+                "name": source_name,
+                "source_type": "schedule",
+                "schedule": {
+                    "cron_expression": "*/5 * * * *",
+                    "timezone": "America/New_York",
+                    "enabled": True,
+                },
+            },
+        )
+        assert response.status_code == 201, f"Failed: {response.text}"
+        data = response.json()
+        assert data["name"] == source_name
+        assert data["source_type"] == "schedule"
+        assert data["schedule"] is not None
+        assert data["schedule"]["cron_expression"] == "*/5 * * * *"
+        assert data["schedule"]["timezone"] == "America/New_York"
+        assert data["schedule"]["enabled"] is True
+
+        # Cleanup
+        e2e_client.delete(
+            f"/api/events/sources/{data['id']}",
+            headers=platform_admin.headers,
+        )
+
+    def test_get_schedule_source(self, e2e_client, platform_admin, schedule_source):
+        """Get a schedule event source with schedule details."""
+        response = e2e_client.get(
+            f"/api/events/sources/{schedule_source['id']}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["source_type"] == "schedule"
+        assert data["schedule"] is not None
+        assert data["schedule"]["cron_expression"] == "0 9 * * *"
+        assert data["schedule"]["timezone"] == "UTC"
+        assert data["schedule"]["enabled"] is True
+
+    def test_update_schedule_source(self, e2e_client, platform_admin, schedule_source):
+        """Update a schedule event source's cron expression and timezone."""
+        response = e2e_client.patch(
+            f"/api/events/sources/{schedule_source['id']}",
+            headers=platform_admin.headers,
+            json={
+                "schedule": {
+                    "cron_expression": "0 */6 * * *",
+                    "timezone": "Europe/London",
+                },
+            },
+        )
+        assert response.status_code == 200, f"Failed: {response.text}"
+        data = response.json()
+        assert data["schedule"]["cron_expression"] == "0 */6 * * *"
+        assert data["schedule"]["timezone"] == "Europe/London"
+
+    def test_disable_schedule_source(self, e2e_client, platform_admin, schedule_source):
+        """Disable a schedule source via the schedule config."""
+        response = e2e_client.patch(
+            f"/api/events/sources/{schedule_source['id']}",
+            headers=platform_admin.headers,
+            json={
+                "schedule": {
+                    "enabled": False,
+                },
+            },
+        )
+        assert response.status_code == 200, f"Failed: {response.text}"
+        data = response.json()
+        assert data["schedule"]["enabled"] is False
+
+    def test_list_schedule_sources(self, e2e_client, platform_admin, schedule_source):
+        """List event sources filtered by schedule type."""
+        response = e2e_client.get(
+            "/api/events/sources",
+            headers=platform_admin.headers,
+            params={"source_type": "schedule"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        sources = data["items"]
+        assert len(sources) >= 1
+        # All returned sources should be schedule type
+        assert all(s["source_type"] == "schedule" for s in sources)
+        # Our source should be in the list
+        source_ids = [s["id"] for s in sources]
+        assert schedule_source["id"] in source_ids
+
+    def test_delete_schedule_source(self, e2e_client, platform_admin):
+        """Delete a schedule event source."""
+        # Create a source to delete
+        source_name = f"E2E Schedule Delete {uuid.uuid4().hex[:8]}"
+        response = e2e_client.post(
+            "/api/events/sources",
+            headers=platform_admin.headers,
+            json={
+                "name": source_name,
+                "source_type": "schedule",
+                "schedule": {
+                    "cron_expression": "0 12 * * *",
+                },
+            },
+        )
+        assert response.status_code == 201
+        source_id = response.json()["id"]
+
+        # Delete it
+        response = e2e_client.delete(
+            f"/api/events/sources/{source_id}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 204
+
+    def test_schedule_source_with_subscription(
+        self, e2e_client, platform_admin, schedule_source, test_workflow
+    ):
+        """Create a subscription with input mapping on a schedule source."""
+        response = e2e_client.post(
+            f"/api/events/sources/{schedule_source['id']}/subscriptions",
+            headers=platform_admin.headers,
+            json={
+                "workflow_id": test_workflow["id"],
+                "input_mapping": {
+                    "report_type": "daily",
+                    "as_of_date": "{{ scheduled_time }}",
+                },
+            },
+        )
+        assert response.status_code == 201, f"Failed: {response.text}"
+        sub = response.json()
+        assert sub["workflow_id"] == test_workflow["id"]
+        assert sub["input_mapping"] is not None
+        assert sub["input_mapping"]["report_type"] == "daily"
+        assert sub["input_mapping"]["as_of_date"] == "{{ scheduled_time }}"

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { formatDistanceToNow } from "date-fns";
+import { authFetch } from "@/lib/api-client";
 
 interface ValidationResult {
 	valid: boolean;
@@ -30,7 +31,7 @@ export function CronTester() {
 		if (!expr.trim()) return;
 
 		try {
-			const response = await fetch("/api/schedules/validate", {
+			const response = await authFetch("/api/schedules/validate", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ expression: expr }),

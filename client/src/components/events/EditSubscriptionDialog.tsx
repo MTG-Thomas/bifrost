@@ -17,6 +17,26 @@ import {
 	useUpdateSubscription,
 	type EventSubscription,
 } from "@/services/events";
+import { useWorkflows } from "@/hooks/useWorkflows";
+import { WorkflowParametersForm } from "@/components/workflows/WorkflowParametersForm";
+import type { components } from "@/lib/v1";
+
+type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
+
+/**
+ * Remove entries where value is undefined, null, or empty string.
+ * Returns undefined if no non-empty values remain.
+ */
+function cleanInputMapping(
+	mapping: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	const cleaned = Object.fromEntries(
+		Object.entries(mapping).filter(
+			([, v]) => v !== undefined && v !== null && v !== "",
+		),
+	);
+	return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
 
 interface EditSubscriptionDialogProps {
 	subscription: EventSubscription | null;
@@ -36,9 +56,19 @@ function EditSubscriptionDialogContent({
 }) {
 	const updateMutation = useUpdateSubscription();
 
+	// Fetch available workflows for parameter info
+	const { data: workflowsData } = useWorkflows();
+	const workflows: WorkflowMetadata[] = workflowsData || [];
+	const selectedWorkflow = workflows.find(
+		(w) => w.id === subscription.workflow_id,
+	);
+
 	// Form state - initialized from props, component remounts when dialog opens
 	const [eventType, setEventType] = useState<string>(
 		subscription.event_type ?? "",
+	);
+	const [inputMapping, setInputMapping] = useState<Record<string, unknown>>(
+		(subscription.input_mapping as Record<string, unknown>) ?? {},
 	);
 	const [errors, setErrors] = useState<string[]>([]);
 
@@ -56,6 +86,8 @@ function EditSubscriptionDialogContent({
 		if (!subscription || !validateForm()) return;
 
 		try {
+			const cleanedMapping = cleanInputMapping(inputMapping);
+
 			await updateMutation.mutateAsync({
 				params: {
 					path: {
@@ -65,6 +97,7 @@ function EditSubscriptionDialogContent({
 				},
 				body: {
 					event_type: eventType.trim() || null,
+					input_mapping: cleanedMapping ?? null,
 				},
 			});
 
@@ -81,7 +114,8 @@ function EditSubscriptionDialogContent({
 			<DialogHeader>
 				<DialogTitle>Edit Subscription</DialogTitle>
 				<DialogDescription>
-					Update the event type filter for this subscription.
+					Update the event type filter and input mapping for this
+					subscription.
 				</DialogDescription>
 			</DialogHeader>
 
@@ -125,6 +159,35 @@ function EditSubscriptionDialogContent({
 						Leave empty to receive all events.
 					</p>
 				</div>
+
+				{/* Input Mapping (shown when workflow has parameters) */}
+				{selectedWorkflow?.parameters &&
+					selectedWorkflow.parameters.length > 0 && (
+						<div className="space-y-3">
+							<div className="border-t pt-3">
+								<Label className="text-sm font-medium">
+									Input Mapping (Optional)
+								</Label>
+								<p className="text-xs text-muted-foreground mt-1">
+									Pre-fill workflow parameters with static
+									values or template expressions. Use{" "}
+									<code className="bg-muted px-1 py-0.5 rounded text-xs">
+										{"{{ scheduled_time }}"}
+									</code>{" "}
+									for the schedule trigger time.
+								</p>
+							</div>
+							<WorkflowParametersForm
+								key={subscription.workflow_id}
+								parameters={selectedWorkflow.parameters}
+								onExecute={() => {}}
+								showExecuteButton={false}
+								renderAsDiv
+								values={inputMapping}
+								onChange={setInputMapping}
+							/>
+						</div>
+					)}
 			</div>
 
 			<DialogFooter>

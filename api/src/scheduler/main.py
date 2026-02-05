@@ -34,7 +34,7 @@ from src.core.pubsub import (
     publish_git_sync_completed,
 )
 from src.core.redis_reconnect import ResilientPubSubListener
-from src.jobs.schedulers.cron_scheduler import process_scheduled_workflows
+from src.jobs.schedulers.cron_scheduler import process_schedule_sources
 from src.jobs.schedulers.execution_cleanup import cleanup_stuck_executions
 
 
@@ -111,12 +111,12 @@ class Scheduler:
             "coalesce": True,  # Combine missed runs into one
         }
 
-        # Schedule processor - every 5 minutes
+        # Schedule processor - every 1 minute
         scheduler.add_job(
-            process_scheduled_workflows,
-            CronTrigger(minute="*/5"),  # Every 5 minutes
+            process_schedule_sources,
+            CronTrigger(minute="*/1"),  # Every 1 minute
             id="schedule_processor",
-            name="Process scheduled workflows",
+            name="Process schedule sources",
             replace_existing=True,
             **misfire_options,
         )

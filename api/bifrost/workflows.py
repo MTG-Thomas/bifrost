@@ -35,7 +35,6 @@ class workflows:
                 - execution_mode: str - Execution mode
                 - timeout_seconds: int - Max execution time
                 - retry_policy: dict | None - Retry configuration
-                - schedule: str | None - Cron expression
                 - endpoint_enabled: bool - Whether exposed as HTTP endpoint
                 - allowed_methods: list[str] | None - Allowed HTTP methods
                 - disable_global_key: bool - Whether global API key is disabled

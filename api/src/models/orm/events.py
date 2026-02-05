@@ -81,6 +81,11 @@ class EventSource(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    schedule_source: Mapped["ScheduleSource | None"] = relationship(
+        back_populates="event_source",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     subscriptions: Mapped[list["EventSubscription"]] = relationship(
         back_populates="event_source",
         cascade="all, delete-orphan",
@@ -94,6 +99,47 @@ class EventSource(Base):
         Index("ix_event_sources_organization_id", "organization_id"),
         Index("ix_event_sources_source_type", "source_type"),
         Index("ix_event_sources_is_active", "is_active"),
+    )
+
+
+class ScheduleSource(Base):
+    """
+    Schedule-specific configuration for an event source.
+
+    Contains cron expression and timezone for scheduled triggers.
+    When a schedule fires, it creates an Event record and triggers
+    all subscribed workflows via EventSubscription.
+    """
+
+    __tablename__ = "schedule_sources"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    event_source_id: Mapped[UUID] = mapped_column(
+        ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+
+    # Schedule configuration
+    cron_expression: Mapped[str] = mapped_column(String(100), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(50), default="UTC", nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Audit
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(),
+        default=datetime.utcnow,
+        server_default=text("NOW()"),
+        onupdate=datetime.utcnow,
+    )
+
+    # Relationships
+    event_source: Mapped["EventSource"] = relationship(back_populates="schedule_source")
+
+    __table_args__ = (
+        Index("ix_schedule_sources_event_source_id", "event_source_id"),
+        Index("ix_schedule_sources_enabled", "enabled"),
     )
 
 
@@ -181,6 +227,11 @@ class EventSubscription(Base):
     filter_expression: Mapped[str | None] = mapped_column(
         Text, default=None
     )  # JSONPath or simple expression (future)
+
+    # Input mapping for workflow parameters
+    # Maps event payload fields to workflow inputs
+    # Example: {"report_type": "daily", "as_of_date": "{{ scheduled_time }}"}
+    input_mapping: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 

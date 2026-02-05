@@ -206,6 +206,7 @@ async def execute_endpoint(
         is_platform_admin=False,
         is_function_key=True,
         execution_id=str(uuid4()),
+        workflow_name=workflow_name,  # Workflow name for context
         public_url=get_settings().public_url,
     )
 

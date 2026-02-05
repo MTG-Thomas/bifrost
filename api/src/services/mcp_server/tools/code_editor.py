@@ -460,7 +460,6 @@ async def _replace_workspace_file(
                     "decorator_type": pd.decorator_type,
                     "has_executions": pd.has_executions,
                     "last_execution_at": pd.last_execution_at,
-                    "schedule": pd.schedule,
                     "endpoint_enabled": pd.endpoint_enabled,
                     "affected_entities": pd.affected_entities,
                 }
@@ -614,7 +613,6 @@ async def _persist_content(
                         "decorator_type": pd.decorator_type,
                         "has_executions": pd.has_executions,
                         "last_execution_at": pd.last_execution_at,
-                        "schedule": pd.schedule,
                         "endpoint_enabled": pd.endpoint_enabled,
                         "affected_entities": pd.affected_entities,
                     }

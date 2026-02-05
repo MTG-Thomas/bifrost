@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+    from .models import ExecutionLog
 from uuid import UUID
 
 import redis as redis_sync
@@ -248,7 +249,7 @@ async def read_logs_from_stream(
     execution_id: str | UUID,
     start: str = "0",
     count: int = 100,
-) -> list[dict[str, Any]]:
+) -> "list[ExecutionLog]":
     """
     Read log entries from an execution's Redis Stream.
 
@@ -258,9 +259,10 @@ async def read_logs_from_stream(
         count: Maximum entries to read
 
     Returns:
-        List of log entries with id, level, message, metadata, timestamp
+        List of ExecutionLog entries
     """
     from src.core.cache import get_redis
+    from .models import ExecutionLog
 
     exec_id = str(execution_id)
     stream_key = execution_logs_stream_key(exec_id)
@@ -272,14 +274,14 @@ async def read_logs_from_stream(
 
             logs = []
             for entry_id, data in entries:
-                logs.append({
-                    "id": entry_id,
-                    "execution_id": data.get("execution_id"),
-                    "level": data.get("level"),
-                    "message": data.get("message"),
-                    "metadata": json.loads(data.get("metadata", "{}")),
-                    "timestamp": data.get("timestamp"),
-                })
+                logs.append(ExecutionLog(
+                    id=entry_id,
+                    execution_id=data.get("execution_id", exec_id),
+                    level=data.get("level", "INFO"),
+                    message=data.get("message", ""),
+                    metadata=json.loads(data.get("metadata", "{}")),
+                    timestamp=data.get("timestamp", ""),
+                ))
             return logs
     except Exception as e:
         logger.warning(f"Failed to read logs from stream: {e}")

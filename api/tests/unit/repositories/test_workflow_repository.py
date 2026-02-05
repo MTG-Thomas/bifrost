@@ -41,7 +41,6 @@ class TestWorkflowRepository:
         workflow.description = "Test workflow"
         workflow.category = "Testing"
         workflow.path = "/workspace/test.py"
-        workflow.schedule = "*/5 * * * *"
         workflow.is_active = True
         workflow.endpoint_enabled = True
         workflow.api_key_hash = "abc123"
@@ -82,19 +81,6 @@ class TestWorkflowRepository:
 
         assert len(result) == 1
         assert result[0] == mock_workflow
-
-    async def test_get_scheduled(self, repository, mock_session, mock_workflow):
-        """Test getting workflows with schedules."""
-        mock_result = MagicMock()
-        mock_scalars = MagicMock()
-        mock_scalars.all.return_value = [mock_workflow]
-        mock_result.scalars.return_value = mock_scalars
-        mock_session.execute.return_value = mock_result
-
-        result = await repository.get_scheduled()
-
-        assert len(result) == 1
-        assert result[0].schedule is not None
 
     async def test_get_endpoint_enabled(self, repository, mock_session, mock_workflow):
         """Test getting workflows with endpoint enabled."""

@@ -171,20 +171,6 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_scheduled(self) -> Sequence[Workflow]:
-        """Get all active workflows with schedules (for CRON processing).
-
-        Note: Returns workflows across all organizations (system-level access).
-        CRON scheduler needs visibility of all scheduled workflows.
-        """
-        result = await self.session.execute(
-            select(Workflow)
-            .where(Workflow.is_active.is_(True))
-            .where(Workflow.schedule.isnot(None))
-            .order_by(Workflow.name)
-        )
-        return result.scalars().all()
-
     async def get_endpoint_enabled(self) -> Sequence[Workflow]:
         """Get all active workflows with endpoint enabled.
 
@@ -225,7 +211,6 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
         query: str | None = None,
         category: str | None = None,
         type: WorkflowType | None = None,
-        has_schedule: bool | None = None,
         endpoint_enabled: bool | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -238,7 +223,6 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
             query: Text search in name/description
             category: Filter by category
             type: Filter by type ('workflow', 'tool', 'data_provider')
-            has_schedule: Filter by whether schedule is set
             endpoint_enabled: Filter by endpoint_enabled flag
             limit: Maximum number of results
             offset: Result offset for pagination
@@ -262,12 +246,6 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
 
         if type:
             stmt = stmt.where(Workflow.type == type)
-
-        if has_schedule is not None:
-            if has_schedule:
-                stmt = stmt.where(Workflow.schedule.isnot(None))
-            else:
-                stmt = stmt.where(Workflow.schedule.is_(None))
 
         if endpoint_enabled is not None:
             stmt = stmt.where(Workflow.endpoint_enabled == endpoint_enabled)

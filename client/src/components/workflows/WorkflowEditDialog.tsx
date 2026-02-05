@@ -1,13 +1,26 @@
 /**
  * WorkflowEditDialog Component
  *
- * Dialog for editing workflow settings including organization scope,
- * access level, and role assignments.
+ * Tabbed dialog for editing all workflow settings: general info, execution,
+ * economics, tool/data provider config, access control, and HTTP endpoint.
  * Platform admin only.
  */
 
 import { useEffect, useState } from "react";
-import { Loader2, Check, ChevronsUpDown, X, Shield, Users } from "lucide-react";
+import {
+	Loader2,
+	Check,
+	ChevronsUpDown,
+	X,
+	Shield,
+	Users,
+	Settings,
+	Timer,
+	DollarSign,
+	Bot,
+	Database,
+	Globe,
+} from "lucide-react";
 import {
 	Dialog,
 	DialogContent,
@@ -36,10 +49,15 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { TagsInput } from "@/components/ui/tags-input";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useRoles } from "@/hooks/useRoles";
@@ -52,6 +70,7 @@ import {
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import type { components } from "@/lib/v1";
 
+type Workflow = components["schemas"]["WorkflowMetadata"];
 type RolePublic = components["schemas"]["RolePublic"];
 
 type WorkflowAccessLevel = "authenticated" | "role_based";
@@ -76,13 +95,10 @@ const ACCESS_LEVELS: {
 	},
 ];
 
+const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
+
 interface WorkflowEditDialogProps {
-	workflow: {
-		id?: string;
-		name?: string;
-		organization_id?: string | null;
-		access_level?: string;
-	} | null;
+	workflow: Workflow | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	onSuccess?: () => void;
@@ -99,11 +115,36 @@ export function WorkflowEditDialog({
 	const assignRoles = useAssignRolesToWorkflow();
 	const removeRole = useRemoveRoleFromWorkflow();
 
-	// Local state
+	// Access control state
 	const [organizationId, setOrganizationId] = useState<string | null | undefined>(undefined);
 	const [accessLevel, setAccessLevel] = useState<WorkflowAccessLevel>("role_based");
 	const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
 	const [rolesOpen, setRolesOpen] = useState(false);
+
+	// General tab state
+	const [displayName, setDisplayName] = useState("");
+	const [tags, setTags] = useState<string[]>([]);
+
+	// Execution tab state
+	const [timeoutSeconds, setTimeoutSeconds] = useState(1800);
+	const [executionMode, setExecutionMode] = useState<"sync" | "async">("sync");
+
+	// Economics tab state
+	const [timeSaved, setTimeSaved] = useState(0);
+	const [value, setValue] = useState(0);
+
+	// Tool config state
+	const [toolDescription, setToolDescription] = useState("");
+
+	// Data provider config state
+	const [cacheTtlSeconds, setCacheTtlSeconds] = useState(300);
+
+	// Endpoint tab state
+	const [endpointEnabled, setEndpointEnabled] = useState(false);
+	const [allowedMethods, setAllowedMethods] = useState<string[]>(["POST"]);
+	const [publicEndpoint, setPublicEndpoint] = useState(false);
+	const [disableGlobalKey, setDisableGlobalKey] = useState(false);
+
 	const [isSaving, setIsSaving] = useState(false);
 
 	// Fetch current workflow roles
@@ -112,9 +153,35 @@ export function WorkflowEditDialog({
 	// Load workflow data when dialog opens or workflow changes
 	useEffect(() => {
 		if (workflow && open) {
+			// Access control
 			setOrganizationId(workflow.organization_id ?? null);
 			setAccessLevel((workflow.access_level as WorkflowAccessLevel) || "role_based");
-			// Fetch roles - refetch is stable and intentionally not in deps to avoid loops
+
+			// General
+			setDisplayName(workflow.display_name ?? "");
+			setTags(workflow.tags ?? []);
+
+			// Execution
+			setTimeoutSeconds(workflow.timeout_seconds ?? 1800);
+			setExecutionMode(workflow.execution_mode ?? "sync");
+
+			// Economics
+			setTimeSaved(workflow.time_saved ?? 0);
+			setValue(workflow.value ?? 0);
+
+			// Tool config
+			setToolDescription(workflow.tool_description ?? "");
+
+			// Data provider config
+			setCacheTtlSeconds(workflow.cache_ttl_seconds ?? 300);
+
+			// Endpoint
+			setEndpointEnabled(workflow.endpoint_enabled ?? false);
+			setAllowedMethods(workflow.allowed_methods ?? ["POST"]);
+			setPublicEndpoint(workflow.public_endpoint ?? false);
+			setDisableGlobalKey(workflow.disable_global_key ?? false);
+
+			// Fetch roles
 			workflowRolesQuery.refetch().then((result) => {
 				if (result.data) {
 					setSelectedRoleIds(result.data.role_ids || []);
@@ -133,31 +200,36 @@ export function WorkflowEditDialog({
 
 		setIsSaving(true);
 		try {
-			// 1. Update workflow settings (org scope and access level)
+			// Build update payload with all changed fields
 			await updateWorkflow.mutateAsync(workflow.id, {
-				organizationId: organizationId,
-				accessLevel: accessLevel,
+				organization_id: organizationId,
+				access_level: accessLevel,
+				display_name: displayName || null,
+				tags: tags,
+				timeout_seconds: timeoutSeconds,
+				execution_mode: executionMode,
+				time_saved: timeSaved,
+				value: value,
+				tool_description: toolDescription || null,
+				cache_ttl_seconds: cacheTtlSeconds,
+				endpoint_enabled: endpointEnabled,
+				allowed_methods: allowedMethods,
+				public_endpoint: publicEndpoint,
+				disable_global_key: disableGlobalKey,
 			});
 
-			// 2. Handle role changes
+			// Handle role changes
 			const currentRoleIds = workflowRolesQuery.data?.role_ids || [];
-
-			// Find roles to add
 			const rolesToAdd = selectedRoleIds.filter(
 				(id) => !currentRoleIds.includes(id)
 			);
-
-			// Find roles to remove
 			const rolesToRemove = currentRoleIds.filter(
 				(id) => !selectedRoleIds.includes(id)
 			);
 
-			// Add new roles
 			if (rolesToAdd.length > 0) {
 				await assignRoles.mutateAsync(workflow.id, rolesToAdd);
 			}
-
-			// Remove old roles
 			for (const roleId of rolesToRemove) {
 				await removeRole.mutateAsync(workflow.id, roleId);
 			}
@@ -185,168 +257,450 @@ export function WorkflowEditDialog({
 		);
 	};
 
+	const handleMethodToggle = (method: string) => {
+		setAllowedMethods((prev) =>
+			prev.includes(method)
+				? prev.filter((m) => m !== method)
+				: [...prev, method]
+		);
+	};
+
+	// Determine which tabs to show based on workflow type
+	const isToolType = workflow?.type === "tool";
+	const isDataProviderType = workflow?.type === "data_provider";
+
 	return (
 		<Dialog open={open} onOpenChange={handleClose}>
-			<DialogContent className="sm:max-w-[500px]">
+			<DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-hidden flex flex-col">
 				<DialogHeader>
 					<DialogTitle>Edit Workflow Settings</DialogTitle>
 					<DialogDescription>
-						Configure organization scope and access control for "
-						{workflow?.name}"
+						Configure settings for "{workflow?.name}"
 					</DialogDescription>
 				</DialogHeader>
 
-				<div className="space-y-6 py-4">
-					{/* Organization Scope */}
-					<div className="space-y-2">
-						<Label>Organization Scope</Label>
-						<OrganizationSelect
-							value={organizationId}
-							onChange={setOrganizationId}
-							showAll={false}
-							showGlobal={true}
-							placeholder="Select organization..."
-						/>
-						<p className="text-xs text-muted-foreground">
-							Global workflows are available to all organizations
-						</p>
-					</div>
+				<Tabs defaultValue="general" className="flex-1 overflow-hidden flex flex-col">
+					<TabsList className="w-full flex-shrink-0">
+						<TabsTrigger value="general" className="gap-1.5">
+							<Settings className="h-3.5 w-3.5" />
+							General
+						</TabsTrigger>
+						<TabsTrigger value="execution" className="gap-1.5">
+							<Timer className="h-3.5 w-3.5" />
+							Execution
+						</TabsTrigger>
+						<TabsTrigger value="economics" className="gap-1.5">
+							<DollarSign className="h-3.5 w-3.5" />
+							Economics
+						</TabsTrigger>
+						{isToolType && (
+							<TabsTrigger value="tool" className="gap-1.5">
+								<Bot className="h-3.5 w-3.5" />
+								Tool
+							</TabsTrigger>
+						)}
+						{isDataProviderType && (
+							<TabsTrigger value="dataprovider" className="gap-1.5">
+								<Database className="h-3.5 w-3.5" />
+								Cache
+							</TabsTrigger>
+						)}
+						<TabsTrigger value="access" className="gap-1.5">
+							<Shield className="h-3.5 w-3.5" />
+							Access
+						</TabsTrigger>
+						<TabsTrigger value="endpoint" className="gap-1.5">
+							<Globe className="h-3.5 w-3.5" />
+							Endpoint
+						</TabsTrigger>
+					</TabsList>
 
-					{/* Access Level */}
-					<div className="space-y-2">
-						<Label>Access Level</Label>
-						<Select
-							value={accessLevel}
-							onValueChange={(value) =>
-								setAccessLevel(value as WorkflowAccessLevel)
-							}
-						>
-							<SelectTrigger>
-								<SelectValue placeholder="Select access level" />
-							</SelectTrigger>
-							<SelectContent>
-								{ACCESS_LEVELS.map((level) => (
-									<SelectItem key={level.value} value={level.value}>
-										<div className="flex items-center gap-2">
-											{level.icon}
+					<div className="flex-1 overflow-y-auto py-4">
+						{/* General Tab */}
+						<TabsContent value="general" className="mt-0 space-y-4">
+							<div className="space-y-2">
+								<Label htmlFor="display-name">Display Name</Label>
+								<Input
+									id="display-name"
+									value={displayName}
+									onChange={(e) => setDisplayName(e.target.value)}
+									placeholder={workflow?.name ?? "Workflow name"}
+								/>
+								<p className="text-xs text-muted-foreground">
+									User-facing name. Leave empty to use the code name.
+								</p>
+							</div>
+
+							<div className="space-y-2">
+								<Label>Description</Label>
+								<p className="text-sm text-muted-foreground bg-muted/50 rounded-md px-3 py-2">
+									{workflow?.description || "No description"}
+								</p>
+								<p className="text-xs text-muted-foreground">
+									Set from the function docstring in code
+								</p>
+							</div>
+
+							<div className="space-y-2">
+								<Label>Category</Label>
+								<p className="text-sm text-muted-foreground bg-muted/50 rounded-md px-3 py-2">
+									{workflow?.category || "General"}
+								</p>
+								<p className="text-xs text-muted-foreground">
+									Set via the decorator in code
+								</p>
+							</div>
+
+							<div className="space-y-2">
+								<Label>Tags</Label>
+								<TagsInput
+									value={tags}
+									onChange={setTags}
+									placeholder="Add tags..."
+								/>
+								<p className="text-xs text-muted-foreground">
+									Press space, comma, or enter to add a tag
+								</p>
+							</div>
+						</TabsContent>
+
+						{/* Execution Tab */}
+						<TabsContent value="execution" className="mt-0 space-y-4">
+							<div className="space-y-2">
+								<Label htmlFor="timeout">Timeout (seconds)</Label>
+								<Input
+									id="timeout"
+									type="number"
+									min={1}
+									max={7200}
+									value={timeoutSeconds}
+									onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
+								/>
+								<p className="text-xs text-muted-foreground">
+									Maximum execution time (1-7200 seconds, default 1800)
+								</p>
+							</div>
+
+							<div className="space-y-2">
+								<Label>Execution Mode</Label>
+								<Select
+									value={executionMode}
+									onValueChange={(v) => setExecutionMode(v as "sync" | "async")}
+								>
+									<SelectTrigger>
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="sync">
 											<div className="flex flex-col">
-												<span>{level.label}</span>
+												<span>Synchronous</span>
 												<span className="text-xs text-muted-foreground">
-													{level.description}
+													Wait for result before responding
 												</span>
 											</div>
-										</div>
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
-					</div>
+										</SelectItem>
+										<SelectItem value="async">
+											<div className="flex flex-col">
+												<span>Asynchronous</span>
+												<span className="text-xs text-muted-foreground">
+													Run in background, return immediately
+												</span>
+											</div>
+										</SelectItem>
+									</SelectContent>
+								</Select>
+							</div>
+						</TabsContent>
 
-					{/* Roles - Only visible when role_based is selected */}
-					{accessLevel === "role_based" && (
-						<div className="space-y-2">
-							<Label>
-								Assigned Roles{" "}
-								{selectedRoleIds.length > 0 && `(${selectedRoleIds.length})`}
-							</Label>
-							<Popover open={rolesOpen} onOpenChange={setRolesOpen}>
-								<PopoverTrigger asChild>
-									<Button
-										variant="outline"
-										role="combobox"
-										aria-expanded={rolesOpen}
-										className="w-full justify-between font-normal"
-									>
-										<span className="text-muted-foreground">
-											Select roles...
-										</span>
-										<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-									</Button>
-								</PopoverTrigger>
-								<PopoverContent
-									className="w-[var(--radix-popover-trigger-width)] p-0"
-									align="start"
+						{/* Economics Tab */}
+						<TabsContent value="economics" className="mt-0 space-y-4">
+							<div className="space-y-2">
+								<Label htmlFor="time-saved">Time Saved (minutes per execution)</Label>
+								<Input
+									id="time-saved"
+									type="number"
+									min={0}
+									value={timeSaved}
+									onChange={(e) => setTimeSaved(Number(e.target.value))}
+								/>
+								<p className="text-xs text-muted-foreground">
+									Estimated minutes saved each time this workflow runs (for ROI reporting)
+								</p>
+							</div>
+
+							<div className="space-y-2">
+								<Label htmlFor="value">Value (per execution)</Label>
+								<Input
+									id="value"
+									type="number"
+									min={0}
+									step={0.01}
+									value={value}
+									onChange={(e) => setValue(Number(e.target.value))}
+								/>
+								<p className="text-xs text-muted-foreground">
+									Flexible value unit per execution (e.g., cost savings, revenue)
+								</p>
+							</div>
+						</TabsContent>
+
+						{/* Tool Config Tab (only for type='tool') */}
+						{isToolType && (
+							<TabsContent value="tool" className="mt-0 space-y-4">
+								<div className="space-y-2">
+									<Label htmlFor="tool-description">Tool Description</Label>
+									<Textarea
+										id="tool-description"
+										value={toolDescription}
+										onChange={(e) => setToolDescription(e.target.value)}
+										placeholder="Describe what this tool does for AI agent selection..."
+										rows={4}
+									/>
+									<p className="text-xs text-muted-foreground">
+										Description optimized for AI tool selection. This helps agents
+										decide when to use this tool.
+									</p>
+								</div>
+							</TabsContent>
+						)}
+
+						{/* Data Provider Config Tab (only for type='data_provider') */}
+						{isDataProviderType && (
+							<TabsContent value="dataprovider" className="mt-0 space-y-4">
+								<div className="space-y-2">
+									<Label htmlFor="cache-ttl">Cache TTL (seconds)</Label>
+									<Input
+										id="cache-ttl"
+										type="number"
+										min={0}
+										max={86400}
+										value={cacheTtlSeconds}
+										onChange={(e) => setCacheTtlSeconds(Number(e.target.value))}
+									/>
+									<p className="text-xs text-muted-foreground">
+										How long to cache results (0-86400 seconds, default 300). Set to 0 to disable caching.
+									</p>
+								</div>
+							</TabsContent>
+						)}
+
+						{/* Access Control Tab */}
+						<TabsContent value="access" className="mt-0 space-y-4">
+							<div className="space-y-2">
+								<Label>Organization Scope</Label>
+								<OrganizationSelect
+									value={organizationId}
+									onChange={setOrganizationId}
+									showAll={false}
+									showGlobal={true}
+									placeholder="Select organization..."
+								/>
+								<p className="text-xs text-muted-foreground">
+									Global workflows are available to all organizations
+								</p>
+							</div>
+
+							<div className="space-y-2">
+								<Label>Access Level</Label>
+								<Select
+									value={accessLevel}
+									onValueChange={(v) =>
+										setAccessLevel(v as WorkflowAccessLevel)
+									}
 								>
-									<Command>
-										<CommandInput placeholder="Search roles..." />
-										<CommandList>
-											<CommandEmpty>No roles found.</CommandEmpty>
-											<CommandGroup>
-												{roles?.map((role: RolePublic) => (
-													<CommandItem
-														key={role.id}
-														value={role.name || ""}
-														onSelect={() => handleRoleToggle(role.id)}
-													>
-														<div className="flex items-center gap-2 flex-1">
-															<Checkbox
-																checked={selectedRoleIds.includes(role.id)}
-															/>
-															<div className="flex flex-col">
-																<span className="font-medium">
-																	{role.name}
-																</span>
-																{role.description && (
-																	<span className="text-xs text-muted-foreground">
-																		{role.description}
-																	</span>
-																)}
-															</div>
-														</div>
-														<Check
-															className={cn(
-																"ml-auto h-4 w-4",
-																selectedRoleIds.includes(role.id)
-																	? "opacity-100"
-																	: "opacity-0"
-															)}
-														/>
-													</CommandItem>
-												))}
-											</CommandGroup>
-										</CommandList>
-									</Command>
-								</PopoverContent>
-							</Popover>
+									<SelectTrigger>
+										<SelectValue placeholder="Select access level" />
+									</SelectTrigger>
+									<SelectContent>
+										{ACCESS_LEVELS.map((level) => (
+											<SelectItem key={level.value} value={level.value}>
+												<div className="flex items-center gap-2">
+													{level.icon}
+													<div className="flex flex-col">
+														<span>{level.label}</span>
+														<span className="text-xs text-muted-foreground">
+															{level.description}
+														</span>
+													</div>
+												</div>
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
 
-							{/* Selected roles display */}
-							{selectedRoleIds.length > 0 && (
-								<div className="flex flex-wrap gap-2 p-2 border rounded-md bg-muted/50">
-									{selectedRoleIds.map((roleId) => {
-										const role = roles?.find(
-											(r: RolePublic) => r.id === roleId
-										);
-										return (
-											<Badge
-												key={roleId}
-												variant="secondary"
-												className="gap-1"
+							{accessLevel === "role_based" && (
+								<div className="space-y-2">
+									<Label>
+										Assigned Roles{" "}
+										{selectedRoleIds.length > 0 && `(${selectedRoleIds.length})`}
+									</Label>
+									<Popover open={rolesOpen} onOpenChange={setRolesOpen}>
+										<PopoverTrigger asChild>
+											<Button
+												variant="outline"
+												role="combobox"
+												aria-expanded={rolesOpen}
+												className="w-full justify-between font-normal"
 											>
-												{role?.name || roleId}
-												<X
-													className="h-3 w-3 cursor-pointer"
-													onClick={() => handleRoleToggle(roleId)}
-												/>
-											</Badge>
-										);
-									})}
+												<span className="text-muted-foreground">
+													Select roles...
+												</span>
+												<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+											</Button>
+										</PopoverTrigger>
+										<PopoverContent
+											className="w-[var(--radix-popover-trigger-width)] p-0"
+											align="start"
+										>
+											<Command>
+												<CommandInput placeholder="Search roles..." />
+												<CommandList>
+													<CommandEmpty>No roles found.</CommandEmpty>
+													<CommandGroup>
+														{roles?.map((role: RolePublic) => (
+															<CommandItem
+																key={role.id}
+																value={role.name || ""}
+																onSelect={() => handleRoleToggle(role.id)}
+															>
+																<div className="flex items-center gap-2 flex-1">
+																	<Checkbox
+																		checked={selectedRoleIds.includes(role.id)}
+																	/>
+																	<div className="flex flex-col">
+																		<span className="font-medium">
+																			{role.name}
+																		</span>
+																		{role.description && (
+																			<span className="text-xs text-muted-foreground">
+																				{role.description}
+																			</span>
+																		)}
+																	</div>
+																</div>
+																<Check
+																	className={cn(
+																		"ml-auto h-4 w-4",
+																		selectedRoleIds.includes(role.id)
+																			? "opacity-100"
+																			: "opacity-0"
+																	)}
+																/>
+															</CommandItem>
+														))}
+													</CommandGroup>
+												</CommandList>
+											</Command>
+										</PopoverContent>
+									</Popover>
+
+									{selectedRoleIds.length > 0 && (
+										<div className="flex flex-wrap gap-2 p-2 border rounded-md bg-muted/50">
+											{selectedRoleIds.map((roleId) => {
+												const role = roles?.find(
+													(r: RolePublic) => r.id === roleId
+												);
+												return (
+													<Badge
+														key={roleId}
+														variant="secondary"
+														className="gap-1"
+													>
+														{role?.name || roleId}
+														<X
+															className="h-3 w-3 cursor-pointer"
+															onClick={() => handleRoleToggle(roleId)}
+														/>
+													</Badge>
+												);
+											})}
+										</div>
+									)}
+
+									<p className="text-xs text-muted-foreground">
+										Users must have at least one of these roles to execute this
+										workflow
+									</p>
+
+									{selectedRoleIds.length === 0 && (
+										<p className="text-xs text-yellow-600 dark:text-yellow-500">
+											No roles assigned - only platform admins can execute this
+											workflow
+										</p>
+									)}
 								</div>
 							)}
+						</TabsContent>
 
-							<p className="text-xs text-muted-foreground">
-								Users must have at least one of these roles to execute this
-								workflow
-							</p>
+						{/* Endpoint Tab */}
+						<TabsContent value="endpoint" className="mt-0 space-y-4">
+							<div className="flex items-center justify-between">
+								<div className="space-y-0.5">
+									<Label>Enable HTTP Endpoint</Label>
+									<p className="text-xs text-muted-foreground">
+										Expose this workflow as an HTTP API endpoint
+									</p>
+								</div>
+								<Switch
+									checked={endpointEnabled}
+									onCheckedChange={setEndpointEnabled}
+								/>
+							</div>
 
-							{selectedRoleIds.length === 0 && (
-								<p className="text-xs text-yellow-600 dark:text-yellow-500">
-									No roles assigned - only platform admins can execute this
-									workflow
-								</p>
+							{endpointEnabled && (
+								<>
+									<div className="space-y-2">
+										<Label>Allowed Methods</Label>
+										<div className="flex flex-wrap gap-2">
+											{HTTP_METHODS.map((method) => (
+												<Button
+													key={method}
+													type="button"
+													variant={
+														allowedMethods.includes(method)
+															? "default"
+															: "outline"
+													}
+													size="sm"
+													onClick={() => handleMethodToggle(method)}
+												>
+													{method}
+												</Button>
+											))}
+										</div>
+									</div>
+
+									<div className="flex items-center justify-between">
+										<div className="space-y-0.5">
+											<Label>Public Endpoint</Label>
+											<p className="text-xs text-muted-foreground">
+												Skip authentication (use for incoming webhooks)
+											</p>
+										</div>
+										<Switch
+											checked={publicEndpoint}
+											onCheckedChange={setPublicEndpoint}
+										/>
+									</div>
+
+									<div className="flex items-center justify-between">
+										<div className="space-y-0.5">
+											<Label>Disable Global API Key</Label>
+											<p className="text-xs text-muted-foreground">
+												Only workflow-specific API keys will work
+											</p>
+										</div>
+										<Switch
+											checked={disableGlobalKey}
+											onCheckedChange={setDisableGlobalKey}
+										/>
+									</div>
+								</>
 							)}
-						</div>
-					)}
-				</div>
+						</TabsContent>
+					</div>
+				</Tabs>
 
 				<DialogFooter>
 					<Button variant="outline" onClick={handleClose} disabled={isSaving}>

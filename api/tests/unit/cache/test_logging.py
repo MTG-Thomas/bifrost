@@ -298,11 +298,11 @@ class TestAsyncLogFunctions:
             logs = await read_logs_from_stream(exec_id)
 
             assert len(logs) == 2
-            assert logs[0]["id"] == "1234-0"
-            assert logs[0]["level"] == "INFO"
-            assert logs[0]["message"] == "First log"
-            assert logs[1]["level"] == "ERROR"
-            assert logs[1]["metadata"] == {"error": True}
+            assert logs[0].id == "1234-0"
+            assert logs[0].level == "INFO"
+            assert logs[0].message == "First log"
+            assert logs[1].level == "ERROR"
+            assert logs[1].metadata == {"error": True}
 
     @pytest.mark.asyncio
     async def test_read_logs_from_stream_empty(self):

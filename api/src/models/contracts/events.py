@@ -64,6 +64,23 @@ class WebhookSourceConfig(BaseModel):
     )
 
 
+class ScheduleSourceConfig(BaseModel):
+    """Schedule-specific configuration for creating an event source."""
+
+    cron_expression: str = Field(
+        ...,
+        description="Cron expression for the schedule (e.g., '0 9 * * *' for daily at 9 AM)",
+    )
+    timezone: str = Field(
+        default="UTC",
+        description="Timezone for the schedule (e.g., 'America/New_York')",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether the schedule is enabled",
+    )
+
+
 class EventSourceCreate(BaseModel):
     """
     Request model for creating an event source.
@@ -90,6 +107,10 @@ class EventSourceCreate(BaseModel):
         default=None,
         description="Webhook configuration (required if source_type is webhook)",
     )
+    schedule: ScheduleSourceConfig | None = Field(
+        default=None,
+        description="Schedule configuration (required if source_type is schedule)",
+    )
 
 
 class EventSourceUpdate(BaseModel):
@@ -113,6 +134,10 @@ class EventSourceUpdate(BaseModel):
     webhook: WebhookSourceConfig | None = Field(
         default=None,
         description="Webhook configuration updates",
+    )
+    schedule: ScheduleSourceConfig | None = Field(
+        default=None,
+        description="Schedule configuration updates",
     )
 
 
@@ -138,6 +163,10 @@ class EventSubscriptionCreate(BaseModel):
         default=None,
         description="Optional JSONPath filter expression (future use)",
     )
+    input_mapping: dict[str, Any] | None = Field(
+        default=None,
+        description="Template mapping for workflow input parameters. Maps workflow params to static values or template expressions (e.g., {'report_type': 'daily', 'as_of_date': '{{ scheduled_time }}'})",
+    )
 
 
 class EventSubscriptionUpdate(BaseModel):
@@ -158,6 +187,10 @@ class EventSubscriptionUpdate(BaseModel):
     is_active: bool | None = Field(
         default=None,
         description="Whether the subscription is active",
+    )
+    input_mapping: dict[str, Any] | None = Field(
+        default=None,
+        description="Template mapping for workflow input parameters",
     )
 
 
@@ -196,6 +229,25 @@ class WebhookSourceResponse(BaseModel):
     expires_at: datetime | None = Field(
         default=None,
         description="When the external subscription expires",
+    )
+
+
+class ScheduleSourceResponse(BaseModel):
+    """Schedule-specific details in event source response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    cron_expression: str = Field(
+        ...,
+        description="Cron expression for the schedule",
+    )
+    timezone: str = Field(
+        ...,
+        description="Timezone for the schedule",
+    )
+    enabled: bool = Field(
+        ...,
+        description="Whether the schedule is enabled",
     )
 
 
@@ -240,6 +292,10 @@ class EventSourceResponse(BaseModel):
         default=None,
         description="Webhook configuration details",
     )
+    schedule: ScheduleSourceResponse | None = Field(
+        default=None,
+        description="Schedule configuration details",
+    )
 
 
 class EventSourceListResponse(BaseModel):
@@ -281,6 +337,10 @@ class EventSubscriptionResponse(BaseModel):
         description="JSONPath filter expression",
     )
     is_active: bool = Field(..., description="Whether the subscription is active")
+    input_mapping: dict[str, Any] | None = Field(
+        default=None,
+        description="Template mapping for workflow input parameters",
+    )
     delivery_count: int = Field(
         default=0,
         description="Total number of deliveries",

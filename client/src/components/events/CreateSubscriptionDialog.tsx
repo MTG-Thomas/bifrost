@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { useCreateSubscription } from "@/services/events";
 import { useWorkflows } from "@/hooks/useWorkflows";
 import { WorkflowSelectorDialog } from "@/components/workflows/WorkflowSelectorDialog";
+import { WorkflowParametersForm } from "@/components/workflows/WorkflowParametersForm";
 import type { components } from "@/lib/v1";
 
 type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
@@ -25,6 +26,21 @@ interface CreateSubscriptionDialogProps {
 	onOpenChange: (open: boolean) => void;
 	sourceId: string;
 	onSuccess?: () => void;
+}
+
+/**
+ * Remove entries where value is undefined, null, or empty string.
+ * Returns undefined if no non-empty values remain.
+ */
+function cleanInputMapping(
+	mapping: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	const cleaned = Object.fromEntries(
+		Object.entries(mapping).filter(
+			([, v]) => v !== undefined && v !== null && v !== "",
+		),
+	);
+	return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
 function CreateSubscriptionDialogContent({
@@ -37,6 +53,9 @@ function CreateSubscriptionDialogContent({
 	// Form state
 	const [workflowId, setWorkflowId] = useState("");
 	const [eventType, setEventType] = useState("");
+	const [inputMapping, setInputMapping] = useState<Record<string, unknown>>(
+		{},
+	);
 	const [errors, setErrors] = useState<string[]>([]);
 	const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false);
 
@@ -44,10 +63,17 @@ function CreateSubscriptionDialogContent({
 	const { data: workflowsData } = useWorkflows();
 	const workflows: WorkflowMetadata[] = workflowsData || [];
 
-	// Get selected workflow name for display
+	// Get selected workflow for display and parameter info
 	const selectedWorkflow = workflows.find((w) => w.id === workflowId);
 
 	const isLoading = createMutation.isPending;
+
+	const handleWorkflowSelect = (ids: string[]) => {
+		const newId = ids[0] || "";
+		setWorkflowId(newId);
+		// Reset input mapping when workflow changes
+		setInputMapping({});
+	};
 
 	const validateForm = (): boolean => {
 		const newErrors: string[] = [];
@@ -65,6 +91,8 @@ function CreateSubscriptionDialogContent({
 		if (!validateForm()) return;
 
 		try {
+			const cleanedMapping = cleanInputMapping(inputMapping);
+
 			await createMutation.mutateAsync({
 				params: {
 					path: { source_id: sourceId },
@@ -72,6 +100,7 @@ function CreateSubscriptionDialogContent({
 				body: {
 					workflow_id: workflowId,
 					event_type: eventType.trim() || undefined,
+					input_mapping: cleanedMapping,
 				},
 			});
 
@@ -125,7 +154,7 @@ function CreateSubscriptionDialogContent({
 						entityRoles={[]}
 						mode="single"
 						selectedWorkflowIds={workflowId ? [workflowId] : []}
-						onSelect={(ids) => setWorkflowId(ids[0] || "")}
+						onSelect={handleWorkflowSelect}
 						title="Select Workflow"
 						description="Choose a workflow to receive events from this source."
 					/>
@@ -151,6 +180,35 @@ function CreateSubscriptionDialogContent({
 						Leave empty to receive all events.
 					</p>
 				</div>
+
+				{/* Input Mapping (shown when workflow has parameters) */}
+				{selectedWorkflow?.parameters &&
+					selectedWorkflow.parameters.length > 0 && (
+						<div className="space-y-3">
+							<div className="border-t pt-3">
+								<Label className="text-sm font-medium">
+									Input Mapping (Optional)
+								</Label>
+								<p className="text-xs text-muted-foreground mt-1">
+									Pre-fill workflow parameters with static
+									values or template expressions. Use{" "}
+									<code className="bg-muted px-1 py-0.5 rounded text-xs">
+										{"{{ scheduled_time }}"}
+									</code>{" "}
+									for the schedule trigger time.
+								</p>
+							</div>
+							<WorkflowParametersForm
+								key={workflowId}
+								parameters={selectedWorkflow.parameters}
+								onExecute={() => {}}
+								showExecuteButton={false}
+								renderAsDiv
+								values={inputMapping}
+								onChange={setInputMapping}
+							/>
+						</div>
+					)}
 			</div>
 
 			<DialogFooter>

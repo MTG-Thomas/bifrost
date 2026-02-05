@@ -21,6 +21,7 @@ from src.models.orm.events import (
     EventDelivery,
     EventSource,
     EventSubscription,
+    ScheduleSource,
     WebhookSource,
 )
 from src.repositories.base import BaseRepository
@@ -32,13 +33,14 @@ class EventSourceRepository(BaseRepository[EventSource]):
     model = EventSource
 
     async def get_by_id_with_details(self, source_id: UUID) -> EventSource | None:
-        """Get event source with webhook details loaded."""
+        """Get event source with webhook and schedule details loaded."""
         result = await self.session.execute(
             select(EventSource)
             .options(
                 joinedload(EventSource.webhook_source).joinedload(
                     WebhookSource.integration
                 ),
+                joinedload(EventSource.schedule_source),
                 joinedload(EventSource.organization),
                 selectinload(EventSource.subscriptions),
             )
@@ -70,6 +72,7 @@ class EventSourceRepository(BaseRepository[EventSource]):
             select(EventSource)
             .options(
                 joinedload(EventSource.webhook_source),
+                joinedload(EventSource.schedule_source),
                 joinedload(EventSource.organization),
             )
         )

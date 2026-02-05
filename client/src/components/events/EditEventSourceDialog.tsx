@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
 	Dialog,
 	DialogContent,
@@ -10,10 +10,44 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useUpdateEventSource, type EventSource } from "@/services/events";
+import { authFetch } from "@/lib/api-client";
+
+interface CronValidationResult {
+	valid: boolean;
+	human_readable: string;
+	next_runs?: string[];
+	interval_seconds?: number;
+	warning?: string;
+	error?: string;
+}
+
+const COMMON_TIMEZONES = [
+	"UTC",
+	"America/New_York",
+	"America/Chicago",
+	"America/Denver",
+	"America/Los_Angeles",
+	"America/Phoenix",
+	"Europe/London",
+	"Europe/Paris",
+	"Europe/Berlin",
+	"Asia/Tokyo",
+	"Asia/Shanghai",
+	"Australia/Sydney",
+	"Pacific/Auckland",
+];
 
 interface EditEventSourceDialogProps {
 	source: EventSource | null;
@@ -44,19 +78,87 @@ function EditEventSourceDialogContent({
 		(source.webhook?.config?.secret as string) ?? "",
 	);
 
+	// Schedule config fields
+	const [cronExpression, setCronExpression] = useState<string>(
+		source.schedule?.cron_expression ?? "",
+	);
+	const [timezone, setTimezone] = useState<string>(
+		source.schedule?.timezone ?? "UTC",
+	);
+	const [scheduleEnabled, setScheduleEnabled] = useState<boolean>(
+		source.schedule?.enabled ?? true,
+	);
+
+	// Cron validation state
+	const [cronValidation, setCronValidation] =
+		useState<CronValidationResult | null>(null);
+
 	const [errors, setErrors] = useState<string[]>([]);
 
 	const isLoading = updateMutation.isPending;
 	const isWebhook = source.source_type === "webhook";
+	const isSchedule = source.source_type === "schedule";
 	const isGenericAdapter =
 		!source.webhook?.adapter_name ||
 		source.webhook?.adapter_name === "generic";
+
+	// Debounced cron validation
+	const validateCron = useCallback(async (expr: string) => {
+		if (!expr.trim()) {
+			setCronValidation(null);
+			return;
+		}
+
+		try {
+			const response = await authFetch("/api/schedules/validate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ expression: expr }),
+			});
+			const data = await response.json();
+			setCronValidation(data);
+		} catch {
+			setCronValidation({
+				valid: false,
+				human_readable: "Failed to validate",
+				error: "Unable to connect to validation service",
+			});
+		}
+	}, []);
+
+	useEffect(() => {
+		if (!cronExpression.trim()) {
+			return;
+		}
+
+		const timer = setTimeout(() => {
+			validateCron(cronExpression);
+		}, 500);
+
+		return () => clearTimeout(timer);
+	}, [cronExpression, validateCron]);
+
+	// Computed display result - null when expression is empty
+	const displayCronValidation = cronExpression.trim()
+		? cronValidation
+		: null;
 
 	const validateForm = (): boolean => {
 		const newErrors: string[] = [];
 
 		if (!name.trim()) {
 			newErrors.push("Name is required");
+		}
+
+		if (isSchedule) {
+			if (!cronExpression.trim()) {
+				newErrors.push("Cron expression is required");
+			} else if (cronValidation && !cronValidation.valid) {
+				newErrors.push(
+					"Cron expression is invalid: " +
+						(cronValidation.error || cronValidation.human_readable),
+				);
+			}
 		}
 
 		setErrors(newErrors);
@@ -87,6 +189,13 @@ function EditEventSourceDialogContent({
 				body: {
 					name: name.trim(),
 					webhook: isWebhook ? { config: webhookConfig } : undefined,
+					schedule: isSchedule
+						? {
+								cron_expression: cronExpression.trim(),
+								timezone,
+								enabled: scheduleEnabled,
+							}
+						: undefined,
 				},
 			});
 
@@ -189,6 +298,109 @@ function EditEventSourceDialogContent({
 								HMAC secret for signature verification
 								(optional)
 							</p>
+						</div>
+					</>
+				)}
+
+				{/* Schedule Config */}
+				{isSchedule && (
+					<>
+						<div className="border-t pt-4">
+							<h4 className="text-sm font-medium mb-3">
+								Schedule Configuration
+							</h4>
+						</div>
+
+						{/* Cron Expression */}
+						<div className="space-y-2">
+							<Label htmlFor="cron-expression">
+								Cron Expression
+							</Label>
+							<Input
+								id="cron-expression"
+								value={cronExpression}
+								onChange={(e) =>
+									setCronExpression(e.target.value)
+								}
+								placeholder="e.g., 0 9 * * * (daily at 9 AM)"
+								className="font-mono"
+							/>
+							<p className="text-xs text-muted-foreground">
+								Standard 5-field cron expression (minute hour
+								day-of-month month day-of-week)
+							</p>
+
+							{/* Cron Validation Display */}
+							{displayCronValidation && (
+								<div className="mt-2">
+									{displayCronValidation.valid ? (
+										<Alert className="bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800">
+											<CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+											<AlertDescription className="text-green-800 dark:text-green-200">
+												{displayCronValidation.human_readable}
+											</AlertDescription>
+										</Alert>
+									) : (
+										<Alert variant="destructive">
+											<AlertCircle className="h-4 w-4" />
+											<AlertDescription>
+												{displayCronValidation.error ||
+													displayCronValidation.human_readable}
+											</AlertDescription>
+										</Alert>
+									)}
+
+									{displayCronValidation.warning && (
+										<Alert className="mt-2 bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800">
+											<AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
+											<AlertDescription className="text-yellow-800 dark:text-yellow-200">
+												{displayCronValidation.warning}
+											</AlertDescription>
+										</Alert>
+									)}
+								</div>
+							)}
+						</div>
+
+						{/* Timezone */}
+						<div className="space-y-2">
+							<Label htmlFor="timezone">Timezone</Label>
+							<Select
+								value={timezone}
+								onValueChange={setTimezone}
+							>
+								<SelectTrigger id="timezone">
+									<SelectValue placeholder="Select timezone..." />
+								</SelectTrigger>
+								<SelectContent>
+									{COMMON_TIMEZONES.map((tz) => (
+										<SelectItem key={tz} value={tz}>
+											{tz}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+							<p className="text-xs text-muted-foreground">
+								Timezone for evaluating the cron expression
+							</p>
+						</div>
+
+						{/* Enabled Toggle */}
+						<div className="flex items-center justify-between">
+							<div className="space-y-0.5">
+								<Label htmlFor="schedule-enabled">
+									Enabled
+								</Label>
+								<p className="text-xs text-muted-foreground">
+									When disabled, the schedule will not trigger
+									events
+								</p>
+							</div>
+							<Switch
+								id="schedule-enabled"
+								checked={scheduleEnabled}
+								onCheckedChange={setScheduleEnabled}
+							/>
 						</div>
 					</>
 				)}

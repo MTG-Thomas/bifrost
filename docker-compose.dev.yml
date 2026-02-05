@@ -68,6 +68,7 @@ services:
       BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
       BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
       BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
+      BIFROST_PUBLIC_URL: ${BIFROST_PUBLIC_URL:-http://localhost:8000}
       # Debugging (optional - enables debugpy)
       ENABLE_DEBUG: ${ENABLE_DEBUG:-false}
     ports:
@@ -95,6 +96,7 @@ services:
       BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
       BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
       BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
+      BIFROST_PUBLIC_URL: ${BIFROST_PUBLIC_URL:-http://localhost:8000}
     volumes:
       - ./api/src:/app/src:ro
       - ./api/shared:/app/shared:ro
@@ -111,6 +113,7 @@ services:
       BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
       BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
       BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
+      BIFROST_PUBLIC_URL: ${BIFROST_PUBLIC_URL:-http://localhost:8000}
       # Thread-based worker model (new execution architecture)
       BIFROST_USE_THREAD_WORKERS: "true"
     volumes:

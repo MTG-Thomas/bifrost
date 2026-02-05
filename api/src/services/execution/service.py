@@ -535,6 +535,7 @@ async def execute_tool(
         is_platform_admin=is_platform_admin,
         is_function_key=False,
         execution_id=execution_id,
+        workflow_name=workflow_name,  # Workflow name for context
         public_url=get_settings().public_url,
     )
 

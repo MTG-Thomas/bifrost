@@ -6,6 +6,18 @@ Note: With dynamic discovery, decorators no longer register with a global regist
 Instead, they attach metadata directly to decorated functions which is then
 read during dynamic discovery. Parameters are now automatically extracted from
 function signatures - no @param decorator needed.
+
+## Decorator Parameters
+
+Only identity parameters are accepted in decorators:
+- name: Override function name (stable identifier)
+- description: Override docstring
+- category: Hint for organization (overridable in UI)
+- tags: Hints for filtering (overridable in UI)
+- is_tool: Mark as AI agent tool (@workflow only)
+
+All other configuration (schedules, timeouts, endpoints, etc.) is managed via UI/API.
+Unknown parameters are ignored with a warning for backwards compatibility.
 """
 
 
@@ -35,7 +47,7 @@ class TestWorkflowDecorator:
         assert metadata.description == "Test workflow function."
         assert metadata.category == "General"
         assert metadata.tags == []
-        assert metadata.execution_mode == "async"  # Default
+        assert metadata.type == "workflow"
 
     def test_workflow_decorator_basic(self):
         """Test basic workflow decorator"""
@@ -59,10 +71,10 @@ class TestWorkflowDecorator:
         assert metadata.description == "Test workflow"
         assert metadata.category == "General"
         assert metadata.tags == []
-        assert metadata.execution_mode == "async"  # Default
+        assert metadata.type == "workflow"
 
     def test_workflow_decorator_full_options(self):
-        """Test workflow decorator with all options"""
+        """Test workflow decorator with all identity options"""
         @workflow(
             name="user_onboarding",
             description="Onboard new M365 user",
@@ -75,53 +87,49 @@ class TestWorkflowDecorator:
         metadata = onboard_user._executable_metadata
         assert metadata.category == "user_management"
         assert metadata.tags == ["m365", "user"]
-        assert metadata.execution_mode == "async"  # Default
+        assert metadata.type == "workflow"
 
         # Verify function still callable
         result = onboard_user("John", "Doe")
         assert result == "Onboarded John Doe"
 
-    def test_workflow_decorator_execution_mode_async(self):
-        """Test workflow with async execution mode"""
+    def test_workflow_as_tool(self):
+        """Test workflow marked as tool"""
         @workflow(
-            name="utility_workflow",
-            description="Utility function",
-            execution_mode="async"
+            name="get_user_tool",
+            description="Get user info",
+            is_tool=True
         )
-        def utility_func():
-            return "utility"
+        def get_user(email: str):
+            return {"email": email}
 
-        metadata = utility_func._executable_metadata
-        assert metadata.execution_mode == "async"
+        metadata = get_user._executable_metadata
+        assert metadata.type == "tool"
+        assert metadata.tool is True
 
-    def test_workflow_endpoint_defaults_to_sync(self):
-        """Test that workflows with endpoint_enabled default to sync"""
-        @workflow(
-            name="webhook_workflow",
-            description="Webhook endpoint",
-            endpoint_enabled=True
-        )
-        def webhook_func():
-            return "webhook"
+    def test_workflow_unknown_params_logged_as_warning(self, caplog):
+        """Test that unknown parameters are accepted but logged as warnings"""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            @workflow(
+                name="legacy_workflow",
+                description="Legacy workflow with old params",
+                execution_mode="sync",  # Old param - should be ignored
+                timeout_seconds=300,    # Old param - should be ignored
+                endpoint_enabled=True,  # Old param - should be ignored
+            )
+            def legacy_func():
+                return "legacy"
 
-        metadata = webhook_func._executable_metadata
-        assert metadata.execution_mode == "sync"  # Auto-defaults to sync
-        assert metadata.endpoint_enabled is True
+        # Verify warning was logged
+        assert "Unknown @workflow parameters ignored" in caplog.text
+        assert "endpoint_enabled" in caplog.text
+        assert "execution_mode" in caplog.text
+        assert "timeout_seconds" in caplog.text
 
-    def test_workflow_endpoint_explicit_async_override(self):
-        """Test that explicit async overrides endpoint default"""
-        @workflow(
-            name="async_webhook",
-            description="Async webhook",
-            endpoint_enabled=True,
-            execution_mode="async"
-        )
-        def async_webhook_func():
-            return "async webhook"
-
-        metadata = async_webhook_func._executable_metadata
-        assert metadata.execution_mode == "async"  # Explicit wins
-        assert metadata.endpoint_enabled is True
+        # Verify metadata uses defaults (not the passed values)
+        metadata = legacy_func._executable_metadata
+        assert metadata.type == "workflow"
 
     def test_workflow_function_metadata_preserved(self):
         """Test that function metadata is preserved"""
@@ -269,22 +277,45 @@ class TestDataProviderDecorator:
         assert metadata.name == "get_licenses"
         assert metadata.description == "Returns available licenses"
         assert metadata.category == "General"
-        assert metadata.cache_ttl_seconds == 300
+        assert metadata.type == "data_provider"
 
     def test_data_provider_decorator_full_options(self):
-        """Test data provider with all options"""
+        """Test data provider with all identity options"""
         @data_provider(
             name="get_available_licenses",
             description="Returns available M365 licenses",
             category="m365",
-            cache_ttl_seconds=600
+            tags=["licensing", "m365"]
         )
         def get_available_licenses():
             return []
 
         metadata = get_available_licenses._executable_metadata
         assert metadata.category == "m365"
-        assert metadata.cache_ttl_seconds == 600
+        assert metadata.tags == ["licensing", "m365"]
+        assert metadata.type == "data_provider"
+
+    def test_data_provider_unknown_params_logged_as_warning(self, caplog):
+        """Test that unknown parameters are accepted but logged as warnings"""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            @data_provider(
+                name="legacy_provider",
+                description="Legacy provider with old params",
+                cache_ttl_seconds=600,   # Old param - should be ignored
+                timeout_seconds=120,     # Old param - should be ignored
+            )
+            def legacy_provider():
+                return []
+
+        # Verify warning was logged
+        assert "Unknown @data_provider parameters ignored" in caplog.text
+        assert "cache_ttl_seconds" in caplog.text
+        assert "timeout_seconds" in caplog.text
+
+        # Verify metadata uses defaults
+        metadata = legacy_provider._executable_metadata
+        assert metadata.type == "data_provider"
 
     def test_data_provider_function_metadata_preserved(self):
         """Test that function metadata is preserved"""

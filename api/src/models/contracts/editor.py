@@ -134,7 +134,6 @@ class PendingDeactivation(BaseModel):
     last_execution_at: str | None = Field(
         default=None, description="Last execution timestamp (ISO 8601)"
     )
-    schedule: str | None = Field(default=None, description="CRON schedule if any")
     endpoint_enabled: bool = Field(
         default=False, description="Whether HTTP endpoint is enabled"
     )

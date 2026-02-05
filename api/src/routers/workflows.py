@@ -89,6 +89,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
     return WorkflowMetadata(
         id=str(workflow.id),
         name=workflow.name,
+        display_name=workflow.display_name,
         description=workflow.description if workflow.description else None,
         category=workflow.category or "General",
         tags=workflow.tags or [],
@@ -99,11 +100,10 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM) -> WorkflowMetadata:
         execution_mode=execution_mode,
         timeout_seconds=workflow.timeout_seconds or 1800,
         retry_policy=None,
-        schedule=workflow.schedule,
         endpoint_enabled=workflow.endpoint_enabled or False,
         allowed_methods=workflow.allowed_methods or ["POST"],
-        disable_global_key=False,
-        public_endpoint=False,
+        disable_global_key=workflow.disable_global_key or False,
+        public_endpoint=workflow.public_endpoint or False,
         is_tool=workflow.type == "tool",  # Derive from type field
         tool_description=workflow.tool_description,
         cache_ttl_seconds=workflow.cache_ttl_seconds or 300,
@@ -779,9 +779,19 @@ async def update_workflow(
 ) -> WorkflowMetadata:
     """Update a workflow's editable properties.
 
-    Currently supports updating:
+    Supports updating:
     - organization_id: Set to null for global scope, or an org UUID for org-scoped
     - access_level: 'authenticated' or 'role_based'
+    - clear_roles: If true, clear all role assignments
+    - display_name: User-facing display name (can be set to null to use code name)
+    - timeout_seconds: Max execution time (1-7200 seconds)
+    - execution_mode: 'sync' or 'async'
+    - time_saved: Minutes saved per execution (for ROI reporting)
+    - value: Flexible value unit per execution
+    - tool_description: Description for AI tool selection (can be set to null)
+    - cache_ttl_seconds: Cache TTL for data providers (0-86400 seconds)
+    - endpoint_enabled: Whether workflow is exposed as HTTP endpoint
+    - allowed_methods: Allowed HTTP methods when endpoint is enabled
 
     Requires platform admin access.
     """
@@ -834,6 +844,86 @@ async def update_workflow(
             # Also set to role_based access level (effectively no access)
             workflow.access_level = "role_based"
             logger.info(f"Cleared all role assignments for workflow '{workflow.name}'")
+
+        # Update display_name if provided
+        if "display_name" in request.model_fields_set:
+            workflow.display_name = request.display_name
+
+        # Update timeout_seconds if provided
+        if request.timeout_seconds is not None:
+            if request.timeout_seconds < 1 or request.timeout_seconds > 7200:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="timeout_seconds must be between 1 and 7200",
+                )
+            workflow.timeout_seconds = request.timeout_seconds
+
+        # Update execution_mode if provided
+        if request.execution_mode is not None:
+            if request.execution_mode not in ("sync", "async"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="execution_mode must be 'sync' or 'async'",
+                )
+            workflow.execution_mode = request.execution_mode
+
+        # Update time_saved if provided
+        if request.time_saved is not None:
+            if request.time_saved < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="time_saved must be non-negative",
+                )
+            workflow.time_saved = request.time_saved
+
+        # Update value if provided
+        if request.value is not None:
+            if request.value < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="value must be non-negative",
+                )
+            workflow.value = request.value
+
+        # Update tool_description if provided
+        if "tool_description" in request.model_fields_set:
+            workflow.tool_description = request.tool_description
+
+        # Update cache_ttl_seconds if provided
+        if request.cache_ttl_seconds is not None:
+            if request.cache_ttl_seconds < 0 or request.cache_ttl_seconds > 86400:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="cache_ttl_seconds must be between 0 and 86400",
+                )
+            workflow.cache_ttl_seconds = request.cache_ttl_seconds
+
+        # Update endpoint_enabled if provided
+        if request.endpoint_enabled is not None:
+            workflow.endpoint_enabled = request.endpoint_enabled
+
+        # Update allowed_methods if provided
+        if request.allowed_methods is not None:
+            valid_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+            for method in request.allowed_methods:
+                if method.upper() not in valid_methods:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid HTTP method: {method}. Must be one of: {', '.join(valid_methods)}",
+                    )
+            workflow.allowed_methods = [m.upper() for m in request.allowed_methods]
+
+        # Update public_endpoint if provided
+        if request.public_endpoint is not None:
+            workflow.public_endpoint = request.public_endpoint
+
+        # Update disable_global_key if provided
+        if request.disable_global_key is not None:
+            workflow.disable_global_key = request.disable_global_key
+
+        # Update tags if provided
+        if request.tags is not None:
+            workflow.tags = request.tags
 
         await db.commit()
         await db.refresh(workflow)

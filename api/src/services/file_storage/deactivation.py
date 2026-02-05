@@ -210,7 +210,6 @@ class DeactivationProtectionService:
                     decorator_type=wf.type or "workflow",
                     has_executions=last_exec is not None,
                     last_execution_at=last_exec.started_at.isoformat() if last_exec else None,
-                    schedule=wf.schedule,
                     endpoint_enabled=wf.endpoint_enabled or False,
                     affected_entities=affected_entities,
                 ))

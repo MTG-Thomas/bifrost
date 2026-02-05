@@ -119,7 +119,6 @@ async def list_workflows(
                     "description": w.description,
                     "type": w.type,
                     "category": w.category,
-                    "schedule": w.schedule,
                     "endpoint_enabled": w.endpoint_enabled,
                     "path": w.path,
                 }
@@ -371,7 +370,6 @@ async def get_workflow(
                 "category": workflow.category,
                 "is_active": workflow.is_active,
                 "path": workflow.path,
-                "schedule": workflow.schedule,
                 "endpoint_enabled": workflow.endpoint_enabled,
                 "tool_description": workflow.tool_description if workflow.type == "tool" else None,
                 "parameters": workflow.parameters_schema,

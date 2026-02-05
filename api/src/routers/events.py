@@ -33,6 +33,7 @@ from src.models.contracts.events import (
     EventSubscriptionUpdate,
     RetryDeliveryRequest,
     RetryDeliveryResponse,
+    ScheduleSourceResponse,
     WebhookAdapterInfo,
     WebhookAdapterListResponse,
     WebhookSourceResponse,
@@ -43,6 +44,7 @@ from src.models.orm.events import (
     EventDelivery,
     EventSource,
     EventSubscription,
+    ScheduleSource,
     WebhookSource,
 )
 from src.repositories.events import (
@@ -93,6 +95,16 @@ async def _build_event_source_response(
             expires_at=ws.expires_at,
         )
 
+    # Build schedule response if applicable
+    schedule_response = None
+    if source.source_type == EventSourceType.SCHEDULE and source.schedule_source:
+        ss = source.schedule_source
+        schedule_response = ScheduleSourceResponse(
+            cron_expression=ss.cron_expression,
+            timezone=ss.timezone,
+            enabled=ss.enabled,
+        )
+
     return EventSourceResponse(
         id=source.id,
         name=source.name,
@@ -107,6 +119,7 @@ async def _build_event_source_response(
         created_at=source.created_at,
         updated_at=source.updated_at,
         webhook=webhook_response,
+        schedule=schedule_response,
     )
 
 
@@ -132,6 +145,7 @@ async def _build_event_subscription_response(
         workflow_name=subscription.workflow.name if subscription.workflow else None,
         event_type=subscription.event_type,
         filter_expression=subscription.filter_expression,
+        input_mapping=subscription.input_mapping,
         is_active=subscription.is_active,
         delivery_count=total_count,
         success_count=success_count,
@@ -391,11 +405,32 @@ async def create_source(
         db.add(webhook_source)
         await db.flush()
 
+    # Handle schedule-specific configuration
+    if request.source_type == EventSourceType.SCHEDULE:
+        if not request.schedule:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Schedule configuration required for schedule source type",
+            )
+
+        # Create schedule source record
+        schedule_source = ScheduleSource(
+            event_source_id=source.id,
+            cron_expression=request.schedule.cron_expression,
+            timezone=request.schedule.timezone,
+            enabled=request.schedule.enabled,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(schedule_source)
+        await db.flush()
+
     # Reload with relationships
     result = await db.execute(
         select(EventSource)
         .options(
             joinedload(EventSource.webhook_source).joinedload(WebhookSource.integration),
+            joinedload(EventSource.schedule_source),
             joinedload(EventSource.organization),
         )
         .where(EventSource.id == source.id)
@@ -473,6 +508,17 @@ async def update_source(
             ws.config = request.webhook.config
         ws.updated_at = datetime.utcnow()
 
+    # Update schedule-specific fields
+    if request.schedule and source.schedule_source:
+        ss = source.schedule_source
+        if request.schedule.cron_expression is not None:
+            ss.cron_expression = request.schedule.cron_expression
+        if request.schedule.timezone is not None:
+            ss.timezone = request.schedule.timezone
+        if request.schedule.enabled is not None:
+            ss.enabled = request.schedule.enabled
+        ss.updated_at = datetime.utcnow()
+
     await db.flush()
 
     # Reload with relationships
@@ -480,6 +526,7 @@ async def update_source(
         select(EventSource)
         .options(
             joinedload(EventSource.webhook_source).joinedload(WebhookSource.integration),
+            joinedload(EventSource.schedule_source),
             joinedload(EventSource.organization),
         )
         .where(EventSource.id == source_id)
@@ -618,6 +665,7 @@ async def create_subscription(
         workflow_id=request.workflow_id,
         event_type=request.event_type,
         filter_expression=request.filter_expression,
+        input_mapping=request.input_mapping,
         is_active=True,
         created_by=ctx.user.email,
         created_at=now,
@@ -688,6 +736,8 @@ async def update_subscription(
         subscription.filter_expression = request.filter_expression
     if "is_active" in request.model_fields_set:
         subscription.is_active = request.is_active
+    if "input_mapping" in request.model_fields_set:
+        subscription.input_mapping = request.input_mapping
 
     subscription.updated_at = datetime.utcnow()
 
@@ -792,14 +842,18 @@ async def list_events(
                 detail=f"Invalid status: {event_status}. Valid values: received, processing, completed, failed",
             )
 
+    # Strip timezone info from since/until - DB column is TIMESTAMP WITHOUT TIME ZONE
+    since_naive = since.replace(tzinfo=None) if since and since.tzinfo else since
+    until_naive = until.replace(tzinfo=None) if until and until.tzinfo else until
+
     # Get events with filters
     event_repo = EventRepository(db)
     events = await event_repo.get_by_source(
         source_id,
         status=status_enum,
         event_type=event_type,
-        since=since,
-        until=until,
+        since=since_naive,
+        until=until_naive,
         limit=limit,
         offset=offset,
     )
@@ -807,8 +861,8 @@ async def list_events(
         source_id,
         status=status_enum,
         event_type=event_type,
-        since=since,
-        until=until,
+        since=since_naive,
+        until=until_naive,
     )
 
     items = []

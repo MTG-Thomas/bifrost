@@ -83,7 +83,6 @@ class WorkflowMetadata(BaseModel):
     execution_mode: str
     timeout_seconds: int | None
     retry_policy: dict | None
-    schedule: str | None
     endpoint_enabled: bool
     allowed_methods: list[str] | None
     disable_global_key: bool
@@ -93,6 +92,17 @@ class WorkflowMetadata(BaseModel):
     time_saved: int | None
     source_file_path: str | None
     relative_file_path: str | None
+
+
+class ExecutionLog(BaseModel):
+    """Single log entry from workflow execution."""
+
+    id: str  # Redis stream entry ID
+    execution_id: str
+    level: str  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    message: str
+    metadata: dict[str, Any] | None = None
+    timestamp: str  # ISO format
 
 
 class WorkflowExecution(BaseModel):

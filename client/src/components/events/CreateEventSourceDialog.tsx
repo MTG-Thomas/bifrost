@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
 	Dialog,
 	DialogContent,
@@ -18,8 +18,9 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { formatDistanceToNow } from "date-fns";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -29,6 +30,39 @@ import {
 } from "@/services/events";
 import { useIntegrations } from "@/services/integrations";
 import { DynamicConfigForm, type ConfigSchema } from "./DynamicConfigForm";
+import { authFetch } from "@/lib/api-client";
+
+interface CronValidationResult {
+	valid: boolean;
+	human_readable: string;
+	next_runs?: string[];
+	interval_seconds?: number;
+	warning?: string;
+	error?: string;
+}
+
+const CRON_PRESETS = [
+	{ label: "Every 5 min", expression: "*/5 * * * *" },
+	{ label: "Hourly", expression: "0 * * * *" },
+	{ label: "Daily 9 AM", expression: "0 9 * * *" },
+	{ label: "Weekly Mon", expression: "0 0 * * 1" },
+];
+
+const COMMON_TIMEZONES = [
+	"UTC",
+	"America/New_York",
+	"America/Chicago",
+	"America/Denver",
+	"America/Los_Angeles",
+	"America/Phoenix",
+	"Europe/London",
+	"Europe/Paris",
+	"Europe/Berlin",
+	"Asia/Tokyo",
+	"Asia/Shanghai",
+	"Australia/Sydney",
+	"Pacific/Auckland",
+];
 
 interface CreateEventSourceDialogProps {
 	open: boolean;
@@ -55,6 +89,12 @@ function CreateEventSourceDialogContent({
 	const [webhookConfig, setWebhookConfig] = useState<Record<string, unknown>>(
 		{},
 	);
+
+	// Schedule state
+	const [cronExpression, setCronExpression] = useState("");
+	const [timezone, setTimezone] = useState("UTC");
+	const [cronValidation, setCronValidation] =
+		useState<CronValidationResult | null>(null);
 
 	// Fetch available adapters
 	const { data: adaptersData } = useWebhookAdapters();
@@ -90,6 +130,42 @@ function CreateEventSourceDialogContent({
 		setIntegrationId("");
 	};
 
+	// Debounced cron validation
+	const validateCronExpression = useCallback(async (expr: string) => {
+		if (!expr.trim()) return;
+
+		try {
+			const response = await authFetch("/api/schedules/validate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ expression: expr }),
+			});
+			const data = await response.json();
+			setCronValidation(data);
+		} catch {
+			setCronValidation({
+				valid: false,
+				human_readable: "Failed to validate",
+				error: "Unable to connect to validation service",
+			});
+		}
+	}, []);
+
+	useEffect(() => {
+		if (!cronExpression) {
+			return;
+		}
+
+		const timer = setTimeout(() => {
+			validateCronExpression(cronExpression);
+		}, 500);
+
+		return () => clearTimeout(timer);
+	}, [cronExpression, validateCronExpression]);
+
+	// Computed display result - null when expression is empty
+	const displayCronValidation = cronExpression ? cronValidation : null;
+
 	const isLoading = createMutation.isPending;
 
 	const validateForm = (): boolean => {
@@ -107,6 +183,17 @@ function CreateEventSourceDialogContent({
 			newErrors.push(
 				`This adapter requires a ${selectedAdapter.requires_integration} integration`,
 			);
+		}
+
+		if (sourceType === "schedule") {
+			if (!cronExpression.trim()) {
+				newErrors.push("Cron expression is required for schedule sources");
+			} else if (cronValidation && !cronValidation.valid) {
+				newErrors.push(
+					"Cron expression is invalid: " +
+						(cronValidation.error || cronValidation.human_readable),
+				);
+			}
 		}
 
 		setErrors(newErrors);
@@ -131,6 +218,14 @@ function CreateEventSourceDialogContent({
 									config: webhookConfig,
 								}
 							: undefined,
+					schedule:
+						sourceType === "schedule"
+							? {
+									cron_expression: cronExpression.trim(),
+									timezone,
+									enabled: true,
+								}
+							: undefined,
 				},
 			});
 
@@ -148,8 +243,8 @@ function CreateEventSourceDialogContent({
 			<DialogHeader>
 				<DialogTitle>Create Event Source</DialogTitle>
 				<DialogDescription>
-					Create a new event source to receive webhooks and trigger
-					workflows.
+					Create a new event source to receive webhooks, run on a
+					schedule, or trigger workflows.
 				</DialogDescription>
 			</DialogHeader>
 
@@ -192,7 +287,11 @@ function CreateEventSourceDialogContent({
 						id="name"
 						value={name}
 						onChange={(e) => setName(e.target.value)}
-						placeholder="e.g., GitHub Webhooks"
+						placeholder={
+							sourceType === "schedule"
+								? "e.g., Daily Sync Schedule"
+								: "e.g., GitHub Webhooks"
+						}
 					/>
 				</div>
 
@@ -210,9 +309,7 @@ function CreateEventSourceDialogContent({
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="webhook">Webhook</SelectItem>
-							<SelectItem value="schedule" disabled>
-								Schedule (Coming Soon)
-							</SelectItem>
+							<SelectItem value="schedule">Schedule</SelectItem>
 							<SelectItem value="internal" disabled>
 								Internal (Coming Soon)
 							</SelectItem>
@@ -390,6 +487,152 @@ function CreateEventSourceDialogContent({
 							</div>
 						</>
 					)}
+
+				{/* Schedule Configuration */}
+				{sourceType === "schedule" && (
+					<>
+						<div className="border-t pt-4">
+							<h4 className="text-sm font-medium mb-3">
+								Schedule Configuration
+							</h4>
+						</div>
+
+						{/* Cron Expression */}
+						<div className="space-y-2">
+							<Label htmlFor="cron-expression">
+								Cron Expression
+							</Label>
+							<Input
+								id="cron-expression"
+								value={cronExpression}
+								onChange={(e) =>
+									setCronExpression(e.target.value)
+								}
+								placeholder="0 9 * * *"
+								className="font-mono"
+							/>
+							<p className="text-xs text-muted-foreground">
+								Standard 5-field cron: minute hour day month
+								weekday
+							</p>
+						</div>
+
+						{/* Quick Presets */}
+						<div className="flex flex-wrap gap-2">
+							{CRON_PRESETS.map((preset) => (
+								<Button
+									key={preset.expression}
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() =>
+										setCronExpression(preset.expression)
+									}
+									className="text-xs"
+								>
+									{preset.label}
+								</Button>
+							))}
+						</div>
+
+						{/* Validation Result */}
+						{displayCronValidation && (
+							<div className="space-y-2">
+								{displayCronValidation.valid ? (
+									<Alert className="bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800">
+										<CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+										<AlertDescription className="text-green-800 dark:text-green-200">
+											{displayCronValidation.human_readable}
+										</AlertDescription>
+									</Alert>
+								) : (
+									<Alert variant="destructive">
+										<AlertCircle className="h-4 w-4" />
+										<AlertDescription>
+											{displayCronValidation.error ||
+												displayCronValidation.human_readable}
+										</AlertDescription>
+									</Alert>
+								)}
+
+								{displayCronValidation.warning && (
+									<Alert className="bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800">
+										<AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
+										<AlertDescription className="text-yellow-800 dark:text-yellow-200">
+											{displayCronValidation.warning}
+										</AlertDescription>
+									</Alert>
+								)}
+
+								{displayCronValidation.next_runs &&
+									displayCronValidation.next_runs.length > 0 && (
+										<div>
+											<h4 className="text-sm font-semibold mb-1">
+												Next runs:
+											</h4>
+											<div className="space-y-0.5">
+												{displayCronValidation.next_runs.map(
+													(run, i) => {
+														const date = new Date(
+															run,
+														);
+														return (
+															<div
+																key={i}
+																className="text-xs flex items-center gap-2"
+															>
+																<span className="text-muted-foreground">
+																	-
+																</span>
+																<span>
+																	{date.toLocaleString()}
+																</span>
+																<span className="text-muted-foreground">
+																	(
+																	{formatDistanceToNow(
+																		date,
+																		{
+																			addSuffix:
+																				true,
+																		},
+																	)}
+																	)
+																</span>
+															</div>
+														);
+													},
+												)}
+											</div>
+										</div>
+									)}
+							</div>
+						)}
+
+						{/* Timezone */}
+						<div className="space-y-2">
+							<Label htmlFor="timezone">Timezone</Label>
+							<Select
+								value={timezone}
+								onValueChange={setTimezone}
+							>
+								<SelectTrigger id="timezone">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									{COMMON_TIMEZONES.map((tz) => (
+										<SelectItem key={tz} value={tz}>
+											{tz.replace(/_/g, " ")}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+							<p className="text-xs text-muted-foreground">
+								The timezone used to evaluate the cron
+								expression.
+							</p>
+						</div>
+					</>
+				)}
 			</div>
 
 			<DialogFooter>

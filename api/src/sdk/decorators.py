@@ -10,11 +10,25 @@ All executable types are stored in the workflows table with a type discriminator
 - @data_provider: type='data_provider' - Data providers for forms/app builder
 
 Parameter information is derived from function signatures - no @param decorator needed.
+
+## Decorator Parameters
+
+Only identity parameters are accepted in decorators. All other configuration
+(schedules, timeouts, endpoints, etc.) is managed via the UI/API.
+
+Allowed parameters:
+- name: Override function name (stable identifier)
+- description: Override docstring
+- category: Hint for organization (overridable in UI)
+- tags: Hints for filtering (overridable in UI)
+- is_tool: Mark as AI agent tool (@workflow only)
+
+Unknown parameters are ignored with a warning for backwards compatibility.
 """
 
 import logging
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
 from src.services.execution.module_loader import (
     DataProviderMetadata,
@@ -30,40 +44,21 @@ logger = logging.getLogger(__name__)
 def workflow(
     _func: Callable | None = None,
     *,
-    # Identity
+    # Identity parameters only
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
-
-    # Execution
-    execution_mode: Literal["sync", "async"] | None = None,
-    timeout_seconds: int = 1800,  # Default 30 minutes
-
-    # Retry
-    retry_policy: dict[str, Any] | None = None,
-
-    # Scheduling
-    schedule: str | None = None,
-
-    # HTTP Endpoint Configuration
-    endpoint_enabled: bool = False,
-    allowed_methods: list[str] | None = None,
-    disable_global_key: bool = False,
-    public_endpoint: bool = False,
-
-    # Tool Configuration (for AI agent tool calling)
     is_tool: bool = False,
-    tool_description: str | None = None,
-
-    # Economics - value metrics for reporting
-    time_saved: int = 0,
-    value: float = 0.0,
+    # Accept unknown params for backwards compatibility
+    **kwargs: Any,
 ):
     """
     Decorator for registering workflow functions.
 
-    Parameters are automatically derived from function signatures - no @param needed.
+    Parameters are automatically derived from function signatures.
+    Only identity parameters are accepted - all other configuration
+    (schedules, timeouts, endpoints) is managed via the UI/API.
 
     Usage:
         @workflow
@@ -76,32 +71,25 @@ def workflow(
             '''Onboard a new M365 user.'''
             ...
 
-        @workflow(is_tool=True, tool_description="Onboard a new M365 user with license")
-        async def onboard_m365_user(email: str, license: str = "E3") -> dict:
-            '''Onboard tool for AI agents.'''
-            ...
-
     Args:
         name: Workflow name (defaults to function name)
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        execution_mode: "sync" | "async" | None (auto-select based on endpoint_enabled)
-        timeout_seconds: Max execution time in seconds (default: 1800, max: 7200)
-        retry_policy: Dict with retry config
-        schedule: Cron expression for scheduled workflows
-        endpoint_enabled: Whether to expose as HTTP endpoint
-        allowed_methods: HTTP methods allowed for endpoint (default: ["POST"])
-        disable_global_key: If True, only workflow-specific API keys work
-        public_endpoint: If True, skip authentication for webhooks
-        is_tool: If True, makes this workflow available as an AI agent tool
-        tool_description: LLM-friendly description for tool calling (defaults to full docstring)
-        time_saved: Minutes saved per execution (for reporting)
-        value: Flexible value unit (e.g., cost savings, revenue)
+        is_tool: If True, available as AI agent tool
 
     Returns:
-        Decorated function
+        Decorated function with _executable_metadata attribute
     """
+    # Warn about deprecated parameters
+    if kwargs:
+        unknown_params = sorted(kwargs.keys())
+        logger.warning(
+            "Unknown @workflow parameters ignored: %s. "
+            "Configuration should be set via UI/API.",
+            ", ".join(unknown_params),
+        )
+
     def decorator(func: Callable) -> Callable:
         # Derive name from function name if not provided
         workflow_name = name or func.__name__
@@ -113,20 +101,8 @@ def workflow(
             workflow_description = func.__doc__.strip().split('\n')[0].strip()
         workflow_description = workflow_description or ""
 
-        # For tools, use the full docstring to give the LLM complete context
-        full_docstring = func.__doc__.strip() if func.__doc__ else ""
-
         # Get tags with default
         workflow_tags = tags if tags is not None else []
-
-        # Get allowed methods with default
-        workflow_allowed_methods = allowed_methods if allowed_methods is not None else ["POST"]
-
-        # Apply execution mode defaults
-        workflow_execution_mode = execution_mode
-        if workflow_execution_mode is None:
-            # Endpoints default to sync, regular workflows to async
-            workflow_execution_mode = "sync" if endpoint_enabled else "async"
 
         # Extract parameters from function signature
         param_dicts = extract_parameters_from_signature(func)
@@ -147,44 +123,30 @@ def workflow(
         if hasattr(func, '__code__'):
             source_file_path = func.__code__.co_filename
 
-        # Tool description: use explicit tool_description, or full docstring, or workflow description
-        workflow_tool_description = tool_description if tool_description else (full_docstring or workflow_description)
-
         # Determine type based on is_tool flag
         workflow_type: ExecutableType = "tool" if is_tool else "workflow"
 
-        # Initialize metadata
+        # Initialize metadata with identity fields only
+        # Execution config (timeout, schedule, endpoint, etc.) comes from DB
         metadata = WorkflowMetadata(
             name=workflow_name,
             description=workflow_description,
             category=category,
             tags=workflow_tags,
             type=workflow_type,
-            execution_mode=workflow_execution_mode,
-            timeout_seconds=timeout_seconds,
-            retry_policy=retry_policy,
-            schedule=schedule,
-            endpoint_enabled=endpoint_enabled,
-            allowed_methods=workflow_allowed_methods,
-            disable_global_key=disable_global_key,
-            public_endpoint=public_endpoint,
             tool=is_tool,
-            tool_description=workflow_tool_description if is_tool else None,
-            time_saved=time_saved,
-            value=value,
             source_file_path=source_file_path,
             parameters=parameters,
-            function=func
+            function=func,
         )
 
         # Store metadata on function for dynamic discovery
         # All executable types use the same attribute name for unified loading
-        func._executable_metadata = metadata
+        func._executable_metadata = metadata  # type: ignore[attr-defined]
 
-        tool_info = ", is_tool=True" if is_tool else ""
         logger.debug(
             f"Workflow decorator applied: {workflow_name} "
-            f"({len(parameters)} params, execution_mode={workflow_execution_mode}{tool_info})"
+            f"({len(parameters)} params, type={workflow_type})"
         )
 
         # Return function unchanged (for normal Python execution)
@@ -202,18 +164,13 @@ def workflow(
 def tool(
     _func: Callable | None = None,
     *,
-    # Identity
+    # Identity parameters only
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
-
-    # Execution
-    execution_mode: Literal["sync", "async"] | None = None,
-    timeout_seconds: int = 1800,
-
-    # Retry
-    retry_policy: dict[str, Any] | None = None,
+    # Accept unknown params for backwards compatibility
+    **kwargs: Any,
 ):
     """
     Decorator for registering AI agent tools.
@@ -239,48 +196,39 @@ def tool(
         description: LLM-friendly description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        execution_mode: "sync" | "async" | None (defaults to "async")
-        timeout_seconds: Max execution time in seconds (default: 1800)
-        retry_policy: Dict with retry config
 
     Returns:
         Decorated function
     """
-    # Delegate to workflow with is_tool=True
+    # Forward any unknown kwargs to workflow for consistent warning
     return workflow(
         _func,
         name=name,
         description=description,
         category=category,
         tags=tags,
-        execution_mode=execution_mode,
-        timeout_seconds=timeout_seconds,
-        retry_policy=retry_policy,
         is_tool=True,
-        tool_description=description,
+        **kwargs,
     )
 
 
 def data_provider(
     _func: Callable | None = None,
     *,
-    # Identity
+    # Identity parameters only
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
-
-    # Execution
-    timeout_seconds: int = 300,  # Default 5 minutes (shorter than workflows)
-
-    # Caching
-    cache_ttl_seconds: int = 300
+    # Accept unknown params for backwards compatibility
+    **kwargs: Any,
 ):
     """
     Decorator for registering data provider functions.
 
     Data providers return dynamic options for form fields and app builder.
     Parameters are automatically derived from function signatures.
+    Only identity parameters are accepted - execution configuration is managed via UI/API.
 
     Data providers are stored in the workflows table with type='data_provider'.
 
@@ -290,7 +238,7 @@ def data_provider(
             '''Returns available M365 licenses.'''
             ...
 
-        @data_provider(category="m365", cache_ttl_seconds=600)
+        @data_provider(category="m365")
         async def get_m365_users() -> list[dict]:
             '''Returns M365 users for the organization.'''
             ...
@@ -300,12 +248,19 @@ def data_provider(
         description: Human-readable description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        timeout_seconds: Max execution time in seconds (default: 300 = 5 min)
-        cache_ttl_seconds: Cache TTL in seconds (default: 300 = 5 minutes)
 
     Returns:
-        Decorated function
+        Decorated function with _executable_metadata attribute
     """
+    # Warn about deprecated parameters
+    if kwargs:
+        unknown_params = sorted(kwargs.keys())
+        logger.warning(
+            "Unknown @data_provider parameters ignored: %s. "
+            "Configuration should be set via UI/API.",
+            ", ".join(unknown_params),
+        )
+
     def decorator(func: Callable) -> Callable:
         # Derive name from function name if not provided
         provider_name = name or func.__name__
@@ -331,44 +286,34 @@ def data_provider(
             for p in param_dicts
         ]
 
-        # Detect source based on file path
-        source = None
+        # Get source file path
         source_file_path = None
         if hasattr(func, '__code__'):
-            file_path = func.__code__.co_filename
-            source_file_path = file_path
-            if '/platform/' in file_path or '\\platform\\' in file_path:
-                source = 'platform'
-            elif '/home/' in file_path or '\\home\\' in file_path:
-                source = 'home'
-            elif '/workspace/' in file_path or '\\workspace\\' in file_path:
-                source = 'workspace'
+            source_file_path = func.__code__.co_filename
 
         # Get tags with default
         provider_tags = tags if tags is not None else []
 
-        # Create metadata
+        # Create metadata with identity fields only
+        # Execution config (timeout, cache_ttl) comes from DB
         metadata = DataProviderMetadata(
             name=provider_name,
             description=provider_description,
             category=category,
             tags=provider_tags,
-            type="data_provider",  # Explicitly set type
-            timeout_seconds=timeout_seconds,
-            cache_ttl_seconds=cache_ttl_seconds,
+            type="data_provider",
             parameters=parameters,
             function=func,
-            source=source,
-            source_file_path=source_file_path
+            source_file_path=source_file_path,
         )
 
         # Store metadata on function for dynamic discovery
         # All executable types use the same attribute name for unified loading
-        func._executable_metadata = metadata
+        func._executable_metadata = metadata  # type: ignore[attr-defined]
 
         logger.debug(
             f"Data provider decorator applied: {provider_name} "
-            f"(cache_ttl={cache_ttl_seconds}s)"
+            f"({len(parameters)} params)"
         )
 
         # Return function unchanged

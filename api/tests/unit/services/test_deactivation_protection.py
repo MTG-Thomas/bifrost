@@ -190,7 +190,6 @@ class TestDetectPendingDeactivationsLogic:
             decorator_type="workflow",
             has_executions=True,
             last_execution_at="2024-01-15T10:30:00",
-            schedule="0 * * * *",
             endpoint_enabled=True,
             affected_entities=[
                 {"entity_type": "form", "id": str(uuid4()), "name": "Form", "reference_type": "workflow"}
@@ -202,7 +201,6 @@ class TestDetectPendingDeactivationsLogic:
         assert info.function_name == "test_workflow"
         assert info.decorator_type == "workflow"
         assert info.has_executions is True
-        assert info.schedule == "0 * * * *"
         assert info.endpoint_enabled is True
         assert len(info.affected_entities) == 1
 
@@ -217,14 +215,12 @@ class TestDetectPendingDeactivationsLogic:
             decorator_type="workflow",
             has_executions=False,
             last_execution_at=None,
-            schedule=None,
             endpoint_enabled=False,
             affected_entities=[],
         )
 
         assert info.has_executions is False
         assert info.last_execution_at is None
-        assert info.schedule is None
         assert info.endpoint_enabled is False
         assert info.affected_entities == []
 
@@ -256,7 +252,6 @@ class TestDetectPendingDeactivationsLogic:
                 decorator_type=decorator_type,
                 has_executions=False,
                 last_execution_at=None,
-                schedule=None,
                 endpoint_enabled=False,
                 affected_entities=[],
             )

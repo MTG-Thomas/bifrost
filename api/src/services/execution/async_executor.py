@@ -219,6 +219,7 @@ async def enqueue_system_workflow_execution(
         is_platform_admin=True,
         is_function_key=False,
         execution_id=execution_id,
+        workflow_name="",  # Will be set by worker when loading workflow
         public_url=get_settings().public_url,
     )
 

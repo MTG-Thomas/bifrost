@@ -55,6 +55,7 @@ class WorkflowMetadata(BaseModel):
 
     # Required fields
     name: str = Field(..., min_length=1, max_length=200, description="Human-readable workflow name")
+    display_name: str | None = Field(default=None, description="Optional display name for UI (falls back to name if not set)")
     description: str | None = Field(default=None, description="Human-readable description")
 
     # Type discriminator - distinguishes workflow/tool/data_provider
@@ -75,9 +76,8 @@ class WorkflowMetadata(BaseModel):
     execution_mode: Literal["sync", "async"] = Field(default="sync", description="Execution mode")
     timeout_seconds: int = Field(default=1800, ge=1, le=7200, description="Max execution time in seconds (default 30 min, max 2 hours)")
 
-    # Retry and scheduling (for future use)
+    # Retry policy (for future use)
     retry_policy: RetryPolicy | None = Field(default=None, description="Retry configuration")
-    schedule: str | None = Field(default=None, description="Cron expression for scheduled execution")
 
     # HTTP Endpoint configuration
     endpoint_enabled: bool = Field(default=False, description="Whether workflow is exposed as HTTP endpoint")
@@ -233,7 +233,11 @@ class WorkflowUsageStats(BaseModel):
 
 
 class WorkflowUpdateRequest(BaseModel):
-    """Request model for updating a workflow's editable properties."""
+    """Request model for updating a workflow's editable properties.
+
+    All fields are optional - only provided fields will be updated.
+    """
+    # Existing fields - organization scoping and access control
     organization_id: str | None = Field(
         default=None,
         description="Organization ID to scope the workflow to, or null for global scope"
@@ -245,6 +249,74 @@ class WorkflowUpdateRequest(BaseModel):
     clear_roles: bool = Field(
         default=False,
         description="If true, clear all role assignments for this workflow (sets to role_based with no roles)"
+    )
+
+    # New fields for UI management
+    display_name: str | None = Field(
+        default=None,
+        max_length=200,
+        description="User-facing display name (defaults to code name if not set)"
+    )
+    timeout_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        le=7200,
+        description="Max execution time in seconds (1-7200, default 1800)"
+    )
+    execution_mode: Literal["sync", "async"] | None = Field(
+        default=None,
+        description="Execution mode: 'sync' for immediate response, 'async' for background execution"
+    )
+
+    # Economics - value metrics for reporting
+    time_saved: int | None = Field(
+        default=None,
+        ge=0,
+        description="Minutes saved per execution (for ROI reporting)"
+    )
+    value: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Flexible value unit per execution (e.g., cost savings, revenue)"
+    )
+
+    # Tool configuration (for AI agent tool calling)
+    tool_description: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Description optimized for AI tool selection (used when workflow is exposed as a tool)"
+    )
+
+    # Data provider configuration
+    cache_ttl_seconds: int | None = Field(
+        default=None,
+        ge=0,
+        le=86400,
+        description="Cache TTL in seconds for data providers (0-86400, default 300)"
+    )
+
+    # Tags (editable in UI, code-defined tags are initial values)
+    tags: list[str] | None = Field(
+        default=None,
+        description="Tags for categorization and search"
+    )
+
+    # HTTP Endpoint configuration
+    endpoint_enabled: bool | None = Field(
+        default=None,
+        description="Whether workflow is exposed as an HTTP endpoint"
+    )
+    allowed_methods: list[str] | None = Field(
+        default=None,
+        description="Allowed HTTP methods when endpoint is enabled (e.g., ['GET', 'POST'])"
+    )
+    public_endpoint: bool | None = Field(
+        default=None,
+        description="If true, skip authentication for this endpoint (use for webhooks)"
+    )
+    disable_global_key: bool | None = Field(
+        default=None,
+        description="If true, only workflow-specific API keys work (global keys rejected)"
     )
 
 

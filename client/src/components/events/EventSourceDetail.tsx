@@ -284,6 +284,26 @@ export function EventSourceDetail({
 					{source.event_count_24h || 0} event
 					{(source.event_count_24h || 0) !== 1 ? "s" : ""} (24h)
 				</Badge>
+				{source.schedule && (
+					<>
+						<Badge variant="outline" className="font-mono">
+							{source.schedule.cron_expression}
+						</Badge>
+						<Badge variant="outline">
+							{source.schedule.timezone}
+						</Badge>
+						<Badge
+							variant={source.schedule.enabled ? "default" : "secondary"}
+							className={
+								source.schedule.enabled
+									? "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900 dark:text-green-200"
+									: "bg-red-100 text-red-800 hover:bg-red-100 dark:bg-red-900 dark:text-red-200"
+							}
+						>
+							{source.schedule.enabled ? "Enabled" : "Disabled"}
+						</Badge>
+					</>
+				)}
 				{webhookUrl && (
 					<Tooltip>
 						<TooltipTrigger asChild>

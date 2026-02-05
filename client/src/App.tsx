@@ -74,9 +74,6 @@ const IntegrationDetail = lazy(() =>
 		default: m.IntegrationDetail,
 	})),
 );
-const Schedules = lazy(() =>
-	import("@/pages/Schedules").then((m) => ({ default: m.Schedules })),
-);
 const Events = lazy(() =>
 	import("@/pages/Events").then((m) => ({ default: m.Events })),
 );
@@ -433,17 +430,7 @@ function AppRoutes() {
 						/>
 
 
-						{/* Scheduled Workflows - PlatformAdmin only */}
-						<Route
-							path="schedules"
-							element={
-								<ProtectedRoute requirePlatformAdmin>
-									<Schedules />
-								</ProtectedRoute>
-							}
-						/>
-
-						{/* Event Sources - PlatformAdmin only */}
+{/* Event Sources - PlatformAdmin only */}
 						<Route
 							path="event-sources"
 							element={

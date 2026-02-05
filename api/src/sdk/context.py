@@ -94,6 +94,7 @@ class ExecutionContext:
 
     # ==================== EXECUTION ====================
     execution_id: str
+    workflow_name: str = field(default="")  # Name of the executing workflow
 
     # ==================== PLATFORM ====================
     # Public URL for constructing external links (e.g., workflow URLs, execution URLs)
@@ -104,8 +105,8 @@ class ExecutionContext:
     _db: "AsyncSession | None" = field(default=None, repr=False)
 
     # ==================== EXECUTION PARAMETERS ====================
-    # Extra parameters passed to the workflow/script that don't match function signature
-    # Access via context.parameters.get('param_name')
+    # All parameters passed to the workflow/script execution
+    # Access via context.parameters.get('param_name') or context.parameters['param_name']
     parameters: dict[str, Any] = field(default_factory=dict)
 
     # ==================== LAUNCH WORKFLOW DATA ====================

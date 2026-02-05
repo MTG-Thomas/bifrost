@@ -40,7 +40,6 @@ class PendingDeactivationInfo:
     decorator_type: str  # "workflow", "tool", "data_provider"
     has_executions: bool
     last_execution_at: str | None  # ISO 8601
-    schedule: str | None
     endpoint_enabled: bool
     affected_entities: list[dict[str, str]]  # List of {entity_type, id, name, reference_type}
 

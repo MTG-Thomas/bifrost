@@ -24,6 +24,8 @@ interface WorkflowParametersFormProps {
 	// Controlled mode: pass values and onChange to lift state up
 	values?: Record<string, unknown>;
 	onChange?: (values: Record<string, unknown>) => void;
+	// When true, renders a div instead of a form element (avoids nested forms)
+	renderAsDiv?: boolean;
 }
 
 /**
@@ -39,6 +41,7 @@ export function WorkflowParametersForm({
 	className,
 	values: controlledValues,
 	onChange,
+	renderAsDiv = false,
 }: WorkflowParametersFormProps) {
 	// Initialize internal state with default values (used when uncontrolled)
 	const [internalValues, setInternalValues] = useState<
@@ -358,8 +361,8 @@ export function WorkflowParametersForm({
 		);
 	}
 
-	return (
-		<form onSubmit={handleSubmit} className={className}>
+	const content = (
+		<>
 			<div className="space-y-4">
 				{parameters.map((param) => (
 					<div key={param.name ?? "param"}>
@@ -382,6 +385,16 @@ export function WorkflowParametersForm({
 					{isExecuting ? "Executing..." : executeButtonText}
 				</Button>
 			)}
+		</>
+	);
+
+	if (renderAsDiv) {
+		return <div className={className}>{content}</div>;
+	}
+
+	return (
+		<form onSubmit={handleSubmit} className={className}>
+			{content}
 		</form>
 	);
 }

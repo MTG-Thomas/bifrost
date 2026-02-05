@@ -292,6 +292,7 @@ async def send_email(
             is_platform_admin=True,
             is_function_key=False,
             execution_id=str(uuid4()),
+            workflow_name="",  # Email workflow name will be set by worker
             public_url=get_settings().public_url,
         )
 

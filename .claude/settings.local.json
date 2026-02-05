@@ -202,7 +202,8 @@
       "Bash(python3:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(npx get-shit-done-cc --global)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(/home/jack/GitHub/bifrost/.venv/bin/pyright:*)"
     ],
     "deny": [],
     "ask": [],

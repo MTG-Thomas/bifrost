@@ -13,7 +13,7 @@
         "**/stubs"
     ],
     "venvPath": "..",
-    "venv": "venv",
+    "venv": ".venv",
     "pythonVersion": "3.11",
     "pythonPlatform": "Linux",
     "typeCheckingMode": "basic",

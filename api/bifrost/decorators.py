@@ -10,10 +10,27 @@ All executable types are stored in the workflows table with a type discriminator
 - @data_provider: type='data_provider' - Data providers for forms/app builder
 
 Parameter information is derived from function signatures - no @param decorator needed.
+
+## Decorator Parameters
+
+Only identity parameters are accepted in decorators. All other configuration
+(schedules, timeouts, endpoints, etc.) is managed via the UI/API.
+
+Allowed parameters:
+- name: Override function name (stable identifier)
+- description: Override docstring
+- category: Hint for organization (overridable in UI)
+- tags: Hints for filtering (overridable in UI)
+- is_tool: Mark as AI agent tool (@workflow only)
+
+Unknown parameters are ignored with a warning for backwards compatibility.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TypeVar
+
+logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -36,9 +53,14 @@ class WorkflowParameter:
 
 @dataclass
 class WorkflowMetadata:
-    """Metadata attached to workflow functions by the @workflow decorator."""
+    """
+    Metadata attached to workflow functions by the @workflow decorator.
 
-    # Identity
+    Only identity parameters are set via decorators. All execution configuration
+    (timeouts, schedules, endpoints, etc.) is managed via UI/API and stored in DB.
+    """
+
+    # Identity (settable via decorator)
     name: str = ""
     description: str = ""
     category: str = "General"
@@ -50,29 +72,8 @@ class WorkflowMetadata:
     # Parameters (derived from function signature)
     parameters: list[WorkflowParameter] = field(default_factory=list)
 
-    # Execution
-    execution_mode: Literal["sync", "async"] | None = None
-    timeout_seconds: int = 1800
-
-    # Retry
-    retry_policy: dict[str, Any] | None = None
-
-    # Scheduling
-    schedule: str | None = None
-
-    # HTTP Endpoint
-    endpoint_enabled: bool = False
-    allowed_methods: list[str] = field(default_factory=lambda: ["POST"])
-    disable_global_key: bool = False
-    public_endpoint: bool = False
-
-    # Tool Configuration
+    # Tool Configuration (settable via decorator)
     is_tool: bool = False
-    tool_description: str | None = None
-
-    # Economics
-    time_saved: int = 0
-    value: float = 0.0
 
     # Source info (set by discovery)
     source_file_path: str | None = None
@@ -88,9 +89,14 @@ class WorkflowMetadata:
 
 @dataclass
 class DataProviderMetadata:
-    """Metadata attached to data provider functions by the @data_provider decorator."""
+    """
+    Metadata attached to data provider functions by the @data_provider decorator.
 
-    # Identity
+    Only identity parameters are set via decorators. Execution configuration
+    (timeouts, cache TTL) is managed via UI/API and stored in DB.
+    """
+
+    # Identity (settable via decorator)
     name: str = ""
     description: str = ""
     category: str = "General"
@@ -102,13 +108,7 @@ class DataProviderMetadata:
     # Parameters (derived from function signature)
     parameters: list[WorkflowParameter] = field(default_factory=list)
 
-    # Execution
-    timeout_seconds: int = 300  # Shorter default for data providers
-
-    # Caching
-    cache_ttl_seconds: int = 300
-
-    # Source info
+    # Source info (set by discovery)
     source_file_path: str | None = None
     relative_file_path: str | None = None
 
@@ -116,34 +116,21 @@ class DataProviderMetadata:
 def workflow(
     _func: Callable | None = None,
     *,
-    # Identity
+    # Identity parameters only
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
-    # Execution
-    execution_mode: Literal["sync", "async"] | None = None,
-    timeout_seconds: int = 1800,
-    # Retry
-    retry_policy: dict[str, Any] | None = None,
-    # Scheduling
-    schedule: str | None = None,
-    # HTTP Endpoint Configuration
-    endpoint_enabled: bool = False,
-    allowed_methods: list[str] | None = None,
-    disable_global_key: bool = False,
-    public_endpoint: bool = False,
-    # Tool Configuration
     is_tool: bool = False,
-    tool_description: str | None = None,
-    # Economics
-    time_saved: int = 0,
-    value: float = 0.0,
+    # Accept unknown params for backwards compatibility
+    **kwargs: Any,
 ) -> Callable[[F], F] | F:
     """
     Decorator for registering workflow functions.
 
     Parameters are automatically derived from function signatures.
+    Only identity parameters are accepted - all other configuration
+    (schedules, timeouts, endpoints) is managed via the UI/API.
 
     Usage:
         @workflow
@@ -161,22 +148,19 @@ def workflow(
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        execution_mode: "sync" | "async" | None (auto-select)
-        timeout_seconds: Max execution time (default: 1800)
-        retry_policy: Dict with retry config
-        schedule: Cron expression for scheduled workflows
-        endpoint_enabled: Whether to expose as HTTP endpoint
-        allowed_methods: HTTP methods allowed (default: ["POST"])
-        disable_global_key: If True, only workflow-specific API keys work
-        public_endpoint: If True, skip authentication
         is_tool: If True, available as AI agent tool
-        tool_description: LLM-friendly description for tools
-        time_saved: Minutes saved per execution
-        value: Flexible value unit
 
     Returns:
         Decorated function with _executable_metadata attribute
     """
+    # Warn about deprecated parameters
+    if kwargs:
+        unknown_params = sorted(kwargs.keys())
+        logger.warning(
+            "Unknown @workflow parameters ignored: %s. "
+            "Configuration should be set via UI/API.",
+            ", ".join(unknown_params),
+        )
 
     def decorator(func: F) -> F:
         # Extract description from docstring
@@ -187,25 +171,14 @@ def workflow(
         # Determine type based on is_tool flag
         workflow_type: ExecutableType = "tool" if is_tool else "workflow"
 
-        # Create metadata
+        # Create metadata with identity fields only
         metadata = WorkflowMetadata(
             name=name or func.__name__,
             description=func_description or "",
             category=category,
             tags=tags or [],
             type=workflow_type,
-            execution_mode=execution_mode,
-            timeout_seconds=timeout_seconds,
-            retry_policy=retry_policy,
-            schedule=schedule,
-            endpoint_enabled=endpoint_enabled,
-            allowed_methods=allowed_methods or ["POST"],
-            disable_global_key=disable_global_key,
-            public_endpoint=public_endpoint,
             is_tool=is_tool,
-            tool_description=tool_description,
-            time_saved=time_saved,
-            value=value,
         )
 
         # Attach metadata to function (all executable types use same attribute)
@@ -220,16 +193,13 @@ def workflow(
 def tool(
     _func: Callable | None = None,
     *,
-    # Identity
+    # Identity parameters only
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
-    # Execution
-    execution_mode: Literal["sync", "async"] | None = None,
-    timeout_seconds: int = 1800,
-    # Retry
-    retry_policy: dict[str, Any] | None = None,
+    # Accept unknown params for backwards compatibility
+    **kwargs: Any,
 ) -> Callable[[F], F] | F:
     """
     Decorator for registering AI agent tools.
@@ -253,45 +223,39 @@ def tool(
         description: LLM-friendly description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        execution_mode: "sync" | "async" | None (defaults to "async")
-        timeout_seconds: Max execution time in seconds (default: 1800)
-        retry_policy: Dict with retry config
 
     Returns:
         Decorated function
     """
+    # Forward any unknown kwargs to workflow for consistent warning
     return workflow(
         _func,
         name=name,
         description=description,
         category=category,
         tags=tags,
-        execution_mode=execution_mode,
-        timeout_seconds=timeout_seconds,
-        retry_policy=retry_policy,
         is_tool=True,
-        tool_description=description,
+        **kwargs,
     )
 
 
 def data_provider(
     _func: Callable | None = None,
     *,
-    # Identity
+    # Identity parameters only
     name: str | None = None,
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
-    # Execution
-    timeout_seconds: int = 300,
-    # Caching
-    cache_ttl_seconds: int = 300,
+    # Accept unknown params for backwards compatibility
+    **kwargs: Any,
 ) -> Callable[[F], F] | F:
     """
     Decorator for data provider functions.
 
     Data providers return dynamic options for form fields and app builder.
     Data providers are stored in the workflows table with type='data_provider'.
+    Only identity parameters are accepted - execution configuration is managed via UI/API.
 
     Usage:
         @data_provider
@@ -299,7 +263,7 @@ def data_provider(
             '''Get list of departments.'''
             return ["Engineering", "Sales", "Marketing"]
 
-        @data_provider(category="m365", cache_ttl_seconds=600)
+        @data_provider(category="m365")
         async def get_m365_users() -> list[dict]:
             '''Returns M365 users for the organization.'''
             ...
@@ -309,12 +273,18 @@ def data_provider(
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        timeout_seconds: Max execution time (default: 300 = 5 min)
-        cache_ttl_seconds: Cache TTL in seconds (default: 300 = 5 minutes)
 
     Returns:
         Decorated function with _executable_metadata attribute
     """
+    # Warn about deprecated parameters
+    if kwargs:
+        unknown_params = sorted(kwargs.keys())
+        logger.warning(
+            "Unknown @data_provider parameters ignored: %s. "
+            "Configuration should be set via UI/API.",
+            ", ".join(unknown_params),
+        )
 
     def decorator(func: F) -> F:
         func_description = description
@@ -327,8 +297,6 @@ def data_provider(
             category=category,
             tags=tags or [],
             type="data_provider",
-            timeout_seconds=timeout_seconds,
-            cache_ttl_seconds=cache_ttl_seconds,
         )
 
         # Attach metadata to function (all executable types use same attribute)

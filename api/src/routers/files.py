@@ -456,7 +456,6 @@ async def put_file_content_editor(
                     decorator_type=pd.decorator_type,  # type: ignore[arg-type]
                     has_executions=pd.has_executions,
                     last_execution_at=pd.last_execution_at,
-                    schedule=pd.schedule,
                     endpoint_enabled=pd.endpoint_enabled,
                     affected_entities=[
                         AffectedEntity(

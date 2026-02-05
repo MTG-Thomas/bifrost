@@ -1,136 +1,212 @@
 """
 CRON Scheduler
 
-Processes scheduled workflows based on their CRON expressions.
+Processes schedule event sources based on their CRON expressions.
 Replaces the Azure Timer trigger version with APScheduler cron job.
 
-Runs every 5 minutes to check for workflows that need to be executed.
+Checks each ScheduleSource and fires events for matching schedules,
+creating Event records and queuing deliveries for subscribed workflows.
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
 
 from croniter import croniter
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
 from src.core.database import get_db_context
-from src.repositories.workflows import WorkflowRepository
-from src.services.execution.async_executor import enqueue_system_workflow_execution
+from src.models.enums import EventDeliveryStatus, EventSourceType, EventStatus
+from src.models.orm.events import Event, EventDelivery, EventSource
+from src.repositories.events import EventSubscriptionRepository
 
 logger = logging.getLogger(__name__)
 
 
-async def process_scheduled_workflows() -> dict[str, Any]:
+async def process_schedule_sources() -> dict[str, Any]:
     """
-    Process all scheduled workflows.
+    Process schedule event sources.
 
-    Checks each workflow with a schedule parameter and enqueues
-    execution if the next run time has passed.
+    Checks each ScheduleSource and fires events for matching schedules.
+    Creates Event records and queues deliveries for subscribed workflows.
 
     Returns:
         Summary of processing results
     """
-    logger.info("Schedule processor started")
+    from src.services.cron_parser import is_cron_expression_valid
 
-    results = {
-        "total_schedules": 0,
-        "executed": 0,
-        "updated": 0,
+    logger.info("Schedule sources processor started")
+
+    results: dict[str, Any] = {
+        "total_sources": 0,
+        "events_created": 0,
+        "deliveries_queued": 0,
         "errors": [],
     }
 
     try:
-        from src.services.cron_parser import calculate_next_run, is_cron_expression_valid
-
-        # Query scheduled workflows from database (replaces scan_all_workflows)
-        # System-level access: org_id=None, is_superuser=True to see all scheduled workflows
         async with get_db_context() as db:
-            workflow_repo = WorkflowRepository(db, org_id=None, is_superuser=True)
-            scheduled_workflows = await workflow_repo.get_scheduled()
+            # Query active schedule sources
+            query = (
+                select(EventSource)
+                .options(
+                    joinedload(EventSource.schedule_source),
+                    joinedload(EventSource.subscriptions),
+                )
+                .where(
+                    EventSource.source_type == EventSourceType.SCHEDULE,
+                    EventSource.is_active.is_(True),
+                )
+            )
+            result = await db.execute(query)
+            sources = result.unique().scalars().all()
 
-        results["total_schedules"] = len(scheduled_workflows)
-        logger.info(f"Found {len(scheduled_workflows)} scheduled workflows")
+            results["total_sources"] = len(sources)
+            now = datetime.utcnow()
 
-        now = datetime.utcnow()
-
-        for workflow in scheduled_workflows:
-            try:
-                workflow_name = workflow.name
-                cron_expression = workflow.schedule
-
-                # Validate CRON expression
-                if not cron_expression or not is_cron_expression_valid(cron_expression):
-                    logger.warning(
-                        f"Invalid CRON expression for workflow {workflow_name}: {cron_expression}"
-                    )
-                    results["errors"].append({
-                        "workflow_name": workflow_name,
-                        "error": f"Invalid CRON expression: {cron_expression}",
-                    })
-                    continue
-
-                # Check if schedule interval is too frequent
+            for source in sources:
                 try:
-                    cron = croniter(cron_expression, now)
-                    first_run = cron.get_next(datetime)
-                    second_run = cron.get_next(datetime)
-                    interval_seconds = (second_run - first_run).total_seconds()
+                    if not source.schedule_source or not source.schedule_source.enabled:
+                        continue
 
-                    if interval_seconds < 300:  # Less than 5 minutes
+                    ss = source.schedule_source
+                    cron_expression = ss.cron_expression
+
+                    # Validate CRON expression
+                    if not is_cron_expression_valid(cron_expression):
                         logger.warning(
-                            f"Schedule interval for {workflow_name} is {interval_seconds}s (< 5 minutes)"
+                            f"Invalid cron for schedule source {source.id}: {cron_expression}"
                         )
-                except Exception as e:
-                    logger.error(f"Failed to validate schedule interval for {workflow_name}: {e}")
+                        results["errors"].append({
+                            "source_id": str(source.id),
+                            "source_name": source.name,
+                            "error": f"Invalid CRON expression: {cron_expression}",
+                        })
+                        continue
 
-                # Get or create schedule state from database
-                # For now, use a simple in-memory check based on CRON
-                # In production, this would query the Config table for schedule state
-                next_run = calculate_next_run(cron_expression, now)
+                    # Check if schedule interval is too frequent
+                    try:
+                        cron = croniter(cron_expression, now)
+                        first_run = cron.get_next(datetime)
+                        second_run = cron.get_next(datetime)
+                        interval_seconds = (second_run - first_run).total_seconds()
 
-                # Check if it's time to execute (within the 5-minute window)
-                if next_run <= now:
-                    logger.info(f"Executing scheduled workflow: {workflow_name}")
+                        if interval_seconds < 300:  # Less than 5 minutes
+                            logger.warning(
+                                f"Schedule interval for source {source.name} is "
+                                f"{interval_seconds}s (< 5 minutes)"
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to validate schedule interval for source {source.id}: {e}"
+                        )
 
-                    # Use the centralized system execution helper
-                    execution_id = await enqueue_system_workflow_execution(
-                        workflow_id=str(workflow.id),
-                        parameters={},
-                        source="Scheduled Execution",
-                        org_id=str(workflow.organization_id) if workflow.organization_id else None,
+                    # Check if the most recent cron match is within our polling window.
+                    # We poll every 1 minute, so check if the last match was < 60s ago.
+                    cron_iter = croniter(cron_expression, now)
+                    prev_run = cron_iter.get_prev(datetime)
+                    seconds_since_last = (now - prev_run).total_seconds()
+                    if seconds_since_last >= 60:
+                        continue  # Last match was outside our polling window
+
+                    logger.info(f"Firing schedule source: {source.name} ({source.id})")
+
+                    # Create event record
+                    event = Event(
+                        id=uuid.uuid4(),
+                        event_source_id=source.id,
+                        event_type="schedule.fired",
+                        received_at=now,
+                        data={
+                            "cron_expression": cron_expression,
+                            "timezone": ss.timezone,
+                            "scheduled_time": now.isoformat(),
+                        },
+                        status=EventStatus.PROCESSING,
                     )
+                    db.add(event)
+                    await db.flush()
+                    results["events_created"] += 1
+
+                    # Get active subscriptions for this source
+                    sub_repo = EventSubscriptionRepository(db)
+                    subscriptions = await sub_repo.get_active_for_event(
+                        source_id=source.id,
+                        event_type=None,  # Match all subscriptions for schedule events
+                    )
+
+                    if not subscriptions:
+                        # No subscriptions - mark event as completed (nothing to deliver)
+                        event.status = EventStatus.COMPLETED
+                        await db.flush()
+                        logger.info(f"No subscriptions for schedule source: {source.id}")
+                        continue
+
+                    # Create deliveries for each subscription
+                    deliveries_for_event = 0
+                    for sub in subscriptions:
+                        if not sub.workflow_id:
+                            logger.warning(
+                                f"Subscription {sub.id} has no workflow, skipping"
+                            )
+                            continue
+
+                        delivery = EventDelivery(
+                            id=uuid.uuid4(),
+                            event_id=event.id,
+                            event_subscription_id=sub.id,
+                            workflow_id=sub.workflow_id,
+                            status=EventDeliveryStatus.PENDING,
+                        )
+                        db.add(delivery)
+                        deliveries_for_event += 1
+
+                    await db.flush()
 
                     logger.info(
-                        "Enqueued scheduled workflow execution",
-                        extra={
-                            "workflow_name": workflow_name,
-                            "execution_id": execution_id,
-                        },
+                        f"Created {deliveries_for_event} deliveries for schedule event: {event.id}"
                     )
 
-                    results["executed"] += 1
+                    # Queue the deliveries using the event processor
+                    from src.services.events.processor import EventProcessor
 
-            except Exception as workflow_error:
-                error_info = {
-                    "workflow_name": workflow.name,
-                    "error": str(workflow_error),
-                }
-                results["errors"].append(error_info)
-                logger.error(
-                    "Error processing scheduled workflow",
-                    extra=error_info,
-                    exc_info=True,
-                )
+                    processor = EventProcessor(db)
+                    queued = await processor.queue_event_deliveries(event.id)
+                    results["deliveries_queued"] += queued
 
-        logger.info(
-            f"Schedule processor completed: "
-            f"Total={results['total_schedules']}, "
-            f"Executed={results['executed']}, "
-            f"Errors={len(results['errors'])}"
-        )
+                    # Update event status based on delivery outcomes
+                    if queued > 0:
+                        event.status = EventStatus.COMPLETED
+                    else:
+                        event.status = EventStatus.COMPLETED
+
+                except Exception as source_error:
+                    error_info = {
+                        "source_id": str(source.id),
+                        "source_name": source.name,
+                        "error": str(source_error),
+                    }
+                    results["errors"].append(error_info)
+                    logger.error(
+                        "Error processing schedule source",
+                        extra=error_info,
+                        exc_info=True,
+                    )
+
+            await db.commit()
 
     except Exception as e:
-        logger.error(f"Schedule processor failed: {str(e)}", exc_info=True)
+        logger.error(f"Schedule sources processor failed: {e}", exc_info=True)
         results["errors"].append({"error": str(e)})
+
+    logger.info(
+        f"Schedule sources processor completed: "
+        f"Sources={results['total_sources']}, "
+        f"Events={results['events_created']}, "
+        f"Deliveries={results['deliveries_queued']}, "
+        f"Errors={len(results['errors'])}"
+    )
 
     return results

@@ -8,7 +8,6 @@ import {
 	FileCode,
 	Key,
 	UserCog,
-	Clock,
 	Settings as SettingsIcon,
 	X,
 	Stethoscope,
@@ -125,13 +124,7 @@ const navSections: NavSection[] = [
 				icon: Webhook,
 				requiresPlatformAdmin: true,
 			},
-			{
-				title: "Schedules",
-				href: "/schedules",
-				icon: Clock,
-				requiresPlatformAdmin: true,
-			},
-			{
+	{
 				title: "Entity Management",
 				href: "/entity-management",
 				icon: Network,

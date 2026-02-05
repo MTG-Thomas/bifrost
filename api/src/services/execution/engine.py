@@ -252,6 +252,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         is_platform_admin=request.is_platform_admin,
         is_function_key=False,  # Engine executions are not function key based
         execution_id=request.execution_id,
+        workflow_name=request.name or "",  # Workflow/script name for context
         public_url=get_settings().public_url,
         _config=request.config,
         startup=request.startup,  # Launch workflow results (from form execution)
@@ -917,27 +918,21 @@ async def _execute_workflow_with_trace(
             # Function accepts **kwargs, pass everything
             # Still coerce types for known parameters
             accepted_params = _coerce_params_to_type_hints(func, parameters)
-            extra_params: dict[str, Any] = {}
         else:
-            # Split parameters into accepted (match function signature) and extra
+            # Only pass parameters that match function signature
             accepted_params = {
                 k: v for k, v in parameters.items() if k in accepted_param_names
             }
-            extra_params = {
-                k: v for k, v in parameters.items() if k not in accepted_param_names
-            }
+            # Coerce string parameters to expected types (for GET query params)
+            accepted_params = _coerce_params_to_type_hints(func, accepted_params)
 
-        # Coerce string parameters to expected types (for GET query params)
-        accepted_params = _coerce_params_to_type_hints(func, accepted_params)
-
-        # Store extra params in context.parameters instead of injecting into globals
-        # This avoids race conditions when concurrent workflows share the same module
-        # Workflows can access via: context.parameters.get('param_name')
-        if extra_params:
-            context.parameters = extra_params
-            # Also add to captured_vars so they appear in execution details
-            for key, value in extra_params.items():
-                captured_vars[key] = remove_circular_refs(value)
+        # Store ALL params in context.parameters for consistent access
+        # Workflows can access any input via: context.parameters.get('param_name')
+        # This includes both signature-matched params and extra params
+        context.parameters = dict(parameters)
+        # Also add to captured_vars so they appear in execution details
+        for key, value in parameters.items():
+            captured_vars[key] = remove_circular_refs(value)
 
         # Check if first parameter is for context (by type annotation OR by name as fallback)
         first_param_is_context = False

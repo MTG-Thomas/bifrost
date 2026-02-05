@@ -13,6 +13,7 @@ Events are always processed asynchronously and return 202 immediately.
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Any
@@ -24,6 +25,7 @@ from src.models.orm.events import (
     Event,
     EventDelivery,
     EventSource,
+    EventSubscription,
     WebhookSource,
 )
 from src.repositories.events import (
@@ -42,6 +44,115 @@ from src.services.webhooks.protocol import (
 from src.services.webhooks.registry import get_adapter
 
 logger = logging.getLogger(__name__)
+
+
+def _render_template(template: str, context: dict) -> Any:
+    """
+    Simple template rendering for {{ variable.path }} expressions.
+
+    Supports dot-notation access into nested dictionaries.
+    If the entire template is a single variable, returns the actual value (preserving type).
+    For mixed content or multiple variables, returns a string with all variables substituted.
+
+    Args:
+        template: String containing {{ variable.path }} expressions
+        context: Dictionary of available variables for substitution
+
+    Returns:
+        The resolved value (preserving type for single variables) or substituted string
+    """
+
+    def resolve_path(var_path: str, ctx: dict) -> tuple[Any, bool]:
+        """Resolve a dot-notation path to its value. Returns (value, found)."""
+        parts = var_path.split(".")
+        value = ctx
+        for part in parts:
+            if isinstance(value, dict):
+                if part in value:
+                    value = value[part]
+                else:
+                    return None, False
+            else:
+                return None, False
+        return value, True
+
+    def replace_var(match: re.Match) -> str:
+        """Replace a single {{ var }} match with its string value."""
+        var_path = match.group(1).strip()
+        value, found = resolve_path(var_path, context)
+        if not found:
+            return match.group(0)  # Keep original if can't resolve
+        return str(value) if value is not None else ""
+
+    # If entire template is just one variable, return the actual value (not stringified)
+    # This preserves types like int, dict, list, etc.
+    single_var = re.match(r"^\{\{\s*([^}]+)\s*\}\}$", template)
+    if single_var:
+        var_path = single_var.group(1).strip()
+        value, found = resolve_path(var_path, context)
+        if found:
+            return value
+        return template  # Keep original if can't resolve
+
+    # Multiple variables or mixed content - substitute all as strings
+    return re.sub(r"\{\{\s*([^}]+)\s*\}\}", replace_var, template)
+
+
+def _process_input_mapping(
+    input_mapping: dict,
+    event: Event,
+    subscription: EventSubscription,
+) -> dict:
+    """
+    Process input_mapping templates to build workflow parameters.
+
+    Supports:
+    - Static values: {"report_type": "daily"}
+    - Template expressions: {"as_of_date": "{{ scheduled_time }}", "user_email": "{{ payload.user.email }}"}
+
+    Available template variables:
+    - `scheduled_time` - ISO timestamp when schedule fired (for schedule events)
+    - `cron_expression` - The cron expression that triggered (for schedule events)
+    - `payload` - Full event payload
+    - `headers` - Request headers (for webhooks)
+
+    Args:
+        input_mapping: Dictionary mapping output keys to values or template expressions
+        event: The Event being processed
+        subscription: The EventSubscription with context
+
+    Returns:
+        Dictionary of processed workflow parameters
+    """
+    # Build context for template substitution
+    context: dict[str, Any] = {
+        "payload": event.data,
+        "headers": event.headers or {},
+        "scheduled_time": (
+            event.received_at.isoformat()
+            if event.received_at
+            else datetime.utcnow().isoformat()
+        ),
+    }
+
+    # Get cron_expression from schedule source if available
+    if (
+        event.event_source
+        and event.event_source.schedule_source
+        and event.event_source.schedule_source.cron_expression
+    ):
+        context["cron_expression"] = event.event_source.schedule_source.cron_expression
+
+    result: dict[str, Any] = {}
+    for key, value in input_mapping.items():
+        if isinstance(value, str) and "{{" in value:
+            # Template expression - render it
+            result[key] = _render_template(value, context)
+        else:
+            # Static value - pass through as-is
+            result[key] = value
+
+    return result
 
 
 class EventProcessor:
@@ -387,6 +498,10 @@ class EventProcessor:
         Queue a workflow execution for an event delivery.
 
         Uses the same execution infrastructure as the rest of the platform.
+
+        If the subscription has an input_mapping defined, it is processed to build
+        workflow parameters using template substitution. Otherwise, the raw event
+        data is used as parameters (legacy behavior).
         """
         from src.services.execution.async_executor import enqueue_system_workflow_execution
 
@@ -395,11 +510,31 @@ class EventProcessor:
         if not workflow:
             raise ValueError(f"Delivery {delivery.id} has no workflow")
 
-        # Build parameters for workflow (matches endpoint behavior)
-        # Extract body fields as flat params so they match function signatures
+        # Get subscription for input_mapping
+        subscription = delivery.subscription
+
+        # Build parameters for workflow
         parameters: dict[str, Any] = {}
-        if isinstance(event.data, dict):
-            parameters.update(event.data)
+
+        if subscription and subscription.input_mapping:
+            # Use input_mapping to build parameters via template substitution
+            parameters = _process_input_mapping(
+                input_mapping=subscription.input_mapping,
+                event=event,
+                subscription=subscription,
+            )
+            logger.debug(
+                "Built workflow parameters from input_mapping",
+                extra={
+                    "delivery_id": str(delivery.id),
+                    "input_mapping_keys": list(subscription.input_mapping.keys()),
+                    "result_keys": list(parameters.keys()),
+                },
+            )
+        else:
+            # Legacy behavior: extract body fields as flat params
+            if isinstance(event.data, dict):
+                parameters.update(event.data)
 
         # Always include full event context under reserved key
         # This includes the COMPLETE raw body for complex/non-dict payloads

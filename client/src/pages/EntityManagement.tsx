@@ -936,7 +936,7 @@ export function EntityManagement() {
 					try {
 						if (entity.entityType === "workflow") {
 							await updateWorkflow.mutateAsync(entityId, {
-								organizationId: orgId,
+								organization_id: orgId,
 							});
 						} else if (entity.entityType === "form") {
 							toast.error("Cannot change form organization", {
@@ -985,12 +985,12 @@ export function EntityManagement() {
 							if (isClearRoles) {
 								// Set to role_based and clear all roles
 								await updateWorkflow.mutateAsync(entityId, {
-									accessLevel: "role_based",
-									clearRoles: true,
+									access_level: "role_based",
+									clear_roles: true,
 								});
 							} else {
 								await updateWorkflow.mutateAsync(entityId, {
-									accessLevel: isAccessLevel ? "authenticated" : "role_based",
+									access_level: isAccessLevel ? "authenticated" : "role_based",
 								});
 							}
 						} else if (entity.entityType === "form") {

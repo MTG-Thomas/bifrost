@@ -2370,6 +2370,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/schedules/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate a CRON expression
+         * @description Validate a CRON expression and return next run times
+         */
+        post: operations["validate_cron_expression_api_schedules_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedules": {
         parameters: {
             query?: never;
@@ -8222,6 +8242,53 @@ export interface components {
             clone_url: string;
         };
         /**
+         * CronValidationRequest
+         * @description Request model for CRON validation
+         */
+        CronValidationRequest: {
+            /**
+             * Expression
+             * @description CRON expression to validate
+             */
+            expression: string;
+        };
+        /**
+         * CronValidationResponse
+         * @description Response model for CRON validation
+         */
+        CronValidationResponse: {
+            /**
+             * Valid
+             * @description Whether the CRON expression is valid
+             */
+            valid: boolean;
+            /**
+             * Human Readable
+             * @description Human-readable description
+             */
+            human_readable: string;
+            /**
+             * Next Runs
+             * @description Next 5 execution times (ISO format)
+             */
+            next_runs?: string[] | null;
+            /**
+             * Interval Seconds
+             * @description Seconds between executions
+             */
+            interval_seconds?: number | null;
+            /**
+             * Warning
+             * @description Warning message for too-frequent schedules
+             */
+            warning?: string | null;
+            /**
+             * Error
+             * @description Error message for invalid expressions
+             */
+            error?: string | null;
+        };
+        /**
          * DailyMetricsEntry
          * @description Single day's execution metrics.
          */
@@ -9122,6 +9189,8 @@ export interface components {
             organization_id?: string | null;
             /** @description Webhook configuration (required if source_type is webhook) */
             webhook?: components["schemas"]["WebhookSourceConfig"] | null;
+            /** @description Schedule configuration (required if source_type is schedule) */
+            schedule?: components["schemas"]["ScheduleSourceConfig"] | null;
         };
         /**
          * EventSourceListResponse
@@ -9210,6 +9279,8 @@ export interface components {
             updated_at: string;
             /** @description Webhook configuration details */
             webhook?: components["schemas"]["WebhookSourceResponse"] | null;
+            /** @description Schedule configuration details */
+            schedule?: components["schemas"]["ScheduleSourceResponse"] | null;
         };
         /**
          * EventSourceType
@@ -9235,6 +9306,8 @@ export interface components {
             is_active?: boolean | null;
             /** @description Webhook configuration updates */
             webhook?: components["schemas"]["WebhookSourceConfig"] | null;
+            /** @description Schedule configuration updates */
+            schedule?: components["schemas"]["ScheduleSourceConfig"] | null;
         };
         /**
          * EventStatus
@@ -9264,6 +9337,13 @@ export interface components {
              * @description Optional JSONPath filter expression (future use)
              */
             filter_expression?: string | null;
+            /**
+             * Input Mapping
+             * @description Template mapping for workflow input parameters. Maps workflow params to static values or template expressions (e.g., {'report_type': 'daily', 'as_of_date': '{{ scheduled_time }}'})
+             */
+            input_mapping?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * EventSubscriptionListResponse
@@ -9327,6 +9407,13 @@ export interface components {
              */
             is_active: boolean;
             /**
+             * Input Mapping
+             * @description Template mapping for workflow input parameters
+             */
+            input_mapping?: {
+                [key: string]: unknown;
+            } | null;
+            /**
              * Delivery Count
              * @description Total number of deliveries
              * @default 0
@@ -9383,6 +9470,13 @@ export interface components {
              * @description Whether the subscription is active
              */
             is_active?: boolean | null;
+            /**
+             * Input Mapping
+             * @description Template mapping for workflow input parameters
+             */
+            input_mapping?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * ExecutableType
@@ -11664,6 +11758,11 @@ export interface components {
             issuer: string;
             /** Account Name */
             account_name: string;
+            /**
+             * Is Existing
+             * @default false
+             */
+            is_existing: boolean;
         };
         /**
          * MFAStatusResponse
@@ -12085,15 +12184,29 @@ export interface components {
         };
         /**
          * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
+         * @description Request model for OAuth callback endpoint
          */
         OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
-            /** Code */
+            /**
+             * Code
+             * @description Authorization code from OAuth provider
+             */
             code: string;
-            /** State */
-            state: string;
+            /**
+             * State
+             * @description State parameter for CSRF protection
+             */
+            state?: string | null;
+            /**
+             * Redirect Uri
+             * @description Redirect URI used in authorization request
+             */
+            redirect_uri?: string | null;
+            /**
+             * Organization Id
+             * @description Organization ID for org-specific token storage (optional, for org overrides)
+             */
+            organization_id?: string | null;
         };
         /**
          * OAuthCallbackResponse
@@ -14812,6 +14925,50 @@ export interface components {
             execution_count: number;
         };
         /**
+         * ScheduleSourceConfig
+         * @description Schedule-specific configuration for creating an event source.
+         */
+        ScheduleSourceConfig: {
+            /**
+             * Cron Expression
+             * @description Cron expression for the schedule (e.g., '0 9 * * *' for daily at 9 AM)
+             */
+            cron_expression: string;
+            /**
+             * Timezone
+             * @description Timezone for the schedule (e.g., 'America/New_York')
+             * @default UTC
+             */
+            timezone: string;
+            /**
+             * Enabled
+             * @description Whether the schedule is enabled
+             * @default true
+             */
+            enabled: boolean;
+        };
+        /**
+         * ScheduleSourceResponse
+         * @description Schedule-specific details in event source response.
+         */
+        ScheduleSourceResponse: {
+            /**
+             * Cron Expression
+             * @description Cron expression for the schedule
+             */
+            cron_expression: string;
+            /**
+             * Timezone
+             * @description Timezone for the schedule
+             */
+            timezone: string;
+            /**
+             * Enabled
+             * @description Whether the schedule is enabled
+             */
+            enabled: boolean;
+        };
+        /**
          * SearchRequest
          * @description Search query request
          */
@@ -15716,7 +15873,7 @@ export interface components {
         };
         /**
          * UserCreate
-         * @description User creation request model.
+         * @description Input for creating a user.
          */
         UserCreate: {
             /**
@@ -15724,10 +15881,22 @@ export interface components {
              * Format: email
              */
             email: string;
-            /** Password */
-            password: string;
             /** Name */
             name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** Organization Id */
+            organization_id?: string | null;
         };
         /**
          * UserFormsResponse
@@ -16313,6 +16482,11 @@ export interface components {
              */
             name: string;
             /**
+             * Display Name
+             * @description Optional display name for UI (falls back to name if not set)
+             */
+            display_name?: string | null;
+            /**
              * Description
              * @description Human-readable description
              */
@@ -16561,6 +16735,8 @@ export interface components {
         /**
          * WorkflowUpdateRequest
          * @description Request model for updating a workflow's editable properties.
+         *
+         *     All fields are optional - only provided fields will be updated.
          */
         WorkflowUpdateRequest: {
             /**
@@ -16579,6 +16755,66 @@ export interface components {
              * @default false
              */
             clear_roles: boolean;
+            /**
+             * Display Name
+             * @description User-facing display name (defaults to code name if not set)
+             */
+            display_name?: string | null;
+            /**
+             * Timeout Seconds
+             * @description Max execution time in seconds (1-7200, default 1800)
+             */
+            timeout_seconds?: number | null;
+            /**
+             * Execution Mode
+             * @description Execution mode: 'sync' for immediate response, 'async' for background execution
+             */
+            execution_mode?: ("sync" | "async") | null;
+            /**
+             * Time Saved
+             * @description Minutes saved per execution (for ROI reporting)
+             */
+            time_saved?: number | null;
+            /**
+             * Value
+             * @description Flexible value unit per execution (e.g., cost savings, revenue)
+             */
+            value?: number | null;
+            /**
+             * Tool Description
+             * @description Description optimized for AI tool selection (used when workflow is exposed as a tool)
+             */
+            tool_description?: string | null;
+            /**
+             * Cache Ttl Seconds
+             * @description Cache TTL in seconds for data providers (0-86400, default 300)
+             */
+            cache_ttl_seconds?: number | null;
+            /**
+             * Tags
+             * @description Tags for categorization and search
+             */
+            tags?: string[] | null;
+            /**
+             * Endpoint Enabled
+             * @description Whether workflow is exposed as an HTTP endpoint
+             */
+            endpoint_enabled?: boolean | null;
+            /**
+             * Allowed Methods
+             * @description Allowed HTTP methods when endpoint is enabled (e.g., ['GET', 'POST'])
+             */
+            allowed_methods?: string[] | null;
+            /**
+             * Public Endpoint
+             * @description If true, skip authentication for this endpoint (use for webhooks)
+             */
+            public_endpoint?: boolean | null;
+            /**
+             * Disable Global Key
+             * @description If true, only workflow-specific API keys work (global keys rejected)
+             */
+            disable_global_key?: boolean | null;
         };
         /**
          * WorkflowUsage
@@ -16671,80 +16907,6 @@ export interface components {
             metadata?: components["schemas"]["WorkflowMetadata"] | null;
         };
         /**
-         * OAuthCallbackRequest
-         * @description Request model for OAuth callback endpoint
-         */
-        src__models__contracts__oauth__OAuthCallbackRequest: {
-            /**
-             * Code
-             * @description Authorization code from OAuth provider
-             */
-            code: string;
-            /**
-             * State
-             * @description State parameter for CSRF protection
-             */
-            state?: string | null;
-            /**
-             * Redirect Uri
-             * @description Redirect URI used in authorization request
-             */
-            redirect_uri?: string | null;
-            /**
-             * Organization Id
-             * @description Organization ID for org-specific token storage (optional, for org overrides)
-             */
-            organization_id?: string | null;
-        };
-        /**
-         * UserCreate
-         * @description Input for creating a user.
-         */
-        src__models__contracts__users__UserCreate: {
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Name */
-            name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** Organization Id */
-            organization_id?: string | null;
-        };
-        /**
-         * MFASetupResponse
-         * @description MFA setup response with secret.
-         */
-        src__routers__auth__MFASetupResponse: {
-            /** Secret */
-            secret: string;
-            /** Qr Code Uri */
-            qr_code_uri: string;
-            /** Provisioning Uri */
-            provisioning_uri: string;
-            /** Issuer */
-            issuer: string;
-            /** Account Name */
-            account_name: string;
-            /**
-             * Is Existing
-             * @default false
-             */
-            is_existing: boolean;
-        };
-        /**
          * MFAVerifyRequest
          * @description Request to verify MFA code during login.
          */
@@ -16760,6 +16922,49 @@ export interface components {
             trust_device: boolean;
             /** Device Name */
             device_name?: string | null;
+        };
+        /**
+         * UserCreate
+         * @description User creation request model.
+         */
+        src__routers__auth__UserCreate: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
+            /** Name */
+            name?: string | null;
+        };
+        /**
+         * MFASetupResponse
+         * @description MFA setup response with secret.
+         */
+        src__routers__mfa__MFASetupResponse: {
+            /** Secret */
+            secret: string;
+            /** Qr Code Uri */
+            qr_code_uri: string;
+            /** Provisioning Uri */
+            provisioning_uri: string;
+            /** Issuer */
+            issuer: string;
+            /** Account Name */
+            account_name: string;
+        };
+        /**
+         * OAuthCallbackRequest
+         * @description OAuth callback request (for when frontend handles callback).
+         */
+        src__routers__oauth_sso__OAuthCallbackRequest: {
+            /** Provider */
+            provider: string;
+            /** Code */
+            code: string;
+            /** State */
+            state: string;
         };
         /**
          * OAuthProviderInfo
@@ -16874,7 +17079,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["src__routers__auth__MFASetupResponse"];
+                    "application/json": components["schemas"]["MFASetupResponse"];
                 };
             };
             /** @description Validation Error */
@@ -17089,7 +17294,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__routers__auth__UserCreate"];
             };
         };
         responses: {
@@ -17320,7 +17525,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
                 };
             };
         };
@@ -17584,7 +17789,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -18035,7 +18240,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
+                "application/json": components["schemas"]["UserCreate"];
             };
         };
         responses: {
@@ -20372,6 +20577,39 @@ export interface operations {
             };
         };
     };
+    validate_cron_expression_api_schedules_validate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CronValidationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CronValidationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_schedules_api_schedules_get: {
         parameters: {
             query?: never;
@@ -21449,7 +21687,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["src__models__contracts__oauth__OAuthCallbackRequest"];
+                "application/json": components["schemas"]["OAuthCallbackRequest"];
             };
         };
         responses: {

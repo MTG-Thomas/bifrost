@@ -40,8 +40,9 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(255), index=True)  # Display name (not unique)
+    name: Mapped[str] = mapped_column(String(255), index=True)  # Code-defined name (from decorator)
     function_name: Mapped[str] = mapped_column(String(255))  # Actual Python function name
+    display_name: Mapped[str | None] = mapped_column(String(255), default=None)  # User-editable display name (defaults to name if NULL)
     description: Mapped[str | None] = mapped_column(Text, default=None)
     category: Mapped[str] = mapped_column(String(100), default="General")
 
@@ -61,9 +62,6 @@ class Workflow(Base):
     module_path: Mapped[str | None] = mapped_column(String(500), default=None)
     code: Mapped[str | None] = mapped_column(Text, default=None)  # Source code snapshot
     code_hash: Mapped[str | None] = mapped_column(String(64), default=None)  # SHA-256 of code
-    schedule: Mapped[str | None] = mapped_column(
-        String(100), default=None
-    )  # CRON expression
     parameters_schema: Mapped[list] = mapped_column(JSONB, default=[])
     tags: Mapped[list] = mapped_column(JSONB, default=[])
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
@@ -73,6 +71,8 @@ class Workflow(Base):
     # Endpoint configuration
     endpoint_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     allowed_methods: Mapped[list] = mapped_column(JSONB, default=["POST"])
+    public_endpoint: Mapped[bool] = mapped_column(Boolean, default=False)
+    disable_global_key: Mapped[bool] = mapped_column(Boolean, default=False)
     execution_mode: Mapped[str] = mapped_column(String(20), default="async")
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)  # 30 min default
 
@@ -145,11 +145,6 @@ class Workflow(Base):
     )
 
     __table_args__ = (
-        Index(
-            "ix_workflows_schedule",
-            "schedule",
-            postgresql_where=text("schedule IS NOT NULL"),
-        ),
         Index(
             "ix_workflows_api_key_hash",
             "api_key_hash",
