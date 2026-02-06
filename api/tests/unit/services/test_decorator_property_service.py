@@ -437,3 +437,306 @@ async def my_workflow():
         # Should recognize bifrost.workflow as workflow
         assert len(decorators) == 1
         assert decorators[0].decorator_type == "workflow"
+
+
+class TestStripIds:
+
+    def test_strip_id_from_decorator_with_multiple_args(self):
+        source = '@workflow(id="abc-123", name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is True
+        assert "abc-123" not in result.new_content
+        assert 'name="test"' in result.new_content
+        assert "@workflow(" in result.new_content
+
+    def test_strip_id_only_arg_converts_to_bare(self):
+        source = '@workflow(id="abc-123")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is True
+        assert "abc-123" not in result.new_content
+        assert "@workflow\n" in result.new_content
+
+    def test_strip_no_id_present(self):
+        source = '@workflow(name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is False
+        assert result.new_content == source
+
+    def test_strip_bare_decorator_unchanged(self):
+        source = '@workflow\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is False
+        assert result.new_content == source
+
+    def test_strip_ids_from_multiple_functions(self):
+        source = (
+            '@workflow(id="aaa", name="A")\n'
+            'def func_a():\n    pass\n\n'
+            '@data_provider(id="bbb", name="B")\n'
+            'def func_b():\n    pass\n'
+        )
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is True
+        assert "aaa" not in result.new_content
+        assert "bbb" not in result.new_content
+        assert 'name="A"' in result.new_content
+        assert 'name="B"' in result.new_content
+        assert len(result.changes) == 2
+
+    def test_strip_id_preserves_other_args_order(self):
+        source = '@workflow(name="X", id="abc", category="Y")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is True
+        decorators = service.read_decorators(result.new_content)
+        assert decorators[0].properties == {"name": "X", "category": "Y"}
+
+    def test_strip_id_changes_list_describes_removal(self):
+        source = '@workflow(id="abc-123", name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert len(result.changes) == 1
+        assert "Removed id" in result.changes[0]
+        assert "my_func" in result.changes[0]
+
+    def test_strip_id_handles_parse_error(self):
+        source = '@workflow(\n    broken syntax!!!\n)\ndef f():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is False
+        assert result.new_content == source
+        assert "Parse error" in result.changes[0]
+
+    def test_strip_ignores_unsupported_decorators(self):
+        source = '@custom(id="abc")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is False
+        assert 'id="abc"' in result.new_content
+
+    def test_strip_tool_decorator(self):
+        source = '@tool(id="tool-id", name="My Tool")\ndef my_tool():\n    pass\n'
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is True
+        assert "tool-id" not in result.new_content
+        assert 'name="My Tool"' in result.new_content
+
+
+class TestInjectSpecificIds:
+
+    def test_inject_into_bare_decorator(self):
+        source = '@workflow\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.inject_specific_ids(source, {"my_func": "injected-id"})
+
+        assert result.modified is True
+        assert "injected-id" in result.new_content
+        decorators = service.read_decorators(result.new_content)
+        assert decorators[0].properties["id"] == "injected-id"
+
+    def test_inject_into_decorator_with_args(self):
+        source = '@workflow(name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.inject_specific_ids(source, {"my_func": "injected-id"})
+
+        assert result.modified is True
+        decorators = service.read_decorators(result.new_content)
+        assert decorators[0].properties["id"] == "injected-id"
+        assert decorators[0].properties["name"] == "test"
+
+    def test_inject_skips_functions_not_in_map(self):
+        source = (
+            '@workflow(name="A")\ndef func_a():\n    pass\n\n'
+            '@workflow(name="B")\ndef func_b():\n    pass\n'
+        )
+        service = get_service()
+        result = service.inject_specific_ids(source, {"func_a": "id-for-a"})
+
+        assert result.modified is True
+        decorators = service.read_decorators(result.new_content)
+        func_a = next(d for d in decorators if d.function_name == "func_a")
+        func_b = next(d for d in decorators if d.function_name == "func_b")
+        assert func_a.properties["id"] == "id-for-a"
+        assert "id" not in func_b.properties
+
+    def test_inject_skips_if_id_already_present(self):
+        source = '@workflow(id="existing", name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.inject_specific_ids(source, {"my_func": "new-id"})
+
+        assert result.modified is False
+        assert "existing" in result.new_content
+        assert "new-id" not in result.new_content
+
+    def test_inject_empty_map_no_changes(self):
+        source = '@workflow(name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.inject_specific_ids(source, {})
+
+        assert result.modified is False
+        assert result.new_content == source
+
+    def test_inject_changes_list_describes_injection(self):
+        source = '@workflow\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.inject_specific_ids(source, {"my_func": "the-id"})
+
+        assert len(result.changes) == 1
+        assert "Injected" in result.changes[0]
+        assert "the-id" in result.changes[0]
+        assert "my_func" in result.changes[0]
+
+    def test_inject_multiple_functions(self):
+        source = (
+            '@workflow\ndef func_a():\n    pass\n\n'
+            '@data_provider\ndef func_b():\n    pass\n'
+        )
+        service = get_service()
+        result = service.inject_specific_ids(
+            source, {"func_a": "id-a", "func_b": "id-b"}
+        )
+
+        assert result.modified is True
+        assert len(result.changes) == 2
+        decorators = service.read_decorators(result.new_content)
+        func_a = next(d for d in decorators if d.function_name == "func_a")
+        func_b = next(d for d in decorators if d.function_name == "func_b")
+        assert func_a.properties["id"] == "id-a"
+        assert func_b.properties["id"] == "id-b"
+
+    def test_inject_handles_parse_error(self):
+        source = '@workflow(\n    broken!!!\n)\ndef f():\n    pass\n'
+        service = get_service()
+        result = service.inject_specific_ids(source, {"f": "some-id"})
+
+        assert result.modified is False
+        assert "Parse error" in result.changes[0]
+
+    def test_inject_ignores_unsupported_decorators(self):
+        source = '@custom\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.inject_specific_ids(source, {"my_func": "some-id"})
+
+        assert result.modified is False
+
+
+class TestWritePropertyResult:
+
+    def test_write_returns_changes_list(self):
+        source = '@workflow(name="X")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.write_properties(source, "my_func", {"category": "Y"})
+
+        assert result.modified is True
+        assert len(result.changes) == 1
+        assert "Added" in result.changes[0]
+        assert "category" in result.changes[0]
+
+    def test_update_returns_updated_change(self):
+        source = '@workflow(name="Old")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.write_properties(source, "my_func", {"name": "New"})
+
+        assert result.modified is True
+        assert len(result.changes) == 1
+        assert "Updated" in result.changes[0]
+
+    def test_no_matching_function_returns_unmodified(self):
+        source = '@workflow(name="X")\ndef my_func():\n    pass\n'
+        service = get_service()
+        result = service.write_properties(source, "other_func", {"name": "Y"})
+
+        assert result.modified is False
+        assert result.new_content == source
+        assert result.changes == []
+
+
+class TestFormattingPreservation:
+
+    def test_strip_ids_preserves_comments(self):
+        source = (
+            '# This is a workflow file\n'
+            '@workflow(id="abc", name="test")  # my decorator\n'
+            'def my_func():\n'
+            '    # body comment\n'
+            '    pass\n'
+        )
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert "# This is a workflow file" in result.new_content
+        assert "# body comment" in result.new_content
+
+    def test_write_preserves_body_indentation(self):
+        source = (
+            '@workflow(name="test")\n'
+            'def my_func():\n'
+            '    x = 1\n'
+            '    if x:\n'
+            '        y = 2\n'
+        )
+        service = get_service()
+        result = service.write_properties(source, "my_func", {"category": "Admin"})
+
+        assert "    x = 1\n" in result.new_content
+        assert "        y = 2\n" in result.new_content
+
+    def test_inject_preserves_blank_lines_between_functions(self):
+        source = (
+            '@workflow\n'
+            'def func_a():\n'
+            '    pass\n'
+            '\n'
+            '\n'
+            '@workflow\n'
+            'def func_b():\n'
+            '    pass\n'
+        )
+        service = get_service()
+        result = service.inject_specific_ids(source, {"func_a": "id-a"})
+
+        assert "\n\n\n" in result.new_content
+
+    def test_roundtrip_inject_then_strip(self):
+        original = '@workflow(name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+
+        injected = service.inject_specific_ids(original, {"my_func": "roundtrip-id"})
+        assert injected.modified is True
+        assert "roundtrip-id" in injected.new_content
+
+        stripped = service.strip_ids(injected.new_content)
+        assert stripped.modified is True
+        assert "roundtrip-id" not in stripped.new_content
+        assert 'name="test"' in stripped.new_content
+
+    def test_strip_then_inject_roundtrip(self):
+        source = '@workflow(id="old-id", name="test")\ndef my_func():\n    pass\n'
+        service = get_service()
+
+        stripped = service.strip_ids(source)
+        assert "old-id" not in stripped.new_content
+
+        injected = service.inject_specific_ids(
+            stripped.new_content, {"my_func": "new-id"}
+        )
+        assert injected.modified is True
+        decorators = service.read_decorators(injected.new_content)
+        assert decorators[0].properties["id"] == "new-id"
+        assert decorators[0].properties["name"] == "test"

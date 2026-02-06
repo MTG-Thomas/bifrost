@@ -7,6 +7,7 @@ Primary use case: E2E tests and fallback when WebSockets unavailable.
 
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -28,6 +29,8 @@ class JobStatusResponse(BaseModel):
     pushed: int = Field(default=0, description="Number of files pushed (git sync)")
     commit_sha: str | None = Field(default=None, description="Commit SHA if created")
     error: str | None = Field(default=None, description="Error message if failed")
+    # Preview data for sync preview jobs
+    preview: dict[str, Any] | None = Field(default=None, description="Sync preview data")
 
 
 @router.get(
@@ -65,6 +68,7 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
                     pushed=result.get("pushed", 0),
                     commit_sha=result.get("commit_sha"),
                     error=result.get("error"),
+                    preview=result.get("preview"),
                 )
         else:
             logger.warning(f"Redis client is None for job {job_id}")

@@ -88,29 +88,23 @@
 
 ---
 
-## Phase 3: Migrate fixture data to factories
+## Phase 3: Remove dead fixture data (DONE)
 
-The factory functions exist in `tests/helpers/factories.py` but aren't used yet. Migrate existing tests to use them.
+The factory functions in `tests/helpers/factories.py` already exist but no tests were using the old fixtures — they were dead code.
 
-### 3a. Replace root conftest fixtures with factory imports
+### What was done
 
-**File:** `tests/conftest.py`
-- Remove `sample_user_data`, `sample_org_data`, `sample_form_data`, `sample_workflow_data` fixtures
-- Update all tests that use them to call `make_user_data()` etc. directly
-- Search for usages: `grep -r "sample_user_data\|sample_org_data\|sample_form_data\|sample_workflow_data" tests/`
+**3a. Removed 4 unused fixtures from root conftest:**
+- `sample_user_data`, `sample_org_data`, `sample_form_data`, `sample_workflow_data`
+- Zero test usages found — all were dead code superseded by factory functions
 
-### 3b. Remove duplicate fixtures from repositories conftest
+**3b. Removed 4 unused fixtures from repositories conftest:**
+- `sample_user_data`, `sample_form_data`, `sample_organization_data`, `sample_execution_data`
+- Kept `mock_context` (actively used by repository tests)
 
-**File:** `tests/unit/repositories/conftest.py`
-- Remove `sample_user_data`, `sample_form_data` (duplicated from root)
-- Update tests to use factory functions
-
-### 3c. Inline string literal fixtures
-
-**File:** `tests/unit/services/conftest.py`
-- `test_org_id` → inline `"org-test-123"` at call sites
-- `test_user_id` → inline `"user@example.com"` at call sites
-- `test_connection_name` → inline `"test_oauth_connection"` at call sites
+**3c. Removed 3 unused string literal fixtures from services conftest:**
+- `test_org_id`, `test_user_id`, `test_connection_name`
+- Zero usages within `tests/unit/services/` — other test dirs define their own locally
 
 ---
 

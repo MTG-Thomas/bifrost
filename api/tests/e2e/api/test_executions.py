@@ -832,6 +832,7 @@ async def {workflow_name}():
                 "/api/workflows/execute",
                 headers=platform_admin.headers,
                 json={"workflow_id": workflow_id, "input_data": {}},
+                timeout=120.0,
             )
             assert response.status_code == 200, f"Execute v1 failed: {response.text}"
             data = response.json()
@@ -869,6 +870,7 @@ async def {workflow_name}():
                 "/api/workflows/execute",
                 headers=platform_admin.headers,
                 json={"workflow_id": workflow_id, "input_data": {}},
+                timeout=120.0,
             )
             assert response.status_code == 200, f"Execute v2 failed: {response.text}"
             data = response.json()

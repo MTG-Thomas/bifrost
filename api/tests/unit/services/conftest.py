@@ -205,22 +205,3 @@ def sample_oauth_response_metadata():
     }
 
 
-# ====================  Helper Fixtures ====================
-
-
-@pytest.fixture
-def test_org_id():
-    """Test organization ID"""
-    return "org-test-123"
-
-
-@pytest.fixture
-def test_user_id():
-    """Test user ID"""
-    return "user@example.com"
-
-
-@pytest.fixture
-def test_connection_name():
-    """Test connection name"""
-    return "test_oauth_connection"

@@ -14,8 +14,9 @@ CSRF protection since the token is not automatically included by browsers.
 import logging
 from typing import Awaitable, Callable
 
-from fastapi import HTTPException, Request, Response, status
+from fastapi import Request, Response, status
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from src.core.security import validate_csrf_token
 
@@ -112,9 +113,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                         "client_ip": request.client.host if request.client else "unknown",
                     }
                 )
-                raise HTTPException(
+                return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="CSRF token missing",
+                    content={"detail": "CSRF token missing"},
                 )
 
             if not validate_csrf_token(csrf_cookie, csrf_header):
@@ -124,9 +125,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                         "client_ip": request.client.host if request.client else "unknown",
                     }
                 )
-                raise HTTPException(
+                return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="CSRF token mismatch",
+                    content={"detail": "CSRF token mismatch"},
                 )
 
         return await call_next(request)

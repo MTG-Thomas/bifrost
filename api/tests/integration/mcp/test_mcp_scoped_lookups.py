@@ -15,8 +15,10 @@ Fix: Use ORDER BY organization_id DESC NULLS LAST LIMIT 1 for name-based lookups
 
 import pytest
 import pytest_asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import AsyncGenerator
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete
@@ -29,6 +31,17 @@ from src.models.enums import AgentAccessLevel
 # =============================================================================
 # Fixtures
 # =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _patch_db_context(db_session: AsyncSession):
+    """Patch get_db_context so MCP tools use the test's db session and event loop."""
+    @asynccontextmanager
+    async def _use_test_session():
+        yield db_session
+
+    with patch("src.core.database.get_db_context", _use_test_session):
+        yield
 
 
 @pytest.fixture
@@ -317,7 +330,6 @@ class TestGetAgentScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_agent_by_name_returns_global_when_only_global_exists(
         self,
         db_session: AsyncSession,
@@ -350,7 +362,6 @@ class TestGetAgentScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_agent_by_id_works_with_cascade_filter(
         self,
         db_session: AsyncSession,
@@ -379,7 +390,6 @@ class TestGetAgentScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_agent_by_name_no_org_context_returns_global_only(
         self,
         db_session: AsyncSession,
@@ -411,7 +421,6 @@ class TestGetAgentScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_agent_platform_admin_sees_all(
         self,
         db_session: AsyncSession,
@@ -449,7 +458,6 @@ class TestGetFormScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_form_by_name_returns_org_specific_when_both_exist(
         self,
         db_session: AsyncSession,
@@ -482,7 +490,6 @@ class TestGetFormScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_form_by_name_returns_global_when_only_global_exists(
         self,
         db_session: AsyncSession,
@@ -515,7 +522,6 @@ class TestGetFormScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_form_by_id_works_with_cascade_filter(
         self,
         db_session: AsyncSession,
@@ -544,7 +550,6 @@ class TestGetFormScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_form_by_name_no_org_context_returns_global_only(
         self,
         db_session: AsyncSession,
@@ -575,7 +580,6 @@ class TestGetFormScopedLookup:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_form_platform_admin_sees_all(
         self,
         db_session: AsyncSession,
@@ -611,7 +615,6 @@ class TestScopedLookupErrorCases:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_agent_not_found(
         self,
         db_session: AsyncSession,
@@ -635,7 +638,6 @@ class TestScopedLookupErrorCases:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Event loop conflict: MCP tools use their own db context")
     async def test_get_form_not_found(
         self,
         db_session: AsyncSession,

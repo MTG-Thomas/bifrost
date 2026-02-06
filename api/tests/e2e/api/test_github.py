@@ -19,6 +19,8 @@ import logging
 
 import pytest
 
+from tests.helpers.polling import poll_until
+
 logger = logging.getLogger(__name__)
 
 
@@ -246,7 +248,7 @@ class TestGitHubSync:
         platform_admin,
         github_configured,
     ):
-        """Test getting sync preview."""
+        """Test getting sync preview (async job pattern)."""
         response = e2e_client.get(
             "/api/github/sync",
             headers=platform_admin.headers,
@@ -254,11 +256,33 @@ class TestGitHubSync:
         assert response.status_code == 200, f"Sync preview failed: {response.text}"
 
         data = response.json()
-        assert "to_pull" in data
-        assert "to_push" in data
-        assert "conflicts" in data
-        assert "will_orphan" in data
-        assert "is_empty" in data
+        # API now returns a job_id — poll for completion
+        assert "job_id" in data, f"Expected job_id in response: {data}"
+        assert data["status"] == "queued"
+        job_id = data["job_id"]
+
+        # Poll for preview job completion
+        terminal_statuses = ["success", "completed", "failed", "error"]
+
+        def check_complete():
+            resp = e2e_client.get(f"/api/jobs/{job_id}", headers=platform_admin.headers)
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get("status") in terminal_statuses:
+                    return result
+            return None
+
+        job_result = poll_until(check_complete, max_wait=60.0, interval=1.0)
+        assert job_result is not None, f"Preview job {job_id} timed out"
+        assert job_result.get("status") in ["success", "completed"], \
+            f"Preview job failed: {job_result}"
+
+        # Preview data should be in the job result
+        preview = job_result.get("preview", {})
+        assert isinstance(preview, dict), f"Expected preview dict, got: {type(preview)}"
+        assert "to_pull" in preview
+        assert "to_push" in preview
+        assert "conflicts" in preview
 
     def test_sync_execute_no_changes(
         self,

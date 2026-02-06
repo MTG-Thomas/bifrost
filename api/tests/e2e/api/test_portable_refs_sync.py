@@ -63,13 +63,36 @@ def execute_sync_with_auto_resolution(e2e_client, headers, max_wait: float = 60.
     can change between preview and execute.
     """
     for attempt in range(max_retries):
-        # Get preview to find any conflicts
+        # Get preview — now returns a job_id that must be polled
         preview_response = e2e_client.get("/api/github/sync", headers=headers)
         if preview_response.status_code != 200:
             logger.error(f"Preview failed: {preview_response.status_code} - {preview_response.text}")
             return None, None
 
-        preview = preview_response.json()
+        preview_data = preview_response.json()
+        preview_job_id = preview_data.get("job_id")
+
+        if preview_job_id:
+            # Poll for preview job completion
+            preview_terminal = ["success", "completed", "failed", "error"]
+
+            def check_preview():
+                resp = e2e_client.get(f"/api/jobs/{preview_job_id}", headers=headers)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("status") in preview_terminal:
+                        return result
+                return None
+
+            preview_result = poll_until(check_preview, max_wait=max_wait, interval=1.0)
+            if preview_result is None or preview_result.get("status") in ["failed", "error"]:
+                logger.error(f"Preview job {preview_job_id} failed: {preview_result}")
+                return None, None
+            preview = preview_result.get("preview", {})
+        else:
+            # Backward compat: inline preview data
+            preview = preview_data
+
         conflicts = preview.get("conflicts", [])
         to_push = preview.get("to_push", [])
         to_pull = preview.get("to_pull", [])
@@ -87,7 +110,7 @@ def execute_sync_with_auto_resolution(e2e_client, headers, max_wait: float = 60.
         # If nothing to sync, we're done
         if not to_push and not to_pull and not conflicts:
             logger.info("Nothing to sync")
-            return {"status": "completed", "message": "Nothing to sync"}, None
+            return {"status": "success", "message": "Nothing to sync"}, None
 
         # Execute sync
         # We pass confirm_orphans=True and confirm_unresolved_refs=True since E2E tests
@@ -131,7 +154,12 @@ def execute_sync_with_auto_resolution(e2e_client, headers, max_wait: float = 60.
 
         # "success" or "completed" means sync finished successfully
         # "failed" means sync failed
-        if job_result.get("status") in ["success", "completed", "failed"]:
+        status = job_result.get("status")
+        if status in ["success", "completed"]:
+            # Normalize to "success" for test assertions
+            job_result["status"] = "success"
+            return job_result, job_id
+        if status == "failed":
             return job_result, job_id
 
         # If conflict, orphans_detected, or unresolved_refs, retry with confirmations

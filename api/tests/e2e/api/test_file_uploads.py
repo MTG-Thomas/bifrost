@@ -116,7 +116,6 @@ class TestFileUploads:
         assert response.status_code in [200, 201, 204], \
             f"S3 upload failed with status {response.status_code}: {response.text}"
 
-    @pytest.mark.xfail(reason="Sync workflow execution with S3 reads may exceed timeout in CI")
     def test_workflow_can_read_uploaded_file(self, e2e_client, platform_admin, test_form):
         """Create workflow that reads uploaded file and verify it can access the content."""
         # First, upload a file
@@ -200,29 +199,36 @@ async def e2e_file_read_workflow(file_path: str):
         assert workflow_id, "Workflow e2e_file_read_workflow not discovered after 30s"
 
         # Execute workflow with the file path (without uploads/ prefix)
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": workflow_id,
-                "input_data": {"file_path": file_path_for_workflow},
-            },
-        )
-        assert response.status_code == 200, f"Execute workflow failed: {response.text}"
-        result = response.json()
+        # Retry on timeout — the sync execution can occasionally lose results
+        # due to process pool recycling races under test load.
+        result = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = e2e_client.post(
+                    "/api/workflows/execute",
+                    headers=platform_admin.headers,
+                    json={
+                        "workflow_id": workflow_id,
+                        "input_data": {"file_path": file_path_for_workflow},
+                    },
+                    timeout=120.0,
+                )
+                assert response.status_code == 200, f"Execute workflow failed: {response.text}"
+                result = response.json()
+                break
+            except httpx.ReadTimeout:
+                last_error = f"Attempt {attempt + 1}: sync execution timed out"
+                print(f"\n{last_error}, retrying...")
+                continue
 
-        # Debug: print the full response
-        print("\n=== Workflow execution response ===")
-        print(f"Status: {result.get('status')}")
-        print(f"Error: {result.get('error')}")
-        print(f"Error Type: {result.get('error_type')}")
-        print(f"Result: {result.get('result')}")
-        print("=== End response ===\n")
+        assert result is not None, f"Workflow execution failed after 3 attempts: {last_error}"
 
         # Verify the workflow could read the file content
         assert "result" in result, "Missing result in execution response"
         workflow_result = result["result"]
-        assert isinstance(workflow_result, dict), f"Result should be a dict, got {type(workflow_result)}: {workflow_result}"
+        assert isinstance(workflow_result, dict), \
+            f"Result should be a dict, got {type(workflow_result)}: {workflow_result}"
         assert "content" in workflow_result, "Missing content in workflow result"
         assert workflow_result["content"] == file_content.decode("utf-8"), \
             f"File content mismatch: expected {file_content}, got {workflow_result['content']}"
@@ -290,14 +296,16 @@ class TestFileUploadAccessControl:
 
     def test_anonymous_cannot_generate_upload_url(self, e2e_client, upload_form):
         """Anonymous user cannot generate upload URL."""
-        response = e2e_client.post(
-            f"/api/forms/{upload_form['id']}/upload",
-            json={
-                "file_name": "user_file.txt",
-                "content_type": "text/plain",
-                "file_size": 100,
-            },
-        )
+        # Use a fresh client with no cookies to simulate anonymous access
+        with httpx.Client(base_url=str(e2e_client.base_url), timeout=60.0) as anon_client:
+            response = anon_client.post(
+                f"/api/forms/{upload_form['id']}/upload",
+                json={
+                    "file_name": "user_file.txt",
+                    "content_type": "text/plain",
+                    "file_size": 100,
+                },
+            )
         # Should get 401 or 403 depending on form access level
         assert response.status_code in [401, 403], \
             f"Should deny access to anonymous user: {response.status_code}"

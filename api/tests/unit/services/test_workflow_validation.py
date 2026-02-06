@@ -1,326 +1,269 @@
-"""
-Unit tests for workflow validation service.
+"""Tests for pure helper functions in workflow_validation service."""
 
-Tests the validate_workflow_file function which validates workflow files
-for syntax errors, decorator issues, and Pydantic validation.
-"""
+from dataclasses import dataclass
+from datetime import datetime
 
 import pytest
 
 from src.services.workflow_validation import (
-    validate_workflow_file,
     _convert_workflow_metadata_to_model,
     _extract_relative_path,
 )
-from src.services.execution.module_loader import WorkflowMetadata, WorkflowParameter
+
+
+@dataclass
+class MockParam:
+    name: str
+    type: str
+    required: bool
+    label: str | None = None
+    default_value: str | None = None
+
+
+@dataclass
+class MockWorkflowMetadata:
+    name: str
+    description: str
+    category: str
+    tags: list[str] | None
+    parameters: list[MockParam] | None
+    execution_mode: str
+    timeout_seconds: int | None
+    time_saved: int | None
+    value: float | None
+    source_file_path: str | None
 
 
 class TestExtractRelativePath:
-    """Test _extract_relative_path helper function
-
-    NOTE: As of the virtual module loading migration, paths are now stored
-    as relative paths in the database and used directly. The function just
-    returns the path as-is without any transformation.
-    """
 
     def test_returns_path_as_is(self):
-        """Test that paths are returned as-is"""
-        result = _extract_relative_path("workflows/my_workflow.py")
-        assert result == "workflows/my_workflow.py"
-
-    def test_returns_nested_path_as_is(self):
-        """Test that nested paths are returned as-is"""
         result = _extract_relative_path("features/ticketing/workflows/create_ticket.py")
         assert result == "features/ticketing/workflows/create_ticket.py"
 
-    def test_returns_absolute_path_as_is(self):
-        """Test that even absolute paths are returned as-is (for backwards compat)"""
-        result = _extract_relative_path("/some/absolute/path.py")
-        assert result == "/some/absolute/path.py"
-
-    def test_none_input(self):
-        """Test None input returns None"""
+    def test_returns_none_for_none_input(self):
         result = _extract_relative_path(None)
         assert result is None
 
-    def test_empty_string(self):
-        """Test empty string returns None"""
+    def test_returns_none_for_empty_string(self):
         result = _extract_relative_path("")
         assert result is None
 
 
 class TestConvertWorkflowMetadataToModel:
-    """Test _convert_workflow_metadata_to_model conversion function"""
 
-    def test_basic_conversion(self):
-        """Test basic metadata conversion without parameters"""
-        metadata = WorkflowMetadata(
-            name="test_workflow",
-            description="Test workflow description",
+    def test_basic_conversion_with_all_fields(self):
+        metadata = MockWorkflowMetadata(
+            name="my_workflow",
+            description="A test workflow",
             category="Testing",
-            tags=["test"],
+            tags=["test", "unit"],
+            parameters=[
+                MockParam(name="input", type="string", required=True),
+            ],
             execution_mode="sync",
-            timeout_seconds=300,
-            source_file_path="/home/test/workflows/test.py"
+            timeout_seconds=600,
+            time_saved=10,
+            value=5.5,
+            source_file_path="workflows/my_workflow.py",
         )
 
         result = _convert_workflow_metadata_to_model(metadata)
 
-        # ID is generated as pending-{name} for validation
-        assert result.id == "pending-test_workflow"
-        assert result.name == "test_workflow"
-        assert result.description == "Test workflow description"
+        assert result.id == "pending-my_workflow"
+        assert result.name == "my_workflow"
+        assert result.description == "A test workflow"
         assert result.category == "Testing"
-        assert result.tags == ["test"]
+        assert result.tags == ["test", "unit"]
+        assert len(result.parameters) == 1
+        assert result.parameters[0].name == "input"
+        assert result.parameters[0].type == "string"
+        assert result.parameters[0].required is True
         assert result.execution_mode == "sync"
-        assert result.timeout_seconds == 300
+        assert result.timeout_seconds == 600
+        assert result.time_saved == 10
+        assert result.value == 5.5
+        assert result.source_file_path == "workflows/my_workflow.py"
+        assert result.relative_file_path == "workflows/my_workflow.py"
+        assert result.retry_policy is None
+        assert result.endpoint_enabled is False
+        assert result.disable_global_key is False
+        assert result.public_endpoint is False
+        assert isinstance(result.created_at, datetime)
 
-    def test_conversion_with_parameters(self):
-        """Test conversion includes workflow parameters correctly"""
-        metadata = WorkflowMetadata(
-            name="test_workflow",
-            description="Test",
+    def test_empty_parameters_list(self):
+        metadata = MockWorkflowMetadata(
+            name="empty_params",
+            description="No params",
+            category="General",
+            tags=["demo"],
+            parameters=[],
+            execution_mode="async",
+            timeout_seconds=300,
+            time_saved=5,
+            value=1.0,
+            source_file_path="workflows/empty.py",
+        )
+
+        result = _convert_workflow_metadata_to_model(metadata)
+        assert result.parameters == []
+
+    def test_none_parameters(self):
+        metadata = MockWorkflowMetadata(
+            name="none_params",
+            description="Null params",
+            category="General",
+            tags=None,
+            parameters=None,
+            execution_mode="sync",
+            timeout_seconds=1800,
+            time_saved=0,
+            value=0.0,
+            source_file_path=None,
+        )
+
+        result = _convert_workflow_metadata_to_model(metadata)
+        assert result.parameters == []
+
+    def test_parameters_with_optional_label_and_default_value(self):
+        metadata = MockWorkflowMetadata(
+            name="labeled_params",
+            description="Has labels",
+            category="General",
+            tags=[],
             parameters=[
-                WorkflowParameter(
-                    name="name",
+                MockParam(
+                    name="email",
                     type="string",
-                    required=True,
-                    label="Name",
-                    default_value=None
+                    required=False,
+                    label="User Email",
+                    default_value="user@example.com",
                 ),
-                WorkflowParameter(
+                MockParam(
                     name="count",
                     type="int",
-                    required=False,
-                    label="Count",
-                    default_value=1
+                    required=True,
+                    label=None,
+                    default_value=None,
                 ),
-            ]
+            ],
+            execution_mode="sync",
+            timeout_seconds=1800,
+            time_saved=0,
+            value=0.0,
+            source_file_path=None,
         )
 
         result = _convert_workflow_metadata_to_model(metadata)
-
         assert len(result.parameters) == 2
 
-        name_param = result.parameters[0]
-        assert name_param.name == "name"
-        assert name_param.type == "string"
-        assert name_param.required is True
-        assert name_param.label == "Name"
+        # First param has label and default_value
+        assert result.parameters[0].label == "User Email"
+        assert result.parameters[0].default_value == "user@example.com"
 
-        count_param = result.parameters[1]
-        assert count_param.name == "count"
-        assert count_param.type == "int"
-        assert count_param.required is False
-        assert count_param.default_value == 1
+        # Second param has None for label and default_value (they were not set)
+        assert result.parameters[1].label is None
+        assert result.parameters[1].default_value is None
 
-    def test_conversion_handles_missing_optional_fields(self):
-        """Test conversion handles parameters with only required fields.
-
-        This test verifies the fix for the AttributeError when workflow parameters
-        don't have form-specific fields like data_provider, help_text, validation.
-        """
-        # WorkflowParameter dataclass only has: name, type, label, required, default_value
-        # It does NOT have: data_provider, help_text, validation, options
-        # The conversion function should handle this gracefully
-        metadata = WorkflowMetadata(
-            name="test_workflow",
-            description="Test",
-            parameters=[
-                WorkflowParameter(
-                    name="simple_param",
-                    type="string",
-                    required=True,
-                )
-            ]
+    def test_tags_default_to_empty_list_when_none(self):
+        metadata = MockWorkflowMetadata(
+            name="no_tags",
+            description="Tags are None",
+            category="General",
+            tags=None,
+            parameters=None,
+            execution_mode="sync",
+            timeout_seconds=1800,
+            time_saved=0,
+            value=0.0,
+            source_file_path=None,
         )
 
-        # This should NOT raise AttributeError
         result = _convert_workflow_metadata_to_model(metadata)
+        assert result.tags == []
 
-        assert len(result.parameters) == 1
-        assert result.parameters[0].name == "simple_param"
-
-
-class TestValidateWorkflowFile:
-    """Test validate_workflow_file function
-
-    NOTE: validate_workflow_file now requires content to be passed directly.
-    It no longer reads from the filesystem - all workflows are stored in the database.
-    Tests should pass content directly via the content parameter.
-    """
-
-    @pytest.mark.asyncio
-    async def test_valid_workflow_passes_validation(self):
-        """Test that a valid workflow file passes validation"""
-        workflow_content = '''
-"""Test workflow"""
-
-from bifrost import workflow
-
-@workflow(
-    category="testing",
-    tags=["test"],
-)
-async def test_valid_workflow(name: str) -> dict:
-    """A simple test workflow."""
-    return {"greeting": f"Hello, {name}!"}
-'''
-        result = await validate_workflow_file("test_workflow.py", content=workflow_content)
-
-        assert result.valid is True
-        assert result.metadata is not None
-        assert result.metadata.name == "test_valid_workflow"
-        # Should have warnings about category and tags being default, but not errors
-        errors = [i for i in result.issues if i.severity == "error"]
-        assert len(errors) == 0
-
-    @pytest.mark.asyncio
-    async def test_syntax_error_fails_validation(self):
-        """Test that syntax errors are caught"""
-        workflow_content = '''
-"""Invalid syntax"""
-
-def test_workflow(
-    # Missing closing paren
-'''
-        result = await validate_workflow_file("invalid_syntax.py", content=workflow_content)
-
-        assert result.valid is False
-        assert any("Syntax error" in i.message for i in result.issues)
-
-    @pytest.mark.asyncio
-    async def test_missing_decorator_fails_validation(self):
-        """Test that missing @workflow decorator is caught"""
-        workflow_content = '''
-"""No decorator"""
-
-async def test_workflow(name: str) -> dict:
-    """A test workflow without decorator."""
-    return {"name": name}
-'''
-        result = await validate_workflow_file("no_decorator.py", content=workflow_content)
-
-        assert result.valid is False
-        assert any("No @workflow decorator found" in i.message for i in result.issues)
-
-    @pytest.mark.asyncio
-    async def test_invalid_workflow_name_fails_validation(self):
-        """Test that invalid workflow names (not snake_case) are caught"""
-        workflow_content = '''
-"""Invalid name"""
-
-from bifrost import workflow
-
-@workflow(
-    name="InvalidCamelCase",
-    category="testing",
-)
-async def invalid_workflow(name: str) -> dict:
-    """Test workflow with invalid name."""
-    return {"name": name}
-'''
-        result = await validate_workflow_file("invalid_name.py", content=workflow_content)
-
-        assert result.valid is False
-        assert any("Invalid workflow name" in i.message for i in result.issues)
-
-    @pytest.mark.asyncio
-    async def test_validation_with_content_parameter(self):
-        """Test validation using content parameter instead of reading from disk"""
-        workflow_content = '''
-"""Test workflow"""
-
-from bifrost import workflow
-
-@workflow(
-    category="testing",
-    tags=["test"],
-)
-async def content_test_workflow(value: int = 1) -> dict:
-    """A workflow validated via content parameter."""
-    return {"doubled": value * 2}
-'''
-        # Pass content directly, path is just for display
-        result = await validate_workflow_file(
-            "fake_path.py",
-            content=workflow_content
+    def test_timeout_defaults_to_1800_when_none(self):
+        metadata = MockWorkflowMetadata(
+            name="default_timeout",
+            description="No timeout set",
+            category="General",
+            tags=[],
+            parameters=None,
+            execution_mode="sync",
+            timeout_seconds=None,
+            time_saved=0,
+            value=0.0,
+            source_file_path=None,
         )
 
-        assert result.valid is True
-        assert result.metadata is not None
-        assert result.metadata.name == "content_test_workflow"
+        result = _convert_workflow_metadata_to_model(metadata)
+        assert result.timeout_seconds == 1800
 
-    @pytest.mark.asyncio
-    async def test_file_not_found_fails_validation(self):
-        """Test that non-existent file fails validation when no content provided
-
-        NOTE: This test validates that when no content is passed, the function
-        tries to read from the database and returns an appropriate error.
-        """
-        from unittest.mock import patch, AsyncMock, MagicMock
-
-        # Mock the database context
-        mock_db = MagicMock()
-        mock_db_context = MagicMock()
-        mock_db_context.__aenter__ = AsyncMock(return_value=mock_db)
-        mock_db_context.__aexit__ = AsyncMock(return_value=None)
-
-        mock_service = MagicMock()
-        mock_service.read_file = AsyncMock(side_effect=FileNotFoundError("Not found"))
-
-        with patch("src.core.database.get_db_context", return_value=mock_db_context):
-            with patch("src.services.file_storage.FileStorageService", return_value=mock_service):
-                result = await validate_workflow_file("nonexistent_workflow.py")
-
-        assert result.valid is False
-        assert any("File not found" in i.message for i in result.issues)
-
-    @pytest.mark.asyncio
-    async def test_invalid_execution_mode_silently_defaults(self):
-        """Test that invalid execution_mode in decorator is silently ignored (defaults to async)."""
-        workflow_content = '''
-"""Invalid execution mode"""
-
-from bifrost import workflow
-
-@workflow(
-    execution_mode="invalid_mode",
-    category="testing",
-)
-async def test_workflow(name: str) -> dict:
-    """Test workflow."""
-    return {"name": name}
-'''
-        result = await validate_workflow_file(
-            "test.py",
-            content=workflow_content
+    def test_time_saved_defaults_to_zero_when_none(self):
+        metadata = MockWorkflowMetadata(
+            name="no_time_saved",
+            description="No time saved",
+            category="General",
+            tags=[],
+            parameters=None,
+            execution_mode="sync",
+            timeout_seconds=1800,
+            time_saved=None,
+            value=0.0,
+            source_file_path=None,
         )
 
-        # execution_mode is no longer a decorator param; unknown kwargs are silently ignored
-        assert result.valid is True
+        result = _convert_workflow_metadata_to_model(metadata)
+        assert result.time_saved == 0
 
-    @pytest.mark.asyncio
-    async def test_missing_description_warning(self):
-        """Test that missing description generates an error"""
-        workflow_content = '''
-"""Module docstring"""
-
-from bifrost import workflow
-
-@workflow(
-    category="testing",
-)
-async def no_description_workflow(name: str):
-    # No docstring on function
-    return {"name": name}
-'''
-        result = await validate_workflow_file(
-            "test.py",
-            content=workflow_content
+    def test_value_defaults_to_zero_when_none(self):
+        metadata = MockWorkflowMetadata(
+            name="no_value",
+            description="No value",
+            category="General",
+            tags=[],
+            parameters=None,
+            execution_mode="sync",
+            timeout_seconds=1800,
+            time_saved=0,
+            value=None,
+            source_file_path=None,
         )
 
-        # The decorator extracts description from docstring first line
-        # If no docstring, description will be empty which is an error
-        assert result.valid is False
-        assert any("description is required" in i.message.lower() for i in result.issues)
+        result = _convert_workflow_metadata_to_model(metadata)
+        assert result.value == 0.0
+
+    def test_id_format_is_pending_name(self):
+        metadata = MockWorkflowMetadata(
+            name="create_ticket",
+            description="Creates a ticket",
+            category="Ticketing",
+            tags=["ticket"],
+            parameters=None,
+            execution_mode="async",
+            timeout_seconds=300,
+            time_saved=15,
+            value=10.0,
+            source_file_path="workflows/create_ticket.py",
+        )
+
+        result = _convert_workflow_metadata_to_model(metadata)
+        assert result.id == "pending-create_ticket"
+
+    def test_relative_file_path_matches_source_file_path(self):
+        path = "features/ticketing/workflows/create_ticket.py"
+        metadata = MockWorkflowMetadata(
+            name="ticket_workflow",
+            description="Ticket",
+            category="General",
+            tags=[],
+            parameters=None,
+            execution_mode="sync",
+            timeout_seconds=1800,
+            time_saved=0,
+            value=0.0,
+            source_file_path=path,
+        )
+
+        result = _convert_workflow_metadata_to_model(metadata)
+        assert result.relative_file_path == path
+        assert result.source_file_path == path

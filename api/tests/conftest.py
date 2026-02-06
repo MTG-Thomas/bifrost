@@ -6,13 +6,12 @@ This module provides:
 2. Message queue fixtures (RabbitMQ)
 3. Cache fixtures (Redis)
 4. Authentication/authorization fixtures
-5. Common test data fixtures
 """
 
 import os
 import sys
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock
 
 import pytest
@@ -192,76 +191,6 @@ def mock_redis():
     mock.delete = AsyncMock(return_value=True)
     mock.expire = AsyncMock(return_value=True)
     return mock
-
-
-# ==================== TEST DATA FIXTURES ====================
-
-
-@pytest.fixture
-def sample_user_data() -> dict[str, Any]:
-    """Sample user data for testing."""
-    return {
-        "email": "test@example.com",
-        "password": "SecurePassword123!",
-        "name": "Test User",
-    }
-
-
-@pytest.fixture
-def sample_org_data() -> dict[str, Any]:
-    """Sample organization data for testing."""
-    return {
-        "name": "Test Organization",
-        "domain": "example.com",
-    }
-
-
-@pytest.fixture
-def sample_form_data() -> dict[str, Any]:
-    """Sample form data for testing."""
-    return {
-        "name": "User Onboarding",
-        "description": "Onboard new users",
-        "linkedWorkflow": "user_onboarding",
-        "formSchema": {
-            "fields": [
-                {
-                    "type": "text",
-                    "name": "email",
-                    "label": "Email Address",
-                    "required": True,
-                },
-                {
-                    "type": "text",
-                    "name": "name",
-                    "label": "Full Name",
-                    "required": True,
-                },
-            ]
-        },
-        "isPublic": False,
-    }
-
-
-@pytest.fixture
-def sample_workflow_data() -> dict[str, Any]:
-    """Sample workflow data for testing."""
-    return {
-        "name": "user_onboarding",
-        "description": "User onboarding workflow",
-        "steps": [
-            {
-                "id": "step1",
-                "name": "Validate Input",
-                "action": "validate",
-            },
-            {
-                "id": "step2",
-                "name": "Create User",
-                "action": "create_user",
-            },
-        ],
-    }
 
 
 @pytest.fixture

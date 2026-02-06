@@ -607,8 +607,8 @@ async def execute_workflow(
     else:
         # Global workflow or inline code - use caller's org context
         execution_org_id = ctx.org_id
-        if execution_org_id is None and ctx.user.is_superuser:
-            # Platform admin - check developer context for org override
+        if ctx.user.is_superuser:
+            # Platform admin - developer context overrides default org
             dev_ctx_result = await db.execute(
                 select(DeveloperContext).where(DeveloperContext.user_id == ctx.user.user_id)
             )
