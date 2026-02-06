@@ -23,6 +23,7 @@ import {
 	RefreshCw,
 	Loader2,
 	Building2,
+	Lock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -896,8 +897,11 @@ const FileTreeItem = memo(function FileTreeItem({
 								<span className="block truncate">{file.name}</span>
 								{/* Scope indicator for org-scoped files */}
 								{organizationName && !isFolder && (
-									<span className="block text-xs text-muted-foreground italic truncate">
+									<span className="flex items-center gap-1 text-xs text-muted-foreground italic truncate">
 										{organizationName}
+										{!file.entityType && (
+											<Lock className="h-3 w-3 flex-shrink-0 opacity-50" title="Scope cannot be changed for this file" />
+										)}
 									</span>
 								)}
 							</div>
@@ -936,13 +940,20 @@ const FileTreeItem = memo(function FileTreeItem({
 							</>
 						)}
 						{/* Change Scope option for entity files */}
-						{file.entityType && onChangeScope && (
+						{onChangeScope && (
 							<>
 								<ContextMenuSeparator />
-								<ContextMenuItem onClick={() => onChangeScope(file)}>
-									<Building2 className="mr-2 h-4 w-4" />
-									Change Scope...
-								</ContextMenuItem>
+								{file.entityType ? (
+									<ContextMenuItem onClick={() => onChangeScope(file)}>
+										<Building2 className="mr-2 h-4 w-4" />
+										Change Scope...
+									</ContextMenuItem>
+								) : (
+									<ContextMenuItem disabled>
+										<Lock className="mr-2 h-4 w-4" />
+										Scope cannot be changed
+									</ContextMenuItem>
+								)}
 							</>
 						)}
 					</ContextMenuContent>
