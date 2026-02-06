@@ -246,6 +246,9 @@ def main(args: list[str] | None = None) -> int:
     if command == "run":
         return handle_run(args[1:])
 
+    if command == "sync":
+        return handle_sync(args[1:])
+
     # Unknown command
     print(f"Unknown command: {command}", file=sys.stderr)
     print_help()
@@ -262,6 +265,7 @@ Usage:
 
 Commands:
   run         Run a workflow file with web-based parameter input
+  sync        Sync with Bifrost platform via GitHub
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
@@ -269,6 +273,9 @@ Commands:
 Examples:
   bifrost run my_workflow.py
   bifrost run my_workflow.py --workflow greet
+  bifrost sync
+  bifrost sync --preview
+  bifrost sync --resolve workflows/billing.py=keep_remote
   bifrost login
   bifrost login --url https://app.gobifrost.com
   bifrost logout
@@ -707,6 +714,20 @@ async def _post_result(
         print(f"\nExecution completed ({status})")
     except Exception as e:
         print(f"\nWarning: Failed to post result: {e}", file=sys.stderr)
+
+
+def handle_sync(args: list[str]) -> int:
+    """
+    Handle 'bifrost sync' command.
+
+    Args:
+        args: Additional arguments
+
+    Returns:
+        Exit code
+    """
+    from .sync import run_sync
+    return run_sync(args)
 
 
 def print_run_help() -> None:
