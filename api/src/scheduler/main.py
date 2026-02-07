@@ -462,10 +462,10 @@ class Scheduler:
 
                 # Store last_synced_at timestamp on success
                 if sync_result.success and config and config.value_json:
-                    from datetime import datetime, timezone
+                    from datetime import datetime
                     config.value_json = {
                         **config.value_json,
-                        "last_synced_at": datetime.now(timezone.utc).isoformat(),
+                        "last_synced_at": datetime.utcnow().isoformat(),
                     }
                     await db.commit()
 

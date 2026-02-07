@@ -48,6 +48,45 @@ class TestWorkflowRepository:
         workflow.api_key_expires_at = None
         return workflow
 
+    # ==========================================================================
+    # resolve() tests
+    # ==========================================================================
+
+    async def test_resolve_by_uuid(self, repository, mock_workflow):
+        """Test resolve() with a valid UUID string."""
+        with patch.object(repository, 'get', return_value=mock_workflow) as mock_get:
+            result = await repository.resolve(str(mock_workflow.id))
+
+        assert result == mock_workflow
+        mock_get.assert_called_once_with(id=mock_workflow.id)
+
+    async def test_resolve_by_name(self, repository, mock_workflow):
+        """Test resolve() with a workflow name (non-UUID string)."""
+        with patch.object(repository, 'get', return_value=mock_workflow) as mock_get:
+            result = await repository.resolve("my_workflow")
+
+        assert result == mock_workflow
+        mock_get.assert_called_once_with(name="my_workflow")
+
+    async def test_resolve_uuid_not_found(self, repository):
+        """Test resolve() returns None when UUID not found."""
+        fake_uuid = str(uuid4())
+        with patch.object(repository, 'get', return_value=None):
+            result = await repository.resolve(fake_uuid)
+
+        assert result is None
+
+    async def test_resolve_name_not_found(self, repository):
+        """Test resolve() returns None when name not found."""
+        with patch.object(repository, 'get', return_value=None):
+            result = await repository.resolve("nonexistent_workflow")
+
+        assert result is None
+
+    # ==========================================================================
+    # get_by_name() tests
+    # ==========================================================================
+
     async def test_get_by_name_found(self, repository, mock_session, mock_workflow):
         """Test getting workflow by name when found."""
         mock_result = MagicMock()

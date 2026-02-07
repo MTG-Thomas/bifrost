@@ -81,13 +81,13 @@ class TestListEventSources:
         mock_repo = MagicMock()
         mock_repo.get_by_organization = AsyncMock(return_value=[])
 
-        with patch("src.services.mcp_server.tools.events.get_db_context") as mock_db:
+        with patch("src.core.database.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
-                "src.services.mcp_server.tools.events.EventSourceRepository",
+                "src.repositories.events.EventSourceRepository",
                 return_value=mock_repo,
             ):
                 result = await list_event_sources(context)
@@ -140,13 +140,13 @@ class TestGetEventSource:
         mock_repo = MagicMock()
         mock_repo.get_by_id_with_details = AsyncMock(return_value=None)
 
-        with patch("src.services.mcp_server.tools.events.get_db_context") as mock_db:
+        with patch("src.core.database.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
-                "src.services.mcp_server.tools.events.EventSourceRepository",
+                "src.repositories.events.EventSourceRepository",
                 return_value=mock_repo,
             ):
                 source_id = str(uuid4())
@@ -175,13 +175,13 @@ class TestUpdateEventSource:
         mock_repo = MagicMock()
         mock_repo.get_by_id_with_details = AsyncMock(return_value=None)
 
-        with patch("src.services.mcp_server.tools.events.get_db_context") as mock_db:
+        with patch("src.core.database.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
-                "src.services.mcp_server.tools.events.EventSourceRepository",
+                "src.repositories.events.EventSourceRepository",
                 return_value=mock_repo,
             ):
                 source_id = str(uuid4())
@@ -210,13 +210,13 @@ class TestDeleteEventSource:
         mock_repo = MagicMock()
         mock_repo.get_by_id_with_details = AsyncMock(return_value=None)
 
-        with patch("src.services.mcp_server.tools.events.get_db_context") as mock_db:
+        with patch("src.core.database.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
-                "src.services.mcp_server.tools.events.EventSourceRepository",
+                "src.repositories.events.EventSourceRepository",
                 return_value=mock_repo,
             ):
                 source_id = str(uuid4())
@@ -248,13 +248,13 @@ class TestListEventSubscriptions:
         mock_source_repo = MagicMock()
         mock_source_repo.get_by_id = AsyncMock(return_value=None)
 
-        with patch("src.services.mcp_server.tools.events.get_db_context") as mock_db:
+        with patch("src.core.database.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
-                "src.services.mcp_server.tools.events.EventSourceRepository",
+                "src.repositories.events.EventSourceRepository",
                 return_value=mock_source_repo,
             ):
                 source_id = str(uuid4())
@@ -292,13 +292,13 @@ class TestCreateEventSubscription:
         mock_source_repo = MagicMock()
         mock_source_repo.get_by_id = AsyncMock(return_value=None)
 
-        with patch("src.services.mcp_server.tools.events.get_db_context") as mock_db:
+        with patch("src.core.database.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
-                "src.services.mcp_server.tools.events.EventSourceRepository",
+                "src.repositories.events.EventSourceRepository",
                 return_value=mock_source_repo,
             ):
                 result = await create_event_subscription(
@@ -372,7 +372,7 @@ class TestListWebhookAdapters:
         ]
 
         with patch(
-            "src.services.mcp_server.tools.events.get_adapter_registry",
+            "src.services.webhooks.registry.get_adapter_registry",
             return_value=mock_registry,
         ):
             result = await list_webhook_adapters(context)
@@ -423,7 +423,7 @@ class TestEventToolsRegistration:
         mock_get_context = MagicMock()
 
         with patch(
-            "src.services.mcp_server.tools.events.register_tool_with_context"
+            "src.services.mcp_server.generators.fastmcp_generator.register_tool_with_context"
         ) as mock_register:
             register_tools(mock_mcp, mock_get_context)
             assert mock_register.call_count == 10

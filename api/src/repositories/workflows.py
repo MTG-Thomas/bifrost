@@ -53,6 +53,28 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
     role_entity_id_column = "workflow_id"
 
     # ==========================================================================
+    # Identifier Resolution
+    # ==========================================================================
+
+    async def resolve(self, identifier: str) -> Workflow | None:
+        """Resolve a workflow by UUID or name.
+
+        If the identifier parses as a UUID, look up by id.
+        Otherwise, look up by name using cascade scoping (org > global).
+
+        Args:
+            identifier: A workflow UUID string or workflow name
+
+        Returns:
+            Workflow if found and accessible, None otherwise
+        """
+        try:
+            workflow_uuid = UUID(identifier)
+            return await self.get(id=workflow_uuid)
+        except ValueError:
+            return await self.get(name=identifier)
+
+    # ==========================================================================
     # Type-Based Queries
     # ==========================================================================
 

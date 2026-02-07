@@ -101,7 +101,7 @@ class WorkflowExecution(BaseModel):
 
 class WorkflowExecutionRequest(BaseModel):
     """Request model for executing a workflow"""
-    workflow_id: str | None = Field(default=None, description="UUID of the workflow to execute (required if code not provided)")
+    workflow_id: str | None = Field(default=None, description="Workflow UUID or name. Names resolve using org-scoped lookup (org-specific > global). Required if code not provided.")
     input_data: dict[str, Any] = Field(default_factory=dict, description="Workflow input parameters")
     form_id: str | None = Field(default=None, description="Optional form ID that triggered this execution")
     transient: bool = Field(default=False, description="If true, skip database persistence (for code editor debugging)")

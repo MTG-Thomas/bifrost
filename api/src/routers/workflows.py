@@ -550,16 +550,18 @@ async def execute_workflow(
     )
     from src.repositories import AccessDeniedError, WorkflowRepository
 
+    # Build repository for scoped lookups and access checks
+    workflow_repo = WorkflowRepository(
+        session=db,
+        org_id=ctx.org_id,
+        user_id=ctx.user.user_id,
+        is_superuser=ctx.user.is_superuser,
+    )
+
     # Look up workflow metadata for type checking (needed for data provider handling)
     workflow = None
     if request.workflow_id:
-        result = await db.execute(
-            select(WorkflowORM).where(
-                WorkflowORM.id == request.workflow_id,
-                WorkflowORM.is_active.is_(True),
-            )
-        )
-        workflow = result.scalar_one_or_none()
+        workflow = await workflow_repo.resolve(request.workflow_id)
         if not workflow:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -576,14 +578,10 @@ async def execute_workflow(
             )
     elif request.workflow_id:
         # Workflow execution - check access via repository cascade scoping
-        workflow_repo = WorkflowRepository(
-            session=db,
-            org_id=ctx.org_id,
-            user_id=ctx.user.user_id,
-            is_superuser=ctx.user.is_superuser,
-        )
+        # resolve() already checked scoping; use can_access with the resolved UUID
+        assert workflow is not None  # guaranteed by resolve() + 404 above
         try:
-            await workflow_repo.can_access(id=UUID(request.workflow_id))
+            await workflow_repo.can_access(id=workflow.id)
         except AccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1153,6 +1151,11 @@ async def recreate_workflow_file(
         workflow = await orphan_service.recreate_file(workflow_id)
 
         # Write the file to storage
+        if not workflow.code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Workflow has no stored code to recreate",
+            )
         file_storage = FileStorageService(db)
         await file_storage.write_file(
             path=workflow.path,
@@ -1373,7 +1376,7 @@ async def remove_role_from_workflow(
         )
     )
 
-    if result.rowcount == 0:
+    if result.rowcount == 0:  # type: ignore[union-attr]
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workflow-role assignment not found",

@@ -900,7 +900,7 @@ const FileTreeItem = memo(function FileTreeItem({
 									<span className="flex items-center gap-1 text-xs text-muted-foreground italic truncate">
 										{organizationName}
 										{!file.entityType && (
-											<Lock className="h-3 w-3 flex-shrink-0 opacity-50" title="Scope cannot be changed for this file" />
+											<span title="Scope cannot be changed for this file"><Lock className="h-3 w-3 flex-shrink-0 opacity-50" /></span>
 										)}
 									</span>
 								)}

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 async def execute_workflow(
     context: Any, workflow_id: str, params: dict[str, Any] | None = None
 ) -> ToolResult:
-    """Execute a workflow by ID and return results."""
+    """Execute a workflow by ID or name and return results."""
     from uuid import UUID
 
     from src.core.database import get_db_context
@@ -28,11 +28,6 @@ async def execute_workflow(
 
     if not workflow_id:
         return error_result("workflow_id is required")
-
-    try:
-        workflow_uuid = UUID(workflow_id)
-    except ValueError:
-        return error_result(f"'{workflow_id}' is not a valid UUID. Use list_workflows to get workflow IDs.")
 
     params = params or {}
     logger.info(f"MCP execute_workflow: {workflow_id} with params: {params}")
@@ -47,10 +42,10 @@ async def execute_workflow(
                 user_id=ctx_user_id,
                 is_superuser=context.is_platform_admin,
             )
-            workflow = await repo.get(id=workflow_uuid)
+            workflow = await repo.resolve(workflow_id)
 
             if not workflow:
-                return error_result(f"Workflow with ID '{workflow_id}' not found. Use list_workflows to see available workflows.")
+                return error_result(f"Workflow '{workflow_id}' not found. Use list_workflows to see available workflows.")
 
             result = await execute_tool(
                 workflow_id=str(workflow.id),
@@ -161,7 +156,8 @@ async def validate_workflow(context: Any, file_path: str) -> ToolResult:
     try:
         async with get_db_context() as db:
             service = FileStorageService(db)
-            content = await service.read_file(file_path)
+            content_bytes, _ = await service.read_file(file_path)
+            content = content_bytes.decode("utf-8")
 
             errors: list[str | dict[str, Any]] = []
             warnings: list[str] = []
@@ -386,7 +382,7 @@ async def get_workflow(
 
 # Tool metadata for registration
 TOOLS = [
-    ("execute_workflow", "Execute Workflow", "Execute a Bifrost workflow by ID and return the results. Use list_workflows to get workflow IDs."),
+    ("execute_workflow", "Execute Workflow", "Execute a Bifrost workflow by ID or name and return the results. Use list_workflows to get workflow IDs."),
     ("list_workflows", "List Workflows", "List workflows registered in Bifrost."),
     ("validate_workflow", "Validate Workflow", "Validate a workflow Python file for syntax and decorator issues."),
     ("create_workflow", "Create Workflow", "Create a new workflow by validating Python code and writing to workspace."),

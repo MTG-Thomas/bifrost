@@ -227,14 +227,6 @@ export function WorkflowDeactivationDialog({
 												Has history
 											</Badge>
 										)}
-										{pd.schedule && (
-											<Badge
-												variant="secondary"
-												className="text-xs"
-											>
-												Scheduled
-											</Badge>
-										)}
 										{pd.endpoint_enabled && (
 											<Badge
 												variant="secondary"

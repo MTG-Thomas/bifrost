@@ -568,8 +568,7 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                # Use `get` instead of `get_by_id` - OrgScopedRepository.get() is async
-                mock_repo.get = AsyncMock(return_value=mock_workflow)
+                mock_repo.resolve = AsyncMock(return_value=mock_workflow)
                 mock_repo_cls.return_value = mock_repo
 
                 with patch(
@@ -604,8 +603,7 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                # Use `get` instead of `get_by_id` - OrgScopedRepository.get() is async
-                mock_repo.get = AsyncMock(return_value=None)
+                mock_repo.resolve = AsyncMock(return_value=None)
                 mock_repo_cls.return_value = mock_repo
 
                 result = await execute_workflow(
@@ -620,17 +618,42 @@ class TestExecuteWorkflow:
         assert "list_workflows" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_returns_error_invalid_uuid(self, org_user_context):
-        """Should return error when workflow_id is not a valid UUID."""
-        result = await execute_workflow(
-            org_user_context,
-            "not-a-valid-uuid",
-        )
+    async def test_resolves_workflow_by_name(self, org_user_context, mock_workflow):
+        """Should resolve workflow by name (not just UUID)."""
+        mock_result = MagicMock()
+        mock_result.status.value = "Success"
+        mock_result.duration_ms = 100
+        mock_result.result = {"output": "ok"}
+        mock_result.error = None
+        mock_result.error_type = None
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "src.repositories.workflows.WorkflowRepository"
+            ) as mock_repo_cls:
+                mock_repo = MagicMock()
+                mock_repo.resolve = AsyncMock(return_value=mock_workflow)
+                mock_repo_cls.return_value = mock_repo
+
+                with patch(
+                    "src.services.execution.service.execute_tool"
+                ) as mock_execute:
+                    mock_execute.return_value = mock_result
+
+                    result = await execute_workflow(
+                        org_user_context,
+                        "test_workflow",  # name, not UUID
+                    )
 
         data = result.structured_content
-        assert "error" in data
-        assert "not a valid UUID" in data["error"]
-        assert "list_workflows" in data["error"]
+        assert data["success"] is True
+        assert data["workflow_name"] == "test_workflow"
+        # Verify resolve was called with the name string
+        mock_repo.resolve.assert_called_once_with("test_workflow")
 
     @pytest.mark.asyncio
     async def test_returns_error_on_execution_failure(
@@ -654,8 +677,7 @@ class TestExecuteWorkflow:
                 "src.repositories.workflows.WorkflowRepository"
             ) as mock_repo_cls:
                 mock_repo = MagicMock()
-                # Use `get` instead of `get_by_id` - OrgScopedRepository.get() is async
-                mock_repo.get = AsyncMock(return_value=mock_workflow)
+                mock_repo.resolve = AsyncMock(return_value=mock_workflow)
                 mock_repo_cls.return_value = mock_repo
 
                 with patch(
