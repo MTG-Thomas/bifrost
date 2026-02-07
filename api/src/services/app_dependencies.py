@@ -10,8 +10,9 @@ Used by:
 - MCP code editor tools
 
 Patterns detected:
-- useWorkflow('uuid')
-- useWorkflow("uuid")
+- useWorkflowQuery('uuid')
+- useWorkflowMutation('uuid')
+- useWorkflow('uuid') (legacy, kept for backward compat)
 """
 
 import logging
@@ -26,9 +27,13 @@ from src.models.orm.app_file_dependencies import AppFileDependency
 logger = logging.getLogger(__name__)
 
 # Regex pattern for extracting workflow dependencies
-# Captures UUIDs from hook calls like useWorkflow('550e8400-e29b-41d4-a716-446655440000')
+# Captures UUIDs from hook calls like useWorkflowQuery('uuid'), useWorkflowMutation('uuid'),
+# or legacy useWorkflow('uuid')
 DEPENDENCY_PATTERNS: dict[str, re.Pattern[str]] = {
-    "workflow": re.compile(r'useWorkflow\([\'"]([a-f0-9-]{36})[\'"]\)', re.IGNORECASE),
+    "workflow": re.compile(
+        r'(?:useWorkflow(?:Query|Mutation)?)\([\'"]([a-f0-9-]{36})[\'"]\)',
+        re.IGNORECASE,
+    ),
 }
 
 
@@ -36,7 +41,7 @@ def parse_dependencies(source: str) -> list[tuple[str, UUID]]:
     """
     Parse source code and extract workflow dependencies.
 
-    Scans for patterns like useWorkflow('uuid').
+    Scans for patterns like useWorkflowQuery('uuid'), useWorkflowMutation('uuid'), or useWorkflow('uuid').
     Returns a list of (dependency_type, dependency_id) tuples.
 
     Args:

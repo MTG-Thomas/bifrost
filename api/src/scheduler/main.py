@@ -460,6 +460,15 @@ class Scheduler:
                     self._sync_clone_path = None
                     self._sync_clone_sha = None
 
+                # Store last_synced_at timestamp on success
+                if sync_result.success and config and config.value_json:
+                    from datetime import datetime, timezone
+                    config.value_json = {
+                        **config.value_json,
+                        "last_synced_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    await db.commit()
+
                 # Publish completion
                 if sync_result.success:
                     await publish_git_sync_log(

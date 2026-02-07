@@ -631,7 +631,7 @@ export function Maintenance() {
 									Rebuild the app dependency graph by parsing
 									all app source files. Extracts{" "}
 									<code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">
-										useWorkflow()
+										useWorkflowQuery()/useWorkflowMutation()
 									</code>,{" "}
 									<code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">
 										useForm()

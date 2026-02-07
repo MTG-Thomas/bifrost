@@ -20,7 +20,7 @@ import { useParams as useRouterParams } from "react-router-dom";
  * const params = useParams();
  * // params = { clientId: "123" }
  *
- * const { data: client } = useWorkflow('get_client', { id: params.clientId });
+ * const { data: client } = useWorkflowQuery('get_client', { id: params.clientId });
  * ```
  */
 export function useParams(): Record<string, string> {

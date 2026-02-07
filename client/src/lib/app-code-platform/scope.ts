@@ -12,7 +12,8 @@ import {
 	Outlet,
 	useOutletContext,
 } from "react-router-dom";
-import { useWorkflow } from "./useWorkflow";
+import { useWorkflowQuery } from "./useWorkflowQuery";
+import { useWorkflowMutation } from "./useWorkflowMutation";
 import { useParams } from "./useParams";
 import { useSearchParams } from "./useSearchParams";
 import { navigate, useNavigate } from "./navigate";
@@ -41,7 +42,8 @@ import { Link, NavLink, Navigate } from "./navigation";
 export function createPlatformScope(): Record<string, unknown> {
 	return {
 		// Workflow execution
-		useWorkflow,
+		useWorkflowQuery,
+		useWorkflowMutation,
 
 		// React Router - ALL commonly used exports
 		useLocation,

@@ -419,10 +419,9 @@ def handle_run(args: list[str]) -> int:
     """
     import importlib.util
 
-    if not args:
-        print("Error: No workflow file specified", file=sys.stderr)
-        print("Usage: bifrost run <file> [--workflow NAME]", file=sys.stderr)
-        return 1
+    if not args or args[0] in ("--help", "-h"):
+        print_run_help()
+        return 0
 
     workflow_file = args[0]
     selected_workflow: str | None = None

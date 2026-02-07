@@ -122,8 +122,6 @@ async def get_github_status(
     Returns basic status information about GitHub configuration.
     For detailed sync preview (files to pull/push), use GET /api/github/sync.
     """
-    from datetime import datetime
-
     try:
         config = await get_github_config(db, ctx.org_id)
 
@@ -140,7 +138,7 @@ async def get_github_status(
                 commits_ahead=0,
                 commits_behind=0,
                 commit_history=[],
-                last_synced=datetime.utcnow().isoformat(),
+                last_synced=None,
                 error=None,
             )
 
@@ -157,7 +155,7 @@ async def get_github_status(
                 commits_ahead=0,
                 commits_behind=0,
                 commit_history=[],
-                last_synced=datetime.utcnow().isoformat(),
+                last_synced=None,
                 error=None,
             )
 
@@ -173,7 +171,7 @@ async def get_github_status(
             commits_ahead=0,
             commits_behind=0,
             commit_history=[],
-            last_synced=datetime.utcnow().isoformat(),
+            last_synced=config.last_synced_at,
             error=None,
         )
 
@@ -190,7 +188,7 @@ async def get_github_status(
             commits_ahead=0,
             commits_behind=0,
             commit_history=[],
-            last_synced=datetime.utcnow().isoformat(),
+            last_synced=None,
             error=str(e),
         )
 

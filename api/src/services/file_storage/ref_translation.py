@@ -244,9 +244,11 @@ def get_nested_value(data: dict, field_path: str) -> str | None:
 # App Source Transformation Functions
 # =============================================================================
 
-# Pattern to match useWorkflow('...') or useWorkflow("...")
-# Captures the quote style and the argument
-USE_WORKFLOW_PATTERN = re.compile(r"useWorkflow\((['\"])([^'\"]+)\1\)")
+# Pattern to match useWorkflowQuery('...'), useWorkflowMutation('...'), or useWorkflow('...')
+# Captures: group(1)=function name, group(2)=quote char, group(3)=argument
+USE_WORKFLOW_PATTERN = re.compile(
+    r"(useWorkflow(?:Query|Mutation)?)\((['\"])([^'\"]+)\2\)"
+)
 
 
 def transform_app_source_uuids_to_refs(
@@ -254,9 +256,9 @@ def transform_app_source_uuids_to_refs(
     workflow_map: dict[str, str],
 ) -> tuple[str, list[str]]:
     """
-    Transform useWorkflow('{uuid}') to useWorkflow('{ref}') in TSX source.
+    Transform useWorkflowQuery/useWorkflowMutation/useWorkflow('{uuid}') to '{ref}' in TSX source.
 
-    Scans source code for useWorkflow() calls and replaces UUIDs with
+    Scans source code for workflow hook calls and replaces UUIDs with
     portable workflow references (path::function_name format).
 
     Args:
@@ -272,12 +274,13 @@ def transform_app_source_uuids_to_refs(
     transformed_uuids: list[str] = []
 
     def replace_uuid(match: re.Match[str]) -> str:
-        quote = match.group(1)
-        arg = match.group(2)
+        func_name = match.group(1)
+        quote = match.group(2)
+        arg = match.group(3)
 
         if arg in workflow_map:
             transformed_uuids.append(arg)
-            return f"useWorkflow({quote}{workflow_map[arg]}{quote})"
+            return f"{func_name}({quote}{workflow_map[arg]}{quote})"
         return match.group(0)
 
     result = USE_WORKFLOW_PATTERN.sub(replace_uuid, source)
@@ -289,9 +292,9 @@ def transform_app_source_refs_to_uuids(
     ref_to_uuid: dict[str, str],
 ) -> tuple[str, list[str]]:
     """
-    Transform useWorkflow('{ref}') to useWorkflow('{uuid}') in TSX source.
+    Transform useWorkflowQuery/useWorkflowMutation/useWorkflow('{ref}') to '{uuid}' in TSX source.
 
-    Scans source code for useWorkflow() calls and resolves portable
+    Scans source code for workflow hook calls and resolves portable
     workflow references back to UUIDs.
 
     Args:
@@ -307,8 +310,9 @@ def transform_app_source_refs_to_uuids(
     unresolved_refs: list[str] = []
 
     def replace_ref(match: re.Match[str]) -> str:
-        quote = match.group(1)
-        arg = match.group(2)
+        func_name = match.group(1)
+        quote = match.group(2)
+        arg = match.group(3)
 
         # Check if already a UUID (skip transformation)
         if _looks_like_uuid(arg):
@@ -316,12 +320,12 @@ def transform_app_source_refs_to_uuids(
 
         # Check if it's a portable ref we can resolve (try both formats)
         if arg in ref_to_uuid:
-            return f"useWorkflow({quote}{ref_to_uuid[arg]}{quote})"
+            return f"{func_name}({quote}{ref_to_uuid[arg]}{quote})"
 
         # Try with workflow:: prefix if not present
         normalized = normalize_portable_ref(arg)
         if normalized in ref_to_uuid:
-            return f"useWorkflow({quote}{ref_to_uuid[normalized]}{quote})"
+            return f"{func_name}({quote}{ref_to_uuid[normalized]}{quote})"
 
         # Unresolved ref - keep as-is but track it
         if "::" in arg:  # Looks like a portable ref

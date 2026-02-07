@@ -196,7 +196,7 @@ export const $: Record<string, unknown> = {
 	// override Lucide's Link icon
 	...LucideIcons,
 
-	// Platform APIs (useWorkflow, navigate, useUser, etc.)
+	// Platform APIs (useWorkflowQuery, useWorkflowMutation, navigate, useUser, etc.)
 	// MUST come after Lucide icons to override Link, NavLink, Navigate, useNavigate
 	...createPlatformScope(),
 
@@ -289,8 +289,8 @@ function ErrorComponent({
  * ```typescript
  * // From source
  * const MyPage = createComponent(`
- *   import { useWorkflow, Button } from "bifrost";
- *   const { data, isLoading } = useWorkflow('get_clients');
+ *   import { useWorkflowQuery, Button } from "bifrost";
+ *   const { data, isLoading } = useWorkflowQuery('get_clients');
  *   if (isLoading) return <div>Loading...</div>;
  *   return <Button>{data.length} clients</Button>;
  * `);

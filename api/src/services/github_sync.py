@@ -1136,6 +1136,14 @@ class GitHubSyncService:
                             entity_type=conflict_metadata.entity_type,
                             parent_slug=conflict_metadata.parent_slug,
                         ))
+                else:
+                    # local_sha == remote_sha: remote unchanged since last sync
+                    # But local content may have been modified (e.g. via MCP tools)
+                    if local_status == GitStatus.MODIFIED:
+                        to_push.append(_enrich_sync_action(
+                            path=path,
+                            action=SyncActionType.MODIFY,
+                        ))
 
             # Check files only in local (not in remote)
             for path, local_info in local_shas.items():

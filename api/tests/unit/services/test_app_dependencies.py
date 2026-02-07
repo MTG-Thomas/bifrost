@@ -81,6 +81,47 @@ const w2 = useWorkflow('550e8400-e29b-41d4-a716-446655440000');
 
         assert len(deps) == 0
 
+    def test_parses_use_workflow_query(self):
+        """useWorkflowQuery call is parsed."""
+        source = "const { data } = useWorkflowQuery('550e8400-e29b-41d4-a716-446655440000');"
+
+        deps = parse_dependencies(source)
+
+        assert len(deps) == 1
+        assert deps[0][0] == "workflow"
+        assert deps[0][1] == UUID("550e8400-e29b-41d4-a716-446655440000")
+
+    def test_parses_use_workflow_mutation(self):
+        """useWorkflowMutation call is parsed."""
+        source = "const { execute } = useWorkflowMutation('550e8400-e29b-41d4-a716-446655440000');"
+
+        deps = parse_dependencies(source)
+
+        assert len(deps) == 1
+        assert deps[0][0] == "workflow"
+        assert deps[0][1] == UUID("550e8400-e29b-41d4-a716-446655440000")
+
+    def test_parses_mixed_hook_calls(self):
+        """All three hook variants are parsed and deduplicated."""
+        source = """
+const q = useWorkflowQuery('11111111-1111-1111-1111-111111111111');
+const m = useWorkflowMutation('22222222-2222-2222-2222-222222222222');
+const w = useWorkflow('33333333-3333-3333-3333-333333333333');
+"""
+        deps = parse_dependencies(source)
+
+        assert len(deps) == 3
+
+    def test_deduplicates_across_hook_variants(self):
+        """Same UUID used via different hooks is deduplicated."""
+        source = """
+const q = useWorkflowQuery('550e8400-e29b-41d4-a716-446655440000');
+const m = useWorkflowMutation('550e8400-e29b-41d4-a716-446655440000');
+"""
+        deps = parse_dependencies(source)
+
+        assert len(deps) == 1
+
 
 class TestSyncFileDependencies:
     """Tests for sync_file_dependencies function."""

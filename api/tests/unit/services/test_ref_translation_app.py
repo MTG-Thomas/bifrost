@@ -207,3 +207,91 @@ const w = useWorkflow('workflows/test.py::func');
         assert "const ref = 'workflows/test.py::func'" in result
         assert "someFunction('workflows/test.py::func')" in result
         assert "useWorkflow('uuid-1234')" in result
+
+
+class TestTransformAppSourceUuidsToRefsNewHooks:
+    """Tests for UUID -> portable ref transformation with new hook names."""
+
+    def test_transforms_use_workflow_query(self):
+        """useWorkflowQuery call with matching UUID is transformed."""
+        source = "const { data } = useWorkflowQuery('550e8400-e29b-41d4-a716-446655440000');"
+        workflow_map = {
+            "550e8400-e29b-41d4-a716-446655440000": "workflows/test.py::my_func"
+        }
+
+        result, transformed = transform_app_source_uuids_to_refs(source, workflow_map)
+
+        assert "useWorkflowQuery('workflows/test.py::my_func')" in result
+        assert "550e8400-e29b-41d4-a716-446655440000" not in result
+        assert len(transformed) == 1
+
+    def test_transforms_use_workflow_mutation(self):
+        """useWorkflowMutation call with matching UUID is transformed."""
+        source = "const { execute } = useWorkflowMutation('550e8400-e29b-41d4-a716-446655440000');"
+        workflow_map = {
+            "550e8400-e29b-41d4-a716-446655440000": "workflows/test.py::my_func"
+        }
+
+        result, transformed = transform_app_source_uuids_to_refs(source, workflow_map)
+
+        assert "useWorkflowMutation('workflows/test.py::my_func')" in result
+        assert "550e8400-e29b-41d4-a716-446655440000" not in result
+        assert len(transformed) == 1
+
+    def test_transforms_mixed_hooks(self):
+        """All hook variants are transformed correctly."""
+        source = """
+const q = useWorkflowQuery('uuid-1111-1111-1111-111111111111');
+const m = useWorkflowMutation('uuid-2222-2222-2222-222222222222');
+const w = useWorkflow('uuid-3333-3333-3333-333333333333');
+"""
+        workflow_map = {
+            "uuid-1111-1111-1111-111111111111": "workflows/a.py::func_a",
+            "uuid-2222-2222-2222-222222222222": "workflows/b.py::func_b",
+            "uuid-3333-3333-3333-333333333333": "workflows/c.py::func_c",
+        }
+
+        result, transformed = transform_app_source_uuids_to_refs(source, workflow_map)
+
+        assert "useWorkflowQuery('workflows/a.py::func_a')" in result
+        assert "useWorkflowMutation('workflows/b.py::func_b')" in result
+        assert "useWorkflow('workflows/c.py::func_c')" in result
+        assert len(transformed) == 3
+
+
+class TestTransformAppSourceRefsToUuidsNewHooks:
+    """Tests for portable ref -> UUID transformation with new hook names."""
+
+    def test_transforms_use_workflow_query_ref(self):
+        """useWorkflowQuery portable ref is resolved to UUID."""
+        source = "const { data } = useWorkflowQuery('workflows/test.py::my_func');"
+        ref_to_uuid = {
+            "workflows/test.py::my_func": "uuid-1234"
+        }
+
+        result, unresolved = transform_app_source_refs_to_uuids(source, ref_to_uuid)
+
+        assert "useWorkflowQuery('uuid-1234')" in result
+        assert len(unresolved) == 0
+
+    def test_transforms_use_workflow_mutation_ref(self):
+        """useWorkflowMutation portable ref is resolved to UUID."""
+        source = "const { execute } = useWorkflowMutation('workflows/test.py::my_func');"
+        ref_to_uuid = {
+            "workflows/test.py::my_func": "uuid-1234"
+        }
+
+        result, unresolved = transform_app_source_refs_to_uuids(source, ref_to_uuid)
+
+        assert "useWorkflowMutation('uuid-1234')" in result
+        assert len(unresolved) == 0
+
+    def test_unresolved_refs_tracked_for_new_hooks(self):
+        """Unresolved refs in new hook variants are tracked."""
+        source = "const { data } = useWorkflowQuery('workflows/missing.py::not_found');"
+        ref_to_uuid = {}
+
+        result, unresolved = transform_app_source_refs_to_uuids(source, ref_to_uuid)
+
+        assert len(unresolved) == 1
+        assert unresolved[0] == "workflows/missing.py::not_found"

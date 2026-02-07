@@ -10,7 +10,7 @@
  *
  * ```jsx
  * // All of these are available in code
- * const { data, isLoading } = useWorkflow('list_clients');
+ * const { data, isLoading } = useWorkflowQuery('list_clients');
  * const user = useUser();
  * const params = useParams();
  * navigate('/clients');
@@ -18,7 +18,8 @@
  */
 
 // Workflow execution
-export { useWorkflow } from "./useWorkflow";
+export { useWorkflowQuery } from "./useWorkflowQuery";
+export { useWorkflowMutation } from "./useWorkflowMutation";
 
 // Router utilities
 export { useParams } from "./useParams";

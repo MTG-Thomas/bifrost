@@ -27,6 +27,7 @@ from fastmcp.tools.tool import ToolResult
 from sqlalchemy import select
 
 from src.core.database import get_db_context
+from src.models.enums import GitStatus
 from src.models.orm.applications import AppFile, Application
 from src.models.orm.organizations import Organization
 from src.models.orm.workflows import Workflow
@@ -506,12 +507,13 @@ async def _replace_text_file(
 
         if existing:
             # Update existing (or resurrect if deleted)
+            created = existing.is_deleted  # Was deleted, now resurrected
             existing.content = content
             existing.content_hash = content_hash
             existing.size_bytes = size_bytes
             existing.entity_type = "text"
             existing.is_deleted = False
-            created = existing.is_deleted  # Was deleted, now resurrected
+            existing.git_status = GitStatus.MODIFIED
         else:
             # Create new
             new_file = WorkspaceFile(

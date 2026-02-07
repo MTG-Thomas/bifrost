@@ -594,117 +594,129 @@ modules/
 
 If you add import statements, you will get: `Cannot use import statement outside a module`
 
-## useWorkflow Hook
+## Workflow Hooks
 
 **CRITICAL: Always use workflow IDs, not names.**
 
 ```tsx
 // CORRECT - use the workflow UUID
-const workflow = useWorkflow("ef8cf1f2-b451-47f4-aee8-336f7cb21d33");
+const { data } = useWorkflowQuery("ef8cf1f2-b451-47f4-aee8-336f7cb21d33");
 
 // WRONG - names don't work
-const workflow = useWorkflow("list_csp_tenants");
+const { data } = useWorkflowQuery("list_csp_tenants");
 ```
 
 Get workflow IDs using `list_workflows` before building the app.
 
-### Hook Return Value
+Two hooks are available:
+- `useWorkflowQuery` — for loading data (runs automatically on mount)
+- `useWorkflowMutation` — for user-triggered actions (runs when you call `execute()`)
 
-The hook returns an object with these properties:
+### useWorkflowQuery
+
+Declarative data fetching. Executes automatically on mount, re-executes when params change.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `execute` | `(params?) => Promise<string>` | Start workflow execution. Returns execution ID (NOT the result). |
-| `executionId` | `string \| null` | Current execution ID (null if not started) |
-| `status` | `string \| null` | Execution status: `Pending`, `Running`, `Success`, `Failed`, `Timeout`, `Cancelled` |
-| `loading` | `boolean` | True while workflow is Pending or Running |
-| `completed` | `boolean` | True when workflow completed successfully (status === 'Success') |
-| `failed` | `boolean` | True when workflow failed (status is Failed/Timeout/Cancelled) |
-| `result` | `T \| null` | The workflow result data (null until completed) |
+| `data` | `T \| null` | The workflow result data (null until completed) |
+| `isLoading` | `boolean` | True while the workflow is executing |
+| `isError` | `boolean` | True if the workflow failed |
 | `error` | `string \| null` | Error message if workflow failed |
 | `logs` | `StreamingLog[]` | Streaming logs array (updates in real-time) |
+| `refetch` | `() => Promise<T>` | Re-execute the workflow |
+| `executionId` | `string \| null` | Current execution ID |
+| `status` | `string \| null` | Execution status |
+
+Options (third parameter): `{ enabled?: boolean }` — set `enabled: false` to skip automatic execution.
+
+### useWorkflowMutation
+
+Imperative execution. Does nothing until `execute()` is called. `execute()` returns `Promise<T>` with the actual result.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `execute` | `(params?) => Promise<T>` | Execute the workflow. Returns the result directly. |
+| `isLoading` | `boolean` | True while the workflow is executing |
+| `isError` | `boolean` | True if the last execution failed |
+| `error` | `string \| null` | Error message from last execution |
+| `data` | `T \| null` | Result data from last execution |
+| `logs` | `StreamingLog[]` | Streaming logs array (updates in real-time) |
+| `reset` | `() => void` | Reset data, error, and loading state |
+| `executionId` | `string \| null` | Current execution ID |
+| `status` | `string \| null` | Execution status |
 
 ### Usage Patterns
 
-**Pattern 1: Load on mount (simple)**
+**Pattern 1: Load data on mount (`useWorkflowQuery`)**
 
 Best for workflows that load data when the page loads.
 
 ```tsx
-const workflow = useWorkflow("workflow-id");
+const { data, isLoading, error } = useWorkflowQuery("workflow-id", { limit: 10 });
 
-useEffect(() => {
-  workflow.execute();
-}, []);
+if (isLoading) return <Skeleton />;
+if (error) return <Alert>{error}</Alert>;
 
-if (workflow.loading) return <Skeleton />;
-if (workflow.failed) return <Alert>{workflow.error}</Alert>;
-
-// Access result directly - it updates when workflow completes
-const data = workflow.result?.items || [];
+return <CustomerList data={data} />;
 ```
 
-**Pattern 2: Button trigger with loading state**
+**Pattern 2: Button-triggered action (`useWorkflowMutation`)**
 
-Best for user-triggered actions where you just need loading feedback.
+Best for user-triggered actions like create, update, delete.
 
 ```tsx
-const workflow = useWorkflow("create-item-workflow");
+const { execute, isLoading } = useWorkflowMutation("create-item-workflow");
 
-<Button onClick={() => workflow.execute({ name: "New Item" })} disabled={workflow.loading}>
-  {workflow.loading ? <Loader2 className="animate-spin" /> : "Create"}
+const handleCreate = async () => {
+  try {
+    const result = await execute({ name: "New Item" });
+    setItems(prev => [...prev, result.item]);
+    setDialogOpen(false);
+  } catch (err) {
+    console.error("Failed:", err.message);
+  }
+};
+
+<Button onClick={handleCreate} disabled={isLoading}>
+  {isLoading ? <Loader2 className="animate-spin" /> : "Create"}
 </Button>
 ```
 
-**Pattern 3: Async action with result handling**
+**Pattern 3: Sequential/batch calls (`useWorkflowMutation`)**
 
-Best when you need to do something with the result (e.g., close dialog, update state).
-**IMPORTANT:** `execute()` returns the execution ID, NOT the result. Use a useEffect to handle completion.
+Each `execute()` call is independent — safe to call in a loop.
 
 ```tsx
-const workflow = useWorkflow("create-item-workflow");
-const [pendingAction, setPendingAction] = useState(false);
+const { execute } = useWorkflowMutation("process-item-workflow");
 
-// Handle completion
-useEffect(() => {
-  if (!pendingAction) return;
-
-  if (workflow.completed && workflow.result) {
-    const newItem = workflow.result.item;
-    setItems(prev => [...prev, newItem]);
-    setDialogOpen(false);
-    setPendingAction(false);
-  } else if (workflow.failed) {
-    console.error("Failed:", workflow.error);
-    setPendingAction(false);
+const handleBatch = async () => {
+  const results = [];
+  for (const item of items) {
+    const result = await execute({ id: item.id });
+    results.push(result);
   }
-}, [workflow.completed, workflow.failed, workflow.result, pendingAction]);
-
-const handleCreate = async () => {
-  setPendingAction(true);
-  try {
-    await workflow.execute({ name: "New Item" });
-    // Don't try to use the result here - it's handled in useEffect
-  } catch (error) {
-    setPendingAction(false);
-  }
+  setProcessed(results);
 };
 ```
 
-### Common Mistakes
+**Pattern 4: Conditional loading (`useWorkflowQuery` with `enabled`)**
+
+Delay execution until a condition is met.
 
 ```tsx
-// WRONG - execute() returns execution ID, not result
-const result = await workflow.execute({ name: "test" });
-if (result.success) { ... }  // result is a string (execution ID)!
-
-// CORRECT - use useEffect to handle async result
-useEffect(() => {
-  if (workflow.completed && workflow.result) {
-    // Now workflow.result has the actual data
-  }
-}, [workflow.completed, workflow.result]);
+const params = useParams();
+const { data, isLoading } = useWorkflowQuery(
+  "get-customer-workflow",
+  { id: params.id },
+  { enabled: !!params.id }
+);
 ```
+
+### Guidelines
+
+- Use `useWorkflowQuery` for **reading/loading data** (GET-like operations)
+- Use `useWorkflowMutation` for **user-triggered actions and writes** (POST/PUT/DELETE-like operations)
+- No `useEffect` needed for handling results — `useWorkflowQuery` auto-executes, and `useWorkflowMutation.execute()` returns results directly as a Promise
 
 ## Layout Pattern
 

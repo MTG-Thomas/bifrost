@@ -317,7 +317,7 @@ class GitRefreshStatusResponse(BaseModel):
     commit_history: list[CommitInfo] = Field(default_factory=list, description="Recent commit history with pushed/unpushed status")
 
     # Metadata
-    last_synced: str = Field(..., description="ISO timestamp of when sync was performed")
+    last_synced: str | None = Field(default=None, description="ISO timestamp of last successful sync")
     error: str | None = Field(default=None, description="Error message if sync failed")
 
     model_config = ConfigDict(from_attributes=True)

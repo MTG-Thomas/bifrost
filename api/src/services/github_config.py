@@ -28,6 +28,7 @@ class GitHubConfig:
     token: str | None
     branch: str
     status: str
+    last_synced_at: str | None = None
 
 
 def _get_fernet() -> Fernet:
@@ -101,6 +102,7 @@ async def get_github_config(db: AsyncSession, org_id: str | UUID | None) -> GitH
         token=token,
         branch=config_value.get("branch", "main"),
         status=config_value.get("status", "connected"),
+        last_synced_at=config_value.get("last_synced_at"),
     )
 
 

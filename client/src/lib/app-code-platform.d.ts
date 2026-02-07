@@ -41,126 +41,138 @@ export type ExecutionStatus =
 	| "Cancelling";
 
 /**
- * Result object returned by the useWorkflow hook
- * @template T - The type of data returned by the workflow
+ * Options for useWorkflowQuery
  */
-export interface UseWorkflowResult<T> {
-	/**
-	 * Start workflow execution with optional parameters.
-	 * Returns a Promise that resolves to the execution ID.
-	 * Calling execute() again replaces the current execution.
-	 */
-	execute: (params?: Record<string, unknown>) => Promise<string>;
-
-	/**
-	 * Current execution ID.
-	 * Null if workflow hasn't been started yet.
-	 */
-	executionId: string | null;
-
-	/**
-	 * Current execution status.
-	 * Null if workflow hasn't been started yet.
-	 */
-	status: ExecutionStatus | null;
-
-	/**
-	 * True while the workflow is Pending or Running.
-	 * Use this for showing loading spinners.
-	 */
-	loading: boolean;
-
-	/**
-	 * True when the workflow completed successfully (status = "Success").
-	 * Use this to conditionally render results.
-	 */
-	completed: boolean;
-
-	/**
-	 * True when the workflow failed (status = "Failed", "Timeout", "Cancelled", or "CompletedWithErrors").
-	 * Use this to show error states.
-	 */
-	failed: boolean;
-
-	/**
-	 * The workflow result data.
-	 * Null until the workflow completes successfully.
-	 */
-	result: T | null;
-
-	/**
-	 * Error message if the workflow failed.
-	 * Null if successful or still running.
-	 */
-	error: string | null;
-
-	/**
-	 * Streaming logs array that updates in real-time.
-	 * Use this to display log output during long-running workflows.
-	 */
-	logs: StreamingLog[];
+export interface UseWorkflowQueryOptions {
+	/** Whether to execute automatically. Default: true. Set false to skip execution until enabled. */
+	enabled?: boolean;
 }
 
 /**
- * Hook for executing workflows with real-time streaming updates.
- * Provides loading, error, completion states, streaming logs, and result.
+ * Result object returned by useWorkflowQuery
+ * @template T - The type of data returned by the workflow
+ */
+export interface UseWorkflowQueryResult<T> {
+	/** The workflow result data. Null until completed. */
+	data: T | null;
+	/** True while the workflow is executing. */
+	isLoading: boolean;
+	/** True if the workflow failed. */
+	isError: boolean;
+	/** Error message if the workflow failed. */
+	error: string | null;
+	/** Streaming logs array that updates in real-time. */
+	logs: StreamingLog[];
+	/** Re-execute the workflow with the same params. */
+	refetch: () => Promise<T>;
+	/** Current execution ID. */
+	executionId: string | null;
+	/** Current execution status. */
+	status: ExecutionStatus | null;
+}
+
+/**
+ * Declarative workflow data fetching hook.
+ * Executes automatically on mount, re-executes when params change.
  *
  * @template T - The type of data returned by the workflow
- * @param workflowId - The workflow ID or name to execute
- * @returns Object with execute function and reactive state
+ * @param workflowId - The workflow ID to execute
+ * @param params - Optional parameters passed to the workflow
+ * @param options - Options like `enabled` to control execution
+ * @returns Object with data, loading state, error, and refetch
  *
  * @example
  * ```tsx
  * // Load data on mount
- * const workflow = useWorkflow<Customer[]>('list-customers');
+ * const { data, isLoading, error } = useWorkflowQuery<Customer[]>(
+ *   "workflow-uuid",
+ *   { limit: 10 }
+ * );
  *
- * useEffect(() => {
- *   workflow.execute({ limit: 10 });
- * }, []);
- *
- * if (workflow.loading) return <Skeleton />;
- * if (workflow.failed) return <Alert>{workflow.error}</Alert>;
- *
- * return <CustomerList data={workflow.result} />;
+ * if (isLoading) return <Skeleton />;
+ * if (error) return <Alert>{error}</Alert>;
+ * return <CustomerList data={data} />;
  * ```
  *
  * @example
  * ```tsx
- * // Button trigger with loading state
- * const workflow = useWorkflow('create-customer');
- *
- * <Button
- *   onClick={() => workflow.execute({ name: 'Acme' })}
- *   disabled={workflow.loading}
- * >
- *   {workflow.loading ? <Loader2 className="animate-spin" /> : 'Create'}
- * </Button>
- * ```
- *
- * @example
- * ```tsx
- * // With streaming logs for long-running tasks
- * const workflow = useWorkflow('long-running-task');
- *
- * useEffect(() => {
- *   workflow.execute({ taskId: 123 });
- * }, []);
- *
- * {workflow.loading && (
- *   <div>
- *     <p>Processing...</p>
- *     <div className="font-mono text-sm">
- *       {workflow.logs.map((log, i) => (
- *         <div key={i}>[{log.level}] {log.message}</div>
- *       ))}
- *     </div>
- *   </div>
- * )}
+ * // Conditional execution
+ * const params = useParams();
+ * const { data } = useWorkflowQuery("get-customer", { id: params.id }, {
+ *   enabled: !!params.id
+ * });
  * ```
  */
-export declare function useWorkflow<T = unknown>(
+export declare function useWorkflowQuery<T = unknown>(
 	workflowId: string,
-): UseWorkflowResult<T>;
+	params?: Record<string, unknown>,
+	options?: UseWorkflowQueryOptions,
+): UseWorkflowQueryResult<T>;
+
+/**
+ * Result object returned by useWorkflowMutation
+ * @template T - The type of data returned by the workflow
+ */
+export interface UseWorkflowMutationResult<T> {
+	/** Execute the workflow. Returns a Promise that resolves to the result. */
+	execute: (params?: Record<string, unknown>) => Promise<T>;
+	/** True while the workflow is executing. */
+	isLoading: boolean;
+	/** True if the last execution failed. */
+	isError: boolean;
+	/** Error message from the last execution. */
+	error: string | null;
+	/** Result data from the last execution. */
+	data: T | null;
+	/** Streaming logs array that updates in real-time. */
+	logs: StreamingLog[];
+	/** Reset data, error, and loading state. */
+	reset: () => void;
+	/** Current execution ID. */
+	executionId: string | null;
+	/** Current execution status. */
+	status: ExecutionStatus | null;
+}
+
+/**
+ * Imperative workflow execution hook.
+ * Does nothing until execute() is called. Returns result as Promise<T>.
+ *
+ * @template T - The type of data returned by the workflow
+ * @param workflowId - The workflow ID to execute
+ * @returns Object with execute function and reactive state
+ *
+ * @example
+ * ```tsx
+ * // Button-triggered action
+ * const { execute, isLoading } = useWorkflowMutation("workflow-uuid");
+ *
+ * const handleCreate = async () => {
+ *   try {
+ *     const result = await execute({ name: "Acme" });
+ *     setItems(prev => [...prev, result.item]);
+ *   } catch (err) {
+ *     console.error("Failed:", err.message);
+ *   }
+ * };
+ * ```
+ *
+ * @example
+ * ```tsx
+ * // Sequential/batch calls
+ * const { execute } = useWorkflowMutation("workflow-uuid");
+ *
+ * const handleBatch = async () => {
+ *   for (const item of items) {
+ *     const result = await execute({ id: item.id });
+ *     results.push(result);
+ *   }
+ * };
+ * ```
+ */
+export declare function useWorkflowMutation<T = unknown>(
+	workflowId: string,
+): UseWorkflowMutationResult<T>;
 
 /**
  * Current user information available in apps
@@ -234,7 +246,7 @@ export declare function useUser(): AppCodeUser;
  * const params = useParams();
  * // params = { clientId: "123" }
  *
- * const { data: client } = useWorkflow('get_client', { id: params.clientId });
+ * const { data: client } = useWorkflowQuery('get_client', { id: params.clientId });
  * ```
  */
 export declare function useParams(): Record<string, string>;
@@ -650,7 +662,8 @@ export interface PlatformScope {
 	Suspense: typeof import("react").Suspense;
 
 	// Platform hooks
-	useWorkflow: typeof useWorkflow;
+	useWorkflowQuery: typeof useWorkflowQuery;
+	useWorkflowMutation: typeof useWorkflowMutation;
 	useUser: typeof useUser;
 	useParams: typeof useParams;
 	useSearchParams: typeof useSearchParams;
