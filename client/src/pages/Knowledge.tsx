@@ -45,7 +45,7 @@ import {
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
 import { toast } from "sonner";
-import { authFetch } from "@/lib/auth";
+import { authFetch } from "@/lib/api-client";
 import { KnowledgeSourceDialog } from "@/components/knowledge/KnowledgeSourceDialog";
 import { KnowledgeDocumentList } from "@/components/knowledge/KnowledgeDocumentList";
 

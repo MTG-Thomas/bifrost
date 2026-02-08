@@ -25,7 +25,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { authFetch } from "@/lib/auth";
+import { authFetch } from "@/lib/api-client";
 
 interface KnowledgeSource {
 	id: string;

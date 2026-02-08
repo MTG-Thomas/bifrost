@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TiptapEditor } from "@/components/ui/tiptap-editor";
 import { toast } from "sonner";
-import { authFetch } from "@/lib/auth";
+import { authFetch } from "@/lib/api-client";
 
 interface KnowledgeDocumentDrawerProps {
 	sourceId: string;

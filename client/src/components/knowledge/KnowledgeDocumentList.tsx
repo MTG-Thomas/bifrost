@@ -29,7 +29,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { authFetch } from "@/lib/auth";
+import { authFetch } from "@/lib/api-client";
 import { KnowledgeDocumentDrawer } from "@/components/knowledge/KnowledgeDocumentDrawer";
 
 interface DocumentSummary {
