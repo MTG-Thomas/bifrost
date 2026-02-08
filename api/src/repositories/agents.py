@@ -34,21 +34,27 @@ class AgentRepository(OrgScopedRepository[Agent]):
         self,
         active_only: bool = True,
     ) -> list[Agent]:
-        """
-        List agents with cascade scoping and role-based access.
+        """List agents with cascade scoping, role-based access, and user's private agents."""
+        from sqlalchemy import or_
+        from src.models.enums import AgentAccessLevel
 
-        Uses the base class scoping and role checking automatically.
-        Eager-loads the tools relationship for efficient access.
-
-        Args:
-            active_only: If True, only return active agents
-
-        Returns:
-            List of Agent ORM objects with tools eager-loaded
-        """
-        # Build base query with cascade scoping
         query = select(self.model).options(selectinload(self.model.tools))
-        query = self._apply_cascade_scope(query)
+
+        # Build scope filter: cascade (org + global) OR user's own private agents
+        cascade_conditions = []
+        if self.org_id is not None:
+            cascade_conditions.append(self.model.organization_id == self.org_id)
+        cascade_conditions.append(self.model.organization_id.is_(None))
+
+        private_condition = (
+            (self.model.access_level == AgentAccessLevel.PRIVATE) &
+            (self.model.owner_user_id == self.user_id)
+        ) if self.user_id else None
+
+        if private_condition is not None:
+            query = query.where(or_(*cascade_conditions, private_condition))
+        else:
+            query = query.where(or_(*cascade_conditions))
 
         if active_only:
             query = query.where(self.model.is_active.is_(True))
@@ -58,7 +64,7 @@ class AgentRepository(OrgScopedRepository[Agent]):
         result = await self.session.execute(query)
         entities = list(result.scalars().unique().all())
 
-        # Filter by role access for non-superusers with role-based entities
+        # Filter by role access for non-superusers
         if not self.is_superuser:
             accessible = []
             for entity in entities:
@@ -137,6 +143,7 @@ class AgentRepository(OrgScopedRepository[Agent]):
                 selectinload(self.model.tools),
                 selectinload(self.model.delegated_agents),
                 selectinload(self.model.roles),
+                selectinload(self.model.owner),
             )
             .where(self.model.id == agent_id)
         )
@@ -161,6 +168,7 @@ class AgentRepository(OrgScopedRepository[Agent]):
                 selectinload(self.model.tools),
                 selectinload(self.model.delegated_agents),
                 selectinload(self.model.roles),
+                selectinload(self.model.owner),
             )
             .where(self.model.id == agent_id)
         )

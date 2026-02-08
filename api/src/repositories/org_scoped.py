@@ -318,6 +318,10 @@ class OrgScopedRepository(Generic[ModelT]):
         if access_level == "role_based":
             return await self._check_role_access(entity)
 
+        if access_level == "private":
+            entity_owner_id = getattr(entity, "owner_user_id", None)
+            return entity_owner_id is not None and entity_owner_id == self.user_id
+
         # Unknown access level - deny
         return False
 
