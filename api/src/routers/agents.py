@@ -22,9 +22,12 @@ from src.core.org_filter import resolve_org_filter
 from src.models.contracts.agents import (
     AgentAccessLevel,
     AgentCreate,
+    AgentPromoteRequest,
     AgentPublic,
     AgentSummary,
     AgentUpdate,
+    AccessibleKnowledgeSource,
+    AccessibleTool,
     AssignDelegationsToAgentRequest,
     AssignToolsToAgentRequest,
 )
@@ -107,18 +110,78 @@ async def _validate_agent_references(
         )
 
 
+async def _validate_user_tool_access(
+    db: DbSession,
+    user_id: UUID,
+    tool_ids: list[str],
+) -> None:
+    """Validate user can access all specified tools via their roles."""
+    if not tool_ids:
+        return
+
+    from src.models.orm.users import UserRole
+    from src.models.orm.workflow_roles import WorkflowRole
+
+    # Get user's role IDs
+    result = await db.execute(
+        select(UserRole.role_id).where(UserRole.user_id == user_id)
+    )
+    user_role_ids = set(result.scalars().all())
+
+    for tool_id in tool_ids:
+        try:
+            workflow_uuid = UUID(tool_id)
+        except ValueError:
+            raise HTTPException(422, f"Invalid tool ID: {tool_id}")
+
+        result = await db.execute(
+            select(Workflow).where(Workflow.id == workflow_uuid)
+        )
+        workflow = result.scalar_one_or_none()
+        if not workflow:
+            raise HTTPException(422, f"Tool '{tool_id}' not found")
+        if not workflow.is_active:
+            raise HTTPException(422, f"Tool '{workflow.name}' is inactive")
+
+        if workflow.access_level == "authenticated":
+            continue
+
+        result = await db.execute(
+            select(WorkflowRole.role_id).where(WorkflowRole.workflow_id == workflow_uuid)
+        )
+        workflow_role_ids = set(result.scalars().all())
+
+        if not workflow_role_ids or not workflow_role_ids.intersection(user_role_ids):
+            raise HTTPException(403, f"You do not have role access to tool '{workflow.name}'")
+
+
+async def _user_has_permission(
+    db: DbSession,
+    user_id: UUID,
+    permission: str,
+) -> bool:
+    """Check if a user has a permission via any of their roles."""
+    from src.models.orm.users import UserRole
+
+    result = await db.execute(
+        select(Role.permissions)
+        .join(UserRole, UserRole.role_id == Role.id)
+        .where(UserRole.user_id == user_id)
+        .where(Role.is_active.is_(True))
+    )
+    for permissions in result.scalars().all():
+        if permissions and permissions.get(permission):
+            return True
+    return False
+
+
 def _agent_to_public(agent: Agent) -> AgentPublic:
-    """Convert Agent ORM to AgentPublic with relationships.
-
-    Includes all referenced tools/agents, even if deactivated.
-    The UI uses /api/tools?include_inactive=true to resolve names
-    and show deactivated tools with warning badges.
-
-    Filters:
-    - system_tools: Only includes tools that exist in the registry
-    """
-    # Get valid system tool IDs from registry
+    """Convert Agent ORM to AgentPublic with relationships."""
     valid_system_tool_ids = set(get_system_tool_ids())
+
+    owner_email = None
+    if agent.owner_user_id and hasattr(agent, 'owner') and agent.owner:
+        owner_email = agent.owner.email
 
     return AgentPublic(
         id=agent.id,
@@ -133,7 +196,8 @@ def _agent_to_public(agent: Agent) -> AgentPublic:
         created_by=agent.created_by,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
-        # Include all tools - UI shows deactivated ones with warning badges
+        owner_user_id=agent.owner_user_id,
+        owner_email=owner_email,
         tool_ids=[str(t.id) for t in agent.tools],
         delegated_agent_ids=[str(a.id) for a in agent.delegated_agents],
         role_ids=[str(r.id) for r in agent.roles],
@@ -212,23 +276,44 @@ async def list_agents(
 async def create_agent(
     agent_data: AgentCreate,
     db: DbSession,
-    user: CurrentSuperuser,
+    user: CurrentActiveUser,
 ) -> AgentPublic:
     """
-    Create a new agent (platform admin only).
+    Create a new agent.
 
-    Creates both database record and S3 file.
+    Platform admins can create any agent type.
+    Regular users can only create private agents with tools they have access to.
     """
+    is_admin = user.is_superuser or any(
+        role in ["Platform Admin", "Platform Owner"] for role in user.roles
+    )
+
+    if not is_admin:
+        # Non-admin: enforce private-only creation
+        if agent_data.access_level != AgentAccessLevel.PRIVATE:
+            raise HTTPException(403, "Non-admin users can only create private agents")
+        agent_data.organization_id = user.organization_id
+        await _validate_user_tool_access(db, user.user_id, agent_data.tool_ids)
+        agent_data.system_tools = []
+        agent_data.knowledge_sources = []
+        agent_data.delegated_agent_ids = []
+        agent_data.role_ids = []
+
     # Validate references before creating the agent
     await _validate_agent_references(
         db=db,
         tool_ids=agent_data.tool_ids,
         delegated_agent_ids=agent_data.delegated_agent_ids,
-        agent_id=None,  # No self-delegation check for new agents
+        agent_id=None,
     )
 
     agent_id = uuid4()
     now = datetime.utcnow()
+
+    # Set owner for private agents
+    owner_user_id = None
+    if agent_data.access_level == AgentAccessLevel.PRIVATE:
+        owner_user_id = user.user_id
 
     # Create the agent
     agent = Agent(
@@ -239,6 +324,7 @@ async def create_agent(
         channels=[c.value for c in agent_data.channels],
         access_level=agent_data.access_level,
         organization_id=agent_data.organization_id,
+        owner_user_id=owner_user_id,
         is_active=True,
         knowledge_sources=agent_data.knowledge_sources or [],
         system_tools=agent_data.system_tools or [],
@@ -320,6 +406,7 @@ async def create_agent(
             selectinload(Agent.tools),
             selectinload(Agent.delegated_agents),
             selectinload(Agent.roles),
+            selectinload(Agent.owner),
         )
         .where(Agent.id == agent_id)
     )
@@ -329,6 +416,71 @@ async def create_agent(
     await sync_agent_roles_to_workflows(db, agent, assigned_by=user.email)
 
     return _agent_to_public(agent)
+
+
+@router.get("/accessible-tools")
+async def get_accessible_tools(
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> list[AccessibleTool]:
+    """Get tools the current user can assign to their agents (via role intersection)."""
+    from src.models.orm.users import UserRole
+    from src.models.orm.workflow_roles import WorkflowRole
+
+    result = await db.execute(
+        select(UserRole.role_id).where(UserRole.user_id == user.user_id)
+    )
+    role_ids = list(result.scalars().all())
+
+    if not role_ids:
+        return []
+
+    result = await db.execute(
+        select(Workflow)
+        .join(WorkflowRole, WorkflowRole.workflow_id == Workflow.id)
+        .where(Workflow.type == "tool")
+        .where(Workflow.is_active.is_(True))
+        .where(WorkflowRole.role_id.in_(role_ids))
+        .distinct()
+    )
+    tools = result.scalars().all()
+
+    return [
+        AccessibleTool(id=str(t.id), name=t.name, description=t.tool_description or t.description)
+        for t in tools
+    ]
+
+
+@router.get("/accessible-knowledge")
+async def get_accessible_knowledge(
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> list[AccessibleKnowledgeSource]:
+    """Get knowledge sources the current user can assign to their agents."""
+    from src.models.orm.users import UserRole
+    from src.models.orm.knowledge_sources import KnowledgeSource, KnowledgeSourceRole
+
+    result = await db.execute(
+        select(UserRole.role_id).where(UserRole.user_id == user.user_id)
+    )
+    role_ids = list(result.scalars().all())
+
+    if not role_ids:
+        return []
+
+    result = await db.execute(
+        select(KnowledgeSource)
+        .join(KnowledgeSourceRole, KnowledgeSourceRole.knowledge_source_id == KnowledgeSource.id)
+        .where(KnowledgeSource.is_active.is_(True))
+        .where(KnowledgeSourceRole.role_id.in_(role_ids))
+        .distinct()
+    )
+    sources = result.scalars().all()
+
+    return [
+        AccessibleKnowledgeSource(id=str(s.id), name=s.name, namespace=s.namespace, description=s.description)
+        for s in sources
+    ]
 
 
 @router.get("/{agent_id}")
@@ -367,15 +519,16 @@ async def update_agent(
     agent_id: UUID,
     agent_data: AgentUpdate,
     db: DbSession,
-    user: CurrentSuperuser,
+    user: CurrentActiveUser,
 ) -> AgentPublic:
-    """Update an agent (platform admin only)."""
+    """Update an agent. Admins can update any agent. Users can update their own private agents."""
     result = await db.execute(
         select(Agent)
         .options(
             selectinload(Agent.tools),
             selectinload(Agent.delegated_agents),
             selectinload(Agent.roles),
+            selectinload(Agent.owner),
         )
         .where(Agent.id == agent_id)
     )
@@ -386,6 +539,22 @@ async def update_agent(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
+
+    is_admin = user.is_superuser or any(
+        role in ["Platform Admin", "Platform Owner"] for role in user.roles
+    )
+
+    if not is_admin:
+        if agent.owner_user_id != user.user_id or agent.access_level != AgentAccessLevel.PRIVATE:
+            raise HTTPException(403, "You can only edit your own private agents")
+        if agent_data.access_level is not None and agent_data.access_level != AgentAccessLevel.PRIVATE:
+            raise HTTPException(403, "Use the promote endpoint to change access level")
+        if agent_data.tool_ids is not None:
+            await _validate_user_tool_access(db, user.user_id, agent_data.tool_ids)
+        agent_data.system_tools = None
+        agent_data.knowledge_sources = None
+        agent_data.delegated_agent_ids = None
+        agent_data.role_ids = None
 
     # Validate references being updated
     await _validate_agent_references(
@@ -511,6 +680,7 @@ async def update_agent(
             selectinload(Agent.tools),
             selectinload(Agent.delegated_agents),
             selectinload(Agent.roles),
+            selectinload(Agent.owner),
         )
         .where(Agent.id == agent_id)
     )
@@ -526,9 +696,9 @@ async def update_agent(
 async def delete_agent(
     agent_id: UUID,
     db: DbSession,
-    user: CurrentSuperuser,
+    user: CurrentActiveUser,
 ) -> None:
-    """Soft delete an agent (platform admin only).
+    """Soft delete an agent. Admins can delete any agent. Users can delete their own private agents.
 
     System agents can be deleted - they will be recreated on next startup
     if they are still defined in the system agent definitions.
@@ -544,10 +714,90 @@ async def delete_agent(
             detail=f"Agent {agent_id} not found",
         )
 
+    is_admin = user.is_superuser or any(
+        role in ["Platform Admin", "Platform Owner"] for role in user.roles
+    )
+
+    if not is_admin:
+        if agent.owner_user_id != user.user_id:
+            raise HTTPException(403, "You can only delete your own private agents")
+
     # Soft delete
     agent.is_active = False
     agent.updated_at = datetime.utcnow()
     await db.flush()
+
+
+@router.post("/{agent_id}/promote")
+async def promote_agent(
+    agent_id: UUID,
+    request: AgentPromoteRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> AgentPublic:
+    """Promote a private agent to organization scope."""
+    result = await db.execute(
+        select(Agent)
+        .options(
+            selectinload(Agent.tools),
+            selectinload(Agent.delegated_agents),
+            selectinload(Agent.roles),
+            selectinload(Agent.owner),
+        )
+        .where(Agent.id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(404, f"Agent {agent_id} not found")
+
+    if agent.access_level != AgentAccessLevel.PRIVATE:
+        raise HTTPException(400, "Agent is not private — nothing to promote")
+
+    is_admin = user.is_superuser or any(
+        role in ["Platform Admin", "Platform Owner"] for role in user.roles
+    )
+
+    if not is_admin:
+        if agent.owner_user_id != user.user_id:
+            raise HTTPException(403, "You can only promote your own agents")
+        if not await _user_has_permission(db, user.user_id, "can_promote_agent"):
+            raise HTTPException(403, "You do not have permission to promote agents")
+
+    # Promote: change access_level, clear owner
+    agent.access_level = request.access_level
+    agent.owner_user_id = None
+    agent.updated_at = datetime.utcnow()
+
+    # Set roles if role_based
+    if request.access_level == AgentAccessLevel.ROLE_BASED and request.role_ids:
+        await db.execute(delete(AgentRole).where(AgentRole.agent_id == agent_id))
+        for role_id in request.role_ids:
+            try:
+                role_uuid = UUID(role_id)
+                result = await db.execute(
+                    select(Role).where(Role.id == role_uuid).where(Role.is_active.is_(True))
+                )
+                role = result.scalar_one_or_none()
+                if role:
+                    db.add(AgentRole(agent_id=agent_id, role_id=role.id, assigned_by=user.email))
+            except ValueError:
+                pass
+
+    await db.flush()
+
+    # Reload
+    result = await db.execute(
+        select(Agent)
+        .options(
+            selectinload(Agent.tools),
+            selectinload(Agent.delegated_agents),
+            selectinload(Agent.roles),
+            selectinload(Agent.owner),
+        )
+        .where(Agent.id == agent_id)
+    )
+    agent = result.scalar_one()
+    return _agent_to_public(agent)
 
 
 # =============================================================================
