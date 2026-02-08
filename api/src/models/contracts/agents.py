@@ -76,6 +76,33 @@ class AgentUpdate(BaseModel):
     llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Override temperature")
 
 
+class AgentPromoteRequest(BaseModel):
+    """Request to promote a private agent to organization scope."""
+    access_level: AgentAccessLevel = Field(
+        default=AgentAccessLevel.ROLE_BASED,
+        description="Target access level (authenticated or role_based)"
+    )
+    role_ids: list[str] = Field(
+        default_factory=list,
+        description="Role IDs for role_based access"
+    )
+
+
+class AccessibleTool(BaseModel):
+    """A tool the current user can assign to their agents."""
+    id: str
+    name: str
+    description: str | None = None
+
+
+class AccessibleKnowledgeSource(BaseModel):
+    """A knowledge source the current user can assign to their agents."""
+    id: str
+    name: str
+    namespace: str
+    description: str | None = None
+
+
 class AgentPublic(BaseModel):
     """Agent output for API responses."""
     model_config = ConfigDict(from_attributes=True)
@@ -90,6 +117,8 @@ class AgentPublic(BaseModel):
     is_active: bool
     is_system: bool = False
     created_by: str | None = None
+    owner_user_id: UUID | None = None
+    owner_email: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     # Populated from relationships
@@ -102,7 +131,7 @@ class AgentPublic(BaseModel):
     llm_max_tokens: int | None = None
     llm_temperature: float | None = None
 
-    @field_serializer("id", "organization_id")
+    @field_serializer("id", "organization_id", "owner_user_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:
         return str(v) if v else None
 
@@ -122,10 +151,11 @@ class AgentSummary(BaseModel):
     is_active: bool
     access_level: AgentAccessLevel
     organization_id: UUID | None = None
+    owner_user_id: UUID | None = None
     created_at: datetime
     llm_model: str | None = None
 
-    @field_serializer("id", "organization_id")
+    @field_serializer("id", "organization_id", "owner_user_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:
         return str(v) if v else None
 

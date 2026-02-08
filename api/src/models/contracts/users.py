@@ -134,6 +134,7 @@ class Role(BaseModel):
     id: str = Field(..., description="Role ID (GUID)")
     name: str = Field(..., min_length=1, max_length=100)
     description: str | None = None
+    permissions: dict = Field(default_factory=dict)
     is_active: bool = Field(default=True)
     created_by: str
     created_at: datetime
@@ -144,12 +145,14 @@ class CreateRoleRequest(BaseModel):
     """Request model for creating a role"""
     name: str = Field(..., min_length=1, max_length=100)
     description: str | None = None
+    permissions: dict | None = Field(default=None)
 
 
 class UpdateRoleRequest(BaseModel):
     """Request model for updating a role"""
     name: str | None = Field(default=None, min_length=1, max_length=100)
     description: str | None = None
+    permissions: dict | None = Field(default=None)
 
 
 # CRUD Pattern Models for Role
@@ -183,6 +186,7 @@ class RolePublic(RoleBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    permissions: dict = Field(default_factory=dict)
     created_by: str
     created_at: datetime
     updated_at: datetime
