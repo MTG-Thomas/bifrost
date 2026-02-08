@@ -64,6 +64,7 @@ from src.routers import (
     events_router,
     hooks_router,
     tables_router,
+    knowledge_sources_router,
     applications_router,
     app_code_files_router,
     dependencies_router,
@@ -430,6 +431,7 @@ def create_app() -> FastAPI:
     app.include_router(events_router)
     app.include_router(hooks_router)
     app.include_router(tables_router)
+    app.include_router(knowledge_sources_router)
     app.include_router(applications_router)
     app.include_router(app_code_files_router)
     app.include_router(dependencies_router)
