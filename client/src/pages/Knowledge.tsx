@@ -21,9 +21,6 @@ import { Button } from "@/components/ui/button";
 import {
 	Card,
 	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
 } from "@/components/ui/card";
 import {
 	AlertDialog,
@@ -47,7 +44,6 @@ import {
 } from "@/components/ui/data-table";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
-import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { authFetch } from "@/lib/auth";
 import { KnowledgeSourceDialog } from "@/components/knowledge/KnowledgeSourceDialog";
@@ -66,7 +62,6 @@ interface KnowledgeSource {
 }
 
 export function Knowledge() {
-	const { isPlatformAdmin } = useAuth();
 	const [sources, setSources] = useState<KnowledgeSource[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [searchTerm, setSearchTerm] = useState("");
@@ -83,7 +78,7 @@ export function Knowledge() {
 				const data = await response.json();
 				setSources(data);
 			}
-		} catch (error) {
+		} catch {
 			toast.error("Failed to load knowledge sources");
 		} finally {
 			setIsLoading(false);

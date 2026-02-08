@@ -326,7 +326,7 @@ export function Agents() {
 								</CardHeader>
 								<CardContent className="pt-0 mt-auto">
 									{/* Private badge */}
-									{(agent as any).access_level === "private" && (
+									{(agent as unknown as { access_level?: string }).access_level === "private" && (
 										<div className="mb-2">
 											<Badge variant="secondary" className="text-xs">
 												<Lock className="mr-1 h-3 w-3" />

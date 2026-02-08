@@ -46,7 +46,7 @@ interface KnowledgeDocumentListProps {
 	namespace: string;
 }
 
-export function KnowledgeDocumentList({ sourceId, namespace }: KnowledgeDocumentListProps) {
+export function KnowledgeDocumentList({ sourceId, namespace: _namespace }: KnowledgeDocumentListProps) {
 	const [documents, setDocuments] = useState<DocumentSummary[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [deleteDoc, setDeleteDoc] = useState<DocumentSummary | null>(null);

@@ -5,7 +5,7 @@
  * Uses the TiptapEditor for rich markdown editing.
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Pencil, Save, X } from "lucide-react";
 import {
 	Sheet,
@@ -51,19 +51,7 @@ export function KnowledgeDocumentDrawer({
 
 	const isOpen = !!documentId || isCreating;
 
-	useEffect(() => {
-		if (documentId) {
-			loadDocument();
-			setIsEditing(false);
-		} else if (isCreating) {
-			setDocument(null);
-			setContent("");
-			setKey("");
-			setIsEditing(true);
-		}
-	}, [documentId, isCreating]);
-
-	const loadDocument = async () => {
+	const loadDocument = useCallback(async () => {
 		if (!documentId) return;
 		try {
 			const response = await authFetch(
@@ -78,7 +66,19 @@ export function KnowledgeDocumentDrawer({
 		} catch {
 			toast.error("Failed to load document");
 		}
-	};
+	}, [documentId, sourceId]);
+
+	useEffect(() => {
+		if (documentId) {
+			loadDocument();
+			setIsEditing(false);
+		} else if (isCreating) {
+			setDocument(null);
+			setContent("");
+			setKey("");
+			setIsEditing(true);
+		}
+	}, [documentId, isCreating, loadDocument]);
 
 	const handleSave = async () => {
 		if (!content.trim()) {

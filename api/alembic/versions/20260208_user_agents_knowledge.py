@@ -3,7 +3,7 @@
 Add private agent access level, owner_user_id, role permissions JSONB,
 knowledge_sources table, and knowledge_source_roles junction table.
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 0fd35b896176
 Revises: d4f6a8b05e23
 Create Date: 2026-02-08
 """
@@ -13,7 +13,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision: str = 'a1b2c3d4e5f6'
+revision: str = '0fd35b896176'
 down_revision: Union[str, None] = 'd4f6a8b05e23'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

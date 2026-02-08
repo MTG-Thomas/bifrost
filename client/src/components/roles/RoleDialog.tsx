@@ -60,7 +60,7 @@ export function RoleDialog({ role, open, onClose }: RoleDialogProps) {
 			form.reset({
 				name: role.name,
 				description: role.description || "",
-				can_promote_agent: (role as any).permissions?.can_promote_agent ?? false,
+				can_promote_agent: (role as unknown as { permissions?: { can_promote_agent?: boolean } }).permissions?.can_promote_agent ?? false,
 			});
 		} else {
 			form.reset({

@@ -12,7 +12,7 @@ Tests the key authorization scenarios for the loosened agent endpoints:
 
 import pytest
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4, UUID
 
 from src.models.enums import AgentAccessLevel
@@ -193,7 +193,7 @@ class TestCreateAgentAuthorization:
         from src.models.contracts.agents import AgentCreate
 
         for access_level in [AgentAccessLevel.AUTHENTICATED, AgentAccessLevel.ROLE_BASED, AgentAccessLevel.PRIVATE]:
-            agent_data = AgentCreate(
+            AgentCreate(
                 name="My Agent",
                 system_prompt="You are helpful.",
                 access_level=access_level,
