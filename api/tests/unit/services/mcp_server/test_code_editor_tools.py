@@ -372,7 +372,7 @@ line 10"""
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = mock_workflow
+            mock_result.scalars.return_value.first.return_value = mock_workflow
             mock_session.execute.return_value = mock_result
 
             result = await read_content_lines(
@@ -429,7 +429,7 @@ class TestGetContent:
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = mock_workflow
+            mock_result.scalars.return_value.first.return_value = mock_workflow
             mock_session.execute.return_value = mock_result
 
             result = await get_content(
@@ -455,7 +455,7 @@ class TestGetContent:
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = None
+            mock_result.scalars.return_value.first.return_value = None
             mock_session.execute.return_value = mock_result
 
             result = await get_content(
@@ -492,7 +492,7 @@ class TestPatchContent:
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = mock_workflow
+            mock_result.scalars.return_value.first.return_value = mock_workflow
             mock_session.execute.return_value = mock_result
 
             # Mock FileStorageService for validation
@@ -536,7 +536,7 @@ def func2():
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = mock_workflow
+            mock_result.scalars.return_value.first.return_value = mock_workflow
             mock_session.execute.return_value = mock_result
 
             result = await patch_content(
@@ -568,7 +568,7 @@ def func2():
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = mock_workflow
+            mock_result.scalars.return_value.first.return_value = mock_workflow
             mock_session.execute.return_value = mock_result
 
             result = await patch_content(
@@ -846,7 +846,7 @@ class TestDeleteContent:
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = mock_workflow
+            mock_result.scalars.return_value.all.return_value = [mock_workflow]
             mock_session.execute.return_value = mock_result
 
             result = await delete_content(
@@ -959,7 +959,7 @@ class TestDeleteContent:
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = None
+            mock_result.scalars.return_value.all.return_value = []
             mock_session.execute.return_value = mock_result
 
             result = await delete_content(
@@ -1040,7 +1040,7 @@ class TestDeleteContent:
             mock_db.return_value.__aenter__.return_value = mock_session
 
             mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = mock_workflow
+            mock_result.scalars.return_value.all.return_value = [mock_workflow]
             mock_session.execute.return_value = mock_result
 
             result = await delete_content(
@@ -1054,3 +1054,207 @@ class TestDeleteContent:
             assert data["success"] is True
             # Query should have been filtered by org_id
             mock_session.execute.assert_called_once()
+
+
+class TestMultiFunctionWorkflows:
+    """Tests for multi-function workflow file handling."""
+
+    @pytest.mark.asyncio
+    async def test_get_content_multi_function_file(self, platform_admin_context):
+        """Should return content when multiple workflow rows share the same path."""
+        from src.services.mcp_server.tools.code_editor import get_content
+
+        code = '''from bifrost import workflow, tool
+
+@workflow(name="Sync Tickets")
+async def sync_tickets():
+    return {"synced": True}
+
+@tool(name="Get Ticket")
+async def get_ticket(ticket_id: str):
+    return {"id": ticket_id}
+'''
+
+        mock_wf1 = MagicMock()
+        mock_wf1.id = uuid4()
+        mock_wf1.path = "workflows/multi.py"
+        mock_wf1.organization_id = None
+        mock_wf1.code = code
+
+        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__.return_value = mock_session
+
+            mock_result = MagicMock()
+            # scalars().first() returns the first row — works even with multiple rows
+            mock_result.scalars.return_value.first.return_value = mock_wf1
+            mock_session.execute.return_value = mock_result
+
+            result = await get_content(
+                context=platform_admin_context,
+                entity_type="workflow",
+                path="workflows/multi.py",
+            )
+
+            assert isinstance(result, ToolResult)
+            assert not is_error_result(result)
+            data = get_result_data(result)
+            assert data["path"] == "workflows/multi.py"
+            assert "sync_tickets" in data["content"]
+            assert "get_ticket" in data["content"]
+
+    @pytest.mark.asyncio
+    async def test_delete_multi_function_file(self, platform_admin_context):
+        """Should deactivate ALL workflows at the same path."""
+        from src.services.mcp_server.tools.code_editor import delete_content
+
+        mock_wf1 = MagicMock()
+        mock_wf1.id = uuid4()
+        mock_wf1.path = "workflows/multi.py"
+        mock_wf1.organization_id = None
+        mock_wf1.is_active = True
+
+        mock_wf2 = MagicMock()
+        mock_wf2.id = uuid4()
+        mock_wf2.path = "workflows/multi.py"
+        mock_wf2.organization_id = None
+        mock_wf2.is_active = True
+
+        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__.return_value = mock_session
+
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = [mock_wf1, mock_wf2]
+            mock_session.execute.return_value = mock_result
+
+            result = await delete_content(
+                context=platform_admin_context,
+                entity_type="workflow",
+                path="workflows/multi.py",
+            )
+
+            assert isinstance(result, ToolResult)
+            data = get_result_data(result)
+            assert data["success"] is True
+            # Both workflows should be deactivated
+            assert mock_wf1.is_active is False
+            assert mock_wf2.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_search_deduplicates_multi_function_results(self, platform_admin_context):
+        """Should not produce duplicate search results from multi-function files."""
+        from src.services.mcp_server.tools.code_editor import search_content
+
+        code = '''from bifrost import workflow
+
+@workflow(name="Sync")
+async def sync():
+    return {"done": True}
+
+@workflow(name="Cleanup")
+async def cleanup():
+    return {"done": True}
+'''
+        # Two rows with same path and identical code (multi-function file)
+        mock_wf1 = MagicMock()
+        mock_wf1.id = uuid4()
+        mock_wf1.path = "workflows/multi.py"
+        mock_wf1.organization_id = None
+        mock_wf1.code = code
+
+        mock_wf2 = MagicMock()
+        mock_wf2.id = uuid4()
+        mock_wf2.path = "workflows/multi.py"
+        mock_wf2.organization_id = None
+        mock_wf2.code = code
+
+        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__.return_value = mock_session
+
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = [mock_wf1, mock_wf2]
+            mock_session.execute.return_value = mock_result
+
+            result = await search_content(
+                context=platform_admin_context,
+                pattern="return",
+                entity_type="workflow",
+            )
+
+            assert isinstance(result, ToolResult)
+            data = get_result_data(result)
+            # Should have exactly 2 matches (one per "return" line), NOT 4
+            assert data["total_matches"] == 2
+
+
+class TestFormatDeactivationResult:
+    """Tests for _format_deactivation_result."""
+
+    def _get_text(self, result: ToolResult) -> str:
+        """Extract text from ToolResult content (handles TextContent list)."""
+        content = result.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list) and len(content) > 0:
+            return content[0].text
+        return ""
+
+    def test_format_without_schedule_key(self):
+        """Should not crash when pending deactivation dict lacks 'schedule' key."""
+        from src.services.mcp_server.tools.code_editor import _format_deactivation_result
+
+        pending = [
+            {
+                "function_name": "sync_tickets",
+                "decorator_type": "workflow",
+                "has_executions": False,
+                "last_execution_at": None,
+                "endpoint_enabled": False,
+                "affected_entities": [],
+            }
+        ]
+
+        result = _format_deactivation_result(
+            path="workflows/sync.py",
+            pending_deactivations=pending,
+            available_replacements=None,
+        )
+
+        assert isinstance(result, ToolResult)
+        text = self._get_text(result)
+        assert "sync_tickets" in text
+        assert "workflow" in text
+
+    def test_format_with_affected_entities(self):
+        """Should list affected entities in deactivation result."""
+        from src.services.mcp_server.tools.code_editor import _format_deactivation_result
+
+        pending = [
+            {
+                "function_name": "sync_tickets",
+                "decorator_type": "workflow",
+                "has_executions": True,
+                "last_execution_at": "2026-01-15T12:00:00Z",
+                "endpoint_enabled": True,
+                "affected_entities": [
+                    {
+                        "entity_type": "form",
+                        "name": "Ticket Sync Form",
+                        "reference_type": "workflow_id",
+                    }
+                ],
+            }
+        ]
+
+        result = _format_deactivation_result(
+            path="workflows/sync.py",
+            pending_deactivations=pending,
+            available_replacements=None,
+        )
+
+        text = self._get_text(result)
+        assert "execution history" in text
+        assert "API endpoint" in text
+        assert "Ticket Sync Form" in text

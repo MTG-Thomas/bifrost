@@ -65,8 +65,6 @@ def _format_deactivation_result(
         lines.append(f"  • {pd['function_name']} ({pd['decorator_type']})")
         if pd["has_executions"]:
             lines.append(f"    - Has execution history (last: {pd['last_execution_at'] or 'unknown'})")
-        if pd["schedule"]:
-            lines.append(f"    - Has schedule: {pd['schedule']}")
         if pd["endpoint_enabled"]:
             lines.append("    - Has API endpoint enabled")
         if pd["affected_entities"]:
@@ -238,7 +236,7 @@ async def _get_content_by_entity(
                     )
 
             result = await db.execute(query)
-            workflow = result.scalar_one_or_none()
+            workflow = result.scalars().first()
 
             if not workflow:
                 return None, None, f"Workflow not found: {path}"
@@ -1085,7 +1083,15 @@ async def _search_workflows(
         )
 
     result = await db.execute(query)
-    workflows = result.scalars().all()
+    all_workflows = result.scalars().all()
+
+    # Deduplicate by path - multi-function files share identical code
+    seen_paths: set[str] = set()
+    workflows = []
+    for wf in all_workflows:
+        if wf.path not in seen_paths:
+            seen_paths.add(wf.path)
+            workflows.append(wf)
 
     matches = []
     for wf in workflows:
@@ -1656,12 +1662,13 @@ async def _delete_workflow(
         )
 
     result = await db.execute(query)
-    workflow = result.scalar_one_or_none()
+    workflows = result.scalars().all()
 
-    if not workflow:
+    if not workflows:
         return False
 
-    workflow.is_active = False
+    for workflow in workflows:
+        workflow.is_active = False
     return True
 
 
