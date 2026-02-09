@@ -114,11 +114,11 @@ from .models import (
 
 # Import decorators - try platform module first, fall back to local SDK version
 try:
-    from src.sdk.decorators import workflow, data_provider
+    from src.sdk.decorators import workflow, data_provider, tool
     from src.sdk.context import ExecutionContext
 except ImportError:
     # CLI/standalone mode - use local decorators
-    from .decorators import workflow, data_provider
+    from .decorators import workflow, data_provider, tool
     _ = WorkflowMetadata  # noqa: F401 - re-exported from .models above
     # Provide a minimal ExecutionContext for CLI mode
     ExecutionContext = None  # type: ignore
@@ -224,6 +224,7 @@ __all__ = [
     # Decorators
     'workflow',
     'data_provider',
+    'tool',
     # Context
     'context',
     'ExecutionContext',

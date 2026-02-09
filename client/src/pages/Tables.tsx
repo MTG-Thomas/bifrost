@@ -9,6 +9,8 @@ import {
 	FileJson2,
 	Globe,
 	Building2,
+	Download,
+	Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,6 +33,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SearchBox } from "@/components/search/SearchBox";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
@@ -39,6 +42,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { useTables, useDeleteTable } from "@/services/tables";
 import { TableDialog } from "@/components/tables/TableDialog";
+import { ImportDialog } from "@/components/ImportDialog";
+import { exportEntities } from "@/services/exportImport";
+import { toast } from "sonner";
 import type { TablePublic } from "@/services/tables";
 
 export function Tables() {
@@ -56,6 +62,9 @@ export function Tables() {
 	const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(
 		undefined,
 	);
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [isImportOpen, setIsImportOpen] = useState(false);
+	const [isExporting, setIsExporting] = useState(false);
 
 	// Convert filterOrgId to scope for API: undefined = all, null = global only, string = org UUID
 	const apiScope =
@@ -126,6 +135,36 @@ export function Tables() {
 		setSelectedTable(undefined);
 	};
 
+	const toggleSelect = (id: string) => {
+		setSelectedIds((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	};
+
+	const toggleSelectAll = () => {
+		if (selectedIds.size === filteredTables.length) {
+			setSelectedIds(new Set());
+		} else {
+			setSelectedIds(new Set(filteredTables.map((t) => t.id)));
+		}
+	};
+
+	const handleExport = async () => {
+		const ids = selectedIds.size > 0 ? Array.from(selectedIds) : [];
+		setIsExporting(true);
+		try {
+			await exportEntities("tables", ids);
+			toast.success("Export downloaded");
+		} catch {
+			toast.error("Export failed");
+		} finally {
+			setIsExporting(false);
+		}
+	};
+
 	const formatDate = (dateStr: string | null) => {
 		if (!dateStr) return "-";
 		return new Date(dateStr).toLocaleDateString(undefined, {
@@ -186,6 +225,34 @@ export function Tables() {
 						/>
 					</div>
 				)}
+				{isPlatformAdmin && (
+					<div className="flex items-center gap-2 ml-auto">
+						{selectedIds.size > 0 && (
+							<span className="text-sm text-muted-foreground">
+								{selectedIds.size} selected
+							</span>
+						)}
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={handleExport}
+							disabled={isExporting}
+						>
+							<Download className="h-4 w-4 mr-1" />
+							{selectedIds.size > 0
+								? `Export (${selectedIds.size})`
+								: "Export All"}
+						</Button>
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setIsImportOpen(true)}
+						>
+							<Upload className="h-4 w-4 mr-1" />
+							Import
+						</Button>
+					</div>
+				)}
 			</div>
 
 			{/* Content */}
@@ -200,6 +267,18 @@ export function Tables() {
 					<DataTable className="max-h-full">
 						<DataTableHeader>
 							<DataTableRow>
+								{isPlatformAdmin && (
+									<DataTableHead className="w-10">
+										<Checkbox
+											checked={
+												filteredTables.length > 0 &&
+												selectedIds.size ===
+													filteredTables.length
+											}
+											onCheckedChange={toggleSelectAll}
+										/>
+									</DataTableHead>
+								)}
 								<DataTableHead>Scope</DataTableHead>
 								<DataTableHead>Name</DataTableHead>
 								<DataTableHead>Description</DataTableHead>
@@ -214,6 +293,21 @@ export function Tables() {
 									className="cursor-pointer hover:bg-muted/50"
 									onClick={() => handleViewDocuments(table)}
 								>
+									{isPlatformAdmin && (
+										<DataTableCell>
+											<Checkbox
+												checked={selectedIds.has(
+													table.id,
+												)}
+												onCheckedChange={() =>
+													toggleSelect(table.id)
+												}
+												onClick={(e) =>
+													e.stopPropagation()
+												}
+											/>
+										</DataTableCell>
+									)}
 									<DataTableCell>
 										{table.organization_id ? (
 											<Badge
@@ -320,6 +414,13 @@ export function Tables() {
 				table={selectedTable}
 				open={isDialogOpen}
 				onClose={handleDialogClose}
+			/>
+
+			<ImportDialog
+				open={isImportOpen}
+				onOpenChange={setIsImportOpen}
+				entityType="tables"
+				onImportComplete={() => refetch()}
 			/>
 
 			{/* Delete Confirmation Dialog */}

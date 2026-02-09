@@ -15,6 +15,8 @@ import {
 	Globe,
 	Building2,
 	ArrowRightLeft,
+	Download,
+	Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -71,6 +73,8 @@ import { useOrganizations } from "@/hooks/useOrganizations";
 import { toast } from "sonner";
 import { authFetch } from "@/lib/api-client";
 import { KnowledgeDocumentDrawer } from "@/components/knowledge/KnowledgeDocumentDrawer";
+import { exportEntities } from "@/services/exportImport";
+import { ImportDialog } from "@/components/ImportDialog";
 
 const PAGE_SIZE = 50;
 
@@ -116,6 +120,8 @@ export function Knowledge() {
 	const [bulkConflictMessage, setBulkConflictMessage] = useState<
 		string | null
 	>(null);
+	const [isImportOpen, setIsImportOpen] = useState(false);
+	const [isExporting, setIsExporting] = useState(false);
 
 	const { data: organizations } = useOrganizations({
 		enabled: isPlatformAdmin,
@@ -272,6 +278,19 @@ export function Knowledge() {
 		}
 	};
 
+	const handleExport = async () => {
+		const ids = selectedIds.size > 0 ? Array.from(selectedIds) : [];
+		setIsExporting(true);
+		try {
+			await exportEntities("knowledge", ids);
+			toast.success("Export downloaded");
+		} catch {
+			toast.error("Export failed");
+		} finally {
+			setIsExporting(false);
+		}
+	};
+
 	return (
 		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
 			{/* Header */}
@@ -340,21 +359,44 @@ export function Knowledge() {
 						/>
 					</div>
 				)}
-				{selectedIds.size > 0 && isPlatformAdmin && (
+				{isPlatformAdmin && (
 					<div className="flex items-center gap-2 ml-auto">
-						<span className="text-sm text-muted-foreground">
-							{selectedIds.size} selected
-						</span>
+						{selectedIds.size > 0 && (
+							<>
+								<span className="text-sm text-muted-foreground">
+									{selectedIds.size} selected
+								</span>
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={() => {
+										setBulkScopeOrgId(null);
+										setBulkScopeOpen(true);
+									}}
+								>
+									<ArrowRightLeft className="h-4 w-4 mr-1" />
+									Change Scope
+								</Button>
+							</>
+						)}
 						<Button
 							variant="outline"
 							size="sm"
-							onClick={() => {
-								setBulkScopeOrgId(null);
-								setBulkScopeOpen(true);
-							}}
+							onClick={handleExport}
+							disabled={isExporting}
 						>
-							<ArrowRightLeft className="h-4 w-4 mr-1" />
-							Change Scope
+							<Download className="h-4 w-4 mr-1" />
+							{selectedIds.size > 0
+								? `Export (${selectedIds.size})`
+								: "Export All"}
+						</Button>
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setIsImportOpen(true)}
+						>
+							<Upload className="h-4 w-4 mr-1" />
+							Import
 						</Button>
 					</div>
 				)}
@@ -650,6 +692,14 @@ export function Knowledge() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
+
+			{/* Import Dialog */}
+			<ImportDialog
+				open={isImportOpen}
+				onOpenChange={setIsImportOpen}
+				entityType="knowledge"
+				onImportComplete={() => fetchDocuments()}
+			/>
 
 			{/* Document Drawer */}
 			<KnowledgeDocumentDrawer

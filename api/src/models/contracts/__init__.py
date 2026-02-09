@@ -488,6 +488,18 @@ from src.models.contracts.ai_usage import (
     UsageReportResponse,
 )
 
+# Export/Import
+from src.models.contracts.export_import import (
+    BulkExportRequest,
+    ConfigExportFile,
+    ExportMetadata,
+    ImportResult,
+    ImportResultItem,
+    IntegrationExportFile,
+    KnowledgeExportFile,
+    TableExportFile,
+)
+
 # Platform Admin
 from src.models.contracts.platform import (
     PoolDetail,
@@ -916,4 +928,13 @@ __all__ = [
     "RecycleProcessResponse",
     "StuckHistoryResponse",
     "StuckWorkflowStats",
+    # Export/Import
+    "ExportMetadata",
+    "KnowledgeExportFile",
+    "TableExportFile",
+    "ConfigExportFile",
+    "IntegrationExportFile",
+    "BulkExportRequest",
+    "ImportResult",
+    "ImportResultItem",
 ]

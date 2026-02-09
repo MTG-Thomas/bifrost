@@ -9,7 +9,7 @@ import { GitHub } from "@/pages/settings/GitHub";
 import { LLMConfig } from "@/pages/settings/LLMConfig";
 import { MCP } from "@/pages/settings/MCP";
 import { Maintenance } from "@/pages/settings/Maintenance";
-import { Bot, Mail, Plug, Shield } from "lucide-react";
+import { Bot, Github, Key, Mail, Palette, Plug, Shield, Wrench } from "lucide-react";
 
 export function Settings() {
 	const navigate = useNavigate();
@@ -50,7 +50,10 @@ export function Settings() {
 						<Plug className="h-4 w-4 mr-1" />
 						MCP
 					</TabsTrigger>
-					<TabsTrigger value="branding">Branding</TabsTrigger>
+					<TabsTrigger value="branding">
+						<Palette className="h-4 w-4 mr-1" />
+						Branding
+					</TabsTrigger>
 					<TabsTrigger value="email">
 						<Mail className="h-4 w-4 mr-1" />
 						Email
@@ -59,11 +62,16 @@ export function Settings() {
 						<Shield className="h-4 w-4 mr-1" />
 						SSO
 					</TabsTrigger>
-					<TabsTrigger value="github">GitHub</TabsTrigger>
+					<TabsTrigger value="github">
+						<Github className="h-4 w-4 mr-1" />
+						GitHub
+					</TabsTrigger>
 					<TabsTrigger value="workflow-keys">
+						<Key className="h-4 w-4 mr-1" />
 						Workflow Keys
 					</TabsTrigger>
 					<TabsTrigger value="maintenance">
+						<Wrench className="h-4 w-4 mr-1" />
 						Maintenance
 					</TabsTrigger>
 				</TabsList>

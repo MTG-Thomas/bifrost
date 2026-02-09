@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import {
 	AlertCircle,
@@ -24,13 +25,17 @@ import {
 	FileCode,
 	AlertTriangle,
 	Settings2,
-	Link2,
 	Database,
 	Search,
 	AppWindow,
+	Download,
+	Upload,
+	Play,
 } from "lucide-react";
 import { toast } from "sonner";
 import { authFetch } from "@/lib/api-client";
+import { exportAll } from "@/services/exportImport";
+import { ImportDialog } from "@/components/ImportDialog";
 import { useEditorStore } from "@/stores/editorStore";
 import { fileService } from "@/services/fileService";
 import {
@@ -109,11 +114,11 @@ interface ReindexResult {
 type ScanResultType = "none" | "reindex" | "sdk" | "docs" | "app-deps";
 
 export function Maintenance() {
-	// Scan states
-	const [isReindexing, setIsReindexing] = useState(false);
-	const [isSdkScanning, setIsSdkScanning] = useState(false);
-	const [isDocsIndexing, setIsDocsIndexing] = useState(false);
-	const [isAppDepScanning, setIsAppDepScanning] = useState(false);
+	// Checklist state
+	const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());
+	const [runningAction, setRunningAction] = useState<string | null>(null);
+	const [completedActions, setCompletedActions] = useState<Set<string>>(new Set());
+	const [actionQueue, setActionQueue] = useState<string[]>([]);
 
 	// Reindex streaming state
 	const [reindexState, setReindexState] = useState<ReindexState>({
@@ -138,7 +143,10 @@ export function Maintenance() {
 	const [appDepScanResult, setAppDepScanResult] =
 		useState<AppDependencyScanResponse | null>(null);
 
-	const isAnyRunning = isReindexing || isSdkScanning || isDocsIndexing || isAppDepScanning;
+	const [isExportingAll, setIsExportingAll] = useState(false);
+	const [isImportAllOpen, setIsImportAllOpen] = useState(false);
+
+	const isAnyRunning = runningAction !== null;
 
 	// Cleanup WebSocket subscription on unmount
 	useEffect(() => {
@@ -204,6 +212,11 @@ export function Maintenance() {
 		[openFileInTab, openEditor, revealLine],
 	);
 
+	const finishAction = useCallback((actionId: string) => {
+		setCompletedActions((prev) => new Set([...prev, actionId]));
+		setRunningAction(null);
+	}, []);
+
 	const handleReindexMessage = useCallback((message: ReindexMessage) => {
 		switch (message.type) {
 			case "progress": {
@@ -225,7 +238,7 @@ export function Maintenance() {
 					errors: completed.errors,
 				});
 				setLastScanType("reindex");
-				setIsReindexing(false);
+				finishAction("reindex");
 				setReindexState({
 					jobId: null,
 					phase: "",
@@ -260,7 +273,7 @@ export function Maintenance() {
 			}
 			case "failed": {
 				const failed = message as ReindexFailed;
-				setIsReindexing(false);
+				finishAction("reindex");
 				setReindexState({
 					jobId: null,
 					phase: "",
@@ -281,10 +294,10 @@ export function Maintenance() {
 				break;
 			}
 		}
-	}, []);
+	}, [finishAction]);
 
 	const handleReindex = async () => {
-		setIsReindexing(true);
+		setRunningAction("reindex");
 		setReindexResult(null);
 
 		try {
@@ -298,7 +311,7 @@ export function Maintenance() {
 				toast.error("Reindex failed", {
 					description: errorData.detail || "Unknown error",
 				});
-				setIsReindexing(false);
+				finishAction("reindex");
 				return;
 			}
 
@@ -332,12 +345,12 @@ export function Maintenance() {
 						? err.message
 						: "Unknown error occurred",
 			});
-			setIsReindexing(false);
+			finishAction("reindex");
 		}
 	};
 
 	const handleSdkScan = async () => {
-		setIsSdkScanning(true);
+		setRunningAction("sdk");
 
 		try {
 			const response = await authFetch("/api/maintenance/scan-sdk", {
@@ -373,12 +386,12 @@ export function Maintenance() {
 						: "Unknown error occurred",
 			});
 		} finally {
-			setIsSdkScanning(false);
+			finishAction("sdk");
 		}
 	};
 
 	const handleDocsIndex = async () => {
-		setIsDocsIndexing(true);
+		setRunningAction("docs");
 
 		try {
 			const response = await authFetch("/api/maintenance/index-docs", {
@@ -418,12 +431,12 @@ export function Maintenance() {
 						: "Unknown error occurred",
 			});
 		} finally {
-			setIsDocsIndexing(false);
+			finishAction("docs");
 		}
 	};
 
 	const handleAppDepScan = async () => {
-		setIsAppDepScanning(true);
+		setRunningAction("app-deps");
 
 		try {
 			const response = await authFetch("/api/maintenance/scan-app-dependencies", {
@@ -459,12 +472,125 @@ export function Maintenance() {
 						: "Unknown error occurred",
 			});
 		} finally {
-			setIsAppDepScanning(false);
+			finishAction("app-deps");
 		}
 	};
 
+	const handleExportAll = async () => {
+		setIsExportingAll(true);
+		try {
+			await exportAll({});
+			toast.success("Export downloaded");
+		} catch {
+			toast.error("Export failed");
+		} finally {
+			setIsExportingAll(false);
+		}
+	};
+
+	const toggleAction = (id: string) => {
+		setSelectedActions((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) {
+				next.delete(id);
+			} else {
+				next.add(id);
+			}
+			return next;
+		});
+	};
+
+	// Process the queue - runs next action when current one finishes
+	useEffect(() => {
+		if (runningAction !== null || actionQueue.length === 0) return;
+
+		const [next, ...rest] = actionQueue;
+		setActionQueue(rest);
+
+		const handlers: Record<string, () => Promise<void>> = {
+			reindex: handleReindex,
+			sdk: handleSdkScan,
+			docs: handleDocsIndex,
+			"app-deps": handleAppDepScan,
+		};
+
+		handlers[next]?.();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [runningAction, actionQueue]);
+
+	const handleRunSelected = () => {
+		if (selectedActions.size === 0) return;
+		setCompletedActions(new Set());
+		// Reindex first since it's the longest, then the rest in order
+		const order = ["reindex", "sdk", "docs", "app-deps"];
+		const queue = order.filter((id) => selectedActions.has(id));
+		setActionQueue(queue);
+	};
+
+	const actions = [
+		{
+			id: "reindex",
+			icon: RefreshCw,
+			label: "Reindex Workspace",
+			description: "Re-scan workspace files for metadata",
+		},
+		{
+			id: "sdk",
+			icon: Search,
+			label: "Scan SDK References",
+			description: "Find missing config/integration references",
+		},
+		{
+			id: "docs",
+			icon: Database,
+			label: "Index Documents",
+			description: "Index platform docs into knowledge store",
+		},
+		{
+			id: "app-deps",
+			icon: AppWindow,
+			label: "Rebuild App Dependencies",
+			description: "Rebuild app dependency graph",
+		},
+	];
+
 	return (
 		<div className="space-y-6">
+			{/* Export/Import Card */}
+			<Card>
+				<CardHeader>
+					<CardTitle className="flex items-center gap-2">
+						<Download className="h-5 w-5" />
+						Export / Import
+					</CardTitle>
+					<CardDescription>
+						Export all platform data as a ZIP archive or import from a previous export
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					<div className="flex items-center gap-4">
+						<Button
+							onClick={handleExportAll}
+							disabled={isExportingAll}
+						>
+							{isExportingAll ? (
+								<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+							) : (
+								<Download className="h-4 w-4 mr-2" />
+							)}
+							Export All
+						</Button>
+						<Button
+							variant="outline"
+							onClick={() => setIsImportAllOpen(true)}
+						>
+							<Upload className="h-4 w-4 mr-2" />
+							Import All
+						</Button>
+					</div>
+				</CardContent>
+			</Card>
+
 			{/* Actions Card */}
 			<Card>
 				<CardHeader>
@@ -473,190 +599,95 @@ export function Maintenance() {
 						Maintenance Actions
 					</CardTitle>
 					<CardDescription>
-						Run workspace maintenance operations
+						Select actions and run them sequentially
 					</CardDescription>
 				</CardHeader>
-				<CardContent className="space-y-6">
-					{/* Workspace Indexing Section */}
-					<div className="space-y-4">
-						<h3 className="text-sm font-medium">
-							Workspace Indexing
-						</h3>
-						<div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
-							<RefreshCw className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-							<div className="text-sm text-blue-800 dark:text-blue-200">
-								<p className="text-blue-700 dark:text-blue-300">
-									Re-scan all workspace files to refresh
-									workflow, tool, and data provider metadata
-									(names, descriptions, parameters,
-									categories). Use this after migrations or if
-									metadata appears out of sync.
-								</p>
-							</div>
-						</div>
-						<div className="flex flex-wrap items-center gap-4">
-							<Button
-								onClick={handleReindex}
-								disabled={isAnyRunning}
-							>
-								{isReindexing ? (
-									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-								) : (
-									<RefreshCw className="h-4 w-4 mr-2" />
-								)}
-								Reindex Workspace
-							</Button>
-						</div>
+				<CardContent className="space-y-4">
+					<div className="rounded-md border divide-y">
+						{actions.map((action) => {
+							const Icon = action.icon;
+							const isRunning = runningAction === action.id;
+							const isCompleted = completedActions.has(action.id);
+							const isQueued = actionQueue.includes(action.id);
 
-						{/* Progress indicator during reindex */}
-						{isReindexing && reindexState.jobId && (
-							<div className="space-y-2 rounded-lg border bg-muted/50 p-4">
-								<div className="flex items-center justify-between text-sm">
-									<span className="font-medium capitalize">
-										{reindexState.phase.replace(
-											/_/g,
-											" ",
-										) || "Starting..."}
-									</span>
-									{reindexState.total > 0 && (
-										<span className="text-muted-foreground">
-											{reindexState.current} /{" "}
-											{reindexState.total}
-										</span>
+							return (
+								<div key={action.id}>
+									<label
+										htmlFor={`action-${action.id}`}
+										className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/50 ${
+											isRunning ? "bg-muted/50" : ""
+										}`}
+									>
+										{isRunning ? (
+											<Loader2 className="h-4 w-4 animate-spin text-primary flex-shrink-0" />
+										) : isCompleted ? (
+											<CheckCircle2 className="h-4 w-4 text-green-600 flex-shrink-0" />
+										) : (
+											<Checkbox
+												id={`action-${action.id}`}
+												checked={selectedActions.has(action.id)}
+												onCheckedChange={() => toggleAction(action.id)}
+												disabled={isAnyRunning}
+											/>
+										)}
+										<Icon className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+										<div className="min-w-0">
+											<p className="text-sm font-medium">
+												{action.label}
+												{isQueued && (
+													<span className="text-xs text-muted-foreground ml-2">queued</span>
+												)}
+											</p>
+											<p className="text-xs text-muted-foreground">
+												{action.description}
+											</p>
+										</div>
+									</label>
+
+									{/* Reindex progress inline */}
+									{isRunning && action.id === "reindex" && reindexState.jobId && (
+										<div className="px-4 pb-3 space-y-2">
+											<div className="flex items-center justify-between text-xs">
+												<span className="font-medium capitalize">
+													{reindexState.phase.replace(/_/g, " ") || "Starting..."}
+												</span>
+												{reindexState.total > 0 && (
+													<span className="text-muted-foreground">
+														{reindexState.current} / {reindexState.total}
+													</span>
+												)}
+											</div>
+											{reindexState.total > 0 && (
+												<Progress
+													value={(reindexState.current / reindexState.total) * 100}
+													className="h-1.5"
+												/>
+											)}
+											{reindexState.currentFile && (
+												<p className="text-xs text-muted-foreground truncate font-mono">
+													{reindexState.currentFile}
+												</p>
+											)}
+										</div>
 									)}
 								</div>
-								{reindexState.total > 0 && (
-									<Progress
-										value={
-											(reindexState.current /
-												reindexState.total) *
-											100
-										}
-										className="h-2"
-									/>
-								)}
-								{reindexState.currentFile && (
-									<p className="text-xs text-muted-foreground truncate font-mono">
-										{reindexState.currentFile}
-									</p>
-								)}
-							</div>
+							);
+						})}
+					</div>
+
+					<Button
+						onClick={handleRunSelected}
+						disabled={selectedActions.size === 0 || isAnyRunning}
+					>
+						{isAnyRunning ? (
+							<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+						) : (
+							<Play className="h-4 w-4 mr-2" />
 						)}
-					</div>
-
-					{/* Divider */}
-					<div className="border-t" />
-
-					{/* SDK Reference Section */}
-					<div className="space-y-4">
-						<h3 className="text-sm font-medium">
-							SDK Reference Scan
-						</h3>
-						<div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
-							<Link2 className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-							<div className="text-sm text-blue-800 dark:text-blue-200">
-								<p className="text-blue-700 dark:text-blue-300">
-									Scan Python files for{" "}
-									<code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">
-										config.get()
-									</code>{" "}
-									and{" "}
-									<code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">
-										integrations.get()
-									</code>{" "}
-									calls that reference missing configurations
-									or integrations.
-								</p>
-							</div>
-						</div>
-						<Button
-							onClick={handleSdkScan}
-							disabled={isAnyRunning}
-							variant="outline"
-						>
-							{isSdkScanning ? (
-								<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-							) : (
-								<Search className="h-4 w-4 mr-2" />
-							)}
-							Scan SDK References
-						</Button>
-					</div>
-
-					{/* Divider */}
-					<div className="border-t" />
-
-					{/* Documentation Indexing Section */}
-					<div className="space-y-4">
-						<h3 className="text-sm font-medium">
-							Documentation Indexing
-						</h3>
-						<div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
-							<Database className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-							<div className="text-sm text-blue-800 dark:text-blue-200">
-								<p className="text-blue-700 dark:text-blue-300">
-									Index Bifrost platform documentation into
-									the knowledge store for use by the Coding
-									Assistant. Only changed files are
-									re-indexed.
-								</p>
-							</div>
-						</div>
-						<Button
-							onClick={handleDocsIndex}
-							disabled={isAnyRunning}
-							variant="outline"
-						>
-							{isDocsIndexing ? (
-								<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-							) : (
-								<Database className="h-4 w-4 mr-2" />
-							)}
-							Index Documents
-						</Button>
-					</div>
-
-					{/* Divider */}
-					<div className="border-t" />
-
-					{/* App Dependencies Section */}
-					<div className="space-y-4">
-						<h3 className="text-sm font-medium">
-							Rebuild App Dependencies
-						</h3>
-						<div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
-							<AppWindow className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-							<div className="text-sm text-blue-800 dark:text-blue-200">
-								<p className="text-blue-700 dark:text-blue-300">
-									Rebuild the app dependency graph by parsing
-									all app source files. Extracts{" "}
-									<code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">
-										useWorkflowQuery()/useWorkflowMutation()
-									</code>,{" "}
-									<code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">
-										useForm()
-									</code>, and{" "}
-									<code className="px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded">
-										useDataProvider()
-									</code>{" "}
-									references and populates the dependency table
-									used by Entity Management.
-								</p>
-							</div>
-						</div>
-						<Button
-							onClick={handleAppDepScan}
-							disabled={isAnyRunning}
-							variant="outline"
-						>
-							{isAppDepScanning ? (
-								<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-							) : (
-								<AppWindow className="h-4 w-4 mr-2" />
-							)}
-							Rebuild App Dependencies
-						</Button>
-					</div>
+						{isAnyRunning
+							? "Running..."
+							: `Run Selected (${selectedActions.size})`}
+					</Button>
 				</CardContent>
 			</Card>
 
@@ -690,6 +721,12 @@ export function Maintenance() {
 					) : null}
 				</CardContent>
 			</Card>
+
+			<ImportDialog
+				open={isImportAllOpen}
+				onOpenChange={setIsImportAllOpen}
+				entityType="all"
+			/>
 		</div>
 	);
 }

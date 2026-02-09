@@ -107,7 +107,9 @@ class TestModelsToMarkdown:
 class TestSuccessResult:
     def test_with_data(self):
         result = success_result("OK", {"key": "val"})
-        assert result.content[0].text == "OK"
+        text = result.content[0].text
+        assert text.startswith("OK")
+        assert '"key": "val"' in text
         assert result.structured_content == {"key": "val"}
 
     def test_without_data(self):
@@ -119,7 +121,9 @@ class TestSuccessResult:
 class TestErrorResult:
     def test_basic_error(self):
         result = error_result("not found")
-        assert result.content[0].text == "Error: not found"
+        text = result.content[0].text
+        assert text.startswith("Error: not found")
+        assert '"error": "not found"' in text
         assert result.structured_content["error"] == "not found"
 
     def test_with_extra_data(self):

@@ -8,6 +8,8 @@ import {
 	Trash2,
 	Link2,
 	Pencil,
+	Download,
+	Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,6 +24,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
 	DataTable,
@@ -39,6 +42,8 @@ import {
 	useDeleteIntegration,
 	type Integration,
 } from "@/services/integrations";
+import { ImportDialog } from "@/components/ImportDialog";
+import { exportEntities } from "@/services/exportImport";
 import { toast } from "sonner";
 
 export function Integrations() {
@@ -52,6 +57,9 @@ export function Integrations() {
 	const [integrationToDelete, setIntegrationToDelete] =
 		useState<Integration | null>(null);
 	const [searchTerm, setSearchTerm] = useState("");
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [isImportOpen, setIsImportOpen] = useState(false);
+	const [isExporting, setIsExporting] = useState(false);
 
 	const { data, isLoading, refetch } = useIntegrations();
 	const deleteMutation = useDeleteIntegration();
@@ -101,6 +109,38 @@ export function Integrations() {
 		}
 	};
 
+	const toggleSelect = (id: string) => {
+		setSelectedIds((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	};
+
+	const toggleSelectAll = () => {
+		if (selectedIds.size === filteredIntegrations.length) {
+			setSelectedIds(new Set());
+		} else {
+			setSelectedIds(
+				new Set(filteredIntegrations.map((i) => i.id)),
+			);
+		}
+	};
+
+	const handleExport = async () => {
+		const ids = selectedIds.size > 0 ? Array.from(selectedIds) : [];
+		setIsExporting(true);
+		try {
+			await exportEntities("integrations", ids);
+			toast.success("Export downloaded");
+		} catch {
+			toast.error("Export failed");
+		} finally {
+			setIsExporting(false);
+		}
+	};
+
 	return (
 		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
 			{/* Header */}
@@ -142,6 +182,32 @@ export function Integrations() {
 					placeholder="Search integrations by name, OAuth provider, or data provider..."
 					className="max-w-md"
 				/>
+				<div className="flex items-center gap-2 ml-auto">
+					{selectedIds.size > 0 && (
+						<span className="text-sm text-muted-foreground">
+							{selectedIds.size} selected
+						</span>
+					)}
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={handleExport}
+						disabled={isExporting}
+					>
+						<Download className="h-4 w-4 mr-1" />
+						{selectedIds.size > 0
+							? `Export (${selectedIds.size})`
+							: "Export All"}
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setIsImportOpen(true)}
+					>
+						<Upload className="h-4 w-4 mr-1" />
+						Import
+					</Button>
+				</div>
 			</div>
 
 			{/* Content */}
@@ -156,6 +222,16 @@ export function Integrations() {
 					<DataTable className="max-h-full">
 						<DataTableHeader>
 							<DataTableRow>
+								<DataTableHead className="w-10">
+									<Checkbox
+										checked={
+											filteredIntegrations.length > 0 &&
+											selectedIds.size ===
+												filteredIntegrations.length
+										}
+										onCheckedChange={toggleSelectAll}
+									/>
+								</DataTableHead>
 								<DataTableHead>Name</DataTableHead>
 								<DataTableHead>OAuth Status</DataTableHead>
 								<DataTableHead>Data Provider</DataTableHead>
@@ -172,6 +248,19 @@ export function Integrations() {
 										handleOpenIntegration(integration.id)
 									}
 								>
+									<DataTableCell>
+										<Checkbox
+											checked={selectedIds.has(
+												integration.id,
+											)}
+											onCheckedChange={() =>
+												toggleSelect(integration.id)
+											}
+											onClick={(e) =>
+												e.stopPropagation()
+											}
+										/>
+									</DataTableCell>
 									<DataTableCell className="font-medium">
 										{integration.name}
 									</DataTableCell>
@@ -298,6 +387,13 @@ export function Integrations() {
 					</CardContent>
 				</Card>
 			)}
+
+			<ImportDialog
+				open={isImportOpen}
+				onOpenChange={setIsImportOpen}
+				entityType="integrations"
+				onImportComplete={() => refetch()}
+			/>
 
 			{/* Create/Edit Dialog */}
 			<CreateIntegrationDialog

@@ -1186,3 +1186,62 @@ class TestMCPContextFiltering:
 
         # Should be empty since tool IDs don't match (case sensitive)
         assert len(tool_names) == 0
+
+
+# ==================== Tool Result Display Text Tests ====================
+
+
+class TestToolResultDisplayText:
+    """Tests that structured data is embedded in display text for older MCP clients."""
+
+    def test_success_result_includes_json_in_content(self):
+        """success_result should append JSON data to display text."""
+        from src.services.mcp_server.tool_result import success_result
+
+        result = success_result("Found 2 items", {"items": [{"id": "abc"}], "count": 2})
+
+        text = result.content[0].text
+        # Display text should contain the human summary
+        assert "Found 2 items" in text
+        # Display text should also contain the structured data as JSON
+        assert '"items"' in text
+        assert '"abc"' in text
+        assert '"count": 2' in text
+        # structured_content should still be set
+        assert result.structured_content == {"items": [{"id": "abc"}], "count": 2}
+
+    def test_success_result_without_data(self):
+        """success_result without data should only have display text."""
+        from src.services.mcp_server.tool_result import success_result
+
+        result = success_result("No data here")
+
+        assert result.content[0].text == "No data here"
+        assert result.structured_content is None
+
+    def test_error_result_includes_json_in_content(self):
+        """error_result should append JSON error data to display text."""
+        from src.services.mcp_server.tool_result import error_result
+
+        result = error_result("Something failed", {"details": "db timeout"})
+
+        text = result.content[0].text
+        assert "Error: Something failed" in text
+        assert '"error": "Something failed"' in text
+        assert '"details": "db timeout"' in text
+        assert result.structured_content["error"] == "Something failed"
+
+    def test_workflow_ids_visible_in_content(self):
+        """Workflow IDs should be visible in display text for LLM parsing."""
+        from src.services.mcp_server.tool_result import success_result
+
+        wf_id = str(uuid4())
+        result = success_result(
+            "Found 1 workflow(s):",
+            {"workflows": [{"id": wf_id, "name": "my_wf"}], "count": 1},
+        )
+
+        text = result.content[0].text
+        # The UUID should be in the content text
+        assert wf_id in text
+        assert "my_wf" in text

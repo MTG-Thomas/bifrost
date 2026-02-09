@@ -46,6 +46,7 @@ from src.routers.knowledge_sources import router as knowledge_sources_router
 from src.routers.applications import router as applications_router
 from src.routers.app_code_files import router as app_code_files_router
 from src.routers.dependencies import router as dependencies_router
+from src.routers.export_import import router as export_import_router
 from src.routers.jobs import router as jobs_router
 from src.routers.platform import (
     workers_router as platform_workers_router,
@@ -101,6 +102,7 @@ __all__ = [
     "applications_router",
     "app_code_files_router",
     "dependencies_router",
+    "export_import_router",
     "jobs_router",
     "platform_workers_router",
     "platform_queue_router",

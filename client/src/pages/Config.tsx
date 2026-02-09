@@ -9,6 +9,8 @@ import {
 	Building2,
 	AlertTriangle,
 	Loader2,
+	Download,
+	Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,10 +33,14 @@ import {
 	DataTableRow,
 } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
+import { toast } from "sonner";
 
 import { useConfigs, useDeleteConfig } from "@/hooks/useConfig";
+import { ImportDialog } from "@/components/ImportDialog";
+import { exportEntities } from "@/services/exportImport";
 import { ConfigDialog } from "@/components/config/ConfigDialog";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -60,6 +66,9 @@ export function Config() {
 		null,
 	);
 	const [searchTerm, setSearchTerm] = useState("");
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [isImportOpen, setIsImportOpen] = useState(false);
+	const [isExporting, setIsExporting] = useState(false);
 
 	// Pass filterOrgId to backend for filtering (undefined = all, null = global only)
 	// For platform admins, undefined means show all. For non-admins, backend handles filtering.
@@ -124,6 +133,42 @@ export function Config() {
 	const handleDialogClose = () => {
 		setIsDialogOpen(false);
 		setSelectedConfig(undefined);
+	};
+
+	const toggleSelect = (id: string) => {
+		setSelectedIds((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	};
+
+	const toggleSelectAll = () => {
+		if (selectedIds.size === filteredConfigs.length) {
+			setSelectedIds(new Set());
+		} else {
+			setSelectedIds(
+				new Set(
+					filteredConfigs.map(
+						(c) => `${c.scope}-${c.key}`,
+					),
+				),
+			);
+		}
+	};
+
+	const handleExport = async () => {
+		const ids = selectedIds.size > 0 ? Array.from(selectedIds) : [];
+		setIsExporting(true);
+		try {
+			await exportEntities("configs", ids);
+			toast.success("Export downloaded");
+		} catch {
+			toast.error("Export failed");
+		} finally {
+			setIsExporting(false);
+		}
 	};
 
 	const getTypeBadge = (type: string) => {
@@ -226,6 +271,34 @@ export function Config() {
 						/>
 					</div>
 				)}
+				{isPlatformAdmin && (
+					<div className="flex items-center gap-2 ml-auto">
+						{selectedIds.size > 0 && (
+							<span className="text-sm text-muted-foreground">
+								{selectedIds.size} selected
+							</span>
+						)}
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={handleExport}
+							disabled={isExporting}
+						>
+							<Download className="h-4 w-4 mr-1" />
+							{selectedIds.size > 0
+								? `Export (${selectedIds.size})`
+								: "Export All"}
+						</Button>
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setIsImportOpen(true)}
+						>
+							<Upload className="h-4 w-4 mr-1" />
+							Import
+						</Button>
+					</div>
+				)}
 			</div>
 
 			{/* Content */}
@@ -238,6 +311,18 @@ export function Config() {
 					<DataTable className="max-h-full">
 						<DataTableHeader>
 							<DataTableRow>
+								{isPlatformAdmin && (
+									<DataTableHead className="w-10">
+										<Checkbox
+											checked={
+												filteredConfigs.length > 0 &&
+												selectedIds.size ===
+													filteredConfigs.length
+											}
+											onCheckedChange={toggleSelectAll}
+										/>
+									</DataTableHead>
+								)}
 								{isPlatformAdmin && (
 									<DataTableHead>Organization</DataTableHead>
 								)}
@@ -253,6 +338,20 @@ export function Config() {
 								<DataTableRow
 									key={`${config.scope}-${config.key}`}
 								>
+									{isPlatformAdmin && (
+										<DataTableCell>
+											<Checkbox
+												checked={selectedIds.has(
+													`${config.scope}-${config.key}`,
+												)}
+												onCheckedChange={() =>
+													toggleSelect(
+														`${config.scope}-${config.key}`,
+													)
+												}
+											/>
+										</DataTableCell>
+									)}
 									{isPlatformAdmin && (
 										<DataTableCell>
 											{config.org_id ? (
@@ -344,6 +443,13 @@ export function Config() {
 				config={selectedConfig}
 				open={isDialogOpen}
 				onClose={handleDialogClose}
+			/>
+
+			<ImportDialog
+				open={isImportOpen}
+				onOpenChange={setIsImportOpen}
+				entityType="configs"
+				onImportComplete={() => refetch()}
 			/>
 
 			{/* Delete Confirmation Dialog */}

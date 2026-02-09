@@ -4,8 +4,13 @@ MCP Tool Result Helpers
 
 Helpers for building FastMCP ToolResult objects with proper
 content (human-readable) and structured_content (machine-parseable).
+
+Note: structured data is also appended as JSON to the display text
+so that MCP clients using older protocol versions (before 2025-06-18)
+that don't support structuredContent can still parse the full data.
 """
 
+import json
 from typing import Any
 
 from fastmcp.tools.tool import ToolResult
@@ -22,8 +27,12 @@ def success_result(display_text: str, data: dict[str, Any] | None = None) -> Too
     Returns:
         ToolResult with content and structured_content per MCP spec.
     """
+    content = display_text
+    if data:
+        json_str = json.dumps(data, indent=2, default=str)
+        content = f"{display_text}\n\n{json_str}"
     return ToolResult(
-        content=display_text,
+        content=content,
         structured_content=data,
     )
 
@@ -44,8 +53,11 @@ def error_result(error_message: str, extra_data: dict[str, Any] | None = None) -
     if extra_data:
         data.update(extra_data)
 
+    json_str = json.dumps(data, indent=2, default=str)
+    content = f"{display_text}\n\n{json_str}"
+
     return ToolResult(
-        content=display_text,
+        content=content,
         structured_content=data,
     )
 
