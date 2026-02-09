@@ -7,7 +7,7 @@ Automatically cleans up old events and event deliveries.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -36,7 +36,7 @@ async def cleanup_old_events() -> dict[str, Any]:
     Returns:
         Summary of cleanup results
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     logger.info("▶ Event cleanup starting")
 
     results: dict[str, Any] = {
@@ -59,7 +59,7 @@ async def cleanup_old_events() -> dict[str, Any]:
             await db.commit()
 
         # Calculate duration
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration_seconds = (end_time - start_time).total_seconds()
         results["duration_seconds"] = duration_seconds
         results["start_time"] = start_time.isoformat()
@@ -89,7 +89,7 @@ async def cleanup_stuck_events() -> dict[str, Any]:
     Returns:
         Summary of cleanup results
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     logger.info("▶ Stuck event cleanup starting")
 
     results: dict[str, Any] = {
@@ -103,7 +103,7 @@ async def cleanup_stuck_events() -> dict[str, Any]:
     try:
         async with get_db_context() as db:
             delivery_repo = EventDeliveryRepository(db)
-            cutoff = datetime.utcnow() - timedelta(minutes=STUCK_DELIVERY_TIMEOUT_MINUTES)
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=STUCK_DELIVERY_TIMEOUT_MINUTES)
 
             # Find stuck deliveries
             stuck_deliveries = await delivery_repo.get_stuck_deliveries(
@@ -122,7 +122,7 @@ async def cleanup_stuck_events() -> dict[str, Any]:
                         f"Execution timeout: delivery stuck in {original_status} status "
                         f"for >{STUCK_DELIVERY_TIMEOUT_MINUTES} minutes"
                     )
-                    delivery.completed_at = datetime.utcnow()
+                    delivery.completed_at = datetime.now(timezone.utc)
                     event_ids.add(delivery.event_id)
                     results["deliveries_failed"] += 1
 
@@ -183,7 +183,7 @@ async def cleanup_stuck_events() -> dict[str, Any]:
                         logger.warning(f"Failed to broadcast event update: {e}")
 
         # Calculate duration
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration_seconds = (end_time - start_time).total_seconds()
         results["duration_seconds"] = duration_seconds
         results["start_time"] = start_time.isoformat()

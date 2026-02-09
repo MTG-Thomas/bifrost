@@ -4,7 +4,7 @@ GlobalBranding ORM model.
 Represents global platform branding configuration.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, LargeBinary, String, text
@@ -29,11 +29,11 @@ class GlobalBranding(Base):
     )
     primary_color: Mapped[str | None] = mapped_column(String(7), default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )

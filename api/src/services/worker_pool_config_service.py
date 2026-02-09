@@ -5,7 +5,7 @@ Persists pool min/max workers settings so they survive container restarts.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -107,7 +107,7 @@ class WorkerPoolConfigService:
         if existing:
             # Update existing config
             existing.value_json = config_data
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
             existing.updated_by = updated_by
             logger.info(
                 f"Updated worker pool config: min_workers={min_workers}, max_workers={max_workers}"

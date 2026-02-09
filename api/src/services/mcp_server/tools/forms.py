@@ -5,6 +5,7 @@ Tools for listing, creating, validating, and managing forms.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -116,7 +117,6 @@ async def create_form(
     Returns:
         ToolResult with form details
     """
-    from datetime import datetime
     from uuid import UUID as UUID_TYPE
 
     from sqlalchemy import select
@@ -208,7 +208,7 @@ async def create_form(
                 return error_result(f"Error validating form schema: {str(e)}")
 
             # Create form record
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             form = FormORM(
                 name=name,
@@ -429,7 +429,6 @@ async def update_form(
     Returns:
         ToolResult with update confirmation
     """
-    from datetime import datetime
     from uuid import UUID as UUID_TYPE
 
     from sqlalchemy import delete, select
@@ -563,7 +562,7 @@ async def update_form(
             if not updates_made:
                 return error_result("No updates provided. Specify at least one field to update.")
 
-            form.updated_at = datetime.utcnow()
+            form.updated_at = datetime.now(timezone.utc)
             await db.flush()
 
             # Reload form with fields

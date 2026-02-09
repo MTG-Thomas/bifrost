@@ -5,7 +5,7 @@ Tests LLM configuration CRUD operations with mocked database.
 """
 
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -70,8 +70,8 @@ def mock_system_config(sample_config_data):
     config.key = LLM_CONFIG_KEY
     config.value_json = sample_config_data
     config.organization_id = None
-    config.created_at = datetime.utcnow()
-    config.updated_at = datetime.utcnow()
+    config.created_at = datetime.now(timezone.utc)
+    config.updated_at = datetime.now(timezone.utc)
     return config
 
 

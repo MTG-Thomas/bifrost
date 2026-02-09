@@ -15,7 +15,7 @@ unified context that works everywhere:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from src.core.config_resolver import ConfigResolver
@@ -189,7 +189,7 @@ class ExecutionContext:
         Called automatically by integration clients.
         """
         call_record = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "integration": integration,
             "method": method,
             "endpoint": endpoint,

@@ -5,7 +5,7 @@ Tests the database operations for listing execution logs with filtering and pagi
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -35,7 +35,7 @@ class TestExecutionLogRepositoryListLogs:
         log.execution_id = uuid4()
         log.level = "ERROR"
         log.message = "Connection failed"
-        log.timestamp = datetime.utcnow()
+        log.timestamp = datetime.now(timezone.utc)
         log.execution = MagicMock()
         log.execution.workflow_name = "test-workflow"
         log.execution.organization = MagicMock()
@@ -53,7 +53,7 @@ class TestExecutionLogRepositoryListLogs:
         mock_log2.execution_id = mock_log.execution_id
         mock_log2.level = "INFO"
         mock_log2.message = "Processing started"
-        mock_log2.timestamp = datetime.utcnow()
+        mock_log2.timestamp = datetime.now(timezone.utc)
         mock_log2.execution = mock_log.execution
 
         mock_result = MagicMock()
@@ -223,7 +223,7 @@ class TestExecutionLogRepositoryListLogs:
         mock_log.execution_id = uuid4()
         mock_log.level = "INFO"
         mock_log.message = "Test message"
-        mock_log.timestamp = datetime.utcnow()
+        mock_log.timestamp = datetime.now(timezone.utc)
         mock_log.execution = MagicMock()
         mock_log.execution.workflow_name = "test-workflow"
         mock_log.execution.organization = None  # No organization

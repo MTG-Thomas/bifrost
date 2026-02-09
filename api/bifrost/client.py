@@ -12,7 +12,7 @@ import os
 import sys
 import threading
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -71,7 +71,7 @@ async def refresh_tokens() -> bool:
             data = response.json()
 
             # Calculate expiry time (30 minutes from now)
-            expires_at = datetime.utcnow() + timedelta(seconds=data.get("expires_in", 1800))
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 1800))
 
             # Save new credentials
             save_credentials(
@@ -176,7 +176,7 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
                     print(" ✓")
 
                     # Calculate expiry time
-                    expires_at = datetime.utcnow() + timedelta(seconds=poll_data.get("expires_in", 1800))
+                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=poll_data.get("expires_in", 1800))
 
                     # Step 5: Save credentials
                     save_credentials(

@@ -6,7 +6,7 @@ discovered from Python files. Data providers were consolidated into this
 table in migration 20260103_000000.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -66,7 +66,7 @@ class Workflow(Base):
     tags: Mapped[list] = mapped_column(JSONB, default=[])
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     is_orphaned: Mapped[bool] = mapped_column(Boolean, default=False)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Endpoint configuration
     endpoint_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -93,11 +93,11 @@ class Workflow(Base):
     api_key_description: Mapped[str | None] = mapped_column(Text, default=None)
     api_key_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     api_key_created_by: Mapped[str | None] = mapped_column(String(255), default=None)
-    api_key_created_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    api_key_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     api_key_last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime, default=None
+        DateTime(timezone=True), default=None
     )
-    api_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    api_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Access control
     # Values: 'authenticated' (any logged-in user), 'role_based' (must have assigned role)
@@ -107,13 +107,13 @@ class Workflow(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
     # Portable reference for GitHub sync

@@ -5,7 +5,7 @@ Provides JWT token generation and HTTP header helpers for testing
 authenticated endpoints with real HTTP requests to the FastAPI server.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 
@@ -58,7 +58,7 @@ def create_test_jwt(
     if not is_superuser and organization_id is None:
         organization_id = "00000000-0000-4000-8000-000000000100"  # Default test org ID
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
         "email": email,

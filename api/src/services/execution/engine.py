@@ -9,7 +9,7 @@ import os
 import sys
 from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Any, get_type_hints, get_origin, get_args, Union
@@ -210,7 +210,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     Raises:
         ValueError: If neither func nor code provided
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
     # Resolve what we're executing
     func = None
@@ -355,14 +355,14 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                 message = log_line[11:].strip()
 
             logger_output.append({
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'level': level,
                 'message': message,
                 'source': 'script' if is_script else 'workflow'
             })
 
         # Calculate duration
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
         # Determine execution status based on result
@@ -392,7 +392,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
 
     except WorkflowExecutionException as e:
         # Workflow exception with captured variables
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
         # Extract variables and logs from the wrapper exception
@@ -418,7 +418,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                 message = log_line[7:].strip()
 
             logger_output.append({
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'level': level,
                 'message': message,
                 'source': 'workflow'
@@ -434,7 +434,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         if isinstance(original_exc, UserError):
             # UserError: Show message only (user-facing)
             logger_output.append({
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'level': 'error',
                 'message': str(original_exc),
                 'source': 'workflow'
@@ -442,7 +442,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         else:
             # Other exceptions: Add full traceback
             logger_output.append({
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'level': 'error',
                 'message': f"Execution error: {request.name or 'workflow'}",
                 'source': 'workflow'
@@ -451,7 +451,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             for line in ''.join(tb_lines).split('\n'):
                 if line.strip():
                     logger_output.append({
-                        'timestamp': datetime.utcnow().isoformat(),
+                        'timestamp': datetime.now(timezone.utc).isoformat(),
                         'level': 'error',
                         'message': line,
                         'source': 'workflow'
@@ -477,13 +477,13 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
 
     except WorkflowError as e:
         # Expected workflow error (without variable capture)
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
         # Add traceback to logs
         import traceback
         logger_output.append({
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'level': 'error',
             'message': f"Workflow error: {request.name or 'workflow'}",
             'source': 'workflow'
@@ -492,7 +492,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         for line in ''.join(tb_lines).split('\n'):
             if line.strip():
                 logger_output.append({
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
                     'level': 'error',
                     'message': line,
                     'source': 'workflow'
@@ -512,7 +512,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
 
     except Exception as e:
         # Unexpected error
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
         logger.error(
@@ -530,7 +530,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         if isinstance(e, UserError):
             # UserError: Show message only (user-facing)
             logger_output.append({
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'level': 'error',
                 'message': str(e),
                 'source': 'script' if request.code else 'workflow'
@@ -538,7 +538,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         else:
             # Other exceptions: Add full traceback
             logger_output.append({
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'level': 'error',
                 'message': f"Execution error: {request.name or 'script'}",
                 'source': 'script' if request.code else 'workflow'
@@ -547,7 +547,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             for line in ''.join(tb_lines).split('\n'):
                 if line.strip():
                     logger_output.append({
-                        'timestamp': datetime.utcnow().isoformat(),
+                        'timestamp': datetime.now(timezone.utc).isoformat(),
                         'level': 'error',
                         'message': line,
                         'source': 'script' if request.code else 'workflow'
@@ -773,7 +773,7 @@ async def _execute_workflow_with_trace(
             if execution_id:
                 import uuid
                 log_id = str(uuid.uuid4())
-                timestamp = datetime.utcnow().isoformat() + "Z"
+                timestamp = datetime.now(timezone.utc).isoformat() + "Z"
 
                 # Atomically get next sequence number BEFORE spawning thread
                 # This ensures sequence assignment order matches log order
@@ -1072,7 +1072,7 @@ def _build_cached_result(
     Returns:
         ExecutionResult with cached data
     """
-    end_time = datetime.utcnow()
+    end_time = datetime.now(timezone.utc)
     duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
     # expires_at comes as ISO string from Redis cache

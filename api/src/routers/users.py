@@ -5,7 +5,7 @@ List and manage users, view user roles and forms.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -105,7 +105,7 @@ async def create_user(
     db: DbSession,
 ) -> UserPublic:
     """Create a new user."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     new_user = UserORM(
         email=request.email,
@@ -205,7 +205,7 @@ async def update_user(
     if request.organization_id is not None:
         db_user.organization_id = request.organization_id
 
-    db_user.updated_at = datetime.utcnow()
+    db_user.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
     await db.refresh(db_user)
@@ -249,7 +249,7 @@ async def delete_user(
         )
 
     db_user.is_active = False
-    db_user.updated_at = datetime.utcnow()
+    db_user.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
     logger.info(f"Deleted user {user_id}")

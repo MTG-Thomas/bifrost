@@ -5,7 +5,7 @@ Tests the Redis Stream-based logging that replaces the old sync Postgres approac
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -181,7 +181,7 @@ class TestLogAndBroadcast:
     def test_log_and_broadcast_calls_both(self):
         """Calls both stream append and pubsub publish."""
         exec_id = str(uuid4())
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
 
         with patch("bifrost._logging.append_log_to_stream") as mock_append:
             with patch("bifrost._logging.publish_log_to_pubsub") as mock_publish:

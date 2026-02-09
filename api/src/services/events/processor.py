@@ -15,7 +15,7 @@ Events are always processed asynchronously and return 202 immediately.
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,7 +131,7 @@ def _process_input_mapping(
         "scheduled_time": (
             event.received_at.isoformat()
             if event.received_at
-            else datetime.utcnow().isoformat()
+            else datetime.now(timezone.utc).isoformat()
         ),
     }
 
@@ -288,7 +288,7 @@ class EventProcessor:
             id=uuid.uuid4(),
             event_source_id=event_source.id,
             event_type=deliver.event_type,
-            received_at=datetime.utcnow(),
+            received_at=datetime.now(timezone.utc),
             headers=deliver.raw_headers,
             data=deliver.data,
             source_ip=request.client_ip,
@@ -655,7 +655,7 @@ async def update_delivery_from_execution(
 
         # Update delivery status
         delivery.status = delivery_status
-        delivery.completed_at = datetime.utcnow()
+        delivery.completed_at = datetime.now(timezone.utc)
         delivery.attempt_count += 1
 
         if error_message:

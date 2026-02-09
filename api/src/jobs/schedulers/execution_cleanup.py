@@ -8,7 +8,7 @@ Runs every 5 minutes to find and timeout stuck executions.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, and_
@@ -47,7 +47,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
         "errors": [],
     }
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     try:
         session_factory = get_session_factory()

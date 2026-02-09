@@ -12,7 +12,7 @@ The new model uses ProcessPoolManager with simple states:
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -159,7 +159,7 @@ async def update_pool_config(
         "min_workers": request.min_workers,
         "max_workers": request.max_workers,
         "requested_by": str(admin.user_id),
-        "requested_at": datetime.utcnow().isoformat(),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
     }
 
     for key in pool_keys:
@@ -437,7 +437,7 @@ async def recycle_process(
         "pid": pid,
         "reason": request.reason if request else "manual_recycle",
         "requested_by": str(admin.user_id),
-        "requested_at": datetime.utcnow().isoformat(),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
     }
 
     await r.publish(command_channel, json.dumps(command))
@@ -506,7 +506,7 @@ async def recycle_all_processes(
         "action": "recycle_all",
         "reason": request.reason if request else "Manual recycle from Diagnostics UI",
         "requested_by": str(admin.user_id),
-        "requested_at": datetime.utcnow().isoformat(),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
     }
 
     await r.publish(command_channel, json.dumps(command))
@@ -605,7 +605,7 @@ async def get_stuck_history(
     'stuck' or 'timeout' patterns, as there's no dedicated error_type field.
     """
     # Use naive datetime since the database stores naive datetimes
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     # Query executions with stuck-like errors
     # Since there's no error_type field, we match on error_message patterns

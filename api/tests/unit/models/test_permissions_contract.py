@@ -3,7 +3,7 @@ Contract tests for Permissions API models
 Tests Pydantic validation rules for request/response models
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -74,7 +74,7 @@ class TestUserPermissionResponse:
             user_id="user-123",
             org_id="org-456",
             granted_by="admin-user",
-            granted_at=datetime.utcnow()
+            granted_at=datetime.now(timezone.utc)
         )
         assert permission.can_execute_workflows is False
         assert permission.can_manage_config is False
@@ -106,7 +106,7 @@ class TestUserResponse:
             id="user-123",
             email="user@example.com",
             display_name="Test User",
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         assert user.is_active is True
 

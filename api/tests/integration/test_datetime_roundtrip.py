@@ -1,7 +1,7 @@
 """
-Integration tests to verify datetimes survive database roundtrips as naive UTC.
+Integration tests to verify datetimes survive database roundtrips as timezone-aware UTC.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -14,7 +14,7 @@ from src.models.orm.users import User
 
 @pytest.mark.asyncio
 async def test_form_datetime_roundtrip(db_session: AsyncSession):
-    """Form created_at should be naive UTC after roundtrip."""
+    """Form created_at should be timezone-aware UTC after roundtrip."""
     # Create a form
     form = Form(
         id=uuid4(),
@@ -28,18 +28,18 @@ async def test_form_datetime_roundtrip(db_session: AsyncSession):
     result = await db_session.execute(select(Form).where(Form.id == form.id))
     retrieved = result.scalar_one()
 
-    # Verify datetime is naive (no timezone info)
+    # Verify datetime is timezone-aware
     assert retrieved.created_at is not None
-    assert retrieved.created_at.tzinfo is None, "created_at should be naive UTC"
+    assert retrieved.created_at.tzinfo is not None, "created_at should be timezone-aware UTC"
 
     # Verify it's recent (within last minute)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     assert now - retrieved.created_at < timedelta(minutes=1), "created_at should be recent"
 
 
 @pytest.mark.asyncio
 async def test_user_datetime_roundtrip(db_session: AsyncSession):
-    """User timestamps should be naive UTC after roundtrip."""
+    """User timestamps should be timezone-aware UTC after roundtrip."""
     # Create a user
     user = User(
         id=uuid4(),
@@ -54,17 +54,17 @@ async def test_user_datetime_roundtrip(db_session: AsyncSession):
     result = await db_session.execute(select(User).where(User.id == user.id))
     retrieved = result.scalar_one()
 
-    # Verify datetimes are naive
+    # Verify datetimes are timezone-aware
     assert retrieved.created_at is not None
-    assert retrieved.created_at.tzinfo is None, "created_at should be naive UTC"
+    assert retrieved.created_at.tzinfo is not None, "created_at should be timezone-aware UTC"
 
     if retrieved.updated_at:
-        assert retrieved.updated_at.tzinfo is None, "updated_at should be naive UTC"
+        assert retrieved.updated_at.tzinfo is not None, "updated_at should be timezone-aware UTC"
 
 
 @pytest.mark.asyncio
 async def test_datetime_comparison_works(db_session: AsyncSession):
-    """Naive UTC datetimes should be comparable without errors."""
+    """Timezone-aware UTC datetimes should be comparable without errors."""
     form1 = Form(
         id=uuid4(),
         name="Form 1",

@@ -4,7 +4,7 @@ AI Usage and Model Pricing ORM models.
 Tracks AI provider usage across workflow executions and chat conversations.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -50,13 +50,13 @@ class AIModelPricing(Base):
         Date, nullable=False, server_default=text("CURRENT_DATE")
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
     __table_args__ = (
@@ -92,7 +92,7 @@ class AIUsage(Base):
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 

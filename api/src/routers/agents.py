@@ -9,7 +9,7 @@ Git sync serializes agents on-the-fly from the database.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -308,7 +308,7 @@ async def create_agent(
     )
 
     agent_id = uuid4()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Set owner for private agents
     owner_user_id = None
@@ -589,7 +589,7 @@ async def update_agent(
     if agent_data.llm_temperature is not None:
         agent.llm_temperature = agent_data.llm_temperature if agent_data.llm_temperature else None
 
-    agent.updated_at = datetime.utcnow()
+    agent.updated_at = datetime.now(timezone.utc)
 
     # Update tool relationships if provided
     tools: list[Workflow] = []
@@ -722,7 +722,7 @@ async def delete_agent(
 
     # Soft delete
     agent.is_active = False
-    agent.updated_at = datetime.utcnow()
+    agent.updated_at = datetime.now(timezone.utc)
     await db.flush()
 
 
@@ -764,7 +764,7 @@ async def promote_agent(
     # Promote: change access_level, clear owner
     agent.access_level = request.access_level
     agent.owner_user_id = None
-    agent.updated_at = datetime.utcnow()
+    agent.updated_at = datetime.now(timezone.utc)
 
     # Set roles if role_based
     if request.access_level == AgentAccessLevel.ROLE_BASED and request.role_ids:

@@ -428,9 +428,9 @@ class TestDeactivationProtection:
         # Create an execution record
         # Execution uses workflow_name, not workflow_id
         # Database expects timezone-naive datetimes (TIMESTAMP WITHOUT TIME ZONE)
-        from datetime import datetime
+        from datetime import datetime, timezone
         from src.models.enums import ExecutionStatus
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         execution = Execution(
             id=uuid4(),
             workflow_name=workflow.function_name,

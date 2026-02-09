@@ -7,7 +7,7 @@ Handles CRUD operations for Execution and ExecutionLog tables.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -131,7 +131,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             api_key_id=parsed_api_key_id,
             is_local_execution=is_local_execution,
             execution_model=execution_model,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
 
         self.session.add(execution)
@@ -199,7 +199,7 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         if duration_ms is not None:
             update_values["duration_ms"] = duration_ms
-            update_values["completed_at"] = datetime.utcnow()
+            update_values["completed_at"] = datetime.now(timezone.utc)
 
         if variables is not None:
             update_values["variables"] = _make_json_safe(variables)
@@ -234,7 +234,7 @@ class ExecutionRepository(BaseRepository[Execution]):
                 log_record = ExecutionLog(
                     execution_id=UUID(execution_id),
                     sequence=idx,
-                    timestamp=datetime.fromisoformat(log_entry["timestamp"]) if isinstance(log_entry.get("timestamp"), str) else datetime.utcnow(),
+                    timestamp=datetime.fromisoformat(log_entry["timestamp"]) if isinstance(log_entry.get("timestamp"), str) else datetime.now(timezone.utc),
                     level=log_entry.get("level", "info").upper(),
                     message=log_entry.get("message", ""),
                     log_metadata=log_entry.get("data"),

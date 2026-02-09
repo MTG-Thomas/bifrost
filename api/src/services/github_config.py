@@ -7,7 +7,7 @@ Handles encrypted storage of GitHub integration configuration.
 import base64
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from cryptography.fernet import Fernet
@@ -149,7 +149,7 @@ async def save_github_config(
 
     if existing:
         existing.value_json = config_data
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = datetime.now(timezone.utc)
         existing.updated_by = updated_by
     else:
         new_config = SystemConfig(
@@ -159,8 +159,8 @@ async def save_github_config(
             value_json=config_data,
             value_bytes=None,
             organization_id=org_uuid,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             created_by=updated_by,
             updated_by=updated_by,
         )

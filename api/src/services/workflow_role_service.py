@@ -8,7 +8,7 @@ This service implements Phase 3 of the workflow-role-access plan:
 auto-assignment of roles to workflows when entities are saved.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -133,7 +133,7 @@ class WorkflowRoleService:
         if not workflow_ids or not role_ids:
             return
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Build list of all (workflow_id, role_id) combinations to insert
         values = [

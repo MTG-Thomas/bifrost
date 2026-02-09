@@ -74,7 +74,7 @@ def mock_table_service():
 @pytest.fixture
 def sample_oauth_connection():
     """Sample OAuth connection data for testing"""
-    from datetime import datetime
+    from datetime import datetime, timezone
     return {
         "connection_id": "conn-123",
         "connection_name": "test_connection",
@@ -88,8 +88,8 @@ def sample_oauth_connection():
         "scopes": "openid profile email",
         "redirect_uri": "/oauth/callback/test_connection",
         "status": "not_connected",
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
         "created_by": "user@example.com"
     }
 
@@ -124,7 +124,7 @@ def sample_oauth_update_request():
 @pytest.fixture
 def mock_config_table_response():
     """Sample Config table entity response"""
-    from datetime import datetime
+    from datetime import datetime, timezone
     import json
     return {
         "PartitionKey": "org-123",
@@ -140,7 +140,7 @@ def mock_config_table_response():
         }),
         "Type": "json",
         "Description": "OAuth metadata for test_connection",
-        "UpdatedAt": datetime.utcnow().isoformat(),
+        "UpdatedAt": datetime.now(timezone.utc).isoformat(),
         "UpdatedBy": "user@example.com"
     }
 
@@ -180,8 +180,8 @@ def mock_shutil():
 @pytest.fixture
 def sample_oauth_tokens():
     """Sample OAuth tokens for testing"""
-    from datetime import datetime, timedelta
-    expires_at = datetime.utcnow() + timedelta(hours=1)
+    from datetime import datetime, timedelta, timezone
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     return {
         "access_token": "access_token_xyz123",
         "refresh_token": "refresh_token_xyz456",
@@ -194,8 +194,8 @@ def sample_oauth_tokens():
 @pytest.fixture
 def sample_oauth_response_metadata():
     """Sample OAuth response metadata"""
-    from datetime import datetime, timedelta
-    expires_at = datetime.utcnow() + timedelta(hours=1)
+    from datetime import datetime, timedelta, timezone
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     return {
         "access_token": "access_token_xyz123",
         "refresh_token": "refresh_token_xyz456",

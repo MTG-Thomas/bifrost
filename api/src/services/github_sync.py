@@ -20,7 +20,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Literal
@@ -2128,7 +2128,7 @@ class GitHubSyncService:
             .where(Workflow.id == UUID(workflow_id))
             .values(
                 is_orphaned=True,
-                updated_at=datetime.utcnow(),
+                updated_at=datetime.now(timezone.utc),
             )
         )
         await self.db.execute(stmt)

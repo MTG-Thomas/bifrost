@@ -3,7 +3,7 @@ Contract tests for Enhanced Forms API (User Story 1 & 2)
 Tests Pydantic validation for form context, query parameters, visibility, and rich components
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -229,8 +229,8 @@ class TestEnhancedFormIntegration:
             is_active=True,
             is_global=False,
             created_by="user-789",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             allowed_query_params=["customer_id", "requires_date"]
         )
 

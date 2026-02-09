@@ -18,7 +18,7 @@ import logging
 import threading
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -172,7 +172,7 @@ class WriteBuffer:
             entity_key=key,
             org_id=org_id or self.org_id,
             data={"value": value, "config_type": config_type} if value is not None else {},
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             user_id=self.user_id,
             sequence=self._next_sequence(),
         )
@@ -227,7 +227,7 @@ class WriteBuffer:
             entity_key=entity_key,
             org_id=org_id or self.org_id,
             data=data,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             user_id=self.user_id,
             sequence=self._next_sequence(),
         )
@@ -265,7 +265,7 @@ class WriteBuffer:
             entity_key=f"{role_id}:users",
             org_id=org_id or self.org_id,
             data={"user_ids": user_ids},
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             user_id=self.user_id,
             sequence=self._next_sequence(),
         )
@@ -285,7 +285,7 @@ class WriteBuffer:
             entity_key=f"{role_id}:forms",
             org_id=org_id or self.org_id,
             data={"form_ids": form_ids},
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             user_id=self.user_id,
             sequence=self._next_sequence(),
         )
@@ -321,7 +321,7 @@ class WriteBuffer:
             entity_key=entity_key,
             org_id=None,  # Orgs are global
             data=data,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             user_id=self.user_id,
             sequence=self._next_sequence(),
         )

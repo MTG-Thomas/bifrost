@@ -6,7 +6,7 @@ Called by the workflow execution consumer.
 """
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from uuid import UUID
 
 from sqlalchemy import select, update, func, text, exists
@@ -201,7 +201,7 @@ async def _upsert_daily_metrics(
                 "total_time_saved": ExecutionMetricsDaily.total_time_saved
                 + add_time_saved,
                 "total_value": ExecutionMetricsDaily.total_value + add_value,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(timezone.utc),
             },
         )
     else:
@@ -238,7 +238,7 @@ async def _upsert_daily_metrics(
                 "total_time_saved": ExecutionMetricsDaily.total_time_saved
                 + add_time_saved,
                 "total_value": ExecutionMetricsDaily.total_value + add_value,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(timezone.utc),
             },
         )
 
@@ -456,7 +456,7 @@ async def _upsert_workflow_roi(
         "success_count": WorkflowROIDaily.success_count + (1 if is_success else 0),
         "total_time_saved": WorkflowROIDaily.total_time_saved + time_saved,
         "total_value": WorkflowROIDaily.total_value + value,
-        "updated_at": datetime.utcnow(),
+        "updated_at": datetime.now(timezone.utc),
     }
 
     # Use different conflict target based on whether org_id is NULL

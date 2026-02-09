@@ -10,7 +10,7 @@ For real-time streaming, use the WebSocket endpoint at /ws/connect
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
@@ -80,7 +80,7 @@ async def create_conversation(
 
     # Create conversation (agent_id can be None for agentless chat)
     conversation_id = uuid4()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     conversation = Conversation(
         id=conversation_id,
@@ -232,7 +232,7 @@ async def delete_conversation(
         )
 
     conversation.is_active = False
-    conversation.updated_at = datetime.utcnow()
+    conversation.updated_at = datetime.now(timezone.utc)
     await db.flush()
 
 

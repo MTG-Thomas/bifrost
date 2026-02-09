@@ -4,7 +4,7 @@ Form, FormField, and FormRole ORM models.
 Represents forms, form fields, and form role associations.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -64,13 +64,13 @@ class FormField(Base):
     content: Mapped[str | None] = mapped_column(Text, default=None)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
     # Relationships
@@ -104,18 +104,18 @@ class Form(Base):
     )
     created_by: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
     # Metadata for file sync
     module_path: Mapped[str | None] = mapped_column(String(500), default=None)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Cross-environment portability references
     # These fields store the path/function identity of the linked workflow,
@@ -145,5 +145,5 @@ class FormRole(Base):
     role_id: Mapped[UUID] = mapped_column(ForeignKey("roles.id"), primary_key=True)
     assigned_by: Mapped[str] = mapped_column(String(255))
     assigned_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )

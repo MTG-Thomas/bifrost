@@ -1,7 +1,7 @@
 """Tests for OAuth refresh endpoint handling client_credentials flow."""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 
@@ -24,7 +24,7 @@ class TestOAuthRefreshClientCredentials:
         # Mock the OAuth client response
         mock_token_response = {
             "access_token": "new-access-token",
-            "expires_at": datetime.utcnow() + timedelta(hours=1),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
         }
 
         oauth_client = OAuthProviderClient()
@@ -66,7 +66,7 @@ class TestOAuthRefreshClientCredentials:
         mock_token_response = {
             "access_token": "refreshed-access-token",
             "refresh_token": "new-refresh-token",
-            "expires_at": datetime.utcnow() + timedelta(hours=1),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
         }
 
         oauth_client = OAuthProviderClient()

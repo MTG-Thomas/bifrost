@@ -8,7 +8,7 @@ Follows the same pattern as GitHubConfigService for SystemConfig storage.
 import base64
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
@@ -164,7 +164,7 @@ class LLMConfigService:
         if existing:
             # Update existing config
             existing.value_json = config_data
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
             existing.updated_by = updated_by
             logger.info(f"Updated LLM config: provider={provider}, model={model}")
         else:

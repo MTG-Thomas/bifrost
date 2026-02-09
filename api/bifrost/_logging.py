@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ def append_log_to_stream(
         Stream entry ID if successful, None on error
     """
     exec_id = str(execution_id)
-    ts = timestamp or datetime.utcnow()
+    ts = timestamp or datetime.now(timezone.utc)
     stream_key = execution_logs_stream_key(exec_id)
 
     safe_metadata = _serialize_metadata(metadata)
@@ -138,7 +138,7 @@ def publish_log_to_pubsub(
         timestamp: Optional timestamp
     """
     exec_id = str(execution_id)
-    ts = timestamp or datetime.utcnow()
+    ts = timestamp or datetime.now(timezone.utc)
 
     safe_metadata = _serialize_metadata(metadata)
     log_entry = {
@@ -181,7 +181,7 @@ def log_and_broadcast(
     Returns:
         Stream entry ID if successful, None on error
     """
-    ts = timestamp or datetime.utcnow()
+    ts = timestamp or datetime.now(timezone.utc)
 
     # Write to stream (source of truth for persistence)
     entry_id = append_log_to_stream(
@@ -224,7 +224,7 @@ async def append_log_to_stream_async(
     from src.core.cache import get_redis
 
     exec_id = str(execution_id)
-    ts = timestamp or datetime.utcnow()
+    ts = timestamp or datetime.now(timezone.utc)
     stream_key = execution_logs_stream_key(exec_id)
 
     safe_metadata = _serialize_metadata(metadata)
@@ -311,7 +311,7 @@ async def publish_log_to_pubsub_async(
     from src.core.cache import get_redis
 
     exec_id = str(execution_id)
-    ts = timestamp or datetime.utcnow()
+    ts = timestamp or datetime.now(timezone.utc)
 
     safe_metadata = _serialize_metadata(metadata)
     log_entry = {
@@ -353,7 +353,7 @@ async def log_and_broadcast_async(
     Returns:
         Stream entry ID if successful, None on error
     """
-    ts = timestamp or datetime.utcnow()
+    ts = timestamp or datetime.now(timezone.utc)
 
     # Write to stream (source of truth for persistence)
     entry_id = await append_log_to_stream_async(
@@ -430,7 +430,7 @@ async def flush_logs_to_postgres(
             for seq, (entry_id, data) in enumerate(entries):
                 try:
                     # Parse timestamp and strip timezone (DB uses TIMESTAMP WITHOUT TIME ZONE)
-                    ts_str = data.get("timestamp", datetime.utcnow().isoformat())
+                    ts_str = data.get("timestamp", datetime.now(timezone.utc).isoformat())
                     ts = datetime.fromisoformat(ts_str)
                     if ts.tzinfo is not None:
                         ts = ts.replace(tzinfo=None)

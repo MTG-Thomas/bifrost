@@ -5,7 +5,7 @@ Provides methods to update git status metadata for workspace files
 in the database.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,7 +42,7 @@ class GitStatusTracker:
         """
         values = {
             "git_status": status,
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
         }
         if github_sha:
             values["github_sha"] = github_sha
@@ -72,7 +72,7 @@ class GitStatusTracker:
         """
         values = {
             "git_status": status,
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
         }
         if github_sha:
             values["github_sha"] = github_sha

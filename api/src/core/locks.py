@@ -14,7 +14,7 @@ Lock Flow:
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import redis.asyncio as redis
 
@@ -110,7 +110,7 @@ class DistributedLockService:
         """
         redis_client = await self._get_redis()
         key = f"{LOCK_KEY_PREFIX}{lock_name}"
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=ttl_seconds)
 
         lock_info = LockInfo(
@@ -218,7 +218,7 @@ class DistributedLockService:
                 return False
 
             # Update expiration
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             lock_info.expires_at = now + timedelta(seconds=additional_seconds)
 
             await redis_client.setex(

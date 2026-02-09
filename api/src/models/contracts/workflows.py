@@ -2,7 +2,7 @@
 Workflow metadata and validation contract models for Bifrost.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -182,7 +182,7 @@ class WorkflowKey(BaseModel):
     hashed_key: str = Field(..., description="SHA-256 hash of the API key")
     workflow_id: str | None = Field(default=None, description="Workflow-specific key, or None for global access")
     created_by: str = Field(..., description="User email who created the key")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_used_at: datetime | None = None
     revoked: bool = Field(default=False)
     revoked_at: datetime | None = None

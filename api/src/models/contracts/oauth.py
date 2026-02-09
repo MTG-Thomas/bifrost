@@ -2,7 +2,7 @@
 OAuth connection contract models for Bifrost.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -269,9 +269,9 @@ class OAuthConnection(BaseModel):
     last_test_at: datetime | None = None
 
     # Metadata
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Helper methods
 
@@ -284,7 +284,7 @@ class OAuthConnection(BaseModel):
         """
         if not self.expires_at:
             return True
-        return datetime.utcnow() >= self.expires_at
+        return datetime.now(timezone.utc) >= self.expires_at
 
     def expires_soon(self, hours: int = 4) -> bool:
         """
@@ -298,7 +298,7 @@ class OAuthConnection(BaseModel):
         """
         if not self.expires_at:
             return True
-        threshold = datetime.utcnow() + timedelta(hours=hours)
+        threshold = datetime.now(timezone.utc) + timedelta(hours=hours)
         return self.expires_at <= threshold
 
     def to_summary(self) -> OAuthConnectionSummary:
@@ -495,7 +495,7 @@ class OAuthCredentials:
 
     def is_expired(self) -> bool:
         """Check if access token is expired"""
-        return datetime.utcnow() >= self.expires_at
+        return datetime.now(timezone.utc) >= self.expires_at
 
     def get_auth_header(self) -> str:
         """Get formatted Authorization header value"""

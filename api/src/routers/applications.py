@@ -13,6 +13,7 @@ File operations are handled through the app_files router.
 """
 
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -453,8 +454,6 @@ export default function RootLayout() {
 
         Sets the new version as the active version and updates published_at.
         """
-        from datetime import datetime
-
         # Create new version for the published copy
         new_version = AppVersion(application_id=application.id)
         self.session.add(new_version)
@@ -472,7 +471,7 @@ export default function RootLayout() {
 
         # Update application to point to new active version
         application.active_version_id = new_version.id
-        application.published_at = datetime.utcnow()
+        application.published_at = datetime.now(timezone.utc)
 
         await self.session.flush()
 

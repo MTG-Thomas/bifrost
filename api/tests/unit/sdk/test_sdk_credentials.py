@@ -6,7 +6,7 @@ Tests the cross-platform credential management for CLI authentication.
 
 import json
 import platform
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -148,7 +148,7 @@ class TestTokenExpiry:
     def test_valid_token(self, temp_credentials_dir):
         """Test token expiry check with valid (future) expiry."""
         # Token expires 10 minutes from now
-        expires_at = datetime.utcnow() + timedelta(minutes=10)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
         save_credentials(
             api_url="https://api.example.com",
@@ -162,7 +162,7 @@ class TestTokenExpiry:
     def test_expired_token(self, temp_credentials_dir):
         """Test token expiry check with expired token."""
         # Token expired 5 minutes ago
-        expires_at = datetime.utcnow() - timedelta(minutes=5)
+        expires_at = datetime.now(timezone.utc) - timedelta(minutes=5)
 
         save_credentials(
             api_url="https://api.example.com",
@@ -176,7 +176,7 @@ class TestTokenExpiry:
     def test_buffer(self, temp_credentials_dir):
         """Test token expiry check with buffer."""
         # Token expires in 30 seconds
-        expires_at = datetime.utcnow() + timedelta(seconds=30)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=30)
 
         save_credentials(
             api_url="https://api.example.com",

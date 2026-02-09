@@ -6,7 +6,7 @@ Handles folder creation, deletion, listing, and bulk operations.
 
 import logging
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -70,7 +70,7 @@ class FolderOperationsService:
         # Normalize to trailing slash
         folder_path = path.rstrip("/") + "/"
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Insert folder record - use on_conflict_do_nothing for silent indexing
         stmt = insert(WorkspaceFile).values(
@@ -143,7 +143,7 @@ class FolderOperationsService:
                 await self._remove_metadata(child.path)
 
         # Soft delete all children and the folder itself
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         stmt = update(WorkspaceFile).where(
             WorkspaceFile.path.startswith(folder_path),
         ).values(

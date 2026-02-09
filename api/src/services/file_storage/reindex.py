@@ -7,7 +7,7 @@ and smart reindexing with reference validation.
 
 import logging
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Awaitable, TYPE_CHECKING
 
@@ -96,7 +96,7 @@ class WorkspaceReindexService:
                     # Upsert index
                     # Note: github_sha is NOT set here - it should only be set by the
                     # GitHub sync process. Reindexing doesn't mean the file is synced.
-                    now = datetime.utcnow()
+                    now = datetime.now(timezone.utc)
                     stmt = insert(WorkspaceFile).values(
                         path=key,
                         content_hash=content_hash,
@@ -170,7 +170,7 @@ class WorkspaceReindexService:
         ).values(
             is_deleted=True,
             git_status=GitStatus.DELETED,
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(timezone.utc),
         )
         result = await self.db.execute(stmt)
         counts["files_removed"] = result.rowcount if result.rowcount > 0 else 0
@@ -190,7 +190,7 @@ class WorkspaceReindexService:
         ])
         ordered_paths = py_files + form_files + agent_files + other_files
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         for rel_path in ordered_paths:
             file_path = local_path / rel_path

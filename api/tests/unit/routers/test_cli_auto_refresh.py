@@ -1,7 +1,7 @@
 """Tests for auto-refresh token behavior when token_url contains {entity_id}."""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 # Note: should_auto_refresh_token is imported inside each test to ensure
@@ -161,7 +161,7 @@ class TestBuildOAuthDataAutoRefresh:
         # Mock the OAuthProviderClient
         mock_token_response = {
             "access_token": "fresh-access-token",
-            "expires_at": datetime.utcnow() + timedelta(hours=1),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
         }
 
         with patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class:
@@ -207,7 +207,7 @@ class TestBuildOAuthDataAutoRefresh:
         token = MagicMock()
         token.encrypted_access_token = "encrypted-stored-token"
         token.encrypted_refresh_token = None
-        token.expires_at = datetime.utcnow() + timedelta(hours=1)
+        token.expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
         entity_id = "some-entity"
 
@@ -305,7 +305,7 @@ class TestBuildOAuthDataAutoRefresh:
 
         mock_token_response = {
             "access_token": "exchange-access-token",
-            "expires_at": datetime.utcnow() + timedelta(hours=1),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
         }
 
         with patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class:
@@ -358,7 +358,7 @@ class TestBuildOAuthDataAutoRefresh:
 
         mock_token_response = {
             "access_token": "exchange-customer-token",
-            "expires_at": datetime.utcnow() + timedelta(hours=1),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
         }
 
         with patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class:

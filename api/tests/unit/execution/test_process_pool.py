@@ -15,7 +15,7 @@ NOTE: These tests use mocks to avoid spawning real processes.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,7 +48,7 @@ class TestExecutionInfo:
 
     def test_basic_creation(self):
         """Should create with required fields."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         info = ExecutionInfo(
             execution_id="exec-123",
@@ -62,7 +62,7 @@ class TestExecutionInfo:
 
     def test_elapsed_seconds(self):
         """Should calculate elapsed time correctly."""
-        past = datetime.utcnow() - timedelta(seconds=5)
+        past = datetime.now(timezone.utc) - timedelta(seconds=5)
 
         info = ExecutionInfo(
             execution_id="exec-123",
@@ -75,7 +75,7 @@ class TestExecutionInfo:
 
     def test_is_timed_out_before_timeout(self):
         """Should return False when within timeout."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         info = ExecutionInfo(
             execution_id="exec-123",
@@ -87,7 +87,7 @@ class TestExecutionInfo:
 
     def test_is_timed_out_after_timeout(self):
         """Should return True when exceeds timeout."""
-        past = datetime.utcnow() - timedelta(seconds=10)
+        past = datetime.now(timezone.utc) - timedelta(seconds=10)
 
         info = ExecutionInfo(
             execution_id="exec-123",
@@ -107,7 +107,7 @@ class TestProcessHandle:
         mock_process.is_alive.return_value = True
         mock_work_queue = MagicMock()
         mock_result_queue = MagicMock()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         handle = ProcessHandle(
             id="process-1",
@@ -137,7 +137,7 @@ class TestProcessHandle:
             state=ProcessState.IDLE,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
 
         assert handle.is_alive is True
@@ -146,7 +146,7 @@ class TestProcessHandle:
     def test_uptime_seconds(self):
         """Should calculate uptime correctly."""
         mock_process = MagicMock()
-        past = datetime.utcnow() - timedelta(seconds=60)
+        past = datetime.now(timezone.utc) - timedelta(seconds=60)
 
         handle = ProcessHandle(
             id="process-1",
@@ -232,7 +232,7 @@ class TestProcessPoolManagerStart:
                 state=ProcessState.IDLE,
                 work_queue=MagicMock(),
                 result_queue=MagicMock(),
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
             )
             pool.processes[handle.id] = handle
             return handle
@@ -285,7 +285,7 @@ class TestProcessPoolManagerRouting:
             state=ProcessState.IDLE,
             work_queue=mock_work_queue,
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         pool.processes["process-1"] = handle
 
@@ -315,7 +315,7 @@ class TestProcessPoolManagerRouting:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         pool.processes["process-1"] = busy_handle
 
@@ -336,7 +336,7 @@ class TestProcessPoolManagerRouting:
                 state=ProcessState.IDLE,
                 work_queue=MagicMock(),
                 result_queue=MagicMock(),
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
             )
             pool.processes["process-2"] = new_handle
             return new_handle
@@ -372,7 +372,7 @@ class TestProcessPoolManagerScaling:
                 state=ProcessState.IDLE,
                 work_queue=MagicMock(),
                 result_queue=MagicMock(),
-                started_at=datetime.utcnow() - timedelta(seconds=i * 10),
+                started_at=datetime.now(timezone.utc) - timedelta(seconds=i * 10),
             )
             pool.processes[handle.id] = handle
 
@@ -409,7 +409,7 @@ class TestProcessPoolManagerTimeouts:
 
         timed_out_execution = ExecutionInfo(
             execution_id="exec-timeout",
-            started_at=datetime.utcnow() - timedelta(seconds=400),
+            started_at=datetime.now(timezone.utc) - timedelta(seconds=400),
             timeout_seconds=300,
         )
 
@@ -420,7 +420,7 @@ class TestProcessPoolManagerTimeouts:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_execution=timed_out_execution,
         )
         pool.processes["process-1"] = handle
@@ -451,7 +451,7 @@ class TestProcessPoolManagerTimeouts:
                 state=ProcessState.IDLE,
                 work_queue=MagicMock(),
                 result_queue=MagicMock(),
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
             )
             pool.processes["process-2"] = new_handle
             return new_handle
@@ -483,7 +483,7 @@ class TestProcessPoolManagerCrashDetection:
 
         crashed_execution = ExecutionInfo(
             execution_id="exec-crash",
-            started_at=datetime.utcnow() - timedelta(seconds=10),
+            started_at=datetime.now(timezone.utc) - timedelta(seconds=10),
             timeout_seconds=300,
         )
 
@@ -494,7 +494,7 @@ class TestProcessPoolManagerCrashDetection:
             state=ProcessState.BUSY,  # Was busy when crashed
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_execution=crashed_execution,
         )
         pool.processes["process-1"] = handle
@@ -519,7 +519,7 @@ class TestProcessPoolManagerCrashDetection:
                 state=ProcessState.IDLE,
                 work_queue=MagicMock(),
                 result_queue=MagicMock(),
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
             )
             pool.processes[new_handle.id] = new_handle
             return new_handle
@@ -554,7 +554,7 @@ class TestProcessPoolManagerRecycle:
             state=ProcessState.IDLE,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         pool.processes["process-1"] = handle
 
@@ -579,7 +579,7 @@ class TestProcessPoolManagerRecycle:
                 state=ProcessState.IDLE,
                 work_queue=MagicMock(),
                 result_queue=MagicMock(),
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
             )
             pool.processes["process-2"] = new_handle
             return new_handle
@@ -611,10 +611,10 @@ class TestProcessPoolManagerRecycle:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_execution=ExecutionInfo(
                 execution_id="exec-123",
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
                 timeout_seconds=300,
             ),
         )
@@ -657,7 +657,7 @@ class TestProcessPoolManagerHeartbeat:
             state=ProcessState.IDLE,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             executions_completed=5,
         )
 
@@ -668,10 +668,10 @@ class TestProcessPoolManagerHeartbeat:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_execution=ExecutionInfo(
                 execution_id="exec-busy",
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
                 timeout_seconds=300,
             ),
             executions_completed=10,
@@ -711,10 +711,10 @@ class TestProcessPoolManagerResultHandling:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_execution=ExecutionInfo(
                 execution_id="exec-123",
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
                 timeout_seconds=300,
             ),
         )
@@ -748,10 +748,10 @@ class TestProcessPoolManagerResultHandling:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_execution=ExecutionInfo(
                 execution_id="exec-123",
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
                 timeout_seconds=300,
             ),
             executions_completed=4,  # Will be 5 after this
@@ -792,10 +792,10 @@ class TestProcessPoolManagerResultHandling:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_execution=ExecutionInfo(
                 execution_id="exec-123",
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
                 timeout_seconds=300,
             ),
         )
@@ -832,7 +832,7 @@ class TestProcessPoolManagerStatus:
             state=ProcessState.IDLE,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             executions_completed=5,
         )
 
@@ -866,7 +866,7 @@ class TestProcessPoolManagerIdleProcess:
             state=ProcessState.IDLE,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         pool.processes["process-1"] = handle
 
@@ -888,7 +888,7 @@ class TestProcessPoolManagerIdleProcess:
             state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         pool.processes["process-1"] = busy_handle
 
@@ -910,7 +910,7 @@ class TestProcessPoolManagerIdleProcess:
             state=ProcessState.IDLE,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         pool.processes["process-1"] = handle
 
@@ -941,7 +941,7 @@ class TestProcessPoolManagerIntegration:
             state=ProcessState.IDLE,
             work_queue=mock_work_queue,
             result_queue=mock_result_queue,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         pool.processes["process-1"] = handle
 

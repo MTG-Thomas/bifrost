@@ -3,7 +3,7 @@ Contract tests for IntegrationConfig API models
 Tests Pydantic validation rules for request/response models
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -167,7 +167,7 @@ class TestIntegrationConfigResponse:
                 "client_id": "87654321-4321-4321-4321-210987654321",
                 "client_secret_config_key": "org-123-msgraph-secret"
             },
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(timezone.utc),
             updated_by="user-123"
         )
 

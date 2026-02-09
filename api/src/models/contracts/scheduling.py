@@ -2,7 +2,7 @@
 Async execution and scheduling contract models for Bifrost.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -32,7 +32,7 @@ class AsyncExecution(BaseModel):
     result_blob_uri: str | None = Field(default=None, description="Blob URI for large results (>32KB)")
     error: str | None = Field(default=None, description="Error message if failed")
     error_details: dict[str, Any] | None = Field(default=None, description="Detailed error information")
-    queued_at: datetime = Field(default_factory=datetime.utcnow)
+    queued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_ms: int | None = Field(default=None, description="Execution duration in milliseconds")

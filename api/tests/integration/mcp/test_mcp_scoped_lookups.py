@@ -16,7 +16,7 @@ Fix: Use ORDER BY organization_id DESC NULLS LAST LIMIT 1 for name-based lookups
 import pytest
 import pytest_asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 from unittest.mock import patch
 from uuid import UUID, uuid4
@@ -73,8 +73,8 @@ async def test_organization(
         is_provider=False,
         settings={},
         created_by="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     db_session.add(org)
     await db_session.commit()
@@ -108,8 +108,8 @@ async def global_agent(db_session: AsyncSession) -> AsyncGenerator[Agent, None]:
         knowledge_sources=[],
         system_tools=[],
         created_by="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     db_session.add(agent)
     await db_session.commit()
@@ -140,8 +140,8 @@ async def org_agent(
         knowledge_sources=[],
         system_tools=[],
         created_by="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     db_session.add(agent)
     await db_session.commit()
@@ -170,8 +170,8 @@ async def global_only_agent(db_session: AsyncSession) -> AsyncGenerator[Agent, N
         knowledge_sources=[],
         system_tools=[],
         created_by="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     db_session.add(agent)
     await db_session.commit()
@@ -196,8 +196,8 @@ async def global_form(db_session: AsyncSession) -> AsyncGenerator[Form, None]:
         organization_id=None,  # Global
         is_active=True,
         created_by="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     db_session.add(form)
     await db_session.commit()
@@ -224,8 +224,8 @@ async def org_form(
         organization_id=test_org_id,  # Org-scoped
         is_active=True,
         created_by="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     db_session.add(form)
     await db_session.commit()
@@ -250,8 +250,8 @@ async def global_only_form(db_session: AsyncSession) -> AsyncGenerator[Form, Non
         organization_id=None,  # Global
         is_active=True,
         created_by="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     db_session.add(form)
     await db_session.commit()

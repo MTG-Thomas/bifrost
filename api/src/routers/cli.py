@@ -15,7 +15,7 @@ import io
 import json
 import logging
 import tarfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -405,7 +405,7 @@ async def cli_set_config(
 
     org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     if request.is_secret:
         from src.core.security import encrypt_secret
@@ -1413,11 +1413,11 @@ async def post_cli_log(
     if request.timestamp:
         try:
             # Parse timestamp and strip timezone to match engine behavior
-            # (engine uses datetime.utcnow() which is timezone-naive)
+            # (engine uses datetime.now(timezone.utc) which is timezone-naive)
             ts = datetime.fromisoformat(request.timestamp.replace("Z", "+00:00"))
             timestamp = ts.replace(tzinfo=None) if ts.tzinfo else ts
         except ValueError:
-            timestamp = datetime.utcnow()
+            timestamp = datetime.now(timezone.utc)
 
     try:
         # Use unified log function - same as workflow engine
@@ -1494,18 +1494,17 @@ async def post_cli_result(
     logs_persisted = 0
     if request.logs:
         from src.models.orm import ExecutionLog
-        from datetime import datetime as dt
 
         logs_to_insert = []
         for seq, log in enumerate(request.logs):
             try:
                 # Parse timestamp, strip timezone for DB
                 if log.timestamp:
-                    ts = dt.fromisoformat(log.timestamp)
+                    ts = datetime.fromisoformat(log.timestamp)
                     if ts.tzinfo is not None:
                         ts = ts.replace(tzinfo=None)
                 else:
-                    ts = dt.utcnow()
+                    ts = datetime.now(timezone.utc)
 
                 log_entry = ExecutionLog(
                     execution_id=exec_uuid,
@@ -2582,8 +2581,6 @@ async def cli_upsert_document(
 
     Uses atomic INSERT ... ON CONFLICT DO UPDATE to prevent race conditions.
     """
-    from datetime import datetime
-
     from sqlalchemy.dialects.postgresql import insert
 
     from src.models.orm.tables import Document
@@ -2597,7 +2594,7 @@ async def cli_upsert_document(
         db, request.table, org_uuid, app_uuid, current_user.email
     )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Atomic upsert using PostgreSQL's INSERT ... ON CONFLICT DO UPDATE
     stmt = insert(Document).values(

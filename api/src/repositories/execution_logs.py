@@ -5,7 +5,7 @@ PostgreSQL-based repository for execution log entries.
 Replaces the Azure Table Storage implementation.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -60,7 +60,7 @@ class ExecutionLogRepository:
             level=level.upper(),
             message=message,
             log_metadata=metadata,
-            timestamp=timestamp or datetime.utcnow(),
+            timestamp=timestamp or datetime.now(timezone.utc),
         )
         self.session.add(log)
         await self.session.flush()
@@ -88,7 +88,7 @@ class ExecutionLogRepository:
                 level=log_dict.get("level", "INFO").upper(),
                 message=log_dict.get("message", ""),
                 log_metadata=log_dict.get("data"),
-                timestamp=log_dict.get("timestamp") or datetime.utcnow(),
+                timestamp=log_dict.get("timestamp") or datetime.now(timezone.utc),
             )
             self.session.add(log)
             log_entries.append(log)

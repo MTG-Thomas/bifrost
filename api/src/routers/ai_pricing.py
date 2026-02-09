@@ -12,7 +12,7 @@ Endpoint Structure:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, status
@@ -137,7 +137,7 @@ async def create_pricing(
         model=data.model,
         input_price_per_million=data.input_price_per_million,
         output_price_per_million=data.output_price_per_million,
-        effective_date=data.effective_date or datetime.utcnow().date(),
+        effective_date=data.effective_date or datetime.now(timezone.utc).date(),
     )
     db.add(pricing)
     await db.flush()
@@ -202,7 +202,7 @@ async def update_pricing(
     if data.effective_date is not None:
         pricing.effective_date = data.effective_date
 
-    pricing.updated_at = datetime.utcnow()
+    pricing.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
     await db.refresh(pricing)

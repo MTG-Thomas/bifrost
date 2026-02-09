@@ -3,7 +3,7 @@ Contract tests for Forms API models
 Tests Pydantic validation rules for request/response models
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -152,8 +152,8 @@ class TestFormResponse:
             is_active=True,
             is_global=False,
             created_by="user-789",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
         )
 
         form_dict = form.model_dump(mode="json")

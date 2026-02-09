@@ -4,7 +4,7 @@ Execution and ExecutionLog ORM models.
 Represents workflow executions and their logs.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -46,8 +46,8 @@ class Execution(Base):
     result_type: Mapped[str | None] = mapped_column(String(50), default=None)
     variables: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, default=None)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     duration_ms: Mapped[int | None] = mapped_column(Integer, default=None)
 
     # Resource metrics (captured from worker process)
@@ -80,7 +80,7 @@ class Execution(Base):
         ForeignKey("cli_sessions.id", ondelete="SET NULL"), default=None
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
 
     # Relationships
@@ -121,7 +121,7 @@ class ExecutionLog(Base):
     message: Mapped[str] = mapped_column(Text)
     log_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
     sequence: Mapped[int] = mapped_column(Integer, default=0)
 

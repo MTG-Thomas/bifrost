@@ -5,7 +5,7 @@ Junction table for workflow role-based access control,
 following the same pattern as FormRole, AppRole, AgentRole.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -36,7 +36,7 @@ class WorkflowRole(Base):
     )
     assigned_by: Mapped[str | None] = mapped_column(String(255), default=None)
     assigned_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
 
     # Relationships

@@ -5,7 +5,7 @@ Junction table for application role-based access control,
 following the same pattern as FormRole.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, text
@@ -31,7 +31,7 @@ class AppRole(Base):
     )
     assigned_by: Mapped[str | None] = mapped_column(String(255), default=None)
     assigned_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
 
     __table_args__ = (

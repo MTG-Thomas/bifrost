@@ -5,7 +5,7 @@ Tests the database operations for workflow registry.
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -201,7 +201,7 @@ class TestWorkflowRepository:
 
     async def test_validate_api_key_expired(self, repository, mock_session, mock_workflow):
         """Test validating an expired API key."""
-        mock_workflow.api_key_expires_at = datetime.utcnow() - timedelta(days=1)
+        mock_workflow.api_key_expires_at = datetime.now(timezone.utc) - timedelta(days=1)
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_workflow
         mock_session.execute.return_value = mock_result

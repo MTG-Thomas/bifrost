@@ -9,7 +9,7 @@ Pattern follows LLMConfigService for SystemConfig storage.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -176,7 +176,7 @@ class EmailService:
         if not validation.valid:
             raise ValueError(validation.message)
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         config_data = {
             "workflow_id": workflow_id,
             "workflow_name": validation.workflow_name,

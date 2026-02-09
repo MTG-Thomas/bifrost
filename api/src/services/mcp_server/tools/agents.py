@@ -316,7 +316,7 @@ async def create_agent(
     try:
         async with get_db_context() as db:
             agent_id = uuid4()
-            now = datetime.now(tz=timezone.utc)
+            now = datetime.now(timezone.utc)
 
             # Create the agent
             agent = Agent(
@@ -553,7 +553,7 @@ async def update_agent(
                 agent.llm_temperature = llm_temperature if llm_temperature >= 0 else None
                 updates_made.append("llm_temperature")
 
-            agent.updated_at = datetime.now(tz=timezone.utc)
+            agent.updated_at = datetime.now(timezone.utc)
 
             # Update tool relationships if provided
             tools: list[Workflow] = []
@@ -692,7 +692,7 @@ async def delete_agent(
 
             # Soft delete
             agent.is_active = False
-            agent.updated_at = datetime.now(tz=timezone.utc)
+            agent.updated_at = datetime.now(timezone.utc)
             await db.flush()
 
             logger.info(f"Deleted (soft) agent {agent.id}: {agent.name}")

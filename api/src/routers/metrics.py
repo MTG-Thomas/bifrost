@@ -12,11 +12,10 @@ Endpoint Structure:
 """
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select, func, case, desc
-from datetime import datetime
 
 from src.models import (
     DashboardMetricsResponse,
@@ -454,7 +453,7 @@ async def get_workflow_metrics(
         Workflow metrics sorted by the specified field (descending)
     """
     try:
-        start_date = datetime.utcnow() - timedelta(days=days)
+        start_date = datetime.now(timezone.utc) - timedelta(days=days)
 
         # Define aggregation columns
         total_executions = func.count(ExecutionModel.id).label("total_executions")

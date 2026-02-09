@@ -7,7 +7,7 @@ Uses OrgScopedRepository for standardized org scoping.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -137,7 +137,7 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
 
     async def set_config(self, request: SetConfigRequest, updated_by: str) -> ConfigResponse:
         """Create or update a config in current org scope."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Handle secret encryption if this is a SECRET type
         stored_value = request.value

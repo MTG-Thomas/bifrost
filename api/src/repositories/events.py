@@ -8,7 +8,7 @@ Database operations for the event system:
 - Event deliveries (tracking delivery to each workflow)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 from uuid import UUID
 
@@ -154,7 +154,7 @@ class WebhookSourceRepository(BaseRepository[WebhookSource]):
         within_hours: int = 48,
     ) -> Sequence[WebhookSource]:
         """Get webhook sources expiring within the specified hours."""
-        expiry_threshold = datetime.utcnow() + timedelta(hours=within_hours)
+        expiry_threshold = datetime.now(timezone.utc) + timedelta(hours=within_hours)
 
         result = await self.session.execute(
             select(WebhookSource)
@@ -316,7 +316,7 @@ class EventRepository(BaseRepository[Event]):
         limit: int = 1000,
     ) -> Sequence[Event]:
         """Get events older than specified days (for cleanup)."""
-        cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
 
         result = await self.session.execute(
             select(Event)
@@ -327,7 +327,7 @@ class EventRepository(BaseRepository[Event]):
 
     async def delete_old_events(self, older_than_days: int = 30) -> int:
         """Delete events older than specified days. Returns count deleted."""
-        cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
 
         result = await self.session.execute(
             delete(Event).where(Event.created_at < cutoff)
@@ -414,7 +414,7 @@ class EventDeliveryRepository(BaseRepository[EventDelivery]):
             delivery.error_message = error_message
 
         if status in (EventDeliveryStatus.SUCCESS, EventDeliveryStatus.FAILED):
-            delivery.completed_at = datetime.utcnow()
+            delivery.completed_at = datetime.now(timezone.utc)
 
         await self.session.flush()
         await self.session.refresh(delivery)
@@ -430,7 +430,7 @@ class EventDeliveryRepository(BaseRepository[EventDelivery]):
             )
             .where(EventDelivery.status == EventDeliveryStatus.FAILED)
             .where(EventDelivery.next_retry_at.isnot(None))
-            .where(EventDelivery.next_retry_at <= datetime.utcnow())
+            .where(EventDelivery.next_retry_at <= datetime.now(timezone.utc))
             .limit(limit)
         )
         return result.unique().scalars().all()
@@ -486,7 +486,7 @@ class EventDeliveryRepository(BaseRepository[EventDelivery]):
         Returns:
             List of stuck EventDelivery records
         """
-        cutoff = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
 
         result = await self.session.execute(
             select(EventDelivery)

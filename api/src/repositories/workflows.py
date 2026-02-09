@@ -20,7 +20,7 @@ Access Control:
 - access_level field: 'authenticated' or 'role_based'
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Sequence
 from uuid import UUID
 
@@ -311,7 +311,7 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
         workflow.api_key_description = description
         workflow.api_key_enabled = True
         workflow.api_key_created_by = created_by
-        workflow.api_key_created_at = datetime.utcnow()
+        workflow.api_key_created_at = datetime.now(timezone.utc)
         workflow.api_key_expires_at = expires_at
         workflow.api_key_last_used_at = None
 
@@ -332,7 +332,7 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
         """Update last used timestamp for API key."""
         workflow = await self.get(id=workflow_id)
         if workflow:
-            workflow.api_key_last_used_at = datetime.utcnow()
+            workflow.api_key_last_used_at = datetime.now(timezone.utc)
             await self.session.flush()
 
     async def get_endpoint_workflow_by_name(self, name: str) -> Workflow | None:
@@ -397,7 +397,7 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
 
         if workflow:
             # Check expiration
-            if workflow.api_key_expires_at and workflow.api_key_expires_at < datetime.utcnow():
+            if workflow.api_key_expires_at and workflow.api_key_expires_at < datetime.now(timezone.utc):
                 return False, None
 
             # If workflow_name provided, verify it matches

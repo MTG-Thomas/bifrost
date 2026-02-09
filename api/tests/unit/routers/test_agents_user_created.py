@@ -11,7 +11,7 @@ Tests the key authorization scenarios for the loosened agent endpoints:
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4, UUID
 
@@ -66,8 +66,8 @@ def make_agent(
     agent.llm_max_tokens = None
     agent.llm_temperature = None
     agent.created_by = "admin@test.com"
-    agent.created_at = datetime.utcnow()
-    agent.updated_at = datetime.utcnow()
+    agent.created_at = datetime.now(timezone.utc)
+    agent.updated_at = datetime.now(timezone.utc)
     agent.owner = None
     return agent
 

@@ -6,7 +6,7 @@ Runs hourly to keep dashboard data fresh without expensive queries.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, func, case, update
@@ -38,9 +38,9 @@ async def refresh_metrics_snapshot() -> dict[str, Any]:
         Summary of refreshed metrics
     """
     logger.info("▶ Metrics snapshot refresh starting")
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     yesterday = now - timedelta(hours=24)
 
     try:
@@ -203,7 +203,7 @@ async def refresh_metrics_snapshot() -> dict[str, Any]:
                 "refreshed_at": now.isoformat(),
             }
 
-            duration_seconds = (datetime.utcnow() - start_time).total_seconds()
+            duration_seconds = (datetime.now(timezone.utc) - start_time).total_seconds()
             logger.info(
                 f"✓ Metrics snapshot refreshed: "
                 f"{total_all_time} total executions, {total_24h} in 24h ({duration_seconds:.1f}s)"

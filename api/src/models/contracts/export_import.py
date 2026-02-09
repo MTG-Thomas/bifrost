@@ -1,6 +1,6 @@
 """Pydantic models for export/import operations."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -10,7 +10,7 @@ class ExportMetadata(BaseModel):
     """Header metadata for all export files."""
     bifrost_export_version: str = "1.0"
     entity_type: str = ""
-    exported_at: datetime = Field(default_factory=datetime.utcnow)
+    exported_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     contains_encrypted_values: bool = False
     item_count: int = 0
 

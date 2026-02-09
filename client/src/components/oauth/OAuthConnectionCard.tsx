@@ -110,7 +110,7 @@ export function OAuthConnectionCard({
 
 		// Parse the date - backend sends UTC timestamps without 'Z' suffix
 		// Add 'Z' to explicitly mark it as UTC, then JavaScript will convert to local time
-		const utcDateStr = dateStr.endsWith("Z") ? dateStr : `${dateStr}Z`;
+		const utcDateStr = dateStr.endsWith("Z") || dateStr.includes("+") || dateStr.includes("-", 10) ? dateStr : `${dateStr}Z`;
 		const date = new Date(utcDateStr);
 		const now = new Date();
 		const diffMs = date.getTime() - now.getTime();
@@ -160,7 +160,7 @@ export function OAuthConnectionCard({
 	const formatDateTimeCompact = (dateStr?: string) => {
 		if (!dateStr) return "Never";
 
-		const utcDateStr = dateStr.endsWith("Z") ? dateStr : `${dateStr}Z`;
+		const utcDateStr = dateStr.endsWith("Z") || dateStr.includes("+") || dateStr.includes("-", 10) ? dateStr : `${dateStr}Z`;
 		const date = new Date(utcDateStr);
 		const now = new Date();
 		const diffMs = date.getTime() - now.getTime();

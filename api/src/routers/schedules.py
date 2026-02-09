@@ -5,7 +5,7 @@ Provides CRON expression validation for the event source UI.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter
@@ -33,7 +33,7 @@ def _validate_cron(expression: str) -> tuple[Literal["valid", "warning", "error"
     # Check for too-frequent schedules (warning if < 5 minutes)
     try:
         from croniter import croniter
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         cron = croniter(expression, now)
         next1 = cron.get_next(datetime)
         next2 = cron.get_next(datetime)
@@ -84,7 +84,7 @@ async def validate_cron_expression(
     interval_seconds: int | None = None
     try:
         from croniter import croniter
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         cron = croniter(expression, now)
         runs = []
         for _ in range(5):

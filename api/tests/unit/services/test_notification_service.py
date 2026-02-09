@@ -6,7 +6,7 @@ Tests the Redis-based notification management and WebSocket delivery.
 
 import json
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
 
@@ -165,8 +165,8 @@ class TestNotificationService:
             "error": None,
             "result": None,
             "metadata": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "user_id": "user-123",
         }
         mock_redis.get.return_value = json.dumps(existing)
@@ -218,8 +218,8 @@ class TestNotificationService:
             "error": None,
             "result": None,
             "metadata": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "user_id": "user-123",
         }
         mock_redis.get.return_value = json.dumps(existing)
@@ -267,8 +267,8 @@ class TestNotificationService:
             "error": None,
             "result": None,
             "metadata": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "user_id": "user-123",
         }
         mock_redis.get.return_value = json.dumps(existing)
@@ -325,8 +325,8 @@ class TestNotificationService:
             "error": None,
             "result": None,
             "metadata": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "user_id": "user-123",
         }
         mock_redis.get.return_value = json.dumps(existing)
@@ -366,8 +366,8 @@ class TestNotificationService:
             "error": None,
             "result": None,
             "metadata": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "user_id": "user-123",
         }
         mock_redis.get.return_value = json.dumps(existing)
@@ -407,8 +407,8 @@ class TestNotificationService:
             "error": None,
             "result": None,
             "metadata": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "user_id": "other-user",
         }
         mock_redis.get.return_value = json.dumps(existing)

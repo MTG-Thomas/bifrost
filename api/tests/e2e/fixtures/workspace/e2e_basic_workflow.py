@@ -39,7 +39,7 @@ async def e2e_simple_greeting(
     greeting = f"{greeting_type}, {name}!"
 
     if include_timestamp:
-        timestamp = datetime.datetime.utcnow().isoformat()
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         greeting += f" (at {timestamp})"
 
     logger.info(f"Generated greeting: {greeting}")

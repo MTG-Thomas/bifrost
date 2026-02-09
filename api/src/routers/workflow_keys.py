@@ -10,7 +10,7 @@ Each workflow can have ONE API key. No global keys - each key is workflow-specif
 
 import hashlib
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -137,14 +137,14 @@ async def create_key(
 
     expires_at = None
     if request.expires_in_days:
-        expires_at = datetime.utcnow() + timedelta(days=request.expires_in_days)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=request.expires_in_days)
 
     # Update workflow with API key info
     workflow.api_key_hash = hashed_key
     workflow.api_key_description = request.description
     workflow.api_key_enabled = True
     workflow.api_key_created_by = user.email
-    workflow.api_key_created_at = datetime.utcnow()
+    workflow.api_key_created_at = datetime.now(timezone.utc)
     workflow.api_key_expires_at = expires_at
 
     await db.flush()
@@ -231,7 +231,7 @@ async def validate_workflow_key(
         Tuple of (is_valid, workflow_id)
     """
     hashed_key = hashlib.sha256(api_key.encode()).hexdigest()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Build query for workflow with matching API key
     query = select(Workflow).where(

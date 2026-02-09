@@ -9,7 +9,7 @@ import ast
 import hashlib
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID as UUID_type, uuid4
 
@@ -121,7 +121,7 @@ class WorkflowIndexer:
                 logger.warning(f"Syntax error parsing {path}: {e}")
                 return
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Track what decorators we find to update workspace_files
         found_workflow = False

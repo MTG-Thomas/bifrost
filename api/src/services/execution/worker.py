@@ -24,7 +24,7 @@ import resource
 import signal
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 # Install virtual import hook IMMEDIATELY at module load time.
@@ -131,7 +131,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     # so that SDK calls (files.read, etc.) work identically to CLI mode
     authenticate_engine()
 
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
     # Capture starting resource usage
     start_rss, start_utime, start_stime = _get_resource_usage()
@@ -197,7 +197,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                     "status": ExecutionStatus.FAILED.value,
                     "error_message": error_msg,
                     "error_type": error_type,
-                    "duration_ms": int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                    "duration_ms": int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000),
                     "result": None,
                     "logs": [],
                     "variables": None,
@@ -268,7 +268,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             "status": ExecutionStatus.FAILED.value,
             "error_message": str(e),
             "error_type": type(e).__name__,
-            "duration_ms": int((datetime.utcnow() - start_time).total_seconds() * 1000),
+            "duration_ms": int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000),
             "result": None,
             "logs": [],
             "variables": None,

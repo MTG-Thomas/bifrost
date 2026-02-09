@@ -8,7 +8,7 @@ Stores API URL, access token, refresh token, and expiration in a JSON file.
 import json
 import os
 import platform
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -136,7 +136,7 @@ def is_token_expired(buffer_seconds: int = 60) -> bool:
     try:
         # Parse ISO 8601 timestamp
         expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Add buffer to current time (refresh early)
         return (expires_at - now).total_seconds() <= buffer_seconds

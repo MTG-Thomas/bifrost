@@ -15,7 +15,7 @@ Key Features:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -723,7 +723,7 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
         LoginResponse with tokens
     """
     # Update last login (use naive datetime for DB compatibility)
-    user.last_login = datetime.utcnow()
+    user.last_login = datetime.now(timezone.utc)
     await db.commit()
 
     # Get user roles from database

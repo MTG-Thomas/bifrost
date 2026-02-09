@@ -5,7 +5,7 @@ Provides access to workflow execution history with filtering capabilities.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -819,7 +819,7 @@ async def get_stuck_executions(
         )
 
     # Find executions that have been pending/running/cancelling for too long
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     query = select(ExecutionModel).where(
         and_(
@@ -862,7 +862,7 @@ async def trigger_cleanup(
         )
 
     # Find stuck executions
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     # Count pending
     pending_query = select(ExecutionModel).where(
@@ -896,7 +896,7 @@ async def trigger_cleanup(
 
     # Update all stuck executions
     failed_count = 0
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # PENDING and RUNNING -> FAILED with timeout message
     for execution in list(pending_executions) + list(running_executions):

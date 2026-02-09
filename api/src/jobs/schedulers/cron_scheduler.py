@@ -10,7 +10,7 @@ creating Event records and queuing deliveries for subscribed workflows.
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from croniter import croniter
@@ -64,7 +64,7 @@ async def process_schedule_sources() -> dict[str, Any]:
             sources = result.unique().scalars().all()
 
             results["total_sources"] = len(sources)
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             for source in sources:
                 try:

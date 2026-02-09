@@ -8,6 +8,7 @@ Applications use code-based files (TSX/TypeScript) stored in app_files table.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastmcp.tools.tool import ToolResult
@@ -417,7 +418,6 @@ async def publish_app(context: Any, app_id: str) -> ToolResult:
     Creates a new version by copying all files from the draft version,
     then sets this new version as the active (live) version.
     """
-    from datetime import datetime
     from uuid import UUID
 
     from sqlalchemy import select
@@ -478,7 +478,7 @@ async def publish_app(context: Any, app_id: str) -> ToolResult:
 
             # Update application to point to new active version
             app.active_version_id = new_version.id
-            app.published_at = datetime.utcnow()
+            app.published_at = datetime.now(timezone.utc)
 
             await db.commit()
 

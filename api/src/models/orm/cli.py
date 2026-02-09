@@ -4,7 +4,7 @@ CLI Session ORM model.
 Represents CLI debugging sessions for local workflow execution.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -35,11 +35,11 @@ class CLISession(Base):
     selected_workflow: Mapped[str | None] = mapped_column(Text, default=None)
     params: Mapped[dict | None] = mapped_column(JSONB, default=None)
     pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    last_seen: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Relationships
     user: Mapped["User"] = relationship()

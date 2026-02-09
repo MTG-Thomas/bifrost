@@ -6,7 +6,7 @@ Handles form metadata extraction, ID alignment, and field synchronization.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -171,7 +171,7 @@ class FormIndexer:
         # (e.g., forms/{uuid}.form.json), so we don't need a separate file_path column.
         # We just use the ID from the JSON content directly.
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Get workflow_id - prefer explicit workflow_id, fall back to linked_workflow (name lookup)
         workflow_id = form_data.get("workflow_id")

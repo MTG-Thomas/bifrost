@@ -9,7 +9,7 @@ import base64
 import io
 import logging
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
@@ -423,7 +423,7 @@ async def export_knowledge(
 ) -> StreamingResponse:
     """Export selected knowledge documents as JSON."""
     export = await _build_knowledge_export(db, request.ids or None)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return _json_response(
         export.model_dump_json(indent=2),
         f"knowledge_export_{timestamp}.json",
@@ -438,7 +438,7 @@ async def export_configs(
 ) -> StreamingResponse:
     """Export selected configs as JSON. Secret values exported encrypted."""
     export = await _build_configs_export(db, request.ids or None)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return _json_response(
         export.model_dump_json(indent=2),
         f"configs_export_{timestamp}.json",
@@ -453,7 +453,7 @@ async def export_tables(
 ) -> StreamingResponse:
     """Export selected tables with all documents as JSON."""
     export = await _build_tables_export(db, request.ids or None)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return _json_response(
         export.model_dump_json(indent=2),
         f"tables_export_{timestamp}.json",
@@ -468,7 +468,7 @@ async def export_integrations(
 ) -> StreamingResponse:
     """Export selected integrations with config schema, mappings, OAuth, and default config."""
     export = await _build_integrations_export(db, request.ids or None)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return _json_response(
         export.model_dump_json(indent=2),
         f"integrations_export_{timestamp}.json",
@@ -502,7 +502,7 @@ async def export_all(
             zf.writestr("integrations.json", integrations_export.model_dump_json(indent=2))
 
     zip_buffer.seek(0)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",

@@ -16,7 +16,7 @@ This service provides:
 import ast
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -265,7 +265,7 @@ class WorkflowOrphanService:
         wf.code_hash = source_wf.code_hash
         wf.function_name = function_name
         wf.is_orphaned = False
-        wf.updated_at = datetime.utcnow()
+        wf.updated_at = datetime.now(timezone.utc)
 
         await self.db.commit()
         await self.db.refresh(wf)
@@ -307,7 +307,7 @@ class WorkflowOrphanService:
 
         # Mark as not orphaned - the actual file write is caller's responsibility
         wf.is_orphaned = False
-        wf.updated_at = datetime.utcnow()
+        wf.updated_at = datetime.now(timezone.utc)
 
         await self.db.commit()
         await self.db.refresh(wf)
@@ -341,7 +341,7 @@ class WorkflowOrphanService:
         ref_count = len(refs)
 
         wf.is_active = False
-        wf.updated_at = datetime.utcnow()
+        wf.updated_at = datetime.now(timezone.utc)
 
         await self.db.commit()
         await self.db.refresh(wf)

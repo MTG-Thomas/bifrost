@@ -7,7 +7,7 @@ Handles read, write, delete, and move operations for individual files.
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
 from sqlalchemy import select, update
@@ -265,7 +265,7 @@ class FileOperationsService:
 
         # Upsert index record
         # Use UTC datetime without timezone info to match SQLAlchemy model defaults
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # For modules and text files, store content directly in workspace_files.content
         # Other entity types store content in their respective tables
@@ -416,7 +416,7 @@ class FileOperationsService:
         ).values(
             is_deleted=True,
             git_status=GitStatus.DELETED,
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(timezone.utc),
             content=None,  # Clear module content on delete
         )
         await self.db.execute(stmt)
@@ -452,7 +452,7 @@ class FileOperationsService:
             FileNotFoundError: If old_path doesn't exist
             FileExistsError: If new_path already exists
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Get the existing file record
         stmt = select(WorkspaceFile).where(

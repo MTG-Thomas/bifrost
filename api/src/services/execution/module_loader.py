@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Literal
@@ -614,7 +614,7 @@ def scan_all_forms() -> list[FormMetadata]:
                     data = json.load(f)
 
                 # Parse datetime fields (support both snake_case and camelCase)
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 created_at = now
                 updated_at = now
                 created_at_str = data.get('created_at') or data.get('createdAt')

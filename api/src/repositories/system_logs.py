@@ -4,7 +4,7 @@ System Logs Repository
 PostgreSQL-based repository for system log entries (platform events, audits).
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -65,7 +65,7 @@ class SystemLogRepository:
             executed_by=executed_by,
             executed_by_name=executed_by_name,
             details=details,
-            timestamp=timestamp or datetime.utcnow(),
+            timestamp=timestamp or datetime.now(timezone.utc),
         )
         self.session.add(log)
         await self.session.flush()

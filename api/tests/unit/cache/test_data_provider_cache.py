@@ -1,7 +1,7 @@
 """Unit tests for data provider Redis cache."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -100,7 +100,7 @@ class TestGetCachedResult:
     @pytest.mark.asyncio
     async def test_cache_hit_returns_entry(self):
         """Returns cached entry when found and not expired."""
-        expires_at = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
         cached_data = {
             "data": {"users": [1, 2, 3]},
             "expires_at": expires_at
@@ -120,7 +120,7 @@ class TestGetCachedResult:
     @pytest.mark.asyncio
     async def test_expired_cache_returns_none(self):
         """Returns None and deletes expired entries."""
-        expires_at = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+        expires_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         cached_data = {
             "data": {"users": [1, 2, 3]},
             "expires_at": expires_at
@@ -160,7 +160,7 @@ class TestCacheResult:
             assert call_args[0][1] == 300  # TTL
 
             # Verify expiration is in the future
-            assert expires_at > datetime.utcnow()
+            assert expires_at > datetime.now(timezone.utc)
 
     @pytest.mark.asyncio
     async def test_cache_result_uses_default_ttl(self):

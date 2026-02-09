@@ -10,7 +10,7 @@ Tests the API behavior for:
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -160,7 +160,7 @@ class TestWorkersListEndpoint:
             mapping={
                 "hostname": "test-host",
                 "status": "online",
-                "started_at": datetime.utcnow().isoformat(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
             },
         )
 
@@ -168,7 +168,7 @@ class TestWorkersListEndpoint:
         heartbeat = {
             "type": "worker_heartbeat",
             "worker_id": worker_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "processes": [
                 {"pid": 12345, "process_id": "process-1", "state": "idle"},
                 {"pid": 12346, "process_id": "process-2", "state": "busy"},
@@ -244,7 +244,7 @@ class TestWorkerDetailEndpoint:
             mapping={
                 "hostname": "detail-host",
                 "status": "online",
-                "started_at": datetime.utcnow().isoformat(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
             },
         )
 
@@ -252,7 +252,7 @@ class TestWorkerDetailEndpoint:
         heartbeat = {
             "type": "worker_heartbeat",
             "worker_id": worker_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "processes": [
                 {
                     "pid": 22345,
@@ -334,7 +334,7 @@ class TestRecycleProcessEndpoint:
             mapping={
                 "hostname": "recycle-host",
                 "status": "online",
-                "started_at": datetime.utcnow().isoformat(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
             },
         )
 
@@ -425,7 +425,7 @@ class TestStuckHistoryEndpoint:
         from src.core.auth import UserPrincipal
 
         # Create executions with stuck error messages
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for i in range(3):
             execution = Execution(
                 id=uuid4(),

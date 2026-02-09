@@ -9,7 +9,7 @@ Runs every 6 hours to check for subscriptions expiring within 48 hours.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -32,7 +32,7 @@ async def renew_expiring_webhooks() -> dict[str, Any]:
     Returns:
         Summary of renewal results
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     logger.info("▶ Webhook renewal starting")
 
     results: dict[str, Any] = {
@@ -77,7 +77,7 @@ async def renew_expiring_webhooks() -> dict[str, Any]:
                     if renewal_result:
                         # Update webhook with new expiration
                         webhook.expires_at = renewal_result.expires_at
-                        webhook.updated_at = datetime.utcnow()
+                        webhook.updated_at = datetime.now(timezone.utc)
 
                         # Update state if returned
                         if renewal_result.state:
@@ -120,7 +120,7 @@ async def renew_expiring_webhooks() -> dict[str, Any]:
             await db.commit()
 
         # Calculate duration
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration_seconds = (end_time - start_time).total_seconds()
         results["duration_seconds"] = duration_seconds
         results["start_time"] = start_time.isoformat()

@@ -7,7 +7,7 @@ Integrations combine OAuth providers, data providers, and configuration schemas.
 
 import logging
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -156,8 +156,8 @@ class IntegrationsRepository:
             entity_id_name=request.entity_id_name,
             default_entity_id=request.default_entity_id,
             is_deleted=False,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
 
         # Add config schema items to the normalized table
@@ -237,7 +237,7 @@ class IntegrationsRepository:
                     )
                     integration.config_schema.append(new_item)
 
-        integration.updated_at = datetime.utcnow()
+        integration.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         await self.db.refresh(integration)
         # Reload with relationships
@@ -250,7 +250,7 @@ class IntegrationsRepository:
             return False
 
         integration.is_deleted = True
-        integration.updated_at = datetime.utcnow()
+        integration.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         return True
 
@@ -303,8 +303,8 @@ class IntegrationsRepository:
             entity_id=request.entity_id,
             entity_name=request.entity_name,
             oauth_token_id=request.oauth_token_id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
         self.db.add(mapping)
         await self.db.flush()
@@ -479,7 +479,7 @@ class IntegrationsRepository:
                 updated_by=updated_by,
             )
 
-        mapping.updated_at = datetime.utcnow()
+        mapping.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         await self.db.refresh(mapping)
         return mapping

@@ -15,7 +15,7 @@ Note: The MCP tools are implemented as decorated functions in src/services/mcp/t
 We test the tool functions directly.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -108,7 +108,7 @@ def mock_knowledge_document():
         score=0.85,
         organization_id=None,
         key="sdk-guide",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -857,7 +857,7 @@ class TestMCPConfigService:
             "allowed_tool_ids": ["execute_workflow", "list_workflows"],
             "blocked_tool_ids": ["search_knowledge"],
         }
-        mock_config.updated_at = datetime.utcnow()
+        mock_config.updated_at = datetime.now(timezone.utc)
         mock_config.updated_by = "admin@test.com"
 
         mock_result = MagicMock()

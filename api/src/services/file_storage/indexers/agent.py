@@ -6,7 +6,7 @@ Handles agent metadata extraction, tool/delegation synchronization, and ID align
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -173,7 +173,7 @@ class AgentIndexer:
         if not isinstance(knowledge_sources, list):
             knowledge_sources = []
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Upsert agent - updates definition but NOT organization_id or access_level
         # These env-specific fields are only set via the API, not from file sync

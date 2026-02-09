@@ -7,7 +7,7 @@ Adapters handle provider-specific subscription management and request validation
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from starlette.requests import Request
@@ -357,14 +357,12 @@ class WebhookAdapter(ABC):
     @staticmethod
     def expiration_datetime(days: int = 3) -> str:
         """Get ISO format datetime for subscription expiration."""
-        dt = datetime.utcnow() + timedelta(days=days)
+        dt = datetime.now(timezone.utc) + timedelta(days=days)
         return dt.isoformat()
 
     @staticmethod
     def parse_datetime(dt_str: str) -> datetime:
         """Parse ISO format datetime string."""
-        from datetime import timezone
-
         # Handle various ISO formats
         dt_str = dt_str.replace("Z", "+00:00")
         dt = datetime.fromisoformat(dt_str)

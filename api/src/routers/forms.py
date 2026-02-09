@@ -11,7 +11,7 @@ They are serialized to JSON on-the-fly for git sync operations.
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
@@ -290,7 +290,7 @@ async def create_form(
         form_schema=form_schema_data,
     )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Create form record
     form = FormORM(
@@ -504,7 +504,7 @@ async def update_form(
         form.access_level = FormAccessLevel.ROLE_BASED
         logger.info(f"Cleared all role assignments for form '{form.name}'")
 
-    form.updated_at = datetime.utcnow()
+    form.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
 
@@ -579,7 +579,7 @@ async def delete_form(
         )
 
     form.is_active = False
-    form.updated_at = datetime.utcnow()
+    form.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
 
@@ -1039,7 +1039,7 @@ async def generate_upload_url(
         )
 
     # Calculate expiration time
-    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat() + "Z"
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat() + "Z"
 
     return FileUploadResponse(
         upload_url=upload_url,

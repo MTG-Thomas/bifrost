@@ -4,7 +4,7 @@ MFA-related ORM models.
 Represents MFA methods, recovery codes, trusted devices, and OAuth accounts.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -47,16 +47,16 @@ class UserMFAMethod(Base):
     encrypted_secret: Mapped[str | None] = mapped_column(Text, default=None)
     mfa_metadata: Mapped[dict] = mapped_column(JSONB, default={})
     last_used_counter: Mapped[int | None] = mapped_column(Integer, default=None)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(),
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
     # Relationships
@@ -77,10 +77,10 @@ class MFARecoveryCode(Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     code_hash: Mapped[str] = mapped_column(String(255))
     is_used: Mapped[bool] = mapped_column(Boolean, default=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     used_from_ip: Mapped[str | None] = mapped_column(String(45), default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
 
     # Relationships
@@ -101,11 +101,11 @@ class TrustedDevice(Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     device_fingerprint: Mapped[str] = mapped_column(String(64))
     device_name: Mapped[str | None] = mapped_column(String(255), default=None)
-    expires_at: Mapped[datetime] = mapped_column(DateTime())
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_ip_address: Mapped[str | None] = mapped_column(String(45), default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
 
     # Relationships
@@ -133,9 +133,9 @@ class UserOAuthAccount(Base):
     provider_user_id: Mapped[str] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(320))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
-    last_login: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="oauth_accounts")
@@ -172,9 +172,9 @@ class UserPasskey(Base):
     # User-facing info
     name: Mapped[str] = mapped_column(String(255))  # "MacBook Pro Touch ID"
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(), default=datetime.utcnow, server_default=text("NOW()")
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="passkeys")

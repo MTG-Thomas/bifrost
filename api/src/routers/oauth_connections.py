@@ -7,7 +7,7 @@ This is separate from oauth_sso.py which handles user authentication.
 
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -243,7 +243,7 @@ class OAuthConnectionRepository:
         if request.scopes is not None:
             provider.scopes = request.scopes
 
-        provider.updated_at = datetime.utcnow()
+        provider.updated_at = datetime.now(timezone.utc)
 
         await self.db.flush()
         await self.db.refresh(provider)
@@ -285,7 +285,7 @@ class OAuthConnectionRepository:
 
         provider.status = status
         provider.status_message = status_message
-        provider.updated_at = datetime.utcnow()
+        provider.updated_at = datetime.now(timezone.utc)
 
         await self.db.flush()
         return True
@@ -350,8 +350,8 @@ class OAuthConnectionRepository:
         # Update provider status
         provider.status = "completed"
         provider.status_message = "Token acquired successfully"
-        provider.last_token_refresh = datetime.utcnow()
-        provider.updated_at = datetime.utcnow()
+        provider.last_token_refresh = datetime.now(timezone.utc)
+        provider.updated_at = datetime.now(timezone.utc)
 
         await self.db.flush()
         await self.db.refresh(token)
@@ -804,7 +804,7 @@ async def refresh_token(
         new_expires_at = result.get("expires_at")
         if not new_expires_at:
             # Default to 1 hour from now if no expiry provided
-            new_expires_at = datetime.utcnow() + timedelta(hours=1)
+            new_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
         await repo.store_token(
             connection_name=connection_name,
@@ -869,7 +869,7 @@ async def refresh_token(
         # Update provider
         provider.status = "completed"
         provider.status_message = None
-        provider.last_token_refresh = datetime.utcnow()
+        provider.last_token_refresh = datetime.now(timezone.utc)
 
         await ctx.db.flush()
 
@@ -997,7 +997,7 @@ async def oauth_callback(
 
     if not expires_at:
         # Default to 1 hour from now if no expiry provided
-        expires_at = datetime.utcnow() + timedelta(hours=1)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
     # Store tokens
     await repo.store_token(
@@ -1195,7 +1195,7 @@ async def trigger_refresh_all(
 
     if config:
         config.value_json = results
-        config.updated_at = datetime.utcnow()
+        config.updated_at = datetime.now(timezone.utc)
     else:
         config = SystemConfig(
             category="oauth",

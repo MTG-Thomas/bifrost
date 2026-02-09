@@ -6,7 +6,7 @@ Supports webhooks as event sources with adapter-based configuration.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -78,7 +78,7 @@ async def _build_event_source_response(
     event_repo = EventRepository(db)
     event_count_24h = await event_repo.count_by_source(
         source.id,
-        since=datetime.utcnow() - timedelta(hours=24),
+        since=datetime.now(timezone.utc) - timedelta(hours=24),
     )
 
     # Build webhook response if applicable
@@ -331,7 +331,7 @@ async def create_source(
     2. Call the adapter's subscribe method (if needed)
     3. Store the webhook configuration
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Create base event source
     source = EventSource(
@@ -499,14 +499,14 @@ async def update_source(
         if request.is_active:
             source.error_message = None
 
-    source.updated_at = datetime.utcnow()
+    source.updated_at = datetime.now(timezone.utc)
 
     # Update webhook-specific fields
     if request.webhook and source.webhook_source:
         ws = source.webhook_source
         if request.webhook.config:
             ws.config = request.webhook.config
-        ws.updated_at = datetime.utcnow()
+        ws.updated_at = datetime.now(timezone.utc)
 
     # Update schedule-specific fields
     if request.schedule and source.schedule_source:
@@ -517,7 +517,7 @@ async def update_source(
             ss.timezone = request.schedule.timezone
         if request.schedule.enabled is not None:
             ss.enabled = request.schedule.enabled
-        ss.updated_at = datetime.utcnow()
+        ss.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
 
@@ -582,7 +582,7 @@ async def delete_source(
                 # Continue with soft delete anyway
 
     source.is_active = False
-    source.updated_at = datetime.utcnow()
+    source.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
 
@@ -645,7 +645,7 @@ async def create_subscription(
     db: DbSession,
 ) -> EventSubscriptionResponse:
     """Create a subscription to an event source."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Verify source exists
     source_repo = EventSourceRepository(db)
@@ -739,7 +739,7 @@ async def update_subscription(
     if "input_mapping" in request.model_fields_set:
         subscription.input_mapping = request.input_mapping
 
-    subscription.updated_at = datetime.utcnow()
+    subscription.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
 
@@ -788,7 +788,7 @@ async def delete_subscription(
         )
 
     subscription.is_active = False
-    subscription.updated_at = datetime.utcnow()
+    subscription.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
 

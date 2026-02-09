@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -920,7 +920,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             select(Conversation).where(Conversation.id == conversation_id)
         )
         conversation = conversation_result.scalar_one()
-        conversation.updated_at = datetime.utcnow()
+        conversation.updated_at = datetime.now(timezone.utc)
         await self.session.flush()
 
         return message

@@ -17,7 +17,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -1409,7 +1409,7 @@ async def assign_roles_to_workflow(
             detail=f"Workflow with ID '{workflow_id}' not found",
         )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for role_id_str in request.role_ids:
         role_uuid = UUID(role_id_str)

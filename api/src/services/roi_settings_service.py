@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -93,7 +93,7 @@ class ROISettingsService:
         if existing:
             # Update existing config
             existing.value_json = config_data
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
             existing.updated_by = updated_by
             logger.info(
                 f"Updated ROI settings: time_saved_unit={time_saved_unit}, value_unit={value_unit}"

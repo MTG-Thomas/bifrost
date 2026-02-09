@@ -23,7 +23,7 @@ Execution Model:
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -335,7 +335,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             {"result": workflow_result, "durationMs": duration_ms},
         )
 
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
         await publish_history_update(
             execution_id=execution_id,
             status=status.value,
@@ -498,7 +498,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             {"error": error, "errorType": error_type},
         )
 
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
         await publish_history_update(
             execution_id=execution_id,
             status=status.value,
@@ -564,7 +564,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         script_name = message_data.get("script_name")
         is_sync = message_data.get("sync", False)
         file_path: str | None = None  # Will be set from workflow metadata lookup
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         # Remove from queue tracking (execution is now being processed)
         await remove_from_queue(execution_id)
@@ -691,7 +691,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         logger.info(f"Scope: caller org {org_id or 'GLOBAL'} (global workflow)")
                 except WorkflowNotFoundError:
                     logger.error(f"Workflow not found: {workflow_id}")
-                    duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                    duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
                     error_msg = f"Workflow with ID '{workflow_id}' not found"
                     await create_execution(
                         execution_id=execution_id,
@@ -858,8 +858,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
         except Exception as e:
             # Unexpected error during setup (before routing to pool)
-            duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-            completed_at = datetime.utcnow()
+            duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+            completed_at = datetime.now(timezone.utc)
             error_msg = str(e)
             error_type = type(e).__name__
 

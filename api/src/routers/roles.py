@@ -7,7 +7,7 @@ Manage roles for organization users.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -95,7 +95,7 @@ async def create_role(
     db: DbSession,
 ) -> RolePublic:
     """Create a new role."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     role = RoleORM(
         name=request.name,
@@ -172,7 +172,7 @@ async def update_role(
     if request.is_active is not None:
         role.is_active = request.is_active
 
-    role.updated_at = datetime.utcnow()
+    role.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
     await db.refresh(role)
@@ -226,7 +226,7 @@ async def delete_role(
         )
 
     role.is_active = False
-    role.updated_at = datetime.utcnow()
+    role.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
     logger.info(f"Soft deleted role {role_id}")
@@ -273,7 +273,7 @@ async def assign_users_to_role(
     db: DbSession,
 ) -> None:
     """Assign users to a role."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for user_id_str in request.user_ids:
         # Try to parse as UUID, otherwise lookup by email
@@ -395,7 +395,7 @@ async def assign_forms_to_role(
     db: DbSession,
 ) -> None:
     """Assign forms to a role."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for form_id_str in request.form_ids:
         form_uuid = UUID(form_id_str)
@@ -506,7 +506,7 @@ async def assign_agents_to_role(
     db: DbSession,
 ) -> None:
     """Assign agents to a role."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for agent_id_str in request.agent_ids:
         agent_uuid = UUID(agent_id_str)

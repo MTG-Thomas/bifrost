@@ -16,7 +16,7 @@ Execution Flow:
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, TypedDict, cast
 
 import redis.asyncio as redis
@@ -142,7 +142,7 @@ class RedisClient:
             "api_key_id": api_key_id,
             "startup": startup,
             "sync": sync,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "cancelled": False,
         }
 

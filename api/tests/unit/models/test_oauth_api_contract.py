@@ -3,7 +3,7 @@ Contract tests for OAuth API models
 Tests Pydantic validation rules for OAuth connection request/response models
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -171,7 +171,7 @@ class TestOAuthConnectionSummary:
                 connection_name="test",
                 oauth_flow_type="authorization_code",
                 status=status,
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
             assert summary.status == status
 
@@ -183,7 +183,7 @@ class TestOAuthConnectionSummary:
                 connection_name="test",
                 oauth_flow_type="authorization_code",
                 status="invalid_status",
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
 
         errors = exc_info.value.errors()
@@ -205,9 +205,9 @@ class TestOAuthConnectionDetail:
             scopes="",
             redirect_uri="/api/oauth/callback/test",
             status="completed",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             created_by="user",
-            updated_at=datetime.utcnow()
+            updated_at=datetime.now(timezone.utc)
         )
 
         detail_dict = detail.model_dump()
@@ -229,9 +229,9 @@ class TestOAuthConnectionDetail:
             scopes="",
             redirect_uri="/api/oauth/callback/test",
             status="completed",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             created_by="user",
-            updated_at=datetime.utcnow()
+            updated_at=datetime.now(timezone.utc)
         )
 
         detail_dict = detail.model_dump(mode="json")
@@ -258,7 +258,7 @@ class TestOAuthConnection:
             redirect_uri="/api/oauth/callback/test",
             status="completed",
             created_by="user",
-            expires_at=datetime.utcnow() - timedelta(hours=1)
+            expires_at=datetime.now(timezone.utc) - timedelta(hours=1)
         )
 
         assert expired_connection.is_expired()
@@ -279,7 +279,7 @@ class TestOAuthConnection:
             redirect_uri="/api/oauth/callback/test",
             status="completed",
             created_by="user",
-            expires_at=datetime.utcnow() + timedelta(hours=3)
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=3)
         )
 
         # With 4 hour threshold, should return True (expires within 4 hours)

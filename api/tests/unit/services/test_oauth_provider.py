@@ -6,7 +6,7 @@ Mocks HTTP requests to OAuth providers.
 
 import pytest
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from src.services.oauth_provider import OAuthProviderClient
@@ -292,9 +292,9 @@ class TestOAuthProviderMetadata:
             "refresh_token": "refresh_123"
         }
 
-        before_parse = datetime.utcnow()
+        before_parse = datetime.now(timezone.utc)
         result = oauth_client._parse_token_response(response_data)
-        datetime.utcnow()
+        datetime.now(timezone.utc)
 
         assert result["access_token"] == "token_123"
         assert result["token_type"] == "Bearer"
@@ -313,9 +313,9 @@ class TestOAuthProviderMetadata:
             # No expires_in
         }
 
-        before_parse = datetime.utcnow()
+        before_parse = datetime.now(timezone.utc)
         result = oauth_client._parse_token_response(response_data)
-        datetime.utcnow()
+        datetime.now(timezone.utc)
 
         assert "expires_at" in result
         # Should default to 1 hour

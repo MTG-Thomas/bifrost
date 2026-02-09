@@ -6,7 +6,7 @@ Handles HTTP communication with OAuth providers for token exchange and refresh
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
@@ -326,11 +326,11 @@ class OAuthProviderClient:
         # Calculate expires_at from expires_in (seconds)
         expires_in = response_data.get("expires_in")
         if expires_in:
-            result["expires_at"] = datetime.utcnow() + timedelta(seconds=int(expires_in))
+            result["expires_at"] = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
         else:
             # Default to 1 hour if not specified
             logger.warning("OAuth response missing expires_in, defaulting to 1 hour")
-            result["expires_at"] = datetime.utcnow() + timedelta(hours=1)
+            result["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
 
         # Log refresh token presence at INFO level for debugging
         if result['refresh_token'] is not None:

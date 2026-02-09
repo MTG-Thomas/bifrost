@@ -5,7 +5,7 @@ CRUD operations for client organizations.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -70,7 +70,7 @@ async def create_organization(
     db: DbSession,
 ) -> OrganizationPublic:
     """Create a new client organization."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     org = OrganizationORM(
         name=request.name,
@@ -158,7 +158,7 @@ async def update_organization(
     if request.settings is not None:
         org.settings = request.settings
 
-    org.updated_at = datetime.utcnow()
+    org.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
     await db.refresh(org)
@@ -207,7 +207,7 @@ async def delete_organization(
         )
 
     org.is_active = False
-    org.updated_at = datetime.utcnow()
+    org.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
 

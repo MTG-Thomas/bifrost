@@ -8,7 +8,7 @@ Role assignments use the knowledge_namespace_roles table.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -323,7 +323,7 @@ async def bulk_update_document_scope(
     stmt = (
         update(KnowledgeStore)
         .where(KnowledgeStore.id.in_(doc_uuids))
-        .values(organization_id=target_org_id, updated_at=datetime.utcnow())
+        .values(organization_id=target_org_id, updated_at=datetime.now(timezone.utc))
     )
     result = await db.execute(stmt)
     await db.flush()
@@ -502,7 +502,7 @@ async def update_document(
     doc.embedding = embedding
     if data.metadata is not None:
         doc.doc_metadata = data.metadata
-    doc.updated_at = datetime.utcnow()
+    doc.updated_at = datetime.now(timezone.utc)
 
     # Update scope if provided
     if scope is not None:
