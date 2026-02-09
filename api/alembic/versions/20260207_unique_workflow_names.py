@@ -24,39 +24,52 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # Check for duplicate org-scoped names before creating index
-    dupes = conn.execute(text("""
-        SELECT organization_id, name, COUNT(*) as cnt
-        FROM workflows
-        WHERE organization_id IS NOT NULL AND is_active = true
-        GROUP BY organization_id, name
-        HAVING COUNT(*) > 1
+    # Auto-resolve duplicate org-scoped names: keep the most recently
+    # updated workflow and deactivate the rest.
+    deactivated_org = conn.execute(text("""
+        UPDATE workflows w
+        SET is_active = false, updated_at = NOW()
+        FROM (
+            SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY organization_id, name
+                ORDER BY updated_at DESC NULLS LAST
+            ) as rn
+            FROM workflows
+            WHERE organization_id IS NOT NULL AND is_active = true
+        ) ranked
+        WHERE w.id = ranked.id AND ranked.rn > 1
+        RETURNING w.id, w.organization_id, w.name
     """)).fetchall()
 
-    if dupes:
-        for org_id, name, cnt in dupes:
-            print(f"WARNING: Duplicate org-scoped workflow name: org={org_id} name='{name}' count={cnt}")
-        raise RuntimeError(
-            f"Cannot create unique index: {len(dupes)} duplicate org-scoped workflow name(s) found. "
-            "Resolve duplicates before retrying."
-        )
+    for wf_id, org_id, name in deactivated_org:
+        print(f"AUTO-RESOLVED: Deactivated duplicate org-scoped workflow "
+              f"id={wf_id} org={org_id} name='{name}'")
 
-    # Check for duplicate global names
-    global_dupes = conn.execute(text("""
-        SELECT name, COUNT(*) as cnt
-        FROM workflows
-        WHERE organization_id IS NULL AND is_active = true
-        GROUP BY name
-        HAVING COUNT(*) > 1
+    if deactivated_org:
+        print(f"Deactivated {len(deactivated_org)} duplicate org-scoped workflow(s)")
+
+    # Auto-resolve duplicate global names: same approach.
+    deactivated_global = conn.execute(text("""
+        UPDATE workflows w
+        SET is_active = false, updated_at = NOW()
+        FROM (
+            SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY name
+                ORDER BY updated_at DESC NULLS LAST
+            ) as rn
+            FROM workflows
+            WHERE organization_id IS NULL AND is_active = true
+        ) ranked
+        WHERE w.id = ranked.id AND ranked.rn > 1
+        RETURNING w.id, w.name
     """)).fetchall()
 
-    if global_dupes:
-        for name, cnt in global_dupes:
-            print(f"WARNING: Duplicate global workflow name: name='{name}' count={cnt}")
-        raise RuntimeError(
-            f"Cannot create unique index: {len(global_dupes)} duplicate global workflow name(s) found. "
-            "Resolve duplicates before retrying."
-        )
+    for wf_id, name in deactivated_global:
+        print(f"AUTO-RESOLVED: Deactivated duplicate global workflow "
+              f"id={wf_id} name='{name}'")
+
+    if deactivated_global:
+        print(f"Deactivated {len(deactivated_global)} duplicate global workflow(s)")
 
     # Org-scoped: one workflow per name per org (only active workflows)
     op.execute(text("""
