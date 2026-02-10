@@ -5,17 +5,18 @@ Extracts display names and entity types from file paths and content
 to provide human-readable labels in the sync preview UI.
 """
 
-import json
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 # Path patterns for entity detection
-FORM_PATTERN = re.compile(r"^forms/.*\.form\.json$")
-AGENT_PATTERN = re.compile(r"^agents/.*\.agent\.json$")
+FORM_PATTERN = re.compile(r"^forms/.*\.form\.yaml$")
+AGENT_PATTERN = re.compile(r"^agents/.*\.agent\.yaml$")
 APP_JSON_PATTERN = re.compile(r"^apps/([^/]+)/app\.json$")
 APP_FILE_PATTERN = re.compile(r"^apps/([^/]+)/(.+)$")
 WORKFLOW_PATTERN = re.compile(r"^(workflows|data_providers)/.*\.py$")
@@ -35,28 +36,28 @@ def extract_entity_metadata(path: str, content: bytes | None = None) -> EntityMe
 
     Args:
         path: File path relative to workspace root
-        content: Optional file content for JSON parsing
+        content: Optional file content for YAML/JSON parsing
 
     Returns:
         EntityMetadata with type, display name, and parent slug
     """
     filename = Path(path).name
 
-    # Form: forms/*.form.json
+    # Form: forms/*.form.yaml
     if FORM_PATTERN.match(path):
-        display_name = _extract_json_name(content, filename)
+        display_name = _extract_yaml_name(content, filename)
         return EntityMetadata(entity_type="form", display_name=display_name)
 
-    # Agent: agents/*.agent.json
+    # Agent: agents/*.agent.yaml
     if AGENT_PATTERN.match(path):
-        display_name = _extract_json_name(content, filename)
+        display_name = _extract_yaml_name(content, filename)
         return EntityMetadata(entity_type="agent", display_name=display_name)
 
     # App metadata: apps/{slug}/app.json
     match = APP_JSON_PATTERN.match(path)
     if match:
         slug = match.group(1)
-        display_name = _extract_json_name(content, slug)
+        display_name = _extract_yaml_name(content, slug)
         return EntityMetadata(entity_type="app", display_name=display_name, parent_slug=slug)
 
     # App file: apps/{slug}/**/*
@@ -80,14 +81,16 @@ def extract_entity_metadata(path: str, content: bytes | None = None) -> EntityMe
     return EntityMetadata(entity_type=None, display_name=filename)
 
 
-def _extract_json_name(content: bytes | None, fallback: str) -> str:
-    """Extract 'name' field from JSON content, with fallback."""
+def _extract_yaml_name(content: bytes | None, fallback: str) -> str:
+    """Extract 'name' field from YAML content, with fallback."""
     if content is None:
         return fallback
 
     try:
-        data = json.loads(content.decode("utf-8"))
-        return data.get("name", fallback)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        logger.debug(f"Failed to parse JSON for name extraction, using fallback: {fallback}")
+        data = yaml.safe_load(content.decode("utf-8"))
+        if isinstance(data, dict):
+            return data.get("name", fallback)
+        return fallback
+    except (yaml.YAMLError, UnicodeDecodeError):
+        logger.debug(f"Failed to parse YAML for name extraction, using fallback: {fallback}")
         return fallback

@@ -497,7 +497,7 @@ def get_github_file_content(github_test_branch):
     Skips test if GitHub is not configured.
 
     Returns:
-        Factory function that fetches and parses JSON files from GitHub
+        Factory function that fetches and parses YAML/JSON files from GitHub
     """
     if github_test_branch is None:
         pytest.skip("GitHub not configured (GITHUB_TEST_PAT not set)")
@@ -525,6 +525,7 @@ def get_github_file_content(github_test_branch):
         import json
 
         import httpx
+        import yaml
 
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         headers = {
@@ -548,7 +549,13 @@ def get_github_file_content(github_test_branch):
         content_b64 = data.get("content", "")
         # GitHub returns base64 with newlines, so we need to handle that
         content_bytes = base64.b64decode(content_b64)
-        parsed = json.loads(content_bytes.decode("utf-8"))
+        content_str = content_bytes.decode("utf-8")
+
+        # Parse as YAML (handles both YAML and JSON since JSON is valid YAML)
+        if path.endswith(".yaml") or path.endswith(".yml"):
+            parsed = yaml.safe_load(content_str)
+        else:
+            parsed = json.loads(content_str)
 
         logger.debug(f"Successfully fetched GitHub file: {path}")
         return parsed

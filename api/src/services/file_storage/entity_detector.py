@@ -6,8 +6,8 @@ or in S3 (regular files).
 Platform entities:
 - Workflows (.py with @workflow decorator)
 - Data providers (.py with @data_provider decorator)
-- Forms (.form.json)
-- Agents (.agent.json)
+- Forms (.form.yaml)
+- Agents (.agent.yaml)
 
 Regular files go to S3.
 """
@@ -34,8 +34,8 @@ def detect_platform_entity_type(path: str, content: bytes) -> str | None:
     Platform entities are stored in the database, not S3:
     - Workflows (.py with @workflow decorator): stored in file_index + _repo/ S3
     - Data providers (.py with @data_provider decorator): stored in file_index + _repo/ S3
-    - Forms (.form.json): stored in forms table
-    - Agents (.agent.json): stored in agents table
+    - Forms (.form.yaml): stored in forms table
+    - Agents (.agent.yaml): stored in agents table
 
     Regular files (modules, data files, configs) go to S3.
 
@@ -46,10 +46,10 @@ def detect_platform_entity_type(path: str, content: bytes) -> str | None:
     Returns:
         Entity type ("workflow", "form", "agent") or None for regular files
     """
-    # JSON platform entities - always go to DB
-    if path.endswith(".form.json"):
+    # YAML platform entities - always go to DB
+    if path.endswith(".form.yaml"):
         return "form"
-    if path.endswith(".agent.json"):
+    if path.endswith(".agent.yaml"):
         return "agent"
 
     # Python files - check for SDK decorators

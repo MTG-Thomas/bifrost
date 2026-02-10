@@ -517,7 +517,7 @@ class DataHelper:
     def test_json_file_without_form_extension_stored_in_s3(
         self, e2e_client, platform_admin
     ):
-        """Regular JSON files (not .form.json) are stored in S3."""
+        """Regular JSON files (not .form.yaml) are stored in S3."""
         response = e2e_client.put(
             "/api/files/editor/content",
             headers=platform_admin.headers,

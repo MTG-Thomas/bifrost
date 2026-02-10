@@ -165,11 +165,11 @@ class WorkspaceReindexService:
         # 3. For each existing file, upsert into file_index
         # Process files in dependency order to prevent FK constraint violations
         py_files = sorted([p for p in existing_paths if p.endswith(".py")])
-        form_files = sorted([p for p in existing_paths if p.endswith(".form.json")])
-        agent_files = sorted([p for p in existing_paths if p.endswith(".agent.json")])
+        form_files = sorted([p for p in existing_paths if p.endswith(".form.yaml")])
+        agent_files = sorted([p for p in existing_paths if p.endswith(".agent.yaml")])
         other_files = sorted([
             p for p in existing_paths
-            if not p.endswith(".py") and not p.endswith(".form.json") and not p.endswith(".agent.json")
+            if not p.endswith(".py") and not p.endswith(".form.yaml") and not p.endswith(".agent.yaml")
         ])
         ordered_paths = py_files + form_files + agent_files + other_files
 

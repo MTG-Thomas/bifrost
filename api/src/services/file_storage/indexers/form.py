@@ -1,10 +1,9 @@
 """
-Form indexer for parsing and indexing .form.json files.
+Form indexer for parsing and indexing .form.yaml files.
 
 Handles form metadata extraction, ID alignment, and field synchronization.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -13,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import yaml
 from pydantic import ValidationError
 
 from src.models import Form, FormField as FormFieldORM, Workflow
@@ -21,9 +21,9 @@ from src.models.contracts.forms import FormField, FormPublic
 logger = logging.getLogger(__name__)
 
 
-def _serialize_form_to_json(form: Form) -> bytes:
+def _serialize_form_to_yaml(form: Form) -> bytes:
     """
-    Serialize a Form to JSON bytes using Pydantic model_dump.
+    Serialize a Form to YAML bytes using Pydantic model_dump.
 
     Uses FormPublic.model_dump() with exclude=True fields auto-excluded.
     UUIDs are used directly for all cross-references.
@@ -32,7 +32,7 @@ def _serialize_form_to_json(form: Form) -> bytes:
         form: Form ORM instance with fields relationship loaded
 
     Returns:
-        JSON serialized as UTF-8 bytes
+        YAML serialized as UTF-8 bytes
     """
     form_public = FormPublic.model_validate(form)
 
@@ -44,12 +44,12 @@ def _serialize_form_to_json(form: Form) -> bytes:
         exclude={"organization_id", "access_level", "created_at", "updated_at"},
     )
 
-    return json.dumps(form_data, indent=2).encode("utf-8")
+    return yaml.dump(form_data, default_flow_style=False, sort_keys=False).encode("utf-8")
 
 
 class FormIndexer:
     """
-    Indexes .form.json files and synchronizes with the database.
+    Indexes .form.yaml files and synchronizes with the database.
 
     Handles ID alignment, workflow name resolution, and field synchronization.
     """
@@ -90,9 +90,9 @@ class FormIndexer:
         content: bytes,
     ) -> bool:
         """
-        Parse and index form from .form.json file.
+        Parse and index form from .form.yaml file.
 
-        If the JSON contains an 'id' field, uses that ID (for dual-write from API).
+        If the YAML contains an 'id' field, uses that ID (for dual-write from API).
         Otherwise generates a new ID and writes it back to the file.
 
         Updates form definition (name, description, workflow_id, form_schema, etc.)
@@ -110,9 +110,9 @@ class FormIndexer:
         content_modified = False
 
         try:
-            form_data = json.loads(content.decode("utf-8"))
-        except json.JSONDecodeError:
-            logger.warning(f"Invalid JSON in form file: {path}")
+            form_data = yaml.safe_load(content.decode("utf-8"))
+        except yaml.YAMLError:
+            logger.warning(f"Invalid YAML in form file: {path}")
             return False
 
         # Remove _export if present (backwards compatibility with old files)
@@ -141,8 +141,8 @@ class FormIndexer:
             logger.info(f"Injecting ID {form_id} into form file: {path}")
 
         # Forms are now "fully virtual" - their path is computed from their ID
-        # (e.g., forms/{uuid}.form.json), so we don't need a separate file_path column.
-        # We just use the ID from the JSON content directly.
+        # (e.g., forms/{uuid}.form.yaml), so we don't need a separate file_path column.
+        # We just use the ID from the YAML content directly.
 
         now = datetime.now(timezone.utc)
 
@@ -251,17 +251,17 @@ class FormIndexer:
         Delete the form associated with a file.
 
         Called when a file is deleted to clean up form records from the database.
-        For virtual forms, the ID is extracted from the path (forms/{uuid}.form.json).
+        For virtual forms, the ID is extracted from the path (forms/{uuid}.form.yaml).
 
         Args:
-            path: File path that was deleted (e.g., "forms/{uuid}.form.json")
+            path: File path that was deleted (e.g., "forms/{uuid}.form.yaml")
 
         Returns:
             Number of forms deleted
         """
-        # Extract form ID from path: forms/{uuid}.form.json -> uuid
+        # Extract form ID from path: forms/{uuid}.form.yaml -> uuid
         import re
-        match = re.match(r"forms/([a-f0-9-]+)\.form\.json$", path, re.IGNORECASE)
+        match = re.match(r"forms/([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
         if not match:
             logger.warning(f"Cannot extract form ID from path: {path}")
             return 0

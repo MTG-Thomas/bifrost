@@ -1,14 +1,14 @@
 """
-Agent indexer for parsing and indexing .agent.json files.
+Agent indexer for parsing and indexing .agent.yaml files.
 
 Handles agent metadata extraction, tool/delegation synchronization, and ID alignment.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+import yaml
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,9 +20,9 @@ from src.models.contracts.agents import AgentPublic
 logger = logging.getLogger(__name__)
 
 
-def _serialize_agent_to_json(agent: Agent) -> bytes:
+def _serialize_agent_to_yaml(agent: Agent) -> bytes:
     """
-    Serialize an Agent to JSON bytes using Pydantic model_dump.
+    Serialize an Agent to YAML bytes using Pydantic model_dump.
 
     Uses AgentPublic.model_dump() with exclude=True fields auto-excluded.
     UUIDs are used directly for all cross-references.
@@ -31,7 +31,7 @@ def _serialize_agent_to_json(agent: Agent) -> bytes:
         agent: Agent ORM instance with tools relationship loaded
 
     Returns:
-        JSON serialized as UTF-8 bytes
+        YAML serialized as UTF-8 bytes
     """
     agent_public = AgentPublic.model_validate(agent)
 
@@ -53,12 +53,12 @@ def _serialize_agent_to_json(agent: Agent) -> bytes:
         if key in agent_data and isinstance(agent_data[key], list):
             agent_data[key] = sorted(agent_data[key])
 
-    return json.dumps(agent_data, indent=2).encode("utf-8")
+    return yaml.dump(agent_data, default_flow_style=False, sort_keys=False).encode("utf-8")
 
 
 class AgentIndexer:
     """
-    Indexes .agent.json files and synchronizes with the database.
+    Indexes .agent.yaml files and synchronizes with the database.
 
     Handles ID alignment, tool/delegation association, and agent definition updates.
     """
@@ -78,9 +78,9 @@ class AgentIndexer:
         content: bytes,
     ) -> bool:
         """
-        Parse and index agent from .agent.json file.
+        Parse and index agent from .agent.yaml file.
 
-        If the JSON contains an 'id' field, uses that ID (for API-created agents).
+        If the YAML contains an 'id' field, uses that ID (for API-created agents).
         Otherwise generates a new ID (for files synced from git/editor).
 
         Updates agent definition (name, description, system_prompt, tools, etc.)
@@ -98,9 +98,9 @@ class AgentIndexer:
         content_modified = False
 
         try:
-            agent_data = json.loads(content.decode("utf-8"))
-        except json.JSONDecodeError:
-            logger.warning(f"Invalid JSON in agent file: {path}")
+            agent_data = yaml.safe_load(content.decode("utf-8"))
+        except yaml.YAMLError:
+            logger.warning(f"Invalid YAML in agent file: {path}")
             return False
 
         # Remove _export if present (backwards compatibility with old files)
@@ -133,8 +133,8 @@ class AgentIndexer:
             logger.info(f"Injecting ID {agent_id} into agent file: {path}")
 
         # Agents are now "fully virtual" - their path is computed from their ID
-        # (e.g., agents/{uuid}.agent.json), so we don't need a separate file_path column.
-        # We just use the ID from the JSON content directly.
+        # (e.g., agents/{uuid}.agent.yaml), so we don't need a separate file_path column.
+        # We just use the ID from the YAML content directly.
 
         # Parse channels
         channels = agent_data.get("channels", ["chat"])
@@ -234,17 +234,17 @@ class AgentIndexer:
         Delete the agent associated with a file.
 
         Called when a file is deleted to clean up agent records from the database.
-        For virtual agents, the ID is extracted from the path (agents/{uuid}.agent.json).
+        For virtual agents, the ID is extracted from the path (agents/{uuid}.agent.yaml).
 
         Args:
-            path: File path that was deleted (e.g., "agents/{uuid}.agent.json")
+            path: File path that was deleted (e.g., "agents/{uuid}.agent.yaml")
 
         Returns:
             Number of agents deleted
         """
-        # Extract agent ID from path: agents/{uuid}.agent.json -> uuid
+        # Extract agent ID from path: agents/{uuid}.agent.yaml -> uuid
         import re
-        match = re.match(r"agents/([a-f0-9-]+)\.agent\.json$", path, re.IGNORECASE)
+        match = re.match(r"agents/([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
         if not match:
             logger.warning(f"Cannot extract agent ID from path: {path}")
             return 0

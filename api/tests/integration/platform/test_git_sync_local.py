@@ -10,7 +10,6 @@ Fixtures:
 - sync_service: GitHubSyncService configured against local bare repo
 """
 
-import hashlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,9 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.orm.file_index import FileIndex
 from src.models.orm.forms import Form
 from src.models.orm.workflows import Workflow
-from src.services.file_index_service import FileIndexService
-from src.services.manifest import Manifest, parse_manifest
-from src.services.repo_storage import RepoStorage
+from src.services.manifest import parse_manifest
 
 
 # =============================================================================
@@ -119,22 +116,30 @@ def _make_manifest(
 
 @pytest.fixture
 def bare_repo(tmp_path):
-    """Local bare git repo."""
+    """Local bare git repo with 'main' as default branch."""
     repo_path = tmp_path / "test-repo.git"
     Repo.init(str(repo_path), bare=True)
+    # Set HEAD to point to main instead of master
+    (repo_path / "HEAD").write_text("ref: refs/heads/main\n")
     return repo_path
 
 
 @pytest.fixture
 def working_clone(tmp_path, bare_repo):
-    """Working clone for committing test data."""
+    """Working clone for committing test data on 'main' branch."""
     work_path = tmp_path / "work"
-    repo = Repo.clone_from(str(bare_repo), str(work_path))
-    # Create initial commit so main branch exists
+    # Init a fresh repo and add origin
+    repo = Repo.init(str(work_path))
+    repo.create_remote("origin", str(bare_repo))
+    # Create initial commit
     (work_path / ".gitkeep").touch()
     repo.index.add([".gitkeep"])
     repo.index.commit("initial")
-    repo.remotes.origin.push()
+    # Rename default branch to main and push
+    repo.heads[0].rename("main")
+    repo.remotes.origin.push(refspec="main:main")
+    # Set upstream tracking
+    repo.heads.main.set_tracking_branch(repo.remotes.origin.refs.main)
     return repo
 
 
@@ -218,7 +223,7 @@ class TestPushToEmptyRepo:
 
         # Verify by cloning the repo and checking files
         verify_path = tmp_path / "verify"
-        verify_repo = Repo.clone_from(f"file://{bare_repo}", str(verify_path))
+        Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
 
         # Workflow .py file should exist
         wf_file = verify_path / "workflows" / "git_sync_test_wf.py"
@@ -251,7 +256,7 @@ class TestPushToEmptyRepo:
 
         # Clone and verify manifest
         verify_path = tmp_path / "verify"
-        Repo.clone_from(f"file://{bare_repo}", str(verify_path))
+        Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
 
         manifest_file = verify_path / ".bifrost" / "metadata.yaml"
         manifest = parse_manifest(manifest_file.read_text())
@@ -312,7 +317,7 @@ class TestIncrementalPush:
 
         # Verify updated content
         verify_path = tmp_path / "verify"
-        Repo.clone_from(f"file://{bare_repo}", str(verify_path))
+        Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
         manifest = parse_manifest(
             (verify_path / ".bifrost" / "metadata.yaml").read_text()
         )
@@ -355,7 +360,7 @@ class TestIncrementalPush:
 
         # Verify file is gone
         verify_path = tmp_path / "verify"
-        Repo.clone_from(f"file://{bare_repo}", str(verify_path))
+        Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
         wf_file = verify_path / "workflows" / "git_sync_test_delete.py"
         assert not wf_file.exists(), "Deleted workflow file should be gone from repo"
 
@@ -679,7 +684,7 @@ class TestRenames:
 
         # Verify new path in repo
         verify_path = tmp_path / "verify"
-        Repo.clone_from(f"file://{bare_repo}", str(verify_path))
+        Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
         old_file = verify_path / "workflows" / "git_sync_test_plat_old.py"
         new_file = verify_path / "workflows" / "git_sync_test_plat_new.py"
         assert not old_file.exists(), "Old path should be gone"
@@ -875,6 +880,7 @@ class TestRoundTrip:
             name="Form Ref Test",
             workflow_id=str(wf_id),
             is_active=True,
+            created_by="test",
         )
         db_session.add(form)
         await db_session.commit()
@@ -884,13 +890,13 @@ class TestRoundTrip:
 
         # Verify form yaml in repo contains UUID reference
         verify_path = tmp_path / "verify"
-        Repo.clone_from(f"file://{bare_repo}", str(verify_path))
+        Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
 
-        # Find the form yaml
-        form_files = list((verify_path / "forms").glob("*.form.yaml")) if (verify_path / "forms").exists() else []
-        assert len(form_files) >= 1, "Form yaml should exist in repo"
+        # Find our specific form yaml by ID
+        form_file = verify_path / "forms" / f"{form_id}.form.yaml"
+        assert form_file.exists(), f"Form yaml should exist in repo at forms/{form_id}.form.yaml"
 
-        form_yaml = form_files[0].read_text()
+        form_yaml = form_file.read_text()
         assert str(wf_id) in form_yaml, "Form yaml should contain workflow UUID reference"
 
         # Pull back
@@ -935,6 +941,7 @@ class TestOrphanDetection:
             name="Orphan Form Test",
             workflow_id=str(wf_id),
             is_active=True,
+            created_by="test",
         )
         db_session.add(form)
         await db_session.commit()

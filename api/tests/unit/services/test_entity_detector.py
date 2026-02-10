@@ -24,20 +24,20 @@ from src.services.file_storage.entity_detector import (
 class TestDetectPlatformEntityType:
     """Tests for detect_platform_entity_type function."""
 
-    def test_form_json_returns_form(self):
-        result = detect_platform_entity_type("my_form.form.json", b"{}")
+    def test_form_yaml_returns_form(self):
+        result = detect_platform_entity_type("my_form.form.yaml", b"name: Test")
         assert result == "form"
 
-    def test_nested_path_form_json_returns_form(self):
-        result = detect_platform_entity_type("some/dir/contact.form.json", b"{}")
+    def test_nested_path_form_yaml_returns_form(self):
+        result = detect_platform_entity_type("some/dir/contact.form.yaml", b"name: Test")
         assert result == "form"
 
-    def test_agent_json_returns_agent(self):
-        result = detect_platform_entity_type("my_agent.agent.json", b"{}")
+    def test_agent_yaml_returns_agent(self):
+        result = detect_platform_entity_type("my_agent.agent.yaml", b"name: Test")
         assert result == "agent"
 
-    def test_nested_path_agent_json_returns_agent(self):
-        result = detect_platform_entity_type("agents/helper.agent.json", b"{}")
+    def test_nested_path_agent_yaml_returns_agent(self):
+        result = detect_platform_entity_type("agents/helper.agent.yaml", b"name: Test")
         assert result == "agent"
 
     def test_python_file_delegates_to_python_detector(self):
@@ -85,13 +85,14 @@ class TestDetectPlatformEntityType:
         result = detect_platform_entity_type(filename, b"content")
         assert result is None
 
-    def test_form_json_takes_precedence_over_json(self):
-        """'.form.json' is detected as form, not as a generic json (None)."""
-        result = detect_platform_entity_type("x.form.json", b"{}")
+    def test_form_yaml_takes_precedence_over_yaml(self):
+        """'.form.yaml' is detected as form, not as generic yaml (text)."""
+        result = detect_platform_entity_type("x.form.yaml", b"name: Test")
         assert result == "form"
 
-    def test_agent_json_takes_precedence_over_json(self):
-        result = detect_platform_entity_type("x.agent.json", b"{}")
+    def test_agent_yaml_takes_precedence_over_yaml(self):
+        """'.agent.yaml' is detected as agent, not as generic yaml (text)."""
+        result = detect_platform_entity_type("x.agent.yaml", b"name: Test")
         assert result == "agent"
 
 

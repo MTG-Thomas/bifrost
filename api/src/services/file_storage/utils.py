@@ -4,16 +4,16 @@ Utility functions for file storage operations.
 Includes serialization helpers for platform entities.
 """
 
-import json
+import yaml
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.models import Form, Agent
 
 
-def serialize_form_to_json(form: "Form") -> bytes:
+def serialize_form_to_yaml(form: "Form") -> bytes:
     """
-    Serialize a Form (with fields) to JSON bytes.
+    Serialize a Form (with fields) to YAML bytes.
 
     Uses the same format as _write_form_to_file in routers/forms.py
     for consistency with file-based storage.
@@ -22,7 +22,7 @@ def serialize_form_to_json(form: "Form") -> bytes:
         form: Form ORM instance with fields relationship loaded
 
     Returns:
-        JSON serialized as UTF-8 bytes
+        YAML serialized as UTF-8 bytes
     """
     # Convert fields to form_schema format (matches _fields_to_form_schema in forms.py)
     fields_data = []
@@ -65,8 +65,8 @@ def serialize_form_to_json(form: "Form") -> bytes:
 
     form_schema = {"fields": fields_data}
 
-    # Build form JSON (matches _write_form_to_file format)
-    # Note: org_id, is_global, access_level are NOT written to JSON
+    # Build form data (matches _write_form_to_file format)
+    # Note: org_id, is_global, access_level are NOT written to YAML
     # These are environment-specific and should only be set in the database
     form_data = {
         "id": str(form.id),
@@ -83,18 +83,18 @@ def serialize_form_to_json(form: "Form") -> bytes:
         "default_launch_params": form.default_launch_params,
     }
 
-    return json.dumps(form_data, indent=2).encode("utf-8")
+    return yaml.dump(form_data, default_flow_style=False, sort_keys=False).encode("utf-8")
 
 
-def serialize_agent_to_json(agent: "Agent") -> bytes:
+def serialize_agent_to_yaml(agent: "Agent") -> bytes:
     """
-    Serialize an Agent to JSON bytes.
+    Serialize an Agent to YAML bytes.
 
     Args:
         agent: Agent ORM instance
 
     Returns:
-        JSON serialized as UTF-8 bytes
+        YAML serialized as UTF-8 bytes
     """
     agent_data = {
         "id": str(agent.id),
@@ -112,4 +112,4 @@ def serialize_agent_to_json(agent: "Agent") -> bytes:
         "updated_at": agent.updated_at.isoformat() + "Z",
     }
 
-    return json.dumps(agent_data, indent=2).encode("utf-8")
+    return yaml.dump(agent_data, default_flow_style=False, sort_keys=False).encode("utf-8")

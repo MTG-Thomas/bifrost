@@ -160,7 +160,7 @@ async def search_files_db(
                 break
 
     # 2. Search forms (serialize to JSON and search)
-    # Forms use virtual paths: forms/{uuid}.form.json
+    # Forms use virtual paths: forms/{uuid}.form.yaml
     if len(all_results) < request.max_results:
         form_conditions = [Form.is_active == True]  # noqa: E712
         form_stmt = (
@@ -170,7 +170,7 @@ async def search_files_db(
         )
         form_result = await db.execute(form_stmt)
         for form in form_result.scalars():
-            virtual_path = f"forms/{form.id}.form.json"
+            virtual_path = f"forms/{form.id}.form.yaml"
             # Apply path filters
             if root_path and not virtual_path.startswith(root_path):
                 continue
@@ -199,7 +199,7 @@ async def search_files_db(
                 break
 
     # 3. Search agents (serialize to JSON and search)
-    # Agents use virtual paths: agents/{uuid}.agent.json
+    # Agents use virtual paths: agents/{uuid}.agent.yaml
     if len(all_results) < request.max_results:
         agent_conditions = [Agent.is_active == True]  # noqa: E712
         agent_stmt = (
@@ -209,7 +209,7 @@ async def search_files_db(
         )
         agent_result = await db.execute(agent_stmt)
         for agent in agent_result.scalars():
-            virtual_path = f"agents/{agent.id}.agent.json"
+            virtual_path = f"agents/{agent.id}.agent.yaml"
             # Apply path filters
             if root_path and not virtual_path.startswith(root_path):
                 continue

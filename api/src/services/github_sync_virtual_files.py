@@ -11,8 +11,8 @@ Virtual files are generated from database entities with:
 - Standardized path patterns
 
 Path patterns:
-- Forms: forms/{form.id}.form.json
-- Agents: agents/{agent.id}.agent.json
+- Forms: forms/{form.id}.form.yaml
+- Agents: agents/{agent.id}.agent.yaml
 - Apps: apps/{slug}/app.json + apps/{slug}/**/*.tsx (directory-based)
 
 Apps are serialized as directories:
@@ -20,9 +20,10 @@ Apps are serialized as directories:
 - apps/{slug}/_layout.tsx, pages/*.tsx, components/*.tsx, modules/*.ts - code files
 """
 
-import json
 import logging
 import re
+
+import yaml
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -32,17 +33,17 @@ from sqlalchemy.orm import selectinload
 
 from src.models import Agent, Application, AppVersion, Form
 from src.services.file_storage.file_ops import compute_git_blob_sha
-from src.services.file_storage.indexers.agent import _serialize_agent_to_json
+from src.services.file_storage.indexers.agent import _serialize_agent_to_yaml
 from src.services.file_storage.indexers.app import _serialize_app_to_json
-from src.services.file_storage.indexers.form import _serialize_form_to_json
+from src.services.file_storage.indexers.form import _serialize_form_to_yaml
 
 logger = logging.getLogger(__name__)
 
 # Regex pattern for extracting UUID from filenames
-# Matches: {uuid}.form.json, {uuid}.agent.json
+# Matches: {uuid}.form.yaml, {uuid}.agent.yaml
 UUID_FILENAME_PATTERN = re.compile(
     r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
-    r"\.(form|agent)\.json$"
+    r"\.(form|agent)\.yaml$"
 )
 
 
@@ -55,7 +56,7 @@ class VirtualFile:
     and can participate in GitHub sync without being stored in workspace_files.
 
     Attributes:
-        path: Virtual file path, e.g., "forms/{uuid}.form.json" or "apps/{slug}/app.json"
+        path: Virtual file path, e.g., "forms/{uuid}.form.yaml" or "apps/{slug}/app.json"
         entity_type: Type of entity - "form", "agent", "app", or "app_file"
         entity_id: Stable identifier - UUID for forms/agents, "app::{uuid}" for apps, path for app_files
         content: Serialized content as bytes
@@ -188,9 +189,9 @@ class VirtualFileProvider:
         errors: list[SerializationError] = []
 
         for form in forms:
-            virtual_path = f"forms/{form.id}.form.json"
+            virtual_path = f"forms/{form.id}.form.yaml"
             try:
-                content = _serialize_form_to_json(form)
+                content = _serialize_form_to_yaml(form)
                 computed_sha = compute_git_blob_sha(content)
 
                 virtual_files.append(
@@ -253,9 +254,9 @@ class VirtualFileProvider:
         errors: list[SerializationError] = []
 
         for agent in agents:
-            virtual_path = f"agents/{agent.id}.agent.json"
+            virtual_path = f"agents/{agent.id}.agent.yaml"
             try:
-                content = _serialize_agent_to_json(agent)
+                content = _serialize_agent_to_yaml(agent)
                 computed_sha = compute_git_blob_sha(content)
 
                 virtual_files.append(
@@ -419,11 +420,11 @@ class VirtualFileProvider:
             return None
 
         try:
-            content = _serialize_form_to_json(form)
+            content = _serialize_form_to_yaml(form)
             computed_sha = compute_git_blob_sha(content)
 
             return VirtualFile(
-                path=f"forms/{form.id}.form.json",
+                path=f"forms/{form.id}.form.yaml",
                 entity_type="form",
                 entity_id=str(form.id),
                 content=content,
@@ -451,11 +452,11 @@ class VirtualFileProvider:
             return None
 
         try:
-            content = _serialize_agent_to_json(agent)
+            content = _serialize_agent_to_yaml(agent)
             computed_sha = compute_git_blob_sha(content)
 
             return VirtualFile(
-                path=f"agents/{agent.id}.agent.json",
+                path=f"agents/{agent.id}.agent.yaml",
                 entity_type="agent",
                 entity_id=str(agent.id),
                 content=content,
@@ -476,7 +477,7 @@ class VirtualFileProvider:
         rather than pre-loading all virtual file content at once.
 
         Args:
-            path: Virtual file path, e.g., "forms/{uuid}.form.json" or "apps/{slug}/pages/index.tsx"
+            path: Virtual file path, e.g., "forms/{uuid}.form.yaml" or "apps/{slug}/pages/index.tsx"
 
         Returns:
             File content as bytes, or None if not found or serialization fails
@@ -576,11 +577,11 @@ class VirtualFileProvider:
         Extract entity UUID from a virtual file filename (fast path).
 
         Uses regex to match the expected filename patterns:
-        - {uuid}.form.json
-        - {uuid}.agent.json
+        - {uuid}.form.yaml
+        - {uuid}.agent.yaml
 
         Args:
-            filename: Just the filename (not the full path), e.g., "abc123.form.json"
+            filename: Just the filename (not the full path), e.g., "abc123.form.yaml"
 
         Returns:
             UUID string if pattern matches, None otherwise
@@ -593,23 +594,25 @@ class VirtualFileProvider:
     @staticmethod
     def extract_id_from_content(content: bytes) -> str | None:
         """
-        Extract entity ID from JSON content (fallback for non-standard filenames).
+        Extract entity ID from YAML/JSON content (fallback for non-standard filenames).
 
-        Parses the JSON and returns the "id" field if present.
+        Parses the content and returns the "id" field if present.
 
         Args:
-            content: JSON content as bytes
+            content: YAML or JSON content as bytes
 
         Returns:
             ID string if found in content, None otherwise
         """
         try:
-            data = json.loads(content.decode("utf-8"))
+            data = yaml.safe_load(content.decode("utf-8"))
+            if not isinstance(data, dict):
+                return None
             entity_id = data.get("id")
             if isinstance(entity_id, str):
                 return entity_id
             return None
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (yaml.YAMLError, UnicodeDecodeError) as e:
             logger.debug(f"Failed to extract ID from content: {e}")
             return None
 
@@ -619,14 +622,14 @@ class VirtualFileProvider:
         Determine entity type from virtual file path.
 
         Args:
-            path: Virtual file path, e.g., "forms/abc123.form.json"
+            path: Virtual file path, e.g., "forms/abc123.form.yaml"
 
         Returns:
             Entity type ("form", "agent", "app", or "app_file") or None if not recognized
         """
-        if path.startswith("forms/") and path.endswith(".form.json"):
+        if path.startswith("forms/") and path.endswith(".form.yaml"):
             return "form"
-        elif path.startswith("agents/") and path.endswith(".agent.json"):
+        elif path.startswith("agents/") and path.endswith(".agent.yaml"):
             return "agent"
         elif path.startswith("apps/"):
             # apps/{slug}/app.json -> "app"
@@ -649,8 +652,8 @@ class VirtualFileProvider:
             True if path matches virtual file pattern, False otherwise
         """
         return (
-            (path.startswith("forms/") and path.endswith(".form.json"))
-            or (path.startswith("agents/") and path.endswith(".agent.json"))
+            (path.startswith("forms/") and path.endswith(".form.yaml"))
+            or (path.startswith("agents/") and path.endswith(".agent.yaml"))
             or path.startswith("apps/")
         )
 

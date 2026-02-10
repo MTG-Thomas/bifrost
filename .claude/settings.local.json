@@ -206,7 +206,8 @@
       "Bash(/home/jack/GitHub/bifrost/.venv/bin/pyright:*)",
       "Bash(sort:*)",
       "Bash(python -m pyright:*)",
-      "Bash(docker ps:*)"
+      "Bash(docker ps:*)",
+      "Bash(ruff check:*)"
     ],
     "deny": [],
     "ask": [],

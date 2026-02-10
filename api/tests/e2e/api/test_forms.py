@@ -236,7 +236,7 @@ class TestFormFileSync:
 
     # NOTE: Form file_path tests removed as forms are now "fully virtual"
     # Forms no longer have a file_path column - their virtual path is computed
-    # from their ID (forms/{uuid}.form.json) for git sync.
+    # from their ID (forms/{uuid}.form.yaml) for git sync.
 
 
 

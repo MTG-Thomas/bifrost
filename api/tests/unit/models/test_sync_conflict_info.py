@@ -5,9 +5,9 @@ from src.models.contracts.github import SyncConflictInfo
 def test_sync_conflict_info_with_metadata():
     """SyncConflictInfo should accept metadata fields."""
     conflict = SyncConflictInfo(
-        path="forms/contact.form.json",
-        local_content='{"name": "Contact Form"}',
-        remote_content='{"name": "Contact Form v2"}',
+        path="forms/contact.form.yaml",
+        local_content='name: Contact Form\n',
+        remote_content='name: Contact Form v2\n',
         local_sha="abc123",
         remote_sha="def456",
         display_name="Contact Form",
@@ -15,7 +15,7 @@ def test_sync_conflict_info_with_metadata():
         parent_slug=None,
     )
 
-    assert conflict.path == "forms/contact.form.json"
+    assert conflict.path == "forms/contact.form.yaml"
     assert conflict.display_name == "Contact Form"
     assert conflict.entity_type == "form"
     assert conflict.parent_slug is None

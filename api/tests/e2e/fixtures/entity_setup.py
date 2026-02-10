@@ -5,7 +5,6 @@ Provides fixtures for creating workflows, apps, forms, and agents
 with proper cleanup after tests.
 """
 
-import json
 import logging
 import time
 from typing import Any, Generator
@@ -367,6 +366,8 @@ def create_app_json_with_portable_refs(
         app_id: Unique identifier for the application (used for sync matching).
         workflow_portable_ref: Portable reference to a workflow (e.g., "path/to/file.py::workflow_name").
     """
+    import json as _json
+
     app_data = {
         "id": app_id,
         "name": app_name,
@@ -404,22 +405,24 @@ def create_app_json_with_portable_refs(
             "version": "1.0",
         },
     }
-    return json.dumps(app_data, indent=2)
+    return _json.dumps(app_data, indent=2)
 
 
-def create_form_json_with_portable_refs(
+def create_form_yaml_with_portable_refs(
     form_name: str,
     form_id: str,
     workflow_portable_ref: str,
 ) -> str:
     """
-    Generate .form.json content with portable workflow refs.
+    Generate .form.yaml content with portable workflow refs.
 
     Args:
         form_name: Display name for the form.
         form_id: Unique identifier for the form (used for sync matching).
         workflow_portable_ref: Portable reference to a workflow (e.g., "path/to/file.py::workflow_name").
     """
+    import yaml
+
     form_data = {
         "id": form_id,
         "name": form_name,
@@ -450,22 +453,24 @@ def create_form_json_with_portable_refs(
             "version": "1.0",
         },
     }
-    return json.dumps(form_data, indent=2)
+    return yaml.dump(form_data, default_flow_style=False)
 
 
-def create_agent_json_with_portable_refs(
+def create_agent_yaml_with_portable_refs(
     agent_name: str,
     agent_id: str,
     workflow_portable_ref: str,
 ) -> str:
     """
-    Generate .agent.json content with portable workflow refs.
+    Generate .agent.yaml content with portable workflow refs.
 
     Args:
         agent_name: Display name for the agent.
         agent_id: Unique identifier for the agent (used for sync matching).
         workflow_portable_ref: Portable reference to a workflow (e.g., "path/to/file.py::workflow_name").
     """
+    import yaml
+
     agent_data = {
         "id": agent_id,
         "name": agent_name,
@@ -478,4 +483,4 @@ def create_agent_json_with_portable_refs(
             "version": "1.0",
         },
     }
-    return json.dumps(agent_data, indent=2)
+    return yaml.dump(agent_data, default_flow_style=False)

@@ -348,11 +348,11 @@ class FileStorageService:
                     path, content, force_deactivation, replacements,
                     cached_ast=cached_ast, cached_content_str=cached_content_str
                 )
-            elif path.endswith(".form.json"):
+            elif path.endswith(".form.yaml"):
                 # Index the form and return proper tuple
                 content_modified = await self._form_indexer.index_form(path, content)
                 return content, content_modified, False, None, [], None, None
-            elif path.endswith(".agent.json"):
+            elif path.endswith(".agent.yaml"):
                 content_modified = await self._agent_indexer.index_agent(path, content)
                 return content, content_modified, False, None, [], None, None
         except Exception as e:
@@ -484,9 +484,9 @@ class FileStorageService:
         if entity_type is None:
             if path.endswith(".py"):
                 entity_type = "workflow"
-            elif path.endswith(".form.json"):
+            elif path.endswith(".form.yaml"):
                 entity_type = "form"
-            elif path.endswith(".agent.json"):
+            elif path.endswith(".agent.yaml"):
                 entity_type = "agent"
 
         if entity_type == "workflow":
@@ -510,10 +510,10 @@ class FileStorageService:
         if path.endswith(".py"):
             # Delete workflows/data_providers/tools
             await self._workflow_indexer.delete_workflows_for_file(path)
-        elif path.endswith(".form.json"):
+        elif path.endswith(".form.yaml"):
             # Delete forms
             await self._form_indexer.delete_form_for_file(path)
-        elif path.endswith(".agent.json"):
+        elif path.endswith(".agent.yaml"):
             # Delete agents
             await self._agent_indexer.delete_agent_for_file(path)
 

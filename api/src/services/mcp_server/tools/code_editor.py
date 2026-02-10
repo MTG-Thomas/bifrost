@@ -859,8 +859,8 @@ async def _list_text_files(
     """List text files (non-Python, non-entity files in file_index)."""
     query = select(FileIndex.path).where(
         ~FileIndex.path.endswith(".py"),
-        ~FileIndex.path.endswith(".form.json"),
-        ~FileIndex.path.endswith(".agent.json"),
+        ~FileIndex.path.endswith(".form.yaml"),
+        ~FileIndex.path.endswith(".agent.yaml"),
         ~FileIndex.path.endswith("/"),
     )
     if path_prefix:
@@ -1178,8 +1178,8 @@ async def _search_text_files(
     """Search text files (non-Python, non-entity) for regex matches."""
     query = select(FileIndex.path, FileIndex.content).where(
         ~FileIndex.path.endswith(".py"),
-        ~FileIndex.path.endswith(".form.json"),
-        ~FileIndex.path.endswith(".agent.json"),
+        ~FileIndex.path.endswith(".form.yaml"),
+        ~FileIndex.path.endswith(".agent.yaml"),
         ~FileIndex.path.endswith("/"),
         FileIndex.content.isnot(None),
     )

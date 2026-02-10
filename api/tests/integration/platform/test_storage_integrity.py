@@ -180,29 +180,35 @@ class TestWorkflowStorageIntegrity:
 # =============================================================================
 
 
-SAMPLE_FORM_JSON = b'''\
-{
-  "name": "Onboarding Form",
-  "description": "New hire onboarding",
-  "workflow": null,
-  "fields": [
-    {"name": "employee_name", "type": "text", "label": "Employee Name", "required": true},
-    {"name": "start_date", "type": "date", "label": "Start Date"}
-  ]
-}
+SAMPLE_FORM_YAML = b'''\
+name: Onboarding Form
+description: New hire onboarding
+workflow: null
+fields:
+- name: employee_name
+  type: text
+  label: Employee Name
+  required: true
+- name: start_date
+  type: date
+  label: Start Date
 '''
 
-SAMPLE_FORM_JSON_UPDATED = b'''\
-{
-  "name": "Onboarding Form",
-  "description": "Updated new hire onboarding",
-  "workflow": null,
-  "fields": [
-    {"name": "employee_name", "type": "text", "label": "Full Name", "required": true},
-    {"name": "start_date", "type": "date", "label": "Start Date"},
-    {"name": "department", "type": "select", "label": "Department"}
-  ]
-}
+SAMPLE_FORM_YAML_UPDATED = b'''\
+name: Onboarding Form
+description: Updated new hire onboarding
+workflow: null
+fields:
+- name: employee_name
+  type: text
+  label: Full Name
+  required: true
+- name: start_date
+  type: date
+  label: Start Date
+- name: department
+  type: select
+  label: Department
 '''
 
 
@@ -217,21 +223,21 @@ class TestFormStorageIntegrity:
         file_index_svc: FileIndexService,
         repo_storage: RepoStorage,
     ):
-        """Write .form.json → file_index has serialized content, S3 has content."""
-        path = "test_storage_forms/onboarding.form.json"
-        content_hash = await file_index_svc.write(path, SAMPLE_FORM_JSON)
+        """Write .form.yaml → file_index has serialized content, S3 has content."""
+        path = "test_storage_forms/onboarding.form.yaml"
+        content_hash = await file_index_svc.write(path, SAMPLE_FORM_YAML)
 
         # file_index should have content
         result = await db_session.execute(
             select(FileIndex).where(FileIndex.path == path)
         )
         fi = result.scalar_one()
-        assert fi.content == SAMPLE_FORM_JSON.decode("utf-8")
+        assert fi.content == SAMPLE_FORM_YAML.decode("utf-8")
         assert fi.content_hash == content_hash
 
         # S3 should have matching content
         s3_content = await repo_storage.read(path)
-        assert s3_content == SAMPLE_FORM_JSON
+        assert s3_content == SAMPLE_FORM_YAML
 
     async def test_update_form_updates_file_index(
         self,
@@ -239,18 +245,18 @@ class TestFormStorageIntegrity:
         file_index_svc: FileIndexService,
     ):
         """Modify form → file_index content matches new serialization."""
-        path = "test_storage_forms/onboarding_update.form.json"
+        path = "test_storage_forms/onboarding_update.form.yaml"
 
         # Write initial then update
-        await file_index_svc.write(path, SAMPLE_FORM_JSON)
-        await file_index_svc.write(path, SAMPLE_FORM_JSON_UPDATED)
+        await file_index_svc.write(path, SAMPLE_FORM_YAML)
+        await file_index_svc.write(path, SAMPLE_FORM_YAML_UPDATED)
 
         # file_index should have updated content
         result = await db_session.execute(
             select(FileIndex).where(FileIndex.path == path)
         )
         fi = result.scalar_one()
-        assert fi.content == SAMPLE_FORM_JSON_UPDATED.decode("utf-8")
+        assert fi.content == SAMPLE_FORM_YAML_UPDATED.decode("utf-8")
         assert "Updated new hire" in fi.content
 
 

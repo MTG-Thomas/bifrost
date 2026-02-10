@@ -10,10 +10,11 @@ we don't need any module cache clearing - sys.modules starts empty.
 """
 
 import importlib.util
-import json
 import logging
 import os
 import sys
+
+import yaml
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -596,7 +597,7 @@ def load_data_provider(name: str) -> tuple[Callable, DataProviderMetadata] | Non
 
 def scan_all_forms() -> list[FormMetadata]:
     """
-    Scan all workspace directories for *.form.json files.
+    Scan all workspace directories for *.form.yaml files.
 
     Returns:
         List of FormMetadata objects
@@ -605,13 +606,13 @@ def scan_all_forms() -> list[FormMetadata]:
     workspace_paths = get_workspace_paths()
 
     for workspace_path in workspace_paths:
-        # Find all *.form.json and form.json files
-        form_files = list(workspace_path.rglob("*.form.json")) + list(workspace_path.rglob("form.json"))
+        # Find all *.form.yaml and form.yaml files
+        form_files = list(workspace_path.rglob("*.form.yaml")) + list(workspace_path.rglob("form.yaml"))
 
         for form_file in form_files:
             try:
                 with open(form_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                    data = yaml.safe_load(f)
 
                 # Parse datetime fields (support both snake_case and camelCase)
                 now = datetime.now(timezone.utc)
@@ -670,12 +671,12 @@ def load_form(form_id: str) -> dict | None:
     workspace_paths = get_workspace_paths()
 
     for workspace_path in workspace_paths:
-        form_files = list(workspace_path.rglob("*.form.json")) + list(workspace_path.rglob("form.json"))
+        form_files = list(workspace_path.rglob("*.form.yaml")) + list(workspace_path.rglob("form.yaml"))
 
         for form_file in form_files:
             try:
                 with open(form_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                    data = yaml.safe_load(f)
 
                 # Check if this is the form we're looking for
                 file_form_id = data.get('id') or f"workspace-{form_file.stem}"
@@ -695,14 +696,14 @@ def load_form_by_file_path(file_path: str) -> dict | None:
     Load a form directly by its file path.
 
     Args:
-        file_path: Full path to the form.json file
+        file_path: Full path to the form.yaml file
 
     Returns:
         Full form dict or None if not found
     """
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            return yaml.safe_load(f)
     except Exception as e:
         logger.warning(f"Failed to load form from {file_path}: {e}")
         return None

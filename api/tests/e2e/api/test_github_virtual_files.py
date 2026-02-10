@@ -182,7 +182,7 @@ class TestVirtualFileRoundTrip:
         logger.info(f"Sync job {job_id} completed successfully")
 
         # 2. Verify form was pushed to GitHub (may have been pushed by a prior sync)
-        form_file_path = f"forms/{form_id}.form.json"
+        form_file_path = f"forms/{form_id}.form.yaml"
         github_content = get_github_file_content(form_file_path)
         assert github_content is not None, f"Form file not found on GitHub: {form_file_path}"
         logger.info(f"Form file verified on GitHub: {form_file_path}")
@@ -204,9 +204,9 @@ class TestVirtualFileRoundTrip:
         logger.info(f"After sync - to_pull: {len(to_pull)}, to_push: {len(to_push)}, conflicts: {len(conflicts)}")
 
         # Check for form specifically - should NOT be in conflicts, to_push, or to_pull
-        form_in_conflicts = any(f"{form_id}.form.json" in c.get("path", "") for c in conflicts)
-        form_in_push = any(f"{form_id}.form.json" in p.get("path", "") for p in to_push)
-        form_in_pull = any(f"{form_id}.form.json" in p.get("path", "") for p in to_pull)
+        form_in_conflicts = any(f"{form_id}.form.yaml" in c.get("path", "") for c in conflicts)
+        form_in_push = any(f"{form_id}.form.yaml" in p.get("path", "") for p in to_push)
+        form_in_pull = any(f"{form_id}.form.yaml" in p.get("path", "") for p in to_pull)
 
         assert not form_in_conflicts, "Form should NOT be in conflicts after push"
         assert not form_in_push, "Form should NOT be in to_push after push"
@@ -238,7 +238,7 @@ class TestVirtualFileRoundTrip:
         logger.info(f"Sync job {job_id} completed successfully")
 
         # 2. Verify agent was pushed to GitHub (may have been pushed by a prior sync)
-        agent_file_path = f"agents/{agent_id}.agent.json"
+        agent_file_path = f"agents/{agent_id}.agent.yaml"
         github_content = get_github_file_content(agent_file_path)
         assert github_content is not None, f"Agent file not found on GitHub: {agent_file_path}"
         logger.info(f"Agent file verified on GitHub: {agent_file_path}")
@@ -255,9 +255,9 @@ class TestVirtualFileRoundTrip:
         logger.info(f"After sync - to_pull: {len(to_pull)}, to_push: {len(to_push)}, conflicts: {len(conflicts)}")
 
         # Check for agent specifically - should NOT be in conflicts, to_push, or to_pull
-        agent_in_conflicts = any(f"{agent_id}.agent.json" in c.get("path", "") for c in conflicts)
-        agent_in_push = any(f"{agent_id}.agent.json" in p.get("path", "") for p in to_push)
-        agent_in_pull = any(f"{agent_id}.agent.json" in p.get("path", "") for p in to_pull)
+        agent_in_conflicts = any(f"{agent_id}.agent.yaml" in c.get("path", "") for c in conflicts)
+        agent_in_push = any(f"{agent_id}.agent.yaml" in p.get("path", "") for p in to_push)
+        agent_in_pull = any(f"{agent_id}.agent.yaml" in p.get("path", "") for p in to_pull)
 
         assert not agent_in_conflicts, "Agent should NOT be in conflicts after push"
         assert not agent_in_push, "Agent should NOT be in to_push after push"
@@ -360,7 +360,7 @@ class TestVirtualFileSHAComparison:
         form_info = test_form_with_workflow
         form = form_info["form"]
         form_id = form["id"]
-        form_file_path = f"forms/{form_id}.form.json"
+        form_file_path = f"forms/{form_id}.form.yaml"
 
         # 1. Execute sync to push the form
         job_result, _ = execute_sync_and_wait(e2e_client, platform_admin.headers)
@@ -445,7 +445,7 @@ class TestVirtualFileSHAComparison:
         agent_info = test_agent_with_tools
         agent = agent_info["agent"]
         agent_id = agent["id"]
-        agent_file_path = f"agents/{agent_id}.agent.json"
+        agent_file_path = f"agents/{agent_id}.agent.yaml"
 
         # 1. Execute sync to push the agent
         job_result, _ = execute_sync_and_wait(e2e_client, platform_admin.headers)

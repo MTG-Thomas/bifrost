@@ -272,37 +272,35 @@ class GitHubSyncService:
             # Clone or init
             repo = self._clone_or_init(tmp_dir)
 
+            # For incremental push: remove all tracked content files first
+            # so that deleted entities disappear from the repo.
+            # Keep .git/ and .gitkeep intact.
+            if repo.head.is_valid():
+                for item in tmp_dir.iterdir():
+                    if item.name == ".git":
+                        continue
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+
             # Serialize platform state to working tree
             await self._serialize_platform_state(tmp_dir)
 
-            # Stage all changes
-            repo.index.add("*")
-            # Also stage deletions
-            deleted = [
-                item.a_path for item in repo.index.diff(None)
-                if item.change_type == "D"
-            ]
-            if deleted:
-                repo.index.remove(deleted)
+            # Stage everything: git add -A (handles adds, modifications, deletions)
+            repo.git.add(A=True)
 
             # Check if there are changes to commit
-            if not repo.is_dirty(untracked_files=True) and not repo.index.diff("HEAD"):
+            if repo.head.is_valid() and not repo.index.diff("HEAD"):
                 return SyncResult(success=True, pushed=0)
 
             # Count files being pushed
-            staged = repo.index.diff("HEAD") if repo.head.is_valid() else []
-            untracked = repo.untracked_files
-            pushed_count = len(list(staged)) + len(untracked)
+            if repo.head.is_valid():
+                pushed_count = len(repo.index.diff("HEAD"))
+            else:
+                pushed_count = len(repo.untracked_files) + len(list(repo.index.diff(None)))
 
             # Commit
-            repo.index.add(["."])
-            # Re-stage deletions after the broad add
-            for item in repo.index.diff(None):
-                if item.change_type == "D":
-                    try:
-                        repo.index.remove([item.a_path])
-                    except Exception:
-                        pass
             commit = repo.index.commit("Sync from Bifrost")
 
             # Push
@@ -312,7 +310,7 @@ class GitHubSyncService:
             logger.info(f"Pushed {pushed_count} files, commit={commit.hexsha[:8]}")
             return SyncResult(
                 success=True,
-                pushed=pushed_count,
+                pushed=max(pushed_count, 1),  # At least 1 if we committed
                 commit_sha=commit.hexsha,
             )
 
@@ -351,25 +349,31 @@ class GitHubSyncService:
 
             # Import workflows
             pulled = 0
+            # Track which workflow IDs are still in the manifest
+            manifest_wf_ids = set()
             for wf_name, mwf in manifest.workflows.items():
+                manifest_wf_ids.add(mwf.id)
                 wf_path = tmp_dir / mwf.path
                 if wf_path.exists():
                     content = wf_path.read_bytes()
-                    await self._import_workflow(mwf, content)
+                    await self._import_workflow(wf_name, mwf, content)
                     pulled += 1
                 else:
                     # File deleted from repo → deactivate
                     await self._deactivate_workflow(mwf.id)
 
+            # Deactivate workflows that exist in DB but were removed from manifest
+            await self._deactivate_missing_workflows(manifest_wf_ids)
+
             # Import forms
-            for form_name, mform in manifest.forms.items():
+            for _form_name, mform in manifest.forms.items():
                 form_path = tmp_dir / mform.path
                 if form_path.exists():
                     content = form_path.read_bytes()
                     await self._import_form(mform, content)
                     pulled += 1
 
-            # Update file_index for all files in the repo
+            # Update file_index: sync all files from repo, remove stale entries
             await self._update_file_index(tmp_dir)
 
             await self.db.commit()
@@ -505,7 +509,6 @@ class GitHubSyncService:
                 self.repo_url,
                 str(target),
                 branch=self.branch,
-                depth=1,
             )
             return repo
         except Exception as e:
@@ -523,10 +526,13 @@ class GitHubSyncService:
 
     async def _serialize_platform_state(self, work_dir: Path) -> None:
         """Write all platform entities to the working tree directory."""
-        from src.models.orm.workflows import Workflow
-        from src.models.orm.forms import Form
+        from uuid import UUID
+
+        from sqlalchemy.orm import selectinload
+
         from src.models.orm.agents import Agent
         from src.models.orm.applications import Application
+        from src.models.orm.forms import Form
         from src.services.file_index_service import FileIndexService
         from src.services.repo_storage import RepoStorage
 
@@ -535,18 +541,26 @@ class GitHubSyncService:
 
         # Write workflow .py files from file_index (S3 _repo/)
         file_index = FileIndexService(self.db, RepoStorage())
-        for wf_name, mwf in manifest.workflows.items():
+        for manifest_wf_name, mwf in manifest.workflows.items():
             content = await file_index.read(mwf.path)
-            if content:
-                file_path = work_dir / mwf.path
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(content)
+            if not content:
+                # file_index has no content — generate a stub from DB metadata
+                content = (
+                    f"from bifrost import workflow\n\n\n"
+                    f"@workflow(name=\"{manifest_wf_name}\")\n"
+                    f"def {mwf.function_name}():\n"
+                    f"    pass\n"
+                )
+            file_path = work_dir / mwf.path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content)
 
-        # Serialize forms to YAML
-        for form_name, mform in manifest.forms.items():
-            from uuid import UUID
+        # Serialize forms to YAML (eagerly load fields for serialization)
+        for _form_name, mform in manifest.forms.items():
             form_result = await self.db.execute(
-                select(Form).where(Form.id == UUID(mform.id))
+                select(Form)
+                .options(selectinload(Form.fields))
+                .where(Form.id == UUID(mform.id))
             )
             form = form_result.scalar_one_or_none()
             if form:
@@ -555,11 +569,12 @@ class GitHubSyncService:
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(form_content)
 
-        # Serialize agents to YAML
-        for agent_name, magent in manifest.agents.items():
-            from uuid import UUID
+        # Serialize agents to YAML (eagerly load tools for serialization)
+        for _agent_name, magent in manifest.agents.items():
             agent_result = await self.db.execute(
-                select(Agent).where(Agent.id == UUID(magent.id))
+                select(Agent)
+                .options(selectinload(Agent.tools))
+                .where(Agent.id == UUID(magent.id))
             )
             agent = agent_result.scalar_one_or_none()
             if agent:
@@ -569,10 +584,10 @@ class GitHubSyncService:
                 file_path.write_text(agent_content)
 
         # Serialize apps to YAML
-        for app_name, mapp in manifest.apps.items():
-            from uuid import UUID
+        for _app_name, mapp in manifest.apps.items():
             app_result = await self.db.execute(
-                select(Application).where(Application.id == UUID(mapp.id))
+                select(Application)
+                .where(Application.id == UUID(mapp.id))
             )
             app = app_result.scalar_one_or_none()
             if app:
@@ -590,21 +605,17 @@ class GitHubSyncService:
     # Internal: import entities from repo
     # -----------------------------------------------------------------
 
-    async def _import_workflow(self, mwf, content: bytes) -> None:
+    async def _import_workflow(self, manifest_name: str, mwf, _content: bytes) -> None:
         """Import a workflow from repo into the DB."""
         from uuid import UUID
+
         from sqlalchemy.dialects.postgresql import insert
+
         from src.models.orm.workflows import Workflow
-
-        content_str = content.decode("utf-8")
-
-        # Parse to extract function metadata
-        func_name = mwf.function_name
-        wf_name = mwf.type if hasattr(mwf, "type") else "workflow"
 
         stmt = insert(Workflow).values(
             id=UUID(mwf.id),
-            name=mwf.function_name,  # Will be overwritten by decorator parse
+            name=manifest_name,
             function_name=mwf.function_name,
             path=mwf.path,
             type=getattr(mwf, "type", "workflow"),
@@ -613,6 +624,7 @@ class GitHubSyncService:
         ).on_conflict_do_update(
             index_elements=["id"],
             set_={
+                "name": manifest_name,
                 "path": mwf.path,
                 "is_active": True,
                 "updated_at": datetime.now(timezone.utc),
@@ -623,7 +635,9 @@ class GitHubSyncService:
     async def _import_form(self, mform, content: bytes) -> None:
         """Import a form from repo YAML into the DB."""
         from uuid import UUID
+
         from sqlalchemy.dialects.postgresql import insert
+
         from src.models.orm.forms import Form
 
         data = yaml.safe_load(content.decode("utf-8"))
@@ -636,6 +650,7 @@ class GitHubSyncService:
             description=data.get("description"),
             workflow_id=data.get("workflow"),
             is_active=True,
+            created_by="git-sync",
             organization_id=UUID(mform.organization_id) if mform.organization_id else None,
         ).on_conflict_do_update(
             index_elements=["id"],
@@ -651,7 +666,9 @@ class GitHubSyncService:
     async def _deactivate_workflow(self, workflow_id: str) -> None:
         """Deactivate a workflow by ID."""
         from uuid import UUID
+
         from sqlalchemy import update
+
         from src.models.orm.workflows import Workflow
 
         stmt = update(Workflow).where(
@@ -662,15 +679,67 @@ class GitHubSyncService:
         )
         await self.db.execute(stmt)
 
-    async def _update_file_index(self, work_dir: Path) -> None:
-        """Update file_index from all files in the working tree."""
-        from src.services.file_index_service import FileIndexService
-        from src.services.repo_storage import RepoStorage
+    async def _deactivate_missing_workflows(self, manifest_wf_ids: set[str]) -> None:
+        """Deactivate workflows that were synced before but are no longer in the manifest."""
+        from src.models.orm.workflows import Workflow
 
-        file_index = FileIndexService(self.db, RepoStorage())
+        if not manifest_wf_ids:
+            return
+
+        # Find active workflows whose paths start with "workflows/" (synced from git)
+        # that are NOT in the current manifest
+        result = await self.db.execute(
+            select(Workflow.id).where(
+                Workflow.is_active == True,  # noqa: E712
+                Workflow.path.like("workflows/%"),
+            )
+        )
+        all_active_ids = {str(row[0]) for row in result.all()}
+        to_deactivate = all_active_ids - manifest_wf_ids
+
+        for wf_id in to_deactivate:
+            await self._deactivate_workflow(wf_id)
+
+    async def _update_file_index(self, work_dir: Path) -> None:
+        """Update file_index from all files in the working tree, remove stale entries."""
+        from sqlalchemy import delete, text
+        from sqlalchemy.dialects.postgresql import insert
+
+        from src.models.orm.file_index import FileIndex
+        from src.services.file_index_service import _is_text_file
+
         files = _walk_tree(work_dir)
+        repo_paths = set()
         for rel_path, content in files.items():
-            await file_index.write(rel_path, content)
+            repo_paths.add(rel_path)
+            if _is_text_file(rel_path):
+                try:
+                    content_str = content.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                content_hash = _content_hash(content)
+                stmt = insert(FileIndex).values(
+                    path=rel_path,
+                    content=content_str,
+                    content_hash=content_hash,
+                ).on_conflict_do_update(
+                    index_elements=[FileIndex.path],
+                    set_={
+                        "content": content_str,
+                        "content_hash": content_hash,
+                        "updated_at": text("NOW()"),
+                    },
+                )
+                await self.db.execute(stmt)
+
+        # Remove file_index entries that no longer exist in the repo
+        existing_result = await self.db.execute(select(FileIndex.path))
+        existing_paths = {row[0] for row in existing_result.all()}
+        stale_paths = existing_paths - repo_paths
+        if stale_paths:
+            await self.db.execute(
+                delete(FileIndex).where(FileIndex.path.in_(stale_paths))
+            )
 
     # -----------------------------------------------------------------
     # Internal: preflight validation

@@ -1007,9 +1007,9 @@ function ConflictList({
 							action: "modify" as const,
 							display_name: conflict.display_name || conflict.path.split("/").pop() || conflict.path,
 							entity_type: conflict.entity_type || (
-								conflict.path.endsWith(".form.json")
+								conflict.path.endsWith(".form.yaml")
 									? "form"
-									: conflict.path.endsWith(".agent.json")
+									: conflict.path.endsWith(".agent.yaml")
 										? "agent"
 										: conflict.path.startsWith("apps/")
 											? "app"

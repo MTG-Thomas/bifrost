@@ -5,7 +5,6 @@ Handles read, write, delete, and move operations for individual files.
 """
 
 import hashlib
-import json
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
@@ -21,7 +20,7 @@ from src.models.orm.applications import Application
 from src.models.orm.file_index import FileIndex
 from src.core.module_cache import set_module, invalidate_module
 from .models import WriteResult
-from .utils import serialize_form_to_json, serialize_agent_to_json
+from .utils import serialize_form_to_yaml, serialize_agent_to_yaml
 from .entity_detector import detect_platform_entity_type
 
 if TYPE_CHECKING:
@@ -91,8 +90,8 @@ class FileOperationsService:
         Read file content.
 
         Routes reads by path convention:
-        - forms/{uuid}.form.json -> serialize from forms table
-        - agents/{uuid}.agent.json -> serialize from agents table
+        - forms/{uuid}.form.yaml -> serialize from forms table
+        - agents/{uuid}.agent.yaml -> serialize from agents table
         - Everything else -> fetch from file_index, fallback to S3
 
         Args:
@@ -107,8 +106,8 @@ class FileOperationsService:
         import re
         from uuid import UUID
 
-        # Forms: forms/{uuid}.form.json
-        form_match = re.match(r"forms/([a-f0-9-]+)\.form\.json$", path, re.IGNORECASE)
+        # Forms: forms/{uuid}.form.yaml
+        form_match = re.match(r"forms/([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
         if form_match:
             try:
                 form_id = UUID(form_match.group(1))
@@ -122,11 +121,11 @@ class FileOperationsService:
             form_result = await self.db.execute(form_stmt)
             form = form_result.scalar_one_or_none()
             if form is not None:
-                return serialize_form_to_json(form), None
+                return serialize_form_to_yaml(form), None
             raise FileNotFoundError(f"Form not found: {form_id}")
 
-        # Agents: agents/{uuid}.agent.json
-        agent_match = re.match(r"agents/([a-f0-9-]+)\.agent\.json$", path, re.IGNORECASE)
+        # Agents: agents/{uuid}.agent.yaml
+        agent_match = re.match(r"agents/([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
         if agent_match:
             try:
                 agent_id = UUID(agent_match.group(1))
@@ -136,7 +135,7 @@ class FileOperationsService:
             agent_result = await self.db.execute(agent_stmt)
             agent = agent_result.scalar_one_or_none()
             if agent is not None:
-                return serialize_agent_to_json(agent), None
+                return serialize_agent_to_yaml(agent), None
             raise FileNotFoundError(f"Agent not found: {agent_id}")
 
         # Everything else: try file_index first, then S3

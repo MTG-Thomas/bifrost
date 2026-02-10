@@ -8,6 +8,7 @@ for all cross-references.
 """
 
 import json
+import yaml
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -51,7 +52,7 @@ def mock_db_session():
 
 
 def make_form_content(form_id: str, workflow_id: str | None = None) -> bytes:
-    """Generate sample form JSON content."""
+    """Generate sample form YAML content."""
     data = {
         "id": form_id,
         "name": "Test Form",
@@ -60,11 +61,11 @@ def make_form_content(form_id: str, workflow_id: str | None = None) -> bytes:
     }
     if workflow_id:
         data["workflow_id"] = workflow_id
-    return json.dumps(data, indent=2).encode("utf-8")
+    return yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
 
 
 def make_agent_content(agent_id: str, tool_ids: list | None = None) -> bytes:
-    """Generate sample agent JSON content."""
+    """Generate sample agent YAML content."""
     data = {
         "id": agent_id,
         "name": "Test Agent",
@@ -75,7 +76,7 @@ def make_agent_content(agent_id: str, tool_ids: list | None = None) -> bytes:
     }
     if tool_ids:
         data["tool_ids"] = tool_ids
-    return json.dumps(data, indent=2).encode("utf-8")
+    return yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
 
 
 # =============================================================================
@@ -98,7 +99,7 @@ class TestExtractIdFromFilename:
         """Test extracting UUID from valid form filename."""
         from src.services.github_sync_virtual_files import VirtualFileProvider
 
-        filename = "550e8400-e29b-41d4-a716-446655440000.form.json"
+        filename = "550e8400-e29b-41d4-a716-446655440000.form.yaml"
         result = VirtualFileProvider.extract_id_from_filename(filename)
         assert result == "550e8400-e29b-41d4-a716-446655440000"
 
@@ -106,7 +107,7 @@ class TestExtractIdFromFilename:
         """Test extracting UUID from valid agent filename."""
         from src.services.github_sync_virtual_files import VirtualFileProvider
 
-        filename = "550e8400-e29b-41d4-a716-446655440000.agent.json"
+        filename = "550e8400-e29b-41d4-a716-446655440000.agent.yaml"
         result = VirtualFileProvider.extract_id_from_filename(filename)
         assert result == "550e8400-e29b-41d4-a716-446655440000"
 
@@ -114,7 +115,7 @@ class TestExtractIdFromFilename:
         """Test extracting UUID handles case insensitivity for forms."""
         from src.services.github_sync_virtual_files import VirtualFileProvider
 
-        filename = "550E8400-E29B-41D4-A716-446655440000.form.json"
+        filename = "550E8400-E29B-41D4-A716-446655440000.form.yaml"
         result = VirtualFileProvider.extract_id_from_filename(filename)
         assert result == "550E8400-E29B-41D4-A716-446655440000"
 
@@ -242,7 +243,7 @@ class TestGetFormVirtualFiles:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"forms/{valid_form_uuid}.form.json",
+            path=f"forms/{valid_form_uuid}.form.yaml",
             entity_type="form",
             entity_id=str(valid_form_uuid),
             content=expected_content,
@@ -262,7 +263,7 @@ class TestGetFormVirtualFiles:
         assert len(form_files) == 1
 
         form_file = form_files[0]
-        expected_path = f"forms/{valid_form_uuid}.form.json"
+        expected_path = f"forms/{valid_form_uuid}.form.yaml"
         assert form_file.path == expected_path
         assert form_file.entity_id == str(valid_form_uuid)
         assert form_file.computed_sha is not None
@@ -291,7 +292,7 @@ class TestGetAgentVirtualFiles:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"agents/{valid_agent_uuid}.agent.json",
+            path=f"agents/{valid_agent_uuid}.agent.yaml",
             entity_type="agent",
             entity_id=str(valid_agent_uuid),
             content=expected_content,
@@ -311,7 +312,7 @@ class TestGetAgentVirtualFiles:
         assert len(agent_files) == 1
 
         agent_file = agent_files[0]
-        expected_path = f"agents/{valid_agent_uuid}.agent.json"
+        expected_path = f"agents/{valid_agent_uuid}.agent.yaml"
         assert agent_file.path == expected_path
         assert agent_file.entity_id == str(valid_agent_uuid)
         assert agent_file.computed_sha is not None
@@ -345,7 +346,7 @@ class TestUUIDsInVirtualContent:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"forms/{valid_form_uuid}.form.json",
+            path=f"forms/{valid_form_uuid}.form.yaml",
             entity_type="form",
             entity_id=str(valid_form_uuid),
             content=expected_content,
@@ -367,7 +368,7 @@ class TestUUIDsInVirtualContent:
         form_file = form_files[0]
         assert form_file.content is not None
 
-        data = json.loads(form_file.content.decode("utf-8"))
+        data = yaml.safe_load(form_file.content.decode("utf-8"))
         # workflow_id should be the UUID directly, not a portable ref
         assert data.get("workflow_id") == str(valid_workflow_uuid)
         # No _export metadata (portable refs are gone)
@@ -393,7 +394,7 @@ class TestUUIDsInVirtualContent:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"agents/{valid_agent_uuid}.agent.json",
+            path=f"agents/{valid_agent_uuid}.agent.yaml",
             entity_type="agent",
             entity_id=str(valid_agent_uuid),
             content=expected_content,
@@ -415,7 +416,7 @@ class TestUUIDsInVirtualContent:
         agent_file = agent_files[0]
         assert agent_file.content is not None
 
-        data = json.loads(agent_file.content.decode("utf-8"))
+        data = yaml.safe_load(agent_file.content.decode("utf-8"))
         # tool_ids should contain UUIDs directly, not portable refs
         assert data.get("tool_ids") == [str(valid_workflow_uuid)]
         # No _export metadata
@@ -445,7 +446,7 @@ class TestShaComputedFromSerializedContent:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"forms/{valid_form_uuid}.form.json",
+            path=f"forms/{valid_form_uuid}.form.yaml",
             entity_type="form",
             entity_id=str(valid_form_uuid),
             content=expected_content,
@@ -486,7 +487,7 @@ class TestShaComputedFromSerializedContent:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"forms/{valid_form_uuid}.form.json",
+            path=f"forms/{valid_form_uuid}.form.yaml",
             entity_type="form",
             entity_id=str(valid_form_uuid),
             content=expected_content,
@@ -531,7 +532,7 @@ class TestGetVirtualFileById:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"forms/{valid_form_uuid}.form.json",
+            path=f"forms/{valid_form_uuid}.form.yaml",
             entity_type="form",
             entity_id=str(valid_form_uuid),
             content=expected_content,
@@ -558,7 +559,7 @@ class TestGetVirtualFileById:
         expected_sha = compute_git_blob_sha(expected_content)
 
         expected_file = VirtualFile(
-            path=f"agents/{valid_agent_uuid}.agent.json",
+            path=f"agents/{valid_agent_uuid}.agent.yaml",
             entity_type="agent",
             entity_id=str(valid_agent_uuid),
             content=expected_content,
@@ -629,7 +630,7 @@ class TestVirtualFileDataclass:
         from src.services.github_sync_virtual_files import VirtualFile
 
         vf = VirtualFile(
-            path="forms/test.form.json",
+            path="forms/test.form.yaml",
             entity_type="form",
             entity_id="660e8400-e29b-41d4-a716-446655440001",
             content=None,
