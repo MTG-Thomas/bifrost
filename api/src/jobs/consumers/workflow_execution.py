@@ -663,6 +663,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             roi_value = 0.0
             workflow_code: str | None = None  # Code from DB for exec_from_db()
             workflow_function_name: str | None = None  # Function name for exec_from_db()
+            content_hash: str | None = None  # Content hash pinned at dispatch time
 
             if not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
@@ -674,6 +675,21 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     workflow_function_name = workflow_data["function_name"]
                     file_path = workflow_data["path"]  # Used for __file__ injection
                     workflow_code = workflow_data["code"]  # Code from DB (may be None for legacy)
+
+                    # Pin execution to content hash for reproducibility (workspace redesign)
+                    try:
+                        from sqlalchemy import select as sa_select
+                        from src.models.orm.file_index import FileIndex
+
+                        hash_result = await db.execute(
+                            sa_select(FileIndex.content_hash).where(
+                                FileIndex.path == file_path
+                            )
+                        )
+                        content_hash = hash_result.scalar_one_or_none()
+                    except Exception:
+                        pass  # file_index may not exist yet during migration
+
                     timeout_seconds = workflow_data["timeout_seconds"]
                     # Initialize ROI from workflow defaults
                     roi_time_saved = workflow_data["time_saved"]
@@ -818,6 +834,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     "value": roi_value,
                 },
                 "file_path": file_path,  # Path for __file__ injection and fallback loading
+                "content_hash": content_hash,  # Pinned hash at dispatch time
             }
 
             # Pre-warm SDK cache BEFORE dispatching to worker process

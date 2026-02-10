@@ -151,6 +151,33 @@ def _find_match_locations(content: str, search_string: str) -> list[dict[str, An
     return locations
 
 
+async def _try_file_index_fallback(path: str) -> tuple[str | None, dict[str, Any] | None, str | None]:
+    """
+    Try reading content from file_index table (new workspace architecture).
+
+    This is a fallback for when entity-specific lookups fail.
+    Returns same format as _get_content_by_entity.
+    """
+    try:
+        from src.models.orm.file_index import FileIndex
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(FileIndex.content, FileIndex.content_hash).where(
+                    FileIndex.path == path
+                )
+            )
+            row = result.one_or_none()
+            if row and isinstance(row.content, str) and row.content:
+                return (
+                    row.content,
+                    {"path": path, "source": "file_index"},
+                    None,
+                )
+    except Exception:
+        pass  # file_index table may not exist yet during migration
+    return None, None, None
+
+
 async def _get_content_by_entity(
     entity_type: str,
     path: str,
@@ -239,6 +266,10 @@ async def _get_content_by_entity(
             workflow = result.scalars().first()
 
             if not workflow:
+                # Try file_index fallback (workspace redesign migration)
+                content, metadata, _ = await _try_file_index_fallback(path)
+                if content is not None:
+                    return content, metadata, None
                 return None, None, f"Workflow not found: {path}"
 
             if not workflow.code:
@@ -270,6 +301,10 @@ async def _get_content_by_entity(
             module = result.scalar_one_or_none()
 
             if not module:
+                # Try file_index fallback (workspace redesign migration)
+                content, metadata, _ = await _try_file_index_fallback(path)
+                if content is not None:
+                    return content, metadata, None
                 return None, None, f"Module not found: {path}"
 
             if not module.content:
@@ -296,6 +331,10 @@ async def _get_content_by_entity(
             text_file = result.scalar_one_or_none()
 
             if not text_file:
+                # Try file_index fallback (workspace redesign migration)
+                content, metadata, _ = await _try_file_index_fallback(path)
+                if content is not None:
+                    return content, metadata, None
                 return None, None, f"Text file not found: {path}"
 
             return (

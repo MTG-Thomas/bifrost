@@ -373,6 +373,15 @@ class FileOperationsService:
             except Exception as e:
                 logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
 
+        # Dual-write to _repo/ file_index (workspace redesign migration)
+        try:
+            from src.services.file_index_service import FileIndexService
+            from src.services.repo_storage import RepoStorage
+            file_index_svc = FileIndexService(self.db, RepoStorage(self.settings))
+            await file_index_svc.write(path, content)
+        except Exception as e:
+            logger.warning(f"Dual-write to file_index failed for {path}: {e}")
+
         logger.info(f"File written: {path} ({size_bytes} bytes) by {updated_by}")
         return WriteResult(
             file_record=file_record,
@@ -428,6 +437,15 @@ class FileOperationsService:
         if entity_type == "module":
             await invalidate_module(path)
             logger.info(f"delete_file({path}): invalidated module cache")
+
+        # Dual-delete from _repo/ file_index (workspace redesign migration)
+        try:
+            from src.services.file_index_service import FileIndexService
+            from src.services.repo_storage import RepoStorage
+            file_index_svc = FileIndexService(self.db, RepoStorage(self.settings))
+            await file_index_svc.delete(path)
+        except Exception as e:
+            logger.warning(f"Dual-delete from file_index failed for {path}: {e}")
 
         logger.info(f"File deleted: {path}")
 

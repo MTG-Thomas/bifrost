@@ -179,6 +179,31 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                     path=file_path,
                     function_name=function_name,
                 )
+            elif function_name and file_path:
+                # Try loading from Redis/S3 cache (new path for workspace redesign)
+                # When workflow_code is not provided in context, the code lives in
+                # S3 with Redis as a read-through cache layer
+                try:
+                    from src.core.module_cache_sync import get_module_sync
+
+                    cached = get_module_sync(file_path)
+                    if cached:
+                        workflow_func, metadata, load_error = load_workflow_from_db(
+                            code=cached["content"],
+                            path=file_path,
+                            function_name=function_name,
+                        )
+                        logger.info(
+                            f"Loaded workflow '{name}' from cache (path={file_path})"
+                        )
+                    else:
+                        logger.error(
+                            f"Workflow code not found in DB or cache: "
+                            f"function_name={function_name}, file_path={file_path}"
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to load workflow from cache: {e}")
+                    load_error = f"Cache load failed: {e}"
             else:
                 # Missing required fields for execution
                 logger.error(
@@ -187,6 +212,21 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                     f"function_name={function_name}, "
                     f"file_path={file_path}"
                 )
+
+            # Validate content hash if pinned at dispatch time (workspace redesign)
+            content_hash = context_data.get("content_hash")
+            if content_hash and workflow_code:
+                import hashlib
+
+                actual_hash = hashlib.sha256(
+                    workflow_code.encode("utf-8")
+                ).hexdigest()
+                if actual_hash != content_hash:
+                    logger.warning(
+                        f"Content hash mismatch for {file_path}: "
+                        f"expected={content_hash[:12]}... actual={actual_hash[:12]}... "
+                        f"Code may have changed during dispatch."
+                    )
 
             if workflow_func is None:
                 metrics = _capture_metrics(start_rss, start_utime, start_stime)
