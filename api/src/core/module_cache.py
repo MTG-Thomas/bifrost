@@ -107,54 +107,6 @@ async def get_all_module_paths() -> set[str]:
     return {p if isinstance(p, str) else p.decode() for p in paths}
 
 
-async def warm_cache_from_db(session=None) -> int:
-    """
-    Load all modules from database into Redis cache.
-
-    Called by init container or API startup to ensure cache is warm.
-
-    Args:
-        session: Optional SQLAlchemy AsyncSession. If not provided, creates its own.
-                 Pass a session during testing to avoid event loop conflicts.
-
-    Returns:
-        Number of modules cached
-    """
-    from sqlalchemy import select
-
-    from src.models.orm.workspace import WorkspaceFile
-
-    async def _warm_with_session(db_session) -> int:
-        stmt = select(WorkspaceFile).where(
-            WorkspaceFile.entity_type == "module",
-            WorkspaceFile.is_deleted == False,  # noqa: E712
-            WorkspaceFile.content.isnot(None),
-        )
-        result = await db_session.execute(stmt)
-        modules = result.scalars().all()
-
-        count = 0
-        for module in modules:
-            if module.content:  # Double-check content exists
-                await set_module(
-                    path=module.path,
-                    content=module.content,
-                    content_hash=module.content_hash or "",
-                )
-                count += 1
-
-        logger.info(f"Warmed module cache with {count} modules")
-        return count
-
-    if session is not None:
-        return await _warm_with_session(session)
-    else:
-        from src.core.database import get_db_context
-
-        async with get_db_context() as db_session:
-            return await _warm_with_session(db_session)
-
-
 async def clear_module_cache() -> int:
     """
     Clear all cached modules.

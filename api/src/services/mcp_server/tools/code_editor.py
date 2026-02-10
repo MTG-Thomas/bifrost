@@ -272,11 +272,26 @@ async def _get_content_by_entity(
                     return content, metadata, None
                 return None, None, f"Workflow not found: {path}"
 
-            if not workflow.code:
+            # Load code from file_index instead of workflows.code column
+            code = None
+            try:
+                from src.models.orm.file_index import FileIndex
+                fi_result = await db.execute(
+                    select(FileIndex.content).where(FileIndex.path == path)
+                )
+                code = fi_result.scalar_one_or_none()
+            except Exception:
+                pass
+
+            if not code:
+                # Try file_index fallback (which opens its own session)
+                content, metadata, _ = await _try_file_index_fallback(path)
+                if content is not None:
+                    return content, metadata, None
                 return None, None, f"Workflow has no code: {path}"
 
             return (
-                workflow.code,
+                code,
                 {
                     "path": workflow.path,
                     "entity_id": str(workflow.id),
@@ -1132,12 +1147,24 @@ async def _search_workflows(
             seen_paths.add(wf.path)
             workflows.append(wf)
 
+    # Load code from file_index for workflow paths
+    from src.models.orm.file_index import FileIndex
+    workflow_paths = [wf.path for wf in workflows]
+    fi_result = await db.execute(
+        select(FileIndex.path, FileIndex.content).where(
+            FileIndex.path.in_(workflow_paths),
+            FileIndex.content.isnot(None),
+        )
+    )
+    fi_code_map = {row.path: row.content for row in fi_result.all()}
+
     matches = []
     for wf in workflows:
-        if not wf.code:
+        code = fi_code_map.get(wf.path)
+        if not code:
             continue
 
-        content = _normalize_line_endings(wf.code)
+        content = _normalize_line_endings(code)
         lines = content.split("\n")
 
         for i, line in enumerate(lines):

@@ -5,7 +5,7 @@ Validates that platform entities (workflows, forms, apps, agents) are stored
 in the database, NOT in S3. Regular files should still go to S3.
 
 Key behaviors validated:
-- Workflows written via editor API are stored in workflows.code column
+- Workflows written via editor API are stored in the database (workflows table + file_index)
 - Forms created via API are stored in forms table, not S3
 - Apps created via API are stored in applications table, not S3
 - Regular files (no decorators) are stored in S3
@@ -21,8 +21,8 @@ class TestDBFirstWorkflows:
 
     def test_workflow_stored_in_db_not_s3(self, e2e_client, platform_admin):
         """
-        Writing a workflow via editor stores code in workflows.code column.
-        The file should NOT be stored in S3 (only for git sync).
+        Writing a workflow via editor stores metadata in workflows table
+        and code in file_index. The file should NOT be stored in S3.
         """
         workflow_content = '''"""DB-First Workflow Test"""
 from bifrost import workflow
@@ -79,7 +79,7 @@ async def db_first_test_workflow(message: str) -> dict:
         )
 
     def test_workflow_read_returns_db_code(self, e2e_client, platform_admin):
-        """Reading a workflow file returns code from workflows.code column."""
+        """Reading a workflow file returns code from file_index."""
         workflow_content = '''"""Read Test Workflow"""
 from bifrost import workflow
 
@@ -133,8 +133,8 @@ async def read_test_workflow(x: int) -> int:
             headers=platform_admin.headers,
         )
 
-    def test_workflow_update_updates_db_code_hash(self, e2e_client, platform_admin):
-        """Updating workflow code updates the code and code_hash in DB."""
+    def test_workflow_update_preserves_identity(self, e2e_client, platform_admin):
+        """Updating workflow code preserves the workflow ID (update, not recreate)."""
         original_content = '''"""Hash Test Workflow"""
 from bifrost import workflow
 

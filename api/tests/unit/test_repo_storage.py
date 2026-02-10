@@ -1,6 +1,6 @@
 """Tests for repo storage service."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 
 @pytest.fixture

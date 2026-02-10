@@ -45,7 +45,6 @@ class TestOrphanedWorkflowModel:
         assert orphan.id == "wf-123"
         assert orphan.name == "Test Workflow"
         assert orphan.function_name == "test_func"
-        assert orphan.code is not None
 
     def test_orphaned_workflow_with_usage(self):
         """Test OrphanedWorkflow with usage references."""
@@ -78,7 +77,7 @@ class TestOrphanedWorkflowModel:
             orphaned_at=None,
         )
 
-        assert orphan.code is None
+        assert orphan.last_path == "workflows/test.py"
 
 
 class TestWorkflowReferenceModel:

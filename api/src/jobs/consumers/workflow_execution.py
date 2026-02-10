@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_session_factory
-from src.core.module_cache import set_module
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import BaseConsumer
@@ -140,61 +139,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
             logger.info("Reconnected persistent DB session")
 
         return self._db_session
-
-    async def _sync_module_cache(self, org_id: str | None = None) -> None:
-        """
-        Sync module cache from DB, adding any missing modules.
-
-        Unlike the old _ensure_module_cache() which only checked if the index
-        was empty, this method:
-        1. Queries all modules from DB
-        2. Checks each module's content key exists in Redis
-        3. Re-caches any modules with missing/expired content
-
-        Args:
-            org_id: Organization ID (currently unused, modules are global)
-        """
-        from sqlalchemy import select
-        from src.models.orm.workspace import WorkspaceFile
-
-        db = await self._get_db_session()
-        redis_conn = await self._redis_client._get_redis()
-
-        # Get all modules from DB
-        stmt = select(WorkspaceFile).where(
-            WorkspaceFile.entity_type == "module",
-            WorkspaceFile.is_deleted == False,  # noqa: E712
-            WorkspaceFile.content.isnot(None),
-        )
-        result = await db.execute(stmt)
-        db_modules = result.scalars().all()
-
-        if not db_modules:
-            logger.debug("No modules in database, cache sync complete")
-            return
-
-        # Check each DB module
-        modules_added = 0
-        for module in db_modules:
-            cache_key = f"bifrost:module:{module.path}"
-
-            # Check if content key exists (not just in index)
-            key_exists = await redis_conn.exists(cache_key)
-
-            if not key_exists:
-                # Module missing or expired - re-cache it
-                await set_module(
-                    path=module.path,
-                    content=module.content,
-                    content_hash=module.content_hash or "",
-                )
-                modules_added += 1
-                logger.debug(f"Re-cached module: {module.path}")
-
-        if modules_added > 0:
-            logger.info(f"Module cache sync: added {modules_added} missing modules")
-        else:
-            logger.debug("Module cache sync: all modules present")
 
     async def _handle_result(self, result: dict[str, Any]) -> None:
         """
@@ -852,9 +796,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
             except Exception as e:
                 # Log but don't fail - SDK will fall back gracefully
                 logger.warning(f"Failed to pre-warm SDK cache: {e}")
-
-            # Ensure module cache is warm before dispatching to worker
-            await self._sync_module_cache(org_id)
 
             # Route to process pool
             # Results are handled asynchronously via _handle_result callback

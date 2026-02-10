@@ -281,25 +281,32 @@ class TestSearchContent:
         """Should find matches in workflow code with context."""
         from src.services.mcp_server.tools.code_editor import search_content
 
-        mock_workflow = MagicMock()
-        mock_workflow.id = uuid4()
-        mock_workflow.path = "workflows/sync_tickets.py"
-        mock_workflow.organization_id = None
-        mock_workflow.code = '''from bifrost import workflow
+        code = '''from bifrost import workflow
 
 @workflow(name="Sync Tickets")
 async def sync_tickets(client_id: str) -> dict:
     """Sync tickets from HaloPSA."""
     return {"synced": True}
 '''
+        mock_workflow = MagicMock()
+        mock_workflow.id = uuid4()
+        mock_workflow.path = "workflows/sync_tickets.py"
+        mock_workflow.organization_id = None
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.all.return_value = [mock_workflow]
-            mock_session.execute.return_value = mock_result
+            # First execute: select(Workflow) -> returns workflow list
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.all.return_value = [mock_workflow]
+            # Second execute: select(FileIndex) -> returns path/content rows
+            mock_fi_result = MagicMock()
+            mock_fi_row = MagicMock()
+            mock_fi_row.path = "workflows/sync_tickets.py"
+            mock_fi_row.content = code
+            mock_fi_result.all.return_value = [mock_fi_row]
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             result = await search_content(
                 context=platform_admin_context,
@@ -356,28 +363,24 @@ class TestReadContentLines:
         """Should read specific line range from workflow."""
         from src.services.mcp_server.tools.code_editor import read_content_lines
 
+        code = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10"
+
         mock_workflow = MagicMock()
         mock_workflow.id = uuid4()
         mock_workflow.path = "workflows/sync.py"
         mock_workflow.organization_id = None
-        mock_workflow.code = """line 1
-line 2
-line 3
-line 4
-line 5
-line 6
-line 7
-line 8
-line 9
-line 10"""
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.first.return_value = mock_workflow
-            mock_session.execute.return_value = mock_result
+            # First execute: select(Workflow) -> returns workflow
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.first.return_value = mock_workflow
+            # Second execute: select(FileIndex.content) -> returns code
+            mock_fi_result = MagicMock()
+            mock_fi_result.scalar_one_or_none.return_value = code
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             result = await read_content_lines(
                 context=platform_admin_context,
@@ -422,19 +425,24 @@ class TestGetContent:
         """Should return full file content with metadata."""
         from src.services.mcp_server.tools.code_editor import get_content
 
+        code = "line 1\nline 2\nline 3"
+
         mock_workflow = MagicMock()
         mock_workflow.id = uuid4()
         mock_workflow.path = "workflows/sync.py"
         mock_workflow.organization_id = None
-        mock_workflow.code = "line 1\nline 2\nline 3"
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.first.return_value = mock_workflow
-            mock_session.execute.return_value = mock_result
+            # First execute: select(Workflow) -> returns workflow
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.first.return_value = mock_workflow
+            # Second execute: select(FileIndex.content) -> returns code
+            mock_fi_result = MagicMock()
+            mock_fi_result.scalar_one_or_none.return_value = code
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             result = await get_content(
                 context=platform_admin_context,
@@ -483,28 +491,33 @@ class TestPatchContent:
         """Should replace unique string successfully."""
         from src.services.mcp_server.tools.code_editor import patch_content
 
+        code = '''async def sync_tickets():
+    return {"status": "old"}
+'''
         mock_workflow = MagicMock()
         mock_workflow.id = uuid4()
         mock_workflow.path = "workflows/sync.py"
         mock_workflow.organization_id = None
-        mock_workflow.code = '''async def sync_tickets():
-    return {"status": "old"}
-'''
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.first.return_value = mock_workflow
-            mock_session.execute.return_value = mock_result
+            # _get_content_by_entity: 1st execute -> Workflow, 2nd -> FileIndex
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.first.return_value = mock_workflow
+            mock_fi_result = MagicMock()
+            mock_fi_result.scalar_one_or_none.return_value = code
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             # Mock FileStorageService for validation
             with patch(
                 "src.services.mcp_server.tools.code_editor.FileStorageService"
             ) as mock_fs:
                 mock_fs_instance = MagicMock()
-                mock_fs_instance.write_file = AsyncMock()
+                mock_write_result = MagicMock()
+                mock_write_result.pending_deactivations = []
+                mock_fs_instance.write_file = AsyncMock(return_value=mock_write_result)
                 mock_fs.return_value = mock_fs_instance
 
                 result = await patch_content(
@@ -524,24 +537,26 @@ class TestPatchContent:
         """Should fail when old_string matches multiple locations."""
         from src.services.mcp_server.tools.code_editor import patch_content
 
-        mock_workflow = MagicMock()
-        mock_workflow.id = uuid4()
-        mock_workflow.path = "workflows/sync.py"
-        mock_workflow.organization_id = None
-        mock_workflow.code = '''def func1():
+        code = '''def func1():
     return "duplicate"
 
 def func2():
     return "duplicate"
 '''
+        mock_workflow = MagicMock()
+        mock_workflow.id = uuid4()
+        mock_workflow.path = "workflows/sync.py"
+        mock_workflow.organization_id = None
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.first.return_value = mock_workflow
-            mock_session.execute.return_value = mock_result
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.first.return_value = mock_workflow
+            mock_fi_result = MagicMock()
+            mock_fi_result.scalar_one_or_none.return_value = code
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             result = await patch_content(
                 context=platform_admin_context,
@@ -565,15 +580,16 @@ def func2():
         mock_workflow.id = uuid4()
         mock_workflow.path = "workflows/sync.py"
         mock_workflow.organization_id = None
-        mock_workflow.code = "some code here"
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.first.return_value = mock_workflow
-            mock_session.execute.return_value = mock_result
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.first.return_value = mock_workflow
+            mock_fi_result = MagicMock()
+            mock_fi_result.scalar_one_or_none.return_value = "some code here"
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             result = await patch_content(
                 context=platform_admin_context,
@@ -639,7 +655,6 @@ class TestReplaceContent:
         mock_workflow.id = uuid4()
         mock_workflow.path = "workflows/sync.py"
         mock_workflow.organization_id = None
-        mock_workflow.code = "old content"
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
@@ -1078,21 +1093,22 @@ async def sync_tickets():
 async def get_ticket(ticket_id: str):
     return {"id": ticket_id}
 '''
-
         mock_wf1 = MagicMock()
         mock_wf1.id = uuid4()
         mock_wf1.path = "workflows/multi.py"
         mock_wf1.organization_id = None
-        mock_wf1.code = code
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            # scalars().first() returns the first row — works even with multiple rows
-            mock_result.scalars.return_value.first.return_value = mock_wf1
-            mock_session.execute.return_value = mock_result
+            # First execute: select(Workflow) -> returns workflow
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.first.return_value = mock_wf1
+            # Second execute: select(FileIndex.content) -> returns code
+            mock_fi_result = MagicMock()
+            mock_fi_result.scalar_one_or_none.return_value = code
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             result = await get_content(
                 context=platform_admin_context,
@@ -1165,21 +1181,26 @@ async def cleanup():
         mock_wf1.id = uuid4()
         mock_wf1.path = "workflows/multi.py"
         mock_wf1.organization_id = None
-        mock_wf1.code = code
 
         mock_wf2 = MagicMock()
         mock_wf2.id = uuid4()
         mock_wf2.path = "workflows/multi.py"
         mock_wf2.organization_id = None
-        mock_wf2.code = code
 
         with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
             mock_session = AsyncMock()
             mock_db.return_value.__aenter__.return_value = mock_session
 
-            mock_result = MagicMock()
-            mock_result.scalars.return_value.all.return_value = [mock_wf1, mock_wf2]
-            mock_session.execute.return_value = mock_result
+            # First execute: select(Workflow) -> returns workflow list
+            mock_wf_result = MagicMock()
+            mock_wf_result.scalars.return_value.all.return_value = [mock_wf1, mock_wf2]
+            # Second execute: select(FileIndex) -> returns path/content rows
+            mock_fi_result = MagicMock()
+            mock_fi_row = MagicMock()
+            mock_fi_row.path = "workflows/multi.py"
+            mock_fi_row.content = code
+            mock_fi_result.all.return_value = [mock_fi_row]
+            mock_session.execute.side_effect = [mock_wf_result, mock_fi_result]
 
             result = await search_content(
                 context=platform_admin_context,

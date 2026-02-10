@@ -7,6 +7,22 @@ Tests CRUD operations for different config types (string, int, bool, json, secre
 import pytest
 
 
+def _create_config(e2e_client, headers, key, value, type_="string", **kwargs):
+    """Create a config and return the response JSON with id."""
+    response = e2e_client.post(
+        "/api/config",
+        headers=headers,
+        json={"key": key, "value": value, "type": type_, **kwargs},
+    )
+    assert response.status_code == 201, f"Create config '{key}' failed: {response.text}"
+    return response.json()
+
+
+def _delete_config(e2e_client, headers, config_id):
+    """Delete a config by UUID."""
+    e2e_client.delete(f"/api/config/{config_id}", headers=headers)
+
+
 @pytest.mark.e2e
 class TestConfigCRUD:
     """Test configuration CRUD operations."""
@@ -29,90 +45,49 @@ class TestConfigCRUD:
         assert data["value"] == "30"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_test_timeout",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, data["id"])
 
     def test_set_int_config(self, e2e_client, platform_admin):
         """Platform admin creates INT config."""
-        response = e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_max_retries",
-                "value": "5",
-                "type": "int",
-                "description": "Max retries setting",
-            },
+        data = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_max_retries", "5", "int", description="Max retries setting",
         )
-        assert response.status_code == 201, f"Create config failed: {response.text}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_max_retries",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, data["id"])
 
     def test_set_bool_config(self, e2e_client, platform_admin):
         """Platform admin creates BOOL config."""
-        response = e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_feature_flag",
-                "value": "true",
-                "type": "bool",
-                "description": "Feature flag",
-            },
+        data = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_feature_flag", "true", "bool", description="Feature flag",
         )
-        assert response.status_code == 201, f"Create config failed: {response.text}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_feature_flag",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, data["id"])
 
     def test_set_json_config(self, e2e_client, platform_admin):
         """Platform admin creates JSON config."""
-        response = e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_settings",
-                "value": '{"enabled": true, "level": 3}',
-                "type": "json",
-                "description": "JSON settings",
-            },
+        data = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_settings", '{"enabled": true, "level": 3}', "json",
+            description="JSON settings",
         )
-        assert response.status_code == 201, f"Create config failed: {response.text}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_settings",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, data["id"])
 
     def test_set_secret_config(self, e2e_client, platform_admin):
         """Platform admin creates SECRET config (encrypted)."""
-        response = e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_api_key",
-                "value": "secret-api-key-12345",
-                "type": "secret",
-                "description": "Test API key",
-            },
+        data = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_api_key", "secret-api-key-12345", "secret",
+            description="Test API key",
         )
-        assert response.status_code == 201, f"Create secret failed: {response.text}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_api_key",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, data["id"])
 
 
 @pytest.mark.e2e
@@ -122,15 +97,10 @@ class TestConfigSecurity:
     def test_list_config_masks_secrets(self, e2e_client, platform_admin):
         """Listing configs shows [SECRET] for encrypted values."""
         # Create a secret first
-        e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_test_secret",
-                "value": "super-secret-value",
-                "type": "secret",
-                "description": "Test secret",
-            },
+        created = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_test_secret", "super-secret-value", "secret",
+            description="Test secret",
         )
 
         # List configs and verify masking
@@ -147,10 +117,7 @@ class TestConfigSecurity:
         assert secret_config["value"] == "[SECRET]", "Secret should be masked"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_test_secret",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, created["id"])
 
 
 @pytest.mark.e2e
@@ -181,21 +148,14 @@ class TestConfigAccess:
     def test_delete_config(self, e2e_client, platform_admin):
         """Platform admin can delete config."""
         # Create config to delete
-        response = e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_delete_test",
-                "value": "to_be_deleted",
-                "type": "string",
-                "description": "Config to delete",
-            },
+        created = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_delete_test", "to_be_deleted", description="Config to delete",
         )
-        assert response.status_code == 201, f"Create config failed: {response.text}"
 
-        # Delete the config
+        # Delete the config by UUID
         response = e2e_client.delete(
-            "/api/config/e2e_delete_test",
+            f"/api/config/{created['id']}",
             headers=platform_admin.headers,
         )
         assert response.status_code == 204, f"Delete config failed: {response.status_code}"
@@ -212,14 +172,9 @@ class TestConfigAccess:
     def test_org_user_cannot_modify_config(self, e2e_client, platform_admin, org1_user):
         """Org user cannot PUT/update config (403 or 405 if PUT not supported)."""
         # Admin creates a config
-        e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_modify_test",
-                "value": "original",
-                "type": "string",
-            },
+        created = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_modify_test", "original",
         )
 
         # Org user tries to update it
@@ -233,37 +188,26 @@ class TestConfigAccess:
             f"Org user should not modify config: {response.status_code}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_modify_test",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, created["id"])
 
     def test_org_user_cannot_delete_config(self, e2e_client, platform_admin, org1_user):
         """Org user cannot DELETE config (403)."""
         # Admin creates a config
-        e2e_client.post(
-            "/api/config",
-            headers=platform_admin.headers,
-            json={
-                "key": "e2e_nodelete_test",
-                "value": "protected",
-                "type": "string",
-            },
+        created = _create_config(
+            e2e_client, platform_admin.headers,
+            "e2e_nodelete_test", "protected",
         )
 
         # Org user tries to delete it
         response = e2e_client.delete(
-            "/api/config/e2e_nodelete_test",
+            f"/api/config/{created['id']}",
             headers=org1_user.headers,
         )
         assert response.status_code == 403, \
             f"Org user should not delete config: {response.status_code}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_nodelete_test",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, created["id"])
 
 
 @pytest.mark.e2e
@@ -287,10 +231,7 @@ class TestConfigScoping:
             f"Create org config failed: {response.status_code} - {response.text}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/config/e2e_org_config",
-            headers=platform_admin.headers,
-        )
+        _delete_config(e2e_client, platform_admin.headers, response.json()["id"])
 
 
 @pytest.mark.e2e
@@ -349,13 +290,10 @@ class TestConfigScopeFiltering:
 
         yield configs
 
-        # Cleanup
-        for key in ["scope_test_global", "scope_test_org1", "scope_test_org2"]:
+        # Cleanup using UUIDs
+        for cfg in configs.values():
             try:
-                e2e_client.delete(
-                    f"/api/config/{key}",
-                    headers=platform_admin.headers,
-                )
+                _delete_config(e2e_client, platform_admin.headers, cfg["id"])
             except Exception:
                 pass
 

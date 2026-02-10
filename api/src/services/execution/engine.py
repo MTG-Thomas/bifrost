@@ -740,9 +740,20 @@ async def _execute_workflow_with_trace(
     # Get the workflow's module file path for filtering
     workflow_module_file = func.__code__.co_filename
 
+    # Known noisy third-party loggers that should never appear in workflow logs
+    _NOISY_LOGGERS = frozenset({
+        "httpcore", "httpx", "urllib3", "botocore", "boto3",
+        "asyncio", "aiohttp", "aiobotocore", "s3transfer",
+        "charset_normalizer", "hpack",
+    })
+
     # Set up logging capture for the workflow
     class WorkflowLogHandler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
+            # Fast reject known noisy third-party loggers
+            if record.name.split(".")[0] in _NOISY_LOGGERS:
+                return
+
             # Always capture TRACEBACK level (admin-only error details)
             is_traceback = record.levelname == "TRACEBACK"
 

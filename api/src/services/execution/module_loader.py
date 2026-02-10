@@ -347,11 +347,11 @@ def load_workflow_from_db(
     """
     Load a workflow by executing code from the database.
 
-    This is the DB-first loading path. It executes code stored in workflows.code
+    This is the DB-first loading path. It executes code loaded from file_index/S3
     and extracts the decorated function.
 
     Args:
-        code: Python source code from workflows.code
+        code: Python source code from file_index or S3
         path: Workspace-relative path for __file__ injection
         function_name: Python function name to find (e.g., "get_client_detail")
 

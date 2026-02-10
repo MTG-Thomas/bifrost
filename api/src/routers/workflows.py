@@ -1246,8 +1246,15 @@ async def recreate_workflow_file(
         # Get the workflow and mark as not orphaned
         workflow = await orphan_service.recreate_file(workflow_id)
 
-        # Write the file to storage
-        if not workflow.code:
+        # Load code from file_index
+        from sqlalchemy import select as sa_select
+        from src.models.orm.file_index import FileIndex
+        fi_result = await db.execute(
+            sa_select(FileIndex.content).where(FileIndex.path == workflow.path)
+        )
+        code_content = fi_result.scalar_one_or_none()
+
+        if not code_content:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Workflow has no stored code to recreate",
@@ -1255,7 +1262,7 @@ async def recreate_workflow_file(
         file_storage = FileStorageService(db)
         await file_storage.write_file(
             path=workflow.path,
-            content=workflow.code.encode("utf-8"),
+            content=code_content.encode("utf-8"),
             updated_by=user.email,
         )
 
@@ -1620,8 +1627,7 @@ async def delete_workflow(
 
     file_svc = FileStorageService(db)
 
-    # Read the current file content — workflow.code stores the source snapshot,
-    # but we read from storage for the authoritative version
+    # Read the current file content from storage (the authoritative version)
     try:
         content_bytes, _ = await file_svc.read_file(workflow.path)
         source_content = content_bytes.decode("utf-8", errors="replace")

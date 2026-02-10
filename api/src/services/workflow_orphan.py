@@ -25,6 +25,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.agents import Agent, AgentTool
+from src.models.orm.file_index import FileIndex
 from src.models.orm.forms import Form, FormField
 from src.models.orm.workflows import Workflow
 
@@ -102,6 +103,13 @@ class WorkflowOrphanService:
         """
         self.db = db
 
+    async def _get_code_from_file_index(self, path: str) -> str | None:
+        """Load workflow code from file_index table."""
+        result = await self.db.execute(
+            select(FileIndex.content).where(FileIndex.path == path)
+        )
+        return result.scalar_one_or_none()
+
     async def get_orphaned_workflows(self) -> list[OrphanedWorkflow]:
         """
         Get all orphaned workflows with their references.
@@ -116,13 +124,14 @@ class WorkflowOrphanService:
         orphans = []
         for wf in workflows:
             used_by = await self._get_workflow_references(wf.id)
+            code = await self._get_code_from_file_index(wf.path)
             orphans.append(
                 OrphanedWorkflow(
                     id=str(wf.id),
                     name=wf.name,
                     function_name=wf.function_name,
                     last_path=wf.path,
-                    code=wf.code,
+                    code=code,
                     used_by=used_by,
                     orphaned_at=wf.updated_at,
                 )
@@ -153,12 +162,13 @@ class WorkflowOrphanService:
         if not wf.is_orphaned:
             raise ValueError(f"Workflow {workflow_id} is not orphaned")
 
-        if not wf.code:
-            logger.warning(f"Orphaned workflow {workflow_id} has no code snapshot")
+        orphan_code = await self._get_code_from_file_index(wf.path)
+        if not orphan_code:
+            logger.warning(f"Orphaned workflow {workflow_id} has no code in file_index")
             return []
 
         # Parse original signature
-        original_sig = self._parse_function_signature(wf.code, wf.function_name)
+        original_sig = self._parse_function_signature(orphan_code, wf.function_name)
         if not original_sig:
             logger.warning(f"Could not parse signature for {wf.function_name}")
             return []
@@ -168,7 +178,6 @@ class WorkflowOrphanService:
             Workflow.is_active.is_(True),
             Workflow.is_orphaned.is_(False),
             Workflow.type == wf.type,
-            Workflow.code.isnot(None),
         )
         result = await self.db.execute(stmt)
         candidates = result.scalars().all()
@@ -187,12 +196,13 @@ class WorkflowOrphanService:
                 continue
             seen_functions.add(key)
 
-            if not candidate.code:
+            candidate_code = await self._get_code_from_file_index(candidate.path)
+            if not candidate_code:
                 continue
 
             # Parse candidate signature
             candidate_sig = self._parse_function_signature(
-                candidate.code, candidate.function_name
+                candidate_code, candidate.function_name
             )
             if not candidate_sig:
                 continue
@@ -226,7 +236,7 @@ class WorkflowOrphanService:
         Replace orphaned workflow with content from existing file.
 
         This links the orphaned workflow to an existing function in another file,
-        updating its path, code, and clearing the orphaned flag.
+        updating its path and clearing the orphaned flag.
 
         Args:
             workflow_id: UUID of the orphaned workflow
@@ -261,8 +271,6 @@ class WorkflowOrphanService:
 
         # Update the orphaned workflow to point to the new location
         wf.path = source_path
-        wf.code = source_wf.code
-        wf.code_hash = source_wf.code_hash
         wf.function_name = function_name
         wf.is_orphaned = False
         wf.updated_at = datetime.now(timezone.utc)
@@ -300,9 +308,14 @@ class WorkflowOrphanService:
             raise ValueError(f"Workflow {workflow_id} not found")
         if not wf.is_orphaned:
             raise ValueError(f"Workflow {workflow_id} is not orphaned")
-        if not wf.code or not wf.path:
+        if not wf.path:
             raise ValueError(
-                f"Workflow {workflow_id} is missing code or path for recreation"
+                f"Workflow {workflow_id} is missing path for recreation"
+            )
+        code = await self._get_code_from_file_index(wf.path)
+        if not code:
+            raise ValueError(
+                f"Workflow {workflow_id} has no code in file_index for recreation"
             )
 
         # Mark as not orphaned - the actual file write is caller's responsibility

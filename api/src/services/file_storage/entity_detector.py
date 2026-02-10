@@ -32,8 +32,8 @@ def detect_platform_entity_type(path: str, content: bytes) -> str | None:
     Detect if a file is a platform entity that should be stored in the database.
 
     Platform entities are stored in the database, not S3:
-    - Workflows (.py with @workflow decorator): stored in workflows.code
-    - Data providers (.py with @data_provider decorator): stored in workflows.code
+    - Workflows (.py with @workflow decorator): stored in file_index + _repo/ S3
+    - Data providers (.py with @data_provider decorator): stored in file_index + _repo/ S3
     - Forms (.form.json): stored in forms table
     - Agents (.agent.json): stored in agents table
 

@@ -6,7 +6,6 @@ decorators without importing the module.
 """
 
 import ast
-import hashlib
 import logging
 import re
 from datetime import datetime, timezone
@@ -221,16 +220,11 @@ class WorkflowIndexer:
                     # Extract parameters from function signature
                     parameters_schema = self._extract_parameters_from_ast(node)
 
-                    # Compute code hash for change detection
-                    code_hash = hashlib.sha256(content).hexdigest()
-
                     stmt = insert(Workflow).values(
                         id=workflow_uuid,
                         name=workflow_name,
                         function_name=function_name,
                         path=path,
-                        code=content_str,
-                        code_hash=code_hash,
                         description=description,
                         category=category,
                         parameters_schema=parameters_schema,
@@ -251,8 +245,6 @@ class WorkflowIndexer:
                             "name": workflow_name,
                             "function_name": function_name,
                             "path": path,
-                            "code": content_str,
-                            "code_hash": code_hash,
                             "description": description,
                             "category": category,
                             "parameters_schema": parameters_schema,
@@ -324,15 +316,10 @@ class WorkflowIndexer:
                     function_name = node.name
 
                     # Data providers are stored in workflows table with type='data_provider'
-                    # Compute code hash for change detection
-                    dp_code_hash = hashlib.sha256(content).hexdigest()
-
                     stmt = insert(Workflow).values(
                         name=provider_name,
                         function_name=function_name,
                         path=path,
-                        code=content_str,
-                        code_hash=dp_code_hash,
                         description=description,
                         category=category,
                         tags=tags,
@@ -346,8 +333,6 @@ class WorkflowIndexer:
                         index_elements=[Workflow.path, Workflow.function_name],
                         set_={
                             "name": provider_name,
-                            "code": content_str,
-                            "code_hash": dp_code_hash,
                             "description": description,
                             "category": category,
                             "tags": tags,
@@ -674,7 +659,10 @@ class WorkflowIndexer:
 
     async def delete_workflows_for_file(self, path: str) -> int:
         """
-        Delete all workflows associated with a file.
+        Soft-delete all workflows associated with a file.
+
+        Uses UPDATE (is_active=False, is_orphaned=True) instead of DELETE to avoid
+        deadlocks with concurrent INSERT...ON CONFLICT indexing operations.
 
         Called when a file is deleted to clean up workflow records from the database.
 
@@ -682,16 +670,21 @@ class WorkflowIndexer:
             path: File path that was deleted
 
         Returns:
-            Number of workflows deleted
+            Number of workflows soft-deleted
         """
-        from sqlalchemy import delete
-
-        # Delete all workflows for this path
-        stmt = delete(Workflow).where(Workflow.path == path)
+        stmt = (
+            update(Workflow)
+            .where(Workflow.path == path, Workflow.is_active == True)  # noqa: E712
+            .values(
+                is_active=False,
+                is_orphaned=True,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
         result = await self.db.execute(stmt)
         count = result.rowcount if result.rowcount else 0
 
         if count > 0:
-            logger.info(f"Deleted {count} workflow(s) from database for deleted file: {path}")
+            logger.info(f"Soft-deleted {count} workflow(s) for deleted file: {path}")
 
         return count

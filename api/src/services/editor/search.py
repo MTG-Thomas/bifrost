@@ -4,7 +4,7 @@ Provides fast full-text search with regex support.
 Platform admin resource - no org scoping.
 
 Search queries the database directly:
-- Workflows: search workflows.code column
+- Workflows: search file_index content
 - Modules: search workspace_files.content column
 - Forms/Apps/Agents: search serialized JSON representations
 """
@@ -19,7 +19,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import SearchRequest, SearchResponse, SearchResult
-from src.models.orm import WorkspaceFile, Workflow, Form, Agent
+from src.models.orm import WorkspaceFile, Form, Agent
+from src.models.orm.file_index import FileIndex
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ async def search_files_db(
     Search files for content matching the query using database queries.
 
     Searches:
-    - workflows.code for workflow Python code
+    - file_index for workflow Python code
     - workspace_files.content for module Python code
     - Serialized JSON for forms, apps, agents
 
@@ -124,36 +125,37 @@ async def search_files_db(
     all_results: List[SearchResult] = []
     files_searched = 0
 
-    # Build path filter
+    # Build path filter for WorkspaceFile queries
     path_filter = WorkspaceFile.path.like(f"{root_path}%") if root_path else True
 
     # Build file pattern filter if specified
-    include_filter = True
+    like_pattern = None
+    ws_include_filter = True
     if request.include_pattern:
         # Convert glob pattern to SQL LIKE pattern
         # e.g., "**/*.py" -> "%.py", "workflows/*.py" -> "workflows/%.py"
         like_pattern = request.include_pattern.replace("**/*", "%").replace("**", "%").replace("*", "%")
-        include_filter = WorkspaceFile.path.like(like_pattern)
+        ws_include_filter = WorkspaceFile.path.like(like_pattern)
 
-    # 1. Search workflows (code column)
+    # 1. Search indexed files via file_index
+    fi_conditions = [
+        FileIndex.content.isnot(None),
+    ]
+    if root_path:
+        fi_conditions.append(FileIndex.path.like(f"{root_path}%"))
+    if like_pattern:
+        fi_conditions.append(FileIndex.path.like(like_pattern))
     workflow_stmt = (
-        select(Workflow.id, Workflow.code, WorkspaceFile.path)
-        .join(WorkspaceFile, WorkspaceFile.entity_id == Workflow.id)
-        .where(
-            WorkspaceFile.is_deleted == False,  # noqa: E712
-            WorkspaceFile.entity_type == "workflow",
-            Workflow.code.isnot(None),
-            path_filter,
-            include_filter,
-        )
+        select(FileIndex.path, FileIndex.content)
+        .where(*fi_conditions)
         .limit(MAX_RESULTS_PER_TYPE)
     )
     workflow_result = await db.execute(workflow_stmt)
     for row in workflow_result:
         files_searched += 1
-        if row.code:
+        if row.content:
             results = _search_content(
-                row.code,
+                row.content,
                 row.path,
                 request.query,
                 request.case_sensitive,
@@ -172,7 +174,7 @@ async def search_files_db(
                 WorkspaceFile.entity_type == "module",
                 WorkspaceFile.content.isnot(None),
                 path_filter,
-                include_filter,
+                ws_include_filter,
             )
             .limit(MAX_RESULTS_PER_TYPE)
         )
@@ -200,7 +202,7 @@ async def search_files_db(
                 WorkspaceFile.is_deleted == False,  # noqa: E712
                 WorkspaceFile.entity_type == "form",
                 path_filter,
-                include_filter,
+                ws_include_filter,
             )
             .limit(MAX_RESULTS_PER_TYPE)
         )
@@ -233,7 +235,7 @@ async def search_files_db(
                 WorkspaceFile.is_deleted == False,  # noqa: E712
                 WorkspaceFile.entity_type == "agent",
                 path_filter,
-                include_filter,
+                ws_include_filter,
             )
             .limit(MAX_RESULTS_PER_TYPE)
         )

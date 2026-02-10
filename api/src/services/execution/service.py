@@ -171,11 +171,33 @@ async def get_workflow_for_execution(
 
         logger.debug(f"Loaded workflow for execution: {workflow_id} -> {workflow_record.name}")
 
+        # Load code from file_index table (replaces workflows.code column)
+        code = None
+        try:
+            from src.models.orm.file_index import FileIndex
+
+            fi_result = await session.execute(
+                select(FileIndex.content).where(
+                    FileIndex.path == workflow_record.path
+                )
+            )
+            code = fi_result.scalar_one_or_none()
+            if code is None:
+                logger.info(
+                    f"No code in file_index for {workflow_record.path}, "
+                    f"worker will fall back to Redis/S3 cache"
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to load code from file_index for {workflow_record.path}: {e}",
+                exc_info=True,
+            )
+
         return {
             "name": workflow_record.name,
             "function_name": workflow_record.function_name,
             "path": workflow_record.path,
-            "code": workflow_record.code,  # May be None for legacy workflows
+            "code": code,
             "timeout_seconds": workflow_record.timeout_seconds or 1800,
             "time_saved": workflow_record.time_saved or 0,
             "value": float(workflow_record.value) if workflow_record.value else 0.0,
@@ -224,22 +246,36 @@ async def get_workflow_by_id(
     if not workflow_record:
         raise WorkflowNotFoundError(f"Workflow with ID '{workflow_id}' not found")
 
-    # Load module from database code
-    if not workflow_record.code:
+    # Load code from file_index or S3 (code no longer stored in workflows table)
+    code = None
+    try:
+        from src.models.orm.file_index import FileIndex
+        from sqlalchemy import select as sa_select
+        from src.core.database import get_session_factory as _get_sf
+        _sf = _get_sf()
+        async with _sf() as code_session:
+            fi_result = await code_session.execute(
+                sa_select(FileIndex.content).where(FileIndex.path == workflow_record.path)
+            )
+            code = fi_result.scalar_one_or_none()
+    except Exception as e:
+        logger.warning(f"Failed to load code from file_index: {e}")
+
+    if not code:
         raise WorkflowLoadError(
-            f"Workflow '{workflow_record.name}' has no code stored in database. "
-            "All workflows must have their code stored in the database."
+            f"Workflow '{workflow_record.name}' has no code in file_index. "
+            "Ensure the workflow file exists in _repo/."
         )
 
     try:
         module = exec_from_db(
-            code=workflow_record.code,
+            code=code,
             path=workflow_record.path,
             function_name=workflow_record.function_name,
         )
-        logger.debug(f"Loaded workflow from DB: {workflow_record.name}")
+        logger.debug(f"Loaded workflow from file_index: {workflow_record.name}")
     except (SyntaxError, ImportError) as e:
-        raise WorkflowLoadError(f"Failed to execute workflow from DB: {e}")
+        raise WorkflowLoadError(f"Failed to execute workflow from file_index: {e}")
 
     # Find the decorated function by name
     # All decorators (@workflow, @tool, @data_provider) use unified _executable_metadata

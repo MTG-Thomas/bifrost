@@ -90,7 +90,7 @@ class FileOperationsService:
         Read file content and metadata.
 
         Routes reads based on workspace_files.entity_type:
-        - If entity_type='workflow' and entity_id is set: fetch from workflows.code column
+        - If entity_type='workflow' and entity_id is set: fetch from file_index
         - If entity_type='form' and entity_id is set: fetch from forms table and serialize
         - If entity_type='app' and entity_id is set: fetch from applications.draft_definition
         - If entity_type='agent' and entity_id is set: fetch from agents table and serialize
@@ -120,15 +120,16 @@ class FileOperationsService:
             entity_type = file_record.entity_type
             entity_id = file_record.entity_id
 
-            # Workflow: fetch code column (requires entity_id)
+            # Workflow: fetch code from file_index (requires entity_id)
             if entity_type == "workflow" and entity_id is not None:
-                workflow_stmt = select(Workflow).where(Workflow.id == entity_id)
-                workflow_result = await self.db.execute(workflow_stmt)
-                workflow = workflow_result.scalar_one_or_none()
+                from src.models.orm.file_index import FileIndex
+                fi_stmt = select(FileIndex.content).where(FileIndex.path == path)
+                fi_result = await self.db.execute(fi_stmt)
+                fi_content = fi_result.scalar_one_or_none()
 
-                if workflow is not None and workflow.code is not None:
-                    return workflow.code.encode("utf-8"), file_record
-                # Fall through to S3 if workflow not found or code is None
+                if fi_content is not None:
+                    return fi_content.encode("utf-8"), file_record
+                # Fall through to S3 if not found in file_index
 
             # Form: serialize to JSON (requires entity_id)
             elif entity_type == "form" and entity_id is not None:
@@ -374,11 +375,13 @@ class FileOperationsService:
                 logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
 
         # Dual-write to _repo/ file_index (workspace redesign migration)
+        # Use savepoint to isolate from parent transaction errors
         try:
             from src.services.file_index_service import FileIndexService
             from src.services.repo_storage import RepoStorage
-            file_index_svc = FileIndexService(self.db, RepoStorage(self.settings))
-            await file_index_svc.write(path, content)
+            async with self.db.begin_nested():
+                file_index_svc = FileIndexService(self.db, RepoStorage(self.settings))
+                await file_index_svc.write(path, content)
         except Exception as e:
             logger.warning(f"Dual-write to file_index failed for {path}: {e}")
 
@@ -439,11 +442,13 @@ class FileOperationsService:
             logger.info(f"delete_file({path}): invalidated module cache")
 
         # Dual-delete from _repo/ file_index (workspace redesign migration)
+        # Use savepoint to isolate from parent transaction errors
         try:
             from src.services.file_index_service import FileIndexService
             from src.services.repo_storage import RepoStorage
-            file_index_svc = FileIndexService(self.db, RepoStorage(self.settings))
-            await file_index_svc.delete(path)
+            async with self.db.begin_nested():
+                file_index_svc = FileIndexService(self.db, RepoStorage(self.settings))
+                await file_index_svc.delete(path)
         except Exception as e:
             logger.warning(f"Dual-delete from file_index failed for {path}: {e}")
 

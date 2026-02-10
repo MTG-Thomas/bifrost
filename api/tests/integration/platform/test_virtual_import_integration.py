@@ -1,19 +1,15 @@
 """
-Integration tests for virtual import system and init container.
+Integration tests for virtual import system.
 
 Tests the complete flow of:
-1. Module cache warming from database
-2. Worker loading modules from Redis cache
-3. Virtual import hook integration
+1. Worker loading modules from Redis cache
+2. Virtual import hook integration
 """
 
 import sys
 
 import pytest
-import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.models.orm.workspace import WorkspaceFile
 
 
 @pytest.fixture(autouse=True)
@@ -26,104 +22,6 @@ def reset_redis_client():
     yield
     # Reset after test
     redis_module._redis_client = None
-
-
-@pytest.mark.integration
-class TestModuleCacheWarming:
-    """Tests for init container cache warming functionality."""
-
-    @pytest_asyncio.fixture
-    async def module_in_db(self, db_session: AsyncSession):
-        """Create a test module in the database."""
-        content = 'TEST_VALUE = "from_database"\ndef get_value(): return TEST_VALUE'
-        module = WorkspaceFile(
-            path="test_integration_module.py",
-            content=content,
-            content_hash="abc123",
-            size_bytes=len(content.encode("utf-8")),
-            entity_type="module",
-            entity_id=None,
-            is_deleted=False,
-        )
-        db_session.add(module)
-        await db_session.commit()
-        await db_session.refresh(module)
-
-        yield module
-
-        # Cleanup
-        await db_session.delete(module)
-        await db_session.commit()
-
-    @pytest.mark.asyncio
-    async def test_warm_cache_from_db_loads_modules(
-        self, db_session: AsyncSession, module_in_db: WorkspaceFile
-    ):
-        """Test that warm_cache_from_db loads modules into Redis cache."""
-        from src.core.module_cache import (
-            clear_module_cache,
-            get_module,
-            warm_cache_from_db,
-        )
-
-        # Clear cache first
-        await clear_module_cache()
-
-        # Verify module is not in cache
-        cached = await get_module("test_integration_module.py")
-        assert cached is None, "Module should not be in cache before warming"
-
-        # Warm cache - pass session to avoid event loop conflicts
-        count = await warm_cache_from_db(session=db_session)
-        assert count >= 1, "Should have cached at least one module"
-
-        # Verify module is now in cache
-        cached = await get_module("test_integration_module.py")
-        assert cached is not None, "Module should be in cache after warming"
-        assert cached["content"] == module_in_db.content
-        assert cached["path"] == module_in_db.path
-
-    @pytest_asyncio.fixture
-    async def deleted_module_in_db(self, db_session: AsyncSession):
-        """Create a deleted test module in the database."""
-        content = "# deleted"
-        module = WorkspaceFile(
-            path="deleted_module.py",
-            content=content,
-            content_hash="deleted",
-            size_bytes=len(content.encode("utf-8")),
-            entity_type="module",
-            entity_id=None,
-            is_deleted=True,  # Marked as deleted
-        )
-        db_session.add(module)
-        await db_session.commit()
-        await db_session.refresh(module)
-
-        yield module
-
-        # Cleanup
-        await db_session.delete(module)
-        await db_session.commit()
-
-    @pytest.mark.asyncio
-    async def test_warm_cache_excludes_deleted_modules(
-        self, db_session: AsyncSession, deleted_module_in_db: WorkspaceFile
-    ):
-        """Test that deleted modules are not cached."""
-        from src.core.module_cache import (
-            clear_module_cache,
-            get_module,
-            warm_cache_from_db,
-        )
-
-        await clear_module_cache()
-        # Pass session to avoid event loop conflicts
-        await warm_cache_from_db(session=db_session)
-
-        # Verify deleted module is not in cache
-        cached = await get_module("deleted_module.py")
-        assert cached is None, "Deleted modules should not be cached"
 
 
 @pytest.mark.integration
@@ -296,45 +194,36 @@ class TestEndToEndModuleLoading:
         module._finder = None
 
     @pytest.mark.asyncio
-    async def test_full_flow_db_to_import(self, db_session: AsyncSession):
-        """Test complete flow: DB -> cache warming -> Redis -> virtual import."""
-        from src.core.module_cache import clear_module_cache, warm_cache_from_db
+    async def test_full_flow_cache_to_import(self, db_session: AsyncSession):
+        """Test complete flow: set_module -> Redis -> virtual import."""
+        from src.core.module_cache import clear_module_cache, set_module
         from src.services.execution.virtual_import import (
             install_virtual_import_hook,
             invalidate_module_index,
             remove_virtual_import_hook,
         )
 
-        # Step 1: Create module in database
         content = """
 WORKFLOW_NAME = "e2e_test"
 
 def run_workflow(params):
     return {"status": "success", "name": WORKFLOW_NAME, "params": params}
 """
-        module = WorkspaceFile(
-            path="e2e_test_workflow.py",
-            content=content,
-            content_hash="e2e123",
-            size_bytes=len(content.encode("utf-8")),
-            entity_type="module",
-            entity_id=None,
-            is_deleted=False,
-        )
-        db_session.add(module)
-        await db_session.commit()
 
         try:
-            # Step 2: Clear and warm cache - pass session to avoid event loop conflicts
+            # Step 1: Set module directly in Redis cache
             await clear_module_cache()
-            count = await warm_cache_from_db(session=db_session)
-            assert count >= 1
+            await set_module(
+                path="e2e_test_workflow.py",
+                content=content,
+                content_hash="e2e123",
+            )
 
-            # Step 3: Install virtual import hook
+            # Step 2: Install virtual import hook
             install_virtual_import_hook()
             invalidate_module_index()
 
-            # Step 4: Import and use the module
+            # Step 3: Import and use the module
             import e2e_test_workflow  # type: ignore[import-not-found]
 
             assert e2e_test_workflow.WORKFLOW_NAME == "e2e_test"
@@ -347,5 +236,3 @@ def run_workflow(params):
         finally:
             remove_virtual_import_hook()
             await clear_module_cache()
-            await db_session.delete(module)
-            await db_session.commit()

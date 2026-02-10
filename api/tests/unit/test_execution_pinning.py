@@ -2,8 +2,6 @@
 
 import hashlib
 
-import pytest
-
 
 def test_content_hash_matches():
     """Hash of code should match what was pinned at dispatch."""
