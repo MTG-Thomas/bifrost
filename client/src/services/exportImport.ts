@@ -4,7 +4,6 @@ export type EntityType = "knowledge" | "tables" | "configs" | "integrations";
 
 export interface ImportOptions {
 	sourceSecretKey?: string;
-	sourceFernetSalt?: string;
 	replaceExisting: boolean;
 	targetOrganizationId?: string | null; // undefined=from file, null=Global, string=org UUID
 }
@@ -90,9 +89,6 @@ export async function importEntities(
 	if (options.sourceSecretKey) {
 		formData.append("source_secret_key", options.sourceSecretKey);
 	}
-	if (options.sourceFernetSalt) {
-		formData.append("source_fernet_salt", options.sourceFernetSalt);
-	}
 	if (options.targetOrganizationId !== undefined) {
 		formData.append(
 			"target_organization_id",
@@ -124,9 +120,6 @@ export async function importAll(
 	formData.append("replace_existing", String(options.replaceExisting));
 	if (options.sourceSecretKey) {
 		formData.append("source_secret_key", options.sourceSecretKey);
-	}
-	if (options.sourceFernetSalt) {
-		formData.append("source_fernet_salt", options.sourceFernetSalt);
 	}
 	if (options.targetOrganizationId !== undefined) {
 		formData.append(

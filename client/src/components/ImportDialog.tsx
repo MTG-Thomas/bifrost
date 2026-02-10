@@ -234,7 +234,6 @@ export function ImportDialog({
 	const [isDragOver, setIsDragOver] = useState(false);
 	const [replaceExisting, setReplaceExisting] = useState(true);
 	const [sourceSecretKey, setSourceSecretKey] = useState("");
-	const [sourceFernetSalt, setSourceFernetSalt] = useState("");
 	const [showSecretFields, setShowSecretFields] = useState(false);
 	const [isImporting, setIsImporting] = useState(false);
 	const [result, setResult] = useState<
@@ -359,7 +358,6 @@ export function ImportDialog({
 			const options = {
 				replaceExisting,
 				sourceSecretKey: sourceSecretKey || undefined,
-				sourceFernetSalt: sourceFernetSalt || undefined,
 				targetOrganizationId: targetOrgId,
 			};
 
@@ -602,8 +600,8 @@ export function ImportDialog({
 									<p className="text-xs text-amber-800 dark:text-amber-200">
 										This file contains encrypted values.
 										Provide the source instance's secret
-										key and salt to re-encrypt them for
-										this instance.
+										key to re-encrypt them for this
+										instance.
 									</p>
 								</div>
 								<div className="space-y-2">
@@ -620,22 +618,6 @@ export function ImportDialog({
 											)
 										}
 										placeholder="BIFROST_SECRET_KEY from source instance"
-									/>
-								</div>
-								<div className="space-y-2">
-									<Label htmlFor="source-salt">
-										Source Fernet Salt
-									</Label>
-									<Input
-										id="source-salt"
-										type="password"
-										value={sourceFernetSalt}
-										onChange={(e) =>
-											setSourceFernetSalt(
-												e.target.value,
-											)
-										}
-										placeholder="BIFROST_FERNET_SALT from source instance"
 									/>
 								</div>
 							</div>

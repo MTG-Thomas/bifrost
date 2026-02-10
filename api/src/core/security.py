@@ -247,6 +247,9 @@ def decode_mfa_token(token: str, expected_purpose: str = "mfa_verify") -> dict[s
 # =============================================================================
 
 
+_FERNET_SALT = b"bifrost_secrets_v1"
+
+
 def _get_fernet_key() -> bytes:
     """
     Derive a Fernet-compatible key from the application secret using HKDF.
@@ -255,21 +258,15 @@ def _get_fernet_key() -> bytes:
     when deriving keys from a high-entropy master key (as opposed to passwords).
     It's faster and provides better key separation with the info parameter.
 
-    The salt is configurable via BIFROST_FERNET_SALT environment variable.
-    For best security, use a random salt unique to each deployment.
-
     Returns:
         32-byte key suitable for Fernet encryption
     """
     settings = get_settings()
 
-    # Use HKDF to derive a key from the secret
-    # - salt: Unique per deployment (configurable via env var)
-    # - info: Context string for key separation
     kdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=settings.fernet_salt.encode(),
+        salt=_FERNET_SALT,
         info=b"bifrost-secrets-encryption",
     )
 
@@ -277,29 +274,29 @@ def _get_fernet_key() -> bytes:
     return key
 
 
-def derive_fernet_key(secret_key: str, fernet_salt: str) -> bytes:
+def derive_fernet_key(secret_key: str) -> bytes:
     """
-    Derive a Fernet-compatible key from explicit key and salt.
+    Derive a Fernet-compatible key from an explicit secret key.
 
-    Same HKDF algorithm as _get_fernet_key() but accepts explicit credentials
+    Same HKDF algorithm as _get_fernet_key() but accepts an explicit key
     instead of reading from settings. Used for import re-encryption.
     """
     kdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=fernet_salt.encode(),
+        salt=_FERNET_SALT,
         info=b"bifrost-secrets-encryption",
     )
     return base64.urlsafe_b64encode(kdf.derive(secret_key.encode()))
 
 
-def decrypt_with_key(encrypted: str, secret_key: str, fernet_salt: str) -> str:
+def decrypt_with_key(encrypted: str, secret_key: str) -> str:
     """
-    Decrypt a secret using explicit key and salt (not current instance settings).
+    Decrypt a secret using an explicit key (not current instance settings).
 
     Used during import to decrypt values encrypted by a different instance.
     """
-    key = derive_fernet_key(secret_key, fernet_salt)
+    key = derive_fernet_key(secret_key)
     f = Fernet(key)
     encrypted_bytes = base64.urlsafe_b64decode(encrypted.encode())
     return f.decrypt(encrypted_bytes).decode()

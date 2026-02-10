@@ -152,10 +152,6 @@ class Settings(BaseSettings):
         description="JWT audience claim for token validation"
     )
 
-    fernet_salt: str = Field(
-        default="bifrost_secrets_v1",
-        description="Salt for Fernet key derivation (override for different encryption keys)"
-    )
 
     oauth_require_mfa: bool = Field(
         default=False,

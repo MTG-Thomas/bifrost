@@ -692,7 +692,6 @@ async def import_configs(
     file: UploadFile = File(...),
     replace_existing: bool = Form(True),
     source_secret_key: str | None = Form(None),
-    source_fernet_salt: str | None = Form(None),
     target_organization_id: str | None = Form(None),
 ) -> ImportResult:
     """Import configs from JSON file with optional secret re-encryption."""
@@ -702,10 +701,10 @@ async def import_configs(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid export file: {e}")
 
-    if export_data.contains_encrypted_values and not (source_secret_key and source_fernet_salt):
+    if export_data.contains_encrypted_values and not source_secret_key:
         raise HTTPException(
             status_code=400,
-            detail="This file contains encrypted values. Provide source_secret_key and source_fernet_salt to re-encrypt for this instance.",
+            detail="This file contains encrypted values. Provide source_secret_key to re-encrypt for this instance.",
         )
 
     target_override, force_global = _parse_target_org(target_organization_id)
@@ -720,9 +719,9 @@ async def import_configs(
             value = item.value
 
             # Re-encrypt secrets
-            if item.config_type == "secret" and value and source_secret_key and source_fernet_salt:
+            if item.config_type == "secret" and value and source_secret_key:
                 try:
-                    plaintext = decrypt_with_key(value, source_secret_key, source_fernet_salt)
+                    plaintext = decrypt_with_key(value, source_secret_key)
                     value = encrypt_secret(plaintext)
                 except Exception as e:
                     result.errors += 1
@@ -800,7 +799,6 @@ async def import_integrations(
     file: UploadFile = File(...),
     replace_existing: bool = Form(True),
     source_secret_key: str | None = Form(None),
-    source_fernet_salt: str | None = Form(None),
     target_organization_id: str | None = Form(None),
 ) -> ImportResult:
     """Import integrations from JSON file with optional secret re-encryption."""
@@ -810,10 +808,10 @@ async def import_integrations(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid export file: {e}")
 
-    if export_data.contains_encrypted_values and not (source_secret_key and source_fernet_salt):
+    if export_data.contains_encrypted_values and not source_secret_key:
         raise HTTPException(
             status_code=400,
-            detail="This file contains encrypted values. Provide source_secret_key and source_fernet_salt to re-encrypt for this instance.",
+            detail="This file contains encrypted values. Provide source_secret_key to re-encrypt for this instance.",
         )
 
     target_override, force_global = _parse_target_org(target_organization_id)
@@ -934,7 +932,7 @@ async def import_integrations(
                 for cfg_key, cfg_value in mapping_item.config.items():
                     await _import_config_value(
                         db, integ.id, org_id, cfg_key, cfg_value,
-                        source_secret_key, source_fernet_salt,
+                        source_secret_key,
                         str(user.user_id), result,
                     )
 
@@ -942,7 +940,7 @@ async def import_integrations(
             for cfg_key, cfg_value in item.default_config.items():
                 await _import_config_value(
                     db, integ.id, None, cfg_key, cfg_value,
-                    source_secret_key, source_fernet_salt,
+                    source_secret_key,
                     str(user.user_id), result,
                 )
 
@@ -950,7 +948,7 @@ async def import_integrations(
             if item.oauth_provider:
                 await _import_oauth_provider(
                     db, integ, item.oauth_provider,
-                    source_secret_key, source_fernet_salt, result,
+                    source_secret_key, result,
                     target_override, force_global,
                 )
 
@@ -971,7 +969,6 @@ async def import_all(
     file: UploadFile = File(...),
     replace_existing: bool = Form(True),
     source_secret_key: str | None = Form(None),
-    source_fernet_salt: str | None = Form(None),
     target_organization_id: str | None = Form(None),
 ) -> dict:
     """Import all entities from a ZIP file."""
@@ -1010,13 +1007,13 @@ async def import_all(
                 elif entity_type == "configs":
                     r = await import_configs(
                         db, user, temp_file, replace_existing,
-                        source_secret_key, source_fernet_salt,
+                        source_secret_key,
                         target_organization_id,
                     )
                 elif entity_type == "integrations":
                     r = await import_integrations(
                         db, user, temp_file, replace_existing,
-                        source_secret_key, source_fernet_salt,
+                        source_secret_key,
                         target_organization_id,
                     )
                 else:
@@ -1077,7 +1074,6 @@ async def _import_config_value(
     key: str,
     value: str | None,
     source_secret_key: str | None,
-    source_fernet_salt: str | None,
     user_id: str,
     result: ImportResult,
 ) -> None:
@@ -1100,9 +1096,9 @@ async def _import_config_value(
             config_type = ConfigType.STRING
 
     # Re-encrypt secrets
-    if config_type == ConfigType.SECRET and value and source_secret_key and source_fernet_salt:
+    if config_type == ConfigType.SECRET and value and source_secret_key:
         try:
-            plaintext = decrypt_with_key(value, source_secret_key, source_fernet_salt)
+            plaintext = decrypt_with_key(value, source_secret_key)
             value = encrypt_secret(plaintext)
         except Exception:
             result.warnings.append(f"Could not re-encrypt secret for config '{key}'")
@@ -1141,7 +1137,6 @@ async def _import_oauth_provider(
     integration: Integration,
     oauth_item: OAuthProviderExportItem,
     source_secret_key: str | None,
-    source_fernet_salt: str | None,
     result: ImportResult,
     target_override: UUID | None = None,
     force_global: bool = False,
@@ -1157,13 +1152,13 @@ async def _import_oauth_provider(
     encrypted_secret_bytes = base64.b64decode(oauth_item.encrypted_client_secret) if oauth_item.encrypted_client_secret else b""
 
     # If we have source keys, re-encrypt the secret
-    if source_secret_key and source_fernet_salt and encrypted_secret_bytes:
+    if source_secret_key and encrypted_secret_bytes:
         try:
             # The encrypted_client_secret in OAuthProvider is raw Fernet encrypted bytes (not base64-wrapped)
             # We need to decrypt with source key and re-encrypt with destination key
             from cryptography.fernet import Fernet
 
-            source_key = derive_fernet_key_for_oauth(source_secret_key, source_fernet_salt)
+            source_key = derive_fernet_key_for_oauth(source_secret_key)
             f = Fernet(source_key)
             plaintext = f.decrypt(encrypted_secret_bytes).decode()
 
@@ -1205,10 +1200,10 @@ async def _import_oauth_provider(
         ))
 
 
-def derive_fernet_key_for_oauth(secret_key: str, fernet_salt: str) -> bytes:
+def derive_fernet_key_for_oauth(secret_key: str) -> bytes:
     """Derive Fernet key for OAuth secret re-encryption (same as derive_fernet_key)."""
     from src.core.security import derive_fernet_key
-    return derive_fernet_key(secret_key, fernet_salt)
+    return derive_fernet_key(secret_key)
 
 
 def _get_current_fernet_key() -> bytes:
