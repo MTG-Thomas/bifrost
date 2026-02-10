@@ -33,6 +33,7 @@ from src.models.orm.users import Role, User, UserRole
 from src.models.orm.workspace import WorkspaceFile
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
+from src.models.orm.file_index import FileIndex
 
 __all__ = [
     # Base
@@ -101,6 +102,7 @@ __all__ = [
     "WorkflowROIDaily",
     # Workspace
     "WorkspaceFile",
+    "FileIndex",
     # Developer
     "DeveloperContext",
     # Events
