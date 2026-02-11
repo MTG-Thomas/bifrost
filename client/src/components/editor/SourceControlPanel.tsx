@@ -23,7 +23,6 @@ import {
 	Workflow,
 	FileCode,
 } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -548,7 +547,6 @@ export function SourceControlPanel() {
 					loading={loading}
 					disabled={!!loading}
 					branch={status.current_branch || "main"}
-					lastSynced={status.last_synced}
 				/>
 
 				{/* Commits */}
@@ -725,7 +723,6 @@ function ChangesSection({
 	loading,
 	disabled,
 	branch,
-	lastSynced,
 }: {
 	changedFiles: ChangedFile[];
 	commitMessage: string;
@@ -739,17 +736,33 @@ function ChangesSection({
 	loading: "fetching" | "committing" | "pulling" | "pushing" | "resolving" | "loading_changes" | null;
 	disabled: boolean;
 	branch: string;
-	lastSynced?: string | null;
 }) {
 	const [expanded, setExpanded] = useState(true);
 
-	// Determine the primary action: pull > commit > push > synced
-	const canCommit = changedFiles.length > 0 && commitMessage.trim().length > 0;
-	const showCommitInput = changedFiles.length > 0 || (!commitsAhead && !commitsBehind);
+	// Determine the primary action: has changes → commit, behind → pull, ahead → push
+	const hasChanges = changedFiles.length > 0;
+	const canCommit = hasChanges && commitMessage.trim().length > 0;
 
-	let actionButton: React.ReactNode;
-	if (commitsBehind > 0 && !canCommit) {
-		// Pull takes priority when there's nothing ready to commit
+	let actionButton: React.ReactNode = null;
+	if (hasChanges) {
+		actionButton = (
+			<Button
+				size="sm"
+				className="w-full gap-2 rounded-none"
+				onClick={onCommit}
+				disabled={disabled || !canCommit}
+			>
+				{loading === "committing" ? (
+					<>
+						<Loader2 className="h-3.5 w-3.5 animate-spin" />
+						Committing...
+					</>
+				) : (
+					`Commit to ${branch}`
+				)}
+			</Button>
+		);
+	} else if (commitsBehind > 0) {
 		actionButton = (
 			<Button
 				size="sm"
@@ -767,24 +780,6 @@ function ChangesSection({
 						<Download className="h-3.5 w-3.5" />
 						Pull ↓{commitsBehind}
 					</>
-				)}
-			</Button>
-		);
-	} else if (canCommit) {
-		actionButton = (
-			<Button
-				size="sm"
-				className="w-full gap-2 rounded-none"
-				onClick={onCommit}
-				disabled={disabled}
-			>
-				{loading === "committing" ? (
-					<>
-						<Loader2 className="h-3.5 w-3.5 animate-spin" />
-						Committing...
-					</>
-				) : (
-					`Commit to ${branch}`
 				)}
 			</Button>
 		);
@@ -809,20 +804,6 @@ function ChangesSection({
 				)}
 			</Button>
 		);
-	} else {
-		// Nothing to do — show a disabled synced button
-		actionButton = (
-			<Button
-				size="sm"
-				variant="outline"
-				className="w-full gap-2 rounded-none"
-				disabled
-			>
-				{lastSynced
-					? `Synced ${formatDistanceToNow(new Date(lastSynced), { addSuffix: true })}`
-					: "Up to date"}
-			</Button>
-		);
 	}
 
 	return (
@@ -844,15 +825,15 @@ function ChangesSection({
 			</button>
 			{expanded && (
 				<div className="flex-1 flex flex-col overflow-hidden min-h-0">
-					{/* Commit message input (shown when there are changes or nothing else to do) */}
-					{showCommitInput && (
+					{/* Commit message input (shown when there are uncommitted changes) */}
+					{hasChanges && (
 						<div className="px-4 pt-2 pb-2 flex-shrink-0">
 							<input
 								type="text"
 								value={commitMessage}
 								onChange={(e) => onCommitMessageChange(e.target.value)}
 								placeholder="Commit message"
-								className="w-full px-2 py-1.5 text-xs bg-muted/50 border border-border rounded focus:outline-none focus:ring-1 focus:ring-ring"
+								className="w-full px-2 py-1.5 text-xs bg-muted/50 border border-border rounded-none focus:outline-none focus:ring-1 focus:ring-ring"
 								disabled={disabled}
 								onKeyDown={(e) => {
 									if (e.key === "Enter" && canCommit) {
@@ -864,9 +845,11 @@ function ChangesSection({
 					)}
 
 					{/* Dynamic action button */}
-					<div className="flex-shrink-0">
-						{actionButton}
-					</div>
+					{actionButton && (
+						<div className="px-4 pb-2 flex-shrink-0">
+							{actionButton}
+						</div>
+					)}
 
 					{/* File list */}
 					<div className="flex-1 overflow-y-auto px-4 pb-2 min-h-0">
