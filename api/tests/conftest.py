@@ -209,11 +209,9 @@ def cleanup_workspace_files():
 
 def pytest_configure(config):
     """Register custom pytest markers."""
-    config.addinivalue_line("markers", "unit: Unit tests (fast, mocked dependencies)")
+    config.addinivalue_line("markers", "unit: Unit tests (fast, no Docker required)")
     config.addinivalue_line(
-        "markers", "integration: Integration tests (real database, message queue)"
-    )
-    config.addinivalue_line(
-        "markers", "e2e: End-to-end tests (full API with all services)"
+        "markers",
+        "e2e: End-to-end tests (Docker stack with database, message queue, and services)",
     )
     config.addinivalue_line("markers", "slow: Tests that take >1 second")
