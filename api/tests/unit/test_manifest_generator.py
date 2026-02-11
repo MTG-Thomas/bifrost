@@ -3,6 +3,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+from src.models.enums import AgentAccessLevel, FormAccessLevel
+
 
 @pytest.fixture
 def mock_db():
@@ -28,24 +30,24 @@ def _mock_workflow(name="test_wf", org_id=None):
     return wf
 
 
-def _mock_form(name="test_form", org_id=None, workflow_id=None, access_level="role_based"):
+def _mock_form(name="test_form", org_id=None, workflow_id=None, access_level=None):
     form = MagicMock()
     form.id = uuid4()
     form.name = name
     form.organization_id = org_id
     form.workflow_id = str(workflow_id) if workflow_id else None
-    form.access_level = access_level
+    form.access_level = access_level or FormAccessLevel.ROLE_BASED
     form.is_active = True
     form.form_roles = []
     return form
 
 
-def _mock_agent(name="test_agent", org_id=None, access_level="role_based"):
+def _mock_agent(name="test_agent", org_id=None, access_level=None):
     agent = MagicMock()
     agent.id = uuid4()
     agent.name = name
     agent.organization_id = org_id
-    agent.access_level = access_level
+    agent.access_level = access_level or AgentAccessLevel.ROLE_BASED
     agent.is_active = True
     agent.is_system = False
     return agent
@@ -87,6 +89,18 @@ async def test_generate_manifest_with_workflow(mock_db):
         empty_result,  # form_roles
         empty_result,  # agent_roles
         empty_result,  # app_roles
+        empty_result,  # integrations
+        empty_result,  # config_schemas
+        empty_result,  # oauth_providers
+        empty_result,  # integration_mappings
+        empty_result,  # configs
+        empty_result,  # tables
+        empty_result,  # knowledge_namespace_roles
+        empty_result,  # knowledge_store namespaces
+        empty_result,  # event_sources
+        empty_result,  # schedule_sources
+        empty_result,  # webhook_sources
+        empty_result,  # event_subscriptions
     ])
 
     manifest = await generate_manifest(mock_db)
@@ -166,6 +180,18 @@ async def test_generate_manifest_with_roles(mock_db):
         form_roles_result,  # form_roles
         empty_result,       # agent_roles
         empty_result,       # app_roles
+        empty_result,       # integrations
+        empty_result,       # config_schemas
+        empty_result,       # oauth_providers
+        empty_result,       # integration_mappings
+        empty_result,       # configs
+        empty_result,       # tables
+        empty_result,       # knowledge_namespace_roles
+        empty_result,       # knowledge_store namespaces
+        empty_result,       # event_sources
+        empty_result,       # schedule_sources
+        empty_result,       # webhook_sources
+        empty_result,       # event_subscriptions
     ])
 
     manifest = await generate_manifest(mock_db)
@@ -215,6 +241,18 @@ async def test_generate_manifest_with_organizations(mock_db):
         empty_result,  # form_roles
         empty_result,  # agent_roles
         empty_result,  # app_roles
+        empty_result,  # integrations
+        empty_result,  # config_schemas
+        empty_result,  # oauth_providers
+        empty_result,  # integration_mappings
+        empty_result,  # configs
+        empty_result,  # tables
+        empty_result,  # knowledge_namespace_roles
+        empty_result,  # knowledge_store namespaces
+        empty_result,  # event_sources
+        empty_result,  # schedule_sources
+        empty_result,  # webhook_sources
+        empty_result,  # event_subscriptions
     ])
 
     manifest = await generate_manifest(mock_db)
@@ -229,8 +267,8 @@ async def test_generate_manifest_access_levels(mock_db):
     """Should include access_level for forms, agents, and apps."""
     from src.services.manifest_generator import generate_manifest
 
-    form = _mock_form(name="auth_form", access_level="authenticated")
-    agent = _mock_agent(name="private_agent", access_level="private")
+    form = _mock_form(name="auth_form", access_level=FormAccessLevel.AUTHENTICATED)
+    agent = _mock_agent(name="private_agent", access_level=AgentAccessLevel.PRIVATE)
     app = _mock_app(name="locked_app", access_level="role_based")
 
     form_result = MagicMock()
@@ -256,6 +294,18 @@ async def test_generate_manifest_access_levels(mock_db):
         empty_result,   # form_roles
         empty_result,   # agent_roles
         empty_result,   # app_roles
+        empty_result,   # integrations
+        empty_result,   # config_schemas
+        empty_result,   # oauth_providers
+        empty_result,   # integration_mappings
+        empty_result,   # configs
+        empty_result,   # tables
+        empty_result,   # knowledge_namespace_roles
+        empty_result,   # knowledge_store namespaces
+        empty_result,   # event_sources
+        empty_result,   # schedule_sources
+        empty_result,   # webhook_sources
+        empty_result,   # event_subscriptions
     ])
 
     manifest = await generate_manifest(mock_db)
@@ -291,6 +341,18 @@ async def test_generate_manifest_excludes_system_agents(mock_db):
         empty_result,   # form_roles
         empty_result,   # agent_roles
         empty_result,   # app_roles
+        empty_result,   # integrations
+        empty_result,   # config_schemas
+        empty_result,   # oauth_providers
+        empty_result,   # integration_mappings
+        empty_result,   # configs
+        empty_result,   # tables
+        empty_result,   # knowledge_namespace_roles
+        empty_result,   # knowledge_store namespaces
+        empty_result,   # event_sources
+        empty_result,   # schedule_sources
+        empty_result,   # webhook_sources
+        empty_result,   # event_subscriptions
     ])
 
     manifest = await generate_manifest(mock_db)
