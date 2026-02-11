@@ -117,7 +117,7 @@ async def test_workflow(db_session: AsyncSession):
     return workflow
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestWorkersListEndpoint:
     """Tests for GET /api/platform/workers endpoint."""
@@ -200,7 +200,7 @@ class TestWorkersListEndpoint:
         assert pool.busy_count == 1
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestWorkerDetailEndpoint:
     """Tests for GET /api/platform/workers/{worker_id} endpoint."""
@@ -289,7 +289,7 @@ class TestWorkerDetailEndpoint:
         assert result.processes[0].executions_completed == 10
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestRecycleProcessEndpoint:
     """Tests for POST /api/platform/workers/{worker_id}/processes/{pid}/recycle endpoint."""
@@ -360,7 +360,7 @@ class TestRecycleProcessEndpoint:
         await pubsub.unsubscribe(f"worker:{worker_id}:commands")
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestQueueEndpoint:
     """Tests for GET /api/platform/queue endpoint."""
@@ -388,7 +388,7 @@ class TestQueueEndpoint:
         assert isinstance(result.items, list)
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestStuckHistoryEndpoint:
     """Tests for GET /api/platform/stuck-history endpoint."""

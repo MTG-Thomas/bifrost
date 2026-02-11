@@ -21,7 +21,7 @@ async def cleanup_forms(db_session: AsyncSession):
     await db_session.commit()
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestFormIndexer:
     async def test_index_form_with_workflow_alias(self, db_session: AsyncSession):

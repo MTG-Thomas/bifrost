@@ -90,7 +90,7 @@ def storage_test_workflow(message: str, count: int = 5):
 '''
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestWorkflowStorageIntegrity:
     """Verify workflow writes are consistent across file_index + S3."""
@@ -212,7 +212,7 @@ fields:
 '''
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestFormStorageIntegrity:
     """Verify form writes are consistent across file_index + S3."""
@@ -275,7 +275,7 @@ def format_name(first: str, last: str) -> str:
 SAMPLE_TEXT = b"This is a plain text configuration file.\nLine 2.\n"
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestModuleStorageIntegrity:
     """Verify module and text file writes are consistent."""
@@ -336,7 +336,7 @@ class TestModuleStorageIntegrity:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestReconciler:
     """Verify file_index reconciler heals drift between S3 and DB."""
@@ -434,7 +434,7 @@ def dual_test_provider():
 '''
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestMultiEntity:
     """Verify files with multiple entity decorators produce correct state."""

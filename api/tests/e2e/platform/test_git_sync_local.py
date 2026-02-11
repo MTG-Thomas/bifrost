@@ -357,7 +357,7 @@ async def cleanup_test_data(db_session: AsyncSession):
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestPushToEmptyRepo:
     """Push platform state to an empty repo (initial git connect)."""
@@ -468,7 +468,7 @@ class TestPushToEmptyRepo:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestIncrementalPush:
     """Push changes to a repo that already has content."""
@@ -581,7 +581,7 @@ class TestIncrementalPush:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestPull:
     """Pull changes from repo into platform."""
@@ -983,7 +983,7 @@ roles: []
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestRenames:
     """Renames are detected correctly during sync."""
@@ -1111,7 +1111,7 @@ class TestRenames:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestConflicts:
     """Conflict detection when both sides modify."""
@@ -1240,7 +1240,7 @@ class TestConflicts:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestRoundTrip:
     """Entity identity preserved through push/pull cycles."""
@@ -1568,7 +1568,7 @@ form_schema:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestOrphanDetection:
     """Orphan warnings when referenced workflows are deleted."""
@@ -1652,7 +1652,7 @@ class TestOrphanDetection:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestPreflightValidation:
     """Preflight checks validate repo health before sync."""
@@ -1820,7 +1820,7 @@ class TestPreflightValidation:
 # =============================================================================
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestSplitManifestFormat:
     """Verify split manifest files work through commit/pull cycle."""

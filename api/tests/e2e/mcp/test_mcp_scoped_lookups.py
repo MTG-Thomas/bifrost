@@ -296,7 +296,7 @@ class MockMCPContext:
 class TestGetAgentScopedLookup:
     """Tests for get_agent MCP tool with scoped lookups."""
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_agent_by_name_returns_org_specific_when_both_exist(
         self,
@@ -328,7 +328,7 @@ class TestGetAgentScopedLookup:
         assert data["organization_id"] == str(test_org_id)
         assert data["description"] == "An org-specific agent"
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_agent_by_name_returns_global_when_only_global_exists(
         self,
@@ -360,7 +360,7 @@ class TestGetAgentScopedLookup:
         assert data["organization_id"] is None  # Global agent
         assert data["description"] == "A global agent with unique name"
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_agent_by_id_works_with_cascade_filter(
         self,
@@ -388,7 +388,7 @@ class TestGetAgentScopedLookup:
         assert "error" not in data
         assert data["id"] == str(org_agent.id)
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_agent_by_name_no_org_context_returns_global_only(
         self,
@@ -419,7 +419,7 @@ class TestGetAgentScopedLookup:
         assert data["id"] == str(global_agent.id)
         assert data["organization_id"] is None
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_agent_platform_admin_sees_all(
         self,
@@ -456,7 +456,7 @@ class TestGetAgentScopedLookup:
 class TestGetFormScopedLookup:
     """Tests for get_form MCP tool with scoped lookups."""
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_form_by_name_returns_org_specific_when_both_exist(
         self,
@@ -488,7 +488,7 @@ class TestGetFormScopedLookup:
         assert data["organization_id"] == str(test_org_id)
         assert data["description"] == "An org-specific form"
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_form_by_name_returns_global_when_only_global_exists(
         self,
@@ -520,7 +520,7 @@ class TestGetFormScopedLookup:
         assert data["organization_id"] is None  # Global form
         assert data["description"] == "A global form with unique name"
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_form_by_id_works_with_cascade_filter(
         self,
@@ -548,7 +548,7 @@ class TestGetFormScopedLookup:
         assert "error" not in data
         assert data["id"] == str(org_form.id)
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_form_by_name_no_org_context_returns_global_only(
         self,
@@ -578,7 +578,7 @@ class TestGetFormScopedLookup:
         assert data["id"] == str(global_form.id)
         assert data["organization_id"] is None
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_form_platform_admin_sees_all(
         self,
@@ -613,7 +613,7 @@ class TestGetFormScopedLookup:
 class TestScopedLookupErrorCases:
     """Tests for error cases in scoped lookups."""
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_agent_not_found(
         self,
@@ -636,7 +636,7 @@ class TestScopedLookupErrorCases:
         assert "error" in data
         assert "not found" in data["error"].lower()
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_form_not_found(
         self,
@@ -659,7 +659,7 @@ class TestScopedLookupErrorCases:
         assert "error" in data
         assert "not found" in data["error"].lower()
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_agent_invalid_uuid(
         self,
@@ -682,7 +682,7 @@ class TestScopedLookupErrorCases:
         assert "error" in data
         assert "not a valid UUID" in data["error"]
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_get_form_invalid_uuid(
         self,

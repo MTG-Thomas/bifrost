@@ -172,7 +172,7 @@ async def clean_tables(db_session: AsyncSession):
     await db_session.commit()
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestReindexWorkspaceFiles:
     """Integration tests for reindex_workspace_files."""

@@ -46,7 +46,7 @@ def regular_user_token():
     )
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 class TestLogsListEndpoint:
     """Integration tests for GET /api/executions/logs endpoint."""
 

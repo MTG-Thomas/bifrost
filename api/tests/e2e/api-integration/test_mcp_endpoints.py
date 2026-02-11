@@ -30,14 +30,14 @@ TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
 class TestMCPConfigEndpoint:
     """Tests for /api/mcp/config endpoint access control."""
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_get_config_requires_auth(self):
         """Should return 401 when no auth provided."""
         response = requests.get(f"{TEST_API_URL}/api/mcp/config")
 
         assert response.status_code == 401
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_get_config_requires_platform_admin(self):
         """Should return 403 for non-admin user."""
         # Create token for regular user (not superuser)
@@ -55,7 +55,7 @@ class TestMCPConfigEndpoint:
         assert response.status_code == 403
         assert "platform admin" in response.json()["detail"].lower()
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_get_config_success_for_platform_admin(self):
         """Should return 200 for platform admin."""
         # Use create_test_jwt with is_superuser=True to get valid UUID
@@ -74,7 +74,7 @@ class TestMCPConfigEndpoint:
         assert "require_platform_admin" in data
         assert "is_configured" in data
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_put_config_requires_auth(self):
         """Should return 401 when no auth provided for PUT."""
         response = requests.put(
@@ -84,7 +84,7 @@ class TestMCPConfigEndpoint:
 
         assert response.status_code == 401
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_put_config_requires_platform_admin(self):
         """Should return 403 for non-admin user on PUT."""
         token = create_test_jwt(
@@ -102,7 +102,7 @@ class TestMCPConfigEndpoint:
         assert response.status_code == 403
         assert "platform admin" in response.json()["detail"].lower()
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_put_config_success_for_platform_admin(self):
         """Should return 200 for platform admin on PUT."""
         token = create_test_jwt(is_superuser=True)
@@ -121,14 +121,14 @@ class TestMCPConfigEndpoint:
         data = response.json()
         assert data["enabled"] is True
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_delete_config_requires_auth(self):
         """Should return 401 when no auth provided for DELETE."""
         response = requests.delete(f"{TEST_API_URL}/api/mcp/config")
 
         assert response.status_code == 401
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_delete_config_requires_platform_admin(self):
         """Should return 403 for non-admin user on DELETE."""
         token = create_test_jwt(
@@ -145,7 +145,7 @@ class TestMCPConfigEndpoint:
         assert response.status_code == 403
         assert "platform admin" in response.json()["detail"].lower()
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_delete_config_success_for_platform_admin(self):
         """Should return 200 for platform admin on DELETE."""
         token = create_test_jwt(is_superuser=True)
@@ -167,14 +167,14 @@ class TestMCPConfigEndpoint:
 class TestMCPToolsEndpoint:
     """Tests for /api/mcp/tools endpoint access control."""
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_list_tools_requires_auth(self):
         """Should return 401 when no auth provided."""
         response = requests.get(f"{TEST_API_URL}/api/mcp/tools")
 
         assert response.status_code == 401
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_list_tools_requires_platform_admin(self):
         """Should return 403 for non-admin user."""
         token = create_test_jwt(
@@ -191,7 +191,7 @@ class TestMCPToolsEndpoint:
         assert response.status_code == 403
         assert "platform admin" in response.json()["detail"].lower()
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_list_tools_success_for_platform_admin(self):
         """Should return 200 for platform admin."""
         token = create_test_jwt(is_superuser=True)
@@ -207,7 +207,7 @@ class TestMCPToolsEndpoint:
         assert "tools" in data
         assert isinstance(data["tools"], list)
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_list_tools_returns_all_system_tools(self):
         """Should return all available system tools."""
         token = create_test_jwt(is_superuser=True)
@@ -236,7 +236,7 @@ class TestMCPToolsEndpoint:
         for expected_id in expected_tools:
             assert expected_id in tool_ids, f"Missing tool: {expected_id}"
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_list_tools_returns_tool_info(self):
         """Should return complete tool info for each tool."""
         token = create_test_jwt(is_superuser=True)
@@ -266,14 +266,14 @@ class TestMCPToolsEndpoint:
 class TestMCPStatusEndpoint:
     """Tests for /api/mcp/status endpoint access control."""
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_status_requires_auth(self):
         """Should return 401 when no auth provided."""
         response = requests.get(f"{TEST_API_URL}/api/mcp/status")
 
         assert response.status_code == 401
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_status_requires_platform_admin(self):
         """Should return 403 for non-admin user."""
         token = create_test_jwt(
@@ -290,7 +290,7 @@ class TestMCPStatusEndpoint:
         assert response.status_code == 403
         assert "platform admin" in response.json()["detail"].lower()
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_status_success_for_platform_admin(self):
         """Should return 200 for platform admin."""
         token = create_test_jwt(is_superuser=True)
@@ -330,7 +330,7 @@ class TestMCPConfigToolFiltering:
         # Reset after test
         requests.delete(f"{TEST_API_URL}/api/mcp/config", headers=headers)
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_config_saves_allowed_tool_ids(self):
         """Should save allowed_tool_ids to config."""
         token = create_test_jwt(is_superuser=True)
@@ -357,7 +357,7 @@ class TestMCPConfigToolFiltering:
         data = response.json()
         assert data["allowed_tool_ids"] == ["execute_workflow", "list_workflows"]
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_config_saves_blocked_tool_ids(self):
         """Should save blocked_tool_ids to config."""
         token = create_test_jwt(is_superuser=True)
@@ -384,7 +384,7 @@ class TestMCPConfigToolFiltering:
         data = response.json()
         assert data["blocked_tool_ids"] == ["search_knowledge"]
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_config_allows_null_for_all_tools(self):
         """Should allow null allowed_tool_ids to mean all tools."""
         token = create_test_jwt(is_superuser=True)
@@ -405,7 +405,7 @@ class TestMCPConfigToolFiltering:
         data = response.json()
         assert data["allowed_tool_ids"] is None
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_config_tracks_configured_by(self):
         """Should track who configured the settings."""
         token = create_test_jwt(email="admin@test.com", is_superuser=True)
@@ -423,7 +423,7 @@ class TestMCPConfigToolFiltering:
         assert data["configured_by"] == "admin@test.com"
         assert data["configured_at"] is not None
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_delete_resets_to_defaults(self):
         """Should reset to defaults after delete."""
         token = create_test_jwt(is_superuser=True)

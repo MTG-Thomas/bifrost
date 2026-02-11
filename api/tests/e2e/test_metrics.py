@@ -51,7 +51,7 @@ async def clean_metrics(db_session: AsyncSession):
     await db_session.commit()
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestDailyMetricsUpsert:
     """Test daily metrics upsert behavior."""

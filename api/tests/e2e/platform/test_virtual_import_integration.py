@@ -24,7 +24,7 @@ def reset_redis_client():
     redis_module._redis_client = None
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 class TestVirtualImportIntegration:
     """Integration tests for virtual import from Redis cache."""
 
@@ -120,7 +120,7 @@ class TestVirtualImportIntegration:
             await clear_module_cache()
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 class TestWorkerVirtualImportHook:
     """Tests for worker.py virtual import hook installation."""
 
@@ -170,7 +170,7 @@ class TestWorkerVirtualImportHook:
         assert has_virtual_finder, "VirtualModuleFinder should be in sys.meta_path"
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 class TestEndToEndModuleLoading:
     """End-to-end tests for module loading from DB through Redis to import."""
 

@@ -22,7 +22,7 @@ async def cleanup_agents(db_session: AsyncSession):
     await db_session.commit()
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestAgentIndexer:
     async def test_index_agent_with_tools_alias(self, db_session: AsyncSession):

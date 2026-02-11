@@ -27,7 +27,7 @@ def mcp_headers(token: str) -> dict[str, str]:
     }
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 class TestMCPProtocol:
     """Test MCP JSON-RPC 2.0 protocol endpoint."""
 
@@ -185,7 +185,7 @@ class TestMCPProtocol:
         assert response.status_code == 401
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 class TestMCPDiscovery:
     """Test MCP OAuth discovery endpoints."""
 

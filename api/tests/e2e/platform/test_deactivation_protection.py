@@ -147,7 +147,7 @@ def helper_function():
 '''
 
 
-@pytest.mark.integration
+@pytest.mark.e2e
 @pytest.mark.asyncio
 class TestDeactivationProtection:
     """Integration tests for workflow deactivation protection."""
