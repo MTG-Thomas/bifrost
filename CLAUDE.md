@@ -73,7 +73,7 @@ api/
 │   ├── models.py     # Pydantic models (source of truth)
 │   └── ...
 ├── alembic/          # Database migrations
-└── tests/            # Unit and integration tests
+└── tests/            # Unit and E2E tests
 
 client/
 ├── src/
@@ -120,12 +120,12 @@ export async function getDataProviders() {
 
 ### Testing & Quality
 
--   **Tests**: All work requires unit and integration tests in `api/tests/`
+-   **Tests**: All work requires unit and e2e tests in `api/tests/`
     -   **IMPORTANT**: Always use `./test.sh` to run tests - it starts all required dependencies (PostgreSQL, RabbitMQ, Redis) in Docker
-    -   Running pytest directly (`python -m pytest`) will FAIL for integration tests that need database access
+    -   Running pytest directly (`python -m pytest`) will FAIL for e2e tests that need database access
     -   Run all tests: `./test.sh`
-    -   Run specific test file: `./test.sh tests/integration/platform/test_sdk_from_workflow.py`
-    -   Run specific test: `./test.sh tests/integration/platform/test_sdk_from_workflow.py::TestSDKFileOperations::test_file_path_sandboxing -v`
+    -   Run specific test file: `./test.sh tests/e2e/platform/test_sdk_from_workflow.py`
+    -   Run specific test: `./test.sh tests/e2e/platform/test_sdk_from_workflow.py::TestSDKFileOperations::test_file_path_sandboxing -v`
     -   Run with coverage: `./test.sh --coverage`
     -   Run E2E tests: `./test.sh --e2e`
 -   **Type Checking**: Must pass `pyright` (API) and `npm run tsc` (client)
@@ -140,8 +140,8 @@ export async function getDataProviders() {
 # Testing (ALWAYS use test.sh - it manages Docker dependencies)
 ./test.sh                                 # Run all backend tests
 ./test.sh tests/unit/                     # Run unit tests only
-./test.sh tests/integration/              # Run integration tests
-./test.sh tests/integration/platform/test_sdk.py  # Run specific file
+./test.sh tests/e2e/                      # Run E2E tests
+./test.sh tests/e2e/platform/test_sdk_from_workflow.py  # Run specific file
 ./test.sh --e2e                           # Run E2E tests (API + workers)
 ./test.sh --client                        # Run backend + Playwright E2E tests
 ./test.sh --client-dev                    # Fast Playwright iteration (keeps stack)

@@ -5,11 +5,10 @@
 # All dependencies (PostgreSQL, RabbitMQ, Redis, API, Worker) are ephemeral and cleaned up after tests.
 #
 # Usage:
-#   ./test.sh                          # Run ALL backend tests (unit, integration, e2e)
+#   ./test.sh                          # Run ALL backend tests (unit + e2e)
 #   ./test.sh --coverage               # Run all tests with coverage report
 #   ./test.sh --wait                   # Wait before cleanup (for debugging)
 #   ./test.sh tests/unit/ -v           # Run only unit tests
-#   ./test.sh tests/integration/ -v    # Run only integration tests
 #   ./test.sh tests/e2e/ -v            # Run only E2E tests
 #   ./test.sh tests/unit/test_foo.py::test_bar -v  # Run single test
 #   ./test.sh --client                 # Run backend tests + Playwright E2E tests
@@ -101,8 +100,9 @@ mkdir -p "$LOG_DIR"
 export_docker_logs() {
     echo "Exporting docker logs to $LOG_DIR/..."
 
-    # Clean up old log files from previous runs
-    rm -f "$LOG_DIR"/*.log "$LOG_DIR"/docker-logs.txt 2>/dev/null
+    # Clean up old docker log files from previous runs (preserve test-runner.log written by tee)
+    find "$LOG_DIR" -maxdepth 1 -name "*.log" ! -name "test-runner.log" -delete 2>/dev/null
+    rm -f "$LOG_DIR"/docker-logs.txt 2>/dev/null
 
     # Export combined logs with timestamps
     {
@@ -531,78 +531,172 @@ for i in {1..15}; do
 done
 
 # =============================================================================
-# Start API and Worker for E2E tests
-# =============================================================================
-echo ""
-echo "Starting API and Worker for E2E tests..."
-docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
-
-# Wait for API to be healthy
-echo "Waiting for API to be ready..."
-for i in {1..60}; do
-    if docker compose -f "$COMPOSE_FILE" exec -T api curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-        echo "API is ready!"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        echo "ERROR: API failed to start within 60 seconds"
-        exit 1
-    fi
-    echo "  Waiting for API... (attempt $i/60)"
-    sleep 1
-done
-
-# =============================================================================
 # Run backend tests (skip if --client-only)
 # =============================================================================
 # Note: Database migrations and cache warming are handled by the init container
 # which the test-runner depends on via docker-compose.test.yml
+#
+# Two-phase execution (default, no custom args):
+#   Phase 1: unit tests (NO e2e services running)
+#   Phase 2: start API + worker, then run e2e tests
+# This prevents e2e tests (which do DDL) from hanging on locks
+# held by API/worker database connections.
+#
+# Custom args: start e2e services first, run single invocation (user may target e2e tests)
 TEST_EXIT_CODE=0
 
 if [ "$CLIENT_ONLY" = false ]; then
-    echo ""
-    echo "============================================================"
-    echo "Running backend tests..."
-    echo "============================================================"
-    echo ""
-
-    # Build pytest command
-    PYTEST_CMD=("pytest")
-
-    if [ "$COVERAGE" = true ]; then
-        PYTEST_CMD+=("--cov=src" "--cov-report=term-missing" "--cov-report=xml:/app/coverage.xml")
-    fi
-
     if [ ${#PYTEST_ARGS[@]} -eq 0 ]; then
-        # Default: run ALL tests (unit, integration, e2e)
-        PYTEST_CMD+=("tests/" "-v")
-    else
-        # Custom test paths provided
-        PYTEST_CMD+=("${PYTEST_ARGS[@]}")
-    fi
+        # =================================================================
+        # Default: Two-phase execution
+        # =================================================================
 
-    # Run tests in container (disable ERR trap for tests - we handle exit code manually)
-    trap - ERR
-    set +e
-    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PYTEST_CMD[@]}"
-    TEST_EXIT_CODE=$?
-    set -e
-
-    # Copy coverage report if generated
-    if [ "$COVERAGE" = true ]; then
+        # --- Phase 1: Unit tests (no e2e services) ---
         echo ""
-        echo "Copying coverage report..."
-        docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner cat /app/coverage.xml > coverage.xml 2>/dev/null || true
-    fi
+        echo "============================================================"
+        echo "Phase 1: Running unit tests..."
+        echo "============================================================"
+        echo ""
 
-    echo ""
-    echo "============================================================"
-    if [ $TEST_EXIT_CODE -eq 0 ]; then
-        echo "Backend tests completed successfully!"
+        # Ignore tests that require a running API service
+        PHASE1_CMD=("pytest" "tests/" "--ignore=tests/e2e/" "-v")
+        if [ "$COVERAGE" = true ]; then
+            PHASE1_CMD+=("--cov=src" "--cov-report=term-missing")
+        fi
+
+        trap - ERR
+        set +e
+        docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE1_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
+        TEST_EXIT_CODE=${PIPESTATUS[0]}
+        set -e
+
+        echo ""
+        echo "============================================================"
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "Phase 1 PASSED"
+        else
+            echo "Phase 1 FAILED (exit code $TEST_EXIT_CODE)"
+            echo "Skipping Phase 2 (e2e)"
+            echo "============================================================"
+        fi
+        echo "============================================================"
+
+        # --- Phase 2: E2E tests (with API + worker) ---
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo ""
+            echo "============================================================"
+            echo "Phase 2: Starting API + Worker for E2E tests..."
+            echo "============================================================"
+            echo ""
+
+            docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
+
+            echo "Waiting for API to be ready..."
+            for i in {1..60}; do
+                if docker compose -f "$COMPOSE_FILE" exec -T api curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                    echo "API is ready!"
+                    break
+                fi
+                if [ $i -eq 60 ]; then
+                    echo "ERROR: API failed to start within 60 seconds"
+                    exit 1
+                fi
+                echo "  Waiting for API... (attempt $i/60)"
+                sleep 1
+            done
+
+            echo ""
+            echo "============================================================"
+            echo "Running E2E tests..."
+            echo "============================================================"
+            echo ""
+
+            # Run e2e tests that need a live API
+            PHASE2_CMD=("pytest" "tests/e2e/" "-v")
+            if [ "$COVERAGE" = true ]; then
+                PHASE2_CMD+=("--cov=src" "--cov-append" "--cov-report=term-missing" "--cov-report=xml:/app/coverage.xml")
+            fi
+
+            trap - ERR
+            set +e
+            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE2_CMD[@]}" 2>&1 | tee -a "$LOG_DIR/test-runner.log"
+            TEST_EXIT_CODE=${PIPESTATUS[0]}
+            set -e
+
+            echo ""
+            echo "============================================================"
+            if [ $TEST_EXIT_CODE -eq 0 ]; then
+                echo "Phase 2 PASSED"
+            else
+                echo "Phase 2 FAILED (exit code $TEST_EXIT_CODE)"
+            fi
+            echo "============================================================"
+        fi
+
+        # Copy coverage report if generated
+        if [ "$COVERAGE" = true ]; then
+            echo ""
+            echo "Copying coverage report..."
+            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner cat /app/coverage.xml > coverage.xml 2>/dev/null || true
+        fi
+
     else
-        echo "Backend tests failed with exit code $TEST_EXIT_CODE"
+        # =================================================================
+        # Custom args: single invocation with e2e services
+        # (user may be targeting e2e tests)
+        # =================================================================
+        echo ""
+        echo "Starting API and Worker (custom args may target e2e tests)..."
+        docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
+
+        echo "Waiting for API to be ready..."
+        for i in {1..60}; do
+            if docker compose -f "$COMPOSE_FILE" exec -T api curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "API is ready!"
+                break
+            fi
+            if [ $i -eq 60 ]; then
+                echo "ERROR: API failed to start within 60 seconds"
+                exit 1
+            fi
+            echo "  Waiting for API... (attempt $i/60)"
+            sleep 1
+        done
+
+        echo ""
+        echo "============================================================"
+        echo "Running tests..."
+        echo "============================================================"
+        echo ""
+
+        PYTEST_CMD=("pytest")
+        if [ "$COVERAGE" = true ]; then
+            PYTEST_CMD+=("--cov=src" "--cov-report=term-missing" "--cov-report=xml:/app/coverage.xml")
+        fi
+        PYTEST_CMD+=("${PYTEST_ARGS[@]}")
+
+        trap - ERR
+        set +e
+        docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PYTEST_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
+        TEST_EXIT_CODE=${PIPESTATUS[0]}
+        set -e
+
+        # Copy coverage report if generated
+        if [ "$COVERAGE" = true ]; then
+            echo ""
+            echo "Copying coverage report..."
+            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner cat /app/coverage.xml > coverage.xml 2>/dev/null || true
+        fi
+
+        echo ""
+        echo "============================================================"
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "Tests completed successfully!"
+        else
+            echo "Tests failed with exit code $TEST_EXIT_CODE"
+        fi
+        echo "============================================================"
     fi
-    echo "============================================================"
 else
     echo ""
     echo "============================================================"
