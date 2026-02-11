@@ -32,9 +32,9 @@ MODULE_CACHE_TTL = 86400
 
 REPO_PREFIX = "_repo/"
 
-# Cached boto3 import state — avoids repeated ImportError on every S3 fallback call
-_boto3_available: bool | None = None
-_boto3_module: Any = None
+# Cached S3 client — reused across calls to avoid repeated setup
+_s3_client: Any = None
+_s3_available: bool | None = None
 
 
 @lru_cache(maxsize=1)
@@ -50,47 +50,64 @@ def _get_sync_redis() -> Any:
     )
 
 
-def _get_s3_module(path: str) -> bytes | None:
+def _get_s3_client() -> Any:
     """
-    Fetch a module from S3 _repo/ prefix (synchronous).
-
-    Uses boto3 sync client since this runs in worker subprocesses.
-    Returns raw bytes or None if not found.
-    boto3 import result is cached to avoid repeated ImportError noise.
+    Get or create a sync S3 client using botocore (always available via aiobotocore).
     """
-    global _boto3_available, _boto3_module
+    global _s3_client, _s3_available
 
-    if _boto3_available is None:
-        try:
-            import boto3  # type: ignore[import-untyped]
-            _boto3_module = boto3
-            _boto3_available = True
-        except ImportError:
-            _boto3_available = False
-            logger.debug("boto3 not available, S3 fallback disabled")
-
-    if not _boto3_available:
+    if _s3_available is False:
         return None
+
+    if _s3_client is not None:
+        return _s3_client
 
     endpoint_url = os.environ.get("BIFROST_S3_ENDPOINT_URL")
     access_key = os.environ.get("BIFROST_S3_ACCESS_KEY")
     secret_key = os.environ.get("BIFROST_S3_SECRET_KEY")
-    bucket = os.environ.get("BIFROST_S3_BUCKET")
     region = os.environ.get("BIFROST_S3_REGION", "us-east-1")
 
-    if not all([bucket, access_key, secret_key]):
+    if not all([access_key, secret_key]):
         logger.debug("S3 not configured, skipping S3 fallback")
+        _s3_available = False
         return None
 
     try:
-        client = _boto3_module.client(
+        import botocore.session  # type: ignore[import-untyped]
+
+        session = botocore.session.get_session()
+        client = session.create_client(
             "s3",
             endpoint_url=endpoint_url,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=region,
         )
+        _s3_client = client
+        _s3_available = True
+        return client
+    except Exception:
+        _s3_available = False
+        logger.debug("botocore not available, S3 fallback disabled")
+        return None
 
+
+def _get_s3_module(path: str) -> bytes | None:
+    """
+    Fetch a module from S3 _repo/ prefix (synchronous).
+
+    Uses botocore sync client since this runs in worker subprocesses.
+    Returns raw bytes or None if not found.
+    """
+    bucket = os.environ.get("BIFROST_S3_BUCKET")
+    if not bucket:
+        return None
+
+    client = _get_s3_client()
+    if client is None:
+        return None
+
+    try:
         key = f"{REPO_PREFIX}{path}"
         response = client.get_object(Bucket=bucket, Key=key)
         return response["Body"].read()
@@ -177,8 +194,8 @@ def reset_sync_redis() -> None:
     _get_sync_redis.cache_clear()
 
 
-def reset_boto3_cache() -> None:
-    """Reset the cached boto3 import state. Used for testing."""
-    global _boto3_available, _boto3_module
-    _boto3_available = None
-    _boto3_module = None
+def reset_s3_client() -> None:
+    """Reset the cached S3 client. Used for testing."""
+    global _s3_client, _s3_available
+    _s3_client = None
+    _s3_available = None

@@ -69,57 +69,29 @@ def test_s3_miss_returns_none():
         assert result is None
 
 
-class TestBoto3ImportCaching:
-    """Tests for boto3 import caching in _get_s3_module."""
+class TestS3ClientCaching:
+    """Tests for botocore S3 client caching in _get_s3_module."""
 
     @pytest.fixture(autouse=True)
     def reset_cache(self):
-        """Reset boto3 cache before each test."""
-        from src.core.module_cache_sync import reset_boto3_cache
-        reset_boto3_cache()
+        """Reset S3 client cache before each test."""
+        from src.core.module_cache_sync import reset_s3_client
+        reset_s3_client()
         yield
-        reset_boto3_cache()
-
-    def test_boto3_import_cached_after_first_failure(self):
-        """Should only attempt boto3 import once, then cache the failure."""
-        import src.core.module_cache_sync as mod
-
-        call_count = 0
-        original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
-
-        def counting_import(name, *args, **kwargs):
-            nonlocal call_count
-            if name == "boto3":
-                call_count += 1
-                raise ImportError("no boto3")
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=counting_import):
-            # First call — should attempt import and cache failure
-            result1 = mod._get_s3_module("test/path.py")
-            assert result1 is None
-            assert call_count == 1
-
-            # Second call — should skip import entirely
-            result2 = mod._get_s3_module("test/other.py")
-            assert result2 is None
-            assert call_count == 1  # Still 1, not 2
+        reset_s3_client()
 
     def test_nosuchkey_logs_debug_not_warning(self, caplog):
         """NoSuchKey errors should log at DEBUG level, not WARNING."""
         import src.core.module_cache_sync as mod
 
-        # Set up mock boto3 client that raises NoSuchKey
+        # Set up mock botocore client that raises NoSuchKey
         mock_client = MagicMock()
         nosuchkey_error = Exception("NoSuchKey")
         nosuchkey_error.response = {"Error": {"Code": "NoSuchKey"}}
         mock_client.get_object.side_effect = nosuchkey_error
 
-        mock_boto3 = MagicMock()
-        mock_boto3.client.return_value = mock_client
-
-        mod._boto3_available = True
-        mod._boto3_module = mock_boto3
+        mod._s3_client = mock_client
+        mod._s3_available = True
 
         env_vars = {
             "BIFROST_S3_ENDPOINT_URL": "http://localhost:9000",
@@ -140,12 +112,12 @@ class TestBoto3ImportCaching:
         assert not any("S3 fallback error" in r.message for r in warning_msgs)
 
     def test_s3_unavailable_returns_none_gracefully(self):
-        """When boto3 import fails, _get_s3_module should return None."""
+        """When S3 client is unavailable, _get_s3_module should return None."""
         import src.core.module_cache_sync as mod
 
-        # Simulate failed import
-        mod._boto3_available = False
-        mod._boto3_module = None
+        # Simulate unavailable client
+        mod._s3_available = False
+        mod._s3_client = None
 
         result = mod._get_s3_module("any/path.py")
         assert result is None
