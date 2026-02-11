@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -139,35 +138,6 @@ async def db_session(async_session_factory) -> AsyncGenerator[AsyncSession, None
     async with async_session_factory() as session:
         yield session
         await session.rollback()
-
-
-@pytest_asyncio.fixture
-async def clean_db(db_session: AsyncSession) -> AsyncGenerator[AsyncSession, None]:
-    """
-    Provide a clean database for tests that need it.
-
-    Truncates all tables before the test runs.
-    Use sparingly as this is slower than transaction rollback.
-    """
-    # Get all table names
-    result = await db_session.execute(
-        text("""
-            SELECT tablename FROM pg_tables
-            WHERE schemaname = 'public'
-            AND tablename != 'alembic_version'
-        """)
-    )
-    tables = [row[0] for row in result.fetchall()]
-
-    if tables:
-        # Disable foreign key checks, truncate, re-enable
-        await db_session.execute(text("SET session_replication_role = 'replica'"))
-        for table in tables:
-            await db_session.execute(text(f'TRUNCATE TABLE "{table}" CASCADE'))
-        await db_session.execute(text("SET session_replication_role = 'origin'"))
-        await db_session.commit()
-
-    yield db_session
 
 
 # ==================== MOCK FIXTURES ====================

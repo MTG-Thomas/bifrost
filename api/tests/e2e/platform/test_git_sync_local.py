@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.orm.file_index import FileIndex
 from src.models.orm.forms import Form
 from src.models.orm.workflows import Workflow
-from src.services.manifest import parse_manifest
+from src.services.manifest import read_manifest_from_dir
 
 
 # =============================================================================
@@ -211,10 +211,10 @@ async def sync_service(db_session: AsyncSession, bare_repo, tmp_path):
     async def _filtered_regenerate(work_dir: Path) -> None:
         await _original_regenerate(work_dir)
         # Re-read the manifest and filter out missing paths
-        manifest_path = work_dir / ".bifrost" / "metadata.yaml"
-        if manifest_path.exists():
-            from src.services.manifest import parse_manifest, serialize_manifest
-            manifest = parse_manifest(manifest_path.read_text())
+        bifrost_dir = work_dir / ".bifrost"
+        if bifrost_dir.exists():
+            from src.services.manifest import read_manifest_from_dir, write_manifest_to_dir
+            manifest = read_manifest_from_dir(bifrost_dir)
             manifest.workflows = {
                 k: v for k, v in manifest.workflows.items()
                 if (work_dir / v.path).exists()
@@ -231,7 +231,7 @@ async def sync_service(db_session: AsyncSession, bare_repo, tmp_path):
                 k: v for k, v in manifest.apps.items()
                 if (work_dir / v.path).exists()
             }
-            manifest_path.write_text(serialize_manifest(manifest))
+            write_manifest_to_dir(manifest, bifrost_dir)
 
     service._regenerate_manifest_only = _filtered_regenerate
 
@@ -288,6 +288,66 @@ async def cleanup_test_data(db_session: AsyncSession):
     )
     await db_session.execute(
         delete(Agent).where(Agent.created_by.in_(["file_sync", "git-sync"]))
+    )
+
+    # Clean up new entity types created by git-sync tests
+    from src.models.orm.events import EventSubscription, EventSource, ScheduleSource, WebhookSource
+    from src.models.orm.config import Config
+    from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
+    from src.models.orm.tables import Table
+
+    await db_session.execute(
+        delete(EventSubscription).where(EventSubscription.created_by == "git-sync")
+    )
+    await db_session.execute(
+        delete(ScheduleSource).where(
+            ScheduleSource.event_source_id.in_(
+                select(EventSource.id).where(EventSource.created_by == "git-sync")
+            )
+        )
+    )
+    await db_session.execute(
+        delete(WebhookSource).where(
+            WebhookSource.event_source_id.in_(
+                select(EventSource.id).where(EventSource.created_by == "git-sync")
+            )
+        )
+    )
+    await db_session.execute(
+        delete(EventSource).where(EventSource.created_by == "git-sync")
+    )
+    await db_session.execute(
+        delete(Config).where(Config.updated_by == "git-sync")
+    )
+    await db_session.execute(
+        delete(IntegrationConfigSchema).where(
+            IntegrationConfigSchema.integration_id.in_(
+                select(Integration.id).where(Integration.name.like("Test%"))
+            )
+        )
+    )
+    await db_session.execute(
+        delete(IntegrationConfigSchema).where(
+            IntegrationConfigSchema.integration_id.in_(
+                select(Integration.id).where(Integration.name.like("Idempotent%"))
+            )
+        )
+    )
+    await db_session.execute(
+        delete(IntegrationMapping).where(
+            IntegrationMapping.integration_id.in_(
+                select(Integration.id).where(Integration.name.like("Test%"))
+            )
+        )
+    )
+    await db_session.execute(
+        delete(Integration).where(Integration.name.like("Test%"))
+    )
+    await db_session.execute(
+        delete(Integration).where(Integration.name.like("Idempotent%"))
+    )
+    await db_session.execute(
+        delete(Table).where(Table.created_by == "git-sync")
     )
     await db_session.commit()
 
@@ -349,9 +409,11 @@ class TestPushToEmptyRepo:
         wf_file = verify_path / "workflows" / "git_sync_test_wf.py"
         assert wf_file.exists(), "Workflow .py file should exist in repo"
 
-        # Manifest should exist
-        manifest_file = verify_path / ".bifrost" / "metadata.yaml"
-        assert manifest_file.exists(), "Manifest should exist in repo"
+        # Split manifest files should exist (not legacy metadata.yaml)
+        bifrost_dir = verify_path / ".bifrost"
+        assert bifrost_dir.exists(), "Manifest directory should exist in repo"
+        assert (bifrost_dir / "workflows.yaml").exists(), "Split workflows.yaml should exist"
+        assert not (bifrost_dir / "metadata.yaml").exists(), "Legacy metadata.yaml should not exist"
 
     async def test_push_generates_manifest(
         self,
@@ -360,7 +422,7 @@ class TestPushToEmptyRepo:
         bare_repo,
         tmp_path,
     ):
-        """Commit + push → .bifrost/metadata.yaml exists with correct entries."""
+        """Commit + push → .bifrost/ split files exist with correct entries."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -387,8 +449,7 @@ class TestPushToEmptyRepo:
         verify_path = tmp_path / "verify"
         Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
 
-        manifest_file = verify_path / ".bifrost" / "metadata.yaml"
-        manifest = parse_manifest(manifest_file.read_text())
+        manifest = read_manifest_from_dir(verify_path / ".bifrost")
 
         # Workflow should be in manifest
         assert len(manifest.workflows) >= 1
@@ -459,9 +520,7 @@ class TestIncrementalPush:
         # Verify updated content
         verify_path = tmp_path / "verify"
         Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
-        manifest = parse_manifest(
-            (verify_path / ".bifrost" / "metadata.yaml").read_text()
-        )
+        manifest = read_manifest_from_dir(verify_path / ".bifrost")
         # Manifest should reflect the update
         found = False
         for name, mwf in manifest.workflows.items():
@@ -757,10 +816,14 @@ channels:
 tool_ids:
 - {wf_id}
 """
-        # Write agent file + manifest
+        # Write agent file + workflow file + manifest
         agent_dir = work_dir / "agents"
         agent_dir.mkdir(exist_ok=True)
         (agent_dir / f"{agent_id}.agent.yaml").write_text(agent_yaml)
+
+        wf_dir = work_dir / "workflows"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "agent_tool.py").write_text(SAMPLE_WORKFLOW_PY)
 
         manifest_dir = work_dir / ".bifrost"
         manifest_dir.mkdir(exist_ok=True)
@@ -770,7 +833,11 @@ tool_ids:
     path: agents/{agent_id}.agent.yaml
     organization_id: null
     roles: []
-workflows: {{}}
+workflows:
+  agent_tool_workflow:
+    id: "{wf_id}"
+    path: workflows/agent_tool.py
+    function_name: agent_tool_workflow
 forms: {{}}
 apps: {{}}
 organizations: []
@@ -778,7 +845,7 @@ roles: []
 """)
 
         # Commit to repo
-        working_clone.index.add(["agents/", ".bifrost/"])
+        working_clone.index.add(["agents/", "workflows/", ".bifrost/"])
         working_clone.index.commit("Add agent with tools")
         working_clone.remotes.origin.push()
 
@@ -957,20 +1024,20 @@ class TestRenames:
             new_file.write_text(old_file.read_text())
             old_file.unlink()
 
-        # Update manifest with new path
-        manifest_file = work_dir / ".bifrost" / "metadata.yaml"
-        if manifest_file.exists():
-            manifest_data = yaml.safe_load(manifest_file.read_text())
-            for name, wf_data in manifest_data.get("workflows", {}).items():
+        # Update manifest with new path (split format: workflows.yaml)
+        wf_manifest = work_dir / ".bifrost" / "workflows.yaml"
+        if wf_manifest.exists():
+            wf_data_yaml = yaml.safe_load(wf_manifest.read_text())
+            for name, wf_data in wf_data_yaml.get("workflows", {}).items():
                 if wf_data.get("id") == str(wf_id):
                     wf_data["path"] = "workflows/git_sync_test_rename_new.py"
-            manifest_file.write_text(
-                yaml.dump(manifest_data, default_flow_style=False, sort_keys=False)
+            wf_manifest.write_text(
+                yaml.dump(wf_data_yaml, default_flow_style=False, sort_keys=False)
             )
 
         working_clone.index.add([
             "workflows/git_sync_test_rename_new.py",
-            ".bifrost/metadata.yaml",
+            ".bifrost/workflows.yaml",
         ])
         working_clone.index.remove(["workflows/git_sync_test_rename_old.py"])
         working_clone.index.commit("rename workflow")
@@ -1103,9 +1170,9 @@ class TestConflicts:
         assert len(pull_result.conflicts) > 0
 
         conflict_paths = [c.path for c in pull_result.conflicts]
-        # The conflict could be on the workflow file or the manifest
+        # The conflict could be on the workflow file or any manifest split file
         assert any(
-            "git_sync_test_conflict" in p or "metadata.yaml" in p
+            "git_sync_test_conflict" in p or ".bifrost/" in p
             for p in conflict_paths
         ), f"Expected conflict on test file, got: {conflict_paths}"
 
@@ -1554,17 +1621,11 @@ class TestOrphanDetection:
         wf_file = work_dir / "workflows" / "git_sync_test_orphan.py"
         if wf_file.exists():
             wf_file.unlink()
-        # Update manifest to remove the workflow entry
-        manifest_file = work_dir / ".bifrost" / "metadata.yaml"
-        if manifest_file.exists():
-            manifest_data = yaml.safe_load(manifest_file.read_text())
-            # Remove workflow from manifest but keep form
-            manifest_data["workflows"] = {}
-            manifest_file.write_text(
-                yaml.dump(manifest_data, default_flow_style=False, sort_keys=False)
-            )
-        working_clone.index.add([".bifrost/metadata.yaml"])
-        working_clone.index.remove(["workflows/git_sync_test_orphan.py"])
+        # Update manifest to remove the workflow entry (split format)
+        wf_manifest = work_dir / ".bifrost" / "workflows.yaml"
+        if wf_manifest.exists():
+            wf_manifest.unlink()
+        working_clone.git.add(A=True)
         working_clone.index.commit("delete workflow, leave form")
         working_clone.remotes.origin.push()
 
@@ -1752,3 +1813,375 @@ class TestPreflightValidation:
         assert preflight.valid is True
         errors = [i for i in preflight.issues if i.severity == "error"]
         assert len(errors) == 0, f"Should have no errors, got: {errors}"
+
+
+# =============================================================================
+# Split Manifest Format
+# =============================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestSplitManifestFormat:
+    """Verify split manifest files work through commit/pull cycle."""
+
+    async def test_push_creates_split_files(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        tmp_path,
+    ):
+        """Commit+push → .bifrost/ contains per-entity-type YAML files, not metadata.yaml."""
+        wf_id = uuid4()
+        wf = Workflow(
+            id=wf_id,
+            name="Split Manifest Test WF",
+            function_name="split_manifest_wf",
+            path="workflows/git_sync_test_split.py",
+            is_active=True,
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_split.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
+
+        # Clone and verify split files
+        verify_path = tmp_path / "verify"
+        Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
+
+        bifrost_dir = verify_path / ".bifrost"
+        assert (bifrost_dir / "workflows.yaml").exists(), "workflows.yaml should exist"
+        assert not (bifrost_dir / "metadata.yaml").exists(), "legacy metadata.yaml should not exist"
+
+        # Verify content
+        wf_data = yaml.safe_load((bifrost_dir / "workflows.yaml").read_text())
+        assert "workflows" in wf_data
+        found = any(
+            wf_entry.get("id") == str(wf_id)
+            for wf_entry in wf_data["workflows"].values()
+        )
+        assert found, f"Workflow {wf_id} should be in workflows.yaml"
+
+    async def test_pull_integration_from_manifest(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull manifest with integration → creates Integration, config_schema, mappings in DB."""
+        from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
+
+        work_dir = Path(working_clone.working_dir)
+        integ_id = str(uuid4())
+        org_id = str(uuid4())
+
+        # Write split manifest with integration
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        (bifrost_dir / "integrations.yaml").write_text(yaml.dump({
+            "integrations": {
+                "TestInteg": {
+                    "id": integ_id,
+                    "entity_id": "tenant_id",
+                    "entity_id_name": "Tenant",
+                    "config_schema": [
+                        {"key": "api_url", "type": "string", "required": True, "position": 0},
+                        {"key": "api_key", "type": "secret", "required": True, "position": 1},
+                    ],
+                    "mappings": [],
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([".bifrost/integrations.yaml"])
+        working_clone.index.commit("add integration")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_pull()
+        assert result.success is True
+
+        # Verify integration in DB
+        from uuid import UUID as UUIDType
+        integ = await db_session.get(Integration, UUIDType(integ_id))
+        assert integ is not None
+        assert integ.name == "TestInteg"
+        assert integ.entity_id == "tenant_id"
+
+        # Verify config schema
+        cs_result = await db_session.execute(
+            select(IntegrationConfigSchema).where(
+                IntegrationConfigSchema.integration_id == UUIDType(integ_id)
+            ).order_by(IntegrationConfigSchema.position)
+        )
+        schemas = cs_result.scalars().all()
+        assert len(schemas) == 2
+        assert schemas[0].key == "api_url"
+        assert schemas[0].type == "string"
+        assert schemas[1].key == "api_key"
+        assert schemas[1].type == "secret"
+
+    async def test_pull_config_from_manifest(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull manifest with configs → creates Config entries in DB."""
+        from src.models.orm.config import Config
+
+        work_dir = Path(working_clone.working_dir)
+        config_id = str(uuid4())
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        (bifrost_dir / "configs.yaml").write_text(yaml.dump({
+            "configs": {
+                "app/api_url": {
+                    "id": config_id,
+                    "key": "app/api_url",
+                    "config_type": "string",
+                    "description": "API Base URL",
+                    "value": "https://api.example.com",
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([".bifrost/configs.yaml"])
+        working_clone.index.commit("add config")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_pull()
+        assert result.success is True
+
+        # Verify config in DB
+        from uuid import UUID as UUIDType
+        cfg = await db_session.get(Config, UUIDType(config_id))
+        assert cfg is not None
+        assert cfg.key == "app/api_url"
+        assert cfg.config_type == "string"
+        assert cfg.value == "https://api.example.com"
+
+    async def test_pull_table_from_manifest(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull manifest with table → creates Table in DB with schema."""
+        from src.models.orm.tables import Table
+
+        work_dir = Path(working_clone.working_dir)
+        table_id = str(uuid4())
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        (bifrost_dir / "tables.yaml").write_text(yaml.dump({
+            "tables": {
+                "ticket_cache": {
+                    "id": table_id,
+                    "description": "Cached tickets",
+                    "schema": {
+                        "columns": [
+                            {"name": "ticket_id", "type": "string"},
+                            {"name": "subject", "type": "string"},
+                        ]
+                    },
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([".bifrost/tables.yaml"])
+        working_clone.index.commit("add table")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_pull()
+        assert result.success is True
+
+        # Verify table in DB
+        from uuid import UUID as UUIDType
+        table = await db_session.get(Table, UUIDType(table_id))
+        assert table is not None
+        assert table.name == "ticket_cache"
+        assert table.description == "Cached tickets"
+        assert table.schema is not None
+        assert len(table.schema["columns"]) == 2
+
+    async def test_pull_event_source_from_manifest(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull manifest with schedule event source → creates EventSource + ScheduleSource + Subscription."""
+        from src.models.orm.events import EventSource, EventSubscription, ScheduleSource
+
+        work_dir = Path(working_clone.working_dir)
+        es_id = str(uuid4())
+        sub_id = str(uuid4())
+        wf_id = str(uuid4())
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+
+        # Need a workflow for the subscription to reference
+        wf_dir = work_dir / "workflows"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "sync_job.py").write_text(SAMPLE_WORKFLOW_CLEAN)
+
+        (bifrost_dir / "workflows.yaml").write_text(yaml.dump({
+            "workflows": {
+                "sync_job": {
+                    "id": wf_id,
+                    "path": "workflows/sync_job.py",
+                    "function_name": "clean_wf",
+                },
+            },
+        }, default_flow_style=False))
+
+        (bifrost_dir / "events.yaml").write_text(yaml.dump({
+            "events": {
+                "Daily Sync": {
+                    "id": es_id,
+                    "source_type": "schedule",
+                    "cron_expression": "0 6 * * *",
+                    "timezone": "America/New_York",
+                    "schedule_enabled": True,
+                    "subscriptions": [
+                        {
+                            "id": sub_id,
+                            "workflow_id": wf_id,
+                            "event_type": "scheduled",
+                        },
+                    ],
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add(["workflows/sync_job.py", ".bifrost/workflows.yaml", ".bifrost/events.yaml"])
+        working_clone.index.commit("add event source")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_pull()
+        assert result.success is True
+
+        # Verify event source in DB
+        from uuid import UUID as UUIDType
+        es = await db_session.get(EventSource, UUIDType(es_id))
+        assert es is not None
+        # source_type may be an enum or string depending on how it was inserted
+        source_type = es.source_type.value if hasattr(es.source_type, "value") else es.source_type
+        assert source_type == "schedule"
+
+        # Verify schedule source
+        sched_result = await db_session.execute(
+            select(ScheduleSource).where(ScheduleSource.event_source_id == UUIDType(es_id))
+        )
+        sched = sched_result.scalar_one_or_none()
+        assert sched is not None
+        assert sched.cron_expression == "0 6 * * *"
+        assert sched.timezone == "America/New_York"
+
+        # Verify subscription
+        sub_result = await db_session.execute(
+            select(EventSubscription).where(EventSubscription.event_source_id == UUIDType(es_id))
+        )
+        sub = sub_result.scalar_one_or_none()
+        assert sub is not None
+        assert str(sub.workflow_id) == wf_id
+        assert sub.event_type == "scheduled"
+
+    async def test_pull_idempotent(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pulling the same manifest twice doesn't create duplicates."""
+        from src.models.orm.integrations import Integration
+
+        work_dir = Path(working_clone.working_dir)
+        integ_id = str(uuid4())
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        (bifrost_dir / "integrations.yaml").write_text(yaml.dump({
+            "integrations": {
+                "IdempotentInteg": {
+                    "id": integ_id,
+                    "entity_id": "tenant_id",
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([".bifrost/integrations.yaml"])
+        working_clone.index.commit("add integration")
+        working_clone.remotes.origin.push()
+
+        # Pull twice
+        result1 = await sync_service.desktop_pull()
+        assert result1.success is True
+        result2 = await sync_service.desktop_pull()
+        assert result2.success is True
+
+        # Should still be exactly one integration with that ID
+        from uuid import UUID as UUIDType
+        integ_result = await db_session.execute(
+            select(Integration).where(Integration.id == UUIDType(integ_id))
+        )
+        integs = integ_result.scalars().all()
+        assert len(integs) == 1
+
+    async def test_pull_reads_legacy_format(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull from repo with legacy metadata.yaml still works."""
+        work_dir = Path(working_clone.working_dir)
+
+        wf_id = str(uuid4())
+        wf_dir = work_dir / "workflows"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "git_sync_test_legacy.py").write_text(SAMPLE_WORKFLOW_PY)
+
+        # Write legacy single-file manifest
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        (bifrost_dir / "metadata.yaml").write_text(_make_manifest(
+            workflows={
+                "Legacy Test Workflow": {
+                    "id": wf_id,
+                    "path": "workflows/git_sync_test_legacy.py",
+                    "function_name": "git_sync_test_wf",
+                    "type": "workflow",
+                }
+            }
+        ))
+
+        working_clone.index.add([
+            "workflows/git_sync_test_legacy.py",
+            ".bifrost/metadata.yaml",
+        ])
+        working_clone.index.commit("add legacy format workflow")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_pull()
+        assert result.success is True
+        assert result.pulled > 0
+
+        # Verify workflow imported
+        wf_result = await db_session.execute(
+            select(Workflow).where(Workflow.id == wf_id)
+        )
+        wf = wf_result.scalar_one_or_none()
+        assert wf is not None
+        assert wf.name == "Legacy Test Workflow"

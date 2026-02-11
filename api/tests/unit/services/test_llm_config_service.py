@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet
 
 from src.services.llm_config_service import (
     LLMConfigService,
+    LLMModelInfo,
     LLMProviderConfig,
     LLMTestResult,
     LLM_CONFIG_CATEGORY,
@@ -275,6 +276,7 @@ class TestLLMConfigServiceTestConnection:
         mock_llm_config.provider = "openai"
         mock_llm_config.api_key = "sk-test-key"
         mock_llm_config.model = "gpt-4o"
+        mock_llm_config.endpoint = None
 
         # Mock OpenAI client
         mock_models = [MagicMock(id="gpt-4o"), MagicMock(id="gpt-3.5-turbo")]
@@ -295,7 +297,7 @@ class TestLLMConfigServiceTestConnection:
                     result = await service.test_connection()
 
         assert result.success is True
-        assert "Connected to OpenAI" in result.message
+        assert "api.openai.com" in result.message
         assert result.models is not None
 
     @pytest.mark.asyncio
@@ -308,6 +310,12 @@ class TestLLMConfigServiceTestConnection:
         mock_llm_config.provider = "anthropic"
         mock_llm_config.api_key = "sk-ant-test-key"
         mock_llm_config.model = "claude-sonnet-4-20250514"
+        mock_llm_config.endpoint = None
+
+        # Mock Anthropic model listing
+        mock_models = [MagicMock(id="claude-sonnet-4-20250514", display_name="Claude Sonnet 4")]
+        mock_models_response = MagicMock()
+        mock_models_response.data = mock_models
 
         with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
             with patch(
@@ -316,14 +324,14 @@ class TestLLMConfigServiceTestConnection:
             ):
                 with patch("anthropic.AsyncAnthropic") as mock_anthropic:
                     mock_client = AsyncMock()
-                    mock_client.messages.create.return_value = MagicMock()
+                    mock_client.models.list.return_value = mock_models_response
                     mock_anthropic.return_value = mock_client
 
                     service = LLMConfigService(mock_session)
                     result = await service.test_connection()
 
         assert result.success is True
-        assert "Connected to Anthropic" in result.message
+        assert "api.anthropic.com" in result.message
         assert result.models is not None
 
     @pytest.mark.asyncio
@@ -336,6 +344,33 @@ class TestLLMConfigServiceTestConnection:
         mock_llm_config.provider = "openai"
         mock_llm_config.api_key = "invalid-key"
         mock_llm_config.model = "gpt-4o"
+        mock_llm_config.endpoint = None
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch(
+                "src.services.llm.factory.get_llm_config",
+                return_value=mock_llm_config,
+            ):
+                with patch("openai.AsyncOpenAI") as mock_openai:
+                    # Simulate client creation failure (e.g., invalid key format)
+                    mock_openai.side_effect = Exception("Invalid API key")
+
+                    service = LLMConfigService(mock_session)
+                    result = await service.test_connection()
+
+        assert result.success is False
+        assert "failed" in result.message.lower() or "Invalid API key" in result.message
+
+    @pytest.mark.asyncio
+    async def test_test_connection_model_listing_failure_still_succeeds(
+        self, mock_session, mock_settings
+    ):
+        """Test that model listing failure results in success with no models."""
+        mock_llm_config = MagicMock()
+        mock_llm_config.provider = "openai"
+        mock_llm_config.api_key = "sk-test-key"
+        mock_llm_config.model = "gpt-4o"
+        mock_llm_config.endpoint = None
 
         with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
             with patch(
@@ -344,14 +379,15 @@ class TestLLMConfigServiceTestConnection:
             ):
                 with patch("openai.AsyncOpenAI") as mock_openai:
                     mock_client = AsyncMock()
-                    mock_client.models.list.side_effect = Exception("Invalid API key")
+                    mock_client.models.list.side_effect = Exception("Permission denied")
                     mock_openai.return_value = mock_client
 
                     service = LLMConfigService(mock_session)
                     result = await service.test_connection()
 
-        assert result.success is False
-        assert "failed" in result.message.lower() or "Invalid API key" in result.message
+        assert result.success is True
+        assert "Model listing not available" in result.message
+        assert result.models is None
 
 
 class TestLLMConfigServiceListModels:
@@ -362,6 +398,10 @@ class TestLLMConfigServiceListModels:
         self, mock_session, mock_settings
     ):
         """Test list_models returns models when connection succeeds."""
+        model_infos = [
+            LLMModelInfo(id="gpt-4o", display_name="gpt-4o"),
+            LLMModelInfo(id="gpt-3.5-turbo", display_name="gpt-3.5-turbo"),
+        ]
         with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
             with patch.object(
                 LLMConfigService,
@@ -369,7 +409,7 @@ class TestLLMConfigServiceListModels:
                 return_value=LLMTestResult(
                     success=True,
                     message="Connected",
-                    models=["gpt-4o", "gpt-3.5-turbo"],
+                    models=model_infos,
                 ),
             ):
                 service = LLMConfigService(mock_session)
@@ -377,7 +417,7 @@ class TestLLMConfigServiceListModels:
 
         assert result is not None
         assert len(result) == 2
-        assert "gpt-4o" in result
+        assert result[0].id == "gpt-4o"
 
     @pytest.mark.asyncio
     async def test_list_models_returns_none_on_failure(
@@ -398,3 +438,104 @@ class TestLLMConfigServiceListModels:
                 result = await service.list_models()
 
         assert result is None
+
+
+class TestLLMConfigServiceLegacyCustomProvider:
+    """Test legacy 'custom' provider mapping to 'openai'."""
+
+    @pytest.mark.asyncio
+    async def test_get_config_maps_custom_to_openai(
+        self, mock_session, mock_settings, fernet_instance
+    ):
+        """Test that legacy 'custom' provider is mapped to 'openai' on read."""
+        encrypted_key = fernet_instance.encrypt(b"sk-custom-key").decode()
+        config_data = {
+            "provider": "custom",
+            "model": "my-custom-model",
+            "encrypted_api_key": encrypted_key,
+            "endpoint": "https://api.custom.com/v1",
+            "max_tokens": 4096,
+            "temperature": 0.7,
+        }
+
+        mock_config = MagicMock()
+        mock_config.value_json = config_data
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = mock_config
+        mock_session.execute.return_value = mock_result
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            service = LLMConfigService(mock_session)
+            result = await service.get_config()
+
+        assert result is not None
+        assert result.provider == "openai"
+        assert result.endpoint == "https://api.custom.com/v1"
+        assert result.model == "my-custom-model"
+
+    @pytest.mark.asyncio
+    async def test_test_connection_with_custom_endpoint(
+        self, mock_session, mock_settings
+    ):
+        """Test that custom endpoint is passed through to OpenAI client."""
+        mock_llm_config = MagicMock()
+        mock_llm_config.provider = "openai"
+        mock_llm_config.api_key = "sk-test-key"
+        mock_llm_config.model = "custom-model"
+        mock_llm_config.endpoint = "https://api.custom.com/v1"
+
+        mock_models_response = MagicMock()
+        mock_models_response.data = [MagicMock(id="custom-model")]
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch(
+                "src.services.llm.factory.get_llm_config",
+                return_value=mock_llm_config,
+            ):
+                with patch("openai.AsyncOpenAI") as mock_openai:
+                    mock_client = AsyncMock()
+                    mock_client.models.list.return_value = mock_models_response
+                    mock_openai.return_value = mock_client
+
+                    service = LLMConfigService(mock_session)
+                    result = await service.test_connection()
+
+                    # Verify endpoint was passed to client
+                    mock_openai.assert_called_once_with(
+                        api_key="sk-test-key",
+                        base_url="https://api.custom.com/v1",
+                    )
+
+        assert result.success is True
+        assert "api.custom.com" in result.message
+
+    @pytest.mark.asyncio
+    async def test_test_connection_graceful_model_listing_fallback(
+        self, mock_session, mock_settings
+    ):
+        """Test that model listing failure doesn't break connection test."""
+        mock_llm_config = MagicMock()
+        mock_llm_config.provider = "openai"
+        mock_llm_config.api_key = "sk-test-key"
+        mock_llm_config.model = "custom-model"
+        mock_llm_config.endpoint = "https://api.custom.com/v1"
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch(
+                "src.services.llm.factory.get_llm_config",
+                return_value=mock_llm_config,
+            ):
+                with patch("openai.AsyncOpenAI") as mock_openai:
+                    mock_client = AsyncMock()
+                    # Model listing fails (e.g., custom endpoint doesn't support it)
+                    mock_client.models.list.side_effect = Exception("Not supported")
+                    mock_openai.return_value = mock_client
+
+                    service = LLMConfigService(mock_session)
+                    result = await service.test_connection()
+
+        # Should still succeed, just without model list
+        assert result.success is True
+        assert "Model listing not available" in result.message
+        assert result.models is None

@@ -378,7 +378,7 @@ class TestReconciler:
         db_session: AsyncSession,
         repo_storage: RepoStorage,
     ):
-        """Insert orphan file_index row → reconciler removes it."""
+        """Insert orphan file_index row with content → reconciler reverse-syncs to S3."""
         from sqlalchemy.dialects.postgresql import insert
         from src.services.file_index_reconciler import reconcile_file_index
 
@@ -402,12 +402,16 @@ class TestReconciler:
         # Run reconciler
         stats = await reconcile_file_index(db_session, repo_storage)
 
-        # file_index should no longer have the orphan
+        # file_index should still have the entry (reverse-synced to S3)
         result = await db_session.execute(
             select(FileIndex).where(FileIndex.path == path)
         )
-        assert result.scalar_one_or_none() is None
-        assert stats["removed"] >= 1
+        assert result.scalar_one_or_none() is not None
+        assert stats["reverse_synced"] >= 1
+
+        # S3 should now have the content too
+        s3_content = await repo_storage.read(path)
+        assert s3_content == b"# Orphaned content"
 
 
 # =============================================================================
