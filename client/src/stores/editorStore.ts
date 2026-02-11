@@ -78,8 +78,8 @@ export interface DiffPreviewState {
 	remoteContent: string | null;
 	isConflict: boolean;
 	isLoading?: boolean;
-	resolution?: "keep_local" | "keep_remote";
-	onResolve?: (resolution: "keep_local" | "keep_remote") => void;
+	resolution?: "ours" | "theirs";
+	onResolve?: (resolution: "ours" | "theirs") => void;
 }
 
 export interface EditorTab {

@@ -184,34 +184,6 @@ class TestApplicationCRUD:
         _delete_app(e2e_client, platform_admin.headers, app1["id"])
         _delete_app(e2e_client, platform_admin.headers, app2["id"])
 
-    def test_update_application_navigation(self, e2e_client, platform_admin):
-        """Update application navigation configuration."""
-        app = _create_app(e2e_client, platform_admin.headers, "nav-test-app", name="Nav Test App")
-
-        # Update navigation
-        response = e2e_client.patch(
-            f"/api/applications/{app['id']}",
-            headers=platform_admin.headers,
-            json={
-                "navigation": {
-                    "sidebar": [
-                        {"id": "home", "label": "Home", "path": "/", "icon": "Home"},
-                        {"id": "settings", "label": "Settings", "path": "/settings"},
-                    ],
-                    "show_sidebar": True,
-                }
-            },
-        )
-        assert response.status_code == 200, f"Update navigation failed: {response.text}"
-        updated = response.json()
-
-        assert updated["navigation"] is not None
-        assert updated["navigation"]["sidebar"][0]["id"] == "home"
-        assert updated["navigation"]["show_sidebar"] is True
-
-        # Cleanup
-        _delete_app(e2e_client, platform_admin.headers, app["id"])
-
     def test_delete_application(self, e2e_client, platform_admin):
         """Delete application."""
         app = _create_app(

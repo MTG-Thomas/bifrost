@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any
 from uuid import UUID
 
 import redis.asyncio as redis
@@ -581,228 +581,90 @@ async def publish_app_published(
 
 
 # =============================================================================
-# Git Sync Pub/Sub (API -> Scheduler Communication)
+# Git Desktop Operations Pub/Sub (API -> Scheduler Communication)
 # =============================================================================
 
 
-async def publish_git_sync_request(
+async def publish_git_operation(
     job_id: str,
     org_id: str,
     user_id: str,
     user_email: str,
-    conflict_resolutions: Mapping[str, str],
-    confirm_orphans: bool,
-) -> None:
-    """
-    Request a git sync operation from the scheduler.
-
-    The scheduler listens on `bifrost:scheduler:git-sync` and executes
-    the sync, publishing progress to `git:{job_id}`.
-
-    Args:
-        job_id: Unique job ID for tracking
-        org_id: Organization ID to sync
-        user_id: User who initiated the sync
-        user_email: Email of the user (for git commit author)
-        conflict_resolutions: Dict mapping file paths to resolution strategy
-        confirm_orphans: Whether to proceed with orphan cleanup
-    """
-    message = {
-        "type": "git_sync_request",
-        "jobId": job_id,
-        "orgId": org_id,
-        "userId": user_id,
-        "userEmail": user_email,
-        "conflictResolutions": conflict_resolutions,
-        "confirmOrphans": confirm_orphans,
-    }
-    await manager._publish_to_redis("scheduler:git-sync", message)
-
-
-async def publish_git_sync_progress(
-    job_id: str,
-    phase: str,
-    current: int,
-    total: int,
-    path: str | None = None,
-) -> None:
-    """
-    Publish git sync progress update.
-
-    Broadcasts to git:{job_id} channel for real-time UI updates.
-
-    Args:
-        job_id: Unique job ID
-        phase: Current phase (pulling, analyzing, pushing, etc.)
-        current: Current item number
-        total: Total items to process
-        path: Current file path being processed
-    """
-    message = {
-        "type": "git_progress",
-        "jobId": job_id,
-        "phase": phase,
-        "current": current,
-        "total": total,
-        "path": path,
-    }
-    await manager.broadcast(f"git:{job_id}", message)
-
-
-async def publish_git_sync_log(
-    job_id: str,
-    level: str,
-    message: str,
-) -> None:
-    """
-    Publish git sync log message.
-
-    Broadcasts to git:{job_id} channel for real-time log streaming.
-
-    Args:
-        job_id: Unique job ID
-        level: Log level (debug, info, warning, error)
-        message: Log message text
-    """
-    log_message = {
-        "type": "git_log",
-        "jobId": job_id,
-        "level": level,
-        "message": message,
-    }
-    await manager.broadcast(f"git:{job_id}", log_message)
-
-
-async def publish_git_sync_completed(
-    job_id: str,
-    status: str,
-    message: str,
+    op_type: str,
     **kwargs: Any,
 ) -> None:
     """
-    Publish git sync completion.
+    Request a git desktop operation from the scheduler.
 
-    Broadcasts to git:{job_id} channel to notify the UI that sync is complete.
-    Also stores the result in Redis for HTTP polling (5-minute TTL).
-
-    Args:
-        job_id: Unique job ID
-        status: Completion status (success, failed, conflict, orphans_detected)
-        message: Human-readable completion message
-        **kwargs: Additional data (conflicts, orphans, counts, etc.)
-    """
-    import json
-
-    completion_message = {
-        "type": "git_complete",
-        "jobId": job_id,
-        "status": status,
-        "message": message,
-        **kwargs,
-    }
-    await manager.broadcast(f"git:{job_id}", completion_message)
-
-    # Store result in Redis for HTTP polling (used by E2E tests and fallback)
-    try:
-        from src.core.redis_client import get_redis_client
-
-        redis_client = get_redis_client()
-        if redis_client:
-            result_key = f"bifrost:job:{job_id}"
-            # Store job result with 5-minute TTL
-            await redis_client.setex(
-                result_key,
-                300,  # 5 minutes TTL
-                json.dumps(completion_message),
-            )
-            logger.info(f"Stored job result in Redis: {result_key} status={status}")
-        else:
-            logger.warning(f"Redis client is None, cannot store job result for {job_id}")
-    except Exception as e:
-        logger.warning(f"Failed to store job result in Redis: {e}")
-
-
-# =============================================================================
-# Git Sync Preview Pub/Sub (API -> Scheduler Communication)
-# =============================================================================
-
-
-async def publish_git_sync_preview_request(
-    job_id: str,
-    org_id: str,
-    user_id: str,
-    user_email: str,
-) -> None:
-    """
-    Request a git sync preview operation from the scheduler.
-
-    The scheduler listens on `bifrost:scheduler:git-sync-preview` and executes
-    the preview, publishing progress to `git:{job_id}`.
+    The scheduler listens on `bifrost:scheduler:git-op` and dispatches
+    to the appropriate service method based on op_type.
 
     Args:
         job_id: Unique job ID for tracking
-        org_id: Organization ID to sync
-        user_id: User who initiated the preview
+        org_id: Organization ID
+        user_id: User who initiated the operation
         user_email: Email of the user
+        op_type: Operation type (git_fetch, git_commit, git_pull, git_push, git_status, git_resolve, git_diff)
+        **kwargs: Additional operation-specific data
     """
-    message = {
-        "type": "git_sync_preview_request",
+    message: dict[str, Any] = {
+        "type": op_type,
         "jobId": job_id,
         "orgId": org_id,
         "userId": user_id,
         "userEmail": user_email,
+        **kwargs,
     }
-    await manager._publish_to_redis("scheduler:git-sync-preview", message)
+    await manager._publish_to_redis("scheduler:git-op", message)
 
 
-async def publish_git_sync_preview_completed(
+async def publish_git_op_completed(
     job_id: str,
     status: str,
-    preview: dict[str, Any] | None = None,
+    result_type: str,
+    data: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
     """
-    Publish git sync preview completion.
+    Publish git operation completion.
 
-    Broadcasts to git:{job_id} channel with the full preview data.
-    Also stores the result in Redis for HTTP polling (5-minute TTL).
+    Broadcasts to git:{job_id} channel with the result.
+    Also stores in Redis for HTTP polling (5-minute TTL).
 
     Args:
         job_id: Unique job ID
-        status: Completion status (success, error)
-        preview: Full SyncPreviewResponse data (as dict)
-        error: Error message if status is error
+        status: Completion status (success, failed, conflict)
+        result_type: Which operation completed (fetch, commit, pull, push, status, resolve, diff)
+        data: Result data dict
+        error: Error message if failed
     """
     import json
 
     completion_message: dict[str, Any] = {
-        "type": "git_preview_complete",
+        "type": "git_op_complete",
         "jobId": job_id,
         "status": status,
+        "resultType": result_type,
     }
-    if preview is not None:
-        completion_message["preview"] = preview
+    if data is not None:
+        completion_message["data"] = data
     if error is not None:
         completion_message["error"] = error
 
     await manager.broadcast(f"git:{job_id}", completion_message)
 
-    # Store result in Redis for HTTP polling (used by E2E tests and fallback)
+    # Store result in Redis for HTTP polling
     try:
         from src.core.redis_client import get_redis_client
 
         redis_client = get_redis_client()
         if redis_client:
             result_key = f"bifrost:job:{job_id}"
-            # Store job result with 5-minute TTL
             await redis_client.setex(
                 result_key,
                 300,  # 5 minutes TTL
                 json.dumps(completion_message),
             )
-            logger.info(f"Stored preview result in Redis: {result_key} status={status}")
-        else:
-            logger.warning(f"Redis client is None, cannot store job result for {job_id}")
     except Exception as e:
         logger.warning(f"Failed to store job result in Redis: {e}")
 

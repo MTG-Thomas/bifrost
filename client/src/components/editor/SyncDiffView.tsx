@@ -2,7 +2,8 @@
  * SyncDiffView - Shows a readonly diff for sync preview
  *
  * Displays local vs remote content using Monaco DiffEditor.
- * For conflicts, includes resolution buttons.
+ * For uncommitted changes: "Working Tree" vs "Last Commit"
+ * For merge conflicts: "Ours (Platform)" vs "Theirs (Git)"
  */
 
 import { useRef, useCallback } from "react";
@@ -54,8 +55,13 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 		if (path.endsWith(".py")) return "python";
 		if (path.endsWith(".tsx") || path.endsWith(".ts")) return "typescript";
 		if (path.endsWith(".jsx") || path.endsWith(".js")) return "javascript";
+		if (path.endsWith(".yaml") || path.endsWith(".yml")) return "yaml";
 		return "plaintext";
 	};
+
+	// Labels depend on whether this is a conflict or uncommitted change
+	const leftLabel = preview.isConflict ? "Ours (Platform)" : "Working Tree";
+	const rightLabel = preview.isConflict ? "Theirs (Git)" : "Last Commit";
 
 	return (
 		<div className="flex flex-col h-full bg-background">
@@ -82,10 +88,10 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 			{/* Diff labels */}
 			<div className="flex border-b text-xs">
 				<div className="flex-1 px-3 py-1 bg-red-500/10 text-center">
-					Local (Database)
+					{leftLabel}
 				</div>
 				<div className="flex-1 px-3 py-1 bg-green-500/10 text-center">
-					Incoming (GitHub)
+					{rightLabel}
 				</div>
 			</div>
 
@@ -119,22 +125,22 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 					<Button
 						variant="outline"
 						size="sm"
-						onClick={() => preview.onResolve?.("keep_local")}
+						onClick={() => preview.onResolve?.("ours")}
 						className={cn(
-							preview.resolution === "keep_local" && "bg-blue-500 text-white"
+							preview.resolution === "ours" && "bg-blue-500 text-white"
 						)}
 					>
-						Keep Local
+						Keep Ours
 					</Button>
 					<Button
 						variant="outline"
 						size="sm"
-						onClick={() => preview.onResolve?.("keep_remote")}
+						onClick={() => preview.onResolve?.("theirs")}
 						className={cn(
-							preview.resolution === "keep_remote" && "bg-blue-500 text-white"
+							preview.resolution === "theirs" && "bg-blue-500 text-white"
 						)}
 					>
-						Accept Incoming
+						Keep Theirs
 					</Button>
 				</div>
 			)}

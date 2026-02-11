@@ -14,7 +14,8 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.orm.agents import Agent
+from src.models.orm.agents import Agent, AgentRole
+from src.models.orm.app_roles import AppRole
 from src.models.orm.applications import Application
 from src.models.orm.forms import Form, FormRole
 from src.models.orm.organizations import Organization
@@ -71,7 +72,7 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
     role_result = await db.execute(select(Role))
     roles_list = role_result.scalars().all()
 
-    # Fetch role assignments for forms and workflows
+    # Fetch role assignments for all entity types
     wf_role_result = await db.execute(select(WorkflowRole))
     wf_roles_by_wf: dict[str, list[str]] = {}
     for wr in wf_role_result.scalars().all():
@@ -81,6 +82,16 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
     form_roles_by_form: dict[str, list[str]] = {}
     for fr in form_role_result.scalars().all():
         form_roles_by_form.setdefault(str(fr.form_id), []).append(str(fr.role_id))
+
+    agent_role_result = await db.execute(select(AgentRole))
+    agent_roles_by_agent: dict[str, list[str]] = {}
+    for ar in agent_role_result.scalars().all():
+        agent_roles_by_agent.setdefault(str(ar.agent_id), []).append(str(ar.role_id))
+
+    app_role_result = await db.execute(select(AppRole))
+    app_roles_by_app: dict[str, list[str]] = {}
+    for apr in app_role_result.scalars().all():
+        app_roles_by_app.setdefault(str(apr.app_id), []).append(str(apr.role_id))
 
     # Build manifest
     manifest = Manifest(
@@ -118,6 +129,7 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
                 path=f"forms/{form.id}.form.yaml",
                 organization_id=str(form.organization_id) if form.organization_id else None,
                 roles=form_roles_by_form.get(str(form.id), []),
+                access_level=str(form.access_level) if form.access_level else "role_based",
             )
             for form in forms_list
         },
@@ -126,16 +138,19 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
                 id=str(agent.id),
                 path=f"agents/{agent.id}.agent.yaml",
                 organization_id=str(agent.organization_id) if agent.organization_id else None,
-                roles=[],
+                roles=agent_roles_by_agent.get(str(agent.id), []),
+                access_level=str(agent.access_level) if agent.access_level else "role_based",
             )
             for agent in agents_list
+            if not agent.is_system  # Exclude system agents
         },
         apps={
             app.name: ManifestApp(
                 id=str(app.id),
                 path=f"apps/{app.slug or app.id}/app.yaml",
                 organization_id=str(app.organization_id) if app.organization_id else None,
-                roles=[],
+                roles=app_roles_by_app.get(str(app.id), []),
+                access_level=str(app.access_level) if app.access_level else "authenticated",
             )
             for app in apps_list
         },

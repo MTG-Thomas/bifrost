@@ -136,6 +136,8 @@ def is_token_expired(buffer_seconds: int = 60) -> bool:
     try:
         # Parse ISO 8601 timestamp
         expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
 
         # Add buffer to current time (refresh early)

@@ -13,21 +13,34 @@ Key principles:
 
 import hashlib
 import logging
-import shutil
 import subprocess
-import tempfile
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
-from typing import Awaitable, Callable, Literal
+from typing import TYPE_CHECKING
 
 import yaml
 from git import Repo as GitRepo
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import Settings, get_settings
+from src.models.contracts.github import (
+    PreflightIssue,
+    PreflightResult,
+)
+from src.services.git_repo_manager import GitRepoManager
 from src.services.github_sync_entity_metadata import extract_entity_metadata
+
+if TYPE_CHECKING:
+    from src.models.contracts.github import (
+        CommitResult,
+        DiffResult,
+        FetchResult,
+        PullResult,
+        PushResult,
+        ResolveResult,
+        WorkingTreeStatus,
+    )
 from src.services.manifest import (
     Manifest,
     parse_manifest,
@@ -35,150 +48,8 @@ from src.services.manifest import (
     get_all_entity_ids,
 )
 from src.services.manifest_generator import generate_manifest
-from src.services.entity_serializers import (
-    serialize_form_to_yaml,
-    serialize_agent_to_yaml,
-    serialize_app_to_yaml,
-)
 
 logger = logging.getLogger(__name__)
-
-# Type alias for progress callback
-ProgressCallback = Callable[[dict], Awaitable[None]]
-LogCallback = Callable[[str, str], Awaitable[None]]
-
-
-# =============================================================================
-# Pydantic Models
-# =============================================================================
-
-
-class SyncActionType(str, Enum):
-    """Type of sync action."""
-    ADD = "add"
-    MODIFY = "modify"
-    DELETE = "delete"
-
-
-class SyncAction(BaseModel):
-    """A single sync action (pull or push)."""
-    path: str = Field(..., description="File path relative to workspace root")
-    action: SyncActionType = Field(..., description="Type of action")
-    sha: str | None = Field(default=None, description="Content hash")
-
-    # Entity metadata for UI display
-    display_name: str | None = Field(default=None)
-    entity_type: str | None = Field(default=None)
-    parent_slug: str | None = Field(default=None)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-def _enrich_sync_action(
-    path: str,
-    action: SyncActionType,
-    sha: str | None = None,
-    content: bytes | None = None,
-) -> SyncAction:
-    """Create a SyncAction enriched with entity metadata."""
-    metadata = extract_entity_metadata(path, content)
-    return SyncAction(
-        path=path,
-        action=action,
-        sha=sha,
-        display_name=metadata.display_name,
-        entity_type=metadata.entity_type,
-        parent_slug=metadata.parent_slug,
-    )
-
-
-class ConflictInfo(BaseModel):
-    """Information about a conflict between local and remote."""
-    path: str = Field(..., description="File path with conflict")
-    local_content: str | None = Field(default=None)
-    remote_content: str | None = Field(default=None)
-    local_sha: str = Field(...)
-    remote_sha: str = Field(...)
-    display_name: str | None = Field(default=None)
-    entity_type: str | None = Field(default=None)
-    parent_slug: str | None = Field(default=None)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class WorkflowReference(BaseModel):
-    """A reference to an entity that uses a workflow."""
-    type: str = Field(...)
-    id: str = Field(...)
-    name: str = Field(...)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class OrphanInfo(BaseModel):
-    """Information about a workflow that will become orphaned."""
-    workflow_id: str = Field(...)
-    workflow_name: str = Field(...)
-    function_name: str = Field(...)
-    last_path: str = Field(...)
-    used_by: list[WorkflowReference] = Field(default_factory=list)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PreflightIssue(BaseModel):
-    """A single issue found during preflight validation."""
-    path: str = Field(...)
-    line: int | None = Field(default=None)
-    message: str = Field(...)
-    severity: Literal["error", "warning"] = Field(...)
-    category: Literal["syntax", "lint", "ref", "orphan", "manifest"] = Field(...)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PreflightResult(BaseModel):
-    """Result of preflight validation."""
-    valid: bool = Field(...)
-    issues: list[PreflightIssue] = Field(default_factory=list)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SyncPreview(BaseModel):
-    """Preview of sync operations before execution."""
-    to_pull: list[SyncAction] = Field(default_factory=list)
-    to_push: list[SyncAction] = Field(default_factory=list)
-    conflicts: list[ConflictInfo] = Field(default_factory=list)
-    preflight: PreflightResult = Field(
-        default_factory=lambda: PreflightResult(valid=True),
-    )
-    is_empty: bool = Field(default=False)
-    commit_sha: str | None = Field(default=None)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SyncResult(BaseModel):
-    """Result of sync execution."""
-    success: bool = Field(...)
-    pulled: int = Field(default=0)
-    pushed: int = Field(default=0)
-    orphaned_workflows: list[str] = Field(default_factory=list)
-    commit_sha: str | None = Field(default=None)
-    error: str | None = Field(default=None)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SyncExecuteRequest(BaseModel):
-    """Request to execute sync with conflict resolutions."""
-    conflict_resolutions: dict[str, Literal["keep_local", "keep_remote"]] = Field(
-        default_factory=dict,
-    )
-    confirm_orphans: bool = Field(default=False)
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================
@@ -189,20 +60,6 @@ class SyncExecuteRequest(BaseModel):
 class SyncError(Exception):
     """Error during sync operation."""
     pass
-
-
-class ConflictError(SyncError):
-    """Unresolved conflicts exist."""
-    def __init__(self, conflicts: list[str]):
-        self.conflicts = conflicts
-        super().__init__(f"Unresolved conflicts: {', '.join(conflicts)}")
-
-
-class OrphanError(SyncError):
-    """User must confirm orphan workflows."""
-    def __init__(self, orphans: list[str]):
-        self.orphans = orphans
-        super().__init__(f"Must confirm orphan workflows: {', '.join(orphans)}")
 
 
 # =============================================================================
@@ -247,276 +104,12 @@ class GitHubSyncService:
         db: AsyncSession,
         repo_url: str,
         branch: str = "main",
+        settings: Settings | None = None,
     ):
         self.db = db
         self.repo_url = repo_url
         self.branch = branch
-
-    # -----------------------------------------------------------------
-    # Push: platform → remote repo
-    # -----------------------------------------------------------------
-
-    async def push(
-        self,
-        progress_callback: ProgressCallback | None = None,
-        log_callback: LogCallback | None = None,
-        conflict_resolutions: dict[str, str] | None = None,
-    ) -> SyncResult:
-        """
-        Serialize current DB state to a git working tree, commit, and push.
-
-        For initial connect (empty repo): creates initial commit.
-        For incremental: commits changes and pushes.
-
-        Args:
-            conflict_resolutions: Dict mapping file paths to resolution strategy
-                ("keep_local" or "keep_remote"). Files resolved as "keep_remote"
-                are excluded from the push (remote version preserved).
-        """
-        resolutions = conflict_resolutions or {}
-        tmp_dir = Path(tempfile.mkdtemp(prefix="bifrost-sync-push-"))
-        try:
-            # Clone or init
-            repo = self._clone_or_init(tmp_dir)
-
-            # For incremental push: remove all tracked content files first
-            # so that deleted entities disappear from the repo.
-            # Keep .git/ and .gitkeep intact.
-            if repo.head.is_valid():
-                for item in tmp_dir.iterdir():
-                    if item.name == ".git":
-                        continue
-                    if item.is_dir():
-                        shutil.rmtree(item)
-                    else:
-                        item.unlink()
-
-            # Serialize platform state to working tree
-            await self._serialize_platform_state(tmp_dir)
-
-            # Apply conflict resolutions: for "keep_remote" files, restore
-            # the remote version so the push doesn't overwrite it.
-            for conflict_path, resolution in resolutions.items():
-                if resolution == "keep_remote":
-                    try:
-                        repo.git.checkout("--", conflict_path)
-                    except Exception:
-                        pass  # File may not exist in remote yet
-
-            # Stage everything: git add -A (handles adds, modifications, deletions)
-            repo.git.add(A=True)
-
-            # Check if there are changes to commit
-            if repo.head.is_valid() and not repo.index.diff("HEAD"):
-                return SyncResult(success=True, pushed=0)
-
-            # Count files being pushed
-            if repo.head.is_valid():
-                pushed_count = len(repo.index.diff("HEAD"))
-            else:
-                pushed_count = len(repo.untracked_files) + len(list(repo.index.diff(None)))
-
-            # Commit
-            commit = repo.index.commit("Sync from Bifrost")
-
-            # Push
-            origin = repo.remotes.origin
-            origin.push(refspec=f"HEAD:refs/heads/{self.branch}")
-
-            logger.info(f"Pushed {pushed_count} files, commit={commit.hexsha[:8]}")
-            return SyncResult(
-                success=True,
-                pushed=max(pushed_count, 1),  # At least 1 if we committed
-                commit_sha=commit.hexsha,
-            )
-
-        except Exception as e:
-            logger.error(f"Push failed: {e}", exc_info=True)
-            return SyncResult(success=False, error=str(e))
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    # -----------------------------------------------------------------
-    # Pull: remote repo → platform
-    # -----------------------------------------------------------------
-
-    async def pull(
-        self,
-        progress_callback: ProgressCallback | None = None,
-        log_callback: LogCallback | None = None,
-        confirm_orphans: bool = False,
-    ) -> SyncResult:
-        """
-        Pull remote changes into the platform DB and file_index.
-
-        Args:
-            confirm_orphans: If True, deactivate workflows that exist in DB
-                but were removed from the manifest. If False, skip orphan cleanup.
-        """
-        tmp_dir = Path(tempfile.mkdtemp(prefix="bifrost-sync-pull-"))
-        try:
-            repo = self._clone_or_init(tmp_dir)
-
-            # Pull latest
-            if repo.remotes:
-                repo.remotes.origin.pull(self.branch)
-
-            # Read manifest
-            manifest_path = tmp_dir / ".bifrost" / "metadata.yaml"
-            if not manifest_path.exists():
-                return SyncResult(success=True, pulled=0)
-
-            manifest = parse_manifest(manifest_path.read_text())
-
-            # Import workflows
-            pulled = 0
-            # Track which workflow IDs are still in the manifest
-            manifest_wf_ids = set()
-            for wf_name, mwf in manifest.workflows.items():
-                manifest_wf_ids.add(mwf.id)
-                wf_path = tmp_dir / mwf.path
-                if wf_path.exists():
-                    content = wf_path.read_bytes()
-                    await self._import_workflow(wf_name, mwf, content)
-                    pulled += 1
-                else:
-                    # File deleted from repo → deactivate
-                    await self._deactivate_workflow(mwf.id)
-
-            # Deactivate workflows that exist in DB but were removed from manifest
-            # Only if user confirmed orphan cleanup
-            if confirm_orphans:
-                await self._deactivate_missing_workflows(manifest_wf_ids)
-
-            # Import forms
-            for _form_name, mform in manifest.forms.items():
-                form_path = tmp_dir / mform.path
-                if form_path.exists():
-                    content = form_path.read_bytes()
-                    await self._import_form(mform, content)
-                    pulled += 1
-
-            # Import agents
-            for _agent_name, magent in manifest.agents.items():
-                agent_path = tmp_dir / magent.path
-                if agent_path.exists():
-                    content = agent_path.read_bytes()
-                    await self._import_agent(magent, content)
-                    pulled += 1
-
-            # Import apps
-            for _app_name, mapp in manifest.apps.items():
-                app_path = tmp_dir / mapp.path
-                if app_path.exists():
-                    content = app_path.read_bytes()
-                    await self._import_app(mapp, content)
-                    pulled += 1
-
-            # Update file_index: sync all files from repo, remove stale entries
-            await self._update_file_index(tmp_dir)
-
-            await self.db.commit()
-
-            commit_sha = repo.head.commit.hexsha if repo.head.is_valid() else None
-            logger.info(f"Pulled {pulled} entities, commit={commit_sha[:8] if commit_sha else 'none'}")
-            return SyncResult(
-                success=True,
-                pulled=pulled,
-                commit_sha=commit_sha,
-            )
-
-        except Exception as e:
-            logger.error(f"Pull failed: {e}", exc_info=True)
-            return SyncResult(success=False, error=str(e))
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    # -----------------------------------------------------------------
-    # Preview: what will change?
-    # -----------------------------------------------------------------
-
-    async def preview(
-        self,
-        progress_callback: ProgressCallback | None = None,
-        log_callback: LogCallback | None = None,
-    ) -> SyncPreview:
-        """
-        Compare platform state with remote repo and return a preview of changes.
-        """
-        tmp_dir = Path(tempfile.mkdtemp(prefix="bifrost-sync-preview-"))
-        try:
-            repo = self._clone_or_init(tmp_dir)
-
-            # Get remote state (what's in the repo)
-            remote_files = _walk_tree(tmp_dir)
-            remote_hashes = {p: _content_hash(c) for p, c in remote_files.items()}
-
-            # Get local state (serialize platform to temp)
-            local_dir = Path(tempfile.mkdtemp(prefix="bifrost-sync-local-"))
-            try:
-                await self._serialize_platform_state(local_dir)
-                local_files = _walk_tree(local_dir)
-                local_hashes = {p: _content_hash(c) for p, c in local_files.items()}
-            finally:
-                shutil.rmtree(local_dir, ignore_errors=True)
-
-            to_push: list[SyncAction] = []
-            to_pull: list[SyncAction] = []
-            conflicts: list[ConflictInfo] = []
-
-            all_paths = set(local_hashes.keys()) | set(remote_hashes.keys())
-
-            for path in sorted(all_paths):
-                local_hash = local_hashes.get(path)
-                remote_hash = remote_hashes.get(path)
-
-                if local_hash and not remote_hash:
-                    # Only in local → push ADD
-                    to_push.append(_enrich_sync_action(
-                        path, SyncActionType.ADD, sha=local_hash,
-                        content=local_files.get(path),
-                    ))
-
-                elif remote_hash and not local_hash:
-                    # Only in remote → pull ADD
-                    to_pull.append(_enrich_sync_action(
-                        path, SyncActionType.ADD, sha=remote_hash,
-                        content=remote_files.get(path),
-                    ))
-
-                elif local_hash != remote_hash:
-                    # Both exist but different → conflict
-                    local_content = local_files.get(path, b"")
-                    remote_content = remote_files.get(path, b"")
-                    metadata = extract_entity_metadata(path, remote_content)
-                    conflicts.append(ConflictInfo(
-                        path=path,
-                        local_content=local_content.decode("utf-8", errors="replace"),
-                        remote_content=remote_content.decode("utf-8", errors="replace"),
-                        local_sha=local_hash or "",
-                        remote_sha=remote_hash or "",
-                        display_name=metadata.display_name,
-                        entity_type=metadata.entity_type,
-                        parent_slug=metadata.parent_slug,
-                    ))
-
-            # Run preflight on remote repo
-            pf = await self._run_preflight(tmp_dir)
-
-            commit_sha = repo.head.commit.hexsha if repo.head.is_valid() else None
-            is_empty = not to_push and not to_pull and not conflicts
-
-            return SyncPreview(
-                to_pull=to_pull,
-                to_push=to_push,
-                conflicts=conflicts,
-                preflight=pf,
-                is_empty=is_empty,
-                commit_sha=commit_sha,
-            )
-
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        self.repo_manager = GitRepoManager(settings or get_settings())
 
     # -----------------------------------------------------------------
     # Preflight: validate repo health
@@ -528,28 +121,606 @@ class GitHubSyncService:
         """
         Validate the remote repo's health without syncing.
 
+        Uses GitRepoManager to restore persistent .git/ from S3.
         Checks: Python syntax, ruff lint, UUID ref resolution, manifest validity.
         """
-        tmp_dir = Path(tempfile.mkdtemp(prefix="bifrost-sync-preflight-"))
+        async with self.repo_manager.checkout() as work_dir:
+            if not (work_dir / ".git").exists():
+                self._clone_or_init(work_dir)
+            return await self._run_preflight(work_dir)
+
+    # -----------------------------------------------------------------
+    # Desktop-style operations: fetch, status, commit, pull, push, resolve, diff
+    # -----------------------------------------------------------------
+
+    async def desktop_fetch(self) -> "FetchResult":
+        """Git fetch origin. Compute ahead/behind counts."""
+        from src.models.contracts.github import FetchResult
+
         try:
-            self._clone_or_init(tmp_dir)
-            return await self._run_preflight(tmp_dir)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            async with self.repo_manager.checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                # Fetch remote
+                remote_exists = True
+                try:
+                    repo.remotes.origin.fetch(self.branch)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "not found" in err_str or "empty" in err_str or "couldn't find remote ref" in err_str:
+                        remote_exists = False
+                    else:
+                        raise
+
+                # Compute ahead/behind
+                ahead = 0
+                behind = 0
+                if remote_exists and repo.head.is_valid():
+                    try:
+                        ahead = int(repo.git.rev_list("--count", f"origin/{self.branch}..HEAD"))
+                    except Exception:
+                        ahead = 0
+                    try:
+                        behind = int(repo.git.rev_list("--count", f"HEAD..origin/{self.branch}"))
+                    except Exception:
+                        behind = 0
+
+                return FetchResult(
+                    success=True,
+                    commits_ahead=ahead,
+                    commits_behind=behind,
+                    remote_branch_exists=remote_exists,
+                )
+        except Exception as e:
+            logger.error(f"Fetch failed: {e}", exc_info=True)
+            return FetchResult(success=False, error=str(e))
+
+    async def desktop_status(self) -> "WorkingTreeStatus":
+        """Get working tree status (uncommitted changes). Regenerates manifest first."""
+        from src.models.contracts.github import ChangedFile, WorkingTreeStatus
+
+        try:
+            async with self.repo_manager.checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                # Regenerate manifest before checking status
+                await self._regenerate_manifest_only(work_dir)
+
+                # Stage everything to get accurate diff
+                repo.git.add(A=True)
+
+                changed: list[ChangedFile] = []
+
+                if repo.head.is_valid():
+                    # Diff staged vs HEAD
+                    porcelain = repo.git.status("--porcelain")
+                    for line in porcelain.strip().split("\n"):
+                        if not line.strip():
+                            continue
+                        status_code = line[:2].strip()
+                        path = line[3:].strip()
+                        # Strip quotes from paths with special chars
+                        if path.startswith('"') and path.endswith('"'):
+                            path = path[1:-1]
+
+                        if status_code in ("A", "??"):
+                            change_type = "added"
+                        elif status_code == "D":
+                            change_type = "deleted"
+                        elif status_code == "R":
+                            change_type = "renamed"
+                        else:
+                            change_type = "modified"
+
+                        metadata = extract_entity_metadata(path)
+                        changed.append(ChangedFile(
+                            path=path,
+                            change_type=change_type,
+                            display_name=metadata.display_name,
+                            entity_type=metadata.entity_type,
+                        ))
+                else:
+                    # No HEAD yet - all files are new
+                    for path in repo.untracked_files:
+                        metadata = extract_entity_metadata(path)
+                        changed.append(ChangedFile(
+                            path=path,
+                            change_type="added",
+                            display_name=metadata.display_name,
+                            entity_type=metadata.entity_type,
+                        ))
+
+                # Unstage (reset) so we don't pollute the working tree
+                if repo.head.is_valid():
+                    repo.git.reset("HEAD")
+
+                return WorkingTreeStatus(
+                    changed_files=changed,
+                    total_changes=len(changed),
+                )
+        except Exception as e:
+            logger.error(f"Status failed: {e}", exc_info=True)
+            return WorkingTreeStatus()
+
+    async def desktop_commit(self, message: str) -> "CommitResult":
+        """
+        Commit working tree changes (local only, no push).
+        Regenerates manifest, runs preflight, commits if valid.
+        """
+        from src.models.contracts.github import CommitResult
+
+        try:
+            async with self.repo_manager.checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                # Regenerate manifest
+                await self._regenerate_manifest_only(work_dir)
+
+                # Stage everything
+                repo.git.add(A=True)
+
+                # Check if there are changes to commit
+                if repo.head.is_valid() and not repo.index.diff("HEAD") and not repo.untracked_files:
+                    return CommitResult(success=True, files_committed=0)
+
+                # Run preflight
+                pf = await self._run_preflight(work_dir)
+                if not pf.valid:
+                    return CommitResult(success=False, error="Preflight validation failed", preflight=pf)
+
+                # Count files
+                if repo.head.is_valid():
+                    file_count = len(repo.index.diff("HEAD")) + len(repo.untracked_files)
+                else:
+                    file_count = len(repo.untracked_files) + len(list(repo.index.diff(None)))
+
+                # Commit
+                commit = repo.index.commit(message)
+
+                logger.info(f"Committed {file_count} files: {commit.hexsha[:8]}")
+                return CommitResult(
+                    success=True,
+                    commit_sha=commit.hexsha,
+                    files_committed=max(file_count, 1),
+                    preflight=pf,
+                )
+        except Exception as e:
+            logger.error(f"Commit failed: {e}", exc_info=True)
+            return CommitResult(success=False, error=str(e))
+
+    async def desktop_pull(self) -> "PullResult":
+        """
+        Pull remote changes. On success, import entities.
+        On conflict, return PullResult with conflicts list.
+        """
+        from src.models.contracts.github import MergeConflict, PullResult
+
+        try:
+            async with self.repo_manager.checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                # Fetch first
+                remote_exists = True
+                try:
+                    repo.remotes.origin.fetch(self.branch)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "not found" in err_str or "empty" in err_str or "couldn't find remote ref" in err_str:
+                        remote_exists = False
+                    else:
+                        raise
+
+                if not remote_exists:
+                    return PullResult(success=True, pulled=0)
+
+                # Attempt merge
+                try:
+                    repo.git.merge(f"origin/{self.branch}")
+                except Exception:
+                    # Check for actual merge conflict (MERGE_HEAD exists after failed merge)
+                    is_merge_conflict = (work_dir / ".git" / "MERGE_HEAD").exists()
+
+                    if is_merge_conflict:
+                        # Parse conflicts using GitPython's unmerged_blobs API
+                        conflicts: list[MergeConflict] = []
+                        try:
+                            unmerged = repo.index.unmerged_blobs()
+                            conflicted_files = sorted(unmerged.keys())
+                        except Exception:
+                            conflicted_files = []
+
+                        for cpath in conflicted_files:
+                            ours_content = None
+                            theirs_content = None
+                            try:
+                                ours_content = repo.git.show(f":2:{cpath}")
+                            except Exception:
+                                pass
+                            try:
+                                theirs_content = repo.git.show(f":3:{cpath}")
+                            except Exception:
+                                pass
+
+                            metadata = extract_entity_metadata(cpath)
+                            conflicts.append(MergeConflict(
+                                path=cpath,
+                                ours_content=ours_content,
+                                theirs_content=theirs_content,
+                                display_name=metadata.display_name,
+                                entity_type=metadata.entity_type,
+                            ))
+
+                        # DON'T abort merge - leave it in merge state for resolve
+                        return PullResult(
+                            success=False,
+                            conflicts=conflicts,
+                            error="Merge conflicts detected",
+                        )
+                    else:
+                        raise
+
+                # Success - import entities atomically with savepoint
+                async with self.db.begin_nested():
+                    pulled = await self._import_all_entities(work_dir)
+                    await self._delete_removed_entities(work_dir)
+                    await self._update_file_index(work_dir)
+                await self.db.commit()
+
+                commit_sha = repo.head.commit.hexsha if repo.head.is_valid() else None
+                logger.info(f"Pull complete: {pulled} entities, commit={commit_sha[:8] if commit_sha else 'none'}")
+                return PullResult(
+                    success=True,
+                    pulled=pulled,
+                    commit_sha=commit_sha,
+                )
+        except Exception as e:
+            logger.error(f"Pull failed: {e}", exc_info=True)
+            return PullResult(success=False, error=str(e))
+
+    async def desktop_push(self) -> "PushResult":
+        """Push existing local commits to remote. Does NOT commit first."""
+        from src.models.contracts.github import PushResult
+
+        try:
+            async with self.repo_manager.checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                if not repo.head.is_valid():
+                    return PushResult(success=True, pushed_commits=0)
+
+                # Count ahead before push
+                ahead = 0
+                try:
+                    repo.remotes.origin.fetch(self.branch)
+                    ahead = int(repo.git.rev_list("--count", f"origin/{self.branch}..HEAD"))
+                except Exception:
+                    # If remote branch doesn't exist, everything is ahead
+                    ahead = int(repo.git.rev_list("--count", "HEAD"))
+
+                if ahead == 0:
+                    return PushResult(success=True, pushed_commits=0)
+
+                # Push
+                push_infos = repo.remotes.origin.push(refspec=f"HEAD:refs/heads/{self.branch}")
+
+                # Check for push errors (GitPython doesn't raise on push failures)
+                from git.remote import PushInfo
+                for pi in push_infos:
+                    if pi.flags & PushInfo.ERROR:
+                        error_msg = pi.summary.strip() if pi.summary else "Push rejected"
+                        logger.error(f"Push error: {error_msg}")
+                        return PushResult(success=False, error=error_msg)
+                    if pi.flags & PushInfo.REJECTED:
+                        error_msg = f"Push rejected (non-fast-forward): {pi.summary.strip() if pi.summary else ''}"
+                        logger.error(error_msg)
+                        return PushResult(success=False, error=error_msg)
+                    if pi.flags & PushInfo.REMOTE_REJECTED:
+                        error_msg = f"Push remote-rejected: {pi.summary.strip() if pi.summary else ''}"
+                        logger.error(error_msg)
+                        return PushResult(success=False, error=error_msg)
+
+                commit_sha = repo.head.commit.hexsha
+                logger.info(f"Pushed {ahead} commits, head={commit_sha[:8]}")
+                return PushResult(
+                    success=True,
+                    commit_sha=commit_sha,
+                    pushed_commits=ahead,
+                )
+        except Exception as e:
+            logger.error(f"Push failed: {e}", exc_info=True)
+            return PushResult(success=False, error=str(e))
+
+    async def desktop_resolve(self, resolutions: dict[str, str]) -> "ResolveResult":
+        """
+        Resolve merge conflicts after a failed pull.
+        Applies ours/theirs per file, completes the merge, imports entities.
+        """
+        from src.models.contracts.github import ResolveResult
+
+        try:
+            async with self.repo_manager.checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                # Verify we're in a merge state
+                merge_head = work_dir / ".git" / "MERGE_HEAD"
+                if not merge_head.exists():
+                    return ResolveResult(success=False, error="Not in a merge state")
+
+                # Apply resolutions
+                for cpath, resolution in resolutions.items():
+                    if resolution == "ours":
+                        repo.git.checkout("--ours", cpath)
+                    elif resolution == "theirs":
+                        repo.git.checkout("--theirs", cpath)
+                    repo.git.add(cpath)
+
+                # Complete the merge
+                repo.index.commit("Merge with conflict resolution")
+
+                # Import entities atomically with savepoint
+                async with self.db.begin_nested():
+                    pulled = await self._import_all_entities(work_dir)
+                    await self._delete_removed_entities(work_dir)
+                    await self._update_file_index(work_dir)
+                await self.db.commit()
+
+                logger.info(f"Resolved conflicts, imported {pulled} entities")
+                return ResolveResult(success=True, pulled=pulled)
+        except Exception as e:
+            logger.error(f"Resolve failed: {e}", exc_info=True)
+            return ResolveResult(success=False, error=str(e))
+
+    async def desktop_diff(self, path: str) -> "DiffResult":
+        """Get file diff: HEAD content vs working tree content."""
+        from src.models.contracts.github import DiffResult
+
+        try:
+            async with self.repo_manager.checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                # Regenerate manifest for accurate diff
+                await self._regenerate_manifest_only(work_dir)
+
+                # Get HEAD content
+                head_content = None
+                if repo.head.is_valid():
+                    try:
+                        head_content = repo.git.show(f"HEAD:{path}")
+                    except Exception:
+                        pass  # File doesn't exist in HEAD (new file)
+
+                # Get working tree content
+                working_content = None
+                working_path = work_dir / path
+                if working_path.exists():
+                    working_content = working_path.read_text(errors="replace")
+
+                return DiffResult(
+                    path=path,
+                    head_content=head_content,
+                    working_content=working_content,
+                )
+        except Exception as e:
+            logger.error(f"Diff failed: {e}", exc_info=True)
+            return DiffResult(path=path)
+
+    # -----------------------------------------------------------------
+    # Helpers for desktop-style operations
+    # -----------------------------------------------------------------
+
+    def _open_or_init(self, work_dir: Path) -> GitRepo:
+        """Open existing .git/ or clone fresh. Ensure remote URL and user identity are set."""
+        if (work_dir / ".git").exists():
+            repo = GitRepo(str(work_dir))
+            if "origin" in [r.name for r in repo.remotes]:
+                repo.remotes.origin.set_url(self.repo_url)
+            else:
+                repo.create_remote("origin", self.repo_url)
+        else:
+            repo = self._clone_or_init(work_dir)
+
+        # Ensure git user identity is configured (needed for merge/commit)
+        with repo.config_writer() as cw:
+            try:
+                cw.get_value("user", "name")
+            except Exception:
+                cw.set_value("user", "name", "Bifrost")
+            try:
+                cw.get_value("user", "email")
+            except Exception:
+                cw.set_value("user", "email", "bifrost@localhost")
+
+        return repo
+
+    async def _regenerate_manifest_only(self, work_dir: Path) -> None:
+        """Write .bifrost/metadata.yaml from DB state. Lightweight - no entity re-serialization."""
+        manifest = await generate_manifest(self.db)
+        manifest_path = work_dir / ".bifrost" / "metadata.yaml"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(serialize_manifest(manifest))
+
+    async def _import_all_entities(self, work_dir: Path) -> int:
+        """Import all entities from the working tree into the DB. Returns count."""
+        manifest_path = work_dir / ".bifrost" / "metadata.yaml"
+        if not manifest_path.exists():
+            return 0
+
+        manifest = parse_manifest(manifest_path.read_text())
+        count = 0
+
+        # Import workflows
+        for wf_name, mwf in manifest.workflows.items():
+            wf_path = work_dir / mwf.path
+            if wf_path.exists():
+                content = wf_path.read_bytes()
+                await self._import_workflow(wf_name, mwf, content)
+                count += 1
+
+        # Import forms
+        for _form_name, mform in manifest.forms.items():
+            form_path = work_dir / mform.path
+            if form_path.exists():
+                content = form_path.read_bytes()
+                await self._import_form(mform, content)
+                count += 1
+
+        # Import agents
+        for _agent_name, magent in manifest.agents.items():
+            agent_path = work_dir / magent.path
+            if agent_path.exists():
+                content = agent_path.read_bytes()
+                await self._import_agent(magent, content)
+                count += 1
+
+        # Import apps
+        for _app_name, mapp in manifest.apps.items():
+            app_path = work_dir / mapp.path
+            if app_path.exists():
+                content = app_path.read_bytes()
+                await self._import_app(mapp, content)
+                count += 1
+
+        return count
+
+    async def _delete_removed_entities(self, work_dir: Path) -> None:
+        """Hard-delete entities whose files no longer exist in the working tree after a pull.
+
+        Git history provides the undo mechanism — no need for a DB recycle bin.
+        Compares manifest entity IDs against active DB entities to find deletions.
+        """
+        from uuid import UUID
+
+        from sqlalchemy import delete as sa_delete
+
+        from src.models.orm.agents import Agent
+        from src.models.orm.applications import Application
+        from src.models.orm.forms import Form
+        from src.models.orm.workflows import Workflow
+
+        manifest_path = work_dir / ".bifrost" / "metadata.yaml"
+        if not manifest_path.exists():
+            return
+
+        manifest = parse_manifest(manifest_path.read_text())
+
+        # Collect IDs of entities present in the manifest AND whose files exist
+        present_wf_ids: set[str] = set()
+        for mwf in manifest.workflows.values():
+            if (work_dir / mwf.path).exists():
+                present_wf_ids.add(mwf.id)
+
+        present_form_ids: set[str] = set()
+        for mform in manifest.forms.values():
+            if (work_dir / mform.path).exists():
+                present_form_ids.add(mform.id)
+
+        present_agent_ids: set[str] = set()
+        for magent in manifest.agents.values():
+            if (work_dir / magent.path).exists():
+                present_agent_ids.add(magent.id)
+
+        present_app_ids: set[str] = set()
+        for mapp in manifest.apps.values():
+            if (work_dir / mapp.path).exists():
+                present_app_ids.add(mapp.id)
+
+        # Delete workflows synced from git that are no longer present
+        wf_result = await self.db.execute(
+            select(Workflow.id).where(
+                Workflow.is_active == True,  # noqa: E712
+                Workflow.path.like("workflows/%"),
+            )
+        )
+        for row in wf_result.all():
+            wf_id = str(row[0])
+            if wf_id not in present_wf_ids:
+                logger.info(f"Deleting workflow {wf_id} — removed from repo")
+                await self.db.execute(
+                    sa_delete(Workflow).where(Workflow.id == UUID(wf_id))
+                )
+
+        # Delete forms synced from git that are no longer present
+        form_result = await self.db.execute(
+            select(Form.id).where(
+                Form.created_by == "git-sync",
+            )
+        )
+        for row in form_result.all():
+            form_id = str(row[0])
+            if form_id not in present_form_ids:
+                logger.info(f"Deleting form {form_id} — removed from repo")
+                await self.db.execute(
+                    sa_delete(Form).where(Form.id == UUID(form_id))
+                )
+
+        # Delete agents synced from git that are no longer present
+        agent_result = await self.db.execute(
+            select(Agent.id).where(
+                Agent.created_by == "git-sync",
+            )
+        )
+        for row in agent_result.all():
+            agent_id = str(row[0])
+            if agent_id not in present_agent_ids:
+                logger.info(f"Deleting agent {agent_id} — removed from repo")
+                await self.db.execute(
+                    sa_delete(Agent).where(Agent.id == UUID(agent_id))
+                )
+
+        # Delete apps — check all apps in manifest scope
+        app_result = await self.db.execute(select(Application.id))
+        all_app_ids = {str(row[0]) for row in app_result.all()}
+        # Only delete apps that were in a previous manifest (have matching paths)
+        # For safety, only delete apps whose IDs appear in neither the manifest nor the present set
+        manifest_app_ids = {mapp.id for mapp in manifest.apps.values()}
+        for app_id in all_app_ids:
+            if app_id in manifest_app_ids and app_id not in present_app_ids:
+                logger.info(f"Deleting app {app_id} — removed from repo")
+                await self.db.execute(
+                    sa_delete(Application).where(Application.id == UUID(app_id))
+                )
 
     # -----------------------------------------------------------------
     # Internal: git operations
     # -----------------------------------------------------------------
 
     def _clone_or_init(self, target: Path) -> GitRepo:
-        """Clone from repo_url, or init if repo is empty."""
+        """Clone from repo_url, or init if repo is empty.
+
+        Handles the case where target already has files (e.g. entity files
+        written by RepoSyncWriter before the first clone). Clones into a
+        temp dir and merges .git/ + remote files into target.
+        """
+        import shutil
+        import tempfile
+
         try:
-            repo = GitRepo.clone_from(
-                self.repo_url,
-                str(target),
-                branch=self.branch,
-            )
-            return repo
+            # Clone into a temp dir first (git clone requires clean dir)
+            clone_dir = Path(tempfile.mkdtemp(prefix="bifrost-clone-"))
+            try:
+                repo = GitRepo.clone_from(
+                    self.repo_url,
+                    str(clone_dir),
+                    branch=self.branch,
+                )
+                # Move .git/ to the target
+                shutil.move(str(clone_dir / ".git"), str(target / ".git"))
+                # Copy any tracked files from clone that aren't in target
+                for item in clone_dir.iterdir():
+                    if item.name == ".git":
+                        continue
+                    dest = target / item.name
+                    if not dest.exists():
+                        if item.is_dir():
+                            shutil.copytree(str(item), str(dest))
+                        else:
+                            shutil.copy2(str(item), str(dest))
+                    else:
+                        logger.info(f"Skipping remote file {item.name} — already exists in working tree")
+                # Open the repo at target
+                return GitRepo(str(target))
+            finally:
+                shutil.rmtree(clone_dir, ignore_errors=True)
         except Exception as e:
             err_str = str(e)
             # Empty repo or branch doesn't exist yet
@@ -558,87 +729,6 @@ class GitHubSyncService:
                 repo.create_remote("origin", self.repo_url)
                 return repo
             raise SyncError(f"Failed to clone {self.repo_url}: {e}") from e
-
-    # -----------------------------------------------------------------
-    # Internal: serialize platform state to working tree
-    # -----------------------------------------------------------------
-
-    async def _serialize_platform_state(self, work_dir: Path) -> None:
-        """Write all platform entities to the working tree directory."""
-        from uuid import UUID
-
-        from sqlalchemy.orm import selectinload
-
-        from src.models.orm.agents import Agent
-        from src.models.orm.applications import Application
-        from src.models.orm.forms import Form
-        from src.services.file_index_service import FileIndexService
-        from src.services.repo_storage import RepoStorage
-
-        # Generate manifest from DB
-        manifest = await generate_manifest(self.db)
-
-        # Write workflow .py files from file_index (S3 _repo/)
-        file_index = FileIndexService(self.db, RepoStorage())
-        for manifest_wf_name, mwf in manifest.workflows.items():
-            content = await file_index.read(mwf.path)
-            if not content:
-                # file_index has no content — generate a stub from DB metadata
-                content = (
-                    f"from bifrost import workflow\n\n\n"
-                    f"@workflow(name=\"{manifest_wf_name}\")\n"
-                    f"def {mwf.function_name}():\n"
-                    f"    pass\n"
-                )
-            file_path = work_dir / mwf.path
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content)
-
-        # Serialize forms to YAML (eagerly load fields for serialization)
-        for _form_name, mform in manifest.forms.items():
-            form_result = await self.db.execute(
-                select(Form)
-                .options(selectinload(Form.fields))
-                .where(Form.id == UUID(mform.id))
-            )
-            form = form_result.scalar_one_or_none()
-            if form:
-                form_content = serialize_form_to_yaml(form)
-                file_path = work_dir / mform.path
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(form_content)
-
-        # Serialize agents to YAML (eagerly load tools for serialization)
-        for _agent_name, magent in manifest.agents.items():
-            agent_result = await self.db.execute(
-                select(Agent)
-                .options(selectinload(Agent.tools))
-                .where(Agent.id == UUID(magent.id))
-            )
-            agent = agent_result.scalar_one_or_none()
-            if agent:
-                agent_content = serialize_agent_to_yaml(agent)
-                file_path = work_dir / magent.path
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(agent_content)
-
-        # Serialize apps to YAML
-        for _app_name, mapp in manifest.apps.items():
-            app_result = await self.db.execute(
-                select(Application)
-                .where(Application.id == UUID(mapp.id))
-            )
-            app = app_result.scalar_one_or_none()
-            if app:
-                app_content = serialize_app_to_yaml(app)
-                file_path = work_dir / mapp.path
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(app_content)
-
-        # Write manifest
-        manifest_path = work_dir / ".bifrost" / "metadata.yaml"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(serialize_manifest(manifest))
 
     # -----------------------------------------------------------------
     # Internal: import entities from repo
@@ -764,43 +854,6 @@ class GitHubSyncService:
             },
         )
         await self.db.execute(stmt)
-
-    async def _deactivate_workflow(self, workflow_id: str) -> None:
-        """Deactivate a workflow by ID."""
-        from uuid import UUID
-
-        from sqlalchemy import update
-
-        from src.models.orm.workflows import Workflow
-
-        stmt = update(Workflow).where(
-            Workflow.id == UUID(workflow_id)
-        ).values(
-            is_active=False,
-            updated_at=datetime.now(timezone.utc),
-        )
-        await self.db.execute(stmt)
-
-    async def _deactivate_missing_workflows(self, manifest_wf_ids: set[str]) -> None:
-        """Deactivate workflows that were synced before but are no longer in the manifest."""
-        from src.models.orm.workflows import Workflow
-
-        if not manifest_wf_ids:
-            return
-
-        # Find active workflows whose paths start with "workflows/" (synced from git)
-        # that are NOT in the current manifest
-        result = await self.db.execute(
-            select(Workflow.id).where(
-                Workflow.is_active == True,  # noqa: E712
-                Workflow.path.like("workflows/%"),
-            )
-        )
-        all_active_ids = {str(row[0]) for row in result.all()}
-        to_deactivate = all_active_ids - manifest_wf_ids
-
-        for wf_id in to_deactivate:
-            await self._deactivate_workflow(wf_id)
 
     async def _update_file_index(self, work_dir: Path) -> None:
         """Update file_index from all files in the working tree, remove stale entries."""

@@ -9,80 +9,12 @@ These models are designed to match the frontend TypeScript types exactly.
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 import re
 
-
-# ==================== NAVIGATION & PERMISSION TYPES ====================
-
-
-PageTransition = Literal["fade", "slide", "blur", "none"]
-PermissionLevel = Literal["none", "view", "edit", "admin"]
-
-
-class NavItem(BaseModel):
-    """Navigation item for sidebar/navbar."""
-
-    id: str = Field(description="Item identifier (usually page ID)")
-    label: str = Field(description="Display label")
-    icon: str | None = Field(default=None, description="Icon name (lucide icon)")
-    path: str | None = Field(default=None, description="Navigation path")
-    visible: str | None = Field(default=None, description="Visibility expression")
-    order: int | None = Field(default=None, description="Order in navigation")
-    is_section: bool | None = Field(
-        default=None, description="Whether this is a section header (group)"
-    )
-    children: list["NavItem"] | None = Field(
-        default=None, description="Child items for section groups"
-    )
-
-
-class NavigationConfig(BaseModel):
-    """Navigation configuration for the application."""
-
-    sidebar: list[NavItem] | None = Field(
-        default=None, description="Sidebar navigation items"
-    )
-    show_sidebar: bool | None = Field(
-        default=None, description="Whether to show the sidebar"
-    )
-    show_header: bool | None = Field(
-        default=None, description="Whether to show the header"
-    )
-    logo_url: str | None = Field(default=None, description="Custom logo URL")
-    brand_color: str | None = Field(default=None, description="Brand color (hex)")
-    page_transition: PageTransition | None = Field(
-        default=None,
-        description="Page transition animation. Defaults to 'fade'. Use 'none' to disable.",
-    )
-
-
-class PermissionRule(BaseModel):
-    """Permission rule for app access control."""
-
-    role: str = Field(
-        description='Role that has this permission (e.g., "admin", "user", "*" for all)'
-    )
-    level: Literal["view", "edit", "admin"] = Field(
-        description="Permission level: view, edit, admin"
-    )
-
-
-class PermissionConfig(BaseModel):
-    """Permission configuration for an application."""
-
-    public: bool | None = Field(
-        default=None, description="Whether the app is public (no auth required)"
-    )
-    default_level: PermissionLevel | None = Field(
-        default=None, description="Default permission level for authenticated users"
-    )
-    rules: list[PermissionRule] | None = Field(
-        default=None, description="Role-based permission rules"
-    )
 
 # ==================== APPLICATION MODELS ====================
 
@@ -166,11 +98,6 @@ class ApplicationUpdate(BaseModel):
         default=None,
         description="Role IDs for role_based access (replaces existing roles)",
     )
-    navigation: NavigationConfig | None = Field(
-        default=None,
-        description="Navigation configuration (sidebar items, header settings)",
-    )
-
     @field_validator("slug")
     @classmethod
     def validate_slug(cls, v: str | None) -> str | None:
@@ -218,15 +145,6 @@ class ApplicationPublic(ApplicationBase):
     has_unpublished_changes: bool
     access_level: str = Field(default="authenticated")
     role_ids: list[UUID] = Field(default_factory=list)
-    navigation: NavigationConfig | dict[str, Any] | None = Field(
-        default=None,
-        description="Navigation configuration (sidebar items, etc.)",
-    )
-    # Export fields - optional, only included when exporting full app
-    permissions: PermissionConfig | None = Field(
-        default=None,
-        description="Permission configuration (included in export)",
-    )
 
     @field_serializer("created_at", "updated_at", "published_at")
     def serialize_dt(self, dt: datetime | None) -> str | None:

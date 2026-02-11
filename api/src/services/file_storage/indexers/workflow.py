@@ -327,7 +327,7 @@ class WorkflowIndexer:
                         },
                     ).returning(Workflow)
                     dp_result = await self.db.execute(stmt)
-                    data_provider = dp_result.scalar_one()
+                    _data_provider = dp_result.scalar_one()
                     logger.debug(f"Indexed data provider: {provider_name} ({function_name}) from {path}")
 
         # Note: workspace_files update removed — file_index is the sole search index.

@@ -102,6 +102,7 @@ def require_github_config(github_test_config: dict[str, Any] | None) -> dict[str
             "GitHub E2E tests require GITHUB_TEST_PAT environment variable. "
             "Set it to a GitHub PAT with repo access to run these tests."
         )
+    assert github_test_config is not None
     return github_test_config
 
 

@@ -25,12 +25,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.config import get_settings
 from src.core.database import init_db, close_db, get_db_context
-from src.core.pubsub import (
-    publish_git_sync_log,
-    publish_git_sync_preview_completed,
-    publish_git_sync_progress,
-    publish_git_sync_completed,
-)
+from src.core.pubsub import publish_git_op_completed
 from src.core.redis_reconnect import ResilientPubSubListener
 from src.jobs.schedulers.cron_scheduler import process_schedule_sources
 from src.jobs.schedulers.execution_cleanup import cleanup_stuck_executions
@@ -233,8 +228,7 @@ class Scheduler:
             redis_url=self.settings.redis_url,
             channels=[
                 "bifrost:scheduler:reindex",
-                "bifrost:scheduler:git-sync",
-                "bifrost:scheduler:git-sync-preview",
+                "bifrost:scheduler:git-op",
             ],
             on_message=self._handle_pubsub_message,
         )
@@ -245,39 +239,15 @@ class Scheduler:
         """Handle incoming pub/sub message."""
         if channel == "bifrost:scheduler:reindex":
             await self._handle_reindex_request(data)
-        elif channel == "bifrost:scheduler:git-sync":
-            await self._handle_git_sync_request(data)
-        elif channel == "bifrost:scheduler:git-sync-preview":
-            await self._handle_git_sync_preview_request(data)
+        elif channel == "bifrost:scheduler:git-op":
+            await self._handle_git_operation(data)
         else:
             logger.warning(f"Unknown channel: {channel}")
 
     @staticmethod
-    def _build_clone_url(github_config: dict) -> str | None:
-        """Build an authenticated git clone URL from github config."""
-        encrypted_token = github_config.get("encrypted_token")
-        repo_url = github_config.get("repo_url")
-
-        if not repo_url:
-            return None
-
-        # Decrypt token
-        token = None
-        if encrypted_token:
-            try:
-                import base64
-                from cryptography.fernet import Fernet
-                from src.config import get_settings
-                settings = get_settings()
-                key_bytes = settings.secret_key.encode()[:32].ljust(32, b'0')
-                fernet = Fernet(base64.urlsafe_b64encode(key_bytes))
-                token = fernet.decrypt(encrypted_token.encode()).decode()
-            except Exception as e:
-                logger.warning(f"Failed to decrypt GitHub token: {e}")
-                return None
-
-        if not token:
-            return None
+    def _build_clone_url_from_config(config) -> str:
+        """Build an authenticated git clone URL from a GitHubConfig object."""
+        repo_url = config.repo_url
 
         # Extract owner/repo from URL
         if repo_url.startswith("https://github.com/"):
@@ -285,7 +255,7 @@ class Scheduler:
         else:
             repo = repo_url
 
-        return f"https://x-access-token:{token}@github.com/{repo}.git"
+        return f"https://x-access-token:{config.token}@github.com/{repo}.git"
 
     async def _handle_reindex_request(self, data: dict) -> None:
         """
@@ -342,358 +312,125 @@ class Scheduler:
             logger.error(f"Reindex job {job_id} failed: {e}", exc_info=True)
             await publish_reindex_failed(job_id, str(e))
 
-    async def _handle_git_sync_request(self, data: dict) -> None:
+    async def _handle_git_operation(self, data: dict) -> None:
         """
-        Handle git sync request from API.
+        Handle a desktop-style git operation request.
 
-        Runs push + pull and publishes progress via WebSocket.
+        Dispatches to the appropriate GitHubSyncService method based on op_type.
         """
-        from src.models import SystemConfig
-        from src.services.github_sync import (
-            GitHubSyncService,
-            ConflictError,
-            OrphanError,
-        )
+        from src.services.github_config import get_github_config
+        from src.services.github_sync import GitHubSyncService
 
-        job_id = data.get("jobId", "unknown")
-        org_id = data.get("orgId")
-        conflict_resolutions = data.get("conflictResolutions", {})
-        confirm_orphans = data.get("confirmOrphans", False)
-
-        logger.info(f"Starting git sync job {job_id} for org {org_id}")
-
-        try:
-            await publish_git_sync_log(job_id, "info", "Starting GitHub sync...")
-
-            async with get_db_context() as db:
-                from uuid import UUID
-                from sqlalchemy import select
-
-                org_uuid = None
-                if org_id:
-                    try:
-                        org_uuid = UUID(org_id)
-                    except ValueError:
-                        pass
-
-                stmt = select(SystemConfig).where(
-                    SystemConfig.category == "github",
-                    SystemConfig.key == "integration",
-                    SystemConfig.organization_id == org_uuid
-                )
-                result = await db.execute(stmt)
-                config = result.scalars().first()
-
-                if not config:
-                    stmt = select(SystemConfig).where(
-                        SystemConfig.category == "github",
-                        SystemConfig.key == "integration",
-                        SystemConfig.organization_id.is_(None)
-                    )
-                    result = await db.execute(stmt)
-                    config = result.scalars().first()
-
-                if not config or not config.value_json:
-                    await publish_git_sync_completed(
-                        job_id,
-                        status="failed",
-                        message="GitHub not configured for this organization",
-                    )
-                    return
-
-                github_config = config.value_json or {}
-                repo_url = github_config.get("repo_url")
-                branch = github_config.get("branch", "main")
-
-                # Build authenticated clone URL
-                clone_url = self._build_clone_url(github_config)
-                if not clone_url or not repo_url:
-                    await publish_git_sync_completed(
-                        job_id,
-                        status="failed",
-                        message="GitHub token or repository not configured",
-                    )
-                    return
-
-                await publish_git_sync_log(
-                    job_id, "info", f"Syncing with repository: {repo_url}"
-                )
-
-                sync_service = GitHubSyncService(
-                    db=db,
-                    repo_url=clone_url,
-                    branch=branch,
-                )
-
-                async def progress_callback(progress: dict) -> None:
-                    await publish_git_sync_progress(
-                        job_id,
-                        progress.get("phase", "syncing"),
-                        progress.get("current", 0),
-                        progress.get("total", 0),
-                        progress.get("path"),
-                    )
-
-                async def log_callback(level: str, message: str) -> None:
-                    await publish_git_sync_log(job_id, level, message)
-
-                # Push platform state, then pull remote changes
-                push_result = await sync_service.push(
-                    progress_callback=progress_callback,
-                    log_callback=log_callback,
-                    conflict_resolutions=conflict_resolutions,
-                )
-                pull_result = await sync_service.pull(
-                    progress_callback=progress_callback,
-                    log_callback=log_callback,
-                    confirm_orphans=confirm_orphans,
-                )
-
-                # Store last_synced_at timestamp on success
-                if push_result.success and pull_result.success and config.value_json:
-                    config.value_json = {
-                        **config.value_json,
-                        "last_synced_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    await db.commit()
-
-                total_pushed = push_result.pushed
-                total_pulled = pull_result.pulled
-                commit_sha = push_result.commit_sha or pull_result.commit_sha
-                error = push_result.error or pull_result.error
-
-                if push_result.success and pull_result.success:
-                    await publish_git_sync_log(
-                        job_id, "success",
-                        f"Sync complete: {total_pulled} pulled, {total_pushed} pushed"
-                    )
-                    await publish_git_sync_completed(
-                        job_id,
-                        status="success",
-                        message=f"Sync completed: {total_pulled} pulled, {total_pushed} pushed",
-                        pulled=total_pulled,
-                        pushed=total_pushed,
-                        commit_sha=commit_sha,
-                    )
-                    logger.info(
-                        f"Git sync job {job_id} completed: "
-                        f"pulled={total_pulled}, pushed={total_pushed}"
-                    )
-                else:
-                    await publish_git_sync_completed(
-                        job_id,
-                        status="failed",
-                        message=error or "Sync failed",
-                    )
-                    logger.error(f"Git sync job {job_id} failed: {error}")
-
-        except ConflictError as e:
-            logger.warning(f"Git sync job {job_id} has conflicts: {e.conflicts}")
-            await publish_git_sync_completed(
-                job_id,
-                status="conflict",
-                message="Unresolved conflicts exist",
-                conflicts=e.conflicts,
-            )
-
-        except OrphanError as e:
-            logger.warning(f"Git sync job {job_id} requires orphan confirmation: {e.orphans}")
-            await publish_git_sync_completed(
-                job_id,
-                status="orphans_detected",
-                message="Must confirm orphan workflows before proceeding",
-                orphans=e.orphans,
-            )
-
-        except Exception as e:
-            logger.error(f"Git sync job {job_id} failed: {e}", exc_info=True)
-            await publish_git_sync_completed(
-                job_id,
-                status="failed",
-                message=str(e),
-            )
-
-    async def _handle_git_sync_preview_request(self, data: dict) -> None:
-        """
-        Handle git sync preview request from API.
-
-        Runs the sync preview and publishes progress via WebSocket.
-        """
-        from src.models import SystemConfig
-        from src.services.github_sync import GitHubSyncService, SyncError
-
+        op_type = data.get("type", "unknown")
         job_id = data.get("jobId", "unknown")
         org_id = data.get("orgId")
 
-        logger.info(f"Starting git sync preview job {job_id} for org {org_id}")
+        logger.info(f"Starting git operation {op_type} job {job_id} for org {org_id}")
 
         try:
-            await publish_git_sync_log(job_id, "info", "Starting sync preview...")
-
             async with get_db_context() as db:
-                from uuid import UUID
-                from sqlalchemy import select
+                github_config = await get_github_config(db, org_id)
 
-                org_uuid = None
-                if org_id:
-                    try:
-                        org_uuid = UUID(org_id)
-                    except ValueError:
-                        pass
-
-                stmt = select(SystemConfig).where(
-                    SystemConfig.category == "github",
-                    SystemConfig.key == "integration",
-                    SystemConfig.organization_id == org_uuid
-                )
-                result = await db.execute(stmt)
-                config = result.scalars().first()
-
-                if not config:
-                    stmt = select(SystemConfig).where(
-                        SystemConfig.category == "github",
-                        SystemConfig.key == "integration",
-                        SystemConfig.organization_id.is_(None)
-                    )
-                    result = await db.execute(stmt)
-                    config = result.scalars().first()
-
-                if not config or not config.value_json:
-                    await publish_git_sync_preview_completed(
-                        job_id,
-                        status="error",
-                        error="GitHub not configured for this organization",
+                if not github_config:
+                    await publish_git_op_completed(
+                        job_id, status="failed", result_type=op_type.replace("git_", ""),
+                        error="GitHub not configured",
                     )
                     return
 
-                github_config = config.value_json or {}
-                repo_url = github_config.get("repo_url")
-                branch = github_config.get("branch", "main")
-
-                clone_url = self._build_clone_url(github_config)
-                if not clone_url or not repo_url:
-                    await publish_git_sync_preview_completed(
-                        job_id,
-                        status="error",
+                if not github_config.token or not github_config.repo_url:
+                    await publish_git_op_completed(
+                        job_id, status="failed", result_type=op_type.replace("git_", ""),
                         error="GitHub token or repository not configured",
                     )
                     return
 
-                await publish_git_sync_log(
-                    job_id, "info", f"Analyzing repository: {repo_url}"
-                )
+                clone_url = self._build_clone_url_from_config(github_config)
+                branch = github_config.branch
 
                 sync_service = GitHubSyncService(
                     db=db,
                     repo_url=clone_url,
                     branch=branch,
+                    settings=get_settings(),
                 )
 
-                async def progress_callback(progress: dict) -> None:
-                    await publish_git_sync_progress(
-                        job_id,
-                        progress.get("phase", "analyzing"),
-                        progress.get("current", 0),
-                        progress.get("total", 0),
-                        progress.get("path"),
+                result_type = op_type.replace("git_", "")
+
+                if op_type == "git_fetch":
+                    op_result = await sync_service.desktop_fetch()
+                    await publish_git_op_completed(
+                        job_id, status="success" if op_result.success else "failed",
+                        result_type="fetch",
+                        data=op_result.model_dump() if op_result.success else None,
+                        error=op_result.error,
                     )
 
-                async def log_callback(level: str, message: str) -> None:
-                    await publish_git_sync_log(job_id, level, message)
+                elif op_type == "git_status":
+                    op_result = await sync_service.desktop_status()
+                    await publish_git_op_completed(
+                        job_id, status="success", result_type="status",
+                        data=op_result.model_dump(),
+                    )
 
-                preview = await sync_service.preview(
-                    progress_callback=progress_callback,
-                    log_callback=log_callback,
-                )
+                elif op_type == "git_commit":
+                    message = data.get("message", "Commit from Bifrost")
+                    op_result = await sync_service.desktop_commit(message)
+                    await publish_git_op_completed(
+                        job_id, status="success" if op_result.success else "failed",
+                        result_type="commit",
+                        data=op_result.model_dump() if op_result.success else None,
+                        error=op_result.error,
+                    )
 
-                # Convert preview to dict for serialization
-                from src.models.contracts.github import (
-                    PreflightIssue,
-                    PreflightResult,
-                    SyncAction,
-                    SyncActionType,
-                    SyncConflictInfo,
-                )
+                elif op_type == "git_pull":
+                    op_result = await sync_service.desktop_pull()
+                    status_str = "success" if op_result.success else ("conflict" if op_result.conflicts else "failed")
+                    await publish_git_op_completed(
+                        job_id, status=status_str, result_type="pull",
+                        data=op_result.model_dump(),
+                        error=op_result.error,
+                    )
 
-                preview_response = {
-                    "to_pull": [
-                        SyncAction(
-                            path=a.path,
-                            action=SyncActionType(a.action.value),
-                            sha=a.sha,
-                            display_name=a.display_name,
-                            entity_type=a.entity_type,
-                            parent_slug=a.parent_slug,
-                        ).model_dump()
-                        for a in preview.to_pull
-                    ],
-                    "to_push": [
-                        SyncAction(
-                            path=a.path,
-                            action=SyncActionType(a.action.value),
-                            sha=a.sha,
-                            display_name=a.display_name,
-                            entity_type=a.entity_type,
-                            parent_slug=a.parent_slug,
-                        ).model_dump()
-                        for a in preview.to_push
-                    ],
-                    "conflicts": [
-                        SyncConflictInfo(
-                            path=c.path,
-                            local_content=c.local_content,
-                            remote_content=c.remote_content,
-                            local_sha=c.local_sha,
-                            remote_sha=c.remote_sha,
-                            display_name=c.display_name,
-                            entity_type=c.entity_type,
-                            parent_slug=c.parent_slug,
-                        ).model_dump()
-                        for c in preview.conflicts
-                    ],
-                    "preflight": PreflightResult(
-                        valid=preview.preflight.valid,
-                        issues=[
-                            PreflightIssue(
-                                path=i.path,
-                                line=i.line,
-                                message=i.message,
-                                severity=i.severity,
-                                category=i.category,
-                            )
-                            for i in preview.preflight.issues
-                        ],
-                    ).model_dump(),
-                    "is_empty": preview.is_empty,
-                }
+                elif op_type == "git_push":
+                    op_result = await sync_service.desktop_push()
+                    await publish_git_op_completed(
+                        job_id, status="success" if op_result.success else "failed",
+                        result_type="push",
+                        data=op_result.model_dump() if op_result.success else None,
+                        error=op_result.error,
+                    )
 
-                await publish_git_sync_log(
-                    job_id, "success",
-                    f"Preview complete: {len(preview.to_pull)} to pull, {len(preview.to_push)} to push"
-                )
-                await publish_git_sync_preview_completed(
-                    job_id,
-                    status="success",
-                    preview=preview_response,
-                )
-                logger.info(
-                    f"Git sync preview job {job_id} completed: "
-                    f"to_pull={len(preview.to_pull)}, to_push={len(preview.to_push)}"
-                )
+                elif op_type == "git_resolve":
+                    resolutions = data.get("resolutions", {})
+                    op_result = await sync_service.desktop_resolve(resolutions)
+                    await publish_git_op_completed(
+                        job_id, status="success" if op_result.success else "failed",
+                        result_type="resolve",
+                        data=op_result.model_dump() if op_result.success else None,
+                        error=op_result.error,
+                    )
 
-        except SyncError as e:
-            logger.error(f"Git sync preview job {job_id} failed: {e}")
-            await publish_git_sync_preview_completed(
-                job_id,
-                status="error",
-                error=str(e),
-            )
+                elif op_type == "git_diff":
+                    path = data.get("path", "")
+                    op_result = await sync_service.desktop_diff(path)
+                    await publish_git_op_completed(
+                        job_id, status="success", result_type="diff",
+                        data=op_result.model_dump(),
+                    )
+
+                else:
+                    await publish_git_op_completed(
+                        job_id, status="failed", result_type=result_type,
+                        error=f"Unknown operation type: {op_type}",
+                    )
+
+                logger.info(f"Git operation {op_type} job {job_id} completed")
 
         except Exception as e:
-            logger.error(f"Git sync preview job {job_id} failed: {e}", exc_info=True)
-            await publish_git_sync_preview_completed(
-                job_id,
-                status="error",
+            logger.error(f"Git operation {op_type} job {job_id} failed: {e}", exc_info=True)
+            await publish_git_op_completed(
+                job_id, status="failed", result_type=op_type.replace("git_", ""),
                 error=str(e),
             )
 

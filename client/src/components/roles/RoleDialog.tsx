@@ -30,7 +30,7 @@ type Role = components["schemas"]["RolePublic"];
 const formSchema = z.object({
 	name: z.string().min(1, "Name is required").max(100, "Name too long"),
 	description: z.string().optional(),
-	can_promote_agent: z.boolean().default(false),
+	can_promote_agent: z.boolean(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -78,9 +78,6 @@ export function RoleDialog({ role, open, onClose }: RoleDialogProps) {
 				body: {
 					name: values.name,
 					description: values.description || null,
-					permissions: {
-						can_promote_agent: values.can_promote_agent,
-					},
 				},
 			});
 		} else {
@@ -89,9 +86,6 @@ export function RoleDialog({ role, open, onClose }: RoleDialogProps) {
 					name: values.name,
 					description: values.description || null,
 					is_active: true,
-					permissions: {
-						can_promote_agent: values.can_promote_agent,
-					},
 				},
 			});
 		}

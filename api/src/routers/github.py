@@ -12,15 +12,14 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from src.core.auth import Context, CurrentSuperuser
 from src.core.database import DbSession
-from src.core.pubsub import (
-    publish_git_sync_preview_request,
-    publish_git_sync_request,
-)
+from src.core.pubsub import publish_git_operation
 from src.models import (
     CommitHistoryResponse,
     CommitInfo,
+    CommitRequest,
     CreateRepoRequest,
     CreateRepoResponse,
+    DiffRequest,
     GitHubBranchesResponse,
     GitHubBranchInfo,
     GitHubConfigRequest,
@@ -28,12 +27,9 @@ from src.models import (
     GitHubRepoInfo,
     GitHubReposResponse,
     GitHubSetupResponse,
+    GitJobResponse,
     GitRefreshStatusResponse,
-    SyncContentRequest,
-    SyncContentResponse,
-    SyncExecuteRequest,
-    SyncExecuteResponse,
-    SyncPreviewJobResponse,
+    ResolveRequest,
     ValidateTokenRequest,
 )
 from src.services.github_api import GitHubAPIClient, GitHubAPIError
@@ -601,214 +597,200 @@ async def get_commits(
 
 
 # =============================================================================
-# API-Based Sync Endpoints
+# Desktop-Style Git Operations
 # =============================================================================
 
 
-@router.get(
-    "/sync",
-    response_model=SyncPreviewJobResponse,
-    summary="Queue sync preview job",
-    description="Queue a background job to preview sync changes. Subscribe to git:{job_id} WebSocket channel for progress and results.",
+@router.post(
+    "/fetch",
+    response_model=GitJobResponse,
+    summary="Queue git fetch",
+    description="Queue a git fetch operation. Results via WebSocket.",
 )
-async def get_sync_preview(
+async def git_fetch(
     ctx: Context,
     user: CurrentSuperuser,
     db: DbSession,
-) -> SyncPreviewJobResponse:
-    """
-    Queue a sync preview as a background job.
+) -> GitJobResponse:
+    """Queue a git fetch operation."""
+    config = await get_github_config(db, ctx.org_id)
+    if not config or not config.token or not config.repo_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
 
-    Returns immediately with a job_id. The client should subscribe to the
-    WebSocket channel git:{job_id} to receive:
-    - Progress updates (git_progress messages with phases like 'cloning', 'scanning')
-    - Completion with full preview data (git_preview_complete message)
-
-    The preview compares local DB state with remote GitHub state and returns:
-    - Files to pull from GitHub
-    - Files to push to GitHub
-    - Files with conflicts requiring resolution
-    - Workflows that will become orphaned
-    """
-    try:
-        config = await get_github_config(db, ctx.org_id)
-
-        if not config or not config.token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub token not found. Please validate your token first.",
-            )
-
-        if not config.repo_url:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub repository not configured.",
-            )
-
-        # Generate job ID for tracking
-        job_id = str(uuid.uuid4())
-
-        # Queue the preview job to the scheduler
-        await publish_git_sync_preview_request(
-            job_id=job_id,
-            org_id=str(ctx.org_id) if ctx.org_id else "",
-            user_id=str(user.user_id),
-            user_email=user.email,
-        )
-
-        return SyncPreviewJobResponse(
-            job_id=job_id,
-            status="queued",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error queueing sync preview: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to queue sync preview",
-        )
+    job_id = str(uuid.uuid4())
+    await publish_git_operation(
+        job_id=job_id,
+        org_id=str(ctx.org_id) if ctx.org_id else "",
+        user_id=str(user.user_id),
+        user_email=user.email,
+        op_type="git_fetch",
+    )
+    return GitJobResponse(job_id=job_id)
 
 
 @router.post(
-    "/sync",
-    response_model=SyncExecuteResponse,
-    summary="Execute sync",
-    description="Queue sync execution with user's conflict resolutions",
+    "/commit",
+    response_model=GitJobResponse,
+    summary="Queue git commit",
+    description="Queue a git commit operation (local only, no push).",
 )
-async def execute_sync(
-    request: SyncExecuteRequest,
+async def git_commit(
+    request: CommitRequest,
     ctx: Context,
     user: CurrentSuperuser,
     db: DbSession,
-) -> SyncExecuteResponse:
-    """
-    Queue the sync execution with user's conflict resolutions.
+) -> GitJobResponse:
+    """Queue a git commit."""
+    config = await get_github_config(db, ctx.org_id)
+    if not config or not config.token or not config.repo_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
 
-    Publishes a request to Redis pubsub for the scheduler to process.
-    Progress is streamed via WebSocket to the git:{job_id} channel.
-
-    Requires:
-    - Conflict resolutions for all conflicted files
-    - Confirmation if workflows will be orphaned
-    """
-    try:
-        config = await get_github_config(db, ctx.org_id)
-
-        if not config or not config.token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub token not found. Please validate your token first.",
-            )
-
-        if not config.repo_url:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub repository not configured.",
-            )
-
-        job_id = str(uuid.uuid4())
-
-        logger.info(f"Queueing git sync execute job: {job_id}")
-
-        await publish_git_sync_request(
-            job_id=job_id,
-            org_id=str(ctx.org_id) if ctx.org_id else "",
-            user_id=str(user.user_id),
-            user_email=user.email,
-            conflict_resolutions=request.conflict_resolutions,
-            confirm_orphans=request.confirm_orphans,
-        )
-
-        logger.info(f"Git sync execute job queued via Redis pubsub: {job_id}")
-
-        return SyncExecuteResponse(
-            success=True,
-            job_id=job_id,
-            status="queued",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error queueing sync execute: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to queue sync execute: {str(e)}",
-        )
+    job_id = str(uuid.uuid4())
+    await publish_git_operation(
+        job_id=job_id,
+        org_id=str(ctx.org_id) if ctx.org_id else "",
+        user_id=str(user.user_id),
+        user_email=user.email,
+        op_type="git_commit",
+        message=request.message,
+    )
+    return GitJobResponse(job_id=job_id)
 
 
 @router.post(
-    "/sync/content",
-    response_model=SyncContentResponse,
-    summary="Get content for diff preview",
-    description="Fetch local or remote content for a file to display in diff view",
+    "/pull",
+    response_model=GitJobResponse,
+    summary="Queue git pull",
+    description="Queue a git pull operation.",
 )
-async def get_sync_content(
-    request: SyncContentRequest,
+async def git_pull(
     ctx: Context,
     user: CurrentSuperuser,
     db: DbSession,
-) -> SyncContentResponse:
-    """
-    Fetch file content for diff preview.
+) -> GitJobResponse:
+    """Queue a git pull."""
+    config = await get_github_config(db, ctx.org_id)
+    if not config or not config.token or not config.repo_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
 
-    - source="local": Read from file_index (platform state)
-    - source="remote": Read from git repo
-    """
-    from src.services.file_index_service import FileIndexService
-    from src.services.repo_storage import RepoStorage
+    job_id = str(uuid.uuid4())
+    await publish_git_operation(
+        job_id=job_id,
+        org_id=str(ctx.org_id) if ctx.org_id else "",
+        user_id=str(user.user_id),
+        user_email=user.email,
+        op_type="git_pull",
+    )
+    return GitJobResponse(job_id=job_id)
 
-    try:
-        config = await get_github_config(db, ctx.org_id)
 
-        if not config or not config.token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub not configured",
-            )
+@router.post(
+    "/push",
+    response_model=GitJobResponse,
+    summary="Queue git push",
+    description="Queue a git push operation.",
+)
+async def git_push(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> GitJobResponse:
+    """Queue a git push."""
+    config = await get_github_config(db, ctx.org_id)
+    if not config or not config.token or not config.repo_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
 
-        if not config.repo_url:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="GitHub repository not configured",
-            )
+    job_id = str(uuid.uuid4())
+    await publish_git_operation(
+        job_id=job_id,
+        org_id=str(ctx.org_id) if ctx.org_id else "",
+        user_id=str(user.user_id),
+        user_email=user.email,
+        op_type="git_push",
+    )
+    return GitJobResponse(job_id=job_id)
 
-        if request.source == "local":
-            # Read from file_index (platform state)
-            file_index = FileIndexService(db, RepoStorage())
-            content = await file_index.read(request.path)
-        else:
-            # Read from git repo via clone
-            from src.services.github_sync import GitHubSyncService
 
-            repo_url = config.repo_url
-            if not repo_url.endswith(".git"):
-                # Build authenticated clone URL
-                repo_url = f"https://x-access-token:{config.token}@github.com/{_extract_repo_from_url(repo_url)}.git"
+@router.post(
+    "/changes",
+    response_model=GitJobResponse,
+    summary="Queue working tree status",
+    description="Queue a working tree status check.",
+)
+async def git_changes(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> GitJobResponse:
+    """Queue a working tree status check."""
+    config = await get_github_config(db, ctx.org_id)
+    if not config or not config.token or not config.repo_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
 
-            sync_service = GitHubSyncService(
-                db=db,
-                repo_url=repo_url,
-                branch=config.branch,
-            )
-            # Use preview to get remote content — it clones and reads
-            preview = await sync_service.preview()
-            # Find the file in pull actions or conflicts
-            content = None
-            for conflict in preview.conflicts:
-                if conflict.path == request.path:
-                    content = conflict.remote_content
-                    break
+    job_id = str(uuid.uuid4())
+    await publish_git_operation(
+        job_id=job_id,
+        org_id=str(ctx.org_id) if ctx.org_id else "",
+        user_id=str(user.user_id),
+        user_email=user.email,
+        op_type="git_status",
+    )
+    return GitJobResponse(job_id=job_id)
 
-        return SyncContentResponse(path=request.path, content=content)
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching sync content: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch content",
-        )
+@router.post(
+    "/resolve",
+    response_model=GitJobResponse,
+    summary="Queue conflict resolution",
+    description="Queue conflict resolution after a failed pull.",
+)
+async def git_resolve(
+    request: ResolveRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> GitJobResponse:
+    """Queue conflict resolution."""
+    config = await get_github_config(db, ctx.org_id)
+    if not config or not config.token or not config.repo_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
+
+    job_id = str(uuid.uuid4())
+    await publish_git_operation(
+        job_id=job_id,
+        org_id=str(ctx.org_id) if ctx.org_id else "",
+        user_id=str(user.user_id),
+        user_email=user.email,
+        op_type="git_resolve",
+        resolutions=request.resolutions,
+    )
+    return GitJobResponse(job_id=job_id)
+
+
+@router.post(
+    "/diff",
+    response_model=GitJobResponse,
+    summary="Queue file diff",
+    description="Queue a file diff operation.",
+)
+async def git_diff(
+    request: DiffRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> GitJobResponse:
+    """Queue a file diff."""
+    config = await get_github_config(db, ctx.org_id)
+    if not config or not config.token or not config.repo_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
+
+    job_id = str(uuid.uuid4())
+    await publish_git_operation(
+        job_id=job_id,
+        org_id=str(ctx.org_id) if ctx.org_id else "",
+        user_id=str(user.user_id),
+        user_email=user.email,
+        op_type="git_diff",
+        path=request.path,
+    )
+    return GitJobResponse(job_id=job_id)

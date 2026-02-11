@@ -59,6 +59,7 @@ class ManifestForm(BaseModel):
     path: str
     organization_id: str | None = None
     roles: list[str] = Field(default_factory=list)
+    access_level: str = "role_based"
 
 
 class ManifestAgent(BaseModel):
@@ -67,6 +68,7 @@ class ManifestAgent(BaseModel):
     path: str
     organization_id: str | None = None
     roles: list[str] = Field(default_factory=list)
+    access_level: str = "role_based"
 
 
 class ManifestApp(BaseModel):
@@ -75,6 +77,7 @@ class ManifestApp(BaseModel):
     path: str
     organization_id: str | None = None
     roles: list[str] = Field(default_factory=list)
+    access_level: str = "authenticated"
 
 
 class Manifest(BaseModel):
@@ -105,8 +108,14 @@ def parse_manifest(yaml_str: str) -> Manifest:
 
 
 def serialize_manifest(manifest: Manifest) -> str:
-    """Serialize a Manifest object to a YAML string."""
-    data = manifest.model_dump(mode="json", exclude_none=False)
+    """Serialize a Manifest object to a YAML string.
+
+    Uses exclude_defaults=True so that fields at their default values
+    (empty lists, default strings, None) are omitted.  This keeps the
+    output stable — re-serializing the same logical manifest always
+    produces the same bytes, avoiding false conflicts during sync.
+    """
+    data = manifest.model_dump(mode="json", exclude_defaults=True)
     return yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 

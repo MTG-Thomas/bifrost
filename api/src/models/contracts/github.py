@@ -4,12 +4,9 @@ GitHub integration contract models for Bifrost.
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-if TYPE_CHECKING:
-    pass
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ==================== GIT & GITHUB MODELS ====================
@@ -188,44 +185,6 @@ class CommitAndPushResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class PushToGitHubRequest(BaseModel):
-    """Request to push to GitHub"""
-    message: str | None = Field(default=None, description="Commit message")
-    connection_id: str | None = Field(default=None, description="WebPubSub connection ID for streaming logs")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PushToGitHubResponse(BaseModel):
-    """Response after pushing to GitHub"""
-    success: bool = Field(..., description="Whether push succeeded")
-    error: str | None = Field(default=None, description="Error message if push failed")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PullFromGitHubRequest(BaseModel):
-    """Request to pull from GitHub"""
-    connection_id: str | None = Field(default=None, description="WebPubSub connection ID for streaming logs")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class GitHubSyncRequest(BaseModel):
-    """Request to sync with GitHub (pull + push)"""
-    connection_id: str | None = Field(default=None, description="WebPubSub connection ID for streaming logs")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class GitHubSyncResponse(BaseModel):
-    """Response after queueing a git sync job"""
-    job_id: str = Field(..., description="Job ID for tracking the sync operation")
-    status: str = Field(..., description="Job status (queued, processing, completed, failed)")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class GitHubSetupResponse(BaseModel):
     """Response after configuring GitHub integration"""
     job_id: str | None = Field(default=None, description="Job ID for tracking the setup operation (deprecated)")
@@ -277,125 +236,11 @@ class GitRefreshStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DiscardUnpushedCommitsResponse(BaseModel):
-    """Response after discarding unpushed commits"""
-    success: bool = Field(..., description="Whether discard was successful")
-    discarded_commits: list[CommitInfo] = Field(default_factory=list, description="List of commits that were discarded")
-    new_head: str | None = Field(default=None, description="New HEAD commit SHA after discard")
-    error: str | None = Field(default=None, description="Error message if operation failed")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class DiscardCommitRequest(BaseModel):
-    """Request to discard a specific commit and all newer commits"""
-    commit_sha: str = Field(..., min_length=1, description="SHA of the commit to discard (this commit and all newer commits will be discarded)")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class FileDiffRequest(BaseModel):
-    """Request to get file diff"""
-    file_path: str = Field(..., min_length=1, description="Relative path to file")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class FileDiffResponse(BaseModel):
-    """Response with file diff information"""
-    file_path: str = Field(..., description="Relative path to file")
-    old_content: str | None = Field(default=None, description="Previous file content (None if new file)")
-    new_content: str = Field(..., description="Current file content")
-    additions: int = Field(..., description="Number of lines added")
-    deletions: int = Field(..., description="Number of lines deleted")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ResolveConflictRequest(BaseModel):
-    """Request to resolve a conflict"""
-    file_path: str = Field(..., min_length=1, description="Relative path to conflicted file")
-    resolution: Literal["current", "incoming", "both", "manual"] = Field(..., description="How to resolve conflict")
-    manual_content: str | None = Field(default=None, description="Manual resolution content (required if resolution='manual')")
-
-    @model_validator(mode='after')
-    def validate_manual_content(self):
-        if self.resolution == "manual" and not self.manual_content:
-            raise ValueError("manual_content is required when resolution is 'manual'")
-        return self
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ResolveConflictResponse(BaseModel):
-    """Response after resolving conflict"""
-    success: bool = Field(..., description="Whether resolution succeeded")
-    file_path: str = Field(..., description="Path to resolved file")
-    remaining_conflicts: int = Field(..., description="Number of remaining conflicts in file")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class CommitHistoryResponse(BaseModel):
     """Response with commit history and pagination"""
     commits: list[CommitInfo] = Field(default_factory=list, description="List of commits (newest first)")
     total_commits: int = Field(..., description="Total number of commits in the entire history")
     has_more: bool = Field(..., description="Whether there are more commits to load")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-# ==================== API-BASED SYNC MODELS ====================
-
-
-class SyncActionType(str, Enum):
-    """Type of sync action."""
-    ADD = "add"
-    MODIFY = "modify"
-    DELETE = "delete"
-
-
-class SyncAction(BaseModel):
-    """A single sync action (pull or push)."""
-    path: str = Field(..., description="File path relative to workspace root")
-    action: SyncActionType = Field(..., description="Type of action")
-    sha: str | None = Field(default=None, description="Git blob SHA (for pull actions)")
-
-    # Entity metadata for UI display
-    display_name: str | None = Field(default=None, description="Human-readable entity name")
-    entity_type: str | None = Field(default=None, description="Entity type: form, agent, app, app_file, workflow")
-    parent_slug: str | None = Field(default=None, description="For app_file: parent app slug")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SyncConflictInfo(BaseModel):
-    """Information about a conflict between local and remote."""
-    path: str = Field(..., description="File path with conflict")
-    local_content: str | None = Field(default=None, description="Local content")
-    remote_content: str | None = Field(default=None, description="Remote content")
-    local_sha: str = Field(..., description="SHA of local content")
-    remote_sha: str = Field(..., description="SHA of remote content")
-    # Entity metadata for UI display (same as SyncAction)
-    display_name: str | None = Field(default=None, description="Human-readable entity name")
-    entity_type: str | None = Field(default=None, description="Entity type: form, agent, app, app_file, workflow")
-    parent_slug: str | None = Field(default=None, description="For app_file: parent app slug")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SyncContentRequest(BaseModel):
-    """Request to fetch content for diff preview."""
-    path: str = Field(..., description="File path to fetch content for")
-    source: Literal["local", "remote"] = Field(..., description="Which side to fetch")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SyncContentResponse(BaseModel):
-    """Response with file content for diff preview."""
-    path: str = Field(..., description="File path")
-    content: str | None = Field(default=None, description="File content (null if not found)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -442,81 +287,125 @@ class PreflightResult(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class SyncPreviewResponse(BaseModel):
-    """Preview of sync operations before execution."""
-    to_pull: list[SyncAction] = Field(
-        default_factory=list,
-        description="Files to pull from GitHub"
-    )
-    to_push: list[SyncAction] = Field(
-        default_factory=list,
-        description="Files to push to GitHub"
-    )
-    conflicts: list[SyncConflictInfo] = Field(
-        default_factory=list,
-        description="Files with conflicts"
-    )
-    preflight: PreflightResult = Field(
-        default_factory=lambda: PreflightResult(valid=True),
-        description="Preflight validation results (syntax, lint, refs, orphans, manifest)"
-    )
-    is_empty: bool = Field(
-        default=False,
-        description="True if no changes to sync"
-    )
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SyncPreviewJobResponse(BaseModel):
-    """Response when sync preview is queued as a background job.
-
-    Note: The API returns a job_id in the response. The client should subscribe
-    to WebSocket channel git:{job_id} AFTER receiving the response to receive
-    streaming progress and completion messages (git_preview_complete).
-    """
+class GitJobResponse(BaseModel):
+    """Response when a git operation is queued as a background job."""
     job_id: str = Field(..., description="Job ID for tracking progress via WebSocket")
-    status: str = Field(default="queued", description="Status: 'queued'")
+    status: str = Field(default="queued", description="Job status")
 
     model_config = ConfigDict(from_attributes=True)
 
 
-class SyncExecuteRequest(BaseModel):
-    """Request to execute sync with conflict resolutions.
+class CommitRequest(BaseModel):
+    """Request to commit working tree changes."""
+    message: str = Field(..., min_length=1, description="Commit message")
 
-    Note: The API returns a job_id in the response. The client should subscribe
-    to WebSocket channel git:{job_id} AFTER receiving the response to receive
-    streaming progress and completion messages.
-    """
-    conflict_resolutions: dict[str, Literal["keep_local", "keep_remote", "skip"]] = Field(
-        default_factory=dict,
-        description="Resolution for each conflicted file path. 'skip' excludes the entity from sync."
-    )
-    confirm_orphans: bool = Field(
-        default=False,
-        description="User acknowledges orphan workflows"
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ResolveRequest(BaseModel):
+    """Request to resolve merge conflicts after a failed pull."""
+    resolutions: dict[str, Literal["ours", "theirs"]] = Field(
+        ..., description="Map of file path to resolution strategy"
     )
 
     model_config = ConfigDict(from_attributes=True)
 
 
-class SyncExecuteResponse(BaseModel):
-    """Result of sync execution (queued job)."""
-    success: bool = Field(..., description="Whether job was queued successfully")
-    job_id: str | None = Field(default=None, description="Job ID for tracking (when queued)")
-    status: str = Field(default="queued", description="Status: 'queued', 'success', 'error'")
-    # These fields are populated via WebSocket completion message, not initial response
-    pulled: int = Field(default=0, description="Number of files pulled")
-    pushed: int = Field(default=0, description="Number of files pushed")
-    orphaned_workflows: list[str] = Field(
-        default_factory=list,
-        description="IDs of workflows marked as orphaned"
+class DiffRequest(BaseModel):
+    """Request to get a file diff."""
+    path: str = Field(..., min_length=1, description="File path to diff")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChangedFile(BaseModel):
+    """A file changed in the working tree (git status)."""
+    path: str = Field(..., description="Relative path from workspace root")
+    change_type: Literal["added", "modified", "deleted", "renamed", "untracked"] = Field(
+        ..., description="Type of change"
     )
-    commit_sha: str | None = Field(
-        default=None,
-        description="SHA of created commit (if any)"
-    )
+    display_name: str | None = Field(default=None, description="Human-readable entity name")
+    entity_type: str | None = Field(default=None, description="Entity type: form, agent, app, workflow")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MergeConflict(BaseModel):
+    """A file with a merge conflict after a failed pull."""
+    path: str = Field(..., description="Relative path to conflicted file")
+    ours_content: str | None = Field(default=None, description="Our (platform) version")
+    theirs_content: str | None = Field(default=None, description="Their (git remote) version")
+    display_name: str | None = Field(default=None, description="Human-readable entity name")
+    entity_type: str | None = Field(default=None, description="Entity type")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FetchResult(BaseModel):
+    """Result of a git fetch operation."""
+    success: bool = Field(..., description="Whether fetch succeeded")
+    commits_ahead: int = Field(default=0, description="Local commits ahead of remote")
+    commits_behind: int = Field(default=0, description="Commits behind remote")
+    remote_branch_exists: bool = Field(default=True, description="Whether the remote branch exists")
     error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkingTreeStatus(BaseModel):
+    """Working tree status (uncommitted changes)."""
+    changed_files: list[ChangedFile] = Field(default_factory=list, description="Changed files")
+    total_changes: int = Field(default=0, description="Total number of changes")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommitResult(BaseModel):
+    """Result of a git commit operation."""
+    success: bool = Field(..., description="Whether commit succeeded")
+    commit_sha: str | None = Field(default=None, description="SHA of created commit")
+    files_committed: int = Field(default=0, description="Number of files committed")
+    error: str | None = Field(default=None, description="Error message if failed")
+    preflight: PreflightResult | None = Field(default=None, description="Preflight validation result")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PullResult(BaseModel):
+    """Result of a git pull operation."""
+    success: bool = Field(..., description="Whether pull succeeded")
+    pulled: int = Field(default=0, description="Number of entities imported")
+    commit_sha: str | None = Field(default=None, description="New HEAD commit SHA")
+    conflicts: list[MergeConflict] = Field(default_factory=list, description="Merge conflicts if any")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PushResult(BaseModel):
+    """Result of a git push operation."""
+    success: bool = Field(..., description="Whether push succeeded")
+    commit_sha: str | None = Field(default=None, description="Latest pushed commit SHA")
+    pushed_commits: int = Field(default=0, description="Number of commits pushed")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ResolveResult(BaseModel):
+    """Result of conflict resolution."""
+    success: bool = Field(..., description="Whether resolution succeeded")
+    pulled: int = Field(default=0, description="Number of entities imported after resolution")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DiffResult(BaseModel):
+    """Result of a file diff operation."""
+    path: str = Field(..., description="File path")
+    head_content: str | None = Field(default=None, description="Content at HEAD (committed)")
+    working_content: str | None = Field(default=None, description="Content in working tree")
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -1,8 +1,8 @@
 """
 Application, AppVersion, and AppFile ORM models.
 
-Represents applications for the App Builder with:
-- applications: metadata, navigation, permissions
+Represents applications with:
+- applications: metadata, access control
 - app_versions: version snapshots (active = live, draft = current work)
 - app_files: source code files for apps
 """
@@ -10,11 +10,10 @@ Represents applications for the App Builder with:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.enums import AppAccessLevel
@@ -86,14 +85,6 @@ class Application(Base):
 
     # Publish history
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-
-    # App-level config (small JSONB)
-    navigation: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, server_default="{}"
-    )
-    permissions: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, server_default="{}"
-    )
 
     # Access control (follows same pattern as forms)
     access_level: Mapped[str] = mapped_column(

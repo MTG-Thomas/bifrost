@@ -6,7 +6,7 @@ Handles folder creation, deletion, listing, and bulk operations.
 
 import logging
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 

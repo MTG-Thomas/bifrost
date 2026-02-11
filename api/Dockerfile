@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gosu \
     git \
+    awscli \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder

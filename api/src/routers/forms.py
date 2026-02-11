@@ -331,6 +331,12 @@ async def create_form(
 
     logger.info(f"Created form {form.id}: {form.name}")
 
+    # Dual-write: serialize form YAML to S3 _repo/
+    from src.services.repo_sync_writer import RepoSyncWriter
+    writer = RepoSyncWriter(db)
+    await writer.write_form(form)
+    await writer.regenerate_manifest()
+
     # Invalidate cache after successful create
     if CACHE_INVALIDATION_AVAILABLE and invalidate_form:
         org_id = str(form.organization_id) if form.organization_id else None
@@ -521,6 +527,12 @@ async def update_form(
 
     logger.info(f"Updated form {form_id}")
 
+    # Dual-write: update form YAML in S3 _repo/
+    from src.services.repo_sync_writer import RepoSyncWriter
+    writer = RepoSyncWriter(db)
+    await writer.write_form(form)
+    await writer.regenerate_manifest()
+
     # Invalidate cache after successful update
     if CACHE_INVALIDATION_AVAILABLE and invalidate_form:
         org_id = str(form.organization_id) if form.organization_id else None
@@ -582,6 +594,12 @@ async def delete_form(
     form.updated_at = datetime.now(timezone.utc)
 
     await db.flush()
+
+    # Dual-write: remove form YAML from S3 _repo/
+    from src.services.repo_sync_writer import RepoSyncWriter
+    writer = RepoSyncWriter(db)
+    await writer.delete_entity_file(f"forms/{form_id}.form.yaml")
+    await writer.regenerate_manifest()
 
     logger.info(f"Soft deleted form {form_id}")
 

@@ -11,7 +11,6 @@
  */
 
 import type { components } from "@/lib/v1";
-import type { SyncPreviewResponse } from "@/hooks/useGitHub";
 import { refreshAccessToken } from "@/lib/api-client";
 import { useNotificationStore } from "@/stores/notificationStore";
 import type { Notification } from "@/stores/notificationStore";
@@ -377,13 +376,6 @@ export type PoolMessage =
 	| PoolProgressMessage;
 
 // Message types from backend
-// Git preview completion type with full preview data
-export interface GitPreviewComplete {
-	status: "success" | "error";
-	preview?: SyncPreviewResponse;
-	error?: string;
-}
-
 type WebSocketMessage =
 	| { type: "connected"; channels: string[]; userId: string }
 	| { type: "connected"; executionId: string }
@@ -401,7 +393,7 @@ type WebSocketMessage =
 	| { type: "git_log"; jobId: string; level: string; message: string }
 	| { type: "git_progress"; jobId: string; phase: string; current: number; total: number; path?: string | null }
 	| { type: "git_complete"; jobId: string; status: "success" | "error"; message: string; [key: string]: unknown }
-	| { type: "git_preview_complete"; jobId: string; status: "success" | "error"; preview?: SyncPreviewResponse; error?: string }
+	| { type: "git_op_complete"; jobId: string; status: string; resultType: string; data?: Record<string, unknown>; error?: string }
 	| {
 			type: "devrun_state_update";
 			state: LocalRunnerStateUpdate | null;
@@ -456,10 +448,17 @@ export interface GitProgress {
 	path?: string | null;
 }
 
+// Git operation complete type
+export interface GitOpComplete {
+	status: string;
+	resultType: string;
+	data?: Record<string, unknown>;
+	error?: string;
+}
+
 type GitLogCallback = (log: PackageLog) => void;
 type GitProgressCallback = (progress: GitProgress) => void;
 type GitCompleteCallback = (complete: PackageComplete & Record<string, unknown>) => void;
-type GitPreviewCompleteCallback = (complete: GitPreviewComplete) => void;
 type LocalRunnerStateCallback = (state: LocalRunnerStateUpdate | null) => void;
 type ReindexCallback = (message: ReindexMessage) => void;
 type CLISessionUpdateCallback = (update: CLISessionUpdate) => void;
@@ -496,7 +495,7 @@ class WebSocketService {
 	private gitLogCallbacks = new Map<string, Set<GitLogCallback>>();
 	private gitProgressCallbacks = new Map<string, Set<GitProgressCallback>>();
 	private gitCompleteCallbacks = new Map<string, Set<GitCompleteCallback>>();
-	private gitPreviewCompleteCallbacks = new Map<string, Set<GitPreviewCompleteCallback>>();
+	private gitOpCompleteCallbacks = new Map<string, Set<(complete: GitOpComplete) => void>>();
 	private localRunnerStateCallbacks = new Set<LocalRunnerStateCallback>();
 	private cliSessionUpdateCallbacks = new Map<
 		string,
@@ -793,14 +792,14 @@ class WebSocketService {
 				break;
 			}
 
-			case "git_preview_complete": {
-				// Git sync preview complete message - dispatch to job-specific subscribers
-				const gitPreviewJobId = message.jobId;
-				if (gitPreviewJobId) {
-					const callbacks = this.gitPreviewCompleteCallbacks.get(gitPreviewJobId);
+			case "git_op_complete": {
+				const gitOpJobId = message.jobId;
+				if (gitOpJobId) {
+					const callbacks = this.gitOpCompleteCallbacks.get(gitOpJobId);
 					callbacks?.forEach((cb) => cb({
 						status: message.status,
-						preview: message.preview,
+						resultType: message.resultType,
+						data: message.data,
 						error: message.error,
 					}));
 				}
@@ -1278,19 +1277,22 @@ class WebSocketService {
 	}
 
 	/**
-	 * Subscribe to git sync preview completion for a specific job
+	 * Subscribe to git operation completion for a specific job
 	 */
-	onGitSyncPreviewComplete(jobId: string, callback: GitPreviewCompleteCallback): () => void {
-		if (!this.gitPreviewCompleteCallbacks.has(jobId)) {
-			this.gitPreviewCompleteCallbacks.set(jobId, new Set());
+	onGitOpComplete(
+		jobId: string,
+		callback: (complete: GitOpComplete) => void,
+	): () => void {
+		if (!this.gitOpCompleteCallbacks.has(jobId)) {
+			this.gitOpCompleteCallbacks.set(jobId, new Set());
 		}
-		this.gitPreviewCompleteCallbacks.get(jobId)!.add(callback);
+		this.gitOpCompleteCallbacks.get(jobId)!.add(callback);
 
 		// Return unsubscribe function
 		return () => {
-			this.gitPreviewCompleteCallbacks.get(jobId)?.delete(callback);
-			if (this.gitPreviewCompleteCallbacks.get(jobId)?.size === 0) {
-				this.gitPreviewCompleteCallbacks.delete(jobId);
+			this.gitOpCompleteCallbacks.get(jobId)?.delete(callback);
+			if (this.gitOpCompleteCallbacks.get(jobId)?.size === 0) {
+				this.gitOpCompleteCallbacks.delete(jobId);
 			}
 		};
 	}

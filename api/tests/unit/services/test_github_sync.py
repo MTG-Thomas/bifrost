@@ -4,87 +4,13 @@ Unit tests for GitHub Sync Service.
 Tests the GitHubSyncService data models and exceptions.
 """
 
-from src.services.github_sync import (
-    SyncAction,
-    SyncActionType,
-    ConflictInfo,
+from src.models.contracts.github import (
     OrphanInfo,
-    WorkflowReference,
     PreflightIssue,
     PreflightResult,
-    SyncPreview,
-    SyncResult,
-    SyncExecuteRequest,
-    SyncError,
-    ConflictError,
-    OrphanError,
+    WorkflowReference,
 )
-
-
-class TestSyncActionType:
-    """Tests for SyncActionType enum."""
-
-    def test_action_types(self):
-        """Test all action types are defined."""
-        assert SyncActionType.ADD.value == "add"
-        assert SyncActionType.MODIFY.value == "modify"
-        assert SyncActionType.DELETE.value == "delete"
-
-
-class TestSyncAction:
-    """Tests for SyncAction model."""
-
-    def test_creates_sync_action(self):
-        """Test SyncAction creation."""
-        action = SyncAction(
-            path="test.py",
-            action=SyncActionType.ADD,
-            sha="abc123",
-        )
-
-        assert action.path == "test.py"
-        assert action.action == SyncActionType.ADD
-        assert action.sha == "abc123"
-
-    def test_sync_action_without_sha(self):
-        """Test SyncAction with no sha."""
-        action = SyncAction(
-            path="test.py",
-            action=SyncActionType.DELETE,
-        )
-
-        assert action.sha is None
-
-
-class TestConflictInfo:
-    """Tests for ConflictInfo model."""
-
-    def test_creates_conflict_info(self):
-        """Test ConflictInfo creation."""
-        conflict = ConflictInfo(
-            path="conflict.py",
-            local_content="local code",
-            remote_content="remote code",
-            local_sha="local-sha",
-            remote_sha="remote-sha",
-        )
-
-        assert conflict.path == "conflict.py"
-        assert conflict.local_content == "local code"
-        assert conflict.remote_content == "remote code"
-        assert conflict.local_sha == "local-sha"
-        assert conflict.remote_sha == "remote-sha"
-
-    def test_conflict_info_without_content(self):
-        """Test ConflictInfo without content (content may be lazy loaded)."""
-        conflict = ConflictInfo(
-            path="conflict.py",
-            local_sha="local-sha",
-            remote_sha="remote-sha",
-        )
-
-        assert conflict.local_content is None
-        assert conflict.remote_content is None
+from src.services.github_sync import SyncError
 
 
 class TestWorkflowReference:
@@ -228,122 +154,6 @@ class TestPreflightResult:
         assert len(result.issues) == 1
 
 
-class TestSyncPreview:
-    """Tests for SyncPreview model."""
-
-    def test_creates_empty_preview(self):
-        """Test empty SyncPreview creation."""
-        preview = SyncPreview(is_empty=True)
-
-        assert preview.is_empty is True
-        assert len(preview.to_pull) == 0
-        assert len(preview.to_push) == 0
-        assert len(preview.conflicts) == 0
-        assert preview.preflight.valid is True
-        assert len(preview.preflight.issues) == 0
-
-    def test_creates_preview_with_changes(self):
-        """Test SyncPreview with changes."""
-        preview = SyncPreview(
-            to_pull=[SyncAction(path="new.py", action=SyncActionType.ADD)],
-            to_push=[SyncAction(path="changed.py", action=SyncActionType.MODIFY)],
-            is_empty=False,
-        )
-
-        assert preview.is_empty is False
-        assert len(preview.to_pull) == 1
-        assert len(preview.to_push) == 1
-
-    def test_preview_with_conflicts(self):
-        """Test SyncPreview with conflicts."""
-        preview = SyncPreview(
-            conflicts=[
-                ConflictInfo(
-                    path="conflict.py",
-                    local_sha="local",
-                    remote_sha="remote",
-                )
-            ],
-            is_empty=False,
-        )
-
-        assert len(preview.conflicts) == 1
-
-    def test_preview_with_preflight_errors(self):
-        """Test SyncPreview with preflight errors."""
-        preview = SyncPreview(
-            preflight=PreflightResult(
-                valid=False,
-                issues=[
-                    PreflightIssue(
-                        path="workflows/bad.py",
-                        message="syntax error",
-                        severity="error",
-                        category="syntax",
-                    ),
-                ],
-            ),
-            is_empty=False,
-        )
-
-        assert preview.preflight.valid is False
-        assert len(preview.preflight.issues) == 1
-
-
-class TestSyncResult:
-    """Tests for SyncResult model."""
-
-    def test_creates_success_result(self):
-        """Test successful SyncResult."""
-        result = SyncResult(
-            success=True,
-            pulled=5,
-            pushed=3,
-            commit_sha="abc123",
-        )
-
-        assert result.success is True
-        assert result.pulled == 5
-        assert result.pushed == 3
-        assert result.commit_sha == "abc123"
-        assert result.error is None
-
-    def test_creates_error_result(self):
-        """Test failed SyncResult."""
-        result = SyncResult(
-            success=False,
-            error="Something went wrong",
-        )
-
-        assert result.success is False
-        assert result.error == "Something went wrong"
-
-
-class TestSyncExecuteRequest:
-    """Tests for SyncExecuteRequest model."""
-
-    def test_creates_request_with_resolutions(self):
-        """Test SyncExecuteRequest with conflict resolutions."""
-        request = SyncExecuteRequest(
-            conflict_resolutions={
-                "file1.py": "keep_local",
-                "file2.py": "keep_remote",
-            },
-            confirm_orphans=True,
-        )
-
-        assert request.conflict_resolutions["file1.py"] == "keep_local"
-        assert request.conflict_resolutions["file2.py"] == "keep_remote"
-        assert request.confirm_orphans is True
-
-    def test_creates_empty_request(self):
-        """Test SyncExecuteRequest with defaults."""
-        request = SyncExecuteRequest()
-
-        assert len(request.conflict_resolutions) == 0
-        assert request.confirm_orphans is False
-
-
 class TestSyncExceptions:
     """Tests for sync exception classes."""
 
@@ -351,24 +161,6 @@ class TestSyncExceptions:
         """Test SyncError exception."""
         error = SyncError("Sync failed")
         assert str(error) == "Sync failed"
-
-    def test_conflict_error(self):
-        """Test ConflictError exception."""
-        conflicts = ["file1.py", "file2.py"]
-        error = ConflictError(conflicts)
-
-        assert "file1.py" in str(error)
-        assert "file2.py" in str(error)
-        assert error.conflicts == conflicts
-
-    def test_orphan_error(self):
-        """Test OrphanError exception."""
-        orphans = ["wf-1", "wf-2"]
-        error = OrphanError(orphans)
-
-        assert "wf-1" in str(error)
-        assert "wf-2" in str(error)
-        assert error.orphans == orphans
 
 
 class TestMemoryUsageDuringFileScan:

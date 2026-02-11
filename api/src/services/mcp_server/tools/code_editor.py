@@ -816,8 +816,6 @@ async def _list_modules(
     db, context: Any, path_prefix: str | None
 ) -> list[dict[str, Any]]:
     """List modules (Python files without workflow decorators)."""
-    from src.services.file_storage.entity_detector import detect_platform_entity_type
-
     # Get all .py paths from file_index that are NOT workflows
     fi_query = select(FileIndex.path).where(
         FileIndex.path.endswith(".py"),

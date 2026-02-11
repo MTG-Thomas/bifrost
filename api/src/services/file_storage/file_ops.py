@@ -16,12 +16,12 @@ from sqlalchemy.orm import selectinload
 
 from src.config import Settings
 from src.models import Workflow, Form, Agent
-from src.models.orm.applications import Application
 from src.models.orm.file_index import FileIndex
 from src.core.module_cache import set_module, invalidate_module
 from src.services.repo_storage import REPO_PREFIX
 from .models import WriteResult
-from .utils import serialize_form_to_yaml, serialize_agent_to_yaml
+from .indexers.form import _serialize_form_to_yaml
+from .indexers.agent import _serialize_agent_to_yaml
 from .entity_detector import detect_platform_entity_type
 
 if TYPE_CHECKING:
@@ -122,7 +122,7 @@ class FileOperationsService:
             form_result = await self.db.execute(form_stmt)
             form = form_result.scalar_one_or_none()
             if form is not None:
-                return serialize_form_to_yaml(form), None
+                return _serialize_form_to_yaml(form), None
             raise FileNotFoundError(f"Form not found: {form_id}")
 
         # Agents: agents/{uuid}.agent.yaml
@@ -136,7 +136,7 @@ class FileOperationsService:
             agent_result = await self.db.execute(agent_stmt)
             agent = agent_result.scalar_one_or_none()
             if agent is not None:
-                return serialize_agent_to_yaml(agent), None
+                return _serialize_agent_to_yaml(agent), None
             raise FileNotFoundError(f"Agent not found: {agent_id}")
 
         # Everything else: Redis cache → S3 _repo/ (file_index is search-only)

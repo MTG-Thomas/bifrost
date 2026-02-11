@@ -240,8 +240,6 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             icon=data.icon,
             organization_id=self.org_id,
             created_by=created_by,
-            navigation={},
-            permissions={},
             access_level=data.access_level,
         )
         self.session.add(application)
@@ -313,10 +311,6 @@ class ApplicationRepository(OrgScopedRepository[Application]):
                     application.organization_id = UUID(data.scope)
                 except ValueError:
                     pass  # Invalid UUID, ignore
-
-        # Handle navigation updates
-        if data.navigation is not None:
-            application.navigation = data.navigation.model_dump(exclude_none=True)
 
         # Update role associations if provided
         if data.role_ids is not None:
@@ -535,7 +529,6 @@ export default function RootLayout() {
             "has_unpublished_changes": application.has_unpublished_changes,
             "access_level": application.access_level,
             "role_ids": [str(rid) for rid in role_ids],
-            "navigation": application.navigation,
             "files": files_data,
         }
 
@@ -630,7 +623,6 @@ async def application_to_public(
         has_unpublished_changes=application.has_unpublished_changes,
         access_level=application.access_level,
         role_ids=role_ids,
-        navigation=application.navigation,
     )
 
 

@@ -5,7 +5,7 @@
  * for imperative usage outside of React hooks
  */
 
-import { $api, apiClient } from "@/lib/api-client";
+import { $api, apiClient, authFetch } from "@/lib/api-client";
 import { useQueryClient } from "@tanstack/react-query";
 import type { components } from "@/lib/v1";
 
@@ -28,34 +28,7 @@ export type ConflictInfo = components["schemas"]["ConflictInfo"];
 export type CommitHistoryResponse =
 	components["schemas"]["CommitHistoryResponse"];
 
-// Sync types - manually defined since SyncPreviewResponse is now sent via WebSocket
-// and not exposed as an HTTP response, so it's pruned from the OpenAPI schema.
-// These must match the Python models in api/src/models/contracts/github.py
-
-export type SyncActionType = "add" | "modify" | "delete";
-
-export interface SyncAction {
-	path: string;
-	action: SyncActionType;
-	sha?: string | null;
-	display_name?: string | null;
-	entity_type?: string | null;
-	parent_slug?: string | null;
-}
-
-export interface SyncConflictInfo {
-	path: string;
-	local_content?: string | null;
-	remote_content?: string | null;
-	local_sha: string;
-	remote_sha: string;
-	display_name?: string | null;
-	entity_type?: string | null;
-	parent_slug?: string | null;
-}
-
-
-
+// Preflight types - used by CommitResult
 export interface PreflightIssue {
 	path: string;
 	line?: number | null;
@@ -69,17 +42,76 @@ export interface PreflightResult {
 	issues: PreflightIssue[];
 }
 
-export interface SyncPreviewResponse {
-	to_pull: SyncAction[];
-	to_push: SyncAction[];
-	conflicts: SyncConflictInfo[];
-	preflight: PreflightResult;
-	is_empty: boolean;
+// Desktop-style git types - manually defined since results are sent via WebSocket
+// These match the Python models in api/src/models/contracts/github.py
+
+export interface GitJobResponse {
+	job_id: string;
+	status: string;
 }
 
-export type SyncPreviewJobResponse = components["schemas"]["SyncPreviewJobResponse"];
-export type SyncExecuteRequest = components["schemas"]["SyncExecuteRequest"];
-export type SyncExecuteResponse = components["schemas"]["SyncExecuteResponse"];
+export interface ChangedFile {
+	path: string;
+	change_type: "added" | "modified" | "deleted" | "renamed" | "untracked";
+	display_name?: string | null;
+	entity_type?: string | null;
+}
+
+export interface MergeConflict {
+	path: string;
+	ours_content?: string | null;
+	theirs_content?: string | null;
+	display_name?: string | null;
+	entity_type?: string | null;
+}
+
+export interface FetchResult {
+	success: boolean;
+	commits_ahead: number;
+	commits_behind: number;
+	remote_branch_exists: boolean;
+	error?: string | null;
+}
+
+export interface WorkingTreeStatus {
+	changed_files: ChangedFile[];
+	total_changes: number;
+}
+
+export interface CommitResult {
+	success: boolean;
+	commit_sha?: string | null;
+	files_committed: number;
+	error?: string | null;
+	preflight?: PreflightResult | null;
+}
+
+export interface PullResult {
+	success: boolean;
+	pulled: number;
+	commit_sha?: string | null;
+	conflicts: MergeConflict[];
+	error?: string | null;
+}
+
+export interface PushResult {
+	success: boolean;
+	commit_sha?: string | null;
+	pushed_commits: number;
+	error?: string | null;
+}
+
+export interface ResolveResult {
+	success: boolean;
+	pulled: number;
+	error?: string | null;
+}
+
+export interface DiffResult {
+	path: string;
+	head_content?: string | null;
+	working_content?: string | null;
+}
 
 // =============================================================================
 // Query Hooks
@@ -215,57 +247,137 @@ export function useDisconnectGitHub() {
 	});
 }
 
+// =============================================================================
+// Desktop-style git operation hooks
+// =============================================================================
+
 /**
- * Queue sync preview job - returns immediately with job_id
- *
- * The caller should subscribe to WebSocket channel git:{job_id} to receive:
- * - Progress updates (git_progress messages with phases like 'cloning', 'scanning')
- * - Completion with full preview data (git_preview_complete message)
- *
- * Returns a mutation-like interface for imperative usage (mutateAsync pattern).
+ * Queue a git fetch operation - returns job_id for WebSocket tracking
  */
-export function useSyncPreview() {
+export function useFetch() {
 	return {
-		mutateAsync: async (): Promise<SyncPreviewJobResponse> => {
-			const response = await apiClient.GET("/api/github/sync");
-			if (!response.data) {
-				const errorDetail =
-					(response.error as { detail?: string } | undefined)?.detail ||
-					"Failed to queue sync preview";
-				throw new Error(errorDetail);
+		mutateAsync: async (): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/fetch", { method: "POST" });
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue fetch");
 			}
-			return response.data as SyncPreviewJobResponse;
+			return (await response.json()) as GitJobResponse;
 		},
 		isPending: false,
 	};
 }
 
 /**
- * Execute sync with conflict resolutions and orphan confirmation
- *
- * NOTE: This queues a background job and returns immediately with job_id.
- * The client should subscribe to WebSocket channel git:{job_id} AFTER
- * receiving the response to get progress/completion messages.
- * Query invalidation should happen in the UI when WebSocket completion is received.
- *
- * Returns a mutation-like interface for imperative usage (mutateAsync pattern).
+ * Queue a git commit operation - returns job_id for WebSocket tracking
  */
-export function useSyncExecute() {
+export function useCommit() {
 	return {
-		mutateAsync: async (params: {
-			body: SyncExecuteRequest;
-		}): Promise<SyncExecuteResponse> => {
-			const response = await apiClient.POST("/api/github/sync", {
-				body: params.body,
+		mutateAsync: async (message: string): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/commit", {
+				method: "POST",
+				body: JSON.stringify({ message }),
 			});
-			if (!response.data) {
-				const errorDetail =
-					(response.error as { detail?: string } | undefined)?.detail ||
-					"Failed to queue sync";
-				throw new Error(errorDetail);
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue commit");
 			}
-			// Returns job_id and status="queued", actual results come via WebSocket
-			return response.data as SyncExecuteResponse;
+			return (await response.json()) as GitJobResponse;
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Queue a git pull operation - returns job_id for WebSocket tracking
+ */
+export function usePull() {
+	return {
+		mutateAsync: async (): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/pull", { method: "POST" });
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue pull");
+			}
+			return (await response.json()) as GitJobResponse;
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Queue a git push operation - returns job_id for WebSocket tracking
+ */
+export function usePush() {
+	return {
+		mutateAsync: async (): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/push", { method: "POST" });
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue push");
+			}
+			return (await response.json()) as GitJobResponse;
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Queue a working tree status check - returns job_id for WebSocket tracking
+ */
+export function useWorkingTreeChanges() {
+	return {
+		mutateAsync: async (): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/changes", {
+				method: "POST",
+			});
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue status check");
+			}
+			return (await response.json()) as GitJobResponse;
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Queue conflict resolution - returns job_id for WebSocket tracking
+ */
+export function useResolveConflicts() {
+	return {
+		mutateAsync: async (
+			resolutions: Record<string, "ours" | "theirs">,
+		): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/resolve", {
+				method: "POST",
+				body: JSON.stringify({ resolutions }),
+			});
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue conflict resolution");
+			}
+			return (await response.json()) as GitJobResponse;
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Queue a file diff operation - returns job_id for WebSocket tracking
+ */
+export function useFileDiff() {
+	return {
+		mutateAsync: async (path: string): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/diff", {
+				method: "POST",
+				body: JSON.stringify({ path }),
+			});
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue diff");
+			}
+			return (await response.json()) as GitJobResponse;
 		},
 		isPending: false,
 	};

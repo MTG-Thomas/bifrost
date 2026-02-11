@@ -28,15 +28,37 @@ def _mock_workflow(name="test_wf", org_id=None):
     return wf
 
 
-def _mock_form(name="test_form", org_id=None, workflow_id=None):
+def _mock_form(name="test_form", org_id=None, workflow_id=None, access_level="role_based"):
     form = MagicMock()
     form.id = uuid4()
     form.name = name
     form.organization_id = org_id
     form.workflow_id = str(workflow_id) if workflow_id else None
+    form.access_level = access_level
     form.is_active = True
     form.form_roles = []
     return form
+
+
+def _mock_agent(name="test_agent", org_id=None, access_level="role_based"):
+    agent = MagicMock()
+    agent.id = uuid4()
+    agent.name = name
+    agent.organization_id = org_id
+    agent.access_level = access_level
+    agent.is_active = True
+    agent.is_system = False
+    return agent
+
+
+def _mock_app(name="test_app", slug=None, org_id=None, access_level="authenticated"):
+    app = MagicMock()
+    app.id = uuid4()
+    app.name = name
+    app.slug = slug or name.lower().replace(" ", "-")
+    app.organization_id = org_id
+    app.access_level = access_level
+    return app
 
 
 @pytest.mark.asyncio
@@ -63,6 +85,8 @@ async def test_generate_manifest_with_workflow(mock_db):
         empty_result,  # roles
         empty_result,  # workflow_roles
         empty_result,  # form_roles
+        empty_result,  # agent_roles
+        empty_result,  # app_roles
     ])
 
     manifest = await generate_manifest(mock_db)
@@ -140,6 +164,8 @@ async def test_generate_manifest_with_roles(mock_db):
         empty_result,       # roles
         wf_roles_result,    # workflow_roles
         form_roles_result,  # form_roles
+        empty_result,       # agent_roles
+        empty_result,       # app_roles
     ])
 
     manifest = await generate_manifest(mock_db)
@@ -187,6 +213,8 @@ async def test_generate_manifest_with_organizations(mock_db):
         empty_result,  # roles
         empty_result,  # workflow_roles
         empty_result,  # form_roles
+        empty_result,  # agent_roles
+        empty_result,  # app_roles
     ])
 
     manifest = await generate_manifest(mock_db)
@@ -194,3 +222,78 @@ async def test_generate_manifest_with_organizations(mock_db):
     # Verify org bindings
     assert manifest.workflows["org_wf"].organization_id == str(org_id)
     assert manifest.forms["org_form"].organization_id == str(org_id)
+
+
+@pytest.mark.asyncio
+async def test_generate_manifest_access_levels(mock_db):
+    """Should include access_level for forms, agents, and apps."""
+    from src.services.manifest_generator import generate_manifest
+
+    form = _mock_form(name="auth_form", access_level="authenticated")
+    agent = _mock_agent(name="private_agent", access_level="private")
+    app = _mock_app(name="locked_app", access_level="role_based")
+
+    form_result = MagicMock()
+    form_result.scalars.return_value.all.return_value = [form]
+
+    agent_result = MagicMock()
+    agent_result.scalars.return_value.all.return_value = [agent]
+
+    app_result = MagicMock()
+    app_result.scalars.return_value.all.return_value = [app]
+
+    empty_result = MagicMock()
+    empty_result.scalars.return_value.all.return_value = []
+
+    mock_db.execute = AsyncMock(side_effect=[
+        empty_result,   # workflows
+        form_result,    # forms
+        agent_result,   # agents
+        app_result,     # apps
+        empty_result,   # organizations
+        empty_result,   # roles
+        empty_result,   # workflow_roles
+        empty_result,   # form_roles
+        empty_result,   # agent_roles
+        empty_result,   # app_roles
+    ])
+
+    manifest = await generate_manifest(mock_db)
+
+    assert manifest.forms["auth_form"].access_level == "authenticated"
+    assert manifest.agents["private_agent"].access_level == "private"
+    assert manifest.apps["locked_app"].access_level == "role_based"
+
+
+@pytest.mark.asyncio
+async def test_generate_manifest_excludes_system_agents(mock_db):
+    """System agents should not appear in manifest."""
+    from src.services.manifest_generator import generate_manifest
+
+    user_agent = _mock_agent(name="User Agent")
+    system_agent = _mock_agent(name="Platform Assistant")
+    system_agent.is_system = True
+
+    agent_result = MagicMock()
+    agent_result.scalars.return_value.all.return_value = [user_agent, system_agent]
+
+    empty_result = MagicMock()
+    empty_result.scalars.return_value.all.return_value = []
+
+    mock_db.execute = AsyncMock(side_effect=[
+        empty_result,   # workflows
+        empty_result,   # forms
+        agent_result,   # agents
+        empty_result,   # apps
+        empty_result,   # organizations
+        empty_result,   # roles
+        empty_result,   # workflow_roles
+        empty_result,   # form_roles
+        empty_result,   # agent_roles
+        empty_result,   # app_roles
+    ])
+
+    manifest = await generate_manifest(mock_db)
+
+    assert "User Agent" in manifest.agents
+    assert "Platform Assistant" not in manifest.agents

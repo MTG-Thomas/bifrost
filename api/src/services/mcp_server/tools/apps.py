@@ -293,7 +293,6 @@ async def get_app(
                 "active_version_id": str(app.active_version_id) if app.active_version_id else None,
                 "draft_version_id": str(app.draft_version_id) if app.draft_version_id else None,
                 "url": f"/apps/{app.slug}",
-                "navigation": app.navigation,
                 "files": [
                     {
                         "id": str(f.id),
@@ -317,7 +316,6 @@ async def update_app(
     app_id: str,
     name: str | None = None,
     description: str | None = None,
-    navigation: dict[str, Any] | None = None,
 ) -> ToolResult:
     """
     Update application metadata.
@@ -326,7 +324,6 @@ async def update_app(
         app_id: Application UUID (required)
         name: New application name
         description: New description
-        navigation: Navigation configuration dict
 
     Returns:
         ToolResult with updated fields
@@ -370,20 +367,6 @@ async def update_app(
             if description is not None:
                 app.description = description
                 updates_made.append("description")
-
-            if navigation is not None:
-                # Validate navigation through Pydantic model with strict checking
-                from pydantic import ValidationError
-
-                from src.models.contracts.applications import NavigationConfig
-
-                try:
-                    # Use strict=True to catch type mismatches
-                    validated_nav = NavigationConfig.model_validate(navigation, strict=True)
-                    app.navigation = validated_nav.model_dump(exclude_none=True)
-                    updates_made.append("navigation")
-                except ValidationError as e:
-                    return error_result(f"Invalid navigation configuration: {e}")
 
             if not updates_made:
                 return error_result("No updates specified")
@@ -538,7 +521,7 @@ Apps are managed at two levels:
 ### App Level
 - `list_apps` - List all applications with file counts
 - `get_app` - Get app metadata and file list
-- `update_app` - Update app settings (name, description, navigation)
+- `update_app` - Update app settings (name, description)
 - `publish_app` - Publish all draft files to live
 
 ### File Level
@@ -829,7 +812,7 @@ TOOLS = [
     ("list_apps", "List Applications", "List all App Builder applications with file counts and URLs."),
     ("create_app", "Create Application", "Create a new App Builder application with scaffold files."),
     ("get_app", "Get Application", "Get application metadata and file list."),
-    ("update_app", "Update Application", "Update application metadata (name, description, navigation)."),
+    ("update_app", "Update Application", "Update application metadata (name, description)."),
     ("publish_app", "Publish Application", "Publish all draft files to live."),
     ("get_app_schema", "Get App Schema", "Get documentation about App Builder application structure and code-based files."),
 ]

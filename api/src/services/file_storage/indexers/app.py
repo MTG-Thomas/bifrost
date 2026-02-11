@@ -55,8 +55,6 @@ def _serialize_app_to_json(app: Application) -> bytes:
         app_data["description"] = app.description
     if app.icon:
         app_data["icon"] = app.icon
-    if app.navigation:
-        app_data["navigation"] = app.navigation
 
     return json.dumps(app_data, indent=2).encode("utf-8")
 
@@ -137,8 +135,6 @@ class AppIndexer:
             existing_app.name = name
             existing_app.description = app_data.get("description")
             existing_app.icon = app_data.get("icon")
-            if "navigation" in app_data:
-                existing_app.navigation = app_data["navigation"]
             existing_app.updated_at = now
 
             logger.info(f"Updated app: {slug}")
@@ -154,11 +150,9 @@ class AppIndexer:
                 slug=slug,
                 description=app_data.get("description"),
                 icon=app_data.get("icon"),
-                navigation=app_data.get("navigation", {}),
                 # Safe defaults for instance-specific fields
                 organization_id=None,  # Global
                 access_level="role_based",  # Locked down by default
-                permissions={},
                 # Version references - set draft_version_id after flush
                 draft_version_id=None,
                 active_version_id=None,  # Not published
@@ -410,8 +404,6 @@ class AppIndexer:
             existing_app.name = name
             existing_app.description = app_data.get("description")
             existing_app.icon = app_data.get("icon")
-            if "navigation" in app_data:
-                existing_app.navigation = app_data["navigation"]
             existing_app.updated_at = now
 
             # If slug changed, update it
@@ -431,10 +423,8 @@ class AppIndexer:
                 slug=slug,
                 description=app_data.get("description"),
                 icon=app_data.get("icon"),
-                navigation=app_data.get("navigation", {}),
                 organization_id=None,
                 access_level="role_based",
-                permissions={},
                 draft_version_id=None,
                 active_version_id=None,
                 created_at=now,

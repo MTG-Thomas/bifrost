@@ -1,8 +1,12 @@
 """
-Git Sync TDD Tests — define the contract for GitPython-based sync.
+Git Sync Tests — desktop-style git operations (commit, push, pull, fetch, etc.).
 
-Uses local bare git repos (no GitHub needed). These tests define the target
-interface for the redesigned GitHubSyncService with GitPython.
+Uses local bare git repos (no GitHub needed). Tests validate the desktop-style
+interface on GitHubSyncService: desktop_commit, desktop_push, desktop_pull,
+desktop_fetch, desktop_status, desktop_diff, desktop_resolve, and preflight.
+
+For "push from platform" tests, entity files are written to the persistent
+dir (simulating what RepoSyncWriter does in production via dual-write to S3).
 
 Fixtures:
 - bare_repo: local bare git repo (tmp_path)
@@ -109,6 +113,20 @@ def _make_manifest(
     return yaml.dump(data, default_flow_style=False, sort_keys=False)
 
 
+def write_entity_to_repo(persistent_dir: Path, rel_path: str, content: str) -> None:
+    """Write a file to the persistent repo dir, simulating RepoSyncWriter dual-write."""
+    target = persistent_dir / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+
+
+def remove_entity_from_repo(persistent_dir: Path, rel_path: str) -> None:
+    """Remove a file from the persistent repo dir, simulating RepoSyncWriter deletion."""
+    target = persistent_dir / rel_path
+    if target.exists():
+        target.unlink()
+
+
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -144,19 +162,80 @@ def working_clone(tmp_path, bare_repo):
 
 
 @pytest_asyncio.fixture
-async def sync_service(db_session: AsyncSession, bare_repo):
+async def sync_service(db_session: AsyncSession, bare_repo, tmp_path):
     """
     GitHubSyncService configured against the local bare repo.
 
     Uses file:// protocol to talk to the bare repo on disk.
+    Replaces GitRepoManager.checkout() with a local-only version
+    that persists state in a temp dir (simulating S3 persistence).
     """
+    import shutil
+    from contextlib import asynccontextmanager
     from src.services.github_sync import GitHubSyncService
 
-    return GitHubSyncService(
+    service = GitHubSyncService(
         db=db_session,
         repo_url=f"file://{bare_repo}",
         branch="main",
     )
+
+    # Replace checkout() with a local-only version that simulates
+    # S3 persistence by using a persistent dir on disk
+    persistent_dir = tmp_path / "persistent_repo"
+    persistent_dir.mkdir()
+
+    @asynccontextmanager
+    async def local_checkout():
+        import tempfile
+        work_dir = Path(tempfile.mkdtemp(prefix="bifrost-test-repo-"))
+        try:
+            # Sync down: copy persistent state to work dir
+            if any(persistent_dir.iterdir()):
+                shutil.copytree(persistent_dir, work_dir, dirs_exist_ok=True)
+            yield work_dir
+            # Sync up: copy work dir back to persistent state
+            shutil.rmtree(persistent_dir)
+            shutil.copytree(work_dir, persistent_dir)
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    service.repo_manager.checkout = local_checkout
+    service._persistent_dir = persistent_dir  # Expose for tests
+
+    # Override _regenerate_manifest_only to filter out entities whose files
+    # don't exist in the working dir. The test DB may contain agents/forms/apps
+    # from other fixtures that have no corresponding files in the test repo.
+    _original_regenerate = service._regenerate_manifest_only
+
+    async def _filtered_regenerate(work_dir: Path) -> None:
+        await _original_regenerate(work_dir)
+        # Re-read the manifest and filter out missing paths
+        manifest_path = work_dir / ".bifrost" / "metadata.yaml"
+        if manifest_path.exists():
+            from src.services.manifest import parse_manifest, serialize_manifest
+            manifest = parse_manifest(manifest_path.read_text())
+            manifest.workflows = {
+                k: v for k, v in manifest.workflows.items()
+                if (work_dir / v.path).exists()
+            }
+            manifest.forms = {
+                k: v for k, v in manifest.forms.items()
+                if (work_dir / v.path).exists()
+            }
+            manifest.agents = {
+                k: v for k, v in manifest.agents.items()
+                if (work_dir / v.path).exists()
+            }
+            manifest.apps = {
+                k: v for k, v in manifest.apps.items()
+                if (work_dir / v.path).exists()
+            }
+            manifest_path.write_text(serialize_manifest(manifest))
+
+    service._regenerate_manifest_only = _filtered_regenerate
+
+    return service
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -179,6 +258,12 @@ async def cleanup_test_data(db_session: AsyncSession):
     await db_session.execute(
         delete(FileIndex).where(FileIndex.path.like(".bifrost/%"))
     )
+    await db_session.execute(
+        delete(FileIndex).where(FileIndex.path.like("forms/%"))
+    )
+    await db_session.execute(
+        delete(Form).where(Form.created_by.in_(["test", "git-sync"]))
+    )
     await db_session.commit()
 
 
@@ -200,8 +285,8 @@ class TestPushToEmptyRepo:
         tmp_path,
     ):
         """
-        Create entities in DB, push → clone and verify workflow .py files,
-        form .form.yaml, manifest.
+        Create entities in DB, write file to repo dir, commit + push →
+        clone and verify workflow .py files, manifest.
         """
         # Create a workflow in DB
         wf_id = uuid4()
@@ -215,11 +300,21 @@ class TestPushToEmptyRepo:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push to empty repo
-        result = await sync_service.push()
+        # Write workflow file to persistent dir (simulates RepoSyncWriter)
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_wf.py",
+            SAMPLE_WORKFLOW_PY,
+        )
 
-        assert result.success is True
-        assert result.pushed > 0
+        # Commit + push
+        commit_result = await sync_service.desktop_commit("initial commit")
+        assert commit_result.success is True
+        assert commit_result.files_committed > 0
+
+        push_result = await sync_service.desktop_push()
+        assert push_result.success is True
+        assert push_result.pushed_commits > 0
 
         # Verify by cloning the repo and checking files
         verify_path = tmp_path / "verify"
@@ -240,7 +335,7 @@ class TestPushToEmptyRepo:
         bare_repo,
         tmp_path,
     ):
-        """Push → .bifrost/metadata.yaml exists with correct entries."""
+        """Commit + push → .bifrost/metadata.yaml exists with correct entries."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -252,7 +347,16 @@ class TestPushToEmptyRepo:
         db_session.add(wf)
         await db_session.commit()
 
-        await sync_service.push()
+        # Write workflow file to persistent dir (simulates RepoSyncWriter)
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_manifest.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+
+        # Commit + push
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
         # Clone and verify manifest
         verify_path = tmp_path / "verify"
@@ -290,7 +394,7 @@ class TestIncrementalPush:
         bare_repo,
         tmp_path,
     ):
-        """Push, modify workflow, push again → repo has updated content."""
+        """Commit+push, modify workflow file, commit+push again → repo has updated content."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -302,18 +406,30 @@ class TestIncrementalPush:
         db_session.add(wf)
         await db_session.commit()
 
-        # First push
-        result1 = await sync_service.push()
+        # Write workflow file and first commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_incremental.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        result1 = await sync_service.desktop_commit("initial commit")
         assert result1.success is True
+        await sync_service.desktop_push()
 
-        # Modify the workflow name
+        # Modify the workflow name in DB and update file in persistent dir
         wf.name = "Git Sync Test Workflow Updated"
         wf.description = "Updated description"
         await db_session.commit()
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_incremental.py",
+            SAMPLE_WORKFLOW_UPDATED,
+        )
 
-        # Second push
-        result2 = await sync_service.push()
+        # Second commit+push
+        result2 = await sync_service.desktop_commit("update workflow")
         assert result2.success is True
+        await sync_service.desktop_push()
 
         # Verify updated content
         verify_path = tmp_path / "verify"
@@ -336,7 +452,7 @@ class TestIncrementalPush:
         bare_repo,
         tmp_path,
     ):
-        """Push, delete workflow, push again → file gone from repo."""
+        """Commit+push, delete workflow file, commit+push again → file gone from repo."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -348,15 +464,26 @@ class TestIncrementalPush:
         db_session.add(wf)
         await db_session.commit()
 
-        # First push
-        await sync_service.push()
+        # Write file and first commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_delete.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Deactivate the workflow
+        # Deactivate the workflow and remove file from persistent dir
         wf.is_active = False
         await db_session.commit()
+        remove_entity_from_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_delete.py",
+        )
 
-        # Second push
-        await sync_service.push()
+        # Second commit+push
+        await sync_service.desktop_commit("delete workflow")
+        await sync_service.desktop_push()
 
         # Verify file is gone
         verify_path = tmp_path / "verify"
@@ -381,7 +508,7 @@ class TestPull:
         sync_service,
         working_clone,
     ):
-        """Commit .py with @workflow to repo, pull → workflows table + file_index populated."""
+        """Commit .py with @workflow to repo, desktop_pull → workflows table + file_index populated."""
         work_dir = Path(working_clone.working_dir)
 
         # Create workflow file in the repo
@@ -415,7 +542,7 @@ class TestPull:
         working_clone.remotes.origin.push()
 
         # Pull into platform
-        result = await sync_service.pull()
+        result = await sync_service.desktop_pull()
 
         assert result.success is True
         assert result.pulled > 0
@@ -445,7 +572,7 @@ class TestPull:
         sync_service,
         working_clone,
     ):
-        """Commit .form.yaml to repo, pull → forms table populated."""
+        """Commit .form.yaml to repo, desktop_pull → forms table populated."""
         work_dir = Path(working_clone.working_dir)
 
         form_id = str(uuid4())
@@ -478,7 +605,7 @@ class TestPull:
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.pull()
+        result = await sync_service.desktop_pull()
         assert result.success is True
 
         # Verify form in DB
@@ -497,7 +624,7 @@ class TestPull:
         bare_repo,
         tmp_path,
     ):
-        """Push, modify in repo, pull → file_index updated."""
+        """Commit+push, modify in repo, desktop_pull → file_index updated."""
         # Create workflow in platform
         wf_id = uuid4()
         wf = Workflow(
@@ -510,10 +637,16 @@ class TestPull:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push to repo
-        await sync_service.push()
+        # Write file to persistent dir and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_modified.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Modify in repo
+        # Modify in repo via working clone
         work_dir = Path(working_clone.working_dir)
         working_clone.remotes.origin.pull()
         wf_file = work_dir / "workflows" / "git_sync_test_modified.py"
@@ -523,7 +656,7 @@ class TestPull:
         working_clone.remotes.origin.push()
 
         # Pull into platform
-        result = await sync_service.pull()
+        result = await sync_service.desktop_pull()
         assert result.success is True
 
         # Verify file_index has updated content
@@ -542,7 +675,7 @@ class TestPull:
         sync_service,
         working_clone,
     ):
-        """Push, delete in repo, pull → entity deactivated, file_index cleaned."""
+        """Commit+push, delete in repo, desktop_pull → entity deactivated, file_index cleaned."""
         # Create workflow in platform
         wf_id = uuid4()
         wf = Workflow(
@@ -555,10 +688,16 @@ class TestPull:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push
-        await sync_service.push()
+        # Write file and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_del_pull.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Delete in repo
+        # Delete in repo via working clone
         work_dir = Path(working_clone.working_dir)
         working_clone.remotes.origin.pull()
         wf_file = work_dir / "workflows" / "git_sync_test_del_pull.py"
@@ -569,12 +708,14 @@ class TestPull:
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.pull()
+        result = await sync_service.desktop_pull()
         assert result.success is True
 
-        # Workflow should be deactivated
-        await db_session.refresh(wf)
-        assert wf.is_active is False
+        # Workflow should be hard-deleted (git history is the undo mechanism)
+        wf_result = await db_session.execute(
+            select(Workflow).where(Workflow.id == wf_id)
+        )
+        assert wf_result.scalar_one_or_none() is None
 
         # file_index entry should be removed
         fi_result = await db_session.execute(
@@ -601,7 +742,7 @@ class TestRenames:
         sync_service,
         working_clone,
     ):
-        """Push, rename file in repo, pull → platform path updated."""
+        """Commit+push, rename file in repo, desktop_pull → platform path updated."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -613,10 +754,16 @@ class TestRenames:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push
-        await sync_service.push()
+        # Write file and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_rename_old.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Rename in repo
+        # Rename in repo via working clone
         work_dir = Path(working_clone.working_dir)
         working_clone.remotes.origin.pull()
         old_file = work_dir / "workflows" / "git_sync_test_rename_old.py"
@@ -645,7 +792,7 @@ class TestRenames:
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.pull()
+        result = await sync_service.desktop_pull()
         assert result.success is True
 
         # Workflow path should be updated
@@ -660,7 +807,7 @@ class TestRenames:
         bare_repo,
         tmp_path,
     ):
-        """Push, rename in platform, push → repo has new path."""
+        """Commit+push, rename in platform, commit+push → repo has new path."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -672,15 +819,31 @@ class TestRenames:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push
-        await sync_service.push()
+        # Write file and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_plat_old.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Rename in platform (update path)
+        # Rename in platform: remove old file, write new file, update DB path
+        remove_entity_from_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_plat_old.py",
+        )
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_plat_new.py",
+            SAMPLE_WORKFLOW_PY,
+        )
         wf.path = "workflows/git_sync_test_plat_new.py"
         await db_session.commit()
 
-        # Push again
-        await sync_service.push()
+        # Commit+push again
+        await sync_service.desktop_commit("rename workflow")
+        await sync_service.desktop_push()
 
         # Verify new path in repo
         verify_path = tmp_path / "verify"
@@ -707,7 +870,7 @@ class TestConflicts:
         sync_service,
         working_clone,
     ):
-        """Push, modify both sides, preview → conflict detected."""
+        """Commit+push, modify both sides, desktop_pull → conflict detected."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -719,10 +882,16 @@ class TestConflicts:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push
-        await sync_service.push()
+        # Write file and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_conflict.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Modify in repo
+        # Modify in repo via working clone
         work_dir = Path(working_clone.working_dir)
         working_clone.remotes.origin.pull()
         wf_file = work_dir / "workflows" / "git_sync_test_conflict.py"
@@ -731,16 +900,25 @@ class TestConflicts:
         working_clone.index.commit("modify workflow in repo")
         working_clone.remotes.origin.push()
 
-        # Modify in platform (different change)
+        # Modify in platform (different change) — write different content to persistent dir
         wf.name = "Conflict Test Workflow Platform Modified"
         await db_session.commit()
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_conflict.py",
+            SAMPLE_WORKFLOW_CLEAN,  # Different content from repo change
+        )
 
-        # Preview should show conflict
-        preview = await sync_service.preview()
-        assert len(preview.conflicts) > 0
+        # Commit locally (creates divergent history)
+        await sync_service.desktop_commit("modify workflow in platform")
 
-        conflict_paths = [c.path for c in preview.conflicts]
-        # The conflict could be on the manifest or the workflow file
+        # Pull should detect conflict since both sides diverged
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success is False
+        assert len(pull_result.conflicts) > 0
+
+        conflict_paths = [c.path for c in pull_result.conflicts]
+        # The conflict could be on the workflow file or the manifest
         assert any(
             "git_sync_test_conflict" in p or "metadata.yaml" in p
             for p in conflict_paths
@@ -752,7 +930,7 @@ class TestConflicts:
         sync_service,
         working_clone,
     ):
-        """Push, modify platform + delete repo → conflict detected."""
+        """Commit+push, modify platform + delete in repo → conflict on pull."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -764,10 +942,16 @@ class TestConflicts:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push
-        await sync_service.push()
+        # Write file and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_del_conflict.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Delete in repo
+        # Delete in repo via working clone
         work_dir = Path(working_clone.working_dir)
         working_clone.remotes.origin.pull()
         wf_file = work_dir / "workflows" / "git_sync_test_del_conflict.py"
@@ -777,22 +961,25 @@ class TestConflicts:
         working_clone.index.commit("delete workflow in repo")
         working_clone.remotes.origin.push()
 
-        # Modify in platform
+        # Modify in platform (creates divergent local commit)
         wf.name = "Delete Conflict Test Modified"
         wf.description = "Modified after repo deletion"
         await db_session.commit()
-
-        # Preview should detect conflict
-        preview = await sync_service.preview()
-        # Either an explicit conflict or a to_pull delete + to_push modify
-        has_conflict = len(preview.conflicts) > 0
-        has_divergence = (
-            any("del_conflict" in a.path for a in preview.to_pull) and
-            any("del_conflict" in a.path or "metadata" in a.path for a in preview.to_push)
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_del_conflict.py",
+            SAMPLE_WORKFLOW_UPDATED,
         )
-        assert has_conflict or has_divergence, (
-            f"Expected conflict or divergence. conflicts={preview.conflicts}, "
-            f"to_pull={preview.to_pull}, to_push={preview.to_push}"
+        await sync_service.desktop_commit("modify workflow in platform")
+
+        # Pull should detect conflict (delete vs modify)
+        pull_result = await sync_service.desktop_pull()
+        # Either an explicit conflict or a failed merge
+        has_conflict = len(pull_result.conflicts) > 0
+        has_error = pull_result.success is False
+        assert has_conflict or has_error, (
+            f"Expected conflict or error. conflicts={pull_result.conflicts}, "
+            f"success={pull_result.success}, error={pull_result.error}"
         )
 
 
@@ -812,7 +999,7 @@ class TestRoundTrip:
         sync_service,
         working_clone,
     ):
-        """Create → push → modify in repo → pull → ID preserved, content matches."""
+        """Create → commit+push → modify in repo → desktop_pull → ID preserved, content matches."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -824,10 +1011,16 @@ class TestRoundTrip:
         db_session.add(wf)
         await db_session.commit()
 
-        # Push
-        await sync_service.push()
+        # Write file and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_roundtrip.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Modify in repo
+        # Modify in repo via working clone
         work_dir = Path(working_clone.working_dir)
         working_clone.remotes.origin.pull()
         wf_file = work_dir / "workflows" / "git_sync_test_roundtrip.py"
@@ -837,7 +1030,7 @@ class TestRoundTrip:
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.pull()
+        result = await sync_service.desktop_pull()
         assert result.success is True
 
         # ID should be preserved
@@ -863,7 +1056,7 @@ class TestRoundTrip:
         bare_repo,
         tmp_path,
     ):
-        """Create workflow + form → push → verify form yaml has UUID ref → pull → UUID preserved."""
+        """Create workflow + form → commit+push → verify form yaml has UUID ref → pull → UUID preserved."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -885,8 +1078,21 @@ class TestRoundTrip:
         db_session.add(form)
         await db_session.commit()
 
-        # Push
-        await sync_service.push()
+        # Write both entity files to persistent dir (simulates RepoSyncWriter)
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_formref.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            f"forms/{form_id}.form.yaml",
+            SAMPLE_FORM_YAML.format(workflow_id=wf_id),
+        )
+
+        # Commit + push
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
         # Verify form yaml in repo contains UUID reference
         verify_path = tmp_path / "verify"
@@ -900,7 +1106,7 @@ class TestRoundTrip:
         assert str(wf_id) in form_yaml, "Form yaml should contain workflow UUID reference"
 
         # Pull back
-        result = await sync_service.pull()
+        result = await sync_service.desktop_pull()
         assert result.success is True
 
         # UUID should be preserved
@@ -924,7 +1130,7 @@ class TestOrphanDetection:
         sync_service,
         working_clone,
     ):
-        """Push workflow + form referencing it, delete workflow in repo → preview warns."""
+        """Commit+push workflow + form, delete workflow in repo, pull → preflight warns about orphan on next commit attempt."""
         wf_id = uuid4()
         wf = Workflow(
             id=wf_id,
@@ -946,29 +1152,55 @@ class TestOrphanDetection:
         db_session.add(form)
         await db_session.commit()
 
-        # Push both
-        await sync_service.push()
+        # Write both entity files and commit+push
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/git_sync_test_orphan.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            f"forms/{form_id}.form.yaml",
+            SAMPLE_FORM_YAML.format(workflow_id=wf_id),
+        )
+        await sync_service.desktop_commit("initial commit")
+        await sync_service.desktop_push()
 
-        # Delete workflow from repo (keep form)
+        # Delete workflow from repo via working clone (keep form)
         work_dir = Path(working_clone.working_dir)
         working_clone.remotes.origin.pull()
         wf_file = work_dir / "workflows" / "git_sync_test_orphan.py"
         if wf_file.exists():
             wf_file.unlink()
+        # Update manifest to remove the workflow entry
+        manifest_file = work_dir / ".bifrost" / "metadata.yaml"
+        if manifest_file.exists():
+            manifest_data = yaml.safe_load(manifest_file.read_text())
+            # Remove workflow from manifest but keep form
+            manifest_data["workflows"] = {}
+            manifest_file.write_text(
+                yaml.dump(manifest_data, default_flow_style=False, sort_keys=False)
+            )
+        working_clone.index.add([".bifrost/metadata.yaml"])
         working_clone.index.remove(["workflows/git_sync_test_orphan.py"])
         working_clone.index.commit("delete workflow, leave form")
         working_clone.remotes.origin.push()
 
-        # Preview should warn about orphan
-        preview = await sync_service.preview()
+        # Pull the changes from repo
+        await sync_service.desktop_pull()
+
+        # Now run preflight — orphan detection happens here
+        # The form still references a workflow UUID that is no longer in the manifest
+        preflight = await sync_service.preflight()
 
         # Check preflight for orphan warnings
         has_orphan_warning = any(
-            i.category == "orphan" for i in preview.preflight.issues
+            i.category == "orphan" for i in preflight.issues
         )
 
         assert has_orphan_warning, (
-            "Preview should warn about orphaned form referencing deleted workflow"
+            f"Preflight should warn about orphaned form referencing deleted workflow. "
+            f"Issues: {preflight.issues}"
         )
 
 

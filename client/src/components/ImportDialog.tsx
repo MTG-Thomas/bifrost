@@ -408,7 +408,6 @@ export function ImportDialog({
 		setParseError(null);
 		setShowSecretFields(false);
 		setSourceSecretKey("");
-		setSourceFernetSalt("");
 		setTargetOrgId(undefined);
 		setHasOrgScopedItems(false);
 		onOpenChange(false);
@@ -575,7 +574,7 @@ export function ImportDialog({
 										<SelectItem value="__global__">
 											Global (no organization)
 										</SelectItem>
-										{orgsData?.data?.map((org) => (
+										{orgsData?.map((org) => (
 											<SelectItem
 												key={org.id}
 												value={org.id}
