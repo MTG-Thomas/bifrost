@@ -108,6 +108,16 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
     for apr in app_role_result.scalars().all():
         app_roles_by_app.setdefault(str(apr.app_id), []).append(str(apr.role_id))
 
+    # Sort role lists for deterministic manifest output
+    for roles in wf_roles_by_wf.values():
+        roles.sort()
+    for roles in form_roles_by_form.values():
+        roles.sort()
+    for roles in agent_roles_by_agent.values():
+        roles.sort()
+    for roles in app_roles_by_app.values():
+        roles.sort()
+
     # ------------------------------------------------------------------
     # Integrations (with config_schema, oauth_provider, mappings)
     # ------------------------------------------------------------------
@@ -138,7 +148,10 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
 
     # Integration mappings
     mapping_result = await db.execute(
-        select(IntegrationMapping).order_by(IntegrationMapping.integration_id)
+        select(IntegrationMapping).order_by(
+            IntegrationMapping.integration_id,
+            IntegrationMapping.organization_id,
+        )
     )
     mappings_by_integ: dict[str, list[IntegrationMapping]] = {}
     for im in mapping_result.scalars().all():
@@ -188,6 +201,10 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
         if ns_name not in ns_data:
             ns_data[ns_name] = {"roles": []}
 
+    # Sort namespace role lists for deterministic output
+    for ns_entry in ns_data.values():
+        ns_entry["roles"].sort()
+
     # ------------------------------------------------------------------
     # Event sources + subscriptions
     # ------------------------------------------------------------------
@@ -214,7 +231,7 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
     sub_result = await db.execute(
         select(EventSubscription)
         .where(EventSubscription.is_active == True)  # noqa: E712
-        .order_by(EventSubscription.event_source_id)
+        .order_by(EventSubscription.event_source_id, EventSubscription.workflow_id)
     )
     subs_by_source: dict[str, list[EventSubscription]] = {}
     for sub in sub_result.scalars().all():
@@ -326,7 +343,7 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
                 organization_id=data.get("organization_id"),
                 roles=data.get("roles", []),
             )
-            for ns_name, data in ns_data.items()
+            for ns_name, data in sorted(ns_data.items())
         },
         events={
             es.name: _build_event_source_manifest(

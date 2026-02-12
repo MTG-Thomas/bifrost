@@ -155,7 +155,7 @@ class WebhookSource(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_source_id: Mapped[UUID] = mapped_column(
-        ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False, unique=True
     )
 
     # Adapter configuration
@@ -192,7 +192,6 @@ class WebhookSource(Base):
     integration: Mapped["Integration | None"] = relationship(lazy="joined")
 
     __table_args__ = (
-        Index("ix_webhook_sources_event_source_id", "event_source_id"),
         Index("ix_webhook_sources_adapter_name", "adapter_name"),
         Index(
             "ix_webhook_sources_expires_at",

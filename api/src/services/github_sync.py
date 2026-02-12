@@ -1034,7 +1034,7 @@ class GitHubSyncService:
                 redirect_uri=op.redirect_uri,
                 integration_id=integ_id,
             ).on_conflict_do_update(
-                constraint="ix_oauth_providers_org_name",
+                constraint="uq_oauth_providers_integration_id",
                 set_={
                     "display_name": op.display_name,
                     "oauth_flow_type": op.oauth_flow_type,
