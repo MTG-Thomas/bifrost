@@ -296,6 +296,32 @@ class FileOperationsService:
             except Exception as e:
                 logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
 
+        # App files: fire pubsub for real-time preview
+        if path.startswith("apps/"):
+            parts = path.split("/")
+            if len(parts) >= 2:
+                slug = parts[1]
+                try:
+                    from src.models.orm.applications import Application
+                    app_stmt = select(Application).where(Application.slug == slug)
+                    app_result = await self.db.execute(app_stmt)
+                    app = app_result.scalar_one_or_none()
+                    if app:
+                        from src.core.pubsub import publish_app_code_file_update
+                        # Relative path within app (strip "apps/{slug}/")
+                        relative_path = "/".join(parts[2:]) if len(parts) > 2 else ""
+                        await publish_app_code_file_update(
+                            app_id=str(app.id),
+                            user_id=updated_by,
+                            user_name=updated_by,
+                            path=relative_path,
+                            source=content_str,
+                            compiled=None,
+                            action="update",
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to publish app file update for {path}: {e}")
+
         logger.info(f"File written: {path} ({size_bytes} bytes) by {updated_by}")
         return WriteResult(
             file_record=None,
@@ -331,6 +357,31 @@ class FileOperationsService:
         from sqlalchemy import delete
         del_stmt = delete(FileIndex).where(FileIndex.path == path)
         await self.db.execute(del_stmt)
+
+        # App files: fire pubsub delete event
+        if path.startswith("apps/"):
+            parts = path.split("/")
+            if len(parts) >= 2:
+                slug = parts[1]
+                try:
+                    from src.models.orm.applications import Application
+                    app_stmt = select(Application).where(Application.slug == slug)
+                    app_result = await self.db.execute(app_stmt)
+                    app = app_result.scalar_one_or_none()
+                    if app:
+                        from src.core.pubsub import publish_app_code_file_update
+                        relative_path = "/".join(parts[2:]) if len(parts) > 2 else ""
+                        await publish_app_code_file_update(
+                            app_id=str(app.id),
+                            user_id="system",
+                            user_name="system",
+                            path=relative_path,
+                            source=None,
+                            compiled=None,
+                            action="delete",
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to publish app file delete for {path}: {e}")
 
         # Clean up related metadata (workflows, forms, agents)
         await self._remove_metadata(path)
