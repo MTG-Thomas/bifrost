@@ -358,6 +358,8 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         Publish draft to live.
 
         Creates a new version from the draft and sets it as the active version.
+        Also creates a published_snapshot from file_index for the new unified
+        file storage model (transition period: both mechanisms are populated).
         """
         application = await self.get_by_id(app_id)
         if not application:
@@ -379,8 +381,21 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         if not draft_version or not draft_version.files:
             raise ValueError("No files in draft version to publish")
 
-        # Create new version with files copied from draft
+        # OLD: Copy files between versions (kept for transition)
         await self._publish_version(application, draft_version)
+
+        # NEW: Also create published_snapshot from file_index
+        # This snapshots the current file hashes for apps/{slug}/*
+        if application.slug:
+            from src.models.orm.file_index import FileIndex
+            fi_result = await self.session.execute(
+                select(FileIndex.path, FileIndex.content_hash).where(
+                    FileIndex.path.startswith(f"apps/{application.slug}/"),
+                )
+            )
+            snapshot = {row.path: row.content_hash for row in fi_result.all()}
+            if snapshot:
+                application.published_snapshot = snapshot
 
         await self.session.flush()
         await self.session.refresh(application)
