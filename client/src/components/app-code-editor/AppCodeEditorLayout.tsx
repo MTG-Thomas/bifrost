@@ -37,8 +37,6 @@ import type { FileNode, FileContent, EditorCallbacks } from "@/components/file-t
 interface AppCodeEditorLayoutProps {
 	/** Application UUID */
 	appId: string;
-	/** Version UUID (draft or active) */
-	versionId: string;
 	/** Application name for display */
 	appName?: string;
 	/** Application slug for building base path */
@@ -56,7 +54,6 @@ type ViewMode = "split" | "code" | "preview" | "app";
  */
 export function AppCodeEditorLayout({
 	appId,
-	versionId,
 	appName = "App",
 	appSlug,
 	onSave,
@@ -99,8 +96,8 @@ export function AppCodeEditorLayout({
 
 	// Create app code operations for the file tree
 	const operations = useMemo(
-		() => createAppCodeOperations(appId, versionId),
-		[appId, versionId],
+		() => createAppCodeOperations(appId),
+		[appId],
 	);
 
 	// Track file tree refresh counter - increments to trigger refresh
@@ -473,7 +470,6 @@ export function AppCodeEditorLayout({
 							<JsxAppShell
 								appId={appId}
 								appSlug={appSlug || ""}
-								versionId={versionId}
 								isPreview={true}
 							/>
 						</div>

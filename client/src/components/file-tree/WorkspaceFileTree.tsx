@@ -52,7 +52,7 @@ function toFileMetadata(file: FileNode): FileMetadata {
 		type: file.type,
 		size: file.size,
 		extension: file.extension,
-		modified: file.modified,
+		modified: file.modified ?? new Date().toISOString(),
 		// Cast entityType to the expected union type
 		entity_type: (file.entityType as FileMetadata["entity_type"]) ?? null,
 		entity_id: file.entityId ?? null,

@@ -1,11 +1,11 @@
 """
 App Code Files Router
 
-CRUD operations for code source files in code engine applications.
-Files are versioned - each file belongs to a specific app version.
+CRUD operations for code source files in App Builder applications.
+Files are stored in S3 via FileStorageService, indexed in file_index table.
 
-Endpoints use UUID for app_id and version_id, with path as file identifier.
-Path can contain slashes (e.g., 'pages/clients/[id]').
+Endpoints use UUID for app_id with relative file paths.
+Path can contain slashes (e.g., 'pages/clients/[id].tsx').
 
 Path conventions:
 - Root: _layout, _providers only
@@ -16,28 +16,28 @@ Path conventions:
 
 import logging
 import re
+from enum import Enum
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, status
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from src.core.auth import Context, CurrentUser
 from src.core.exceptions import AccessDeniedError
-from src.core.pubsub import publish_app_code_file_update
 from src.models.contracts.applications import (
-    AppFileCreate,
-    AppFileListResponse,
-    AppFileResponse,
     AppFileUpdate,
+    SimpleFileListResponse,
+    SimpleFileResponse,
 )
-from src.models.orm.applications import Application, AppFile
+from src.models.orm.applications import Application
+from src.models.orm.file_index import FileIndex
 from src.routers.applications import ApplicationRepository
-from src.services.app_dependencies import sync_file_dependencies
+from src.services.file_storage.service import get_file_storage_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/applications/{app_id}/versions/{version_id}/files",
+    prefix="/api/applications/{app_id}/files",
     tags=["App Code Files"],
 )
 
@@ -213,269 +213,201 @@ async def get_application_or_404(ctx: Context, app_id: UUID) -> Application:
         )
 
 
-async def validate_version_id(
-    ctx: Context,
-    app: Application,
-    version_id: UUID,
-) -> None:
-    """Validate that version_id belongs to the application.
+class FileMode(str, Enum):
+    draft = "draft"
+    live = "live"
 
-    Raises HTTPException 404 if version is not valid for this app.
+
+def _app_prefix(slug: str) -> str:
+    """Return the file_index path prefix for an app slug."""
+    return f"apps/{slug}/"
+
+
+def _app_json_path(slug: str) -> str:
+    """Return the file_index path for the app.json metadata file."""
+    return f"apps/{slug}/app.json"
+
+
+def _strip_prefix(full_path: str, prefix: str) -> str:
+    """Strip the app prefix from a full file_index path to get a relative path."""
+    if full_path.startswith(prefix):
+        return full_path[len(prefix):]
+    return full_path
+
+
+# =============================================================================
+# S3-backed App File Endpoints
+# =============================================================================
+
+
+@router.get(
+    "",
+    response_model=SimpleFileListResponse,
+    summary="List app files",
+)
+async def list_app_files(
+    app_id: UUID = Path(..., description="Application UUID"),
+    mode: FileMode = FileMode.draft,
+    ctx: Context = None,
+    user: CurrentUser = None,
+) -> SimpleFileListResponse:
+    """List all files for an application.
+
+    In draft mode, reads from file_index (which mirrors S3).
+    In live mode, reads from the published_snapshot on the application.
     """
-    # Check that the version belongs to this app
-    valid_version_ids = {app.draft_version_id, app.active_version_id}
-    # Also check versions relationship if we need historical versions
-    if version_id not in valid_version_ids:
-        # Query to verify the version exists and belongs to this app
-        from src.models.orm.applications import AppVersion
+    app = await get_application_or_404(ctx, app_id)
+    prefix = _app_prefix(app.slug)
+    app_json = _app_json_path(app.slug)
 
-        query = select(AppVersion).where(
-            AppVersion.id == version_id,
-            AppVersion.application_id == app.id,
-        )
-        result = await ctx.db.execute(query)
-        if not result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Version '{version_id}' not found for application '{app.id}'",
+    if mode == FileMode.live:
+        # Live mode: use published_snapshot
+        snapshot = app.published_snapshot
+        if not snapshot:
+            return SimpleFileListResponse(files=[], total=0)
+
+        # Read content for each file from FileStorageService (Redis cache -> S3)
+        storage = get_file_storage_service(ctx.db)
+        files: list[SimpleFileResponse] = []
+        for full_path in sorted(snapshot.keys()):
+            if full_path == app_json:
+                continue
+            rel_path = _strip_prefix(full_path, prefix)
+            try:
+                content_bytes, _ = await storage.read_file(full_path)
+                source = content_bytes.decode("utf-8", errors="replace")
+            except FileNotFoundError:
+                source = ""
+            files.append(SimpleFileResponse(path=rel_path, source=source))
+
+        return SimpleFileListResponse(files=files, total=len(files))
+
+    # Draft mode: query file_index directly (has content column)
+    query = (
+        select(FileIndex)
+        .where(
+            and_(
+                FileIndex.path.startswith(prefix),
+                FileIndex.path != app_json,
             )
-
-
-async def get_code_file_or_404(
-    ctx: Context,
-    version_id: UUID,
-    file_path: str,
-) -> AppFile:
-    """Get code file by version_id and path or raise 404."""
-    query = select(AppFile).where(
-        AppFile.app_version_id == version_id,
-        AppFile.path == file_path,
+        )
+        .order_by(FileIndex.path)
     )
     result = await ctx.db.execute(query)
-    code_file = result.scalar_one_or_none()
+    rows = list(result.scalars().all())
 
-    if not code_file:
+    files = [
+        SimpleFileResponse(
+            path=_strip_prefix(row.path, prefix),
+            source=row.content or "",
+        )
+        for row in rows
+    ]
+
+    return SimpleFileListResponse(files=files, total=len(files))
+
+
+@router.get(
+    "/{file_path:path}",
+    response_model=SimpleFileResponse,
+    summary="Read a single app file",
+)
+async def read_app_file(
+    app_id: UUID = Path(..., description="Application UUID"),
+    file_path: str = Path(..., description="Relative file path (can contain slashes)"),
+    mode: FileMode = FileMode.draft,
+    ctx: Context = None,
+    user: CurrentUser = None,
+) -> SimpleFileResponse:
+    """Read a single file by relative path.
+
+    Draft mode reads from Redis cache -> S3 via FileStorageService.
+    Live mode verifies the file exists in published_snapshot first.
+    """
+    app = await get_application_or_404(ctx, app_id)
+    prefix = _app_prefix(app.slug)
+    full_path = f"{prefix}{file_path}"
+
+    if mode == FileMode.live:
+        # Verify file exists in published snapshot
+        snapshot = app.published_snapshot
+        if not snapshot or full_path not in snapshot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"File '{file_path}' not found in published version",
+            )
+
+    storage = get_file_storage_service(ctx.db)
+    try:
+        content_bytes, _ = await storage.read_file(full_path)
+        source = content_bytes.decode("utf-8", errors="replace")
+    except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"File '{file_path}' not found",
         )
 
-    return code_file
+    return SimpleFileResponse(path=file_path, source=source)
 
 
-def code_file_to_response(code_file: AppFile) -> AppFileResponse:
-    """Convert ORM model to response."""
-    return AppFileResponse(
-        id=code_file.id,
-        app_version_id=code_file.app_version_id,
-        path=code_file.path,
-        source=code_file.source,
-        compiled=code_file.compiled,
-        created_at=code_file.created_at,
-        updated_at=code_file.updated_at,
-    )
-
-
-# =============================================================================
-# Code File CRUD Endpoints
-# =============================================================================
-
-
-@router.get(
-    "",
-    response_model=AppFileListResponse,
-    summary="List code files",
-)
-async def list_code_files(
-    app_id: UUID = Path(..., description="Application UUID"),
-    version_id: UUID = Path(..., description="Version UUID"),
-    ctx: Context = None,
-    user: CurrentUser = None,
-) -> AppFileListResponse:
-    """List all code files for a specific app version."""
-    # Verify app access
-    app = await get_application_or_404(ctx, app_id)
-    await validate_version_id(ctx, app, version_id)
-
-    query = (
-        select(AppFile)
-        .where(AppFile.app_version_id == version_id)
-        .order_by(AppFile.path)
-    )
-    result = await ctx.db.execute(query)
-    files = list(result.scalars().all())
-
-    return AppFileListResponse(
-        files=[code_file_to_response(f) for f in files],
-        total=len(files),
-    )
-
-
-@router.get(
+@router.put(
     "/{file_path:path}",
-    response_model=AppFileResponse,
-    summary="Get code file by path",
+    response_model=SimpleFileResponse,
+    summary="Create or update an app file",
 )
-async def get_code_file(
-    app_id: UUID = Path(..., description="Application UUID"),
-    version_id: UUID = Path(..., description="Version UUID"),
-    file_path: str = Path(..., description="File path (can contain slashes)"),
-    ctx: Context = None,
-    user: CurrentUser = None,
-) -> AppFileResponse:
-    """Get a specific code file by its path."""
-    # Verify app access
-    app = await get_application_or_404(ctx, app_id)
-    await validate_version_id(ctx, app, version_id)
-
-    code_file = await get_code_file_or_404(ctx, version_id, file_path)
-
-    return code_file_to_response(code_file)
-
-
-@router.post(
-    "",
-    response_model=AppFileResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create code file",
-)
-async def create_code_file(
-    data: AppFileCreate,
-    app_id: UUID = Path(..., description="Application UUID"),
-    version_id: UUID = Path(..., description="Version UUID"),
-    ctx: Context = None,
-    user: CurrentUser = None,
-) -> AppFileResponse:
-    """Create a new code file in the specified version."""
-    # Verify app access
-    app = await get_application_or_404(ctx, app_id)
-    await validate_version_id(ctx, app, version_id)
-
-    # Validate path conventions
-    validate_file_path(data.path)
-
-    # Check for duplicate path in this version
-    existing_query = select(AppFile).where(
-        AppFile.app_version_id == version_id,
-        AppFile.path == data.path,
-    )
-    existing = await ctx.db.execute(existing_query)
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"File with path '{data.path}' already exists",
-        )
-
-    # Create the file
-    code_file = AppFile(
-        app_version_id=version_id,
-        path=data.path,
-        source=data.source,
-    )
-    ctx.db.add(code_file)
-    await ctx.db.flush()
-    await ctx.db.refresh(code_file)
-
-    # Sync dependencies (parse source and update dependency index)
-    await sync_file_dependencies(ctx.db, code_file.id, code_file.source, app.organization_id)
-
-    # Emit event for real-time updates with full content
-    await publish_app_code_file_update(
-        app_id=str(app_id),
-        user_id=str(user.user_id),
-        user_name=user.name or user.email or "Unknown",
-        path=data.path,
-        source=data.source,
-        compiled=None,
-        action="create",
-    )
-
-    logger.info(f"Created code file '{data.path}' in app {app_id} version {version_id}")
-    return code_file_to_response(code_file)
-
-
-@router.patch(
-    "/{file_path:path}",
-    response_model=AppFileResponse,
-    summary="Update code file",
-)
-async def update_code_file(
+async def write_app_file(
     data: AppFileUpdate,
     app_id: UUID = Path(..., description="Application UUID"),
-    version_id: UUID = Path(..., description="Version UUID"),
-    file_path: str = Path(..., description="File path (can contain slashes)"),
+    file_path: str = Path(..., description="Relative file path (can contain slashes)"),
     ctx: Context = None,
     user: CurrentUser = None,
-) -> AppFileResponse:
-    """Update a code file's source or compiled output."""
-    # Verify app access
+) -> SimpleFileResponse:
+    """Create or update a file at the given path.
+
+    Validates the path, then writes via FileStorageService (which handles
+    S3 storage, file_index update, and pubsub for apps/ paths).
+    """
     app = await get_application_or_404(ctx, app_id)
-    await validate_version_id(ctx, app, version_id)
 
-    code_file = await get_code_file_or_404(ctx, version_id, file_path)
+    # Validate path conventions
+    validate_file_path(file_path)
 
-    # Track if source changed (for dependency sync)
-    source_changed = data.source is not None and data.source != code_file.source
+    prefix = _app_prefix(app.slug)
+    full_path = f"{prefix}{file_path}"
+    source = data.source or ""
 
-    # Apply updates
-    if data.source is not None:
-        code_file.source = data.source
-    if data.compiled is not None:
-        code_file.compiled = data.compiled
-
-    await ctx.db.flush()
-    await ctx.db.refresh(code_file)
-
-    # Sync dependencies only if source changed
-    if source_changed:
-        await sync_file_dependencies(ctx.db, code_file.id, code_file.source, app.organization_id)
-
-    # Emit event for real-time updates with full content
-    await publish_app_code_file_update(
-        app_id=str(app_id),
-        user_id=str(user.user_id),
-        user_name=user.name or user.email or "Unknown",
-        path=file_path,
-        source=code_file.source,
-        compiled=code_file.compiled,
-        action="update",
+    storage = get_file_storage_service(ctx.db)
+    await storage.write_file(
+        path=full_path,
+        content=source.encode("utf-8"),
+        updated_by=user.email or "unknown",
     )
 
-    logger.info(f"Updated code file '{file_path}' in app {app_id} version {version_id}")
-    return code_file_to_response(code_file)
+    logger.info(f"Wrote app file '{file_path}' for app {app_id} (slug={app.slug})")
+    return SimpleFileResponse(path=file_path, source=source)
 
 
 @router.delete(
     "/{file_path:path}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete code file",
+    summary="Delete an app file",
 )
-async def delete_code_file(
+async def delete_app_file(
     app_id: UUID = Path(..., description="Application UUID"),
-    version_id: UUID = Path(..., description="Version UUID"),
-    file_path: str = Path(..., description="File path (can contain slashes)"),
+    file_path: str = Path(..., description="Relative file path (can contain slashes)"),
     ctx: Context = None,
     user: CurrentUser = None,
 ) -> None:
-    """Delete a code file."""
-    # Verify app access
+    """Delete a file at the given path.
+
+    Deletes via FileStorageService (which handles S3 deletion,
+    file_index cleanup, and pubsub for apps/ paths).
+    """
     app = await get_application_or_404(ctx, app_id)
-    await validate_version_id(ctx, app, version_id)
+    prefix = _app_prefix(app.slug)
+    full_path = f"{prefix}{file_path}"
 
-    code_file = await get_code_file_or_404(ctx, version_id, file_path)
+    storage = get_file_storage_service(ctx.db)
+    await storage.delete_file(full_path)
 
-    await ctx.db.delete(code_file)
-    await ctx.db.flush()
-
-    # Emit event for real-time updates
-    await publish_app_code_file_update(
-        app_id=str(app_id),
-        user_id=str(user.user_id),
-        user_name=user.name or user.email or "Unknown",
-        path=file_path,
-        source=None,
-        compiled=None,
-        action="delete",
-    )
-
-    logger.info(f"Deleted code file '{file_path}' from app {app_id} version {version_id}")
+    logger.info(f"Deleted app file '{file_path}' from app {app_id} (slug={app.slug})")

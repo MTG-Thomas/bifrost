@@ -5,8 +5,8 @@
  * Renders JsxAppShell for file-based JSX apps with AppLayout wrapper.
  *
  * Routes:
- * - /apps/:slug/preview/* - Preview mode (uses draft_version_id)
- * - /apps/:slug/* - Published mode (uses active_version_id)
+ * - /apps/:slug/preview/* - Preview mode (uses draft files)
+ * - /apps/:slug/* - Published mode (uses live files)
  */
 
 import { useParams, useNavigate } from "react-router-dom";
@@ -39,13 +39,6 @@ export function AppRouter({ preview = false }: AppRouterProps) {
 		isLoading,
 		error,
 	} = useApplication(slugParam);
-
-	// Get the appropriate version ID
-	const versionId = application
-		? preview
-			? application.draft_version_id
-			: application.active_version_id
-		: null;
 
 	// Loading state
 	if (isLoading) {
@@ -111,22 +104,18 @@ export function AppRouter({ preview = false }: AppRouterProps) {
 		);
 	}
 
-	// Handle missing version
-	if (!versionId) {
+	// Handle not published (only for non-preview mode)
+	if (!preview && !application.is_published) {
 		return (
 			<div className="min-h-screen flex items-center justify-center p-4">
 				<Card className="max-w-md w-full">
 					<CardHeader>
 						<div className="flex items-center gap-2 text-muted-foreground">
 							<AlertTriangle className="h-5 w-5" />
-							<CardTitle>
-								{preview ? "No Draft Version" : "Not Published"}
-							</CardTitle>
+							<CardTitle>Not Published</CardTitle>
 						</div>
 						<CardDescription>
-							{preview
-								? "No draft version is available for this application."
-								: "This application has not been published yet."}
+							This application has not been published yet.
 						</CardDescription>
 					</CardHeader>
 					<CardContent className="flex gap-2">
@@ -156,7 +145,6 @@ export function AppRouter({ preview = false }: AppRouterProps) {
 			<JsxAppShell
 				appId={application.id}
 				appSlug={application.slug}
-				versionId={versionId}
 				isPreview={preview}
 			/>
 		</AppLayout>

@@ -57,9 +57,6 @@ from src.models.orm import (
     DeveloperContext,
     # Applications (App Builder)
     Application,
-    AppVersion,
-    AppFile,
-    AppFileDependency,
     AppRole,
 )
 
@@ -123,9 +120,6 @@ __all__ = [
     "DeveloperContext",
     # Applications (App Builder)
     "Application",
-    "AppVersion",
-    "AppFile",
-    "AppFileDependency",
     "AppRole",
     # Enums
     "ExecutionStatus",

@@ -11,11 +11,11 @@ import type { components } from "@/lib/v1";
 // Types - Auto-generated from OpenAPI spec
 // =============================================================================
 
-export type OAuthProvider = components["schemas"]["OAuthProviderInfo"];
+export type OAuthProvider = components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"];
 export type AuthStatus = components["schemas"]["AuthStatusResponse"];
 export type OAuthInitResponse = components["schemas"]["OAuthInitResponse"];
 export type MFAStatus = components["schemas"]["MFAStatusResponse"];
-export type TOTPSetupResponse = components["schemas"]["MFASetupResponse"];
+export type TOTPSetupResponse = components["schemas"]["src__routers__auth__MFASetupResponse"];
 export type TOTPVerifyResponse = components["schemas"]["MFAVerifyResponse"];
 export type RecoveryCodesCount =
 	components["schemas"]["RecoveryCodesCountResponse"];

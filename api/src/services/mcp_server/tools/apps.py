@@ -4,7 +4,7 @@ App Builder MCP Tools - Application Level
 Tools for listing, creating, getting, updating, publishing apps,
 plus schema documentation.
 
-Applications use code-based files (TSX/TypeScript) stored in app_files table.
+Applications use code-based files (TSX/TypeScript) stored in file_index table.
 """
 
 import logging
@@ -24,16 +24,15 @@ async def list_apps(context: Any) -> ToolResult:
     from sqlalchemy import func, select
 
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppFile, Application
+    from src.models.orm.applications import Application
+    from src.models.orm.file_index import FileIndex
 
     logger.info("MCP list_apps called")
 
     try:
         async with get_db_context() as db:
-            # Query apps with file count
             query = select(Application)
 
-            # Non-admins can only see their org's apps + global apps
             if not context.is_platform_admin and context.org_id:
                 query = query.where(
                     (Application.organization_id == context.org_id)
@@ -45,16 +44,13 @@ async def list_apps(context: Any) -> ToolResult:
 
             apps_data = []
             for app in apps:
-                # Get file count from draft version
-                count = 0
-                if app.draft_version_id:
-                    file_count_query = (
-                        select(func.count())
-                        .select_from(AppFile)
-                        .where(AppFile.app_version_id == app.draft_version_id)
-                    )
-                    file_count = await db.execute(file_count_query)
-                    count = file_count.scalar() or 0
+                file_count_query = (
+                    select(func.count())
+                    .select_from(FileIndex)
+                    .where(FileIndex.path.startswith(f"apps/{app.slug}/"))
+                )
+                file_count = await db.execute(file_count_query)
+                count = file_count.scalar() or 0
 
                 apps_data.append({
                     "id": str(app.id),
@@ -62,9 +58,9 @@ async def list_apps(context: Any) -> ToolResult:
                     "slug": app.slug,
                     "description": app.description,
                     "status": "published" if app.is_published else "draft",
+                    "is_published": app.is_published,
+                    "has_unpublished_changes": app.has_unpublished_changes,
                     "file_count": count,
-                    "active_version_id": str(app.active_version_id) if app.active_version_id else None,
-                    "draft_version_id": str(app.draft_version_id) if app.draft_version_id else None,
                     "url": f"/apps/{app.slug}",
                 })
 
@@ -103,24 +99,21 @@ async def create_app(
     from sqlalchemy import select
 
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppFile, AppVersion, Application
+    from src.models.orm.applications import Application
+    from src.services.file_storage import FileStorageService
 
     logger.info(f"MCP create_app called with name={name}, scope={scope}")
 
     if not name:
         return error_result("name is required")
 
-    # Validate scope parameter
     if scope not in ("global", "organization"):
         return error_result("scope must be 'global' or 'organization'")
 
-    # Determine effective organization_id based on scope
     effective_org_id: UUID | None = None
     if scope == "global":
-        # Global resources have no organization_id
         effective_org_id = None
     else:
-        # Organization scope: use provided organization_id or fall back to context.org_id
         if organization_id:
             try:
                 effective_org_id = UUID(organization_id)
@@ -131,13 +124,11 @@ async def create_app(
         else:
             return error_result("organization_id is required when scope='organization' and no context org_id is set")
 
-    # Generate slug from name if not provided
     if not slug:
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
     try:
         async with get_db_context() as db:
-            # Check for duplicate slug within same org scope
             query = select(Application).where(Application.slug == slug)
             if effective_org_id:
                 query = query.where(Application.organization_id == effective_org_id)
@@ -148,7 +139,6 @@ async def create_app(
             if existing.scalar_one_or_none():
                 return error_result(f"Application with slug '{slug}' already exists")
 
-            # Create application
             app = Application(
                 id=uuid4(),
                 name=name,
@@ -160,19 +150,9 @@ async def create_app(
             db.add(app)
             await db.flush()
 
-            # Create initial draft version
-            draft_version = AppVersion(
-                application_id=app.id,
-            )
-            db.add(draft_version)
-            await db.flush()
+            # Write scaffold files via FileStorageService
+            file_storage = FileStorageService(db)
 
-            # Link app to draft version
-            app.draft_version_id = draft_version.id
-            await db.flush()
-
-            # Create scaffold files
-            # Root layout - wraps all pages
             layout_source = '''import { Outlet } from "bifrost";
 
 export default function RootLayout() {
@@ -183,14 +163,6 @@ export default function RootLayout() {
   );
 }
 '''
-            layout_file = AppFile(
-                app_version_id=draft_version.id,
-                path="_layout.tsx",
-                source=layout_source,
-            )
-            db.add(layout_file)
-
-            # Home page
             index_source = '''export default function HomePage() {
   return (
     <div className="p-8">
@@ -202,12 +174,16 @@ export default function RootLayout() {
   );
 }
 '''
-            index_file = AppFile(
-                app_version_id=draft_version.id,
-                path="pages/index.tsx",
-                source=index_source,
+            await file_storage.write_file(
+                path=f"apps/{slug}/_layout.tsx",
+                content=layout_source.encode("utf-8"),
+                updated_by="system",
             )
-            db.add(index_file)
+            await file_storage.write_file(
+                path=f"apps/{slug}/pages/index.tsx",
+                content=index_source.encode("utf-8"),
+                updated_by="system",
+            )
 
             await db.commit()
 
@@ -217,7 +193,6 @@ export default function RootLayout() {
                 "id": str(app.id),
                 "name": app.name,
                 "slug": app.slug,
-                "draft_version_id": str(draft_version.id),
                 "file_count": 2,
                 "url": f"/apps/{app.slug}",
             })
@@ -235,14 +210,15 @@ async def get_app(
     """
     Get application metadata and file list.
 
-    Returns app info and a summary of files in the draft version.
+    Returns app info and a summary of files.
     """
     from uuid import UUID
 
     from sqlalchemy import select
 
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppFile, Application
+    from src.models.orm.applications import Application
+    from src.models.orm.file_index import FileIndex
 
     logger.info(f"MCP get_app called with id={app_id}, slug={app_slug}")
 
@@ -261,7 +237,6 @@ async def get_app(
             else:
                 query = query.where(Application.slug == app_slug)
 
-            # Non-admins can only see their org's apps + global
             if not context.is_platform_admin and context.org_id:
                 query = query.where(
                     (Application.organization_id == context.org_id)
@@ -274,32 +249,29 @@ async def get_app(
             if not app:
                 return error_result(f"Application not found: {app_id or app_slug}")
 
-            # List files from draft version
-            files = []
-            if app.draft_version_id:
-                files_query = (
-                    select(AppFile)
-                    .where(AppFile.app_version_id == app.draft_version_id)
-                    .order_by(AppFile.path)
-                )
-                files_result = await db.execute(files_query)
-                files = list(files_result.scalars().all())
+            # List files from file_index
+            prefix = f"apps/{app.slug}/"
+            files_query = (
+                select(FileIndex.path)
+                .where(FileIndex.path.startswith(prefix))
+                .order_by(FileIndex.path)
+            )
+            files_result = await db.execute(files_query)
+            file_paths = list(files_result.scalars().all())
 
             app_data = {
                 "id": str(app.id),
                 "name": app.name,
                 "slug": app.slug,
                 "description": app.description,
-                "active_version_id": str(app.active_version_id) if app.active_version_id else None,
-                "draft_version_id": str(app.draft_version_id) if app.draft_version_id else None,
+                "is_published": app.is_published,
+                "has_unpublished_changes": app.has_unpublished_changes,
                 "url": f"/apps/{app.slug}",
                 "files": [
                     {
-                        "id": str(f.id),
-                        "path": f.path,
-                        "has_compiled": f.compiled is not None,
+                        "path": p.removeprefix(prefix),
                     }
-                    for f in files
+                    for p in file_paths
                 ],
             }
 
@@ -373,7 +345,6 @@ async def update_app(
 
             await db.commit()
 
-            # Emit event for real-time updates
             await publish_app_draft_update(
                 app_id=app_id,
                 user_id=str(context.user_id),
@@ -398,16 +369,16 @@ async def update_app(
 async def publish_app(context: Any, app_id: str) -> ToolResult:
     """Publish all draft files to live.
 
-    Creates a new version by copying all files from the draft version,
-    then sets this new version as the active (live) version.
+    Builds a published_snapshot from current file_index entries and
+    sets it on the application.
     """
     from uuid import UUID
 
     from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
 
     from src.core.database import get_db_context
-    from src.models.orm.applications import AppFile, AppVersion, Application
+    from src.models.orm.applications import Application
+    from src.models.orm.file_index import FileIndex
 
     logger.info(f"MCP publish_app called with id={app_id}")
 
@@ -429,58 +400,39 @@ async def publish_app(context: Any, app_id: str) -> ToolResult:
             if not app:
                 return error_result(f"Application not found: {app_id}")
 
-            if not app.draft_version_id:
-                return error_result("Application has no draft version to publish")
-
-            # Get draft version with files
-            draft_version_query = (
-                select(AppVersion)
-                .where(AppVersion.id == app.draft_version_id)
-                .options(selectinload(AppVersion.files))
+            # Query all files for this app from file_index
+            prefix = f"apps/{app.slug}/"
+            files_query = (
+                select(FileIndex.path, FileIndex.content_hash)
+                .where(FileIndex.path.startswith(prefix))
             )
-            draft_result = await db.execute(draft_version_query)
-            draft_version = draft_result.scalar_one_or_none()
+            files_result = await db.execute(files_query)
+            files = files_result.all()
 
-            if not draft_version or not draft_version.files:
-                return error_result("No files in draft version to publish")
+            if not files:
+                return error_result("No files found to publish")
 
-            # Create new version for the published copy
-            new_version = AppVersion(application_id=app.id)
-            db.add(new_version)
-            await db.flush()
-
-            # Copy all files from draft to new version
-            for draft_file in draft_version.files:
-                new_file = AppFile(
-                    app_version_id=new_version.id,
-                    path=draft_file.path,
-                    source=draft_file.source,
-                    compiled=draft_file.compiled,
-                )
-                db.add(new_file)
-
-            # Update application to point to new active version
-            app.active_version_id = new_version.id
+            # Build snapshot and set on application
+            snapshot = {row.path: row.content_hash for row in files}
+            app.published_snapshot = snapshot
             app.published_at = datetime.now(timezone.utc)
 
             await db.commit()
 
-            # Emit event for real-time updates
             await publish_app_published(
                 app_id=app_id,
                 user_id=str(context.user_id),
                 user_name=context.user_name or context.user_email or "Unknown",
-                new_version_id=str(new_version.id),
+                new_version_id=app_id,
             )
 
-            display_text = f"Published application: {app.name} ({len(draft_version.files)} files)"
+            display_text = f"Published application: {app.name} ({len(files)} files)"
             return success_result(display_text, {
                 "success": True,
                 "id": str(app.id),
                 "name": app.name,
-                "active_version_id": str(new_version.id),
-                "draft_version_id": str(app.draft_version_id),
-                "files_published": len(draft_version.files),
+                "is_published": True,
+                "files_published": len(files),
             })
 
     except Exception as e:
@@ -491,23 +443,15 @@ async def publish_app(context: Any, app_id: str) -> ToolResult:
 async def get_app_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Get application schema documentation for code-based apps."""
     from src.models.contracts.applications import (
-        AppFileCreate,
-        AppFileUpdate,
         ApplicationCreate,
         ApplicationUpdate,
     )
     from src.services.mcp_server.schema_utils import models_to_markdown
 
-    # Generate model documentation
     app_models = models_to_markdown([
         (ApplicationCreate, "ApplicationCreate (for creating apps)"),
         (ApplicationUpdate, "ApplicationUpdate (for updating apps)"),
     ], "Application Models")
-
-    file_models = models_to_markdown([
-        (AppFileCreate, "AppFileCreate (for creating files)"),
-        (AppFileUpdate, "AppFileUpdate (for updating files)"),
-    ], "File Models")
 
     # Documentation for code-based apps
     overview = r"""# App Builder Schema Documentation
@@ -803,7 +747,7 @@ export default function ClientsPage() {
 
 """
 
-    schema_doc = overview + app_models + "\n\n" + file_models
+    schema_doc = overview + app_models
     return success_result("App Builder schema documentation", {"schema": schema_doc})
 
 

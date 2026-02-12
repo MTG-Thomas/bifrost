@@ -6,9 +6,17 @@
  */
 
 import type { RouteObject } from "react-router-dom";
-import type { components } from "@/lib/v1";
 
-export type AppCodeFile = components["schemas"]["AppFileResponse"];
+/**
+ * Simplified app code file shape returned by the new file endpoints.
+ * Only `path` and `source` are guaranteed by the API.
+ */
+export interface AppCodeFile {
+	/** File path within the app (e.g., "pages/index.tsx", "components/Button") */
+	path: string;
+	/** Original source code */
+	source: string;
+}
 
 /**
  * Parsed route segment

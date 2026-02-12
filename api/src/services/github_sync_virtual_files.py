@@ -31,7 +31,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.models import Agent, Application, AppVersion, Form
+from src.models import Agent, Application, Form
+from src.models.orm.file_index import FileIndex
 from src.services.file_storage.file_ops import compute_git_blob_sha
 from src.services.file_storage.indexers.agent import _serialize_agent_to_yaml
 from src.services.file_storage.indexers.app import _serialize_app_to_json
@@ -293,19 +294,13 @@ class VirtualFileProvider:
         - apps/{slug}/app.json - portable metadata
         - apps/{slug}/{path} - each code file (pages/*.tsx, components/*.tsx, etc.)
 
-        Uses the app's active_version if published, otherwise draft_version.
+        Code files are loaded from the file_index table at paths like apps/{slug}/**/*.
 
         Args:
             include_content: If True, include content in VirtualFile. If False,
                           compute SHA only and set content to None.
         """
-        stmt = (
-            select(Application)
-            .options(
-                selectinload(Application.active_version).selectinload(AppVersion.files),
-                selectinload(Application.draft_version_ref).selectinload(AppVersion.files),
-            )
-        )
+        stmt = select(Application)
         result = await self.db.execute(stmt)
         apps = result.scalars().all()
 
@@ -313,12 +308,6 @@ class VirtualFileProvider:
         errors: list[SerializationError] = []
 
         for app in apps:
-            # Use active_version if published, otherwise draft
-            version = app.active_version or app.draft_version_ref
-            if not version:
-                logger.debug(f"App {app.slug} has no version, skipping")
-                continue
-
             app_dir = f"apps/{app.slug}"
             app_entity_id = f"app::{app.id}"  # Stable ID regardless of slug/directory
 
@@ -349,11 +338,22 @@ class VirtualFileProvider:
                 )
                 continue  # Skip files if app.json fails
 
-            # 2. Serialize each code file (UUIDs used directly, no transformation)
-            for file in version.files:
-                file_path = f"{app_dir}/{file.path}"
+            # 2. Load code files from file_index
+            prefix = f"apps/{app.slug}/"
+            fi_result = await self.db.execute(
+                select(FileIndex.path, FileIndex.content).where(
+                    FileIndex.path.startswith(prefix),
+                ).order_by(FileIndex.path)
+            )
+            files = fi_result.all()
+
+            for file in files:
+                file_path = file.path  # Already full path like "apps/my-app/pages/index.tsx"
+                # Skip app.json since we already handled it above
+                if file_path == f"{app_dir}/app.json":
+                    continue
                 try:
-                    file_content = file.source.encode("utf-8")
+                    file_content = file.content.encode("utf-8") if file.content else b""
                     file_sha = compute_git_blob_sha(file_content)
 
                     virtual_files.append(
@@ -366,12 +366,12 @@ class VirtualFileProvider:
                         )
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to serialize app file {file.path}: {e}")
+                    logger.warning(f"Failed to serialize app file {file_path}: {e}")
                     errors.append(
                         SerializationError(
                             entity_type="app_file",
-                            entity_id=str(file.id),
-                            entity_name=file.path,
+                            entity_id=file_path,
+                            entity_name=file.path[len(prefix):],
                             path=file_path,
                             error=str(e),
                         )
@@ -540,36 +540,21 @@ class VirtualFileProvider:
         slug: str,
         file_rel_path: str,
     ) -> bytes | None:
-        """Get content for a specific app file."""
-        stmt = (
-            select(Application)
-            .options(
-                selectinload(Application.active_version).selectinload(AppVersion.files),
-                selectinload(Application.draft_version_ref).selectinload(AppVersion.files),
-            )
-            .where(Application.slug == slug)
+        """Get content for a specific app file from file_index."""
+        full_path = f"apps/{slug}/{file_rel_path}"
+        result = await self.db.execute(
+            select(FileIndex.content).where(FileIndex.path == full_path)
         )
-        result = await self.db.execute(stmt)
-        app = result.scalar_one_or_none()
+        row = result.scalar_one_or_none()
 
-        if not app:
+        if row is None:
             return None
 
-        # Use active_version if published, otherwise draft
-        version = app.active_version or app.draft_version_ref
-        if not version:
+        try:
+            return row.encode("utf-8") if row else b""
+        except Exception as e:
+            logger.warning(f"Failed to encode app file {full_path}: {e}")
             return None
-
-        # Find the file with matching path
-        for file in version.files:
-            if file.path == file_rel_path:
-                try:
-                    return file.source.encode("utf-8")
-                except Exception as e:
-                    logger.warning(f"Failed to serialize app file {file.path}: {e}")
-                    return None
-
-        return None
 
     @staticmethod
     def extract_id_from_filename(filename: str) -> str | None:

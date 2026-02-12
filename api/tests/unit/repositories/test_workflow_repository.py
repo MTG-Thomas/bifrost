@@ -83,6 +83,44 @@ class TestWorkflowRepository:
 
         assert result is None
 
+    async def test_resolve_by_path_ref(self, repository, mock_workflow):
+        """Test resolve() with path::function_name format."""
+        with patch.object(repository, '_resolve_by_path_ref', return_value=mock_workflow) as mock_resolve:
+            result = await repository.resolve("workflows/customers.py::list_customers")
+
+        assert result == mock_workflow
+        mock_resolve.assert_called_once_with("workflows/customers.py::list_customers")
+
+    async def test_resolve_by_path_ref_with_feature_prefix(self, repository, mock_workflow):
+        """Test resolve() with feature-prefixed path::function_name format."""
+        ref = "features/project-management-demo/workflows/customers.py::list_customers_demo"
+        with patch.object(repository, '_resolve_by_path_ref', return_value=mock_workflow) as mock_resolve:
+            result = await repository.resolve(ref)
+
+        assert result == mock_workflow
+        mock_resolve.assert_called_once_with(ref)
+
+    async def test_resolve_by_path_ref_not_found(self, repository, mock_session):
+        """Test resolve() returns None when path::function_name not found."""
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        result = await repository.resolve("workflows/missing.py::nonexistent")
+
+        assert result is None
+
+    async def test_resolve_path_ref_prefers_over_name_lookup(self, repository, mock_workflow):
+        """Test that :: in identifier triggers path ref lookup, not name lookup."""
+        with patch.object(repository, '_resolve_by_path_ref', return_value=mock_workflow) as mock_path_ref:
+            with patch.object(repository, 'get') as mock_get:
+                result = await repository.resolve("some/path.py::func")
+
+        # Should use path ref, not name lookup
+        mock_path_ref.assert_called_once()
+        mock_get.assert_not_called()
+        assert result == mock_workflow
+
     # ==========================================================================
     # get_by_name() tests
     # ==========================================================================

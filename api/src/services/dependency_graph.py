@@ -19,13 +19,11 @@ from sqlalchemy.orm import selectinload
 from src.models.orm import (
     Agent,
     AgentTool,
-    AppFile,
-    AppFileDependency,
     Application,
-    AppVersion,
     Form,
     Workflow,
 )
+from src.models.orm.file_index import FileIndex
 
 
 def _extract_workflows_from_props(obj: dict | list | str | int | None) -> set[UUID]:
@@ -225,27 +223,23 @@ class DependencyGraphService:
         app: Application,
         workflow_id: UUID,
     ) -> bool:
-        """
-        Check if an application uses a specific workflow.
+        """Check if an application uses a specific workflow by scanning file_index."""
+        from src.services.app_dependencies import parse_dependencies
 
-        Uses the app_file_dependencies table to check if any file in any
-        version of the app references this workflow via useWorkflow() hook.
-        Checks all versions (not just active) for consistency with
-        _get_dependencies().
-        """
-        # Query the dependencies table across all versions of this app
+        prefix = f"apps/{app.slug}/"
         result = await self.db.execute(
-            select(AppFileDependency.id)
-            .join(AppFile, AppFileDependency.app_file_id == AppFile.id)
-            .join(AppVersion, AppFile.app_version_id == AppVersion.id)
-            .where(
-                AppVersion.application_id == app.id,
-                AppFileDependency.dependency_type == "workflow",
-                AppFileDependency.dependency_id == workflow_id,
+            select(FileIndex.content).where(
+                FileIndex.path.startswith(prefix),
+                ~FileIndex.path.endswith("/app.json"),
             )
-            .limit(1)
         )
-        return result.scalar_one_or_none() is not None
+        wf_id_str = str(workflow_id)
+        for (content,) in result.all():
+            if content:
+                refs = parse_dependencies(content)
+                if wf_id_str in refs:
+                    return True
+        return False
 
     async def _fetch_entity_node(
         self,
@@ -387,23 +381,37 @@ class DependencyGraphService:
                         )
 
         elif entity_type == "app":
-            # Apps USE workflows via code file dependencies (useWorkflow hook)
-            # Query dependencies from ALL versions of the app (not just active)
-            # This ensures we show all dependencies regardless of which version they're in
-            deps_result = await self.db.execute(
-                select(AppFileDependency.dependency_type, AppFileDependency.dependency_id)
-                .join(AppFile, AppFileDependency.app_file_id == AppFile.id)
-                .join(AppVersion, AppFile.app_version_id == AppVersion.id)
-                .where(AppVersion.application_id == entity_id)
-                .distinct()
+            # Apps USE workflows via hook calls in source code
+            # Scan file_index for apps/{slug}/* files and parse for workflow refs
+            from src.services.app_dependencies import parse_dependencies
+            from src.models.orm.workflows import Workflow as WfORM
+
+            app_result = await self.db.execute(
+                select(Application).where(Application.id == entity_id)
             )
-            for dep_type, dep_id in deps_result.all():
-                if dep_type == "workflow":
-                    dependencies.append(("workflow", dep_id, "uses"))
-                elif dep_type == "form":
-                    dependencies.append(("form", dep_id, "uses"))
-                elif dep_type == "data_provider":
-                    dependencies.append(("workflow", dep_id, "uses"))
+            app = app_result.scalar_one_or_none()
+            if app:
+                prefix = f"apps/{app.slug}/"
+                fi_result = await self.db.execute(
+                    select(FileIndex.content).where(
+                        FileIndex.path.startswith(prefix),
+                        ~FileIndex.path.endswith("/app.json"),
+                    )
+                )
+                # Collect all workflow refs from all files
+                all_refs: set[str] = set()
+                for (content,) in fi_result.all():
+                    if content:
+                        all_refs.update(parse_dependencies(content))
+
+                if all_refs:
+                    # Resolve refs to workflow UUIDs
+                    wf_result = await self.db.execute(
+                        select(WfORM.id, WfORM.name).where(WfORM.is_active.is_(True))
+                    )
+                    for wf_id, wf_name in wf_result.all():
+                        if str(wf_id) in all_refs or wf_name in all_refs:
+                            dependencies.append(("workflow", wf_id, "uses"))
 
         elif entity_type == "agent":
             # Agents USE workflows (via agent_tools)

@@ -8,9 +8,7 @@
 import React from "react";
 import { createComponent } from "./app-code-runtime";
 import { authFetch } from "./api-client";
-import type { components } from "@/lib/v1";
-
-type AppCodeFile = components["schemas"]["AppFileResponse"];
+import type { AppCodeFile } from "./app-code-router";
 
 /**
  * Cached component entry
@@ -21,53 +19,42 @@ interface ComponentCache {
 }
 
 /**
- * Code file response from the API
+ * Code file response from the new API endpoint
  */
 interface AppCodeFileResponse {
-	id: string;
-	app_version_id: string;
 	path: string;
 	source: string;
-	compiled: string | null;
-	created_at: string;
-	updated_at: string;
 }
 
 /**
  * Cache for compiled components
- * Key format: `{appId}:{versionId}:{path}`
+ * Key format: `{appId}:{path}`
  */
 const componentCache = new Map<string, ComponentCache>();
 
 /**
- * Build cache key from app, version, and path
+ * Build cache key from app and path
  */
-function buildCacheKey(
-	appId: string,
-	versionId: string,
-	path: string,
-): string {
-	return `${appId}:${versionId}:${path}`;
+function buildCacheKey(appId: string, path: string): string {
+	return `${appId}:${path}`;
 }
 
 /**
  * Fetch a code file from the API
  *
  * @param appId - Application ID
- * @param versionId - Version ID (draft or published)
  * @param path - File path (e.g., "components/ClientCard")
  * @returns The file response or null if not found
  */
 export async function resolveFile(
 	appId: string,
-	versionId: string,
 	path: string,
 ): Promise<AppCodeFileResponse | null> {
 	try {
 		// URL-encode the path since it may contain slashes
 		const encodedPath = encodeURIComponent(path);
 		const response = await authFetch(
-			`/api/applications/${appId}/versions/${versionId}/files/${encodedPath}`,
+			`/api/applications/${appId}/files/${encodedPath}?mode=draft`,
 		);
 
 		if (!response.ok) {
@@ -128,33 +115,13 @@ export function clearAppCache(appId: string): void {
 }
 
 /**
- * Clear cache for a specific app version
- *
- * @param appId - Application ID
- * @param versionId - Version ID
- */
-export function clearVersionCache(appId: string, versionId: string): void {
-	const prefix = `${appId}:${versionId}:`;
-	for (const key of componentCache.keys()) {
-		if (key.startsWith(prefix)) {
-			componentCache.delete(key);
-		}
-	}
-}
-
-/**
  * Clear cache for a specific file
  *
  * @param appId - Application ID
- * @param versionId - Version ID
  * @param path - File path
  */
-export function clearFileCache(
-	appId: string,
-	versionId: string,
-	path: string,
-): void {
-	const key = buildCacheKey(appId, versionId, path);
+export function clearFileCache(appId: string, path: string): void {
+	const key = buildCacheKey(appId, path);
 	componentCache.delete(key);
 }
 
@@ -174,7 +141,7 @@ export function getCacheStats(): { size: number; keys: string[] } {
  * This looks for files in the `components/` directory and extracts their names.
  * These are the ONLY components that should be fetched from the API.
  *
- * @param files - All files for an app version
+ * @param files - All files for an app
  * @returns Set of component names that exist as user files
  *
  * @example
@@ -217,14 +184,12 @@ export function getUserComponentNames(files: AppCodeFile[]): Set<string> {
  * It only fetches components that actually exist, avoiding 404 errors.
  *
  * @param appId - Application ID
- * @param versionId - Version ID
  * @param componentNames - Names referenced in JSX
  * @param userComponentNames - Set of component names that exist as user files
  * @returns Map of component name to React component
  */
 export async function resolveAppComponentsFromFiles(
 	appId: string,
-	versionId: string,
 	componentNames: string[],
 	userComponentNames: Set<string>,
 ): Promise<Record<string, React.ComponentType>> {
@@ -236,7 +201,7 @@ export async function resolveAppComponentsFromFiles(
 	);
 
 	for (const name of existingCustomNames) {
-		const cacheKey = buildCacheKey(appId, versionId, `components/${name}`);
+		const cacheKey = buildCacheKey(appId, `components/${name}`);
 
 		// Check cache first
 		const cached = componentCache.get(cacheKey);
@@ -246,9 +211,9 @@ export async function resolveAppComponentsFromFiles(
 		}
 
 		// Fetch from API - try with .tsx extension first, then without
-		let file = await resolveFile(appId, versionId, `components/${name}.tsx`);
+		let file = await resolveFile(appId, `components/${name}.tsx`);
 		if (!file) {
-			file = await resolveFile(appId, versionId, `components/${name}`);
+			file = await resolveFile(appId, `components/${name}`);
 		}
 		if (!file) {
 			// This shouldn't happen since we filtered to known files
@@ -256,11 +221,8 @@ export async function resolveAppComponentsFromFiles(
 			continue;
 		}
 
-		// Use compiled version if available, otherwise compile on client
-		const source = file.compiled || file.source;
-		const useCompiled = !!file.compiled;
-
-		const component = createComponent(source, {}, useCompiled);
+		// Compilation is 100% client-side now
+		const component = createComponent(file.source, {}, false);
 
 		// Cache the compiled component
 		componentCache.set(cacheKey, {

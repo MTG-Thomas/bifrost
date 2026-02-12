@@ -52,7 +52,6 @@ from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.forms import Form, FormField
 from src.models.orm.applications import Application
 from src.models.orm.agents import Agent, AgentTool
-from src.models.orm.app_file_dependencies import AppFileDependency
 from src.models.orm.developer import DeveloperContext
 from src.models.orm.users import Role
 from src.services.workflow_validation import _extract_relative_path
@@ -202,23 +201,49 @@ async def _get_app_workflow_ids(db: DbSession, app_id: UUID) -> set[UUID]:
     """
     Get all workflow IDs referenced by an app.
 
-    Queries the app_file_dependencies table for all workflow references
-    across all versions of the app.
+    Scans file_index for app source files and parses for workflow references.
     """
-    from src.models.orm.app_file_dependencies import AppFileDependency
-    from src.models.orm.applications import AppFile, AppVersion
+    from src.models.orm.file_index import FileIndex
+    from src.models.orm.applications import Application
+    from src.models.orm.workflows import Workflow as WfORM
+    from src.services.app_dependencies import parse_dependencies
 
-    result = await db.execute(
-        select(AppFileDependency.dependency_id)
-        .join(AppFile, AppFileDependency.app_file_id == AppFile.id)
-        .join(AppVersion, AppFile.app_version_id == AppVersion.id)
-        .where(
-            AppVersion.application_id == app_id,
-            AppFileDependency.dependency_type == "workflow",
-        )
-        .distinct()
+    # Get app slug
+    app_result = await db.execute(
+        select(Application.slug).where(Application.id == app_id)
     )
-    return {row[0] for row in result.all()}
+    slug = app_result.scalar_one_or_none()
+    if not slug:
+        return set()
+
+    # Scan file_index for source code
+    prefix = f"apps/{slug}/"
+    fi_result = await db.execute(
+        select(FileIndex.content).where(
+            FileIndex.path.startswith(prefix),
+            ~FileIndex.path.endswith("/app.json"),
+        )
+    )
+
+    # Collect all refs from all files
+    all_refs: set[str] = set()
+    for (content,) in fi_result.all():
+        if content:
+            all_refs.update(parse_dependencies(content))
+
+    if not all_refs:
+        return set()
+
+    # Resolve refs to workflow UUIDs
+    wf_result = await db.execute(
+        select(WfORM.id, WfORM.name).where(WfORM.is_active.is_(True))
+    )
+    matched: set[UUID] = set()
+    for wf_id, wf_name in wf_result.all():
+        if str(wf_id) in all_refs or wf_name in all_refs:
+            matched.add(wf_id)
+
+    return matched
 
 
 async def _compute_used_by_counts(db: DbSession, workflow_ids: list[UUID]) -> dict[UUID, int]:
@@ -230,7 +255,6 @@ async def _compute_used_by_counts(db: DbSession, workflow_ids: list[UUID]) -> di
     - forms.launch_workflow_id (pre-execution workflow)
     - form_fields.data_provider_id (dynamic data providers)
     - agent_tools.workflow_id (agent tool bindings)
-    - app_file_dependencies.dependency_id (app code references)
 
     Returns a dict mapping workflow UUID -> count of referencing entities.
     """
@@ -262,13 +286,10 @@ async def _compute_used_by_counts(db: DbSession, workflow_ids: list[UUID]) -> di
     refs_agent = (
         select(AgentTool.workflow_id.label("wf_id"))
     )
-    refs_app = (
-        select(AppFileDependency.dependency_id.label("wf_id"))
-    )
 
     # Union all reference sources and count per workflow
     all_refs = union_all(
-        refs_form_wf, refs_form_launch, refs_form_dp, refs_agent, refs_app
+        refs_form_wf, refs_form_launch, refs_form_dp, refs_agent
     ).subquery("all_refs")
 
     count_query = (
@@ -414,7 +435,7 @@ async def list_workflows(
 
         # Batch-compute used_by_count for all workflows in a single query.
         # Counts references from: forms (workflow_id, launch_workflow_id),
-        # form_fields (data_provider_id), agent_tools, and app_file_dependencies.
+        # form_fields (data_provider_id), and agent_tools.
         workflow_ids = [w.id for w in workflows]
         used_by_counts: dict[UUID, int] = {}
         if workflow_ids:
@@ -562,39 +583,42 @@ async def get_workflow_usage_stats(
         ]
 
         # =========================================================================
-        # Apps: via app_file_dependencies table
+        # Apps: scan file_index for workflow references in source code
         # =========================================================================
-        from src.models.orm.app_file_dependencies import AppFileDependency
-        from src.models.orm.applications import AppFile, AppVersion
+        from src.models.orm.file_index import FileIndex
+        from src.services.app_dependencies import parse_dependencies
 
-        apps_query = (
-            select(
-                Application.id,
-                Application.name,
-                func.count(distinct(AppFileDependency.dependency_id)).label("workflow_count"),
-            )
-            .outerjoin(AppVersion, AppVersion.application_id == Application.id)
-            .outerjoin(AppFile, AppFile.app_version_id == AppVersion.id)
-            .outerjoin(
-                AppFileDependency,
-                (AppFileDependency.app_file_id == AppFile.id)
-                & (AppFileDependency.dependency_type == "workflow"),
-            )
-            .group_by(Application.id, Application.name)
+        apps_base_query = (
+            select(Application.id, Application.name, Application.slug)
             .order_by(Application.name)
         )
         if org_filter:
-            apps_query = apps_query.where(Application.organization_id == org_filter)
+            apps_base_query = apps_base_query.where(Application.organization_id == org_filter)
 
-        apps_result = await db.execute(apps_query)
-        apps: list[EntityUsage] = [
-            EntityUsage(
-                id=str(row.id),
-                name=row.name,
-                workflow_count=row.workflow_count or 0,
+        apps_base_result = await db.execute(apps_base_query)
+        all_apps = apps_base_result.all()
+
+        apps: list[EntityUsage] = []
+        for app_row in all_apps:
+            prefix = f"apps/{app_row.slug}/"
+            fi_result = await db.execute(
+                select(FileIndex.content).where(
+                    FileIndex.path.startswith(prefix),
+                    ~FileIndex.path.endswith("/app.json"),
+                )
             )
-            for row in apps_result.all()
-        ]
+            all_refs: set[str] = set()
+            for (content,) in fi_result.all():
+                if content:
+                    all_refs.update(parse_dependencies(content))
+
+            apps.append(
+                EntityUsage(
+                    id=str(app_row.id),
+                    name=app_row.name,
+                    workflow_count=len(all_refs),  # Count of unique refs (approximate)
+                )
+            )
 
         return WorkflowUsageStats(forms=forms, apps=apps, agents=agents)
 

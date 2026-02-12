@@ -47,7 +47,7 @@ interface LastUpdate {
  * const { newVersionAvailable, refreshApp } = useAppLiveUpdates({
  *   appId: app.id,
  *   mode: 'live',
- *   currentVersionId: app.active_version_id,
+ *   currentVersionId: app.published_at,
  * });
  * ```
  */

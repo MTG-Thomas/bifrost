@@ -2,7 +2,7 @@
  * JSX App Shell
  *
  * The root component for rendering a JSX-based application.
- * Fetches all files for an app version, builds the router configuration,
+ * Fetches all files for an app, builds the router configuration,
  * and renders the app with proper layout and provider wrapping.
  */
 
@@ -14,7 +14,6 @@ import {
 	useOutletContext,
 } from "react-router-dom";
 import { authFetch } from "@/lib/api-client";
-import type { components } from "@/lib/v1";
 import { buildRoutes, type AppCodeFile, type AppCodeRouteObject } from "@/lib/app-code-router";
 import { createComponent } from "@/lib/app-code-runtime";
 import {
@@ -29,16 +28,20 @@ import { JsxPageRenderer } from "./JsxPageRenderer";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 import { useAppCodeUpdates } from "@/hooks/useAppCodeUpdates";
 
-type AppFileListResponse = components["schemas"]["AppFileListResponse"];
+/**
+ * Response shape from the new file listing endpoint
+ */
+interface AppFileListResponse {
+	files: AppCodeFile[];
+	total: number;
+}
 
 interface JsxAppShellProps {
 	/** Application ID */
 	appId: string;
 	/** Application slug for URL routing */
 	appSlug: string;
-	/** Version ID (draft or published) */
-	versionId: string;
-	/** Whether this is preview mode (uses draft version) */
+	/** Whether this is preview mode (uses draft files) */
 	isPreview?: boolean;
 }
 
@@ -47,7 +50,6 @@ interface JsxAppShellProps {
  */
 interface JsxAppContext {
 	appId: string;
-	versionId: string;
 	/** Set of component names that exist as user files in components/ */
 	userComponentNames: Set<string>;
 }
@@ -60,14 +62,14 @@ export function useJsxAppContext(): JsxAppContext {
 }
 
 /**
- * Fetch all app code files for an app version
+ * Fetch all app code files for an application
  */
 async function fetchAppFiles(
 	appId: string,
-	versionId: string,
+	mode: "draft" | "live",
 ): Promise<AppCodeFile[]> {
 	const response = await authFetch(
-		`/api/applications/${appId}/versions/${versionId}/files`,
+		`/api/applications/${appId}/files?mode=${mode}`,
 	);
 
 	if (!response.ok) {
@@ -97,12 +99,10 @@ function findSpecialFile(
 function LayoutWrapper({
 	file,
 	appId,
-	versionId,
 	userComponentNames,
 }: {
 	file: AppCodeFile;
 	appId: string;
-	versionId: string;
 	userComponentNames: Set<string>;
 }) {
 	const [LayoutComponent, setLayoutComponent] =
@@ -111,8 +111,8 @@ function LayoutWrapper({
 	const [isLoading, setIsLoading] = useState(true);
 
 	const appContext = useMemo<JsxAppContext>(
-		() => ({ appId, versionId, userComponentNames }),
-		[appId, versionId, userComponentNames],
+		() => ({ appId, userComponentNames }),
+		[appId, userComponentNames],
 	);
 
 	useEffect(() => {
@@ -129,7 +129,6 @@ function LayoutWrapper({
 				if (componentNames.length > 0) {
 					customComponents = await resolveAppComponentsFromFiles(
 						appId,
-						versionId,
 						componentNames,
 						userComponentNames,
 					);
@@ -137,12 +136,11 @@ function LayoutWrapper({
 
 				if (cancelled) return;
 
-				const source = file.compiled || file.source;
-				const useCompiled = !!file.compiled;
+				// Compilation is 100% client-side now
 				const Component = createComponent(
-					source,
+					file.source,
 					customComponents,
-					useCompiled,
+					false,
 				);
 
 				setLayoutComponent(() => Component);
@@ -163,7 +161,7 @@ function LayoutWrapper({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, versionId, userComponentNames, file.id, file.source, file.compiled]);
+	}, [appId, userComponentNames, file.path, file.source]);
 
 	if (isLoading) {
 		return <PageLoader message="Loading layout..." />;
@@ -191,7 +189,7 @@ function LayoutWrapper({
 	}
 
 	return (
-		<JsxErrorBoundary filePath={file.path} resetKey={file.updated_at}>
+		<JsxErrorBoundary filePath={file.path} resetKey={file.source}>
 			<LayoutComponent />
 		</JsxErrorBoundary>
 	);
@@ -205,13 +203,11 @@ function LayoutWrapper({
 function ProvidersWrapper({
 	file,
 	appId,
-	versionId,
 	userComponentNames,
 	children,
 }: {
 	file: AppCodeFile;
 	appId: string;
-	versionId: string;
 	userComponentNames: Set<string>;
 	children: React.ReactNode;
 }) {
@@ -235,7 +231,6 @@ function ProvidersWrapper({
 				if (componentNames.length > 0) {
 					customComponents = await resolveAppComponentsFromFiles(
 						appId,
-						versionId,
 						componentNames,
 						userComponentNames,
 					);
@@ -243,12 +238,11 @@ function ProvidersWrapper({
 
 				if (cancelled) return;
 
-				const source = file.compiled || file.source;
-				const useCompiled = !!file.compiled;
+				// Compilation is 100% client-side now
 				const Component = createComponent(
-					source,
+					file.source,
 					customComponents,
-					useCompiled,
+					false,
 				);
 
 				setProvidersComponent(
@@ -276,7 +270,7 @@ function ProvidersWrapper({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, versionId, userComponentNames, file.id, file.source, file.compiled]);
+	}, [appId, userComponentNames, file.path, file.source]);
 
 	if (isLoading) {
 		return <PageLoader message="Loading app..." />;
@@ -293,7 +287,7 @@ function ProvidersWrapper({
 	}
 
 	return (
-		<JsxErrorBoundary filePath={file.path} resetKey={file.updated_at}>
+		<JsxErrorBoundary filePath={file.path} resetKey={file.source}>
 			<ProvidersComponent>{children}</ProvidersComponent>
 		</JsxErrorBoundary>
 	);
@@ -305,7 +299,6 @@ function ProvidersWrapper({
 function renderRoutes(
 	routes: AppCodeRouteObject[],
 	appId: string,
-	versionId: string,
 	userComponentNames: Set<string>,
 ): React.ReactNode {
 	return routes.map((route, index) => {
@@ -318,7 +311,6 @@ function renderRoutes(
 					element={
 						<JsxPageRenderer
 							appId={appId}
-							versionId={versionId}
 							file={route.file}
 							userComponentNames={userComponentNames}
 						/>
@@ -334,27 +326,25 @@ function renderRoutes(
 						<LayoutWrapper
 							file={route.file}
 							appId={appId}
-							versionId={versionId}
 							userComponentNames={userComponentNames}
 						/>
 					)
 				: (
 						<JsxPageRenderer
 							appId={appId}
-							versionId={versionId}
 							file={route.file}
 							userComponentNames={userComponentNames}
 						/>
 					)
 			: route.children && route.children.length > 0
-				? <Outlet context={{ appId, versionId, userComponentNames }} />
+				? <Outlet context={{ appId, userComponentNames }} />
 				: undefined;
 
 		// Render with children if any
 		if (route.children && route.children.length > 0) {
 			return (
 				<Route key={route.path || index} path={route.path} element={element}>
-					{renderRoutes(route.children, appId, versionId, userComponentNames)}
+					{renderRoutes(route.children, appId, userComponentNames)}
 				</Route>
 			);
 		}
@@ -375,12 +365,10 @@ function renderRoutes(
 function AppContent({
 	files,
 	appId,
-	versionId,
 	userComponentNames,
 }: {
 	files: AppCodeFile[];
 	appId: string;
-	versionId: string;
 	userComponentNames: Set<string>;
 }) {
 	// Build routes from files
@@ -403,7 +391,7 @@ function AppContent({
 
 	return (
 		<Routes>
-			{renderRoutes(jsxRoutes, appId, versionId, userComponentNames)}
+			{renderRoutes(jsxRoutes, appId, userComponentNames)}
 		</Routes>
 	);
 }
@@ -415,7 +403,7 @@ function AppContent({
  *
  * This component:
  * 1. Sets up app context for navigation path transformation
- * 2. Fetches all files for the app version
+ * 2. Fetches all files for the app
  * 3. Builds the router configuration from page files
  * 4. Wraps with _providers if it exists
  * 5. Renders the app with proper layouts
@@ -425,7 +413,6 @@ function AppContent({
  * <JsxAppShell
  *   appId="my-app-id"
  *   appSlug="my-app"
- *   versionId="draft"
  *   isPreview={true}
  * />
  * ```
@@ -433,13 +420,15 @@ function AppContent({
 export function JsxAppShell({
 	appId,
 	appSlug,
-	versionId,
 	isPreview = false,
 }: JsxAppShellProps) {
 	const [files, setFiles] = useState<AppCodeFile[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const setAppContext = useAppBuilderStore((state) => state.setAppContext);
+
+	// Determine file mode based on preview flag
+	const mode = isPreview ? "draft" : "live";
 
 	// Real-time updates via WebSocket (only in preview mode)
 	const { updateCounter } = useAppCodeUpdates({
@@ -465,7 +454,7 @@ export function JsxAppShell({
 			setError(null);
 
 			try {
-				const appFiles = await fetchAppFiles(appId, versionId);
+				const appFiles = await fetchAppFiles(appId, mode);
 
 				if (cancelled) return;
 
@@ -489,7 +478,7 @@ export function JsxAppShell({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, versionId, updateCounter]);
+	}, [appId, mode, updateCounter]);
 
 	// Compute user component names from files list (memoized)
 	// Must be called before any conditional returns to satisfy React Hooks rules
@@ -532,7 +521,6 @@ export function JsxAppShell({
 		<AppContent
 			files={files}
 			appId={appId}
-			versionId={versionId}
 			userComponentNames={userComponentNames}
 		/>
 	);
@@ -544,7 +532,6 @@ export function JsxAppShell({
 				<ProvidersWrapper
 					file={providersFile}
 					appId={appId}
-					versionId={versionId}
 					userComponentNames={userComponentNames}
 				>
 					{appContent}

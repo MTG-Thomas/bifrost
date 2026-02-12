@@ -31,12 +31,11 @@ from src.models.contracts.notifications import (
     NotificationStatus,
 )
 from src.models.orm import (
-    AppFile,
-    AppFileDependency,
     Application,
     Workflow,
 )
-from src.services.app_dependencies import sync_file_dependencies
+from src.models.orm.file_index import FileIndex
+from src.services.app_dependencies import parse_dependencies
 from src.services.notification_service import get_notification_service
 
 logger = logging.getLogger(__name__)
@@ -394,8 +393,8 @@ class AppDependencyScanResponse(BaseModel):
 @router.post(
     "/scan-app-dependencies",
     response_model=AppDependencyScanResponse,
-    summary="Rebuild app dependencies",
-    description="Rebuild AppFileDependency table by parsing all app source files (Platform admin only)",
+    summary="Scan app dependencies",
+    description="Scan all app source files for workflow references and report issues (Platform admin only)",
 )
 async def scan_app_dependencies(
     ctx: Context,
@@ -403,89 +402,77 @@ async def scan_app_dependencies(
     db: AsyncSession = Depends(get_db),
 ) -> AppDependencyScanResponse:
     """
-    Rebuild app file dependencies from source code.
+    Scan app file dependencies from source code in file_index.
 
     This endpoint:
-    1. Clears all existing AppFileDependency records
-    2. Parses all app file source code to find useWorkflow(), useForm(), and
-       useDataProvider() calls
-    3. Inserts new AppFileDependency records for each found dependency
-    4. Reports any dependencies that reference non-existent entities
-
-    This populates the data used by the dependency graph feature.
+    1. Reads all app source files from file_index (apps/{slug}/* paths)
+    2. Parses source code for useWorkflow(), useWorkflowQuery(), useWorkflowMutation() calls
+    3. Resolves references against active workflows
+    4. Reports any dependencies that reference non-existent workflows
 
     Creates a platform admin notification if issues are found.
-
-    Returns:
-        AppDependencyScanResponse with rebuild results
     """
-    from src.models.orm.applications import AppVersion
-
     try:
-        # Step 1: Get all app files with their app info
-        files_result = await db.execute(
-            select(AppFile, Application)
-            .join(AppVersion, AppFile.app_version_id == AppVersion.id)
-            .join(Application, AppVersion.application_id == Application.id)
+        # Step 1: Get all apps
+        apps_result = await db.execute(select(Application))
+        apps = apps_result.scalars().all()
+
+        # Build workflow lookup (all active workflows)
+        wf_result = await db.execute(
+            select(Workflow.id, Workflow.name).where(Workflow.is_active.is_(True))
         )
-        file_rows = files_result.all()
+        wf_by_name: dict[str, str] = {}  # name -> str(id)
+        wf_ids: set[str] = set()
+        for wf_id, wf_name in wf_result.all():
+            wf_by_name[wf_name] = str(wf_id)
+            wf_ids.add(str(wf_id))
 
         all_issues: list[AppDependencyIssue] = []
-        total_deps_rebuilt = 0
+        total_deps_found = 0
         files_scanned = 0
         apps_seen: set[str] = set()
 
-        for file, app in file_rows:
-            apps_seen.add(str(app.id))
-            files_scanned += 1
+        for app in apps:
+            prefix = f"apps/{app.slug}/"
+            fi_result = await db.execute(
+                select(FileIndex.path, FileIndex.content).where(
+                    FileIndex.path.startswith(prefix),
+                    ~FileIndex.path.endswith("/app.json"),
+                )
+            )
 
-            if not file.source:
+            app_files = fi_result.all()
+            if not app_files:
                 continue
 
-            # Step 2: Sync dependencies using DB-aware resolution
-            # This deletes existing deps for the file and inserts new ones
-            count = await sync_file_dependencies(
-                db, file.id, file.source, app.organization_id
-            )
-            total_deps_rebuilt += count
+            apps_seen.add(str(app.id))
 
-        # Step 3: Validate — check for dependencies referencing non-existent workflows
-        all_deps_result = await db.execute(
-            select(
-                AppFileDependency.dependency_type,
-                AppFileDependency.dependency_id,
-                AppFile.path,
-                Application.id.label("app_id"),
-                Application.name.label("app_name"),
-                Application.slug.label("app_slug"),
-            )
-            .join(AppFile, AppFileDependency.app_file_id == AppFile.id)
-            .join(AppVersion, AppFile.app_version_id == AppVersion.id)
-            .join(Application, AppVersion.application_id == Application.id)
-        )
+            for fi_path, content in app_files:
+                files_scanned += 1
+                if not content:
+                    continue
 
-        for row in all_deps_result.all():
-            # Check if the referenced workflow exists and is active
-            wf_result = await db.execute(
-                select(Workflow.id).where(
-                    Workflow.id == row.dependency_id,
-                    Workflow.is_active.is_(True),
-                )
-            )
-            if wf_result.scalar_one_or_none() is None:
-                all_issues.append(
-                    AppDependencyIssue(
-                        app_id=str(row.app_id),
-                        app_name=row.app_name,
-                        app_slug=row.app_slug,
-                        file_path=row.path,
-                        dependency_type=row.dependency_type,
-                        dependency_id=str(row.dependency_id),
-                    )
-                )
+                refs = parse_dependencies(content)
+                if not refs:
+                    continue
 
-        # Commit all the new dependency records
-        await db.commit()
+                relative_path = fi_path[len(prefix):]
+
+                for ref in refs:
+                    total_deps_found += 1
+                    # Check if ref resolves to an active workflow
+                    resolved = ref in wf_ids or ref in wf_by_name
+                    if not resolved:
+                        all_issues.append(
+                            AppDependencyIssue(
+                                app_id=str(app.id),
+                                app_name=app.name,
+                                app_slug=app.slug,
+                                file_path=relative_path,
+                                dependency_type="workflow",
+                                dependency_id=ref,
+                            )
+                        )
 
         # Create notification if issues found
         notification_created = False
@@ -536,14 +523,14 @@ async def scan_app_dependencies(
 
         logger.info(
             f"App dependency rebuild completed: scanned {len(apps_seen)} apps, "
-            f"{files_scanned} files, rebuilt {total_deps_rebuilt} dependencies, "
+            f"{files_scanned} files, rebuilt {total_deps_found} dependencies, "
             f"found {len(all_issues)} issues"
         )
 
         return AppDependencyScanResponse(
             apps_scanned=len(apps_seen),
             files_scanned=files_scanned,
-            dependencies_rebuilt=total_deps_rebuilt,
+            dependencies_rebuilt=total_deps_found,
             issues_found=len(all_issues),
             issues=all_issues,
             notification_created=notification_created,

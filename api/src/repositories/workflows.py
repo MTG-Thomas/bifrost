@@ -57,13 +57,15 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
     # ==========================================================================
 
     async def resolve(self, identifier: str) -> Workflow | None:
-        """Resolve a workflow by UUID or name.
+        """Resolve a workflow by UUID, path::function_name, or name.
 
-        If the identifier parses as a UUID, look up by id.
-        Otherwise, look up by name using cascade scoping (org > global).
+        Resolution order:
+        1. If identifier parses as a UUID, look up by id.
+        2. If identifier contains '::', treat as path::function_name lookup.
+        3. Otherwise, look up by name using cascade scoping (org > global).
 
         Args:
-            identifier: A workflow UUID string or workflow name
+            identifier: A workflow UUID string, "path::function_name" ref, or workflow name
 
         Returns:
             Workflow if found and accessible, None otherwise
@@ -72,7 +74,38 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
             workflow_uuid = UUID(identifier)
             return await self.get(id=workflow_uuid)
         except ValueError:
-            return await self.get(name=identifier)
+            pass
+
+        # path::function_name format (portable ref used by app code)
+        if "::" in identifier:
+            return await self._resolve_by_path_ref(identifier)
+
+        return await self.get(name=identifier)
+
+    async def _resolve_by_path_ref(self, ref: str) -> Workflow | None:
+        """Resolve a path::function_name reference to a workflow.
+
+        Args:
+            ref: A string like "workflows/foo.py::bar" or "path::function_name"
+
+        Returns:
+            Workflow if found, None otherwise
+        """
+        path, _, function_name = ref.rpartition("::")
+        if not path or not function_name:
+            return None
+
+        stmt = (
+            select(Workflow)
+            .where(
+                Workflow.path == path,
+                Workflow.function_name == function_name,
+                Workflow.is_active.is_(True),
+            )
+        )
+        stmt = self._apply_cascade_scope(stmt)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     # ==========================================================================
     # Type-Based Queries

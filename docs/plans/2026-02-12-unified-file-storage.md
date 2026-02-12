@@ -27,20 +27,42 @@
 | 5 | Verify read_file works for apps/ paths | N/A | No changes needed — Redis→S3 fallback already handles it |
 | 6 | Publish/snapshot mechanism | `a47b1e5e` | `publish()` now populates `published_snapshot` alongside old version-copy (transition) |
 | 7 | Simplify MCP content tools | `1a61e7d7` | Dropped entity_type requirement, all tools path-based. ~900 lines removed. |
+| 8 | Update client for new file serving endpoints | N/A | Already done — client was updated in Tasks 4-7. JsxAppShell, AppRouter, resolver, appCodeOperations all use S3-backed `/files` endpoints. |
+| 9 | Update app_code_files router | pending | Removed old version-based router (487 lines). `s3_router` renamed to sole `router`. Updated `__init__.py` and `main.py`. |
+| 10 | Data migration script | pending | Created `scripts/migrate_app_files_to_s3.py`. Raw SQL (no ORM dependency), idempotent, creates published_snapshot from active version. |
+| 11 | Drop old tables + ORM cleanup | pending | Migration: `20260212_drop_old_app_tables`. Removed `AppVersion`, `AppFile`, `AppFileDependency` from ORM. Dropped `active_version_id`, `draft_version_id` from `Application`. |
 
 ### Alembic migration chain
 ```
-20260212_uq_webhook_es → 20260212_pub_snap (head)
+20260212_uq_webhook_es → 20260212_pub_snap → 20260212_drop_old_app_tables (head)
 ```
 
 ### Key decision: app_dependencies
-The plan originally called for a new `app_dependencies` table (Task 3). This was reverted because the existing `app_file_dependencies` table already tracks the same relationships. During Task 11, the existing table will be altered in-place: rename `app_file_id` FK to `application_id` (pointing to `applications.id` instead of `app_files.id`). This avoids creating a redundant table.
+The plan originally called for a new `app_dependencies` table (Task 3). This was reverted because the existing `app_file_dependencies` table already tracks the same relationships. Task 11 now drops `app_file_dependencies` entirely (along with `app_files` and `app_versions`). Dependency tracking will be rebuilt using `file_index` scans in Task 12.
 
 ---
 
 ## REMAINING Tasks
 
-### Task 8: Update client for new file serving endpoints
+### ~~Task 8: Update client for new file serving endpoints~~ ✅
+
+Already done — client was updated during Tasks 4-7.
+
+### ~~Task 9: Update app_code_files router~~ ✅
+
+Old version-based router removed. S3 router is now the sole router.
+
+### ~~Task 10: Data migration — move existing app files to S3~~ ✅
+
+Created `scripts/migrate_app_files_to_s3.py`.
+
+### ~~Task 11: Drop old tables~~ ✅
+
+Migration `20260212_drop_old_app_tables` created. ORM cleaned up.
+
+---
+
+### Task 8 (original): Update client for new file serving endpoints
 
 **Depends on:** Tasks 4-6 (done)
 
@@ -263,18 +285,16 @@ Task 6  (publish/snapshot)         ✅ a47b1e5e
 Task 7  (simplify MCP tools)       ✅ 1a61e7d7
 
 REMAINING ──────────────────────────────────────────────────────
-Task 8  (client updates)         ◄── next batch, parallelizable with Task 9
-Task 9  (router updates)         ◄── next batch, parallelizable with Task 8
+Task 8  (client updates)         ✅ already done
+Task 9  (router updates)         ✅ done
+Task 10 (data migration)         ✅ done
+Task 11 (drop old tables)        ✅ done
                                       │
-Task 10 (data migration)         ◄───┘ depends on 8+9
-                                      │
-Task 11 (drop old tables)        ◄───┘ depends on 10
-                                      │
-Task 12 (update consumers)       ◄───┘ depends on 11
+Task 12 (update consumers)       ◄───┘ NEXT
                                       │
 Task 13 (frontend types)         ◄───┘ depends on 12
                                       │
 Task 14 (verification)           ◄───┘ depends on 13
 ```
 
-Tasks 8-9 can be parallelized. Tasks 10-14 are strictly sequential (destructive changes).
+Tasks 12-14 are strictly sequential.

@@ -20,8 +20,6 @@ import { JsxErrorBoundary } from "./JsxErrorBoundary";
 interface JsxPageRendererProps {
 	/** Application ID */
 	appId: string;
-	/** Version ID (draft or published) */
-	versionId: string;
 	/** The app code file to render */
 	file: AppCodeFile;
 	/** Set of component names that exist as user files in components/ */
@@ -81,7 +79,6 @@ function PageError({
  */
 export function JsxPageRenderer({
 	appId,
-	versionId,
 	file,
 	userComponentNames,
 }: JsxPageRendererProps) {
@@ -90,13 +87,8 @@ export function JsxPageRenderer({
 	const [error, setError] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 
-	// Extract the source to use (prefer compiled if available)
-	const { source, useCompiled } = useMemo(() => {
-		return {
-			source: file.compiled || file.source,
-			useCompiled: !!file.compiled,
-		};
-	}, [file.compiled, file.source]);
+	// Compilation is 100% client-side now
+	const source = useMemo(() => file.source, [file.source]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -106,8 +98,7 @@ export function JsxPageRenderer({
 			setError(null);
 
 			try {
-				// Extract component names from the original source (not compiled)
-				// since compiled code may have different identifiers
+				// Extract component names from source
 				const componentNames = extractComponentNames(file.source);
 
 				// Resolve only components that exist as user files
@@ -116,7 +107,6 @@ export function JsxPageRenderer({
 				if (componentNames.length > 0) {
 					customComponents = await resolveAppComponentsFromFiles(
 						appId,
-						versionId,
 						componentNames,
 						userComponentNames,
 					);
@@ -128,7 +118,7 @@ export function JsxPageRenderer({
 				const Component = createComponent(
 					source,
 					customComponents,
-					useCompiled,
+					false,
 				);
 
 				setPageComponent(() => Component);
@@ -149,7 +139,7 @@ export function JsxPageRenderer({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, versionId, userComponentNames, file.id, file.source, source, useCompiled]);
+	}, [appId, userComponentNames, file.path, file.source, source]);
 
 	if (isLoading) {
 		return <PageSkeleton />;
@@ -164,7 +154,7 @@ export function JsxPageRenderer({
 	}
 
 	return (
-		<JsxErrorBoundary filePath={file.path} resetKey={file.updated_at}>
+		<JsxErrorBoundary filePath={file.path} resetKey={file.source}>
 			<PageComponent />
 		</JsxErrorBoundary>
 	);

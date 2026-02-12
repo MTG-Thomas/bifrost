@@ -39,8 +39,6 @@ from src.models import (  # noqa: F401
     GlobalBranding,
     # Applications (App Builder)
     Application,
-    AppVersion,
-    AppFile,
     AppRole,
 )
 

@@ -189,7 +189,7 @@ export function usePublishApplication() {
 /**
  * Hook to export an application to JSON
  * @param appId - Application ID
- * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param versionId - Version ID (optional, defaults to current draft)
  * @param scope - Optional scope parameter
  */
 export function useExportApplication(
@@ -331,7 +331,7 @@ export async function publishApplication(
 /**
  * Export application (imperative)
  * @param appId - Application ID
- * @param versionId - Version ID (draft_version_id or active_version_id)
+ * @param versionId - Version ID (optional, defaults to current draft)
  * @param scope - Optional scope parameter
  */
 export async function exportApplication(

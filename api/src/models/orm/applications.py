@@ -1,10 +1,9 @@
 """
-Application, AppVersion, and AppFile ORM models.
+Application ORM model.
 
 Represents applications with:
-- applications: metadata, access control
-- app_versions: version snapshots (active = live, draft = current work)
-- app_files: source code files for apps
+- applications: metadata, access control, published_snapshot
+- Files stored in S3 via file_index (not in database tables)
 """
 
 from __future__ import annotations
@@ -20,46 +19,17 @@ from src.models.enums import AppAccessLevel
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
-    from src.models.orm.app_file_dependencies import AppFileDependency
     from src.models.orm.app_roles import AppRole
     from src.models.orm.organizations import Organization
     from src.models.orm.tables import Table
 
 
-class AppVersion(Base):
-    """Version snapshot for an application.
-
-    Each version represents a point-in-time snapshot of the application.
-    - active_version: The currently published/live version
-    - draft_version: The current work-in-progress version
-    """
-
-    __tablename__ = "app_versions"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    application_id: Mapped[UUID] = mapped_column(
-        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
-    )
-
-    # Relationships
-    files: Mapped[list["AppFile"]] = relationship(
-        "AppFile",
-        back_populates="version",
-        cascade="all, delete-orphan",
-    )
-
-    __table_args__ = (
-        Index("ix_app_versions_application_id", "application_id"),
-    )
-
-
 class Application(Base):
     """Application entity for App Builder.
 
-    Applications hold app metadata with files in app_files table.
+    Applications hold app metadata. Files are stored in S3 at
+    _repo/apps/{slug}/ paths, indexed in file_index table.
+
     - organization_id = NULL: Global application (platform-wide)
     - organization_id = UUID: Organization-scoped application
     """
@@ -71,16 +41,6 @@ class Application(Base):
     slug: Mapped[str] = mapped_column(String(255), nullable=False)
     organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), default=None
-    )
-
-    # Version pointers
-    active_version_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("app_versions.id", ondelete="SET NULL", use_alter=True),
-        default=None,
-    )
-    draft_version_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("app_versions.id", ondelete="SET NULL", use_alter=True),
-        default=None,
     )
 
     # Publish history
@@ -119,21 +79,6 @@ class Application(Base):
     roles: Mapped[list["AppRole"]] = relationship(
         "AppRole", cascade="all, delete-orphan", passive_deletes=True
     )
-    versions: Mapped[list["AppVersion"]] = relationship(
-        "AppVersion",
-        cascade="all, delete-orphan",
-        foreign_keys="AppVersion.application_id",
-    )
-    active_version: Mapped["AppVersion | None"] = relationship(
-        "AppVersion",
-        foreign_keys=[active_version_id],
-        post_update=True,
-    )
-    draft_version_ref: Mapped["AppVersion | None"] = relationship(
-        "AppVersion",
-        foreign_keys=[draft_version_id],
-        post_update=True,
-    )
 
     __table_args__ = (
         Index("ix_applications_organization_id", "organization_id"),
@@ -143,59 +88,17 @@ class Application(Base):
     @property
     def is_published(self) -> bool:
         """Check if the application has been published at least once."""
-        return self.active_version_id is not None
+        return self.published_snapshot is not None
 
     @property
     def has_unpublished_changes(self) -> bool:
-        """Check if there are unpublished changes in the draft."""
-        if self.draft_version_id is None:
-            return False
-        if self.active_version_id is None:
-            return True  # Never published, so draft has changes
-        return self.draft_version_id != self.active_version_id
+        """Check if there are unpublished changes in the draft.
 
-
-class AppFile(Base):
-    """Source code file for apps.
-
-    Each file belongs to a version (via app_version_id).
-    Path is the unique identifier within a version (e.g., "pages/clients/[id].tsx").
-    """
-
-    __tablename__ = "app_files"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    app_version_id: Mapped[UUID] = mapped_column(
-        ForeignKey("app_versions.id", ondelete="CASCADE"), nullable=False
-    )
-
-    # Identity (path is the key within a version)
-    path: Mapped[str] = mapped_column(String(500), nullable=False)
-
-    # Content
-    source: Mapped[str] = mapped_column(Text, nullable=False)  # Original source code
-    compiled: Mapped[str | None] = mapped_column(Text, default=None)  # Compiled output
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        server_default=text("NOW()"),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    # Relationships
-    version: Mapped["AppVersion"] = relationship("AppVersion", back_populates="files")
-    dependencies: Mapped[list["AppFileDependency"]] = relationship(
-        "AppFileDependency",
-        back_populates="app_file",
-        cascade="all, delete-orphan",
-    )
-
-    __table_args__ = (
-        Index("ix_app_files_version", "app_version_id"),
-        Index("ix_app_files_path", "app_version_id", "path", unique=True),
-    )
+        TODO: Compare current file_index state vs published_snapshot to detect
+        actual changes. For now, always return True if published (conservative).
+        """
+        if self.published_snapshot is None:
+            return True  # Never published, so there are "unpublished" changes
+        # Conservative: assume changes exist. A more precise check would
+        # compare file_index entries for apps/{slug}/ against the snapshot.
+        return True

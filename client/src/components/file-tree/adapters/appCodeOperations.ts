@@ -2,7 +2,7 @@
  * App Code File Operations Adapter
  *
  * Provides FileOperations for the App Code Builder editor.
- * Works with the /api/applications/{app_id}/versions/{version_id}/files endpoints.
+ * Works with the /api/applications/{app_id}/files endpoints.
  */
 
 import { authFetch } from "@/lib/api-client";
@@ -12,13 +12,8 @@ import type { FileNode, FileContent, FileOperations } from "../types";
  * App code file from API response
  */
 interface AppCodeFileResponse {
-	id: string;
-	app_version_id: string;
 	path: string;
 	source: string;
-	compiled: string | null;
-	created_at: string;
-	updated_at: string;
 }
 
 /**
@@ -34,27 +29,23 @@ function toFileNode(file: AppCodeFileResponse): FileNode {
 		type: "file", // App code API only has files, folders are virtual
 		size: file.source.length,
 		extension: null, // App code files don't have extensions in path
-		modified: file.updated_at,
-		metadata: {
-			id: file.id,
-			compiled: file.compiled,
-		},
+		modified: null,
+		metadata: {},
 	};
 }
 
 /**
- * Create app code file operations for a specific app version
+ * Create app code file operations for a specific application
  *
  * @param appId - Application UUID
- * @param versionId - Version UUID (draft or active)
  * @returns FileOperations implementation for app code files
  */
-export function createAppCodeOperations(appId: string, versionId: string): FileOperations {
-	const baseUrl = `/api/applications/${appId}/versions/${versionId}/files`;
+export function createAppCodeOperations(appId: string): FileOperations {
+	const baseUrl = `/api/applications/${appId}/files`;
 
 	return {
 		async list(path: string): Promise<FileNode[]> {
-			const response = await authFetch(baseUrl);
+			const response = await authFetch(`${baseUrl}?mode=draft`);
 
 			if (!response.ok) {
 				throw new Error(`Failed to list files: ${response.statusText}`);
@@ -73,7 +64,7 @@ export function createAppCodeOperations(appId: string, versionId: string): FileO
 		},
 
 		async read(path: string): Promise<FileContent> {
-			const response = await authFetch(`${baseUrl}/${encodeURIComponent(path)}`);
+			const response = await authFetch(`${baseUrl}/${encodeURIComponent(path)}?mode=draft`);
 
 			if (!response.ok) {
 				throw new Error(`Failed to read file: ${response.statusText}`);
@@ -84,8 +75,6 @@ export function createAppCodeOperations(appId: string, versionId: string): FileO
 			return {
 				content: file.source,
 				encoding: "utf-8",
-				// Use updated_at as etag for optimistic locking
-				etag: file.updated_at,
 			};
 		},
 
@@ -95,33 +84,15 @@ export function createAppCodeOperations(appId: string, versionId: string): FileO
 			_encoding: "utf-8" | "base64" = "utf-8",
 			_etag?: string,
 		): Promise<void> {
-			// Check if file exists first
-			const checkResponse = await authFetch(`${baseUrl}/${encodeURIComponent(path)}`);
+			// Use PUT for both create and update (upsert semantics)
+			const response = await authFetch(`${baseUrl}/${encodeURIComponent(path)}`, {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ source: content }),
+			});
 
-			if (checkResponse.ok) {
-				// File exists, update it
-				const response = await authFetch(`${baseUrl}/${encodeURIComponent(path)}`, {
-					method: "PATCH",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ source: content }),
-				});
-
-				if (!response.ok) {
-					throw new Error(`Failed to update file: ${response.statusText}`);
-				}
-			} else if (checkResponse.status === 404) {
-				// File doesn't exist, create it
-				const response = await authFetch(baseUrl, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ path, source: content }),
-				});
-
-				if (!response.ok) {
-					throw new Error(`Failed to create file: ${response.statusText}`);
-				}
-			} else {
-				throw new Error(`Failed to check file: ${checkResponse.statusText}`);
+			if (!response.ok) {
+				throw new Error(`Failed to write file: ${response.statusText}`);
 			}
 		},
 

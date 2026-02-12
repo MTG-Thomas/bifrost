@@ -2339,9 +2339,9 @@ export interface paths {
          * @description Rename or move a file or folder.
          *
          *     For platform entities (workflows, forms, apps, agents), this updates the path
-         *     in both workspace_files and the entity table, preserving all metadata.
+         *     in file_index and the entity table, preserving all metadata.
          *
-         *     For regular files, copies content in S3 and updates the index.
+         *     For regular files, copies content in S3 and updates file_index.
          *
          *     Cloud mode only - used by browser editor.
          */
@@ -2858,31 +2858,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/github/sync": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Queue sync preview job
-         * @description Queue a background job to preview sync changes. Subscribe to git:{job_id} WebSocket channel for progress and results.
-         */
-        get: operations["get_sync_preview_api_github_sync_get"];
-        put?: never;
-        /**
-         * Execute sync
-         * @description Queue sync execution with user's conflict resolutions
-         */
-        post: operations["execute_sync_api_github_sync_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/github/sync/content": {
+    "/api/github/fetch": {
         parameters: {
             query?: never;
             header?: never;
@@ -2892,10 +2868,154 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Get content for diff preview
-         * @description Fetch local or remote content for a file to display in diff view
+         * Queue git fetch
+         * @description Queue a git fetch operation. Results via WebSocket.
          */
-        post: operations["get_sync_content_api_github_sync_content_post"];
+        post: operations["git_fetch_api_github_fetch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue git commit
+         * @description Queue a git commit operation (local only, no push).
+         */
+        post: operations["git_commit_api_github_commit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue git pull
+         * @description Queue a git pull operation.
+         */
+        post: operations["git_pull_api_github_pull_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue git push
+         * @description Queue a git push operation.
+         */
+        post: operations["git_push_api_github_push_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue working tree status
+         * @description Queue a working tree status check.
+         */
+        post: operations["git_changes_api_github_changes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue conflict resolution
+         * @description Queue conflict resolution after a failed pull.
+         */
+        post: operations["git_resolve_api_github_resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue file diff
+         * @description Queue a file diff operation.
+         */
+        post: operations["git_diff_api_github_diff_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Queue sync preview
+         * @description Queue a sync preview operation. Fetches remote, computes diff, runs preflight. Results via WebSocket/polling.
+         */
+        get: operations["sync_preview_api_github_sync_get"];
+        put?: never;
+        /**
+         * Queue sync execution
+         * @description Queue a full sync: commit local changes, pull remote (with conflict resolutions), push. Results via WebSocket/polling.
+         */
+        post: operations["sync_execute_api_github_sync_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3125,22 +3245,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4947,8 +5067,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Rebuild app dependencies
-         * @description Rebuild AppFileDependency table by parsing all app source files (Platform admin only)
+         * Scan app dependencies
+         * @description Scan all app source files for workflow references and report issues (Platform admin only)
          */
         post: operations["scan_app_dependencies_api_maintenance_scan_app_dependencies_post"];
         delete?: never;
@@ -6209,7 +6329,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/applications/{app_id}/versions/{version_id}/files": {
+    "/api/applications/{app_id}/files": {
         parameters: {
             query?: never;
             header?: never;
@@ -6217,23 +6337,22 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List code files
-         * @description List all code files for a specific app version.
+         * List app files
+         * @description List all files for an application.
+         *
+         *     In draft mode, reads from file_index (which mirrors S3).
+         *     In live mode, reads from the published_snapshot on the application.
          */
-        get: operations["list_code_files_api_applications__app_id__versions__version_id__files_get"];
+        get: operations["list_app_files_api_applications__app_id__files_get"];
         put?: never;
-        /**
-         * Create code file
-         * @description Create a new code file in the specified version.
-         */
-        post: operations["create_code_file_api_applications__app_id__versions__version_id__files_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/applications/{app_id}/versions/{version_id}/files/{file_path}": {
+    "/api/applications/{app_id}/files/{file_path}": {
         parameters: {
             query?: never;
             header?: never;
@@ -6241,24 +6360,33 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get code file by path
-         * @description Get a specific code file by its path.
+         * Read a single app file
+         * @description Read a single file by relative path.
+         *
+         *     Draft mode reads from Redis cache -> S3 via FileStorageService.
+         *     Live mode verifies the file exists in published_snapshot first.
          */
-        get: operations["get_code_file_api_applications__app_id__versions__version_id__files__file_path__get"];
-        put?: never;
+        get: operations["read_app_file_api_applications__app_id__files__file_path__get"];
+        /**
+         * Create or update an app file
+         * @description Create or update a file at the given path.
+         *
+         *     Validates the path, then writes via FileStorageService (which handles
+         *     S3 storage, file_index update, and pubsub for apps/ paths).
+         */
+        put: operations["write_app_file_api_applications__app_id__files__file_path__put"];
         post?: never;
         /**
-         * Delete code file
-         * @description Delete a code file.
+         * Delete an app file
+         * @description Delete a file at the given path.
+         *
+         *     Deletes via FileStorageService (which handles S3 deletion,
+         *     file_index cleanup, and pubsub for apps/ paths).
          */
-        delete: operations["delete_code_file_api_applications__app_id__versions__version_id__files__file_path__delete"];
+        delete: operations["delete_app_file_api_applications__app_id__files__file_path__delete"];
         options?: never;
         head?: never;
-        /**
-         * Update code file
-         * @description Update a code file's source or compiled output.
-         */
-        patch: operations["update_code_file_api_applications__app_id__versions__version_id__files__file_path__patch"];
+        patch?: never;
         trace?: never;
     };
     "/api/dependencies/{entity_type}/{entity_id}": {
@@ -7208,69 +7336,6 @@ export interface components {
             notification_created: boolean;
         };
         /**
-         * AppFileCreate
-         * @description Input for creating a code file.
-         */
-        AppFileCreate: {
-            /**
-             * Path
-             * @description File path within the app (e.g., 'pages/clients/[id]', 'components/Button')
-             */
-            path: string;
-            /**
-             * Source
-             * @description Original source code
-             * @default
-             */
-            source: string;
-        };
-        /**
-         * AppFileListResponse
-         * @description Response for listing code files.
-         */
-        AppFileListResponse: {
-            /** Files */
-            files: components["schemas"]["AppFileResponse"][];
-            /** Total */
-            total: number;
-        };
-        /**
-         * AppFileResponse
-         * @description Full code file response.
-         */
-        AppFileResponse: {
-            /**
-             * Path
-             * @description File path within the app (e.g., 'pages/clients/[id]', 'components/Button')
-             */
-            path: string;
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * App Version Id
-             * Format: uuid
-             * @description ID of the version this file belongs to
-             */
-            app_version_id: string;
-            /**
-             * Source
-             * @description Original source code
-             */
-            source: string;
-            /**
-             * Compiled
-             * @description Compiled output
-             */
-            compiled?: string | null;
-            /** Created At */
-            created_at: string;
-            /** Updated At */
-            updated_at: string;
-        };
-        /**
          * AppFileUpdate
          * @description Input for updating a code file.
          */
@@ -7400,16 +7465,6 @@ export interface components {
             slug: string;
             /** Organization Id */
             organization_id: string | null;
-            /**
-             * Active Version Id
-             * @description ID of the currently live version (null if never published)
-             */
-            active_version_id?: string | null;
-            /**
-             * Draft Version Id
-             * @description ID of the current draft version
-             */
-            draft_version_id?: string | null;
             /** Published At */
             published_at: string | null;
             /** Created At */
@@ -7429,15 +7484,6 @@ export interface components {
             access_level: string;
             /** Role Ids */
             role_ids?: string[];
-            /**
-             * Navigation
-             * @description Navigation configuration (sidebar items, etc.)
-             */
-            navigation?: components["schemas"]["NavigationConfig-Output"] | {
-                [key: string]: unknown;
-            } | null;
-            /** @description Permission configuration (included in export) */
-            permissions?: components["schemas"]["PermissionConfig"] | null;
         };
         /**
          * ApplicationPublishRequest
@@ -7493,8 +7539,6 @@ export interface components {
              * @description Role IDs for role_based access (replaces existing roles)
              */
             role_ids?: string[] | null;
-            /** @description Navigation configuration (sidebar items, header settings) */
-            navigation?: components["schemas"]["NavigationConfig-Input"] | null;
         };
         /**
          * AssignAgentsToRoleRequest
@@ -7635,8 +7679,6 @@ export interface components {
             replace_existing: boolean;
             /** Source Secret Key */
             source_secret_key?: string | null;
-            /** Source Fernet Salt */
-            source_fernet_salt?: string | null;
             /** Target Organization Id */
             target_organization_id?: string | null;
         };
@@ -7654,8 +7696,6 @@ export interface components {
             replace_existing: boolean;
             /** Source Secret Key */
             source_secret_key?: string | null;
-            /** Source Fernet Salt */
-            source_fernet_salt?: string | null;
             /** Target Organization Id */
             target_organization_id?: string | null;
         };
@@ -7673,8 +7713,6 @@ export interface components {
             replace_existing: boolean;
             /** Source Secret Key */
             source_secret_key?: string | null;
-            /** Source Fernet Salt */
-            source_fernet_salt?: string | null;
             /** Target Organization Id */
             target_organization_id?: string | null;
         };
@@ -8476,6 +8514,17 @@ export interface components {
             is_pushed: boolean;
         };
         /**
+         * CommitRequest
+         * @description Request to commit working tree changes.
+         */
+        CommitRequest: {
+            /**
+             * Message
+             * @description Commit message
+             */
+            message: string;
+        };
+        /**
          * CompatibleReplacement
          * @description Potential replacement for an orphaned workflow.
          */
@@ -9249,6 +9298,17 @@ export interface components {
              * @default 1800
              */
             expires_in: number;
+        };
+        /**
+         * DiffRequest
+         * @description Request to get a file diff.
+         */
+        DiffRequest: {
+            /**
+             * Path
+             * @description File path to diff
+             */
+            path: string;
         };
         /**
          * DocsIndexResponse
@@ -10498,6 +10558,11 @@ export interface components {
             organization_id?: string | null;
         };
         /**
+         * FileMode
+         * @enum {string}
+         */
+        FileMode: "draft" | "live";
+        /**
          * FileReadRequest
          * @description Request to read a file.
          */
@@ -11183,6 +11248,23 @@ export interface components {
              * Status
              * @description Configuration status
              * @default configured
+             */
+            status: string;
+        };
+        /**
+         * GitJobResponse
+         * @description Response when a git operation is queued as a background job.
+         */
+        GitJobResponse: {
+            /**
+             * Job Id
+             * @description Job ID for tracking progress via WebSocket
+             */
+            job_id: string;
+            /**
+             * Status
+             * @description Job status
+             * @default queued
              */
             status: string;
         };
@@ -12184,7 +12266,7 @@ export interface components {
              * @description LLM provider type
              * @enum {string}
              */
-            provider: "openai" | "anthropic" | "custom";
+            provider: "openai" | "anthropic";
             /**
              * Model
              * @description Model identifier (e.g., 'gpt-4o', 'claude-sonnet-4-20250514')
@@ -12197,7 +12279,7 @@ export interface components {
             api_key: string;
             /**
              * Endpoint
-             * @description Custom endpoint URL (for custom OpenAI-compatible providers)
+             * @description Custom API endpoint URL (e.g., for Azure OpenAI, Ollama, or other compatible providers)
              */
             endpoint?: string | null;
             /**
@@ -12227,7 +12309,7 @@ export interface components {
              * Provider
              * @enum {string}
              */
-            provider: "openai" | "anthropic" | "custom";
+            provider: "openai" | "anthropic";
             /** Model */
             model: string;
             /** Endpoint */
@@ -12285,7 +12367,7 @@ export interface components {
              * @description LLM provider type
              * @enum {string}
              */
-            provider: "openai" | "anthropic" | "custom";
+            provider: "openai" | "anthropic";
             /**
              * Model
              * @description Model identifier
@@ -12298,7 +12380,7 @@ export interface components {
             api_key: string;
             /**
              * Endpoint
-             * @description Custom endpoint URL
+             * @description Custom API endpoint URL
              */
             endpoint?: string | null;
         };
@@ -12567,22 +12649,6 @@ export interface components {
             force_new: boolean;
         };
         /**
-         * MFASetupResponse
-         * @description MFA setup response with secret.
-         */
-        MFASetupResponse: {
-            /** Secret */
-            secret: string;
-            /** Qr Code Uri */
-            qr_code_uri: string;
-            /** Provisioning Uri */
-            provisioning_uri: string;
-            /** Issuer */
-            issuer: string;
-            /** Account Name */
-            account_name: string;
-        };
-        /**
          * MFAStatusResponse
          * @description MFA status response.
          */
@@ -12597,23 +12663,6 @@ export interface components {
             enrolled_methods: string[];
             /** Recovery Codes Remaining */
             recovery_codes_remaining: number;
-        };
-        /**
-         * MFAVerifyRequest
-         * @description Request to verify MFA code during login.
-         */
-        MFAVerifyRequest: {
-            /** Mfa Token */
-            mfa_token: string;
-            /** Code */
-            code: string;
-            /**
-             * Trust Device
-             * @default false
-             */
-            trust_device: boolean;
-            /** Device Name */
-            device_name?: string | null;
         };
         /**
          * MFAVerifyResponse
@@ -12736,170 +12785,6 @@ export interface components {
             tenant_id: string;
         };
         /**
-         * NavItem
-         * @description Navigation item for sidebar/navbar.
-         */
-        "NavItem-Input": {
-            /**
-             * Id
-             * @description Item identifier (usually page ID)
-             */
-            id: string;
-            /**
-             * Label
-             * @description Display label
-             */
-            label: string;
-            /**
-             * Icon
-             * @description Icon name (lucide icon)
-             */
-            icon?: string | null;
-            /**
-             * Path
-             * @description Navigation path
-             */
-            path?: string | null;
-            /**
-             * Visible
-             * @description Visibility expression
-             */
-            visible?: string | null;
-            /**
-             * Order
-             * @description Order in navigation
-             */
-            order?: number | null;
-            /**
-             * Is Section
-             * @description Whether this is a section header (group)
-             */
-            is_section?: boolean | null;
-            /**
-             * Children
-             * @description Child items for section groups
-             */
-            children?: components["schemas"]["NavItem-Input"][] | null;
-        };
-        /**
-         * NavItem
-         * @description Navigation item for sidebar/navbar.
-         */
-        "NavItem-Output": {
-            /**
-             * Id
-             * @description Item identifier (usually page ID)
-             */
-            id: string;
-            /**
-             * Label
-             * @description Display label
-             */
-            label: string;
-            /**
-             * Icon
-             * @description Icon name (lucide icon)
-             */
-            icon?: string | null;
-            /**
-             * Path
-             * @description Navigation path
-             */
-            path?: string | null;
-            /**
-             * Visible
-             * @description Visibility expression
-             */
-            visible?: string | null;
-            /**
-             * Order
-             * @description Order in navigation
-             */
-            order?: number | null;
-            /**
-             * Is Section
-             * @description Whether this is a section header (group)
-             */
-            is_section?: boolean | null;
-            /**
-             * Children
-             * @description Child items for section groups
-             */
-            children?: components["schemas"]["NavItem-Output"][] | null;
-        };
-        /**
-         * NavigationConfig
-         * @description Navigation configuration for the application.
-         */
-        "NavigationConfig-Input": {
-            /**
-             * Sidebar
-             * @description Sidebar navigation items
-             */
-            sidebar?: components["schemas"]["NavItem-Input"][] | null;
-            /**
-             * Show Sidebar
-             * @description Whether to show the sidebar
-             */
-            show_sidebar?: boolean | null;
-            /**
-             * Show Header
-             * @description Whether to show the header
-             */
-            show_header?: boolean | null;
-            /**
-             * Logo Url
-             * @description Custom logo URL
-             */
-            logo_url?: string | null;
-            /**
-             * Brand Color
-             * @description Brand color (hex)
-             */
-            brand_color?: string | null;
-            /**
-             * Page Transition
-             * @description Page transition animation. Defaults to 'fade'. Use 'none' to disable.
-             */
-            page_transition?: ("fade" | "slide" | "blur" | "none") | null;
-        };
-        /**
-         * NavigationConfig
-         * @description Navigation configuration for the application.
-         */
-        "NavigationConfig-Output": {
-            /**
-             * Sidebar
-             * @description Sidebar navigation items
-             */
-            sidebar?: components["schemas"]["NavItem-Output"][] | null;
-            /**
-             * Show Sidebar
-             * @description Whether to show the sidebar
-             */
-            show_sidebar?: boolean | null;
-            /**
-             * Show Header
-             * @description Whether to show the header
-             */
-            show_header?: boolean | null;
-            /**
-             * Logo Url
-             * @description Custom logo URL
-             */
-            logo_url?: string | null;
-            /**
-             * Brand Color
-             * @description Brand color (hex)
-             */
-            brand_color?: string | null;
-            /**
-             * Page Transition
-             * @description Page transition animation. Defaults to 'fade'. Use 'none' to disable.
-             */
-            page_transition?: ("fade" | "slide" | "blur" | "none") | null;
-        };
-        /**
          * NotificationCategory
          * @description Categories for grouping notifications.
          * @enum {string}
@@ -13008,18 +12893,6 @@ export interface components {
              * @default Redirect user to authorization_url to complete OAuth flow
              */
             message: string;
-        };
-        /**
-         * OAuthCallbackRequest
-         * @description OAuth callback request (for when frontend handles callback).
-         */
-        OAuthCallbackRequest: {
-            /** Provider */
-            provider: string;
-            /** Code */
-            code: string;
-            /** State */
-            state: string;
         };
         /**
          * OAuthCallbackResponse
@@ -13448,24 +13321,12 @@ export interface components {
             display_name?: string | null;
         };
         /**
-         * OAuthProviderInfo
-         * @description OAuth provider information.
-         */
-        OAuthProviderInfo: {
-            /** Name */
-            name: string;
-            /** Display Name */
-            display_name: string;
-            /** Icon */
-            icon?: string | null;
-        };
-        /**
          * OAuthProvidersResponse
          * @description Available OAuth providers.
          */
         OAuthProvidersResponse: {
             /** Providers */
-            providers: components["schemas"]["OAuthProviderInfo"][];
+            providers: components["schemas"]["src__routers__oauth_sso__OAuthProviderInfo"][];
         };
         /**
          * OAuthTokenResponse
@@ -14018,44 +13879,6 @@ export interface components {
              * @description Forms, agents, and apps that depend on this workflow
              */
             affected_entities?: components["schemas"]["AffectedEntity"][];
-        };
-        /**
-         * PermissionConfig
-         * @description Permission configuration for an application.
-         */
-        PermissionConfig: {
-            /**
-             * Public
-             * @description Whether the app is public (no auth required)
-             */
-            public?: boolean | null;
-            /**
-             * Default Level
-             * @description Default permission level for authenticated users
-             */
-            default_level?: ("none" | "view" | "edit" | "admin") | null;
-            /**
-             * Rules
-             * @description Role-based permission rules
-             */
-            rules?: components["schemas"]["PermissionRule"][] | null;
-        };
-        /**
-         * PermissionRule
-         * @description Permission rule for app access control.
-         */
-        PermissionRule: {
-            /**
-             * Role
-             * @description Role that has this permission (e.g., "admin", "user", "*" for all)
-             */
-            role: string;
-            /**
-             * Level
-             * @description Permission level: view, edit, admin
-             * @enum {string}
-             */
-            level: "view" | "edit" | "admin";
         };
         /**
          * PlatformMetricsResponse
@@ -14779,6 +14602,19 @@ export interface components {
              * @description New file path for the workflow
              */
             new_path: string;
+        };
+        /**
+         * ResolveRequest
+         * @description Request to resolve merge conflicts after a failed pull.
+         */
+        ResolveRequest: {
+            /**
+             * Resolutions
+             * @description Map of file path to resolution strategy
+             */
+            resolutions: {
+                [key: string]: "ours" | "theirs";
+            };
         };
         /**
          * ResourceMetricsEntry
@@ -15888,6 +15724,32 @@ export interface components {
             token_type: string;
         };
         /**
+         * SimpleFileListResponse
+         * @description Response for listing S3-backed app files.
+         */
+        SimpleFileListResponse: {
+            /** Files */
+            files: components["schemas"]["SimpleFileResponse"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * SimpleFileResponse
+         * @description Single file response for S3-backed app files.
+         */
+        SimpleFileResponse: {
+            /**
+             * Path
+             * @description Relative file path within the app (e.g., 'pages/index.tsx')
+             */
+            path: string;
+            /**
+             * Source
+             * @description File source content
+             */
+            source: string;
+        };
+        /**
          * StuckExecutionsResponse
          * @description Response model for stuck executions query
          */
@@ -15931,136 +15793,19 @@ export interface components {
             last_stuck_at: string;
         };
         /**
-         * SyncContentRequest
-         * @description Request to fetch content for diff preview.
-         */
-        SyncContentRequest: {
-            /**
-             * Path
-             * @description File path to fetch content for
-             */
-            path: string;
-            /**
-             * Source
-             * @description Which side to fetch
-             * @enum {string}
-             */
-            source: "local" | "remote";
-        };
-        /**
-         * SyncContentResponse
-         * @description Response with file content for diff preview.
-         */
-        SyncContentResponse: {
-            /**
-             * Path
-             * @description File path
-             */
-            path: string;
-            /**
-             * Content
-             * @description File content (null if not found)
-             */
-            content?: string | null;
-        };
-        /**
          * SyncExecuteRequest
-         * @description Request to execute sync with conflict resolutions.
-         *
-         *     Note: The API returns a job_id in the response. The client should subscribe
-         *     to WebSocket channel git:{job_id} AFTER receiving the response to receive
-         *     streaming progress and completion messages.
+         * @description Request to execute a sync with conflict resolutions.
          */
         SyncExecuteRequest: {
-            /**
-             * Conflict Resolutions
-             * @description Resolution for each conflicted file path. 'skip' excludes the entity from sync.
-             */
+            /** Conflict Resolutions */
             conflict_resolutions?: {
-                [key: string]: "keep_local" | "keep_remote" | "skip";
+                [key: string]: string;
             };
             /**
              * Confirm Orphans
-             * @description User acknowledges orphan workflows
              * @default false
              */
             confirm_orphans: boolean;
-            /**
-             * Confirm Unresolved Refs
-             * @description User acknowledges unresolved workflow refs
-             * @default false
-             */
-            confirm_unresolved_refs: boolean;
-        };
-        /**
-         * SyncExecuteResponse
-         * @description Result of sync execution (queued job).
-         */
-        SyncExecuteResponse: {
-            /**
-             * Success
-             * @description Whether job was queued successfully
-             */
-            success: boolean;
-            /**
-             * Job Id
-             * @description Job ID for tracking (when queued)
-             */
-            job_id?: string | null;
-            /**
-             * Status
-             * @description Status: 'queued', 'success', 'error'
-             * @default queued
-             */
-            status: string;
-            /**
-             * Pulled
-             * @description Number of files pulled
-             * @default 0
-             */
-            pulled: number;
-            /**
-             * Pushed
-             * @description Number of files pushed
-             * @default 0
-             */
-            pushed: number;
-            /**
-             * Orphaned Workflows
-             * @description IDs of workflows marked as orphaned
-             */
-            orphaned_workflows?: string[];
-            /**
-             * Commit Sha
-             * @description SHA of created commit (if any)
-             */
-            commit_sha?: string | null;
-            /**
-             * Error
-             * @description Error message if failed
-             */
-            error?: string | null;
-        };
-        /**
-         * SyncPreviewJobResponse
-         * @description Response when sync preview is queued as a background job.
-         *
-         *     Note: The API returns a job_id in the response. The client should subscribe
-         *     to WebSocket channel git:{job_id} AFTER receiving the response to receive
-         *     streaming progress and completion messages (git_preview_complete).
-         */
-        SyncPreviewJobResponse: {
-            /**
-             * Job Id
-             * @description Job ID for tracking progress via WebSocket
-             */
-            job_id: string;
-            /**
-             * Status
-             * @description Status: 'queued'
-             * @default queued
-             */
-            status: string;
         };
         /**
          * SystemLog
@@ -16571,33 +16316,6 @@ export interface components {
             output_tokens: number;
         };
         /**
-         * UserCreate
-         * @description Input for creating a user.
-         */
-        UserCreate: {
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Name */
-            name?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
-             * Is Superuser
-             * @default false
-             */
-            is_superuser: boolean;
-            /** Organization Id */
-            organization_id?: string | null;
-        };
-        /**
          * UserFormsResponse
          * @description Response model for getting forms accessible to a user
          */
@@ -16746,6 +16464,10 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
         /**
          * ValidationIssue
@@ -17647,6 +17369,33 @@ export interface components {
             organization_id?: string | null;
         };
         /**
+         * UserCreate
+         * @description Input for creating a user.
+         */
+        src__models__contracts__users__UserCreate: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Name */
+            name?: string | null;
+            /** Password */
+            password?: string | null;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Is Superuser
+             * @default false
+             */
+            is_superuser: boolean;
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /**
          * MFASetupResponse
          * @description MFA setup response with secret.
          */
@@ -17668,6 +17417,23 @@ export interface components {
             is_existing: boolean;
         };
         /**
+         * MFAVerifyRequest
+         * @description Request to verify MFA code during login.
+         */
+        src__routers__auth__MFAVerifyRequest: {
+            /** Mfa Token */
+            mfa_token: string;
+            /** Code */
+            code: string;
+            /**
+             * Trust Device
+             * @default false
+             */
+            trust_device: boolean;
+            /** Device Name */
+            device_name?: string | null;
+        };
+        /**
          * UserCreate
          * @description User creation request model.
          */
@@ -17683,12 +17449,52 @@ export interface components {
             name?: string | null;
         };
         /**
+         * MFASetupResponse
+         * @description MFA setup response with secret.
+         */
+        src__routers__mfa__MFASetupResponse: {
+            /** Secret */
+            secret: string;
+            /** Qr Code Uri */
+            qr_code_uri: string;
+            /** Provisioning Uri */
+            provisioning_uri: string;
+            /** Issuer */
+            issuer: string;
+            /** Account Name */
+            account_name: string;
+        };
+        /**
          * MFAVerifyRequest
          * @description Request to verify MFA code.
          */
         src__routers__mfa__MFAVerifyRequest: {
             /** Code */
             code: string;
+        };
+        /**
+         * OAuthCallbackRequest
+         * @description OAuth callback request (for when frontend handles callback).
+         */
+        src__routers__oauth_sso__OAuthCallbackRequest: {
+            /** Provider */
+            provider: string;
+            /** Code */
+            code: string;
+            /** State */
+            state: string;
+        };
+        /**
+         * OAuthProviderInfo
+         * @description OAuth provider information.
+         */
+        src__routers__oauth_sso__OAuthProviderInfo: {
+            /** Name */
+            name: string;
+            /** Display Name */
+            display_name: string;
+            /** Icon */
+            icon?: string | null;
         };
     };
     responses: never;
@@ -17834,7 +17640,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MFAVerifyRequest"];
+                "application/json": components["schemas"]["src__routers__auth__MFAVerifyRequest"];
             };
         };
         responses: {
@@ -18237,7 +18043,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MFASetupResponse"];
+                    "application/json": components["schemas"]["src__routers__mfa__MFASetupResponse"];
                 };
             };
         };
@@ -18501,7 +18307,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["OAuthCallbackRequest"];
+                "application/json": components["schemas"]["src__routers__oauth_sso__OAuthCallbackRequest"];
             };
         };
         responses: {
@@ -18952,7 +18758,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreate"];
+                "application/json": components["schemas"]["src__models__contracts__users__UserCreate"];
             };
         };
         responses: {
@@ -20073,9 +19879,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": unknown;
                 };
             };
             /** @description Workflow not found */
@@ -22058,7 +21862,7 @@ export interface operations {
             };
         };
     };
-    get_sync_preview_api_github_sync_get: {
+    git_fetch_api_github_fetch_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -22073,12 +21877,191 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SyncPreviewJobResponse"];
+                    "application/json": components["schemas"]["GitJobResponse"];
                 };
             };
         };
     };
-    execute_sync_api_github_sync_post: {
+    git_commit_api_github_commit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    git_pull_api_github_pull_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitJobResponse"];
+                };
+            };
+        };
+    };
+    git_push_api_github_push_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitJobResponse"];
+                };
+            };
+        };
+    };
+    git_changes_api_github_changes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitJobResponse"];
+                };
+            };
+        };
+    };
+    git_resolve_api_github_resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    git_diff_api_github_diff_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiffRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_preview_api_github_sync_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitJobResponse"];
+                };
+            };
+        };
+    };
+    sync_execute_api_github_sync_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -22097,40 +22080,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SyncExecuteResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_sync_content_api_github_sync_content_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SyncContentRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SyncContentResponse"];
+                    "application/json": components["schemas"]["GitJobResponse"];
                 };
             };
             /** @description Validation Error */
@@ -22527,7 +22477,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -22560,7 +22510,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -22593,7 +22543,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -22626,7 +22576,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__get: {
         parameters: {
             query?: never;
             header: {
@@ -28395,15 +28345,15 @@ export interface operations {
             };
         };
     };
-    list_code_files_api_applications__app_id__versions__version_id__files_get: {
+    list_app_files_api_applications__app_id__files_get: {
         parameters: {
-            query?: never;
+            query?: {
+                mode?: components["schemas"]["FileMode"];
+            };
             header?: never;
             path: {
                 /** @description Application UUID */
                 app_id: string;
-                /** @description Version UUID */
-                version_id: string;
             };
             cookie?: never;
         };
@@ -28415,7 +28365,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AppFileListResponse"];
+                    "application/json": components["schemas"]["SimpleFileListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -28429,54 +28379,16 @@ export interface operations {
             };
         };
     };
-    create_code_file_api_applications__app_id__versions__version_id__files_post: {
+    read_app_file_api_applications__app_id__files__file_path__get: {
         parameters: {
-            query?: never;
+            query?: {
+                mode?: components["schemas"]["FileMode"];
+            };
             header?: never;
             path: {
                 /** @description Application UUID */
                 app_id: string;
-                /** @description Version UUID */
-                version_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AppFileCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppFileResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_code_file_api_applications__app_id__versions__version_id__files__file_path__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Application UUID */
-                app_id: string;
-                /** @description Version UUID */
-                version_id: string;
-                /** @description File path (can contain slashes) */
+                /** @description Relative file path (can contain slashes) */
                 file_path: string;
             };
             cookie?: never;
@@ -28489,7 +28401,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AppFileResponse"];
+                    "application/json": components["schemas"]["SimpleFileResponse"];
                 };
             };
             /** @description Validation Error */
@@ -28503,50 +28415,14 @@ export interface operations {
             };
         };
     };
-    delete_code_file_api_applications__app_id__versions__version_id__files__file_path__delete: {
+    write_app_file_api_applications__app_id__files__file_path__put: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 /** @description Application UUID */
                 app_id: string;
-                /** @description Version UUID */
-                version_id: string;
-                /** @description File path (can contain slashes) */
-                file_path: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_code_file_api_applications__app_id__versions__version_id__files__file_path__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Application UUID */
-                app_id: string;
-                /** @description Version UUID */
-                version_id: string;
-                /** @description File path (can contain slashes) */
+                /** @description Relative file path (can contain slashes) */
                 file_path: string;
             };
             cookie?: never;
@@ -28563,8 +28439,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AppFileResponse"];
+                    "application/json": components["schemas"]["SimpleFileResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_app_file_api_applications__app_id__files__file_path__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application UUID */
+                app_id: string;
+                /** @description Relative file path (can contain slashes) */
+                file_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

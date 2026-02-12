@@ -2,7 +2,7 @@
 Application contract models for Bifrost App Builder.
 
 Provides Pydantic models for API request/response handling.
-Applications use code-based files (TSX/TypeScript) stored in app_files table.
+Applications use code-based files (TSX/TypeScript) stored in S3 via file_index.
 
 Type Alignment:
 These models are designed to match the frontend TypeScript types exactly.
@@ -129,14 +129,6 @@ class ApplicationPublic(ApplicationBase):
     id: UUID
     slug: str
     organization_id: UUID | None
-    active_version_id: UUID | None = Field(
-        default=None,
-        description="ID of the currently live version (null if never published)",
-    )
-    draft_version_id: UUID | None = Field(
-        default=None,
-        description="ID of the current draft version",
-    )
     published_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -223,14 +215,6 @@ class VersionHistoryResponse(BaseModel):
     """Response for version history endpoint."""
 
     history: list[VersionHistoryEntry]
-    active_version_id: UUID | None = Field(
-        default=None,
-        description="ID of the currently live version",
-    )
-    draft_version_id: UUID | None = Field(
-        default=None,
-        description="ID of the current draft version",
-    )
 
 
 # ==================== APP FILE MODELS ====================
@@ -289,6 +273,23 @@ class AppFileListResponse(BaseModel):
     """Response for listing code files."""
 
     files: list[AppFileResponse]
+    total: int
+
+
+# ==================== SIMPLE FILE MODELS (S3-backed) ====================
+
+
+class SimpleFileResponse(BaseModel):
+    """Single file response for S3-backed app files."""
+
+    path: str = Field(description="Relative file path within the app (e.g., 'pages/index.tsx')")
+    source: str = Field(description="File source content")
+
+
+class SimpleFileListResponse(BaseModel):
+    """Response for listing S3-backed app files."""
+
+    files: list[SimpleFileResponse]
     total: int
 
 

@@ -54,8 +54,8 @@ class TestApplicationCRUD:
         assert app["description"] == "Test application for E2E tests"
         assert app["icon"] == "box"
         assert app.get("id"), "App should have an ID"
-        assert app["active_version_id"] is None, "New app should not have active version"
-        assert app["draft_version_id"] is not None, "New app should have a draft version"
+        assert app["is_published"] is False, "New app should not be published"
+        assert app["has_unpublished_changes"] is True, "New app should have unpublished changes from scaffolded files"
 
         # Cleanup
         _delete_app(e2e_client, platform_admin.headers, app["id"])
@@ -295,37 +295,29 @@ class TestApplicationVersioning:
 
     def test_get_saved_draft(self, e2e_client, platform_admin, test_app):
         """Saved draft is retrievable via files API."""
-        # Code engine apps store their definition as files
-        # Get the draft version ID
         response = e2e_client.get(
-            f"/api/applications/{test_app['id']}/versions/{test_app['draft_version_id']}/files",
+            f"/api/applications/{test_app['id']}/files",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200
         data = response.json()
-        # New code engine apps have scaffolded files
         assert data["total"] >= 2, "Expected scaffolded files for code engine app"
 
-    def test_multiple_publishes_create_new_versions(
-        self, e2e_client, platform_admin, test_app
-    ):
-        """Multiple publishes create new version IDs."""
-        # Code engine apps don't use the /draft endpoint for definition
-        # They use the files API. Publishing copies draft files to active version.
-
-        # First publish - promotes draft to active
+    def test_multiple_publishes(self, e2e_client, platform_admin, test_app):
+        """Multiple publishes update the published state."""
+        # First publish
         response = e2e_client.post(
             f"/api/applications/{test_app['id']}/publish",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"First publish failed: {response.text}"
         v1 = response.json()
-        v1_active_id = v1["active_version_id"]
-        assert v1_active_id is not None, "First publish should set active_version_id"
+        assert v1["is_published"] is True, "First publish should mark app as published"
+        v1_published_at = v1["published_at"]
 
-        # Modify a file in draft (PATCH for updates)
-        e2e_client.patch(
-            f"/api/applications/{test_app['id']}/versions/{test_app['draft_version_id']}/files/pages/index.tsx",
+        # Modify a file in draft
+        e2e_client.put(
+            f"/api/applications/{test_app['id']}/files/pages/index.tsx",
             headers=platform_admin.headers,
             json={"source": "export default function Index() { return <div>V2</div>; }"},
         )
@@ -337,10 +329,9 @@ class TestApplicationVersioning:
         )
         assert response.status_code == 200, f"Second publish failed: {response.text}"
         v2 = response.json()
-        v2_active_id = v2["active_version_id"]
-
-        assert v2_active_id != v1_active_id, \
-            "Each publish should create a new active_version_id"
+        assert v2["is_published"] is True
+        assert v2["published_at"] != v1_published_at, \
+            "Each publish should update published_at"
 
 
 @pytest.mark.e2e
@@ -485,18 +476,17 @@ class TestApplicationDBStorage:
 
         # Verify scaffolded files exist (they're automatically created)
         response = e2e_client.get(
-            f"/api/applications/{app['id']}/versions/{app['draft_version_id']}/files",
+            f"/api/applications/{app['id']}/files",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200
         data = response.json()
-        # Code engine apps have scaffolded files
         file_paths = [f["path"] for f in data["files"]]
         assert "pages/index.tsx" in file_paths, f"Expected pages/index.tsx in {file_paths}"
 
-        # Modify the index file via files API (PATCH for updates)
-        modify_response = e2e_client.patch(
-            f"/api/applications/{app['id']}/versions/{app['draft_version_id']}/files/pages/index.tsx",
+        # Modify the index file via files API
+        modify_response = e2e_client.put(
+            f"/api/applications/{app['id']}/files/pages/index.tsx",
             headers=platform_admin.headers,
             json={"source": "export default function Index() { return <div>Persisted</div>; }"},
         )
@@ -504,7 +494,7 @@ class TestApplicationDBStorage:
 
         # Query in a separate request - data should persist
         response = e2e_client.get(
-            f"/api/applications/{app['id']}/versions/{app['draft_version_id']}/files/pages/index.tsx",
+            f"/api/applications/{app['id']}/files/pages/index.tsx",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"Get file failed: {response.text}"
@@ -532,11 +522,10 @@ class TestCodeEngineApps:
         )
         assert response.status_code == 201, f"Create app failed: {response.text}"
         app = response.json()
-        assert app["draft_version_id"] is not None
 
-        # List files for the draft version
+        # List files
         response = e2e_client.get(
-            f"/api/applications/{app['id']}/versions/{app['draft_version_id']}/files",
+            f"/api/applications/{app['id']}/files",
             headers=platform_admin.headers,
         )
         assert response.status_code == 200, f"List files failed: {response.text}"

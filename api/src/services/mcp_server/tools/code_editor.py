@@ -23,13 +23,11 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
 
 from fastmcp.tools.tool import ToolResult
 from sqlalchemy import select
 
 from src.core.database import get_db_context
-from src.models.orm.applications import Application
 from src.models.orm.file_index import FileIndex
 from src.services.file_storage import FileStorageService
 from src.services.mcp_server.tool_result import (
@@ -284,29 +282,6 @@ async def _replace_workspace_file(
         return WorkspaceWriteResult(created=created)
 
 
-async def _resolve_app_path(app_id: str, path: str) -> str | None:
-    """
-    Resolve a legacy app_id + relative path to a full apps/{slug}/path.
-
-    Returns the resolved path or None if app not found.
-    """
-    try:
-        app_uuid = UUID(app_id)
-    except ValueError:
-        return None
-
-    async with get_db_context() as db:
-        app = await db.get(Application, app_uuid)
-        if app and app.slug:
-            # If path already starts with apps/{slug}/, return as-is
-            prefix = f"apps/{app.slug}/"
-            if path.startswith(prefix):
-                return path
-            # Otherwise prepend the app path prefix
-            return f"{prefix}{path.lstrip('/')}"
-    return None
-
-
 # =============================================================================
 # list_content Tool
 # =============================================================================
@@ -314,30 +289,18 @@ async def _resolve_app_path(app_id: str, path: str) -> str | None:
 
 async def list_content(
     context: Any,
-    entity_type: str | None = None,  # Kept for backwards compat
-    app_id: str | None = None,  # Kept for backwards compat, ignored
     organization_id: str | None = None,
     path_prefix: str | None = None,
 ) -> ToolResult:
     """List files in the workspace. Optionally filter by path prefix."""
-    logger.info(f"MCP list_content: path_prefix={path_prefix}, entity_type={entity_type}")
+    logger.info(f"MCP list_content: path_prefix={path_prefix}")
 
     try:
         async with get_db_context() as db:
             query = select(FileIndex.path).order_by(FileIndex.path)
 
-            # Use path_prefix if given, otherwise use entity_type as a hint
             if path_prefix:
                 query = query.where(FileIndex.path.startswith(path_prefix))
-            elif entity_type == "app_file" and app_id:
-                # Legacy: look up app slug from app_id for path prefix
-                try:
-                    app_uuid = UUID(app_id)
-                    app = await db.get(Application, app_uuid)
-                    if app and app.slug:
-                        query = query.where(FileIndex.path.startswith(f"apps/{app.slug}/"))
-                except (ValueError, Exception):
-                    pass
 
             result = await db.execute(query)
             files = [{"path": row[0]} for row in result.fetchall()]
@@ -364,8 +327,6 @@ async def list_content(
 async def search_content(
     context: Any,
     pattern: str,
-    entity_type: str | None = None,  # Kept for backwards compat
-    app_id: str | None = None,  # Kept for backwards compat
     path: str | None = None,
     organization_id: str | None = None,
     context_lines: int = 3,
@@ -433,8 +394,6 @@ async def search_content(
 async def read_content_lines(
     context: Any,
     path: str,
-    entity_type: str | None = None,  # Kept for backwards compat
-    app_id: str | None = None,  # Kept for backwards compat
     organization_id: str | None = None,
     start_line: int = 1,
     end_line: int | None = None,
@@ -446,12 +405,6 @@ async def read_content_lines(
 
     if not path:
         return error_result("path is required")
-
-    # Legacy backwards compat: resolve app_id + relative path
-    if app_id and not path.startswith("apps/"):
-        resolved = await _resolve_app_path(app_id, path)
-        if resolved:
-            path = resolved
 
     content_result, metadata_result, error = await _get_content_by_path(path, context)
 
@@ -508,8 +461,6 @@ async def read_content_lines(
 async def get_content(
     context: Any,
     path: str,
-    entity_type: str | None = None,  # Kept for backwards compat
-    app_id: str | None = None,  # Kept for backwards compat
     organization_id: str | None = None,
 ) -> ToolResult:
     """Get the entire content of a file."""
@@ -517,12 +468,6 @@ async def get_content(
 
     if not path:
         return error_result("path is required")
-
-    # Legacy backwards compat: resolve app_id + relative path
-    if app_id and not path.startswith("apps/"):
-        resolved = await _resolve_app_path(app_id, path)
-        if resolved:
-            path = resolved
 
     content_result, metadata_result, error = await _get_content_by_path(path, context)
 
@@ -583,8 +528,6 @@ async def patch_content(
     path: str,
     old_string: str,
     new_string: str,
-    entity_type: str | None = None,  # Kept for backwards compat
-    app_id: str | None = None,  # Kept for backwards compat
     organization_id: str | None = None,
     force_deactivation: bool = False,
     replacements: dict[str, str] | None = None,
@@ -601,8 +544,6 @@ async def patch_content(
         path: File path
         old_string: String to find and replace (must be unique in file)
         new_string: Replacement string
-        entity_type: Kept for backwards compatibility, ignored
-        app_id: Kept for backwards compatibility, used to resolve legacy app paths
         organization_id: Organization ID
         force_deactivation: If True, proceed even if workflows would be deactivated
         replacements: Mapping of old_workflow_id -> new_function_name for renames
@@ -613,12 +554,6 @@ async def patch_content(
         return error_result("path is required")
     if not old_string:
         return error_result("old_string is required")
-
-    # Legacy backwards compat: resolve app_id + relative path
-    if app_id and not path.startswith("apps/"):
-        resolved = await _resolve_app_path(app_id, path)
-        if resolved:
-            path = resolved
 
     content_result, metadata_result, error = await _get_content_by_path(path, context)
 
@@ -700,8 +635,6 @@ async def replace_content(
     context: Any,
     path: str,
     content: str,
-    entity_type: str | None = None,  # Kept for backwards compat
-    app_id: str | None = None,  # Kept for backwards compat
     organization_id: str | None = None,
     force_deactivation: bool = False,
     replacements: dict[str, str] | None = None,
@@ -720,8 +653,6 @@ async def replace_content(
         context: Request context
         path: File path
         content: New file content
-        entity_type: Kept for backwards compatibility, ignored
-        app_id: Kept for backwards compatibility, used to resolve legacy app paths
         organization_id: Organization ID
         force_deactivation: If True, proceed even if workflows would be deactivated
         replacements: Mapping of old_workflow_id -> new_function_name for renames
@@ -734,12 +665,6 @@ async def replace_content(
         return error_result("content is required")
 
     content = _normalize_line_endings(content)
-
-    # Legacy backwards compat: resolve app_id + relative path
-    if app_id and not path.startswith("apps/"):
-        resolved = await _resolve_app_path(app_id, path)
-        if resolved:
-            path = resolved
 
     try:
         # All files go through _replace_workspace_file (unified path)
@@ -782,8 +707,6 @@ async def replace_content(
 async def delete_content(
     context: Any,
     path: str,
-    entity_type: str | None = None,  # Kept for backwards compat
-    app_id: str | None = None,  # Kept for backwards compat
     organization_id: str | None = None,
 ) -> ToolResult:
     """Delete a file."""
@@ -791,12 +714,6 @@ async def delete_content(
 
     if not path:
         return error_result("path is required")
-
-    # Legacy backwards compat: resolve app_id + relative path
-    if app_id and not path.startswith("apps/"):
-        resolved = await _resolve_app_path(app_id, path)
-        if resolved:
-            path = resolved
 
     try:
         async with get_db_context() as db:

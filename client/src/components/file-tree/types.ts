@@ -21,8 +21,8 @@ export interface FileNode {
 	size: number | null;
 	/** File extension without dot (null for folders) */
 	extension: string | null;
-	/** Last modified timestamp (ISO string) */
-	modified: string;
+	/** Last modified timestamp (ISO string), null if unknown */
+	modified: string | null;
 	/** Platform entity type (workflow, form, app, agent) - for icon display */
 	entityType?: string | null;
 	/** Platform entity ID */

@@ -294,10 +294,9 @@ export function AppCodeEditorPage() {
 
 			{/* Code Editor */}
 			<div className="flex-1 min-h-0">
-				{existingApp?.id && existingApp?.draft_version_id && (
+				{existingApp?.id && (
 					<AppCodeEditorLayout
 						appId={existingApp.id}
-						versionId={existingApp.draft_version_id}
 						appName={existingApp.name}
 						appSlug={existingApp.slug}
 					/>

@@ -21,7 +21,7 @@
  * // For app code files (app builder)
  * import { FileTree, createAppCodeOperations, appCodeIconResolver } from '@/components/file-tree';
  *
- * const operations = createAppCodeOperations(appId, versionId);
+ * const operations = createAppCodeOperations(appId);
  * <FileTree
  *   operations={operations}
  *   iconResolver={appCodeIconResolver}

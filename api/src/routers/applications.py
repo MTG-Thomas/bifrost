@@ -33,7 +33,7 @@ from src.models.contracts.applications import (
     ApplicationUpdate,
 )
 from src.models.orm.app_roles import AppRole
-from src.models.orm.applications import AppFile, AppVersion, Application
+from src.models.orm.applications import Application
 from src.core.exceptions import AccessDeniedError
 from src.repositories.org_scoped import OrgScopedRepository
 
@@ -245,17 +245,8 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         self.session.add(application)
         await self.session.flush()
 
-        # Create initial draft version
-        draft_version = AppVersion(application_id=application.id)
-        self.session.add(draft_version)
-        await self.session.flush()
-
-        # Link app to draft version
-        application.draft_version_id = draft_version.id
-        await self.session.flush()  # Ensure draft_version_id is persisted
-
-        # Scaffold initial files for new apps
-        await self._scaffold_code_files(draft_version.id)
+        # Scaffold initial files via FileStorageService
+        await self._scaffold_code_files(application.slug)
 
         # Add role associations if role_based access
         if data.access_level == "role_based" and data.role_ids:
@@ -357,63 +348,47 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         """
         Publish draft to live.
 
-        Creates a new version from the draft and sets it as the active version.
-        Also creates a published_snapshot from file_index for the new unified
-        file storage model (transition period: both mechanisms are populated).
+        Creates a published_snapshot from file_index, capturing the current
+        state of all files under apps/{slug}/.
         """
         application = await self.get_by_id(app_id)
         if not application:
             return None
 
-        if not application.draft_version_id:
-            raise ValueError("Application has no draft version to publish")
-
-        # Verify there are files in the draft version
-        from sqlalchemy.orm import selectinload
-        draft_version_query = (
-            select(AppVersion)
-            .where(AppVersion.id == application.draft_version_id)
-            .options(selectinload(AppVersion.files))
-        )
-        result = await self.session.execute(draft_version_query)
-        draft_version = result.scalar_one_or_none()
-
-        if not draft_version or not draft_version.files:
-            raise ValueError("No files in draft version to publish")
-
-        # OLD: Copy files between versions (kept for transition)
-        await self._publish_version(application, draft_version)
-
-        # NEW: Also create published_snapshot from file_index
-        # This snapshots the current file hashes for apps/{slug}/*
-        if application.slug:
-            from src.models.orm.file_index import FileIndex
-            fi_result = await self.session.execute(
-                select(FileIndex.path, FileIndex.content_hash).where(
-                    FileIndex.path.startswith(f"apps/{application.slug}/"),
-                )
+        # Create published_snapshot from file_index
+        from src.models.orm.file_index import FileIndex
+        fi_result = await self.session.execute(
+            select(FileIndex.path, FileIndex.content_hash).where(
+                FileIndex.path.startswith(f"apps/{application.slug}/"),
             )
-            snapshot = {row.path: row.content_hash for row in fi_result.all()}
-            if snapshot:
-                application.published_snapshot = snapshot
+        )
+        snapshot = {row.path: row.content_hash for row in fi_result.all()}
+        if not snapshot:
+            raise ValueError("No files found to publish")
+
+        application.published_snapshot = snapshot
+        application.published_at = datetime.now(timezone.utc)
 
         await self.session.flush()
         await self.session.refresh(application)
 
         logger.info(
-            f"Published application {app_id} with version {application.active_version_id} "
-            f"by user {published_by}"
+            f"Published application {app_id} "
+            f"({len(snapshot)} files) by user {published_by}"
         )
         return application
 
-    async def _scaffold_code_files(self, version_id: UUID) -> None:
-        """Create initial scaffold files for a code engine app.
+    async def _scaffold_code_files(self, slug: str) -> None:
+        """Create initial scaffold files for a new app via FileStorageService.
 
         Creates:
-        - _layout: Root layout wrapper
-        - pages/index: Home page
+        - _layout.tsx: Root layout wrapper
+        - pages/index.tsx: Home page
         """
-        # Root layout - wraps all pages
+        from src.services.file_storage import FileStorageService
+
+        file_storage = FileStorageService(self.session)
+
         layout_source = '''import { Outlet } from "bifrost";
 
 export default function RootLayout() {
@@ -424,14 +399,12 @@ export default function RootLayout() {
   );
 }
 '''
-        layout_file = AppFile(
-            app_version_id=version_id,
-            path="_layout.tsx",
-            source=layout_source,
+        await file_storage.write_file(
+            path=f"apps/{slug}/_layout.tsx",
+            content=layout_source.encode("utf-8"),
+            updated_by="system",
         )
-        self.session.add(layout_file)
 
-        # Home page
         index_source = '''export default function HomePage() {
   return (
     <div className="p-8">
@@ -443,87 +416,38 @@ export default function RootLayout() {
   );
 }
 '''
-        index_file = AppFile(
-            app_version_id=version_id,
-            path="pages/index.tsx",
-            source=index_source,
+        await file_storage.write_file(
+            path=f"apps/{slug}/pages/index.tsx",
+            content=index_source.encode("utf-8"),
+            updated_by="system",
         )
-        self.session.add(index_file)
 
-        await self.session.flush()
-        logger.info(f"Scaffolded initial code files for version {version_id}")
-
-    async def _publish_version(
-        self,
-        application: Application,
-        draft_version: AppVersion,
-    ) -> None:
-        """
-        Create a new published version by copying files from the draft version.
-
-        Sets the new version as the active version and updates published_at.
-        """
-        # Create new version for the published copy
-        new_version = AppVersion(application_id=application.id)
-        self.session.add(new_version)
-        await self.session.flush()
-
-        # Copy all files from draft to new version
-        for draft_file in draft_version.files:
-            new_file = AppFile(
-                app_version_id=new_version.id,
-                path=draft_file.path,
-                source=draft_file.source,
-                compiled=draft_file.compiled,
-            )
-            self.session.add(new_file)
-
-        # Update application to point to new active version
-        application.active_version_id = new_version.id
-        application.published_at = datetime.now(timezone.utc)
-
-        await self.session.flush()
-
-    async def get_files_for_version(
-        self,
-        version_id: UUID,
-    ) -> list[AppFile]:
-        """Get all files for a specific version."""
-        from sqlalchemy.orm import selectinload
-
-        version_query = (
-            select(AppVersion)
-            .where(AppVersion.id == version_id)
-            .options(selectinload(AppVersion.files))
-        )
-        result = await self.session.execute(version_query)
-        version = result.scalar_one_or_none()
-
-        if not version:
-            return []
-        return list(version.files)
+        logger.info(f"Scaffolded initial code files for app {slug}")
 
     async def export_application(
         self,
         application: Application,
-        version_id: UUID | None = None,
+        version_id: UUID | None = None,  # noqa: ARG002 - kept for API compat
     ) -> dict:
         """
         Export application data for API response or GitHub sync.
 
-        Returns a dictionary with application metadata and files.
+        Returns a dictionary with application metadata and files from file_index.
         """
-        # Use draft version if no specific version requested
-        target_version_id = version_id or application.draft_version_id
-        files_data: list[dict] = []
+        from src.models.orm.file_index import FileIndex
 
-        if target_version_id:
-            files = await self.get_files_for_version(target_version_id)
-            for file in sorted(files, key=lambda f: f.path):
-                file_dict: dict = {"path": file.path, "source": file.source}
-                if file.compiled:
-                    file_dict["compiled"] = file.compiled
-                files_data.append(file_dict)
+        prefix = f"apps/{application.slug}/"
+        fi_result = await self.session.execute(
+            select(FileIndex.path, FileIndex.content).where(
+                FileIndex.path.startswith(prefix),
+                ~FileIndex.path.endswith("/app.json"),
+            ).order_by(FileIndex.path)
+        )
+
+        files_data: list[dict] = []
+        for row in fi_result.all():
+            rel_path = row.path[len(prefix):]
+            files_data.append({"path": rel_path, "source": row.content or ""})
 
         role_ids = await self.get_role_ids(application.id)
 
@@ -534,8 +458,6 @@ export default function RootLayout() {
             "description": application.description,
             "icon": application.icon,
             "organization_id": str(application.organization_id) if application.organization_id else None,
-            "active_version_id": str(application.active_version_id) if application.active_version_id else None,
-            "draft_version_id": str(application.draft_version_id) if application.draft_version_id else None,
             "published_at": application.published_at.isoformat() if application.published_at else None,
             "created_at": application.created_at.isoformat() if application.created_at else None,
             "updated_at": application.updated_at.isoformat() if application.updated_at else None,
@@ -553,61 +475,48 @@ export default function RootLayout() {
         files_data: list[dict],
     ) -> None:
         """
-        Replace all files in the draft version with the provided files.
+        Replace all files in the app with the provided files via FileStorageService.
 
         Args:
             application: The application to update
-            files_data: List of file dictionaries with 'path', 'source', and optional 'compiled'
+            files_data: List of file dictionaries with 'path' and 'source'
         """
-        if not application.draft_version_id:
-            raise ValueError("Application has no draft version")
+        from src.services.file_storage import FileStorageService
 
-        # Delete existing files
-        from sqlalchemy import delete as sql_delete
-        await self.session.execute(
-            sql_delete(AppFile).where(AppFile.app_version_id == application.draft_version_id)
-        )
+        file_storage = FileStorageService(self.session)
+        prefix = f"apps/{application.slug}/"
 
-        # Create new files
-        for file_dict in files_data:
-            new_file = AppFile(
-                app_version_id=application.draft_version_id,
-                path=file_dict["path"],
-                source=file_dict["source"],
-                compiled=file_dict.get("compiled"),
+        # Delete existing files (except app.json)
+        from src.models.orm.file_index import FileIndex
+        existing_result = await self.session.execute(
+            select(FileIndex.path).where(
+                FileIndex.path.startswith(prefix),
+                ~FileIndex.path.endswith("/app.json"),
             )
-            self.session.add(new_file)
+        )
+        for (path,) in existing_result.all():
+            await file_storage.delete_file(path)
 
-        await self.session.flush()
+        # Write new files
+        for file_dict in files_data:
+            full_path = f"{prefix}{file_dict['path']}"
+            source = file_dict.get("source", "")
+            await file_storage.write_file(
+                path=full_path,
+                content=source.encode("utf-8"),
+                updated_by="system",
+            )
 
     async def rollback_to_version(
         self,
         application: Application,
-        version_id: UUID,
+        version_id: UUID,  # noqa: ARG002
     ) -> None:
         """
-        Rollback the application's active version to a previous version.
-
-        Validates that the version belongs to this application.
+        Rollback is no longer supported with the unified file storage model.
+        Published snapshots are immutable point-in-time captures.
         """
-        # Verify version exists and belongs to this application
-        version_query = select(AppVersion).where(
-            AppVersion.id == version_id,
-            AppVersion.application_id == application.id,
-        )
-        result = await self.session.execute(version_query)
-        version = result.scalar_one_or_none()
-
-        if not version:
-            raise ValueError(f"Version {version_id} not found for this application")
-
-        # Cannot rollback to draft version
-        if version_id == application.draft_version_id:
-            raise ValueError("Cannot rollback to draft version")
-
-        # Update active version
-        application.active_version_id = version_id
-        await self.session.flush()
+        raise ValueError("Version rollback is not supported. Use published snapshots instead.")
 
 
 # =============================================================================
@@ -628,8 +537,6 @@ async def application_to_public(
         description=application.description,
         icon=application.icon,
         organization_id=application.organization_id,
-        active_version_id=application.active_version_id,
-        draft_version_id=application.draft_version_id,
         published_at=application.published_at,
         created_at=application.created_at,
         updated_at=application.updated_at,
@@ -928,7 +835,7 @@ async def get_draft(
         is_superuser=user.is_platform_admin,
     )
     app = await get_application_by_id_or_404(ctx, app_id, scope)
-    export_data = await repo.export_application(app, version_id=app.draft_version_id)
+    export_data = await repo.export_application(app)
     return ApplicationDefinition(
         definition=export_data,
         version=0,  # Legacy field - deprecated
@@ -1018,7 +925,7 @@ async def publish_application(
             app_id=str(app_id),
             user_id=str(user.user_id),
             user_name=user.name or user.email or "Unknown",
-            new_version_id=str(application.active_version_id) if application.active_version_id else "",
+            new_version_id=application.published_at.isoformat() if application.published_at else "",
         )
 
         return await application_to_public(application, repo)
