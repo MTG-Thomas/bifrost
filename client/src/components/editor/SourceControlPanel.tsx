@@ -357,8 +357,8 @@ export function SourceControlPanel() {
 		setLoading("committing");
 		try {
 			const result = await cleanupOp.mutateAsync({});
-			const cleaned = result.data?.cleaned ?? [];
-			const count = result.data?.count ?? 0;
+			const cleaned = result.cleaned ?? [];
+			const count = result.count ?? 0;
 
 			// Log cleanup results to terminal
 			const logs = [
@@ -368,7 +368,7 @@ export function SourceControlPanel() {
 					source: "preflight",
 					timestamp: new Date().toISOString(),
 				},
-				...cleaned.map((e) => ({
+				...cleaned.map((e: { entity_type: string; entity_name: string; path: string }) => ({
 					level: "INFO",
 					message: `   Deactivated ${e.entity_type}: ${e.entity_name} (${e.path})`,
 					source: "preflight",
@@ -379,6 +379,7 @@ export function SourceControlPanel() {
 				loggerOutput: logs,
 				variables: {},
 				status: "Success",
+				error: undefined,
 				executionId: `cleanup-${Date.now()}`,
 			});
 

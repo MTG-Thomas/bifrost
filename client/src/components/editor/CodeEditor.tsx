@@ -46,7 +46,6 @@ export function CodeEditor() {
 	const { theme } = useTheme();
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
-	const monacoInitializedRef = useRef<boolean>(false);
 	const conflictDisposableRef = useRef<Monaco.IDisposable | null>(null);
 
 	// Indexing state for blocking overlay during ID injection
@@ -268,11 +267,7 @@ export function CodeEditor() {
 
 	// Configure Monaco BEFORE it mounts - this is critical for comment support
 	const handleEditorWillMount: BeforeMount = async (monaco) => {
-		// Initialize Monaco language configurations once
-		if (!monacoInitializedRef.current) {
-			monacoInitializedRef.current = true;
-			await initializeMonaco(monaco);
-		}
+		await initializeMonaco(monaco);
 	};
 
 	const handleEditorMount: OnMount = async (editor, monaco) => {

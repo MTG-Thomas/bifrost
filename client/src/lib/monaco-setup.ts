@@ -7,6 +7,7 @@ import type * as Monaco from "monaco-editor";
 import { useWorkflowsStore } from "@/stores/workflowsStore";
 
 let setupComplete = false;
+let monacoInitialized = false;
 
 // Side-channel for current file path (Monaco doesn't know workspace paths)
 let _currentFilePath: string | null = null;
@@ -39,6 +40,9 @@ export function configureMonaco() {
  * This is called when the first editor instance mounts
  */
 export async function initializeMonaco(monaco: typeof Monaco) {
+	if (monacoInitialized) return;
+	monacoInitialized = true;
+
 	// Ensure Python language configuration is loaded
 	// Monaco should have this by default, but we'll verify
 	const pythonLang = monaco.languages
