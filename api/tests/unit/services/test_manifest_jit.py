@@ -51,3 +51,42 @@ async def test_desktop_commit_regenerates_manifest_before_staging():
         # Manifest must be regenerated BEFORE git add
         assert call_order == ["regenerate_manifest", "git_add"]
         mock_regen.assert_called_once_with(mock_db, mock_work_dir)
+
+
+@pytest.mark.asyncio
+async def test_reimport_regenerates_manifest_and_reindexes_workflows():
+    """reimport_from_repo() should regenerate manifest and re-run workflow indexer."""
+    from src.services.github_sync import GitHubSyncService
+
+    mock_db = AsyncMock()
+    service = GitHubSyncService.__new__(GitHubSyncService)
+    service.db = mock_db
+    service.branch = "main"
+
+    mock_work_dir = MagicMock(spec=Path)
+
+    # Set repo_manager before patching (bypass __init__)
+    mock_rm = MagicMock()
+    mock_rm.checkout.return_value.__aenter__ = AsyncMock(return_value=mock_work_dir)
+    mock_rm.checkout.return_value.__aexit__ = AsyncMock(return_value=False)
+    service.repo_manager = mock_rm
+
+    # begin_nested() must return an async context manager (not a coroutine)
+    mock_nested = MagicMock()
+    mock_nested.__aenter__ = AsyncMock()
+    mock_nested.__aexit__ = AsyncMock(return_value=False)
+    mock_db.begin_nested = MagicMock(return_value=mock_nested)
+    mock_db.commit = AsyncMock()
+
+    with patch.object(service, '_regenerate_manifest_to_dir') as mock_regen, \
+         patch.object(service, '_reindex_registered_workflows') as mock_reindex, \
+         patch.object(service, '_import_all_entities', return_value=5) as mock_import, \
+         patch.object(service, '_delete_removed_entities') as mock_delete, \
+         patch.object(service, '_update_file_index') as mock_fi, \
+         patch.object(service, '_sync_app_previews') as mock_apps:
+
+        result = await service.reimport_from_repo()
+
+        mock_regen.assert_called_once()
+        mock_reindex.assert_called_once()
+        assert result == 5

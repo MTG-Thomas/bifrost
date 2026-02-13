@@ -297,6 +297,29 @@ class GitHubSyncService:
             if filename not in files and path.exists():
                 path.unlink()
 
+    async def _reindex_registered_workflows(self, work_dir) -> int:
+        """Re-run WorkflowIndexer on all registered workflow .py files."""
+        from src.services.file_storage.indexers.workflow import WorkflowIndexer
+        from src.models.orm.workflows import Workflow as WfORM
+        from sqlalchemy import select
+
+        indexer = WorkflowIndexer(self.db)
+        result = await self.db.execute(
+            select(WfORM.path).where(WfORM.is_active.is_(True)).distinct()
+        )
+        paths = [row[0] for row in result.all()]
+        count = 0
+
+        for py_path in paths:
+            full_path = work_dir / py_path
+            if full_path.exists():
+                content = full_path.read_bytes()
+                await indexer.index_python_file(py_path, content)
+                count += 1
+
+        logger.info(f"Re-indexed {count} registered workflow files")
+        return count
+
     async def desktop_commit(self, message: str) -> "CommitResult":
         """
         Commit working tree changes (local only, no push).
@@ -975,12 +998,18 @@ class GitHubSyncService:
         Returns count of entities imported.
         """
         async with self.repo_manager.checkout() as work_dir:
+            # Regenerate manifest from current DB state
+            await self._regenerate_manifest_to_dir(self.db, work_dir)
+
             # Import entities atomically with savepoint
             async with self.db.begin_nested():
                 count = await self._import_all_entities(work_dir)
                 await self._delete_removed_entities(work_dir)
                 await self._update_file_index(work_dir)
             await self.db.commit()
+
+            # Re-run indexers on all registered workflow files
+            await self._reindex_registered_workflows(work_dir)
 
             # Sync app preview files
             await self._sync_app_previews(work_dir)
