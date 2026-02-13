@@ -34,6 +34,8 @@ from src.models import (
     OrphanedWorkflowInfo,
     OrphanedWorkflowsResponse,
     RecreateFileResponse,
+    RegisterWorkflowRequest,
+    RegisterWorkflowResponse,
     ReplaceWorkflowRequest,
     ReplaceWorkflowResponse,
     WorkflowExecutionRequest,
@@ -881,6 +883,119 @@ async def validate_workflow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to validate workflow",
         )
+
+
+@router.post(
+    "/register",
+    response_model=RegisterWorkflowResponse,
+    status_code=201,
+    summary="Register a workflow function",
+    description="Register a decorated function from an existing .py file as a workflow.",
+)
+async def register_workflow(
+    request: RegisterWorkflowRequest,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> RegisterWorkflowResponse:
+    """Register a workflow function from an existing Python file."""
+    import ast
+    from uuid import uuid4
+    from src.services.file_storage import FileStorageService
+    from src.services.file_storage.indexers.workflow import WorkflowIndexer
+
+    service = FileStorageService(db)
+
+    # 1. Verify file exists
+    try:
+        content_tuple = await service.read_file(request.path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {request.path}")
+
+    if not request.path.endswith(".py"):
+        raise HTTPException(status_code=400, detail="Path must be a .py file")
+
+    # read_file returns tuple[bytes, None]
+    content = content_tuple[0]
+
+    # 2. AST parse and find the function with a decorator
+    content_str = content.decode("utf-8", errors="replace")
+    try:
+        tree = ast.parse(content_str, filename=request.path)
+    except SyntaxError as e:
+        raise HTTPException(status_code=400, detail=f"Syntax error: {e}")
+
+    # Find the target function
+    target_node = None
+    target_decorator_type = None
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != request.function_name:
+            continue
+        for dec in node.decorator_list:
+            dec_name = None
+            if isinstance(dec, ast.Name):
+                dec_name = dec.id
+            elif isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name):
+                dec_name = dec.func.id
+            if dec_name in ("workflow", "tool", "data_provider"):
+                target_node = node
+                target_decorator_type = dec_name
+                break
+        if target_node:
+            break
+
+    if not target_node:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No decorated function '{request.function_name}' found in {request.path}",
+        )
+
+    # 3. Check if already registered
+    existing = await db.execute(
+        select(WorkflowORM).where(
+            WorkflowORM.path == request.path,
+            WorkflowORM.function_name == request.function_name,
+            WorkflowORM.is_active.is_(True),
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Workflow already registered")
+
+    # 4. Create minimal DB record
+    workflow_id = uuid4()
+    wf_type = "data_provider" if target_decorator_type == "data_provider" else (
+        "tool" if target_decorator_type == "tool" else "workflow"
+    )
+    new_wf = WorkflowORM(
+        id=workflow_id,
+        name=request.function_name,
+        function_name=request.function_name,
+        path=request.path,
+        type=wf_type,
+        is_active=True,
+    )
+    db.add(new_wf)
+    await db.flush()
+
+    # 5. Run indexer to enrich with content-derived fields
+    indexer = WorkflowIndexer(db)
+    await indexer.index_python_file(request.path, content)
+
+    # 6. Re-fetch enriched record
+    result = await db.execute(
+        select(WorkflowORM).where(WorkflowORM.id == workflow_id)
+    )
+    workflow = result.scalar_one()
+
+    return RegisterWorkflowResponse(
+        id=str(workflow.id),
+        name=workflow.name,
+        function_name=workflow.function_name,
+        path=workflow.path,
+        type=workflow.type,
+        description=workflow.description,
+    )
 
 
 @router.patch(

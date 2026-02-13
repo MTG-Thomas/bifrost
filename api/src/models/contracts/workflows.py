@@ -150,6 +150,25 @@ class MetadataResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+# ==================== WORKFLOW REGISTRATION ====================
+
+
+class RegisterWorkflowRequest(BaseModel):
+    """Request model for explicit workflow registration."""
+    path: str = Field(..., description="Workspace-relative path to the .py file")
+    function_name: str = Field(..., description="Name of the decorated function to register")
+
+
+class RegisterWorkflowResponse(BaseModel):
+    """Response model for workflow registration."""
+    id: str = Field(..., description="Workflow UUID")
+    name: str = Field(..., description="Workflow name (from decorator or function name)")
+    function_name: str = Field(..., description="Python function name")
+    path: str = Field(..., description="File path")
+    type: str = Field(..., description="Executable type: workflow, tool, or data_provider")
+    description: str | None = Field(default=None, description="Workflow description")
+
+
 # ==================== WORKFLOW VALIDATION ====================
 
 
