@@ -380,6 +380,123 @@ async def get_workflow(
         return error_result(f"Error getting workflow: {str(e)}")
 
 
+async def register_workflow(context: Any, path: str, function_name: str) -> ToolResult:
+    """Register a decorated Python function as a workflow.
+
+    Takes a file path and function name, validates the function has a
+    @workflow/@tool/@data_provider decorator, and registers it in the system.
+    """
+    import ast
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from src.core.database import get_db_context
+    from src.models.orm.workflows import Workflow as WorkflowORM
+    from src.services.file_storage import FileStorageService
+    from src.services.file_storage.indexers.workflow import WorkflowIndexer
+
+    if not path:
+        return error_result("path is required")
+    if not function_name:
+        return error_result("function_name is required")
+    if not path.endswith(".py"):
+        return error_result("path must be a .py file")
+
+    try:
+        async with get_db_context() as db:
+            service = FileStorageService(db)
+
+            # Read file
+            try:
+                content, _ = await service.read_file(path)
+            except FileNotFoundError:
+                return error_result(f"File not found: {path}")
+
+            # AST parse and find decorated function
+            content_str = content.decode("utf-8", errors="replace")
+            try:
+                tree = ast.parse(content_str, filename=path)
+            except SyntaxError as e:
+                return error_result(f"Syntax error in {path}: {e}")
+
+            found = False
+            decorator_type = None
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.name != function_name:
+                    continue
+                for dec in node.decorator_list:
+                    dec_name = None
+                    if isinstance(dec, ast.Name):
+                        dec_name = dec.id
+                    elif isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name):
+                        dec_name = dec.func.id
+                    if dec_name in ("workflow", "tool", "data_provider"):
+                        found = True
+                        decorator_type = dec_name
+                        break
+                if found:
+                    break
+
+            if not found:
+                return error_result(
+                    f"No @workflow/@tool/@data_provider decorated function '{function_name}' found in {path}"
+                )
+
+            # Check already registered
+            existing = await db.execute(
+                select(WorkflowORM).where(
+                    WorkflowORM.path == path,
+                    WorkflowORM.function_name == function_name,
+                    WorkflowORM.is_active.is_(True),
+                )
+            )
+            if existing.scalar_one_or_none():
+                return error_result(f"Workflow '{function_name}' in {path} is already registered")
+
+            # Create record
+            wf_type = "data_provider" if decorator_type == "data_provider" else (
+                "tool" if decorator_type == "tool" else "workflow"
+            )
+            workflow_id = uuid4()
+            new_wf = WorkflowORM(
+                id=workflow_id,
+                name=function_name,
+                function_name=function_name,
+                path=path,
+                type=wf_type,
+                is_active=True,
+            )
+            db.add(new_wf)
+            await db.flush()
+
+            # Enrich with decorator metadata
+            indexer = WorkflowIndexer(db)
+            await indexer.index_python_file(path, content)
+
+            # Re-fetch enriched record
+            result = await db.execute(
+                select(WorkflowORM).where(WorkflowORM.id == workflow_id)
+            )
+            workflow = result.scalar_one()
+
+            return success_result(
+                f"Registered {wf_type} '{workflow.name}' from {path}::{function_name}",
+                {
+                    "id": str(workflow.id),
+                    "name": workflow.name,
+                    "function_name": workflow.function_name,
+                    "path": workflow.path,
+                    "type": workflow.type,
+                },
+            )
+    except Exception as e:
+        logger.error(f"register_workflow failed: {e}", exc_info=True)
+        return error_result(str(e))
+
+
 # Tool metadata for registration
 TOOLS = [
     ("execute_workflow", "Execute Workflow", "Execute a Bifrost workflow by ID or name and return the results. Use list_workflows to get workflow IDs."),
@@ -388,6 +505,7 @@ TOOLS = [
     ("create_workflow", "Create Workflow", "Create a new workflow by validating Python code and writing to workspace."),
     ("get_workflow_schema", "Get Workflow Schema", "Get documentation about workflow structure, decorators, and SDK features."),
     ("get_workflow", "Get Workflow", "Get detailed metadata for a specific workflow by ID or name."),
+    ("register_workflow", "Register Workflow", "Register a decorated Python function as a workflow. Takes a file path and function name."),
 ]
 
 
@@ -402,6 +520,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "create_workflow": create_workflow,
         "get_workflow_schema": get_workflow_schema,
         "get_workflow": get_workflow,
+        "register_workflow": register_workflow,
     }
 
     for tool_id, name, description in TOOLS:

@@ -775,15 +775,15 @@ class TestGetSystemToolIds:
 
     def test_returns_all_system_tool_ids(self):
         """Should return IDs for all system tools."""
-        from src.routers.tools import get_system_tool_ids, SYSTEM_TOOLS
+        from src.routers.tools import get_system_tool_ids, get_system_tools
 
         tool_ids = get_system_tool_ids()
 
         # Should return same number as SYSTEM_TOOLS
-        assert len(tool_ids) == len(SYSTEM_TOOLS)
+        assert len(tool_ids) == len(get_system_tools())
 
         # Should contain all expected IDs
-        expected_ids = {tool.id for tool in SYSTEM_TOOLS}
+        expected_ids = {tool.id for tool in get_system_tools()}
         assert set(tool_ids) == expected_ids
 
     def test_contains_expected_tools(self):
@@ -1245,3 +1245,85 @@ class TestToolResultDisplayText:
         # The UUID should be in the content text
         assert wf_id in text
         assert "my_wf" in text
+
+
+# ==================== register_workflow Tests ====================
+
+
+class TestRegisterWorkflow:
+    """Tests for the register_workflow MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_path(self, platform_admin_context):
+        """register_workflow MCP tool rejects missing path."""
+        from src.services.mcp_server.tools.workflow import register_workflow
+
+        result = await register_workflow(platform_admin_context, "", "my_function")
+        data = result.structured_content
+        assert "error" in data
+        assert "path is required" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_function_name(self, platform_admin_context):
+        """register_workflow MCP tool rejects missing function_name."""
+        from src.services.mcp_server.tools.workflow import register_workflow
+
+        result = await register_workflow(platform_admin_context, "workflows/test.py", "")
+        data = result.structured_content
+        assert "error" in data
+        assert "function_name is required" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_python_file(self, platform_admin_context):
+        """register_workflow MCP tool rejects non-.py files."""
+        from src.services.mcp_server.tools.workflow import register_workflow
+
+        result = await register_workflow(platform_admin_context, "workflows/test.yaml", "my_function")
+        data = result.structured_content
+        assert "error" in data
+        assert "path must be a .py file" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_file_not_found(self, platform_admin_context):
+        """register_workflow MCP tool returns error when file not found."""
+        from src.services.mcp_server.tools.workflow import register_workflow
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("src.services.file_storage.FileStorageService") as mock_svc_cls:
+                mock_svc = MagicMock()
+                mock_svc.read_file = AsyncMock(side_effect=FileNotFoundError("not found"))
+                mock_svc_cls.return_value = mock_svc
+
+                result = await register_workflow(platform_admin_context, "workflows/missing.py", "my_func")
+
+        data = result.structured_content
+        assert "error" in data
+        assert "File not found" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_no_decorated_function(self, platform_admin_context):
+        """register_workflow MCP tool rejects files without matching decorated function."""
+        from src.services.mcp_server.tools.workflow import register_workflow
+
+        # Python file with a function but no @workflow decorator
+        code = b"def my_func():\n    return 42\n"
+
+        with patch("src.core.database.get_db_context") as mock_db_ctx:
+            mock_session = AsyncMock()
+            mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("src.services.file_storage.FileStorageService") as mock_svc_cls:
+                mock_svc = MagicMock()
+                mock_svc.read_file = AsyncMock(return_value=(code, None))
+                mock_svc_cls.return_value = mock_svc
+
+                result = await register_workflow(platform_admin_context, "workflows/test.py", "my_func")
+
+        data = result.structured_content
+        assert "error" in data
+        assert "No @workflow/@tool/@data_provider decorated function" in data["error"]
