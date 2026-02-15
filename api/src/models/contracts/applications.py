@@ -44,6 +44,10 @@ class ApplicationCreate(ApplicationBase):
         pattern=r"^[a-z][a-z0-9-]*$",
         description="URL-friendly slug (lowercase letters, numbers, hyphens)",
     )
+    app_type: str = Field(
+        default="runtime",
+        description="Application type: 'runtime' (browser-compiled JSX) or 'static' (pre-built Vite bundle)",
+    )
     access_level: str = Field(
         default="authenticated",
         description="Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles)",
@@ -64,6 +68,14 @@ class ApplicationCreate(ApplicationBase):
             )
         return v
 
+    @field_validator("app_type")
+    @classmethod
+    def validate_app_type(cls, v: str) -> str:
+        """Validate app_type is one of the allowed values."""
+        if v not in ("runtime", "static"):
+            raise ValueError("app_type must be 'runtime' or 'static'")
+        return v
+
     @field_validator("access_level")
     @classmethod
     def validate_access_level(cls, v: str) -> str:
@@ -74,7 +86,11 @@ class ApplicationCreate(ApplicationBase):
 
 
 class ApplicationUpdate(BaseModel):
-    """Input for updating application metadata."""
+    """Input for updating application metadata.
+
+    Note: app_type is intentionally not updatable — it is set at creation
+    and determines how the app is built and served (runtime vs static).
+    """
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     slug: str | None = Field(
@@ -129,6 +145,7 @@ class ApplicationPublic(ApplicationBase):
     id: UUID
     slug: str
     organization_id: UUID | None
+    app_type: str = Field(default="runtime")
     published_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -284,6 +301,7 @@ class SimpleFileResponse(BaseModel):
 
     path: str = Field(description="Relative file path within the app (e.g., 'pages/index.tsx')")
     source: str = Field(description="File source content")
+    compiled: str | None = Field(default=None, description="Pre-compiled JavaScript output")
 
 
 class SimpleFileListResponse(BaseModel):

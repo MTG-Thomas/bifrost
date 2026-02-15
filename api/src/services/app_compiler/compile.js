@@ -1,0 +1,115 @@
+#!/usr/bin/env node
+/**
+ * Server-side Babel compiler for Bifrost app files.
+ * Replicates the exact pipeline from client/src/lib/app-code-compiler.ts.
+ *
+ * Input (stdin):  {"files": [{"path": "pages/index.tsx", "source": "..."}]}
+ * Output (stdout): {"results": [{"path": "...", "compiled": "...", "error": null}]}
+ */
+const { transform } = require("@babel/standalone");
+
+function preprocessImports(source) {
+  let result = source.replace(
+    /^\s*import\s+(\{[^}]*\})\s+from\s+["']bifrost["']\s*;?\s*$/gm,
+    "const $1 = $;"
+  );
+  result = result.replace(
+    /^\s*import\s+(\w+)\s+from\s+["']bifrost["']\s*;?\s*$/gm,
+    "const $1 = $.default || $;"
+  );
+  result = result.replace(
+    /^\s*import\s+(\w+)\s*,\s*(\{[^}]*\})\s+from\s+["']bifrost["']\s*;?\s*$/gm,
+    "const $1 = $.default || $;\nconst $2 = $;"
+  );
+  return result;
+}
+
+function postprocessExports(compiled) {
+  let code = compiled;
+  let defaultExport = null;
+  const namedExports = [];
+
+  const defaultFuncMatch = code.match(/export\s+default\s+function\s+(\w+)/);
+  if (defaultFuncMatch) {
+    const funcName = defaultFuncMatch[1];
+    code = code.replace(/export\s+default\s+function\s+(\w+)/, "function $1");
+    code += `\n__defaultExport__ = ${funcName};`;
+    defaultExport = funcName;
+  }
+
+  if (!defaultExport && code.includes("export default function(")) {
+    code = code.replace(/export\s+default\s+function\s*\(/, "__defaultExport__ = function(");
+    defaultExport = "__defaultExport__";
+  }
+
+  const defaultVarMatch = code.match(/export\s+default\s+(\w+)\s*;/);
+  if (!defaultExport && defaultVarMatch) {
+    const varName = defaultVarMatch[1];
+    code = code.replace(/export\s+default\s+\w+\s*;/, "");
+    code += `\n__defaultExport__ = ${varName};`;
+    defaultExport = varName;
+  }
+
+  for (const match of code.matchAll(/export\s+function\s+(\w+)/g)) {
+    namedExports.push(match[1]);
+  }
+  for (const match of code.matchAll(/export\s+(?:const|let|var)\s+(\w+)/g)) {
+    namedExports.push(match[1]);
+  }
+
+  code = code.replace(/export\s+\{[^}]*\}\s*;?/g, "");
+  code = code.replace(/export\s+(const|let|var|function|class)\s+/g, "$1 ");
+
+  if (namedExports.length > 0) {
+    code += "\n__exports__ = {};";
+    for (const name of namedExports) {
+      code += `\n__exports__.${name} = ${name};`;
+    }
+  }
+
+  if (!defaultExport && namedExports.length > 0) {
+    defaultExport = namedExports[0];
+    code += `\n__defaultExport__ = ${defaultExport};`;
+  }
+
+  return { code, defaultExport, namedExports };
+}
+
+function compileFile(source, path) {
+  try {
+    const preprocessed = preprocessImports(source);
+    const result = transform(preprocessed, {
+      filename: path || "component.tsx",
+      presets: ["react", "typescript"],
+      plugins: ["proposal-optional-chaining", "proposal-nullish-coalescing-operator"],
+      sourceType: "module",
+    });
+
+    if (!result.code) {
+      return { compiled: null, error: "Compilation produced no output" };
+    }
+
+    const { code, defaultExport, namedExports } = postprocessExports(result.code);
+    return { compiled: code, defaultExport, namedExports, error: null };
+  } catch (err) {
+    return { compiled: null, error: err.message || "Compilation failed" };
+  }
+}
+
+// Read JSON from stdin
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const { files } = JSON.parse(input);
+    const results = files.map((f) => ({
+      path: f.path,
+      ...compileFile(f.source, f.path),
+    }));
+    process.stdout.write(JSON.stringify({ results }));
+  } catch (err) {
+    process.stdout.write(JSON.stringify({ error: err.message }));
+    process.exit(1);
+  }
+});

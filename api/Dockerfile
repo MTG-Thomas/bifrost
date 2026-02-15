@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     git \
     awscli \
+    nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
@@ -48,6 +49,11 @@ COPY api/alembic.ini /app/
 COPY api/bifrost/ /app/bifrost/
 COPY api/bifrost.py /app/
 COPY api/scripts/ /app/scripts/
+
+# Install app compiler Node.js dependencies
+COPY api/src/services/app_compiler/package.json api/src/services/app_compiler/package-lock.json* /app/src/services/app_compiler/
+COPY api/src/services/app_compiler/compile.js /app/src/services/app_compiler/
+RUN cd /app/src/services/app_compiler && npm install --production
 
 # Create non-root user
 RUN useradd -m -u 1000 bifrost && \

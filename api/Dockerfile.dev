@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     git \
     awscli \
+    nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
@@ -47,6 +48,11 @@ RUN useradd -m -u 1000 bifrost && \
 # Create directories for workspace and temp
 RUN mkdir -p /workspace /tmp/bifrost && \
     chown -R bifrost:bifrost /workspace /tmp/bifrost
+
+# Install app compiler Node.js dependencies
+COPY api/src/services/app_compiler/package.json api/src/services/app_compiler/package-lock.json* /app/src/services/app_compiler/
+COPY api/src/services/app_compiler/compile.js /app/src/services/app_compiler/
+RUN cd /app/src/services/app_compiler && npm install --production
 
 # Copy entrypoint script
 COPY api/entrypoint.sh /entrypoint.sh
