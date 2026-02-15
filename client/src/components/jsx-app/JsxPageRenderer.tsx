@@ -139,7 +139,7 @@ export function JsxPageRenderer({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, userComponentNames, file.path, file.source, source]);
+	}, [appId, userComponentNames, file.path, file.source, file.compiled, source]);
 
 	if (isLoading) {
 		return <PageSkeleton />;

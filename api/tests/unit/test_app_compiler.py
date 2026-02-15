@@ -1,5 +1,5 @@
 import pytest
-from src.services.app_compiler import AppCompilerService, CompileResult
+from src.services.app_compiler import AppCompilerService
 
 
 @pytest.fixture
