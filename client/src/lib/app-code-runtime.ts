@@ -70,7 +70,17 @@ import {
 	UNSAFE_RouteContext,
 } from "react-router-dom";
 import * as LucideIcons from "lucide-react";
-import { compileAppCode, wrapAsComponent } from "./app-code-compiler";
+/**
+ * Wrap compiled code in a component factory.
+ */
+function wrapAsComponent(compiled: string): string {
+	return `
+    var __defaultExport__;
+    var __exports__ = {};
+    ${compiled}
+    return __defaultExport__;
+  `;
+}
 import { createPlatformScope } from "./app-code-platform/scope";
 
 /**
@@ -331,20 +341,14 @@ export function createComponent(
 	if (useCompiled) {
 		compiled = source;
 	} else {
-		const result = compileAppCode(source);
-
-		if (!result.success) {
-			// Return an error component that shows the compilation error
-			const errorMessage = result.error || "Unknown compilation error";
-			return function CompilationError() {
-				return ErrorComponent({
-					title: "Compilation Error",
-					message: errorMessage,
-				});
-			};
-		}
-
-		compiled = result.compiled!;
+		// Server-side compilation required — if we reach here without
+		// compiled code, something went wrong in the pipeline
+		return function ServerCompileRequired() {
+			return ErrorComponent({
+				title: "Compilation Required",
+				message: "This file needs server-side compilation. Save the file to trigger compilation.",
+			});
+		};
 	}
 
 	// Step 2: Build the full scope
