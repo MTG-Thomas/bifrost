@@ -25,7 +25,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.agents import Agent, AgentTool
-from src.models.orm.file_index import FileIndex
 from src.models.orm.forms import Form, FormField
 from src.models.orm.workflows import Workflow
 
@@ -103,12 +102,12 @@ class WorkflowOrphanService:
         """
         self.db = db
 
-    async def _get_code_from_file_index(self, path: str) -> str | None:
-        """Load workflow code from file_index table."""
-        result = await self.db.execute(
-            select(FileIndex.content).where(FileIndex.path == path)
-        )
-        return result.scalar_one_or_none()
+    async def _get_code(self, path: str) -> str | None:
+        """Load file content via Redis→S3 cache chain."""
+        from src.core.module_cache import get_module
+
+        cached = await get_module(path)
+        return cached["content"] if cached else None
 
     async def get_orphaned_workflows(self) -> list[OrphanedWorkflow]:
         """
@@ -124,7 +123,7 @@ class WorkflowOrphanService:
         orphans = []
         for wf in workflows:
             used_by = await self._get_workflow_references(wf.id)
-            code = await self._get_code_from_file_index(wf.path)
+            code = await self._get_code(wf.path)
             orphans.append(
                 OrphanedWorkflow(
                     id=str(wf.id),
@@ -162,7 +161,7 @@ class WorkflowOrphanService:
         if not wf.is_orphaned:
             raise ValueError(f"Workflow {workflow_id} is not orphaned")
 
-        orphan_code = await self._get_code_from_file_index(wf.path)
+        orphan_code = await self._get_code(wf.path)
         if not orphan_code:
             logger.warning(f"Orphaned workflow {workflow_id} has no code in file_index")
             return []
@@ -196,7 +195,7 @@ class WorkflowOrphanService:
                 continue
             seen_functions.add(key)
 
-            candidate_code = await self._get_code_from_file_index(candidate.path)
+            candidate_code = await self._get_code(candidate.path)
             if not candidate_code:
                 continue
 
@@ -312,7 +311,7 @@ class WorkflowOrphanService:
             raise ValueError(
                 f"Workflow {workflow_id} is missing path for recreation"
             )
-        code = await self._get_code_from_file_index(wf.path)
+        code = await self._get_code(wf.path)
         if not code:
             raise ValueError(
                 f"Workflow {workflow_id} has no code in file_index for recreation"
