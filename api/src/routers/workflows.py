@@ -1386,13 +1386,10 @@ async def recreate_workflow_file(
         # Get the workflow and mark as not orphaned
         workflow = await orphan_service.recreate_file(workflow_id)
 
-        # Load code from file_index
-        from sqlalchemy import select as sa_select
-        from src.models.orm.file_index import FileIndex
-        fi_result = await db.execute(
-            sa_select(FileIndex.content).where(FileIndex.path == workflow.path)
-        )
-        code_content = fi_result.scalar_one_or_none()
+        # Load code via Redis→S3 cache chain
+        from src.core.module_cache import get_module
+        cached = await get_module(workflow.path)
+        code_content = cached["content"] if cached else None
 
         if not code_content:
             raise HTTPException(
