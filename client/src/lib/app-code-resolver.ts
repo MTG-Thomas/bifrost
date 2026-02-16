@@ -194,6 +194,8 @@ export async function resolveAppComponentsFromFiles(
 	userComponentNames: Set<string>,
 	/** Pre-loaded files from /render — avoids per-component API calls */
 	allFiles?: AppCodeFile[],
+	/** Loaded external npm dependencies keyed by package name */
+	externalDeps: Record<string, Record<string, unknown>> = {},
 ): Promise<Record<string, React.ComponentType>> {
 	const components: Record<string, React.ComponentType> = {};
 
@@ -244,7 +246,7 @@ export async function resolveAppComponentsFromFiles(
 			continue;
 		}
 
-		const component = createComponent(source, {}, isPreCompiled);
+		const component = createComponent(source, {}, isPreCompiled, externalDeps);
 
 		// Cache the compiled component
 		componentCache.set(cacheKey, {

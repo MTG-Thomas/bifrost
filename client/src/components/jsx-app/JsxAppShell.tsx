@@ -21,6 +21,7 @@ import {
 	extractComponentNames,
 	getUserComponentNames,
 } from "@/lib/app-code-resolver";
+import { loadDependencies } from "@/lib/esm-loader";
 import { PageLoader } from "@/components/PageLoader";
 import { AppLoadingSkeleton } from "./AppLoadingSkeleton";
 import { JsxErrorBoundary } from "./JsxErrorBoundary";
@@ -42,6 +43,7 @@ interface AppFileListResponse {
 interface AppRenderResponse {
 	files: Array<{ path: string; code: string }>;
 	total: number;
+	dependencies?: Record<string, string>;
 }
 
 interface JsxAppShellProps {
@@ -62,6 +64,8 @@ interface JsxAppContext {
 	userComponentNames: Set<string>;
 	/** All pre-loaded files (for resolving components without API calls) */
 	allFiles: AppCodeFile[];
+	/** Loaded external npm dependencies keyed by package name */
+	externalDeps: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -77,12 +81,19 @@ export function useJsxAppContext(): JsxAppContext {
  * Uses the /render endpoint which returns pre-compiled JS and
  * batch-compiles on demand if any files are missing compiled versions.
  */
+interface FetchResult {
+	files: AppCodeFile[];
+	dependencies: Record<string, string>;
+}
+
 async function fetchAppFiles(
 	appId: string,
 	mode: "draft" | "live",
-): Promise<AppCodeFile[]> {
+	signal?: AbortSignal,
+): Promise<FetchResult> {
 	const response = await authFetch(
 		`/api/applications/${appId}/render?mode=${mode}`,
+		{ signal },
 	);
 
 	if (!response.ok) {
@@ -91,14 +102,14 @@ async function fetchAppFiles(
 	}
 
 	const data: AppRenderResponse = await response.json();
-	// Map render response to AppCodeFile shape.
-	// code is already compiled JS — set as both source and compiled
-	// so the runtime uses the compiled path.
-	return data.files.map((f) => ({
-		path: f.path,
-		source: f.code,
-		compiled: f.code,
-	}));
+	return {
+		files: data.files.map((f) => ({
+			path: f.path,
+			source: f.code,
+			compiled: f.code,
+		})),
+		dependencies: data.dependencies ?? {},
+	};
 }
 
 /**
@@ -121,11 +132,13 @@ function LayoutWrapper({
 	appId,
 	userComponentNames,
 	allFiles,
+	externalDeps,
 }: {
 	file: AppCodeFile;
 	appId: string;
 	userComponentNames: Set<string>;
 	allFiles: AppCodeFile[];
+	externalDeps: Record<string, Record<string, unknown>>;
 }) {
 	const [LayoutComponent, setLayoutComponent] =
 		useState<React.ComponentType | null>(null);
@@ -133,8 +146,8 @@ function LayoutWrapper({
 	const [isLoading, setIsLoading] = useState(true);
 
 	const appContext = useMemo<JsxAppContext>(
-		() => ({ appId, userComponentNames, allFiles }),
-		[appId, userComponentNames, allFiles],
+		() => ({ appId, userComponentNames, allFiles, externalDeps }),
+		[appId, userComponentNames, allFiles, externalDeps],
 	);
 
 	useEffect(() => {
@@ -154,6 +167,7 @@ function LayoutWrapper({
 						componentNames,
 						userComponentNames,
 						allFiles,
+						externalDeps,
 					);
 				}
 
@@ -164,6 +178,7 @@ function LayoutWrapper({
 					file.compiled || file.source,
 					customComponents,
 					!!file.compiled,
+					externalDeps,
 				);
 
 				setLayoutComponent(() => Component);
@@ -184,7 +199,7 @@ function LayoutWrapper({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, userComponentNames, allFiles, file.path, file.source]);
+	}, [appId, userComponentNames, allFiles, externalDeps, file.path, file.source]);
 
 	if (isLoading) {
 		return <PageLoader message="Loading layout..." />;
@@ -228,12 +243,14 @@ function ProvidersWrapper({
 	appId,
 	userComponentNames,
 	allFiles,
+	externalDeps,
 	children,
 }: {
 	file: AppCodeFile;
 	appId: string;
 	userComponentNames: Set<string>;
 	allFiles: AppCodeFile[];
+	externalDeps: Record<string, Record<string, unknown>>;
 	children: React.ReactNode;
 }) {
 	const [ProvidersComponent, setProvidersComponent] = useState<
@@ -259,6 +276,7 @@ function ProvidersWrapper({
 						componentNames,
 						userComponentNames,
 						allFiles,
+						externalDeps,
 					);
 				}
 
@@ -269,6 +287,7 @@ function ProvidersWrapper({
 					file.compiled || file.source,
 					customComponents,
 					!!file.compiled,
+					externalDeps,
 				);
 
 				setProvidersComponent(
@@ -296,7 +315,7 @@ function ProvidersWrapper({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, userComponentNames, allFiles, file.path, file.source]);
+	}, [appId, userComponentNames, allFiles, externalDeps, file.path, file.source]);
 
 	if (isLoading) {
 		return <PageLoader message="Loading app..." />;
@@ -327,6 +346,7 @@ function renderRoutes(
 	appId: string,
 	userComponentNames: Set<string>,
 	allFiles: AppCodeFile[],
+	externalDeps: Record<string, Record<string, unknown>>,
 ): React.ReactNode {
 	return routes.map((route, index) => {
 		// Handle index routes
@@ -341,6 +361,7 @@ function renderRoutes(
 							file={route.file}
 							userComponentNames={userComponentNames}
 							allFiles={allFiles}
+							externalDeps={externalDeps}
 						/>
 					}
 				/>
@@ -356,6 +377,7 @@ function renderRoutes(
 							appId={appId}
 							userComponentNames={userComponentNames}
 							allFiles={allFiles}
+							externalDeps={externalDeps}
 						/>
 					)
 				: (
@@ -364,17 +386,18 @@ function renderRoutes(
 							file={route.file}
 							userComponentNames={userComponentNames}
 							allFiles={allFiles}
+							externalDeps={externalDeps}
 						/>
 					)
 			: route.children && route.children.length > 0
-				? <Outlet context={{ appId, userComponentNames, allFiles }} />
+				? <Outlet context={{ appId, userComponentNames, allFiles, externalDeps }} />
 				: undefined;
 
 		// Render with children if any
 		if (route.children && route.children.length > 0) {
 			return (
 				<Route key={route.path || index} path={route.path} element={element}>
-					{renderRoutes(route.children, appId, userComponentNames, allFiles)}
+					{renderRoutes(route.children, appId, userComponentNames, allFiles, externalDeps)}
 				</Route>
 			);
 		}
@@ -396,10 +419,12 @@ function AppContent({
 	files,
 	appId,
 	userComponentNames,
+	externalDeps,
 }: {
 	files: AppCodeFile[];
 	appId: string;
 	userComponentNames: Set<string>;
+	externalDeps: Record<string, Record<string, unknown>>;
 }) {
 	// Build routes from files
 	const jsxRoutes = useMemo(() => buildRoutes(files), [files]);
@@ -421,7 +446,7 @@ function AppContent({
 
 	return (
 		<Routes>
-			{renderRoutes(jsxRoutes, appId, userComponentNames, files)}
+			{renderRoutes(jsxRoutes, appId, userComponentNames, files, externalDeps)}
 		</Routes>
 	);
 }
@@ -453,6 +478,7 @@ export function JsxAppShell({
 	isPreview = false,
 }: JsxAppShellProps) {
 	const [files, setFiles] = useState<AppCodeFile[] | null>(null);
+	const [externalDeps, setExternalDeps] = useState<Record<string, Record<string, unknown>>>({});
 	const [error, setError] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const setAppContext = useAppBuilderStore((state) => state.setAppContext);
@@ -460,7 +486,8 @@ export function JsxAppShell({
 	// Determine file mode based on preview flag
 	const mode = isPreview ? "draft" : "live";
 
-	// Real-time updates via WebSocket (only in preview mode)
+	// Real-time updates via WebSocket (only in preview mode).
+	// On file changes, re-fetch compiled files from /render.
 	const { updateCounter } = useAppCodeUpdates({
 		appId,
 		enabled: isPreview,
@@ -476,28 +503,40 @@ export function JsxAppShell({
 		};
 	}, [appSlug, isPreview, setAppContext]);
 
+	// Load app files (initial + WS-triggered refreshes)
 	useEffect(() => {
-		let cancelled = false;
+		const controller = new AbortController();
 
 		async function loadApp() {
-			setIsLoading(true);
+			// Only show loading skeleton on initial load
+			if (!files) {
+				setIsLoading(true);
+			}
 			setError(null);
 
 			try {
-				const appFiles = await fetchAppFiles(appId, mode);
+				const { files: appFiles, dependencies } = await fetchAppFiles(appId, mode, controller.signal);
 
-				if (cancelled) return;
+				if (controller.signal.aborted) return;
+
+				// Load external deps from esm.sh (parallel fetch)
+				let loadedDeps: Record<string, Record<string, unknown>> = {};
+				if (Object.keys(dependencies).length > 0) {
+					loadedDeps = await loadDependencies(dependencies);
+					if (controller.signal.aborted) return;
+				}
 
 				setFiles(appFiles);
+				setExternalDeps(loadedDeps);
 			} catch (err) {
-				if (cancelled) return;
+				if (controller.signal.aborted) return;
 				setError(
 					err instanceof Error
 						? err.message
 						: "Failed to load application",
 				);
 			} finally {
-				if (!cancelled) {
+				if (!controller.signal.aborted) {
 					setIsLoading(false);
 				}
 			}
@@ -506,9 +545,9 @@ export function JsxAppShell({
 		loadApp();
 
 		return () => {
-			cancelled = true;
+			controller.abort();
 		};
-	}, [appId, mode, updateCounter]);
+	}, [appId, mode, updateCounter]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	// Compute user component names from files list (memoized)
 	// Must be called before any conditional returns to satisfy React Hooks rules
@@ -552,6 +591,7 @@ export function JsxAppShell({
 			files={files}
 			appId={appId}
 			userComponentNames={userComponentNames}
+			externalDeps={externalDeps}
 		/>
 	);
 
@@ -564,6 +604,7 @@ export function JsxAppShell({
 					appId={appId}
 					userComponentNames={userComponentNames}
 					allFiles={files}
+					externalDeps={externalDeps}
 				>
 					{appContent}
 				</ProvidersWrapper>

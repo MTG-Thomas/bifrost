@@ -26,6 +26,8 @@ interface JsxPageRendererProps {
 	userComponentNames: Set<string>;
 	/** All pre-loaded files (for resolving components without API calls) */
 	allFiles?: AppCodeFile[];
+	/** Loaded external npm dependencies keyed by package name */
+	externalDeps?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -84,6 +86,7 @@ export function JsxPageRenderer({
 	file,
 	userComponentNames,
 	allFiles,
+	externalDeps,
 }: JsxPageRendererProps) {
 	const [PageComponent, setPageComponent] =
 		useState<React.ComponentType | null>(null);
@@ -113,6 +116,7 @@ export function JsxPageRenderer({
 						componentNames,
 						userComponentNames,
 						allFiles,
+						externalDeps ?? {},
 					);
 				}
 
@@ -123,6 +127,7 @@ export function JsxPageRenderer({
 					file.compiled || source,
 					customComponents,
 					!!file.compiled,
+					externalDeps ?? {},
 				);
 
 				setPageComponent(() => Component);
@@ -143,7 +148,7 @@ export function JsxPageRenderer({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, userComponentNames, file.path, file.source, file.compiled, source]);
+	}, [appId, userComponentNames, allFiles, externalDeps, file.path, file.source, file.compiled, source]);
 
 	if (isLoading) {
 		return <PageSkeleton />;
