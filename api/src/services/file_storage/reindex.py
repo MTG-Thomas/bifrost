@@ -117,7 +117,7 @@ class WorkspaceReindexService:
         """
         Reindex file_index table from local filesystem.
 
-        Called after download_workspace() to ensure DB matches actual files.
+        Ensures DB matches actual files on disk.
         Also reconciles orphaned workflows/data_providers.
 
         Args:

@@ -170,10 +170,6 @@ class FileStorageService:
         """List all files in workspace (recursive)."""
         return await self._folder_ops.list_all_files(include_deleted=include_deleted)
 
-    async def download_workspace(self, local_path: Path) -> None:
-        """Download entire workspace from S3 to local filesystem."""
-        await self._folder_ops.download_workspace(local_path)
-
     async def upload_from_directory(
         self,
         local_path: Path,

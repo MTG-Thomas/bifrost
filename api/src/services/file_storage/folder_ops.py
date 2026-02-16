@@ -5,7 +5,6 @@ Handles folder creation, deletion, listing, and bulk operations.
 """
 
 import logging
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -246,44 +245,6 @@ class FolderOperationsService:
             )
             for fi in result.scalars()
         ]
-
-    async def download_workspace(self, local_path: Path) -> None:
-        """
-        Download entire workspace to local directory.
-
-        Clears existing content first to ensure clean state.
-        Used by workers before execution.
-
-        Args:
-            local_path: Local directory to download to
-        """
-        # Clear existing workspace to remove stale files
-        if local_path.exists():
-            shutil.rmtree(local_path)
-        local_path.mkdir(parents=True, exist_ok=True)
-
-        async with self._s3_client.get_client() as s3:
-            # List all objects in bucket
-            paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=self.settings.s3_bucket):
-                for obj in page.get("Contents", []):
-                    key = obj.get("Key")
-                    if not key:
-                        continue
-                    local_file = local_path / key
-
-                    # Create parent directories
-                    local_file.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Download file
-                    response = await s3.get_object(
-                        Bucket=self.settings.s3_bucket,
-                        Key=key,
-                    )
-                    content = await response["Body"].read()
-                    local_file.write_bytes(content)
-
-        logger.info(f"Workspace downloaded to {local_path}")
 
     async def upload_from_directory(
         self,
