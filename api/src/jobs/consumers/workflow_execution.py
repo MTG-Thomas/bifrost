@@ -618,18 +618,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     workflow_function_name = workflow_data["function_name"]
                     file_path = workflow_data["path"]  # Used for __file__ injection and Redis/S3 loading
 
-                    # Pin execution to content hash for reproducibility.
-                    # Worker validates loaded code matches this hash.
-                    from sqlalchemy import select as sa_select
-                    from src.models.orm.file_index import FileIndex
-
-                    hash_result = await db.execute(
-                        sa_select(FileIndex.content_hash).where(
-                            FileIndex.path == file_path
-                        )
-                    )
-                    content_hash = hash_result.scalar_one_or_none()
-
                     timeout_seconds = workflow_data["timeout_seconds"]
                     # Initialize ROI from workflow defaults
                     roi_time_saved = workflow_data["time_saved"]
