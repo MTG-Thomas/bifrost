@@ -141,11 +141,12 @@ class FileOperationsService:
                 return _serialize_agent_to_yaml(agent), None
             raise FileNotFoundError(f"Agent not found: {agent_id}")
 
-        # Everything else: Redis cache → S3 _repo/ (file_index is search-only)
-        from src.core.module_cache import get_module
-        cached = await get_module(path)
-        if cached:
-            return cached["content"].encode("utf-8"), None
+        # Python modules: Redis cache → S3 fallback (for fast worker imports)
+        if path.endswith(".py"):
+            from src.core.module_cache import get_module
+            cached = await get_module(path)
+            if cached:
+                return cached["content"].encode("utf-8"), None
 
         # Fallback to S3 _repo/ prefix
         s3_key = f"{REPO_PREFIX}{path}"
