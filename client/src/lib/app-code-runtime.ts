@@ -351,32 +351,25 @@ export function createComponent(
 		};
 	}
 
-	// Step 2: Build the full scope
-	const scope = {
-		...$,
-		...customComponents,
-		$: { ...$, ...customComponents }, // Also provide $ for explicit imports
-		$deps: externalDeps,
-	};
+	// Step 2: Build the combined $ scope (includes custom components)
+	const combinedScope = { ...$, ...customComponents };
 
-	// Step 3: Create argument names and values for the function
-	// This makes everything available as direct variables (backward compat)
-	// AND as properties on $ (for import statements)
-	const argNames = Object.keys(scope);
-	const argValues = Object.values(scope);
-
-	// Step 4: Wrap the compiled code as a component factory
+	// Step 3: Wrap the compiled code as a component factory
 	const wrapped = wrapAsComponent(compiled);
 
-	// Step 5: Create and execute the factory
+	// Step 4: Create and execute the factory
+	// We inject only $, $deps, and React as function parameters.
+	// Compiled code destructures what it needs: `const { Button } = $;`
+	// This avoids "already declared" errors when compiled code uses
+	// `const { X } = $;` for a name that was also a function parameter.
 	try {
-		// Create a function that takes all scope items as arguments
-		const factory = new Function(...argNames, wrapped) as (
-			...args: unknown[]
+		const factory = new Function("$", "$deps", "React", wrapped) as (
+			scope: Record<string, unknown>,
+			deps: Record<string, Record<string, unknown>>,
+			react: typeof React,
 		) => React.ComponentType;
 
-		// Execute the factory with our scope values
-		const Component = factory(...argValues);
+		const Component = factory(combinedScope, externalDeps, React);
 
 		// Wrap in an error boundary function component
 		return function SafeComponent(
