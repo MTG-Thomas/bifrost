@@ -120,6 +120,31 @@ def _parse_dependencies(yaml_content: str | None) -> dict[str, str]:
     return deps
 
 
+def _serialize_dependencies(
+    deps: dict[str, str], existing_yaml: str | None
+) -> str:
+    """Serialize dependencies back into app.yaml content.
+
+    Preserves existing non-dependency fields. If no existing YAML,
+    creates a minimal file.
+    """
+    data: dict = {}
+    if existing_yaml:
+        try:
+            parsed = yaml.safe_load(existing_yaml)
+            if isinstance(parsed, dict):
+                data = parsed
+        except Exception:
+            pass
+
+    if deps:
+        data["dependencies"] = deps
+    else:
+        data.pop("dependencies", None)
+
+    return yaml.dump(data, default_flow_style=False, sort_keys=False)
+
+
 def validate_file_path(path: str) -> None:
     """Validate file path against conventions.
 
@@ -560,3 +585,83 @@ async def render_app(
     ]
 
     return AppRenderResponse(files=files, total=len(files), dependencies=dependencies)
+
+
+# =============================================================================
+# Dependencies endpoints — read/write app.yaml dependencies section
+# =============================================================================
+
+
+@render_router.get(
+    "/dependencies",
+    response_model=dict[str, str],
+    summary="Get app dependencies",
+)
+async def get_dependencies(
+    app_id: UUID = Path(..., description="Application UUID"),
+    ctx: Context = None,
+    user: CurrentUser = None,
+) -> dict[str, str]:
+    """Return the validated dependencies dict from app.yaml."""
+    app = await get_application_or_404(ctx, app_id)
+    file_index = FileIndexService(ctx.db)
+    yaml_content = await file_index.read(f"apps/{app.slug}/app.yaml")
+    return _parse_dependencies(yaml_content)
+
+
+@render_router.put(
+    "/dependencies",
+    response_model=dict[str, str],
+    summary="Update app dependencies",
+)
+async def put_dependencies(
+    deps: dict[str, str],
+    app_id: UUID = Path(..., description="Application UUID"),
+    ctx: Context = None,
+    user: CurrentUser = None,
+) -> dict[str, str]:
+    """Replace the dependencies section of app.yaml.
+
+    Validates every package name and version, enforces the max-dependency
+    limit, then writes back to app.yaml preserving other fields.
+    """
+    app = await get_application_or_404(ctx, app_id)
+
+    # Validate
+    if len(deps) > _MAX_DEPENDENCIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many dependencies (max {_MAX_DEPENDENCIES})",
+        )
+    for name, version in deps.items():
+        if not _PKG_NAME_RE.match(name):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid package name: {name}",
+            )
+        if not _VERSION_RE.match(version):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid version for {name}: {version}",
+            )
+
+    # Read existing app.yaml
+    file_index = FileIndexService(ctx.db)
+    yaml_path = f"apps/{app.slug}/app.yaml"
+    existing_yaml = await file_index.read(yaml_path)
+
+    # Serialize and write back
+    new_yaml = _serialize_dependencies(deps, existing_yaml)
+    storage = get_file_storage_service(ctx.db)
+    await storage.write_file(
+        path=yaml_path,
+        content=new_yaml.encode("utf-8"),
+        updated_by=user.email or "unknown",
+    )
+
+    # Invalidate render cache
+    app_storage = AppStorageService()
+    await app_storage.invalidate_render_cache(str(app.id))
+
+    logger.info(f"Updated dependencies for app {app_id}: {list(deps.keys())}")
+    return deps
