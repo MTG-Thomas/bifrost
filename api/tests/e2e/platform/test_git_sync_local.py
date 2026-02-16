@@ -2380,3 +2380,376 @@ class TestCrossInstanceManifestReconciliation:
         )
         imported_config = config_result.scalar_one_or_none()
         assert imported_config is not None, "Config should be imported from remote"
+
+
+# =============================================================================
+# Pull Upsert Natural Key Tests
+# =============================================================================
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+class TestPullUpsertNaturalKeys:
+    """Test that _import_* methods handle ID mismatches by matching on natural keys."""
+
+    async def test_workflow_import_with_different_id(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        working_clone,
+    ):
+        """When a workflow exists with (path, function_name) but a different ID,
+        the import should update the existing row's ID to match the manifest."""
+        # Create a workflow in the DB with ID_A
+        id_a = uuid4()
+        wf = Workflow(
+            id=id_a,
+            name="Original",
+            function_name="natural_key_test_wf",
+            path="workflows/natural_key_test.py",
+            is_active=True,
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        # Write the workflow file to the persistent dir
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/natural_key_test.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+
+        # Push from "another instance" (working_clone) with same (path, function_name) but ID_B
+        id_b = uuid4()
+        clone_dir = Path(working_clone.working_dir)
+
+        # Write workflow file
+        wf_dir = clone_dir / "workflows"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "natural_key_test.py").write_text(SAMPLE_WORKFLOW_PY)
+
+        # Write manifest with ID_B for the same path+function_name
+        bifrost_dir = clone_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        manifest_content = yaml.dump({
+            "workflows": {
+                "natural_key_test_wf": {
+                    "id": str(id_b),
+                    "path": "workflows/natural_key_test.py",
+                    "function_name": "natural_key_test_wf",
+                    "type": "workflow",
+                }
+            }
+        }, default_flow_style=False, sort_keys=False)
+        (bifrost_dir / "metadata.yaml").write_text(manifest_content)
+
+        working_clone.index.add([
+            "workflows/natural_key_test.py",
+            ".bifrost/metadata.yaml",
+        ])
+        working_clone.index.commit("Add workflow with different ID")
+        working_clone.remotes.origin.push("main")
+
+        # Pull — this should NOT raise IntegrityError
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success, f"Pull failed: {pull_result.error}"
+
+        # Verify: only one workflow row exists with the manifest's ID (id_b)
+        result = await db_session.execute(
+            select(Workflow).where(
+                Workflow.path == "workflows/natural_key_test.py",
+                Workflow.function_name == "natural_key_test_wf",
+            )
+        )
+        rows = result.scalars().all()
+        assert len(rows) == 1, f"Expected 1 workflow row, got {len(rows)}"
+        assert rows[0].id == id_b, f"Expected manifest ID {id_b}, got {rows[0].id}"
+
+    async def test_integration_import_with_different_id(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        working_clone,
+    ):
+        """When an integration exists with same name but different ID,
+        the import should update the existing row's ID to match the manifest."""
+        from src.models.orm.integrations import Integration
+
+        # Create integration in DB with ID_A
+        id_a = uuid4()
+        integ = Integration(id=id_a, name="NaturalKeyTestInteg", is_deleted=False)
+        db_session.add(integ)
+        await db_session.commit()
+
+        # Push from "another instance" with same name but ID_B
+        id_b = uuid4()
+        clone_dir = Path(working_clone.working_dir)
+
+        bifrost_dir = clone_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        manifest_content = yaml.dump({
+            "integrations": {
+                "NaturalKeyTestInteg": {
+                    "id": str(id_b),
+                    "entity_id": "tenant_id",
+                }
+            }
+        }, default_flow_style=False, sort_keys=False)
+        (bifrost_dir / "metadata.yaml").write_text(manifest_content)
+
+        working_clone.index.add([".bifrost/metadata.yaml"])
+        working_clone.index.commit("Add integration with different ID")
+        working_clone.remotes.origin.push("main")
+
+        # Pull — should NOT raise IntegrityError
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success, f"Pull failed: {pull_result.error}"
+
+        # Verify: one integration with manifest ID
+        result = await db_session.execute(
+            select(Integration).where(Integration.name == "NaturalKeyTestInteg")
+        )
+        rows = result.scalars().all()
+        assert len(rows) == 1, f"Expected 1 integration, got {len(rows)}"
+        assert rows[0].id == id_b, f"Expected manifest ID {id_b}, got {rows[0].id}"
+
+    async def test_app_import_with_different_id(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        working_clone,
+    ):
+        """When an app exists with same slug but different ID,
+        the import should update the existing row's ID to match the manifest."""
+        from src.models.orm.applications import Application
+
+        # Create app in DB with ID_A
+        id_a = uuid4()
+        app = Application(
+            id=id_a, name="Natural Key App", slug="natural-key-app",
+            organization_id=None,
+        )
+        db_session.add(app)
+        await db_session.commit()
+
+        # Push from "another instance" with same slug but ID_B
+        id_b = uuid4()
+        clone_dir = Path(working_clone.working_dir)
+
+        # Write app.yaml file
+        app_dir = clone_dir / "apps" / "natural-key-app"
+        app_dir.mkdir(parents=True, exist_ok=True)
+        (app_dir / "app.yaml").write_text(yaml.dump({
+            "name": "Natural Key App Updated",
+            "description": "Updated from remote",
+        }, default_flow_style=False))
+
+        bifrost_dir = clone_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        manifest_content = yaml.dump({
+            "apps": {
+                "natural-key-app": {
+                    "id": str(id_b),
+                    "path": "apps/natural-key-app/app.yaml",
+                    "slug": "natural-key-app",
+                }
+            }
+        }, default_flow_style=False, sort_keys=False)
+        (bifrost_dir / "metadata.yaml").write_text(manifest_content)
+
+        working_clone.index.add([
+            "apps/natural-key-app/app.yaml",
+            ".bifrost/metadata.yaml",
+        ])
+        working_clone.index.commit("Add app with different ID")
+        working_clone.remotes.origin.push("main")
+
+        # Pull — should NOT raise IntegrityError
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success, f"Pull failed: {pull_result.error}"
+
+        # Verify: one app with manifest ID
+        result = await db_session.execute(
+            select(Application).where(Application.slug == "natural-key-app")
+        )
+        rows = result.scalars().all()
+        assert len(rows) == 1, f"Expected 1 app, got {len(rows)}"
+        assert rows[0].id == id_b, f"Expected manifest ID {id_b}, got {rows[0].id}"
+
+    async def test_config_import_with_different_id(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        working_clone,
+    ):
+        """When a config exists with same (integration_id, org_id, key) but different ID,
+        the import should update the existing row's ID to match the manifest."""
+        from src.models.orm.config import Config
+        from src.models.orm.integrations import Integration
+
+        # Create integration first (needed for FK)
+        integ_id = uuid4()
+        integ = Integration(id=integ_id, name="ConfigTestInteg", is_deleted=False)
+        db_session.add(integ)
+        await db_session.flush()
+
+        # Create config in DB with ID_A
+        id_a = uuid4()
+        cfg = Config(
+            id=id_a, key="natural_key_cfg", value={"test": True},
+            integration_id=integ_id, updated_by="test",
+        )
+        db_session.add(cfg)
+        await db_session.commit()
+
+        # Push from "another instance" with same natural key but ID_B
+        id_b = uuid4()
+        clone_dir = Path(working_clone.working_dir)
+
+        bifrost_dir = clone_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        manifest_content = yaml.dump({
+            "integrations": {
+                "ConfigTestInteg": {
+                    "id": str(integ_id),
+                    "entity_id": "tenant_id",
+                }
+            },
+            "configs": {
+                "natural_key_cfg": {
+                    "id": str(id_b),
+                    "key": "natural_key_cfg",
+                    "integration_id": str(integ_id),
+                    "config_type": "string",
+                    "value": {"test": True, "updated": True},
+                }
+            }
+        }, default_flow_style=False, sort_keys=False)
+        (bifrost_dir / "metadata.yaml").write_text(manifest_content)
+
+        working_clone.index.add([".bifrost/metadata.yaml"])
+        working_clone.index.commit("Add config with different ID")
+        working_clone.remotes.origin.push("main")
+
+        # Pull — should NOT raise IntegrityError
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success, f"Pull failed: {pull_result.error}"
+
+        # Verify: one config row with manifest ID
+        result = await db_session.execute(
+            select(Config).where(
+                Config.key == "natural_key_cfg",
+                Config.integration_id == integ_id,
+            )
+        )
+        rows = result.scalars().all()
+        assert len(rows) == 1, f"Expected 1 config, got {len(rows)}"
+        assert rows[0].id == id_b, f"Expected manifest ID {id_b}, got {rows[0].id}"
+
+    async def test_event_subscription_import_with_different_id(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        working_clone,
+    ):
+        """When an event subscription exists with same (event_source_id, workflow_id)
+        but different ID, the import should update the existing row."""
+        from src.models.orm.events import EventSource, EventSubscription
+
+        # Create a workflow (needed for FK)
+        wf_id = uuid4()
+        wf = Workflow(
+            id=wf_id, name="SubTestWF", function_name="sub_test_wf",
+            path="workflows/sub_test.py", is_active=True,
+        )
+        db_session.add(wf)
+
+        # Create event source
+        es_id = uuid4()
+        es = EventSource(
+            id=es_id, name="SubTestSource", source_type="schedule",
+            is_active=True, created_by="test",
+        )
+        db_session.add(es)
+
+        # Create subscription with ID_A
+        sub_id_a = uuid4()
+        sub = EventSubscription(
+            id=sub_id_a, event_source_id=es_id, workflow_id=wf_id,
+            is_active=True, created_by="test",
+        )
+        db_session.add(sub)
+        await db_session.commit()
+
+        # Push from "another instance" with same (event_source_id, workflow_id) but ID_B
+        sub_id_b = uuid4()
+        clone_dir = Path(working_clone.working_dir)
+
+        bifrost_dir = clone_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+
+        # Need workflow file + manifest for the pull to work
+        wf_dir = clone_dir / "workflows"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "sub_test.py").write_text(SAMPLE_WORKFLOW_PY)
+
+        # Write persistent workflow file too
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/sub_test.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+
+        manifest_content = yaml.dump({
+            "workflows": {
+                "sub_test_wf": {
+                    "id": str(wf_id),
+                    "path": "workflows/sub_test.py",
+                    "function_name": "sub_test_wf",
+                    "type": "workflow",
+                }
+            },
+            "events": {
+                str(es_id): {
+                    "id": str(es_id),
+                    "source_type": "schedule",
+                    "is_active": True,
+                    "cron_expression": "0 * * * *",
+                    "subscriptions": [
+                        {
+                            "id": str(sub_id_b),
+                            "workflow_id": str(wf_id),
+                            "is_active": True,
+                        }
+                    ],
+                }
+            },
+        }, default_flow_style=False, sort_keys=False)
+        (bifrost_dir / "metadata.yaml").write_text(manifest_content)
+
+        working_clone.index.add([
+            "workflows/sub_test.py",
+            ".bifrost/metadata.yaml",
+        ])
+        working_clone.index.commit("Add event subscription with different ID")
+        working_clone.remotes.origin.push("main")
+
+        # Pull — should NOT raise IntegrityError
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success, f"Pull failed: {pull_result.error}"
+
+        # Verify: one subscription with manifest ID
+        result = await db_session.execute(
+            select(EventSubscription).where(
+                EventSubscription.event_source_id == es_id,
+                EventSubscription.workflow_id == wf_id,
+            )
+        )
+        rows = result.scalars().all()
+        assert len(rows) == 1, f"Expected 1 subscription, got {len(rows)}"
+        assert rows[0].id == sub_id_b, f"Expected manifest ID {sub_id_b}, got {rows[0].id}"

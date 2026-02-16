@@ -1122,30 +1122,71 @@ class GitHubSyncService:
         """Import a workflow from repo into the DB."""
         from uuid import UUID
 
+        from sqlalchemy import update
         from sqlalchemy.dialects.postgresql import insert
 
         from src.models.orm.workflows import Workflow
 
-        stmt = insert(Workflow).values(
-            id=UUID(mwf.id),
-            name=manifest_name,
-            function_name=mwf.function_name,
-            path=mwf.path,
-            type=getattr(mwf, "type", "workflow"),
-            is_active=True,
-            organization_id=UUID(mwf.organization_id) if mwf.organization_id else None,
-        ).on_conflict_do_update(
-            index_elements=["id"],
-            set_={
-                "name": manifest_name,
-                "function_name": mwf.function_name,
-                "path": mwf.path,
-                "type": getattr(mwf, "type", "workflow"),
-                "is_active": True,
-                "updated_at": datetime.now(timezone.utc),
-            },
+        wf_id = UUID(mwf.id)
+        org_id = UUID(mwf.organization_id) if mwf.organization_id else None
+
+        # Check for existing workflow by natural key (path, function_name) OR by ID
+        by_natural = await self.db.execute(
+            select(Workflow.id).where(
+                Workflow.path == mwf.path,
+                Workflow.function_name == mwf.function_name,
+            )
         )
-        await self.db.execute(stmt)
+        existing_by_natural = by_natural.scalar_one_or_none()
+
+        by_id = await self.db.execute(
+            select(Workflow.id).where(Workflow.id == wf_id)
+        )
+        existing_by_id = by_id.scalar_one_or_none()
+
+        if existing_by_natural is not None:
+            # Match on natural key — update (including ID if it changed)
+            stmt = (
+                update(Workflow)
+                .where(Workflow.id == existing_by_natural)
+                .values(
+                    id=wf_id,
+                    name=manifest_name,
+                    function_name=mwf.function_name,
+                    path=mwf.path,
+                    type=getattr(mwf, "type", "workflow"),
+                    is_active=True,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await self.db.execute(stmt)
+        elif existing_by_id is not None:
+            # Same ID but path/function changed (rename) — update
+            stmt = (
+                update(Workflow)
+                .where(Workflow.id == wf_id)
+                .values(
+                    name=manifest_name,
+                    function_name=mwf.function_name,
+                    path=mwf.path,
+                    type=getattr(mwf, "type", "workflow"),
+                    is_active=True,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await self.db.execute(stmt)
+        else:
+            # New workflow — insert
+            stmt = insert(Workflow).values(
+                id=wf_id,
+                name=manifest_name,
+                function_name=mwf.function_name,
+                path=mwf.path,
+                type=getattr(mwf, "type", "workflow"),
+                is_active=True,
+                organization_id=org_id,
+            )
+            await self.db.execute(stmt)
 
     async def _resolve_portable_ref(self, ref: str) -> str | None:
         """Resolve a path::function_name portable ref to a workflow UUID string.
@@ -1275,6 +1316,7 @@ class GitHubSyncService:
         """Import an app from repo into the DB (metadata only)."""
         from uuid import UUID
 
+        from sqlalchemy import update
         from sqlalchemy.dialects.postgresql import insert
 
         from src.models.orm.applications import Application
@@ -1289,22 +1331,51 @@ class GitHubSyncService:
             logger.warning(f"App {mapp.id} has no slug or path, skipping")
             return
 
-        stmt = insert(Application).values(
-            id=UUID(mapp.id),
-            name=data.get("name", ""),
-            description=data.get("description"),
-            slug=slug,
-            organization_id=UUID(mapp.organization_id) if mapp.organization_id else None,
-        ).on_conflict_do_update(
-            index_elements=["id"],
-            set_={
-                "name": data.get("name", ""),
-                "description": data.get("description"),
-                "slug": slug,
-                "updated_at": datetime.now(timezone.utc),
-            },
-        )
-        await self.db.execute(stmt)
+        app_id = UUID(mapp.id)
+        org_id = UUID(mapp.organization_id) if mapp.organization_id else None
+
+        # Two-step: check for existing app by natural key (org_id, slug)
+        existing_query = select(Application.id).where(Application.slug == slug)
+        if org_id:
+            existing_query = existing_query.where(Application.organization_id == org_id)
+        else:
+            existing_query = existing_query.where(Application.organization_id.is_(None))
+
+        existing = await self.db.execute(existing_query)
+        existing_id = existing.scalar_one_or_none()
+
+        if existing_id is not None:
+            # Update existing row (including ID if it changed)
+            stmt = (
+                update(Application)
+                .where(Application.id == existing_id)
+                .values(
+                    id=app_id,
+                    name=data.get("name", ""),
+                    description=data.get("description"),
+                    slug=slug,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await self.db.execute(stmt)
+        else:
+            # Insert new row
+            stmt = insert(Application).values(
+                id=app_id,
+                name=data.get("name", ""),
+                description=data.get("description"),
+                slug=slug,
+                organization_id=org_id,
+            ).on_conflict_do_update(
+                index_elements=["id"],
+                set_={
+                    "name": data.get("name", ""),
+                    "description": data.get("description"),
+                    "slug": slug,
+                    "updated_at": datetime.now(timezone.utc),
+                },
+            )
+            await self.db.execute(stmt)
 
     async def _import_integration(self, integ_name: str, minteg) -> None:
         """Import an integration from manifest into the DB.
@@ -1321,34 +1392,44 @@ class GitHubSyncService:
 
         integ_id = UUID(minteg.id)
 
-        # Upsert integration
-        stmt = insert(Integration).values(
-            id=integ_id,
-            name=integ_name,
-            entity_id=minteg.entity_id,
-            entity_id_name=minteg.entity_id_name,
-            default_entity_id=minteg.default_entity_id,
-            list_entities_data_provider_id=(
+        # Two-step upsert: check by natural key (name) or by ID
+        by_name = await self.db.execute(
+            select(Integration.id).where(Integration.name == integ_name)
+        )
+        existing_by_name = by_name.scalar_one_or_none()
+
+        integ_values = {
+            "name": integ_name,
+            "entity_id": minteg.entity_id,
+            "entity_id_name": minteg.entity_id_name,
+            "default_entity_id": minteg.default_entity_id,
+            "list_entities_data_provider_id": (
                 UUID(minteg.list_entities_data_provider_id)
                 if minteg.list_entities_data_provider_id else None
             ),
-            is_deleted=False,
-        ).on_conflict_do_update(
-            index_elements=["id"],
-            set_={
-                "name": integ_name,
-                "entity_id": minteg.entity_id,
-                "entity_id_name": minteg.entity_id_name,
-                "default_entity_id": minteg.default_entity_id,
-                "list_entities_data_provider_id": (
-                    UUID(minteg.list_entities_data_provider_id)
-                    if minteg.list_entities_data_provider_id else None
-                ),
-                "is_deleted": False,
-                "updated_at": datetime.now(timezone.utc),
-            },
-        )
-        await self.db.execute(stmt)
+            "is_deleted": False,
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+        if existing_by_name is not None:
+            # Match on natural key — update (including ID if it changed)
+            from sqlalchemy import update as sa_update
+            stmt = (
+                sa_update(Integration)
+                .where(Integration.id == existing_by_name)
+                .values(id=integ_id, **integ_values)
+            )
+            await self.db.execute(stmt)
+        else:
+            # Insert or update by ID (handles rename case: same ID, new name)
+            stmt = insert(Integration).values(
+                id=integ_id,
+                **{k: v for k, v in integ_values.items() if k != "updated_at"},
+            ).on_conflict_do_update(
+                index_elements=["id"],
+                set_=integ_values,
+            )
+            await self.db.execute(stmt)
 
         # Sync config schema items: delete all + re-insert
         from sqlalchemy import delete as sa_delete
@@ -1422,46 +1503,81 @@ class GitHubSyncService:
         """
         from uuid import UUID
 
+        from sqlalchemy import update
         from sqlalchemy.dialects.postgresql import insert
 
         from src.models.orm.config import Config
 
         cfg_id = UUID(mcfg.id)
+        integ_id = UUID(mcfg.integration_id) if mcfg.integration_id else None
+        org_id = UUID(mcfg.organization_id) if mcfg.organization_id else None
 
-        # Check if this is a secret that already has a value
-        if mcfg.config_type == "secret":
-            existing = await self.db.execute(
-                select(Config.value).where(Config.id == cfg_id)
-            )
-            row = existing.first()
-            if row and row[0] is not None:
-                # Secret already has a value — don't overwrite
+        # Check for existing config by natural key (integration_id, org_id, key)
+        existing_query = select(Config.id, Config.value).where(Config.key == mcfg.key)
+        if integ_id:
+            existing_query = existing_query.where(Config.integration_id == integ_id)
+        else:
+            existing_query = existing_query.where(Config.integration_id.is_(None))
+        if org_id:
+            existing_query = existing_query.where(Config.organization_id == org_id)
+        else:
+            existing_query = existing_query.where(Config.organization_id.is_(None))
+
+        result = await self.db.execute(existing_query)
+        existing = result.first()
+
+        if existing is not None:
+            existing_id, existing_value = existing
+
+            # Secret with existing value — don't overwrite
+            if mcfg.config_type == "secret" and existing_value is not None:
                 return
 
-        stmt = insert(Config).values(
-            id=cfg_id,
-            key=mcfg.key,
-            config_type=mcfg.config_type,
-            description=mcfg.description,
-            integration_id=UUID(mcfg.integration_id) if mcfg.integration_id else None,
-            organization_id=UUID(mcfg.organization_id) if mcfg.organization_id else None,
-            value=mcfg.value if mcfg.value is not None else {},
-            updated_by="git-sync",
-        ).on_conflict_do_update(
-            index_elements=["id"],
-            set_={
+            # Update existing row (including ID if it changed)
+            update_values: dict = {
+                "id": cfg_id,
                 "key": mcfg.key,
                 "config_type": mcfg.config_type,
                 "description": mcfg.description,
-                "integration_id": UUID(mcfg.integration_id) if mcfg.integration_id else None,
-                "organization_id": UUID(mcfg.organization_id) if mcfg.organization_id else None,
+                "integration_id": integ_id,
+                "organization_id": org_id,
                 "updated_by": "git-sync",
                 "updated_at": datetime.now(timezone.utc),
-                # Only update value for non-secret types
-                **({"value": mcfg.value if mcfg.value is not None else {}} if mcfg.config_type != "secret" else {}),
-            },
-        )
-        await self.db.execute(stmt)
+            }
+            if mcfg.config_type != "secret":
+                update_values["value"] = mcfg.value if mcfg.value is not None else {}
+
+            stmt = (
+                update(Config)
+                .where(Config.id == existing_id)
+                .values(**update_values)
+            )
+            await self.db.execute(stmt)
+        else:
+            # Insert new row
+            stmt = insert(Config).values(
+                id=cfg_id,
+                key=mcfg.key,
+                config_type=mcfg.config_type,
+                description=mcfg.description,
+                integration_id=integ_id,
+                organization_id=org_id,
+                value=mcfg.value if mcfg.value is not None else {},
+                updated_by="git-sync",
+            ).on_conflict_do_update(
+                index_elements=["id"],
+                set_={
+                    "key": mcfg.key,
+                    "config_type": mcfg.config_type,
+                    "description": mcfg.description,
+                    "integration_id": integ_id,
+                    "organization_id": org_id,
+                    "updated_by": "git-sync",
+                    "updated_at": datetime.now(timezone.utc),
+                    **({"value": mcfg.value if mcfg.value is not None else {}} if mcfg.config_type != "secret" else {}),
+                },
+            )
+            await self.db.execute(stmt)
 
     async def _import_table(self, table_name: str, mtable) -> None:
         """Import a table definition from manifest into the DB (schema only, no data).
@@ -1586,8 +1702,9 @@ class GitHubSyncService:
                 is_active=msub.is_active,
                 created_by="git-sync",
             ).on_conflict_do_update(
-                index_elements=["id"],
+                index_elements=["event_source_id", "workflow_id"],
                 set_={
+                    "id": UUID(msub.id),
                     "workflow_id": UUID(msub.workflow_id),
                     "event_type": msub.event_type,
                     "filter_expression": msub.filter_expression,

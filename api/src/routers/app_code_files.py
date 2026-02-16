@@ -38,8 +38,8 @@ from src.models.contracts.applications import (
 from src.models.orm.applications import Application
 from src.routers.applications import ApplicationRepository
 from src.services.app_storage import AppStorageService
-from src.core.module_cache import get_module
 from src.services.file_index_service import FileIndexService
+from src.services.repo_storage import RepoStorage
 from src.services.file_storage.service import get_file_storage_service
 
 logger = logging.getLogger(__name__)
@@ -353,9 +353,12 @@ async def list_app_files(
         if rel_path == "app.yaml":
             continue
 
-        # Source from Redis→S3 cache
-        cached = await get_module(full_path)
-        source = cached["content"] if cached else ""
+        # Source from S3 (_repo/)
+        repo = RepoStorage()
+        try:
+            source = (await repo.read(full_path)).decode("utf-8", errors="replace")
+        except Exception:
+            source = ""
 
         # Compiled from _apps/{app_id}/{mode}/
         compiled: str | None = None
@@ -394,10 +397,13 @@ async def read_app_file(
     app = await get_application_or_404(ctx, app_id)
     app_storage = AppStorageService()
 
-    # Source from Redis→S3 cache
+    # Source from S3 (_repo/)
     repo_path = f"{_repo_prefix(app.slug)}{file_path}"
-    cached = await get_module(repo_path)
-    source = cached["content"] if cached else None
+    repo = RepoStorage()
+    try:
+        source = (await repo.read(repo_path)).decode("utf-8", errors="replace")
+    except Exception:
+        source = None
     if source is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -527,11 +533,12 @@ async def render_app(
     storage_mode = "preview" if mode == FileMode.draft else "live"
     app_id_str = str(app.id)
 
-    # Read dependencies from app.yaml in file_index (fast DB read, not cached)
+    # Read dependencies from app.yaml in S3
     dependencies: dict[str, str] = {}
     try:
-        cached = await get_module(f"apps/{app.slug}/app.yaml")
-        yaml_content = cached["content"] if cached else None
+        repo = RepoStorage()
+        yaml_bytes = await repo.read(f"apps/{app.slug}/app.yaml")
+        yaml_content = yaml_bytes.decode("utf-8", errors="replace")
         dependencies = _parse_dependencies(yaml_content)
     except Exception:
         pass
@@ -615,8 +622,11 @@ async def get_dependencies(
 ) -> dict[str, str]:
     """Return the validated dependencies dict from app.yaml."""
     app = await get_application_or_404(ctx, app_id)
-    cached = await get_module(f"apps/{app.slug}/app.yaml")
-    yaml_content = cached["content"] if cached else None
+    repo = RepoStorage()
+    try:
+        yaml_content = (await repo.read(f"apps/{app.slug}/app.yaml")).decode("utf-8", errors="replace")
+    except Exception:
+        yaml_content = None
     return _parse_dependencies(yaml_content)
 
 
@@ -658,8 +668,11 @@ async def put_dependencies(
 
     # Read existing app.yaml
     yaml_path = f"apps/{app.slug}/app.yaml"
-    cached = await get_module(yaml_path)
-    existing_yaml = cached["content"] if cached else None
+    repo = RepoStorage()
+    try:
+        existing_yaml = (await repo.read(yaml_path)).decode("utf-8", errors="replace")
+    except Exception:
+        existing_yaml = None
 
     # Serialize and write back
     new_yaml = _serialize_dependencies(deps, existing_yaml)

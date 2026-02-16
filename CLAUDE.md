@@ -60,6 +60,17 @@ The client at `localhost:3000` proxies `/api/*` to the API container. This means
 - ❌ Restart the entire stack for single-service changes
 - ❌ Manually write TypeScript types for API responses
 
+## File Operation Model
+
+| Content type | Write path | Read path | Cache strategy |
+|-------------|-----------|----------|----------------|
+| All files | S3 `_repo/` via `RepoStorage` | S3 `_repo/` via `RepoStorage` | S3 is source of truth |
+| Text files | + `file_index` DB | `file_index` (search only) | Search index, never read content |
+| Python modules/workflows | + Redis via `set_module()` | Redis via `get_module()` → S3 fallback | Write-through (warm on write) |
+| Compiled app files | S3 `_apps/{id}/preview/` | Redis render cache → S3 fallback | Invalidate on write, lazy rebuild |
+
+**`get_module()` must NOT be used for non-Python files.** App source reads (TSX, YAML, etc.) go to S3 directly via `RepoStorage.read()`.
+
 ## Project Structure
 
 ```

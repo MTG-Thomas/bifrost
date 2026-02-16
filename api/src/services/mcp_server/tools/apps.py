@@ -1049,9 +1049,9 @@ async def get_app_dependencies(
     from sqlalchemy import select
 
     from src.core.database import get_db_context
-    from src.core.module_cache import get_module
     from src.models.orm.applications import Application
     from src.routers.app_code_files import _parse_dependencies
+    from src.services.repo_storage import RepoStorage
 
     if not app_id and not app_slug:
         return error_result("Either app_id or app_slug is required")
@@ -1078,8 +1078,11 @@ async def get_app_dependencies(
             if not app:
                 return error_result(f"Application not found: {app_id or app_slug}")
 
-            cached = await get_module(f"apps/{app.slug}/app.yaml")
-            yaml_content = cached["content"] if cached else None
+            repo = RepoStorage()
+            try:
+                yaml_content = (await repo.read(f"apps/{app.slug}/app.yaml")).decode("utf-8", errors="replace")
+            except Exception:
+                yaml_content = None
             deps = _parse_dependencies(yaml_content)
 
             if not deps:
@@ -1123,11 +1126,11 @@ async def update_app_dependencies(
     from sqlalchemy import select
 
     from src.core.database import get_db_context
-    from src.core.module_cache import get_module
     from src.models.orm.applications import Application
     from src.routers.app_code_files import _serialize_dependencies
     from src.services.app_storage import AppStorageService
     from src.services.file_storage.file_storage_service import get_file_storage_service
+    from src.services.repo_storage import RepoStorage
 
     MAX_DEPS = 20
     PKG_NAME_RE = re.compile(r"^(@[a-z0-9-]+/)?[a-z0-9][a-z0-9._-]*$")
@@ -1164,8 +1167,11 @@ async def update_app_dependencies(
 
             # Read existing app.yaml
             yaml_path = f"apps/{app.slug}/app.yaml"
-            cached = await get_module(yaml_path)
-            existing_yaml = cached["content"] if cached else None
+            repo = RepoStorage()
+            try:
+                existing_yaml = (await repo.read(yaml_path)).decode("utf-8", errors="replace")
+            except Exception:
+                existing_yaml = None
 
             # Serialize and write
             new_yaml = _serialize_dependencies(dependencies, existing_yaml)

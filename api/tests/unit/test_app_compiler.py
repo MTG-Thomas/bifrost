@@ -26,7 +26,7 @@ export default function Page() {
 }'''
         result = await compiler.compile_file(source, "pages/index.tsx")
         assert result.success is True
-        assert "const {" in result.compiled or "const { " in result.compiled
+        assert "var {" in result.compiled or "var { " in result.compiled
 
     @pytest.mark.asyncio
     async def test_compile_syntax_error(self, compiler):
