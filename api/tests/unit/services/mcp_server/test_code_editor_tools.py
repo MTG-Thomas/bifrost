@@ -78,16 +78,13 @@ class TestListContent:
         """Should list workflow paths using path_prefix."""
         from src.services.mcp_server.tools.code_editor import list_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
-
-            mock_result = MagicMock()
-            mock_result.fetchall.return_value = [
-                ("workflows/sync_tickets.py",),
-                ("workflows/sync_users.py",),
-            ]
-            mock_session.execute.return_value = mock_result
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.list = AsyncMock(return_value=[
+                "workflows/sync_tickets.py",
+                "workflows/sync_users.py",
+            ])
+            mock_repo_cls.return_value = mock_repo
 
             result = await list_content(
                 context=platform_admin_context,
@@ -100,22 +97,20 @@ class TestListContent:
             assert len(data["files"]) == 2
             assert data["files"][0]["path"] == "workflows/sync_tickets.py"
             assert data["files"][1]["path"] == "workflows/sync_users.py"
+            mock_repo.list.assert_called_once_with("workflows/")
 
     @pytest.mark.asyncio
     async def test_list_modules(self, platform_admin_context):
         """Should list module paths using path_prefix."""
         from src.services.mcp_server.tools.code_editor import list_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
-
-            mock_result = MagicMock()
-            mock_result.fetchall.return_value = [
-                ("modules/helpers.py",),
-                ("modules/utils.py",),
-            ]
-            mock_session.execute.return_value = mock_result
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.list = AsyncMock(return_value=[
+                "modules/helpers.py",
+                "modules/utils.py",
+            ])
+            mock_repo_cls.return_value = mock_repo
 
             result = await list_content(
                 context=platform_admin_context,
@@ -134,16 +129,13 @@ class TestListContent:
         """Should list app files using path_prefix with app slug."""
         from src.services.mcp_server.tools.code_editor import list_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
-
-            mock_result = MagicMock()
-            mock_result.fetchall.return_value = [
-                ("apps/test-app/components/Header.tsx",),
-                ("apps/test-app/pages/index.tsx",),
-            ]
-            mock_session.execute.return_value = mock_result
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.list = AsyncMock(return_value=[
+                "apps/test-app/components/Header.tsx",
+                "apps/test-app/pages/index.tsx",
+            ])
+            mock_repo_cls.return_value = mock_repo
 
             result = await list_content(
                 context=platform_admin_context,
@@ -162,15 +154,12 @@ class TestListContent:
         """Should filter by path_prefix when provided."""
         from src.services.mcp_server.tools.code_editor import list_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
-
-            mock_result = MagicMock()
-            mock_result.fetchall.return_value = [
-                ("workflows/sync_tickets.py",),
-            ]
-            mock_session.execute.return_value = mock_result
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.list = AsyncMock(return_value=[
+                "workflows/sync_tickets.py",
+            ])
+            mock_repo_cls.return_value = mock_repo
 
             result = await list_content(
                 context=platform_admin_context,
@@ -186,17 +175,14 @@ class TestListContent:
         """Should list all files when no path_prefix given."""
         from src.services.mcp_server.tools.code_editor import list_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
-
-            mock_result = MagicMock()
-            mock_result.fetchall.return_value = [
-                ("apps/my-app/pages/index.tsx",),
-                ("modules/helpers.py",),
-                ("workflows/sync.py",),
-            ]
-            mock_session.execute.return_value = mock_result
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.list = AsyncMock(return_value=[
+                "apps/my-app/pages/index.tsx",
+                "modules/helpers.py",
+                "workflows/sync.py",
+            ])
+            mock_repo_cls.return_value = mock_repo
 
             result = await list_content(
                 context=platform_admin_context,
@@ -205,21 +191,19 @@ class TestListContent:
             assert isinstance(result, ToolResult)
             data = get_result_data(result)
             assert data["count"] == 3
+            mock_repo.list.assert_called_once_with("")
 
     @pytest.mark.asyncio
     async def test_list_workflows_org_scoped(self, org_user_context):
         """Should list files filtered by path_prefix for org users."""
         from src.services.mcp_server.tools.code_editor import list_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
-
-            mock_result = MagicMock()
-            mock_result.fetchall.return_value = [
-                ("workflows/sync_tickets.py",),
-            ]
-            mock_session.execute.return_value = mock_result
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.list = AsyncMock(return_value=[
+                "workflows/sync_tickets.py",
+            ])
+            mock_repo_cls.return_value = mock_repo
 
             result = await list_content(
                 context=org_user_context,
@@ -231,7 +215,6 @@ class TestListContent:
             assert "files" in data
             assert len(data["files"]) == 1
             assert data["files"][0]["path"] == "workflows/sync_tickets.py"
-            mock_session.execute.assert_called_once()
 
 
 class TestSearchContent:
@@ -632,115 +615,111 @@ class TestDeleteContent:
         """Should delete a workflow file via FileStorageService."""
         from src.services.mcp_server.tools.code_editor import delete_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.exists = AsyncMock(return_value=True)
+            mock_repo_cls.return_value = mock_repo
 
-            # select(FileIndex.path).where(...) -> scalar_one_or_none returns the path
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = "workflows/test.py"
-            mock_session.execute.return_value = mock_result
+            with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+                mock_session = AsyncMock()
+                mock_db.return_value.__aenter__.return_value = mock_session
 
-            with patch(
-                "src.services.mcp_server.tools.code_editor.FileStorageService"
-            ) as mock_fs_cls:
-                mock_fs_instance = MagicMock()
-                mock_fs_instance.delete_file = AsyncMock()
-                mock_fs_cls.return_value = mock_fs_instance
+                with patch(
+                    "src.services.mcp_server.tools.code_editor.FileStorageService"
+                ) as mock_fs_cls:
+                    mock_fs_instance = MagicMock()
+                    mock_fs_instance.delete_file = AsyncMock()
+                    mock_fs_cls.return_value = mock_fs_instance
 
-                result = await delete_content(
-                    context=platform_admin_context,
-                    path="workflows/test.py",
-                )
+                    result = await delete_content(
+                        context=platform_admin_context,
+                        path="workflows/test.py",
+                    )
 
-                assert isinstance(result, ToolResult)
-                data = get_result_data(result)
-                assert data["success"] is True
-                assert data["path"] == "workflows/test.py"
-                mock_fs_instance.delete_file.assert_called_once_with("workflows/test.py")
+                    assert isinstance(result, ToolResult)
+                    data = get_result_data(result)
+                    assert data["success"] is True
+                    assert data["path"] == "workflows/test.py"
+                    mock_fs_instance.delete_file.assert_called_once_with("workflows/test.py")
 
     @pytest.mark.asyncio
     async def test_delete_module(self, platform_admin_context):
         """Should delete a module file via FileStorageService."""
         from src.services.mcp_server.tools.code_editor import delete_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.exists = AsyncMock(return_value=True)
+            mock_repo_cls.return_value = mock_repo
 
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = "modules/test.py"
-            mock_session.execute.return_value = mock_result
+            with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+                mock_session = AsyncMock()
+                mock_db.return_value.__aenter__.return_value = mock_session
 
-            with patch(
-                "src.services.mcp_server.tools.code_editor.FileStorageService"
-            ) as mock_fs_cls:
-                mock_fs_instance = MagicMock()
-                mock_fs_instance.delete_file = AsyncMock()
-                mock_fs_cls.return_value = mock_fs_instance
+                with patch(
+                    "src.services.mcp_server.tools.code_editor.FileStorageService"
+                ) as mock_fs_cls:
+                    mock_fs_instance = MagicMock()
+                    mock_fs_instance.delete_file = AsyncMock()
+                    mock_fs_cls.return_value = mock_fs_instance
 
-                result = await delete_content(
-                    context=platform_admin_context,
-                    path="modules/test.py",
-                )
+                    result = await delete_content(
+                        context=platform_admin_context,
+                        path="modules/test.py",
+                    )
 
-                assert isinstance(result, ToolResult)
-                data = get_result_data(result)
-                assert data["success"] is True
-                assert data["path"] == "modules/test.py"
-                mock_fs_instance.delete_file.assert_called_once_with("modules/test.py")
+                    assert isinstance(result, ToolResult)
+                    data = get_result_data(result)
+                    assert data["success"] is True
+                    assert data["path"] == "modules/test.py"
+                    mock_fs_instance.delete_file.assert_called_once_with("modules/test.py")
 
     @pytest.mark.asyncio
     async def test_delete_app_file(self, platform_admin_context):
         """Should delete an app file using full path."""
         from src.services.mcp_server.tools.code_editor import delete_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.exists = AsyncMock(return_value=True)
+            mock_repo_cls.return_value = mock_repo
 
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = "apps/test-app/pages/index.tsx"
-            mock_session.execute.return_value = mock_result
+            with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+                mock_session = AsyncMock()
+                mock_db.return_value.__aenter__.return_value = mock_session
 
-            with patch(
-                "src.services.mcp_server.tools.code_editor.FileStorageService"
-            ) as mock_fs_cls:
-                mock_fs_instance = MagicMock()
-                mock_fs_instance.delete_file = AsyncMock()
-                mock_fs_cls.return_value = mock_fs_instance
+                with patch(
+                    "src.services.mcp_server.tools.code_editor.FileStorageService"
+                ) as mock_fs_cls:
+                    mock_fs_instance = MagicMock()
+                    mock_fs_instance.delete_file = AsyncMock()
+                    mock_fs_cls.return_value = mock_fs_instance
 
-                result = await delete_content(
-                    context=platform_admin_context,
-                    path="apps/test-app/pages/index.tsx",
-                )
+                    result = await delete_content(
+                        context=platform_admin_context,
+                        path="apps/test-app/pages/index.tsx",
+                    )
 
-                assert isinstance(result, ToolResult)
-                data = get_result_data(result)
-                assert data["success"] is True
-                assert data["path"] == "apps/test-app/pages/index.tsx"
-                mock_fs_instance.delete_file.assert_called_once_with("apps/test-app/pages/index.tsx")
+                    assert isinstance(result, ToolResult)
+                    data = get_result_data(result)
+                    assert data["success"] is True
+                    assert data["path"] == "apps/test-app/pages/index.tsx"
+                    mock_fs_instance.delete_file.assert_called_once_with("apps/test-app/pages/index.tsx")
 
     @pytest.mark.asyncio
     async def test_delete_not_found(self, platform_admin_context):
         """Should return error if file not found."""
         from src.services.mcp_server.tools.code_editor import delete_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.exists = AsyncMock(return_value=False)
+            mock_repo_cls.return_value = mock_repo
 
-            # FileIndex query returns None (not found)
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = None
-            mock_session.execute.return_value = mock_result
+            with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+                mock_session = AsyncMock()
+                mock_db.return_value.__aenter__.return_value = mock_session
 
-            # S3 fallback also returns None
-            with patch(
-                "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
-                new_callable=AsyncMock,
-                return_value=None,
-            ):
                 result = await delete_content(
                     context=platform_admin_context,
                     path="workflows/nonexistent.py",
@@ -772,30 +751,30 @@ class TestDeleteContent:
         """Should delete a file for org-scoped users."""
         from src.services.mcp_server.tools.code_editor import delete_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.exists = AsyncMock(return_value=True)
+            mock_repo_cls.return_value = mock_repo
 
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = "workflows/test.py"
-            mock_session.execute.return_value = mock_result
+            with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+                mock_session = AsyncMock()
+                mock_db.return_value.__aenter__.return_value = mock_session
 
-            with patch(
-                "src.services.mcp_server.tools.code_editor.FileStorageService"
-            ) as mock_fs_cls:
-                mock_fs_instance = MagicMock()
-                mock_fs_instance.delete_file = AsyncMock()
-                mock_fs_cls.return_value = mock_fs_instance
+                with patch(
+                    "src.services.mcp_server.tools.code_editor.FileStorageService"
+                ) as mock_fs_cls:
+                    mock_fs_instance = MagicMock()
+                    mock_fs_instance.delete_file = AsyncMock()
+                    mock_fs_cls.return_value = mock_fs_instance
 
-                result = await delete_content(
-                    context=org_user_context,
-                    path="workflows/test.py",
-                )
+                    result = await delete_content(
+                        context=org_user_context,
+                        path="workflows/test.py",
+                    )
 
-                assert isinstance(result, ToolResult)
-                data = get_result_data(result)
-                assert data["success"] is True
-                mock_session.execute.assert_called_once()
+                    assert isinstance(result, ToolResult)
+                    data = get_result_data(result)
+                    assert data["success"] is True
 
 
 class TestMultiFunctionWorkflows:
@@ -839,31 +818,32 @@ async def get_ticket(ticket_id: str):
         """Should delete a multi-function file via FileStorageService."""
         from src.services.mcp_server.tools.code_editor import delete_content
 
-        with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
-            mock_session = AsyncMock()
-            mock_db.return_value.__aenter__.return_value = mock_session
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.exists = AsyncMock(return_value=True)
+            mock_repo_cls.return_value = mock_repo
 
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = "workflows/multi.py"
-            mock_session.execute.return_value = mock_result
+            with patch("src.services.mcp_server.tools.code_editor.get_db_context") as mock_db:
+                mock_session = AsyncMock()
+                mock_db.return_value.__aenter__.return_value = mock_session
 
-            with patch(
-                "src.services.mcp_server.tools.code_editor.FileStorageService"
-            ) as mock_fs_cls:
-                mock_fs_instance = MagicMock()
-                mock_fs_instance.delete_file = AsyncMock()
-                mock_fs_cls.return_value = mock_fs_instance
+                with patch(
+                    "src.services.mcp_server.tools.code_editor.FileStorageService"
+                ) as mock_fs_cls:
+                    mock_fs_instance = MagicMock()
+                    mock_fs_instance.delete_file = AsyncMock()
+                    mock_fs_cls.return_value = mock_fs_instance
 
-                result = await delete_content(
-                    context=platform_admin_context,
-                    path="workflows/multi.py",
-                )
+                    result = await delete_content(
+                        context=platform_admin_context,
+                        path="workflows/multi.py",
+                    )
 
-                assert isinstance(result, ToolResult)
-                data = get_result_data(result)
-                assert data["success"] is True
-                assert data["path"] == "workflows/multi.py"
-                mock_fs_instance.delete_file.assert_called_once_with("workflows/multi.py")
+                    assert isinstance(result, ToolResult)
+                    data = get_result_data(result)
+                    assert data["success"] is True
+                    assert data["path"] == "workflows/multi.py"
+                    mock_fs_instance.delete_file.assert_called_once_with("workflows/multi.py")
 
     @pytest.mark.asyncio
     async def test_search_deduplicates_multi_function_results(self, platform_admin_context):

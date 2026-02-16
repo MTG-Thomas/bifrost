@@ -30,6 +30,7 @@ from sqlalchemy import select
 from src.core.database import get_db_context
 from src.models.orm.file_index import FileIndex
 from src.services.file_storage import FileStorageService
+from src.services.repo_storage import RepoStorage
 from src.services.mcp_server.tool_result import (
     error_result,
     format_diff,
@@ -296,14 +297,9 @@ async def list_content(
     logger.info(f"MCP list_content: path_prefix={path_prefix}")
 
     try:
-        async with get_db_context() as db:
-            query = select(FileIndex.path).order_by(FileIndex.path)
-
-            if path_prefix:
-                query = query.where(FileIndex.path.startswith(path_prefix))
-
-            result = await db.execute(query)
-            files = [{"path": row[0]} for row in result.fetchall()]
+        repo = RepoStorage()
+        paths = await repo.list(path_prefix or "")
+        files = [{"path": p} for p in sorted(paths)]
 
         if not files:
             display = "No files found"
@@ -717,15 +713,10 @@ async def delete_content(
 
     try:
         async with get_db_context() as db:
-            # Verify file exists before deleting
-            fi_result = await db.execute(
-                select(FileIndex.path).where(FileIndex.path == path)
-            )
-            if fi_result.scalar_one_or_none() is None:
-                # Also check S3 as a fallback (file might not be indexed yet)
-                content = await _read_from_cache_or_s3(path)
-                if content is None:
-                    return error_result(f"File not found: {path}")
+            # Verify file exists in S3 before deleting
+            repo = RepoStorage()
+            if not await repo.exists(path):
+                return error_result(f"File not found: {path}")
 
             # Use FileStorageService.delete_file() for all deletions
             # It handles: S3 cleanup, file_index cleanup, app pubsub,
