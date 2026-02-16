@@ -367,74 +367,82 @@ class FileOperationsService:
         """
         Delete a file from storage.
 
-        Args:
-            path: Relative path within workspace
+        Pattern: S3 first (source of truth), then conditional side effects.
         """
-        # .bifrost/ files are generated artifacts, not user-editable
         if path.startswith(".bifrost/") or path == ".bifrost":
             raise HTTPException(
                 status_code=403,
                 detail=".bifrost/ files are system-generated and cannot be edited directly",
             )
 
-        # Detect entity type from path (used for module cache invalidation below)
-        platform_entity_type = detect_platform_entity_type(path, b"")
+        # === S3: Source of truth (must succeed) ===
+        await self._delete_from_s3(path)
 
-        # Delete from S3 _repo/ prefix for all files
+        # === Side effects (best-effort, independent) ===
+        for op in (
+            self._remove_from_search_index,
+            self._handle_app_file_cleanup,
+            self._remove_metadata,
+            self._invalidate_module_cache_if_python,
+        ):
+            try:
+                await op(path)
+            except Exception as e:
+                logger.warning(f"Delete side effect failed for {path}: {e}")
+
+        logger.info(f"File deleted: {path}")
+
+    async def _delete_from_s3(self, path: str) -> None:
+        """Delete from S3 _repo/ — source-of-truth operation."""
         s3_key = f"{REPO_PREFIX}{path}"
         async with self._s3_client.get_client() as s3:
-            try:
-                await s3.delete_object(
-                    Bucket=self.settings.s3_bucket,
-                    Key=s3_key,
-                )
-            except Exception:
-                pass  # Ignore S3 errors for idempotency
+            await s3.delete_object(Bucket=self.settings.s3_bucket, Key=s3_key)
 
-        # Delete from file_index
+    async def _remove_from_search_index(self, path: str) -> None:
+        """Remove from file_index search table if present."""
         from sqlalchemy import delete
         del_stmt = delete(FileIndex).where(FileIndex.path == path)
         await self.db.execute(del_stmt)
 
-        # App files: fire pubsub delete event
-        if path.startswith("apps/"):
-            parts = path.split("/")
-            if len(parts) >= 2:
-                slug = parts[1]
-                try:
-                    from src.models.orm.applications import Application
-                    app_stmt = select(Application).where(Application.slug == slug)
-                    app_result = await self.db.execute(app_stmt)
-                    app = app_result.scalar_one_or_none()
-                    if app:
-                        from src.core.pubsub import publish_app_code_file_update
-                        relative_path = "/".join(parts[2:]) if len(parts) > 2 else ""
-                        await publish_app_code_file_update(
-                            app_id=str(app.id),
-                            user_id="system",
-                            user_name="system",
-                            path=relative_path,
-                            source=None,
-                            compiled=None,
-                            action="delete",
-                        )
-                        # Delete from _apps/{app_id}/preview/
-                        from src.services.app_storage import AppStorageService
-                        app_storage = AppStorageService()
-                        await app_storage.delete_preview_file(
-                            str(app.id), relative_path
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to publish app file delete for {path}: {e}")
+    async def _handle_app_file_cleanup(self, path: str) -> None:
+        """If this file belongs to an app, clean up preview and notify clients."""
+        if not path.startswith("apps/"):
+            return
 
-        # Clean up related metadata (workflows, forms, agents)
-        await self._remove_metadata(path)
+        parts = path.split("/")
+        if len(parts) < 2:
+            return
 
-        # Invalidate module cache
+        slug = parts[1]
+        from src.models.orm.applications import Application
+        app_stmt = select(Application).where(Application.slug == slug)
+        app_result = await self.db.execute(app_stmt)
+        app = app_result.scalar_one_or_none()
+        if not app:
+            return
+
+        relative_path = "/".join(parts[2:]) if len(parts) > 2 else ""
+
+        from src.core.pubsub import publish_app_code_file_update
+        await publish_app_code_file_update(
+            app_id=str(app.id),
+            user_id="system",
+            user_name="system",
+            path=relative_path,
+            source=None,
+            compiled=None,
+            action="delete",
+        )
+
+        from src.services.app_storage import AppStorageService
+        app_storage = AppStorageService()
+        await app_storage.delete_preview_file(str(app.id), relative_path)
+
+    async def _invalidate_module_cache_if_python(self, path: str) -> None:
+        """Invalidate Redis module cache for Python files."""
+        platform_entity_type = detect_platform_entity_type(path, b"")
         if platform_entity_type == "module" or path.endswith(".py"):
             await invalidate_module(path)
-
-        logger.info(f"File deleted: {path}")
 
     async def move_file(self, old_path: str, new_path: str) -> None:
         """
