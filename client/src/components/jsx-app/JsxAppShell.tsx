@@ -30,14 +30,6 @@ import { useAppBuilderStore } from "@/stores/app-builder.store";
 import { useAppCodeUpdates } from "@/hooks/useAppCodeUpdates";
 
 /**
- * Response shape from the file listing endpoint (editor)
- */
-interface AppFileListResponse {
-	files: AppCodeFile[];
-	total: number;
-}
-
-/**
  * Response shape from the render endpoint
  */
 interface AppRenderResponse {

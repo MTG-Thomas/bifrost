@@ -2267,6 +2267,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Push Files
+         * @description Push multiple files to _repo/ in a single batch.
+         *
+         *     For each file in the request, writes content via FileStorageService.
+         *     Compares content hashes to skip unchanged files.
+         *     If delete_missing_prefix is set, deletes files under that prefix
+         *     that are not in the push batch.
+         */
+        post: operations["push_files_api_files_push_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/editor": {
         parameters: {
             query?: never;
@@ -3285,22 +3310,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__post"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6343,6 +6368,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/applications/{app_id}/deploy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deploy a static app bundle to preview
+         * @description Upload a pre-built static app bundle to preview.
+         *
+         *     Accepts a .tar.gz archive of the Vite build output (dist/ directory).
+         *     The archive must contain an index.html at the root.
+         *
+         *     Files go to **preview** storage — preview at /apps-v2/{slug}/preview/.
+         *     Use POST /{app_id}/publish to copy preview → live.
+         *
+         *     Only works for apps with app_type='static'.
+         */
+        post: operations["deploy_static_app_api_applications__app_id__deploy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate application files
+         * @description Run static analysis on application files.
+         *
+         *     Checks for: unknown components, workflow ID format/existence,
+         *     bad imports, forbidden patterns, required file structure.
+         */
+        post: operations["validate_application_api_applications__app_id__validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/applications/{app_id}/export": {
         parameters: {
             query?: never;
@@ -6400,7 +6476,9 @@ export interface paths {
          * List app files
          * @description List all files for an application.
          *
-         *     Reads from _apps/{app_id}/preview/ (draft) or _apps/{app_id}/live/ (live).
+         *     Source content is read from the file_index (_repo/apps/{slug}/).
+         *     Compiled content is read from _apps/{app_id}/{mode}/.
+         *     The compiled field is only set when it differs from source.
          */
         get: operations["list_app_files_api_applications__app_id__files_get"];
         put?: never;
@@ -6422,7 +6500,9 @@ export interface paths {
          * Read a single app file
          * @description Read a single file by relative path.
          *
-         *     Reads from _apps/{app_id}/preview/ (draft) or _apps/{app_id}/live/ (live).
+         *     Source content is read from the file_index (_repo/apps/{slug}/).
+         *     Compiled content is read from _apps/{app_id}/{mode}/.
+         *     The compiled field is only set when it differs from source.
          */
         get: operations["read_app_file_api_applications__app_id__files__file_path__get"];
         /**
@@ -6442,6 +6522,72 @@ export interface paths {
          *     file_index cleanup, pubsub, and preview sync).
          */
         delete: operations["delete_app_file_api_applications__app_id__files__file_path__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get all compiled files for rendering
+         * @description Return all files as compiled JS, ready for client-side execution.
+         *
+         *     Reads entirely from S3 (_apps/{app_id}/{mode}/).  If any compilable
+         *     files still contain raw TSX/TS (pre-compilation era), the entire app
+         *     is batch-compiled and the results written back to S3.
+         *
+         *     Unlike /files, this returns only `path` + `code` (no source).
+         */
+        get: operations["render_app_api_applications__app_id__render_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps-v2/{slug}/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve Static App
+         * @description Serve a static app file. Use ?mode=preview for unpublished draft.
+         */
+        get: operations["serve_static_app_apps_v2__slug___path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps-v2/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve Static App Root
+         * @description Serve the root index.html of a static app. Use ?mode=preview for unpublished draft.
+         */
+        get: operations["serve_static_app_root_apps_v2__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -7410,6 +7556,49 @@ export interface components {
             compiled?: string | null;
         };
         /**
+         * AppRenderResponse
+         * @description All compiled files needed to render an application.
+         */
+        AppRenderResponse: {
+            /** Files */
+            files: components["schemas"]["RenderFileResponse"][];
+            /** Total */
+            total: number;
+            /**
+             * Dependencies
+             * @description npm dependencies from app.yaml {name: version} for esm.sh loading
+             */
+            dependencies?: {
+                [key: string]: string;
+            };
+        };
+        /** AppValidationIssue */
+        AppValidationIssue: {
+            /** Severity */
+            severity: string;
+            /** File */
+            file: string;
+            /** Message */
+            message: string;
+            /** Line */
+            line?: number | null;
+        };
+        /** AppValidationResponse */
+        AppValidationResponse: {
+            /** Valid */
+            valid: boolean;
+            /**
+             * Errors
+             * @default []
+             */
+            errors: components["schemas"]["AppValidationIssue"][];
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: components["schemas"]["AppValidationIssue"][];
+        };
+        /**
          * ApplicationCreate
          * @description Input for creating an application.
          */
@@ -7434,6 +7623,12 @@ export interface components {
              * @description URL-friendly slug (lowercase letters, numbers, hyphens)
              */
             slug: string;
+            /**
+             * App Type
+             * @description Application type: 'runtime' (browser-compiled JSX) or 'static' (pre-built Vite bundle)
+             * @default runtime
+             */
+            app_type: string;
             /**
              * Access Level
              * @description Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles)
@@ -7523,6 +7718,11 @@ export interface components {
             slug: string;
             /** Organization Id */
             organization_id: string | null;
+            /**
+             * App Type
+             * @default runtime
+             */
+            app_type: string;
             /** Published At */
             published_at: string | null;
             /** Created At */
@@ -7569,6 +7769,9 @@ export interface components {
         /**
          * ApplicationUpdate
          * @description Input for updating application metadata.
+         *
+         *     Note: app_type is intentionally not updatable — it is set at creation
+         *     and determines how the app is built and served (runtime vs static).
          */
         ApplicationUpdate: {
             /** Name */
@@ -7722,6 +7925,15 @@ export interface components {
              * @description Similarity score to the deactivated workflow (0.0-1.0)
              */
             similarity_score: number;
+        };
+        /** Body_deploy_static_app_api_applications__app_id__deploy_post */
+        Body_deploy_static_app_api_applications__app_id__deploy_post: {
+            /**
+             * Bundle
+             * Format: binary
+             * @description Tarball (.tar.gz) of the built dist/ directory
+             */
+            bundle: string;
         };
         /** Body_import_all_api_export_import_import_all_post */
         Body_import_all_api_export_import_import_all_post: {
@@ -9207,6 +9419,16 @@ export interface components {
             root_id: string;
         };
         /**
+         * DeployResponse
+         * @description Response from deploying a static app bundle.
+         */
+        DeployResponse: {
+            /** Files Uploaded */
+            files_uploaded: number;
+            /** Mode */
+            mode: string;
+        };
+        /**
          * DetailedHealthCheck
          * @description Detailed health check with component status.
          */
@@ -10658,6 +10880,52 @@ export interface components {
          * @enum {string}
          */
         FileMode: "draft" | "live";
+        /**
+         * FilePushRequest
+         * @description Request to push multiple files to _repo/.
+         */
+        FilePushRequest: {
+            /**
+             * Files
+             * @description Map of repo_path to content
+             */
+            files: {
+                [key: string]: string;
+            };
+            /**
+             * Delete Missing Prefix
+             * @description If set, delete files under this prefix not in the push batch
+             */
+            delete_missing_prefix?: string | null;
+        };
+        /**
+         * FilePushResponse
+         * @description Response for file push.
+         */
+        FilePushResponse: {
+            /**
+             * Created
+             * @default 0
+             */
+            created: number;
+            /**
+             * Updated
+             * @default 0
+             */
+            updated: number;
+            /**
+             * Deleted
+             * @default 0
+             */
+            deleted: number;
+            /**
+             * Unchanged
+             * @default 0
+             */
+            unchanged: number;
+            /** Errors */
+            errors?: string[];
+        };
         /**
          * FileReadRequest
          * @description Request to read a file.
@@ -14777,6 +15045,22 @@ export interface components {
             job_id: string;
         };
         /**
+         * RenderFileResponse
+         * @description Single compiled file for rendering (no source).
+         */
+        RenderFileResponse: {
+            /**
+             * Path
+             * @description Relative file path within the app
+             */
+            path: string;
+            /**
+             * Code
+             * @description Compiled JavaScript ready for execution
+             */
+            code: string;
+        };
+        /**
          * ReplaceWorkflowRequest
          * @description Request to replace an orphaned workflow with content from existing file.
          */
@@ -15942,6 +16226,11 @@ export interface components {
              * @description File source content
              */
             source: string;
+            /**
+             * Compiled
+             * @description Pre-compiled JavaScript output
+             */
+            compiled?: string | null;
         };
         /**
          * StuckExecutionsResponse
@@ -21141,6 +21430,39 @@ export interface operations {
             };
         };
     };
+    push_files_api_files_push_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FilePushRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePushResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_files_editor_api_files_editor_get: {
         parameters: {
             query: {
@@ -22742,7 +23064,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -22775,7 +23097,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -22808,7 +23130,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -22841,7 +23163,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__put: {
+    execute_endpoint_api_endpoints__workflow_name__post: {
         parameters: {
             query?: never;
             header: {
@@ -28545,6 +28867,72 @@ export interface operations {
             };
         };
     };
+    deploy_static_app_api_applications__app_id__deploy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_deploy_static_app_api_applications__app_id__deploy_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_application_api_applications__app_id__validate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppValidationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     export_application_api_applications__app_id__export_get: {
         parameters: {
             query?: {
@@ -28745,6 +29133,107 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    render_app_api_applications__app_id__render_get: {
+        parameters: {
+            query?: {
+                mode?: components["schemas"]["FileMode"];
+            };
+            header?: never;
+            path: {
+                /** @description Application UUID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppRenderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    serve_static_app_apps_v2__slug___path__get: {
+        parameters: {
+            query?: {
+                mode?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    serve_static_app_root_apps_v2__slug__get: {
+        parameters: {
+            query?: {
+                mode?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
             };
             /** @description Validation Error */
             422: {
