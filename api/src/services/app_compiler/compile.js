@@ -24,6 +24,34 @@ function preprocessImports(source) {
   return result;
 }
 
+function preprocessExternalImports(source) {
+  // Named imports: import { X, Y } from "pkg" → const { X, Y } = $deps["pkg"];
+  let result = source.replace(
+    /^\s*import\s+(\{[^}]*\})\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
+    'const $1 = $$deps["$2"];'
+  );
+
+  // Default imports: import X from "pkg" → const X = ($deps["pkg"].default || $deps["pkg"]);
+  result = result.replace(
+    /^\s*import\s+(\w+)\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
+    'const $1 = ($$deps["$2"].default || $$deps["$2"]);'
+  );
+
+  // Namespace imports: import * as X from "pkg" → const X = $deps["pkg"];
+  result = result.replace(
+    /^\s*import\s+\*\s+as\s+(\w+)\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
+    'const $1 = $$deps["$2"];'
+  );
+
+  // Mixed imports: import X, { Y, Z } from "pkg"
+  result = result.replace(
+    /^\s*import\s+(\w+)\s*,\s*(\{[^}]*\})\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
+    'const $1 = ($$deps["$3"].default || $$deps["$3"]);\nconst $2 = $$deps["$3"];'
+  );
+
+  return result;
+}
+
 function postprocessExports(compiled) {
   let code = compiled;
   let defaultExport = null;
@@ -77,7 +105,8 @@ function postprocessExports(compiled) {
 
 function compileFile(source, path) {
   try {
-    const preprocessed = preprocessImports(source);
+    let preprocessed = preprocessImports(source);      // bifrost imports → $
+    preprocessed = preprocessExternalImports(preprocessed); // remaining → $deps["pkg"]
     const result = transform(preprocessed, {
       filename: path || "component.tsx",
       presets: ["react", "typescript"],
