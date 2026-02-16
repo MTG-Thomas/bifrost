@@ -31,7 +31,9 @@ import {
 	PanelLeft,
 	LayoutGrid,
 	AppWindow,
+	Package,
 } from "lucide-react";
+import { DependencyPanel } from "./DependencyPanel";
 import type { FileNode, FileContent, EditorCallbacks } from "@/components/file-tree/types";
 
 interface AppCodeEditorLayoutProps {
@@ -46,6 +48,7 @@ interface AppCodeEditorLayoutProps {
 }
 
 type ViewMode = "split" | "code" | "preview" | "app";
+type SidebarTab = "files" | "packages";
 
 /**
  * App Code Editor Layout
@@ -63,6 +66,7 @@ export function AppCodeEditorLayout({
 	// Layout state
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [viewMode, setViewMode] = useState<ViewMode>("split");
+	const [sidebarTab, setSidebarTab] = useState<SidebarTab>("files");
 
 	// Compute base path for the app preview
 	// The editor is now at /apps/{slug}/edit/* so we need to extract that base
@@ -301,6 +305,24 @@ export function AppCodeEditorLayout({
 							(unsaved)
 						</span>
 					)}
+
+					<div className="w-px h-4 bg-border mx-1" />
+
+					{/* Package manager button */}
+					<Button
+						variant={sidebarTab === "packages" && !sidebarCollapsed ? "secondary" : "ghost"}
+						size="icon"
+						className="h-7 w-7"
+						onClick={() => {
+							if (sidebarCollapsed) {
+								setSidebarCollapsed(false);
+							}
+							setSidebarTab(sidebarTab === "packages" ? "files" : "packages");
+						}}
+						title="Package manager"
+					>
+						<Package className="h-4 w-4" />
+					</Button>
 				</div>
 
 				<div className="flex items-center gap-1">
@@ -384,25 +406,56 @@ export function AppCodeEditorLayout({
 
 			{/* Main content */}
 			<div className="flex-1 min-h-0 flex">
-				{/* Sidebar - File Tree */}
+				{/* Sidebar */}
 				{!sidebarCollapsed && (
-					<div className="w-60 border-r flex-shrink-0 overflow-auto">
-						<FileTree
-							operations={operations}
-							iconResolver={appCodeIconResolver}
-							editor={editorCallbacks}
-							refreshTrigger={fileTreeRefresh}
-							config={{
-								enableUpload: false,
-								enableDragMove: true,
-								enableCreate: true,
-								enableRename: true,
-								enableDelete: true,
-								emptyMessage: "No files yet",
-								loadingMessage: "Loading files...",
-								pathValidator: validateAppCodePath,
-							}}
-						/>
+					<div className="w-60 border-r flex-shrink-0 flex flex-col">
+						{/* Tab switcher */}
+						<div className="flex border-b">
+							<button
+								className={`flex-1 px-3 py-1.5 text-xs font-medium ${
+									sidebarTab === "files"
+										? "border-b-2 border-primary text-foreground"
+										: "text-muted-foreground hover:text-foreground"
+								}`}
+								onClick={() => setSidebarTab("files")}
+							>
+								Files
+							</button>
+							<button
+								className={`flex-1 px-3 py-1.5 text-xs font-medium ${
+									sidebarTab === "packages"
+										? "border-b-2 border-primary text-foreground"
+										: "text-muted-foreground hover:text-foreground"
+								}`}
+								onClick={() => setSidebarTab("packages")}
+							>
+								Packages
+							</button>
+						</div>
+
+						{/* Tab content */}
+						{sidebarTab === "files" ? (
+							<div className="flex-1 overflow-auto">
+								<FileTree
+									operations={operations}
+									iconResolver={appCodeIconResolver}
+									editor={editorCallbacks}
+									refreshTrigger={fileTreeRefresh}
+									config={{
+										enableUpload: false,
+										enableDragMove: true,
+										enableCreate: true,
+										enableRename: true,
+										enableDelete: true,
+										emptyMessage: "No files yet",
+										loadingMessage: "Loading files...",
+										pathValidator: validateAppCodePath,
+									}}
+								/>
+							</div>
+						) : (
+							<DependencyPanel appId={appId} />
+						)}
 					</div>
 				)}
 
