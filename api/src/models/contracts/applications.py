@@ -323,6 +323,10 @@ class AppRenderResponse(BaseModel):
 
     files: list[RenderFileResponse]
     total: int
+    dependencies: dict[str, str] = Field(
+        default_factory=dict,
+        description="npm dependencies from app.yaml {name: version} for esm.sh loading",
+    )
 
 
 # ==================== IMPORT MODELS ====================

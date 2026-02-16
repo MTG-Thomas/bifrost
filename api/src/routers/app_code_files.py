@@ -22,6 +22,8 @@ import re
 from enum import Enum
 from uuid import UUID
 
+import yaml
+
 from fastapi import APIRouter, HTTPException, Path, status
 
 from src.core.auth import Context, CurrentUser
@@ -70,6 +72,52 @@ VALID_NAME_PATTERN = re.compile(r"^[\w-]+$")
 
 # Pattern for valid file names (requires .ts or .tsx extension)
 VALID_FILENAME_PATTERN = re.compile(r"^[\w-]+\.tsx?$")
+
+# Validation patterns for npm dependencies
+_PKG_NAME_RE = re.compile(r"^(@[a-z0-9-]+/)?[a-z0-9][a-z0-9._-]*$")
+_VERSION_RE = re.compile(r"^\^?~?\d+(\.\d+){0,2}$")
+_MAX_DEPENDENCIES = 20
+
+
+def _parse_dependencies(yaml_content: str | None) -> dict[str, str]:
+    """Parse and validate dependencies from app.yaml content.
+
+    Returns validated {name: version} dict. Skips invalid entries,
+    never raises.
+    """
+    if not yaml_content:
+        return {}
+
+    try:
+        data = yaml.safe_load(yaml_content)
+    except Exception:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    raw_deps = data.get("dependencies")
+    if not isinstance(raw_deps, dict):
+        return {}
+
+    deps: dict[str, str] = {}
+    for name, version in raw_deps.items():
+        if len(deps) >= _MAX_DEPENDENCIES:
+            break
+
+        name_str = str(name)
+        version_str = str(version)
+
+        if not _PKG_NAME_RE.match(name_str):
+            logger.warning(f"Skipping invalid package name: {name_str}")
+            continue
+        if not _VERSION_RE.match(version_str):
+            logger.warning(f"Skipping invalid version for {name_str}: {version_str}")
+            continue
+
+        deps[name_str] = version_str
+
+    return deps
 
 
 def validate_file_path(path: str) -> None:
@@ -408,10 +456,15 @@ async def delete_app_file(
 
 
 # =============================================================================
-# Render endpoint — compiled JS only, batch-compiles on demand
+# Render endpoint — compiled JS only, reads from S3 (_apps/)
 # =============================================================================
 
 _COMPILABLE_EXTENSIONS = (".tsx", ".ts")
+
+
+def _looks_like_jsx(content: str) -> bool:
+    """Quick heuristic: uncompiled TSX/TS contains JSX or import statements."""
+    return "import " in content or "</" in content or "=>" in content
 
 
 @render_router.get(
@@ -427,87 +480,83 @@ async def render_app(
 ) -> AppRenderResponse:
     """Return all files as compiled JS, ready for client-side execution.
 
-    If any compilable files are missing their compiled version in S3,
-    the entire app is batch-compiled first (writes results to S3 for
-    future requests).
+    Reads entirely from S3 (_apps/{app_id}/{mode}/).  If any compilable
+    files still contain raw TSX/TS (pre-compilation era), the entire app
+    is batch-compiled and the results written back to S3.
 
     Unlike /files, this returns only `path` + `code` (no source).
     """
     app = await get_application_or_404(ctx, app_id)
     app_storage = AppStorageService()
-    file_index = FileIndexService(ctx.db)
-
-    repo_prefix = _repo_prefix(app.slug)
-    source_paths = await file_index.list_paths(prefix=repo_prefix)
-
-    if not source_paths:
-        return AppRenderResponse(files=[], total=0)
-
     storage_mode = "preview" if mode == FileMode.draft else "live"
     app_id_str = str(app.id)
 
-    # Gather source from DB and compiled from S3
-    source_map: dict[str, str] = {}   # rel_path -> source
-    compiled_map: dict[str, str] = {}  # rel_path -> compiled JS
+    # Read dependencies from app.yaml in file_index (fast DB read, not cached)
+    dependencies: dict[str, str] = {}
+    try:
+        file_index = FileIndexService(ctx.db)
+        yaml_content = await file_index.read(f"apps/{app.slug}/app.yaml")
+        dependencies = _parse_dependencies(yaml_content)
+    except Exception:
+        pass
 
-    for full_path in sorted(source_paths):
-        rel_path = full_path[len(repo_prefix):]
-        if not rel_path or rel_path == "app.yaml":
+    # 1. Try Redis cache first
+    cached = await app_storage.get_render_cache(app_id_str, storage_mode)
+    if cached:
+        files = [
+            RenderFileResponse(path=p, code=c)
+            for p, c in sorted(cached.items())
+        ]
+        return AppRenderResponse(files=files, total=len(files), dependencies=dependencies)
+
+    # 2. Cache miss — read from S3
+    rel_paths = await app_storage.list_files(app_id_str, storage_mode)
+    if not rel_paths:
+        return AppRenderResponse(files=[], total=0, dependencies=dependencies)
+
+    file_contents: dict[str, str] = {}
+    for rel_path in rel_paths:
+        if rel_path == "app.yaml":
             continue
+        content_bytes = await app_storage.read_file(app_id_str, storage_mode, rel_path)
+        file_contents[rel_path] = content_bytes.decode("utf-8", errors="replace")
 
-        source = await file_index.read(full_path) or ""
-        source_map[rel_path] = source
-
-        # Try reading compiled from S3
-        try:
-            compiled_bytes = await app_storage.read_file(
-                app_id_str, storage_mode, rel_path
-            )
-            compiled_str = compiled_bytes.decode("utf-8", errors="replace")
-            if compiled_str != source:
-                compiled_map[rel_path] = compiled_str
-        except FileNotFoundError:
-            pass
-
-    # Check if any compilable files are missing compiled versions
+    # 3. If any compilable files look uncompiled, batch-compile and write back
     needs_compile = [
-        rel for rel in source_map
-        if rel.endswith(_COMPILABLE_EXTENSIONS) and rel not in compiled_map
+        rel for rel, content in file_contents.items()
+        if rel.endswith(_COMPILABLE_EXTENSIONS) and _looks_like_jsx(content)
     ]
 
     if needs_compile:
-        # Batch-compile ALL compilable files (not just missing ones,
-        # to ensure consistency)
         from src.services.app_compiler import AppCompilerService
 
         compiler = AppCompilerService()
         batch_input = [
-            {"path": rel, "source": source_map[rel]}
-            for rel in source_map
-            if rel.endswith(_COMPILABLE_EXTENSIONS)
+            {"path": rel, "source": file_contents[rel]}
+            for rel in needs_compile
         ]
 
-        if batch_input:
-            results = await compiler.compile_batch(batch_input)
-            for result in results:
-                if result.success and result.compiled:
-                    compiled_map[result.path] = result.compiled
-                    # Write to S3 for future requests
-                    await app_storage.write_preview_file(
-                        app_id_str,
-                        result.path,
-                        result.compiled.encode("utf-8"),
-                    )
+        results = await compiler.compile_batch(batch_input)
+        for result in results:
+            if result.success and result.compiled:
+                file_contents[result.path] = result.compiled
+                await app_storage.write_preview_file(
+                    app_id_str,
+                    result.path,
+                    result.compiled.encode("utf-8"),
+                )
 
         logger.info(
-            f"On-demand compiled {len(batch_input)} files for app {app_id}"
-            f" ({len(needs_compile)} were missing)"
+            f"On-demand compiled {len(needs_compile)} files for app {app_id}"
         )
 
-    # Build response: compiled JS for compilable files, raw source for others
-    files: list[RenderFileResponse] = []
-    for rel_path, source in source_map.items():
-        code = compiled_map.get(rel_path, source)
-        files.append(RenderFileResponse(path=rel_path, code=code))
+    # 4. Warm the Redis cache
+    await app_storage.set_render_cache(app_id_str, storage_mode, file_contents)
 
-    return AppRenderResponse(files=files, total=len(files))
+    # 5. Build response
+    files = [
+        RenderFileResponse(path=rel_path, code=code)
+        for rel_path, code in sorted(file_contents.items())
+    ]
+
+    return AppRenderResponse(files=files, total=len(files), dependencies=dependencies)
