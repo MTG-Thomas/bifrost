@@ -9,44 +9,50 @@
 const { transform } = require("@babel/standalone");
 
 function preprocessImports(source) {
+  // Use `var` instead of `const` so these don't conflict with scope
+  // parameters injected by the runtime (e.g. Outlet, Card, etc.)
+  // `var` can redeclare function parameters without error in strict mode.
   let result = source.replace(
     /^\s*import\s+(\{[^}]*\})\s+from\s+["']bifrost["']\s*;?\s*$/gm,
-    "const $1 = $;"
+    "var $1 = $;"
   );
   result = result.replace(
     /^\s*import\s+(\w+)\s+from\s+["']bifrost["']\s*;?\s*$/gm,
-    "const $1 = $.default || $;"
+    "var $1 = $.default || $;"
   );
   result = result.replace(
     /^\s*import\s+(\w+)\s*,\s*(\{[^}]*\})\s+from\s+["']bifrost["']\s*;?\s*$/gm,
-    "const $1 = $.default || $;\nconst $2 = $;"
+    "var $1 = $.default || $;\nvar $2 = $;"
   );
   return result;
 }
 
 function preprocessExternalImports(source) {
-  // Named imports: import { X, Y } from "pkg" → const { X, Y } = $deps["pkg"];
+  // Use `var` instead of `const` — same reason as preprocessImports:
+  // avoids redeclaration errors with scope parameters in strict mode.
+
+  // Named imports: import { X, Y } from "pkg" → var { X, Y } = $deps["pkg"];
   let result = source.replace(
     /^\s*import\s+(\{[^}]*\})\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
-    'const $1 = $$deps["$2"];'
+    'var $1 = $$deps["$2"];'
   );
 
-  // Default imports: import X from "pkg" → const X = ($deps["pkg"].default || $deps["pkg"]);
+  // Default imports: import X from "pkg" → var X = ($deps["pkg"].default || $deps["pkg"]);
   result = result.replace(
     /^\s*import\s+(\w+)\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
-    'const $1 = ($$deps["$2"].default || $$deps["$2"]);'
+    'var $1 = ($$deps["$2"].default || $$deps["$2"]);'
   );
 
-  // Namespace imports: import * as X from "pkg" → const X = $deps["pkg"];
+  // Namespace imports: import * as X from "pkg" → var X = $deps["pkg"];
   result = result.replace(
     /^\s*import\s+\*\s+as\s+(\w+)\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
-    'const $1 = $$deps["$2"];'
+    'var $1 = $$deps["$2"];'
   );
 
   // Mixed imports: import X, { Y, Z } from "pkg"
   result = result.replace(
     /^\s*import\s+(\w+)\s*,\s*(\{[^}]*\})\s+from\s+["']([^"']+)["']\s*;?\s*$/gm,
-    'const $1 = ($$deps["$3"].default || $$deps["$3"]);\nconst $2 = $$deps["$3"];'
+    'var $1 = ($$deps["$3"].default || $$deps["$3"]);\nvar $2 = $$deps["$3"];'
   );
 
   return result;

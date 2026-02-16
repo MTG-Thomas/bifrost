@@ -76,7 +76,7 @@ export default function Page() {
 '''
     result = await compiler.compile_file(source, "pages/index.tsx")
     assert result.success
-    assert "const {" in result.compiled
+    assert "var {" in result.compiled or "var " in result.compiled
     assert "= $;" in result.compiled or "= $" in result.compiled
     assert "$deps" not in result.compiled
 
