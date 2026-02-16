@@ -29,10 +29,10 @@ class TestExtractEntityMetadata:
         assert result.display_name == "Support Bot"
         assert result.parent_slug is None
 
-    def test_app_json_extracts_name(self):
-        """App app.json extracts name as display_name."""
-        path = "apps/dashboard/app.json"
-        content = b'{"name": "Dashboard", "slug": "dashboard"}'
+    def test_app_yaml_extracts_name(self):
+        """App app.yaml extracts name as display_name."""
+        path = "apps/dashboard/app.yaml"
+        content = b"name: Dashboard\nslug: dashboard\n"
 
         result = extract_entity_metadata(path, content)
 

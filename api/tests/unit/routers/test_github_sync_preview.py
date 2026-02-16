@@ -24,8 +24,8 @@ def test_extract_entity_metadata_for_agent():
 
 def test_extract_entity_metadata_for_app():
     """App metadata should extract name and include parent_slug."""
-    content = b'{"name": "Dashboard App", "version": "1.0"}'
-    metadata = extract_entity_metadata("apps/dashboard/app.json", content)
+    content = b"name: Dashboard App\nversion: '1.0'\n"
+    metadata = extract_entity_metadata("apps/dashboard/app.yaml", content)
 
     assert metadata.entity_type == "app"
     assert metadata.display_name == "Dashboard App"
