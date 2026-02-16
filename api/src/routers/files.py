@@ -691,22 +691,24 @@ async def delete_file_editor(
     Delete a file or folder recursively.
 
     Cloud mode only - used by browser editor.
+    Uses S3 prefix listing to detect folders (no file_index markers needed).
     """
-    from sqlalchemy import select
-    from src.models.orm.file_index import FileIndex
+    from src.services.repo_storage import RepoStorage
 
     try:
         storage = FileStorageService(db)
+        repo = RepoStorage()
 
-        # Check if this is a folder (path ending with /)
-        folder_path = path.rstrip("/") + "/"
-        stmt = select(FileIndex.path).where(FileIndex.path == folder_path)
-        result = await db.execute(stmt)
-        is_folder = result.scalar_one_or_none() is not None
+        # Check if this is a folder by listing S3 for children
+        folder_prefix = path.rstrip("/") + "/"
+        children = await repo.list(folder_prefix)
 
-        if is_folder:
-            await storage.delete_folder(path)
+        if children:
+            # Folder delete: delete each child; any failure should fail request
+            for child_path in children:
+                await storage.delete_file(child_path)
         else:
+            # Single file delete
             await storage.delete_file(path)
 
     except ValueError as e:

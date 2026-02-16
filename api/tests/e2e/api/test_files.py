@@ -312,6 +312,46 @@ class TestFileOperations:
                 headers=platform_admin.headers,
             )
 
+    def test_delete_folder_removes_children(self, e2e_client, platform_admin):
+        """Deleting a folder removes all child files from S3."""
+        # Create files in a folder
+        for name in ["one.py", "two.py", "sub/three.py"]:
+            e2e_client.put(
+                "/api/files/editor/content",
+                headers=platform_admin.headers,
+                json={"path": f"e2e_delete_folder/{name}", "content": f"# {name}"},
+            )
+
+        # Verify folder appears in listing
+        response = e2e_client.get(
+            "/api/files/editor?path=.",
+            headers=platform_admin.headers,
+        )
+        paths = [f["path"] for f in response.json()]
+        assert "e2e_delete_folder" in paths
+
+        # Delete the folder
+        response = e2e_client.delete(
+            "/api/files/editor?path=e2e_delete_folder",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 204
+
+        # Verify folder is gone from listing
+        response = e2e_client.get(
+            "/api/files/editor?path=.",
+            headers=platform_admin.headers,
+        )
+        paths = [f["path"] for f in response.json()]
+        assert "e2e_delete_folder" not in paths
+
+        # Verify children are gone too
+        response = e2e_client.get(
+            "/api/files/editor?path=e2e_delete_folder",
+            headers=platform_admin.headers,
+        )
+        assert response.json() == []
+
 
 @pytest.mark.e2e
 class TestFileAccess:
