@@ -38,7 +38,6 @@ from src.models.contracts.applications import (
 from src.models.orm.applications import Application
 from src.routers.applications import ApplicationRepository
 from src.services.app_storage import AppStorageService
-from src.services.file_index_service import FileIndexService
 from src.services.repo_storage import RepoStorage
 from src.services.file_storage.service import get_file_storage_service
 
@@ -325,24 +324,24 @@ async def list_app_files(
 ) -> SimpleFileListResponse:
     """List all files for an application.
 
-    Source content is read from the file_index (_repo/apps/{slug}/).
+    Source content is read from S3 (_repo/apps/{slug}/).
     Compiled content is read from _apps/{app_id}/{mode}/.
     The compiled field is only set when it differs from source.
     """
     app = await get_application_or_404(ctx, app_id)
     app_storage = AppStorageService()
-    file_index = FileIndexService(ctx.db)
+    repo = RepoStorage()
 
-    # Source files live under apps/{slug}/ in the file_index
+    # List source files from S3 (source of truth)
     repo_prefix = _repo_prefix(app.slug)
-    source_paths = await file_index.list_paths(prefix=repo_prefix)
+    source_paths = await repo.list(repo_prefix)
 
     if not source_paths:
         return SimpleFileListResponse(files=[], total=0)
 
     storage_mode = "preview" if mode == FileMode.draft else "live"
 
-    # Read source from file_index and compiled from _apps/
+    # Read source from S3 and compiled from _apps/
     files: list[SimpleFileResponse] = []
     for full_path in sorted(source_paths):
         # Derive relative path by stripping the repo prefix
@@ -352,9 +351,11 @@ async def list_app_files(
         # Skip app.yaml (manifest metadata, not a source file)
         if rel_path == "app.yaml":
             continue
+        # Skip folder marker entries
+        if rel_path.endswith("/"):
+            continue
 
         # Source from S3 (_repo/)
-        repo = RepoStorage()
         try:
             source = (await repo.read(full_path)).decode("utf-8", errors="replace")
         except Exception:
@@ -365,7 +366,6 @@ async def list_app_files(
         try:
             compiled_bytes = await app_storage.read_file(str(app.id), storage_mode, rel_path)
             compiled_str = compiled_bytes.decode("utf-8", errors="replace")
-            # Only set compiled if it differs from source
             if compiled_str != source:
                 compiled = compiled_str
         except FileNotFoundError:
