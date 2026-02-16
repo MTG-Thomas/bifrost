@@ -161,7 +161,7 @@ class S3Backend(FileBackend):
             if location in ("temp", "uploads"):
                 # Direct S3 read — temp/uploads don't go through workspace index
                 return await self.storage.read_uploaded_file(s3_path)
-            content, _ = await self.storage.read_file(s3_path)
+            content, _ = await self.storage.read_file(path)
             return content
         except Exception as e:
             # Convert S3 errors to appropriate exceptions
@@ -180,7 +180,7 @@ class S3Backend(FileBackend):
             await self.storage.write_raw_to_s3(s3_path, content)
         else:
             # Workspace files get full indexing
-            await self.storage.write_file(s3_path, content, updated_by)
+            await self.storage.write_file(path, content, updated_by)
 
     async def delete(self, path: str, location: Location) -> None:
         """Delete file from S3."""
@@ -190,7 +190,7 @@ class S3Backend(FileBackend):
             await self.storage.delete_raw_from_s3(s3_path)
         else:
             # Workspace files go through full delete with index update
-            await self.storage.delete_file(s3_path)
+            await self.storage.delete_file(path)
 
     async def list(self, directory: str, location: Location) -> list[str]:
         """List files in S3 directory."""
@@ -200,7 +200,7 @@ class S3Backend(FileBackend):
             return await self.storage.list_raw_s3(s3_dir)
         else:
             # Workspace listing through index
-            files = await self.storage.list_files(s3_dir)
+            files = await self.storage.list_files(directory)
             return [f.path for f in files]
 
     async def exists(self, path: str, location: Location) -> bool:
