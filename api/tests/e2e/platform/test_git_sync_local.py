@@ -2236,6 +2236,7 @@ class TestCrossInstanceManifestReconciliation:
 
         integ = Integration(id=integ_id, name="TestReconcileInteg", is_deleted=False)
         db_session.add(integ)
+        await db_session.flush()  # FK: configs reference integration_id
         cfg1 = Config(
             id=config_1_id, key="keep_this", value="yes",
             integration_id=integ_id, updated_by="git-sync",

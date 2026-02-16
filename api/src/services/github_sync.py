@@ -413,9 +413,10 @@ class GitHubSyncService:
             async with self.repo_manager.checkout() as work_dir:
                 repo = self._open_or_init(work_dir)
 
-                # Regenerate manifest from DB so working tree reflects current platform state.
-                # This ensures git stash captures the real local state before merging remote.
-                await self._regenerate_manifest_to_dir(self.db, work_dir)
+                # NOTE: We intentionally do NOT regenerate the manifest here.
+                # The sync_execute flow commits first (which regenerates the manifest),
+                # then calls desktop_pull. Regenerating here would overwrite the
+                # manifest with DB state and stash it, causing conflicts with remote.
 
                 # Fetch first
                 remote_exists = True
