@@ -139,7 +139,6 @@ export function AppRouter({ preview = false }: AppRouterProps) {
 		);
 	}
 
-	// Render app with standard header layout
 	return (
 		<AppLayout appName={application.name} isPreview={preview}>
 			<JsxAppShell

@@ -123,22 +123,6 @@ class TestValidateWorkflowImpl:
         assert "Error" in text or "error" in text.lower()
 
 
-class TestGetWorkflowSchemaImpl:
-    """Tests for get_workflow_schema tool."""
-
-    @pytest.mark.asyncio
-    async def test_returns_schema_documentation(self, context):
-        """Should return workflow schema documentation."""
-        from src.services.mcp_server.tools.workflow import get_workflow_schema
-
-        result = await get_workflow_schema(context)
-        assert not is_error_result(result)
-        text = get_content_text(result)
-        assert text is not None
-        # Schema documentation should mention key concepts
-        assert "@workflow" in text or "decorator" in text.lower()
-
-
 # ==================== Get Workflow Tool Tests ====================
 
 

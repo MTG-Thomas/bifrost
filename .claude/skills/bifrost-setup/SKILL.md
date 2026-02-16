@@ -1,5 +1,5 @@
 ---
-name: setup
+name: bifrost:setup
 description: Set up Bifrost SDK - install CLI, authenticate, configure MCP server. Use when user needs to get started with Bifrost or has incomplete setup.
 ---
 

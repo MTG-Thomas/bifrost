@@ -494,7 +494,6 @@ class TestSystemToolMetadata:
             "delete_content",
             # Workflow and execution tools
             "validate_workflow",
-            "get_workflow_schema",
             "get_workflow",
             "list_executions",
             "get_execution",

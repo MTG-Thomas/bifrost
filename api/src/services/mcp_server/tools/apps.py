@@ -576,17 +576,73 @@ Applications in Bifrost use TypeScript/TSX files. For detailed component docs (p
 - `components/*.tsx` — Reusable UI components
 - `modules/*.ts` — Utility modules
 
-## CRITICAL: No Import Statements
+## Imports
 
-All modules are auto-provided by the Bifrost runtime. **Do NOT use import statements** or you get: `Cannot use import statement outside a module`.
+App files use standard ES import syntax. The server-side compiler transforms imports automatically:
 
-Available in scope:
-- **React**: `useState`, `useEffect`, `useMemo`, `useCallback`, etc.
+**Bifrost imports** — platform components, hooks, icons, utilities:
+```tsx
+import { Button, Card, useWorkflowQuery, useState } from "bifrost";
+```
+
+**External npm imports** — packages declared in `app.yaml` dependencies:
+```tsx
+import dayjs from "dayjs";
+import { LineChart, Line } from "recharts";
+```
+
+Everything from `"bifrost"` is also available in scope without importing (for backwards compatibility), but **using explicit imports is the recommended pattern**.
+
+### Available from "bifrost"
+
+- **React**: `useState`, `useEffect`, `useMemo`, `useCallback`, `useRef`, etc.
 - **Bifrost hooks**: `useWorkflowQuery`, `useWorkflowMutation`, `useUser`, `useNavigate`, `useLocation`, `useParams`
-- **Routing**: `Outlet`, `Link`
+- **Routing**: `Outlet`, `Link`, `NavLink`, `Navigate`
 - **UI**: Button, Card, Table, Select, Badge, Input, Skeleton, Pagination, Calendar, DateRangePicker, MultiCombobox, TagsInput, Combobox, Slider, Dialog, Alert, Tabs, etc.
 - **Icons**: All lucide-react icons (e.g., `Loader2`, `RefreshCw`, `Check`, `X`)
 - **Utilities**: `cn` (className merging), `format` (date-fns)
+
+## External Dependencies (npm packages)
+
+Apps can use npm packages loaded at runtime from esm.sh CDN.
+
+### Declaring dependencies in `app.yaml`:
+```yaml
+name: My Dashboard
+description: Analytics dashboard
+dependencies:
+  recharts: "2.12"
+  dayjs: "1.11"
+```
+
+### Using in code:
+```tsx
+import { LineChart, Line, XAxis, YAxis } from "recharts";
+import dayjs from "dayjs";
+
+export default function Dashboard() {
+  const { data } = useWorkflowQuery("workflow-uuid");
+  return (
+    <LineChart data={data}>
+      <XAxis dataKey="date" tickFormatter={(d) => dayjs(d).format("MMM D")} />
+      <YAxis />
+      <Line dataKey="value" />
+    </LineChart>
+  );
+}
+```
+
+### Managing dependencies via API:
+- `GET /api/applications/{app_id}/dependencies` — returns current deps
+- `PUT /api/applications/{app_id}/dependencies` — update deps (max 20, validates package names and versions)
+
+### Via `push_files`:
+Include the `dependencies` field in `app.yaml` when pushing files.
+
+### Rules:
+- Max 20 dependencies per app
+- Version format: semver with optional `^` or `~` prefix (e.g., `"2.12"`, `"^1.5.3"`)
+- Package names: lowercase, hyphens, optional `@scope/` prefix
 
 ## Available Components (use `get_component_docs` for full API)
 
@@ -659,11 +715,12 @@ async def validate_app(context: Any, app_id: str) -> ToolResult:
     """
     Validate application files for common issues.
 
-    Runs static analysis checking for:
+    Compiles all files and runs static analysis checking for:
+    - Compilation errors (syntax, JSX, TypeScript)
+    - Missing dependencies (imported but not in app.yaml)
+    - Unused dependencies (in app.yaml but not imported)
     - Unknown components
     - Invalid workflow IDs
-    - Import statements (not allowed in app builder)
-    - Forbidden patterns (require, module.exports)
     - Missing required files (_layout.tsx)
 
     Args:
@@ -677,7 +734,7 @@ async def validate_app(context: Any, app_id: str) -> ToolResult:
     from src.core.database import get_db_context
     from src.models.orm.applications import Application
     from src.models.orm.file_index import FileIndex
-    from src.models.orm.workflow import Workflow
+    from src.models.orm.workflows import Workflow
     from src.routers.applications import KNOWN_APP_COMPONENTS
 
     logger.info(f"MCP validate_app called with id={app_id}")
@@ -716,35 +773,72 @@ async def validate_app(context: Any, app_id: str) -> ToolResult:
             if f"{prefix}pages/index.tsx" not in files:
                 warnings.append({"severity": "warning", "file": "pages/index.tsx", "message": "Missing pages/index.tsx"})
 
-            # Analyze TSX/TS files
+            # Parse declared dependencies from app.yaml
+            from src.routers.app_code_files import _parse_dependencies
+
+            yaml_content = files.get(f"{prefix}app.yaml", "")
+            declared_deps = _parse_dependencies(yaml_content) if yaml_content else {}
+            referenced_deps: set[str] = set()
+
+            # Collect TSX/TS files for compilation
+            compilable_files = []
             for full_path, content in files.items():
                 rel_path = full_path[len(prefix):]
                 if not (rel_path.endswith(".tsx") or rel_path.endswith(".ts")):
                     continue
+                compilable_files.append({"path": rel_path, "source": content, "full_path": full_path})
 
-                for i, line in enumerate(content.split("\n"), 1):
-                    stripped = line.strip()
-                    if re.match(r'^import\s+', stripped) and not stripped.startswith("//"):
-                        errors.append({"severity": "error", "file": rel_path, "message": f"Import not allowed: {stripped[:80]}", "line": i})
+            # Compile all files via the server-side compiler
+            if compilable_files:
+                from src.services.app_compiler import AppCompilerService
+                compiler = AppCompilerService()
+                compile_inputs = [{"path": f["path"], "source": f["source"]} for f in compilable_files]
+                compile_results = await compiler.compile_batch(compile_inputs)
 
-                # Check unknown components
-                comp_refs = set(re.findall(r'<([A-Z][a-zA-Z0-9]*)', content))
-                for comp in comp_refs:
-                    if comp not in KNOWN_APP_COMPONENTS:
-                        warnings.append({"severity": "warning", "file": rel_path, "message": f"Unknown component <{comp}>"})
+                for comp_file, comp_result in zip(compilable_files, compile_results):
+                    rel_path = comp_file["path"]
+                    content = comp_file["source"]
 
-                # Check workflow IDs
-                wf_refs = re.findall(r'(?:useWorkflowQuery|useWorkflowMutation)\s*\(\s*["\']([^"\']+)["\']', content)
-                for wf_ref in wf_refs:
-                    try:
-                        wf_uuid = UUID(wf_ref)
-                        wf_result = await db.execute(
-                            select(Workflow.id).where(Workflow.id == wf_uuid, Workflow.is_active == True)  # noqa: E712
-                        )
-                        if not wf_result.scalar_one_or_none():
-                            errors.append({"severity": "error", "file": rel_path, "message": f"Workflow '{wf_ref}' not found"})
-                    except ValueError:
-                        errors.append({"severity": "error", "file": rel_path, "message": f"'{wf_ref}' is not a valid UUID"})
+                    if not comp_result.success:
+                        errors.append({"severity": "error", "file": rel_path, "message": f"Compilation failed: {comp_result.error}"})
+
+                    # Extract external import references (non-bifrost)
+                    for match in re.finditer(
+                        r'^\s*import\s+.*?\s+from\s+["\']([^"\']+)["\']\s*;?\s*$',
+                        content,
+                        re.MULTILINE,
+                    ):
+                        pkg = match.group(1)
+                        if pkg != "bifrost":
+                            # Handle scoped packages: @scope/pkg → @scope/pkg
+                            referenced_deps.add(pkg)
+
+                    # Check unknown components
+                    comp_refs = set(re.findall(r'<([A-Z][a-zA-Z0-9]*)', content))
+                    for comp in comp_refs:
+                        if comp not in KNOWN_APP_COMPONENTS:
+                            warnings.append({"severity": "warning", "file": rel_path, "message": f"Unknown component <{comp}>"})
+
+                    # Check workflow IDs
+                    wf_refs = re.findall(r'(?:useWorkflowQuery|useWorkflowMutation)\s*\(\s*["\']([^"\']+)["\']', content)
+                    for wf_ref in wf_refs:
+                        try:
+                            wf_uuid = UUID(wf_ref)
+                            wf_result = await db.execute(
+                                select(Workflow.id).where(Workflow.id == wf_uuid, Workflow.is_active == True)  # noqa: E712
+                            )
+                            if not wf_result.scalar_one_or_none():
+                                errors.append({"severity": "error", "file": rel_path, "message": f"Workflow '{wf_ref}' not found"})
+                        except ValueError:
+                            errors.append({"severity": "error", "file": rel_path, "message": f"'{wf_ref}' is not a valid UUID"})
+
+            # Check for missing/unused dependencies
+            for dep in referenced_deps:
+                if dep not in declared_deps:
+                    errors.append({"severity": "error", "file": "app.yaml", "message": f"Missing dependency: '{dep}' is imported but not in app.yaml dependencies"})
+            for dep in declared_deps:
+                if dep not in referenced_deps:
+                    warnings.append({"severity": "warning", "file": "app.yaml", "message": f"Unused dependency: '{dep}' is declared but not imported by any file"})
 
             # Build result
             lines = []
@@ -935,6 +1029,175 @@ async def push_files(
         return error_result(f"Error pushing files: {str(e)}")
 
 
+async def get_app_dependencies(
+    context: Any,
+    app_id: str | None = None,
+    app_slug: str | None = None,
+) -> ToolResult:
+    """
+    Get npm dependencies declared in an app's app.yaml.
+
+    Args:
+        app_id: Application UUID
+        app_slug: Application slug (alternative to app_id)
+
+    Returns:
+        ToolResult with dependencies dict {package_name: version}
+    """
+    from uuid import UUID
+
+    from sqlalchemy import select
+
+    from src.core.database import get_db_context
+    from src.models.orm.applications import Application
+    from src.routers.app_code_files import _parse_dependencies
+    from src.services.file_storage.file_index_service import FileIndexService
+
+    if not app_id and not app_slug:
+        return error_result("Either app_id or app_slug is required")
+
+    try:
+        async with get_db_context() as db:
+            if app_id:
+                try:
+                    app_uuid = UUID(app_id)
+                except ValueError:
+                    return error_result(f"Invalid app_id format: {app_id}")
+                query = select(Application).where(Application.id == app_uuid)
+            else:
+                query = select(Application).where(Application.slug == app_slug)
+
+            if not context.is_platform_admin and context.org_id:
+                query = query.where(
+                    (Application.organization_id == context.org_id)
+                    | (Application.organization_id.is_(None))
+                )
+
+            result = await db.execute(query)
+            app = result.scalar_one_or_none()
+            if not app:
+                return error_result(f"Application not found: {app_id or app_slug}")
+
+            file_index = FileIndexService(db)
+            yaml_content = await file_index.read(f"apps/{app.slug}/app.yaml")
+            deps = _parse_dependencies(yaml_content)
+
+            if not deps:
+                return success_result(
+                    f"No dependencies declared for {app.name}",
+                    {"dependencies": {}, "app_id": str(app.id), "app_name": app.name},
+                )
+
+            dep_list = ", ".join(f"{k}@{v}" for k, v in deps.items())
+            return success_result(
+                f"{app.name} dependencies: {dep_list}",
+                {"dependencies": deps, "app_id": str(app.id), "app_name": app.name},
+            )
+
+    except Exception as e:
+        logger.exception(f"Error getting app dependencies: {e}")
+        return error_result(f"Error getting dependencies: {str(e)}")
+
+
+async def update_app_dependencies(
+    context: Any,
+    app_id: str,
+    dependencies: dict[str, str],
+) -> ToolResult:
+    """
+    Update npm dependencies in an app's app.yaml.
+
+    Args:
+        app_id: Application UUID (required)
+        dependencies: Dict of {package_name: version}. Pass empty dict to remove all.
+            Package names: lowercase, hyphens, optional @scope/ prefix.
+            Versions: semver with optional ^ or ~ (e.g., "2.12", "^1.5.3").
+            Max 20 packages.
+
+    Returns:
+        ToolResult with updated dependencies
+    """
+    import re
+    from uuid import UUID
+
+    from sqlalchemy import select
+
+    from src.core.database import get_db_context
+    from src.models.orm.applications import Application
+    from src.routers.app_code_files import _serialize_dependencies
+    from src.services.app_storage import AppStorageService
+    from src.services.file_storage.file_index_service import FileIndexService
+    from src.services.file_storage.file_storage_service import get_file_storage_service
+
+    MAX_DEPS = 20
+    PKG_NAME_RE = re.compile(r"^(@[a-z0-9-]+/)?[a-z0-9][a-z0-9._-]*$")
+    VERSION_RE = re.compile(r"^\^?~?\d+(\.\d+){0,2}$")
+
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        return error_result(f"Invalid app_id format: {app_id}")
+
+    if len(dependencies) > MAX_DEPS:
+        return error_result(f"Too many dependencies (max {MAX_DEPS})")
+
+    # Validate
+    for name, version in dependencies.items():
+        if not PKG_NAME_RE.match(name):
+            return error_result(f"Invalid package name: {name}")
+        if not VERSION_RE.match(version):
+            return error_result(f"Invalid version for {name}: {version}")
+
+    try:
+        async with get_db_context() as db:
+            query = select(Application).where(Application.id == app_uuid)
+            if not context.is_platform_admin and context.org_id:
+                query = query.where(
+                    (Application.organization_id == context.org_id)
+                    | (Application.organization_id.is_(None))
+                )
+
+            result = await db.execute(query)
+            app = result.scalar_one_or_none()
+            if not app:
+                return error_result(f"Application not found: {app_id}")
+
+            # Read existing app.yaml
+            file_index = FileIndexService(db)
+            yaml_path = f"apps/{app.slug}/app.yaml"
+            existing_yaml = await file_index.read(yaml_path)
+
+            # Serialize and write
+            new_yaml = _serialize_dependencies(dependencies, existing_yaml)
+            storage = get_file_storage_service(db)
+            user_email = context.user_email or "mcp"
+            await storage.write_file(
+                path=yaml_path,
+                content=new_yaml.encode("utf-8"),
+                updated_by=user_email,
+            )
+
+            # Invalidate render cache
+            app_storage = AppStorageService()
+            await app_storage.invalidate_render_cache(str(app.id))
+
+            if dependencies:
+                dep_list = ", ".join(f"{k}@{v}" for k, v in dependencies.items())
+                display_text = f"Updated {app.name} dependencies: {dep_list}"
+            else:
+                display_text = f"Removed all dependencies from {app.name}"
+
+            return success_result(display_text, {
+                "dependencies": dependencies,
+                "app_id": str(app.id),
+                "app_name": app.name,
+            })
+
+    except Exception as e:
+        logger.exception(f"Error updating app dependencies: {e}")
+        return error_result(f"Error updating dependencies: {str(e)}")
+
+
 # Tool metadata for registration
 TOOLS = [
     ("list_apps", "List Applications", "List all App Builder applications with file counts and URLs."),
@@ -942,10 +1205,12 @@ TOOLS = [
     ("get_app", "Get Application", "Get application metadata and file list."),
     ("update_app", "Update Application", "Update application metadata (name, description)."),
     ("publish_app", "Publish Application", "Publish all draft files to live."),
-    ("validate_app", "Validate Application", "Validate application files for common issues (unknown components, bad workflow IDs, forbidden patterns)."),
+    ("validate_app", "Validate Application", "Build and validate an app: compiles all files, checks for missing/unused dependencies, unknown components, and bad workflow IDs."),
     ("push_files", "Push Files", "Push multiple files to _repo/ in a single batch. Useful for creating or updating entire apps or workflow sets."),
     ("get_app_schema", "Get App Schema", "Get documentation about App Builder application structure and code-based files."),
     ("get_component_docs", "Get Component Docs", "Get detailed UI component documentation (props, variants, examples). Filter by component names or category."),
+    ("get_app_dependencies", "Get App Dependencies", "Get npm dependencies declared in an app's app.yaml."),
+    ("update_app_dependencies", "Update App Dependencies", "Update npm dependencies in an app's app.yaml. Pass a dict of {package: version}."),
 ]
 
 
@@ -963,6 +1228,8 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "push_files": push_files,
         "get_app_schema": get_app_schema,
         "get_component_docs": get_component_docs,
+        "get_app_dependencies": get_app_dependencies,
+        "update_app_dependencies": update_app_dependencies,
     }
 
     for tool_id, name, description in TOOLS:

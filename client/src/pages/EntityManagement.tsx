@@ -1238,7 +1238,7 @@ export function EntityManagement() {
 						} else if (entity.entityType === "agent") {
 							url = `/api/agents/${entity.id}`;
 						} else if (entity.entityType === "app") {
-							url = `/api/applications/${entity.slug}`;
+							url = `/api/applications/${entity.id}`;
 						} else {
 							return;
 						}

@@ -252,9 +252,6 @@ def main(args: list[str] | None = None) -> int:
     if command == "push":
         return handle_push(args[1:])
 
-    if command == "deploy":
-        return handle_deploy(args[1:])
-
     # Unknown command
     print(f"Unknown command: {command}", file=sys.stderr)
     print_help()
@@ -273,7 +270,6 @@ Commands:
   run         Run a workflow file with web-based parameter input
   sync        Sync with Bifrost platform via GitHub
   push        Push local files to Bifrost platform
-  deploy      Build and deploy a static app (Vite bundle)
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
@@ -286,8 +282,6 @@ Examples:
   bifrost sync --resolve workflows/billing.py=keep_remote
   bifrost push apps/my-app
   bifrost push apps/my-app --clean
-  bifrost deploy --slug example-static-app
-  bifrost deploy --slug example-static-app --publish
   bifrost login
   bifrost login --url https://app.gobifrost.com
   bifrost logout
@@ -1002,175 +996,6 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-
-
-def handle_deploy(args: list[str]) -> int:
-    """
-    Handle 'bifrost deploy' command.
-
-    Builds a static app (if dist/ doesn't exist) and deploys the bundle
-    to Bifrost via POST /api/applications/{app_id}/deploy.
-
-    Usage:
-      bifrost deploy --slug <slug> [--publish] [--skip-build] [--dist <path>]
-    """
-    if not args or args[0] in ("--help", "-h"):
-        print("""
-Usage: bifrost deploy --slug <slug> [options]
-
-Build and deploy a static Vite app to Bifrost.
-
-Options:
-  --slug, -s SLUG       App slug (required)
-  --publish             Publish to live after deploying to preview
-  --skip-build          Skip npm run build (use existing dist/)
-  --dist PATH           Path to dist directory (default: ./dist)
-  --help, -h            Show this help message
-
-Examples:
-  bifrost deploy --slug my-app
-  bifrost deploy --slug my-app --publish
-  bifrost deploy --slug my-app --skip-build --dist ./build
-""".strip())
-        return 0
-
-    slug = None
-    publish = False
-    skip_build = False
-    dist_path = "dist"
-
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg in ("--slug", "-s"):
-            if i + 1 >= len(args):
-                print("Error: --slug requires a value", file=sys.stderr)
-                return 1
-            slug = args[i + 1]
-            i += 2
-        elif arg == "--publish":
-            publish = True
-            i += 1
-        elif arg == "--skip-build":
-            skip_build = True
-            i += 1
-        elif arg == "--dist":
-            if i + 1 >= len(args):
-                print("Error: --dist requires a value", file=sys.stderr)
-                return 1
-            dist_path = args[i + 1]
-            i += 2
-        else:
-            print(f"Unknown option: {arg}", file=sys.stderr)
-            return 1
-
-    if not slug:
-        print("Error: --slug is required", file=sys.stderr)
-        return 1
-
-    return asyncio.run(_deploy_static_app(slug, publish=publish, skip_build=skip_build, dist_path=dist_path))
-
-
-async def _deploy_static_app(slug: str, publish: bool = False, skip_build: bool = False, dist_path: str = "dist") -> int:
-    """Deploy a static app bundle to Bifrost."""
-    import pathlib
-    import subprocess
-    import tarfile
-    import tempfile
-
-    dist = pathlib.Path(dist_path).resolve()
-
-    # Build if needed
-    if not skip_build:
-        print("Building app...")
-        try:
-            subprocess.run(["npm", "run", "build"], check=True)
-        except subprocess.CalledProcessError:
-            print("Error: build failed", file=sys.stderr)
-            return 1
-        except FileNotFoundError:
-            print("Error: npm not found. Install Node.js or use --skip-build.", file=sys.stderr)
-            return 1
-
-    if not dist.exists() or not dist.is_dir():
-        print(f"Error: {dist_path}/ directory not found. Run build first.", file=sys.stderr)
-        return 1
-
-    if not (dist / "index.html").exists():
-        print(f"Error: {dist_path}/index.html not found. Is this a valid Vite build?", file=sys.stderr)
-        return 1
-
-    # Get authenticated client
-    try:
-        client = BifrostClient.get_instance(require_auth=True)
-    except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    # Look up app by slug to get the UUID
-    print(f"Looking up app '{slug}'...")
-    try:
-        response = await client.get(f"/api/applications/{slug}")
-        if response.status_code != 200:
-            print(f"Error: app '{slug}' not found (HTTP {response.status_code})", file=sys.stderr)
-            return 1
-        app_data = response.json()
-        app_id = app_data["id"]
-        app_type = app_data.get("app_type", "runtime")
-        if app_type != "static":
-            print(f"Error: app '{slug}' is a '{app_type}' app, not a static app", file=sys.stderr)
-            return 1
-    except Exception as e:
-        print(f"Error looking up app: {e}", file=sys.stderr)
-        return 1
-
-    # Create tarball
-    print("Packaging dist/ ...")
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-        tarball_path = tmp.name
-
-    try:
-        with tarfile.open(tarball_path, "w:gz") as tar:
-            for file_path in sorted(dist.rglob("*")):
-                if file_path.is_file():
-                    arcname = str(file_path.relative_to(dist))
-                    tar.add(file_path, arcname=arcname)
-
-        # Upload
-        print(f"Deploying to {client.api_url} ...")
-        with open(tarball_path, "rb") as f:
-            response = await client.post(
-                f"/api/applications/{app_id}/deploy",
-                files={"bundle": ("dist.tar.gz", f, "application/gzip")},
-            )
-
-        if response.status_code != 200:
-            print(f"Error: deploy failed (HTTP {response.status_code})", file=sys.stderr)
-            try:
-                detail = response.json().get("detail", response.text)
-                print(f"  {detail}", file=sys.stderr)
-            except Exception:
-                print(f"  {response.text}", file=sys.stderr)
-            return 1
-
-        result = response.json()
-        print(f"  Deployed {result.get('files_uploaded', '?')} files to preview")
-
-        # Publish if requested
-        if publish:
-            print("Publishing preview → live ...")
-            pub_response = await client.post(f"/api/applications/{app_id}/publish")
-            if pub_response.status_code == 200:
-                print("  Published!")
-            else:
-                print(f"  Publish failed (HTTP {pub_response.status_code})", file=sys.stderr)
-                return 1
-
-        print(f"\nDone! App available at /apps-v2/{slug}/")
-        return 0
-
-    finally:
-        os.unlink(tarball_path)
 
 
 def print_run_help() -> None:

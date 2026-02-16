@@ -107,14 +107,22 @@ async def create_event_source(
     cron_expression: str | None = None,
     timezone: str = "UTC",
     schedule_enabled: bool = True,
+    # Auto-subscription shortcut
+    workflow_id: str | None = None,
 ) -> ToolResult:
-    """Create a new event source (webhook or schedule)."""
+    """Create a new event source (webhook or schedule).
+
+    If workflow_id is provided, automatically creates a subscription linking
+    the event source to that workflow. If an active event source with the same
+    name, source_type, and organization already exists, reuses it and ensures
+    a subscription to the workflow exists.
+    """
     from src.core.database import get_db_context
     from src.models.enums import EventSourceType
-    from src.models.orm.events import EventSource, ScheduleSource, WebhookSource
+    from src.models.orm.events import EventSource, EventSubscription, ScheduleSource, WebhookSource
     from src.services.webhooks.registry import get_adapter_registry
 
-    logger.info(f"MCP create_event_source called: name={name}, type={source_type}")
+    logger.info(f"MCP create_event_source called: name={name}, type={source_type}, workflow_id={workflow_id}")
 
     try:
         source_type_enum = EventSourceType(source_type)
@@ -130,73 +138,158 @@ async def create_event_source(
         if not cron_expression:
             return error_result("cron_expression is required for schedule source type")
 
+    # Validate workflow_id format if provided
+    if workflow_id:
+        try:
+            UUID(workflow_id)
+        except ValueError:
+            return error_result(f"Invalid workflow_id: {workflow_id}. Must be a valid UUID.")
+
     try:
         now = datetime.now(_tz.utc)
         user_email = getattr(context, "user_email", "") or getattr(context, "email", "mcp")
 
         async with get_db_context() as db:
-            # Create base event source
-            source = EventSource(
-                name=name,
-                source_type=source_type_enum,
-                organization_id=UUID(organization_id) if organization_id else None,
-                is_active=True,
-                created_by=user_email,
-                created_at=now,
-                updated_at=now,
-            )
-            db.add(source)
-            await db.flush()
+            org_uuid = UUID(organization_id) if organization_id else None
 
-            callback_url = None
+            # Upsert logic: if workflow_id provided, check for existing matching source
+            existing_source = None
+            if workflow_id:
+                query = (
+                    select(EventSource)
+                    .options(
+                        joinedload(EventSource.webhook_source),
+                        joinedload(EventSource.schedule_source),
+                    )
+                    .where(
+                        EventSource.name == name,
+                        EventSource.source_type == source_type_enum,
+                        EventSource.is_active.is_(True),
+                    )
+                )
+                if org_uuid:
+                    query = query.where(EventSource.organization_id == org_uuid)
+                else:
+                    query = query.where(EventSource.organization_id.is_(None))
 
-            # Handle webhook
-            if source_type_enum == EventSourceType.WEBHOOK:
-                registry = get_adapter_registry()
-                adapter = registry.get(adapter_name)
-                if adapter_name and not adapter:
-                    return error_result(f"Unknown webhook adapter: {adapter_name}")
+                result = await db.execute(query)
+                existing_source = result.unique().scalar_one_or_none()
 
-                webhook_source = WebhookSource(
-                    event_source_id=source.id,
-                    adapter_name=adapter_name,
-                    integration_id=UUID(integration_id) if integration_id else None,
-                    config=webhook_config or {},
+            if existing_source:
+                source = existing_source
+                callback_url = _build_callback_url(source.id) if source_type_enum == EventSourceType.WEBHOOK else None
+            else:
+                # Create base event source
+                source = EventSource(
+                    name=name,
+                    source_type=source_type_enum,
+                    organization_id=org_uuid,
+                    is_active=True,
+                    created_by=user_email,
                     created_at=now,
                     updated_at=now,
                 )
-
-                callback_url = _build_callback_url(source.id)
-
-                if adapter:
-                    try:
-                        result = await adapter.subscribe(
-                            callback_url=callback_url,
-                            config=webhook_config or {},
-                            integration=None,  # TODO: load integration if needed
-                        )
-                        webhook_source.external_id = result.external_id
-                        webhook_source.state = result.state
-                        webhook_source.expires_at = result.expires_at
-                    except Exception as e:
-                        logger.error(f"Failed to subscribe webhook: {e}", exc_info=True)
-                        source.error_message = str(e)
-
-                db.add(webhook_source)
+                db.add(source)
                 await db.flush()
 
-            # Handle schedule
-            if source_type_enum == EventSourceType.SCHEDULE:
-                schedule_source = ScheduleSource(
-                    event_source_id=source.id,
-                    cron_expression=cron_expression,
-                    timezone=timezone,
-                    enabled=schedule_enabled,
-                    created_at=now,
-                    updated_at=now,
+                callback_url = None
+
+                # Handle webhook
+                if source_type_enum == EventSourceType.WEBHOOK:
+                    registry = get_adapter_registry()
+                    adapter = registry.get(adapter_name)
+                    if adapter_name and not adapter:
+                        return error_result(f"Unknown webhook adapter: {adapter_name}")
+
+                    webhook_source = WebhookSource(
+                        event_source_id=source.id,
+                        adapter_name=adapter_name,
+                        integration_id=UUID(integration_id) if integration_id else None,
+                        config=webhook_config or {},
+                        created_at=now,
+                        updated_at=now,
+                    )
+
+                    callback_url = _build_callback_url(source.id)
+
+                    if adapter:
+                        try:
+                            result = await adapter.subscribe(
+                                callback_url=callback_url,
+                                config=webhook_config or {},
+                                integration=None,  # TODO: load integration if needed
+                            )
+                            webhook_source.external_id = result.external_id
+                            webhook_source.state = result.state
+                            webhook_source.expires_at = result.expires_at
+                        except Exception as e:
+                            logger.error(f"Failed to subscribe webhook: {e}", exc_info=True)
+                            source.error_message = str(e)
+
+                    db.add(webhook_source)
+                    await db.flush()
+
+                # Handle schedule
+                if source_type_enum == EventSourceType.SCHEDULE:
+                    schedule_source = ScheduleSource(
+                        event_source_id=source.id,
+                        cron_expression=cron_expression,
+                        timezone=timezone,
+                        enabled=schedule_enabled,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    db.add(schedule_source)
+                    await db.flush()
+
+            # Auto-create subscription if workflow_id provided
+            subscription_data = None
+            if workflow_id:
+                # Check if subscription already exists
+                existing_sub = await db.execute(
+                    select(EventSubscription)
+                    .options(joinedload(EventSubscription.workflow))
+                    .where(
+                        EventSubscription.event_source_id == source.id,
+                        EventSubscription.workflow_id == UUID(workflow_id),
+                        EventSubscription.is_active.is_(True),
+                    )
                 )
-                db.add(schedule_source)
-                await db.flush()
+                existing_sub_row = existing_sub.unique().scalar_one_or_none()
+
+                if existing_sub_row:
+                    subscription_data = {
+                        "subscription_id": str(existing_sub_row.id),
+                        "workflow_id": workflow_id,
+                        "workflow_name": existing_sub_row.workflow.name if existing_sub_row.workflow else None,
+                        "already_existed": True,
+                    }
+                else:
+                    subscription = EventSubscription(
+                        event_source_id=source.id,
+                        workflow_id=UUID(workflow_id),
+                        is_active=True,
+                        created_by=user_email,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    db.add(subscription)
+                    await db.flush()
+
+                    # Reload with workflow name
+                    sub_result = await db.execute(
+                        select(EventSubscription)
+                        .options(joinedload(EventSubscription.workflow))
+                        .where(EventSubscription.id == subscription.id)
+                    )
+                    subscription = sub_result.unique().scalar_one()
+
+                    subscription_data = {
+                        "subscription_id": str(subscription.id),
+                        "workflow_id": workflow_id,
+                        "workflow_name": subscription.workflow.name if subscription.workflow else None,
+                        "already_existed": False,
+                    }
 
             response: dict[str, Any] = {
                 "id": str(source.id),
@@ -206,6 +299,9 @@ async def create_event_source(
                 "is_active": True,
             }
 
+            if existing_source:
+                response["already_existed"] = True
+
             if callback_url:
                 response["callback_url"] = callback_url
             if source.error_message:
@@ -214,10 +310,17 @@ async def create_event_source(
                 response["cron_expression"] = cron_expression
                 response["timezone"] = timezone
                 response["schedule_enabled"] = schedule_enabled
+            if subscription_data:
+                response["subscription"] = subscription_data
 
             display_text = f"Created event source '{name}' ({source_type})"
+            if existing_source:
+                display_text = f"Reused existing event source '{name}' ({source_type})"
             if callback_url:
                 display_text += f" - callback: {callback_url}"
+            if subscription_data:
+                wf_name = subscription_data.get("workflow_name") or workflow_id
+                display_text += f" -> {wf_name}"
 
             return success_result(display_text, response)
 
@@ -688,7 +791,7 @@ async def list_webhook_adapters(
 # Tool metadata for registration
 TOOLS = [
     ("list_event_sources", "List Event Sources", "List event sources with optional filters by type and organization."),
-    ("create_event_source", "Create Event Source", "Create a new event source (webhook or schedule)."),
+    ("create_event_source", "Create Event Source", "Create a new event source (webhook or schedule). Optionally pass workflow_id to auto-create a subscription in one call."),
     ("get_event_source", "Get Event Source", "Get details of a specific event source."),
     ("update_event_source", "Update Event Source", "Update an existing event source."),
     ("delete_event_source", "Delete Event Source", "Soft delete an event source."),

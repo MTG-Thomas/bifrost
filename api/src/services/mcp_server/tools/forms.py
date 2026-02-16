@@ -89,6 +89,37 @@ async def get_form_schema(context: Any) -> ToolResult:
         (DataProviderInputConfig, "DataProviderInputConfig (for cascading dropdowns)"),
     ], "Form Schema Documentation")
 
+    # Data provider usage docs (previously in get_data_provider_schema)
+    data_provider_docs = """
+## Using Data Providers in Forms
+
+Reference a data provider in form field definitions to create dynamic dropdowns:
+
+```json
+{
+  "name": "customer",
+  "type": "select",
+  "label": "Select Customer",
+  "data_provider_id": "uuid-of-provider",
+  "data_provider_inputs": {
+    "department_id": "{{department}}"
+  }
+}
+```
+
+Data providers must return a list of objects with label/value pairs:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| label | string | Yes | Text shown to user in dropdown |
+| value | string | Yes | Value stored when selected |
+| metadata | object | No | Optional extra data for workflows |
+
+Data providers are stored as workflows with type='data_provider'.
+Use `list_workflows` to see available data providers. For `@data_provider` decorator docs, use `get_sdk_schema`.
+"""
+
+    schema_doc += data_provider_docs
     return success_result("Form schema documentation", {"schema": schema_doc})
 
 

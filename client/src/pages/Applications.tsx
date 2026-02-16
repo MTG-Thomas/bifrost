@@ -114,16 +114,16 @@ export function Applications() {
 		navigate(`/apps/${appSlug}/edit`);
 	};
 
-	const handlePreview = (appId: string) => {
-		navigate(`/apps/${appId}/preview`);
+	const handlePreview = (appSlug: string) => {
+		navigate(`/apps/${appSlug}/preview`);
 	};
 
-	const handleLaunch = (appId: string) => {
-		navigate(`/apps/${appId}`);
+	const handleLaunch = (appSlug: string) => {
+		navigate(`/apps/${appSlug}`);
 	};
 
-	const handleDelete = (appSlug: string, appName: string) => {
-		setSelectedApp({ id: appSlug, name: appName });
+	const handleDelete = (appId: string, appName: string) => {
+		setSelectedApp({ id: appId, name: appName });
 		setIsDeleteDialogOpen(true);
 	};
 
@@ -378,7 +378,7 @@ export function Applications() {
 													size="icon"
 													onClick={() =>
 														handleDelete(
-															app.slug,
+															app.id,
 															app.name,
 														)
 													}
@@ -523,7 +523,7 @@ export function Applications() {
 															size="sm"
 															onClick={() =>
 																handleDelete(
-																	app.slug,
+																	app.id,
 																	app.name,
 																)
 															}

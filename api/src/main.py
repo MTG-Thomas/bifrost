@@ -69,7 +69,6 @@ from src.routers import (
     applications_router,
     app_code_files_router,
     app_render_router,
-    app_static_serve_router,
     dependencies_router,
     export_import_router,
     platform_workers_router,
@@ -472,7 +471,6 @@ def create_app() -> FastAPI:
     app.include_router(applications_router)
     app.include_router(app_code_files_router)
     app.include_router(app_render_router)
-    app.include_router(app_static_serve_router)
     app.include_router(dependencies_router)
     app.include_router(export_import_router)
     app.include_router(platform_workers_router)

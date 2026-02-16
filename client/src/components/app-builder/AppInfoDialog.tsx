@@ -94,25 +94,24 @@ const formSchema = z.object({
 type FormValues = z.infer<typeof formSchema>;
 
 interface AppInfoDialogProps {
-	appId?: string | null;
+	appSlug?: string | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	/** Called after successful create with the new app slug (for navigation) */
+	/** Called after successful create with the new app slug */
 	onCreated?: (slug: string) => void;
 }
 
 export function AppInfoDialog({
-	appId,
+	appSlug,
 	open,
 	onOpenChange,
 	onCreated,
 }: AppInfoDialogProps) {
-	const isEditing = !!appId;
+	const isEditing = !!appSlug;
 	const { isPlatformAdmin, user } = useAuth();
 
-	// Fetch existing app when editing (by slug - appId is actually the slug here)
 	const { data: existingApp, isLoading: isLoadingApp } = useApplication(
-		isEditing ? appId : undefined,
+		isEditing ? appSlug : undefined,
 	);
 
 	const { data: roles, isLoading: rolesLoading } = useRoles();
@@ -157,7 +156,7 @@ export function AppInfoDialog({
 				name: "",
 				slug: "",
 				description: "",
-				organization_id: defaultOrgId,
+					organization_id: defaultOrgId,
 				access_level: "role_based",
 				role_ids: [],
 			});

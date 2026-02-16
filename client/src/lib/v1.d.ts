@@ -3310,22 +3310,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        get: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        put: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        post: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_name__post"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_name__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6368,34 +6368,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/applications/{app_id}/deploy": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Deploy a static app bundle to preview
-         * @description Upload a pre-built static app bundle to preview.
-         *
-         *     Accepts a .tar.gz archive of the Vite build output (dist/ directory).
-         *     The archive must contain an index.html at the root.
-         *
-         *     Files go to **preview** storage — preview at /apps-v2/{slug}/preview/.
-         *     Use POST /{app_id}/publish to copy preview → live.
-         *
-         *     Only works for apps with app_type='static'.
-         */
-        post: operations["deploy_static_app_api_applications__app_id__deploy_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/applications/{app_id}/validate": {
         parameters: {
             query?: never;
@@ -6553,7 +6525,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/apps-v2/{slug}/{path}": {
+    "/api/applications/{app_id}/dependencies": {
         parameters: {
             query?: never;
             header?: never;
@@ -6561,31 +6533,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Serve Static App
-         * @description Serve a static app file. Use ?mode=preview for unpublished draft.
+         * Get app dependencies
+         * @description Return the validated dependencies dict from app.yaml.
          */
-        get: operations["serve_static_app_apps_v2__slug___path__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/apps-v2/{slug}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
+        get: operations["get_dependencies_api_applications__app_id__dependencies_get"];
         /**
-         * Serve Static App Root
-         * @description Serve the root index.html of a static app. Use ?mode=preview for unpublished draft.
+         * Update app dependencies
+         * @description Replace the dependencies section of app.yaml.
+         *
+         *     Validates every package name and version, enforces the max-dependency
+         *     limit, then writes back to app.yaml preserving other fields.
          */
-        get: operations["serve_static_app_root_apps_v2__slug__get"];
-        put?: never;
+        put: operations["put_dependencies_api_applications__app_id__dependencies_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -7624,12 +7583,6 @@ export interface components {
              */
             slug: string;
             /**
-             * App Type
-             * @description Application type: 'runtime' (browser-compiled JSX) or 'static' (pre-built Vite bundle)
-             * @default runtime
-             */
-            app_type: string;
-            /**
              * Access Level
              * @description Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles)
              * @default authenticated
@@ -7718,11 +7671,6 @@ export interface components {
             slug: string;
             /** Organization Id */
             organization_id: string | null;
-            /**
-             * App Type
-             * @default runtime
-             */
-            app_type: string;
             /** Published At */
             published_at: string | null;
             /** Created At */
@@ -7769,9 +7717,6 @@ export interface components {
         /**
          * ApplicationUpdate
          * @description Input for updating application metadata.
-         *
-         *     Note: app_type is intentionally not updatable — it is set at creation
-         *     and determines how the app is built and served (runtime vs static).
          */
         ApplicationUpdate: {
             /** Name */
@@ -7925,15 +7870,6 @@ export interface components {
              * @description Similarity score to the deactivated workflow (0.0-1.0)
              */
             similarity_score: number;
-        };
-        /** Body_deploy_static_app_api_applications__app_id__deploy_post */
-        Body_deploy_static_app_api_applications__app_id__deploy_post: {
-            /**
-             * Bundle
-             * Format: binary
-             * @description Tarball (.tar.gz) of the built dist/ directory
-             */
-            bundle: string;
         };
         /** Body_import_all_api_export_import_import_all_post */
         Body_import_all_api_export_import_import_all_post: {
@@ -9417,16 +9353,6 @@ export interface components {
              * @description ID of the root node
              */
             root_id: string;
-        };
-        /**
-         * DeployResponse
-         * @description Response from deploying a static app bundle.
-         */
-        DeployResponse: {
-            /** Files Uploaded */
-            files_uploaded: number;
-            /** Mode */
-            mode: string;
         };
         /**
          * DetailedHealthCheck
@@ -23064,7 +22990,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -23097,7 +23023,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -23130,7 +23056,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -23163,7 +23089,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_name__post: {
+    execute_endpoint_api_endpoints__workflow_name__delete: {
         parameters: {
             query?: never;
             header: {
@@ -28867,41 +28793,6 @@ export interface operations {
             };
         };
     };
-    deploy_static_app_api_applications__app_id__deploy_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                app_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": components["schemas"]["Body_deploy_static_app_api_applications__app_id__deploy_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeployResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     validate_application_api_applications__app_id__validate_post: {
         parameters: {
             query?: never;
@@ -29179,15 +29070,13 @@ export interface operations {
             };
         };
     };
-    serve_static_app_apps_v2__slug___path__get: {
+    get_dependencies_api_applications__app_id__dependencies_get: {
         parameters: {
-            query?: {
-                mode?: string | null;
-            };
+            query?: never;
             header?: never;
             path: {
-                slug: string;
-                path: string;
+                /** @description Application UUID */
+                app_id: string;
             };
             cookie?: never;
         };
@@ -29199,7 +29088,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -29213,18 +29104,23 @@ export interface operations {
             };
         };
     };
-    serve_static_app_root_apps_v2__slug__get: {
+    put_dependencies_api_applications__app_id__dependencies_put: {
         parameters: {
-            query?: {
-                mode?: string | null;
-            };
+            query?: never;
             header?: never;
             path: {
-                slug: string;
+                /** @description Application UUID */
+                app_id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: string;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -29232,7 +29128,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
             /** @description Validation Error */

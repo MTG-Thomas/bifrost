@@ -1,5 +1,5 @@
 ---
-name: build
+name: bifrost:build
 description: Build Bifrost workflows, forms, and apps. Use when user wants to create, debug, or modify Bifrost artifacts. Supports SDK-first (local dev + git) and MCP-only modes.
 ---
 
@@ -16,6 +16,32 @@ echo "Source: $BIFROST_HAS_SOURCE | Path: $BIFROST_SOURCE_PATH | URL: $BIFROST_D
 
 **If SDK or Login is false/empty:** Direct user to run `/bifrost:setup` first.
 
+## Core Principle: Local First
+
+**In SDK-First mode, everything happens locally until it needs the platform.** Use local file tools (Glob, Read, Grep) for all exploration. Write files locally, test locally, commit and sync to deploy.
+
+**Exploration & Discovery** -> Local file tools (Glob, Read, Grep)
+- Source code in the workspace or adjacent projects
+- Existing app patterns, table schemas, workflow code
+- `.bifrost/*.yaml` manifests (the source of truth)
+- Projects being ported to Bifrost
+
+**Writing & Creating** -> Local files + git + `bifrost sync`
+- Write workflow/form/agent files in the git repo
+- Add entries to `.bifrost/*.yaml` manifests
+- Commit, push, then `bifrost sync` to deploy
+
+**Testing** -> `bifrost run` for workflows, platform for everything else
+- Workflows: `bifrost run <file> --workflow <name> --params '{...}'`
+- Forms, apps, agents: These require the platform to render/execute — use preview URLs or MCP execution tools after sync
+
+**MCP tools are for platform operations only:**
+- Schema docs (`get_app_schema`, `get_table_schema`, `get_sdk_schema`) — platform capability reference not in local files
+- Execution/logs (`execute_workflow`, `get_execution`) — for forms/apps/agents that need the platform runtime
+- Platform state verification (`list_workflows`, etc.) — ONLY when debugging sync divergence
+
+**Never use MCP for:** discovery (`list_*`), reading code (`list_content`, `search_content`, `read_content_lines`), or creating artifacts (`create_workflow`, etc.) when a local workspace exists.
+
 ## Development Mode
 
 **Auto-detect:** If a `.bifrost/` directory exists in the workspace, you are in **SDK-First** mode. Otherwise, use **MCP-Only** mode. Only ask the user if the situation is ambiguous.
@@ -26,7 +52,7 @@ Best for: developers who want git history, local testing, code review before dep
 
 **Requirements:** Git repository, Bifrost SDK installed, GitHub sync configured in platform.
 
-**Discovery: ALWAYS read local `.bifrost/*.yaml` files first.** These are the source of truth — the platform is synced FROM them. Never call MCP discovery tools (`list_workflows`, `list_integrations`, `list_forms`, etc.) when the same data is in local YAML.
+**Discovery: ALWAYS read local `.bifrost/*.yaml` files first.** These are the source of truth — the platform is synced FROM them. Never call MCP discovery tools when the same data is in local YAML.
 
 | To find... | Read this file | NOT this MCP tool |
 |---|---|---|
@@ -48,7 +74,7 @@ Best for: developers who want git history, local testing, code review before dep
 **Creation flow:**
 1. Write workflow/form/agent files locally in the git repo
 2. Add entries to `.bifrost/*.yaml` manifest files
-3. Test workflows locally with `bifrost run <file> <function> --params '{...}'`
+3. Test workflows locally with `bifrost run <file> --workflow <name> --params '{...}'`
 4. Iterate until happy with the result
 5. `git add && git commit && git push` to push to GitHub
 6. `bifrost sync` to sync with the platform (runs preflight, pulls/pushes changes)
@@ -97,7 +123,7 @@ my-workspace/
     {uuid}.agent.yaml              # Agent definition (prompt, tools, channels)
   apps/
     my-dashboard/
-      app.json                     # App metadata
+      app.yaml                     # App metadata
       pages/index.tsx              # App code files
   modules/
     shared/utils.py                # Shared Python modules
@@ -154,6 +180,10 @@ workflows:
     access_level: role_based       # role_based | authenticated | public
     endpoint_enabled: false
     timeout_seconds: 1800
+    category: Onboarding
+    tags:
+      - hr
+      - onboarding
 ```
 
 Workflow code is a standard `.py` file with `@workflow`/`@tool`/`@data_provider` decorators.
@@ -195,6 +225,7 @@ forms:
     path: forms/d2e5f8a1-....form.yaml
     organization_id: "9a3f2b1c-..."
     roles: ["b7e2a4d1-..."]
+    access_level: role_based       # role_based | authenticated | public
 ```
 
 ### Agent (`agents/{uuid}.agent.yaml`)
@@ -226,20 +257,31 @@ agents:
     path: agents/c3d4e5f6-....agent.yaml
     organization_id: "9a3f2b1c-..."
     roles: ["b7e2a4d1-..."]
+    access_level: authenticated
 ```
 
-### App (`apps/{slug}/app.json`)
+### App (`apps/{slug}/app.yaml`)
 
-```json
-{
-  "id": "<uuid>",
-  "name": "Dashboard",
-  "slug": "my-dashboard",
-  "description": "Client overview dashboard"
-}
+```yaml
+name: Dashboard
+description: Client overview dashboard
+dependencies:              # Optional: npm packages loaded from esm.sh
+  recharts: "2.12"
+  dayjs: "1.11"
 ```
 
 App pages and components are sibling files in the same directory.
+
+**App manifest entry** (`.bifrost/apps.yaml`):
+```yaml
+apps:
+  Dashboard:
+    id: "a1b2c3d4-..."
+    path: apps/my-dashboard/app.yaml
+    organization_id: "9a3f2b1c-..."
+    roles: ["b7e2a4d1-..."]
+    access_level: role_based
+```
 
 ## Sync Workflow (SDK-First)
 
@@ -295,56 +337,144 @@ Clarify with the user:
 5. **Error handling requirements?**
 6. **If migrating from Rewst:** Use `/rewst-migration` skill for cutover guidance
 
-## MCP Tools Reference
+## MCP Tools Guidance
 
-> **SDK-First mode:** Skip the Discovery tools below — read `.bifrost/*.yaml` files instead. Use MCP only for Execution, Events, and SDK docs.
+> **SDK-First mode:** Read `.bifrost/*.yaml` files instead of calling discovery tools. Use MCP only for execution, events, and SDK docs.
 
-### Discovery (MCP-Only mode, or post-sync verification)
-- `list_workflows` - List workflows (filter by query, category, type)
-- `get_workflow` - Get workflow metadata by ID or name
-- `get_workflow_schema` - Workflow decorator documentation
-- `get_sdk_schema` - Full SDK documentation
-- `list_integrations` - Available integrations and auth status
-- `list_forms` - List forms with URLs
-- `get_form_schema` - Form structure documentation
-- `list_apps` - List App Builder applications
-- `get_app_schema` - App structure documentation
-- `get_data_provider_schema` - Data provider patterns
-- `get_agent_schema` - Agent structure and channels
-- `list_event_sources` - List event sources (webhooks, schedules)
-- `get_event_source` - Get event source details
-- `list_webhook_adapters` - List available webhook adapters
+### When to use MCP tools
 
-### Creation (Auto-Validating)
-- `create_workflow` - Create workflow, tool, or data provider
-- `create_form` - Create a form linked to a workflow
-- `create_app` - Create an App Builder application
+| Need | Tool | Notes |
+|------|------|-------|
+| SDK/decorator docs | `get_workflow_schema`, `get_sdk_schema` | Platform capability reference |
+| Form field types | `get_form_schema` | Field type docs not in local files |
+| App structure docs | `get_app_schema` | App Builder patterns + component list |
+| Agent structure docs | `get_agent_schema` | Agent channels/config docs |
+| Data provider docs | `get_data_provider_schema` | Data provider patterns |
+| Run a workflow | `execute_workflow` | Test on platform after sync |
+| Check execution logs | `get_execution`, `list_executions` | Debug workflow runs |
+| Create event triggers | `create_event_source`, `create_event_subscription` | Webhooks and schedules |
+| Manage events | `update_event_source`, `delete_event_source` | Modify triggers |
+| Validate an app | `validate_app` or `bifrost push --validate` | Static analysis: bad components, workflow refs |
+| Push files to platform | `bifrost push <path>` (CLI) | Batch push local files to `_repo/` — use `--clean` to delete remote-only files, `--validate` for apps |
+| Get app dependencies | `get_app_dependencies` | Read npm deps from app.yaml |
+| Update app dependencies | `update_app_dependencies` | Add/remove/update npm deps in app.yaml |
 
-### Editing
-- `list_content` - List files by entity type
-- `search_content` - Search code patterns
-- `read_content_lines` - Read specific lines
-- `patch_content` - Surgical string replacement
-- `replace_content` - Replace entire file
+### Editing via MCP (MCP-Only mode)
 
-### Events
-- `list_event_subscriptions` - List subscriptions for an event source
-- `create_event_source` - Create event source (webhook or schedule)
-- `update_event_source` - Update event source
-- `delete_event_source` - Delete event source
-- `create_event_subscription` - Link event source to workflow
-- `update_event_subscription` - Update subscription
-- `delete_event_subscription` - Delete subscription
+- Prefer `patch_content` for surgical string replacements — it's precise and safe
+- Use `replace_content` only when replacing an entire file or when `patch_content` fails (ambiguous match)
+- Use `get_content` / `read_content_lines` to read before editing
 
-### Execution
-- `execute_workflow` - Execute by workflow ID
-- `list_executions` - List recent executions
-- `get_execution` - Get execution details and logs
+## Building Apps
 
-### Organization
-- `list_organizations` - List all organizations
-- `get_organization` - Get org details
-- `list_tables` - List data tables
+Apps are React-based dashboards/tools built with TSX files. They run in a sandboxed runtime with access to platform components and workflow data.
+
+### App File Structure
+
+```
+apps/my-app/
+  app.yaml              # App metadata (name, description)
+  _layout.tsx           # Root layout - MUST use <Outlet />, NOT {children}
+  _providers.tsx         # Optional context providers
+  pages/
+    index.tsx           # Home page (route: /)
+    settings.tsx        # Settings page (route: /settings)
+    [id].tsx            # Dynamic route (route: /:id)
+  components/
+    MyWidget.tsx        # Reusable components
+  modules/
+    utils.ts            # Utility modules
+```
+
+### Critical App Rules
+
+1. **Use standard ES imports** — the server-side compiler transforms them automatically:
+   ```tsx
+   // Bifrost platform imports (hooks, components, icons, utilities):
+   import { Button, Card, useWorkflowQuery, useState } from "bifrost";
+
+   // External npm packages (declared in app.yaml dependencies):
+   import dayjs from "dayjs";
+   import { LineChart, Line } from "recharts";
+   ```
+   Everything from `"bifrost"` is also available in scope without importing (backwards compatible), but explicit imports are recommended.
+
+2. **Root layout uses `<Outlet />`**, not `{children}`
+
+3. **Use workflow UUIDs**, not workflow names, in `useWorkflowQuery` / `useWorkflowMutation`
+
+4. **Scrollable content** needs flex layout: parent `flex flex-col h-full`, child `flex-1 overflow-auto`
+
+### External Dependencies (npm packages)
+
+Apps can use npm packages loaded at runtime from esm.sh CDN. Declare them in `app.yaml`:
+
+```yaml
+name: My Dashboard
+description: Analytics dashboard
+dependencies:
+  recharts: "2.12"
+  dayjs: "1.11"
+```
+
+**Rules:** Max 20 packages. Version format: semver with optional `^`/`~` (e.g., `"2.12"`, `"^1.5.3"`). Package names: lowercase, hyphens, optional `@scope/` prefix.
+
+**Managing via API:**
+- `GET /api/applications/{app_id}/dependencies` — current deps
+- `PUT /api/applications/{app_id}/dependencies` — update deps
+
+**Managing via MCP:** Include `dependencies` field in `app.yaml` when using `push_files`.
+
+### Available from "bifrost"
+
+**Hooks:**
+- `useWorkflowQuery(workflowId, params, options)` — auto-executes on mount, returns `{ data, isLoading, error, refetch }`
+- `useWorkflowMutation(workflowId)` — returns `{ mutate, mutateAsync, isPending, data, error }`
+- `useUser()` — current user info
+- `navigate(path)` — programmatic navigation
+
+**UI Components (shadcn/ui):**
+- Layout: Card (+ Header, Footer, Title, Content, Description, Action)
+- Forms: Button, Input, Label, Textarea, Checkbox, Switch, Select (+sub), RadioGroup, Combobox, MultiCombobox, TagsInput, Slider
+- Display: Badge, Avatar (+sub), Alert (+sub), Skeleton, Progress, Separator
+- Navigation: Tabs (+sub), Pagination (+sub)
+- Feedback: Dialog (+sub), AlertDialog (+sub), Tooltip (+sub), Popover (+sub), Sheet (+sub), HoverCard (+sub)
+- Data: Table (+sub), Accordion (+sub), Collapsible (+sub)
+- Calendar/Date: Calendar, DateRangePicker
+- Menus: DropdownMenu (+sub), ContextMenu (+sub), Command (+sub)
+- Toggle: Toggle, ToggleGroup, ToggleGroupItem
+- Routing: Link, NavLink, Outlet, Navigate
+
+**Utilities:**
+- `cn(...)` — Tailwind class merging (clsx + twMerge)
+- `format(date, pattern)` — date-fns format function (e.g., `format(new Date(), 'yyyy-MM-dd')`)
+- `toast(message)` — Sonner toast notifications
+
+**Icons:** All lucide-react icons available (e.g., `<Settings />`, `<ChevronRight />`, `<Search />`)
+
+### App Development Workflow (SDK-First)
+
+1. Write app files locally in `apps/{slug}/`
+2. Add entry to `.bifrost/apps.yaml`
+3. `bifrost push apps/{slug}` to push to platform (or `bifrost sync` if using git workflow)
+4. `bifrost push apps/{slug} --validate` to push and validate in one step
+5. Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`
+
+### App Development Workflow (MCP-Only)
+
+1. `create_app(name="My App")` — scaffolds `_layout.tsx` + `pages/index.tsx`
+2. Edit files with `patch_content` / `replace_content`
+3. Preview at `$BIFROST_DEV_URL/apps/{slug}/preview` (live updates)
+4. Validate with `validate_app(app_id)` to catch issues
+
+### App Validation
+
+Use `validate_app(app_id)` MCP tool or `POST /api/applications/{app_id}/validate` to check for:
+- Unknown components (JSX tags not in the component registry)
+- Forbidden patterns (`require()`, `module.exports`)
+- Bad workflow ID format (must be UUID)
+- Non-existent workflow IDs (checks DB for active workflows)
+- Missing required files (`_layout.tsx`)
 
 ## Triggering Workflows
 
@@ -376,7 +506,7 @@ Three patterns for connecting triggers to workflows:
 - **Workflows (local):** `bifrost run <file> --workflow <name> --params '{...}'`
 - **Workflows (remote):** `execute_workflow` with workflow ID, check `get_execution` for logs
 - **Forms:** Access at `$BIFROST_DEV_URL/forms/{form_id}`, submit, check `list_executions`
-- **Apps:** Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`, publish with `publish_app`, then live at `$BIFROST_DEV_URL/apps/{slug}`
+- **Apps:** Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`, validate with `validate_app`, publish with `publish_app`, then live at `$BIFROST_DEV_URL/apps/{slug}`
 - **Events (schedule):** Wait for next cron tick, check `list_executions` for the subscribed workflow
 - **Events (webhook):** `curl -X POST $BIFROST_DEV_URL/api/hooks/{source_id} -H 'Content-Type: application/json' -d '{...}'`, check `list_executions`
 

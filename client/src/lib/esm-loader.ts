@@ -43,8 +43,14 @@ export async function loadDependencies(
 				return;
 			}
 			try {
-				const mod = await import(/* @vite-ignore */ buildUrl(name, version));
-				const exports = { ...mod };
+				const url = buildUrl(name, version);
+				const mod = await import(/* @vite-ignore */ url);
+				// Copy module exports. Use the module directly to preserve
+				// getter behavior on namespace objects.
+				const exports: Record<string, unknown> = {};
+				for (const k of Object.keys(mod)) {
+					exports[k] = mod[k];
+				}
 				moduleCache.set(key, exports);
 				result[name] = exports;
 			} catch (err) {

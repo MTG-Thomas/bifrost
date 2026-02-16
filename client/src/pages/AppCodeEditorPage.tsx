@@ -273,7 +273,7 @@ export function AppCodeEditorPage() {
 						<Settings className="h-4 w-4" />
 					</Button>
 					<AppInfoDialog
-						appId={existingApp?.slug}
+						appSlug={existingApp?.slug}
 						open={isSettingsOpen}
 						onOpenChange={setIsSettingsOpen}
 					/>

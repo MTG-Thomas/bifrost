@@ -9,12 +9,13 @@ Data flow:
 1. Git sync/import: copy from _repo/{app_path}/ to _apps/{app_id}/preview/
 2. Editor write: write to _apps/{app_id}/preview/
 3. Publish: copy preview → live
-4. Serve draft: read from preview
-5. Serve live: read from live
+4. Serve draft: read from preview (Redis cache → S3 fallback)
+5. Serve live: read from live (Redis cache → S3 fallback)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -123,7 +124,9 @@ class AppStorageService:
                 logger.info(f"Removed {len(stale)} stale preview files for app {app_id}")
 
             logger.info(f"Synced {synced} files to preview for app {app_id}")
-            return synced
+
+        await self.invalidate_render_cache(app_id)
+        return synced
 
     async def sync_preview_compiled(
         self, app_id: str, source_dir_in_repo: str
@@ -230,7 +233,9 @@ class AppStorageService:
                 f"Synced {synced} compiled files to preview for app {app_id}"
                 f" ({len(compile_errors)} compile errors)"
             )
-            return synced, compile_errors
+
+        await self.invalidate_render_cache(app_id)
+        return synced, compile_errors
 
     # -----------------------------------------------------------------
     # Single file operations
@@ -239,7 +244,7 @@ class AppStorageService:
     async def write_preview_file(
         self, app_id: str, relative_path: str, content: bytes
     ) -> None:
-        """Write a single file to _apps/{app_id}/preview/."""
+        """Write a single file to _apps/{app_id}/preview/ and bust render cache."""
         key = self._key(app_id, "preview", relative_path)
         async with self._get_client() as client:
             await client.put_object(
@@ -247,15 +252,17 @@ class AppStorageService:
                 Key=key,
                 Body=content,
             )
+        await self.invalidate_render_cache(app_id)
 
     async def delete_preview_file(self, app_id: str, relative_path: str) -> None:
-        """Delete a single file from _apps/{app_id}/preview/."""
+        """Delete a single file from _apps/{app_id}/preview/ and bust render cache."""
         key = self._key(app_id, "preview", relative_path)
         async with self._get_client() as client:
             try:
                 await client.delete_object(Bucket=self._bucket, Key=key)
             except Exception:
                 pass  # Idempotent
+        await self.invalidate_render_cache(app_id)
 
     async def read_file(
         self, app_id: str, mode: AppMode, relative_path: str
@@ -339,7 +346,70 @@ class AppStorageService:
                 f"Published {published} files for app {app_id}"
                 f" (removed {len(stale)} stale)"
             )
-            return published
+
+        await self.invalidate_render_cache(app_id)
+        return published
+
+    # -----------------------------------------------------------------
+    # Render cache (Redis → S3 fallback)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _render_cache_key(app_id: str, mode: AppMode) -> str:
+        return f"bifrost:app_render:{app_id}:{mode}"
+
+    async def get_render_cache(
+        self, app_id: str, mode: AppMode
+    ) -> dict[str, str] | None:
+        """Try to read cached render bundle from Redis.
+
+        Returns:
+            dict of {rel_path: code} or None on cache miss.
+        """
+        try:
+            from src.core.cache import get_shared_redis
+
+            r = await get_shared_redis()
+            data = await r.get(self._render_cache_key(app_id, mode))
+            if data:
+                return json.loads(data)
+        except Exception:
+            logger.debug(f"Render cache miss/error for app {app_id} ({mode})")
+        return None
+
+    async def set_render_cache(
+        self, app_id: str, mode: AppMode, files: dict[str, str], ttl: int = 300
+    ) -> None:
+        """Write render bundle to Redis cache.
+
+        Args:
+            files: dict of {rel_path: code}
+            ttl: Cache TTL in seconds (default 5 minutes).
+        """
+        try:
+            from src.core.cache import get_shared_redis
+
+            r = await get_shared_redis()
+            await r.set(
+                self._render_cache_key(app_id, mode),
+                json.dumps(files),
+                ex=ttl,
+            )
+        except Exception:
+            logger.debug(f"Failed to set render cache for app {app_id} ({mode})")
+
+    async def invalidate_render_cache(self, app_id: str) -> None:
+        """Invalidate render cache for both draft and live modes."""
+        try:
+            from src.core.cache import get_shared_redis
+
+            r = await get_shared_redis()
+            await r.delete(
+                self._render_cache_key(app_id, "preview"),
+                self._render_cache_key(app_id, "live"),
+            )
+        except Exception:
+            logger.debug(f"Failed to invalidate render cache for app {app_id}")
 
     # -----------------------------------------------------------------
     # Helpers
