@@ -29,7 +29,7 @@ class WorkflowRole(Base):
     __tablename__ = "workflow_roles"
 
     workflow_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
     )
     role_id: Mapped[UUID] = mapped_column(
         ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True

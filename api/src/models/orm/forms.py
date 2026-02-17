@@ -47,7 +47,7 @@ class FormField(Base):
     # NOTE: FK now points to workflows table where type='data_provider'
     # (migrated from data_providers table in 20260103_000000)
     data_provider_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("workflows.id", ondelete="SET NULL"), default=None
+        ForeignKey("workflows.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )
     data_provider_inputs: Mapped[dict | None] = mapped_column(JSONB, default=None)
 

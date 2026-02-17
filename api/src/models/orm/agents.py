@@ -128,7 +128,7 @@ class AgentTool(Base):
         ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
     )
     workflow_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
     )
 
 

@@ -40,7 +40,7 @@ class Table(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"), default=None
     )
     application_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("applications.id", ondelete="SET NULL"), default=None
+        ForeignKey("applications.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )
     schema: Mapped[dict | None] = mapped_column(JSONB, default=None)
     description: Mapped[str | None] = mapped_column(Text, default=None)

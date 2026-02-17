@@ -216,7 +216,7 @@ class EventSubscription(Base):
         ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False
     )
     workflow_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
 
     # Optional filtering
@@ -352,7 +352,7 @@ class EventDelivery(Base):
         ForeignKey("event_subscriptions.id", ondelete="CASCADE"), nullable=False
     )
     workflow_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
 
     # Execution reference (set when queued, before Execution record exists)

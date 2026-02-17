@@ -159,7 +159,7 @@ class WorkflowROIDaily(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     date: Mapped[datetime] = mapped_column(Date, nullable=False)
     workflow_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
     organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True

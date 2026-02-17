@@ -24,7 +24,7 @@ class AppEmbedSecret(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     application_id: Mapped[UUID] = mapped_column(
-        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("applications.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     secret_encrypted: Mapped[str] = mapped_column(Text, nullable=False)

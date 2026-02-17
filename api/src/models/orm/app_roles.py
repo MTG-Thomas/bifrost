@@ -24,7 +24,7 @@ class AppRole(Base):
     __tablename__ = "app_roles"
 
     app_id: Mapped[UUID] = mapped_column(
-        ForeignKey("applications.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("applications.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
     )
     role_id: Mapped[UUID] = mapped_column(
         ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
