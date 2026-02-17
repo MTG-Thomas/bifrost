@@ -7,7 +7,7 @@
 
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Upload, Settings, Loader2 } from "lucide-react";
+import { ArrowLeft, Upload, Settings, Loader2, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,6 +22,7 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { AppInfoDialog } from "@/components/app-builder/AppInfoDialog";
+import { EmbedSettingsDialog } from "@/components/app-builder/EmbedSettingsDialog";
 import { toast } from "sonner";
 import { AppCodeEditorLayout } from "@/components/app-code-editor/AppCodeEditorLayout";
 import {
@@ -64,6 +65,7 @@ export function AppCodeEditorPage() {
 	const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
 	const [publishMessage, setPublishMessage] = useState("");
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+	const [isEmbedOpen, setIsEmbedOpen] = useState(false);
 
 	// For existing apps, we skip the creation form and go straight to the editor
 	// For new apps, we show the creation form first
@@ -264,6 +266,26 @@ export function AppCodeEditorPage() {
 				</div>
 
 				<div className="flex items-center gap-2">
+					{/* Embed */}
+					{isEditing && existingApp && (
+						<>
+							<Button
+								variant="ghost"
+								size="icon"
+								onClick={() => setIsEmbedOpen(true)}
+								title="Embed settings"
+							>
+								<Link className="h-4 w-4" />
+							</Button>
+							<EmbedSettingsDialog
+								appId={existingApp.id}
+								appSlug={existingApp.slug}
+								open={isEmbedOpen}
+								onOpenChange={setIsEmbedOpen}
+							/>
+						</>
+					)}
+
 					{/* Settings */}
 					<Button
 						variant="ghost"
