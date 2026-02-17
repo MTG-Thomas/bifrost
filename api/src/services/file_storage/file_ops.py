@@ -413,12 +413,12 @@ class FileOperationsService:
         # Find the app whose repo_path is the longest prefix of this path.
         # e.g. path="custom/deep/app/pages/index.tsx" matches repo_path="custom/deep/app"
         # We append "/" to repo_path so "apps/my" doesn't match "apps/myapp/file.tsx"
-        # SQL: WHERE :path LIKE repo_path || '/%'
+        # Uses starts_with() instead of LIKE to avoid wildcard chars (_, %) in repo_path.
         stmt = (
             select(Application)
             .where(
                 Application.repo_path.isnot(None),
-                text(":path LIKE repo_path || '/%'").bindparams(path=path),
+                text("starts_with(:path, repo_path || '/')").bindparams(path=path),
             )
             .order_by(func.length(Application.repo_path).desc())
             .limit(1)

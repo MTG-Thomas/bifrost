@@ -2753,3 +2753,107 @@ class TestPullUpsertNaturalKeys:
         rows = result.scalars().all()
         assert len(rows) == 1, f"Expected 1 subscription, got {len(rows)}"
         assert rows[0].id == sub_id_b, f"Expected manifest ID {sub_id_b}, got {rows[0].id}"
+
+    async def test_app_import_custom_repo_path(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        working_clone,
+    ):
+        """Importing an app at a non-apps/{slug} path should preserve the canonical repo_path."""
+        clone_dir = Path(working_clone.working_dir)
+
+        app_id = uuid4()
+        # App lives at a custom path, NOT apps/{slug}
+        custom_path = "custom/team/dashboard"
+        app_dir = clone_dir / custom_path
+        app_dir.mkdir(parents=True, exist_ok=True)
+        (app_dir / "app.yaml").write_text(yaml.dump({
+            "name": "Team Dashboard",
+            "description": "Custom path app",
+        }, default_flow_style=False))
+
+        bifrost_dir = clone_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        manifest_content = yaml.dump({
+            "apps": {
+                "team-dashboard": {
+                    "id": str(app_id),
+                    "path": f"{custom_path}/app.yaml",
+                    "slug": "team-dashboard",
+                }
+            }
+        }, default_flow_style=False, sort_keys=False)
+        (bifrost_dir / "metadata.yaml").write_text(manifest_content)
+
+        working_clone.index.add([
+            f"{custom_path}/app.yaml",
+            ".bifrost/metadata.yaml",
+        ])
+        working_clone.index.commit("Add app at custom path")
+        working_clone.remotes.origin.push("main")
+
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success, f"Pull failed: {pull_result.error}"
+
+        # Verify: repo_path is the custom path, not apps/{slug}
+        from src.models.orm.applications import Application
+        result = await db_session.execute(
+            select(Application).where(Application.slug == "team-dashboard")
+        )
+        app = result.scalar_one_or_none()
+        assert app is not None, "App not imported"
+        assert app.repo_path == custom_path, (
+            f"Expected repo_path='{custom_path}', got '{app.repo_path}'"
+        )
+
+    async def test_app_import_underscore_in_slug(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+        working_clone,
+    ):
+        """Importing an app whose slug contains _ (SQL LIKE wildcard) should work correctly."""
+        clone_dir = Path(working_clone.working_dir)
+
+        app_id = uuid4()
+        slug = "my_app"
+        app_dir = clone_dir / "apps" / slug
+        app_dir.mkdir(parents=True, exist_ok=True)
+        (app_dir / "app.yaml").write_text(yaml.dump({
+            "name": "My Underscore App",
+            "description": "Has underscores in slug",
+        }, default_flow_style=False))
+
+        bifrost_dir = clone_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        manifest_content = yaml.dump({
+            "apps": {
+                slug: {
+                    "id": str(app_id),
+                    "path": f"apps/{slug}/app.yaml",
+                    "slug": slug,
+                }
+            }
+        }, default_flow_style=False, sort_keys=False)
+        (bifrost_dir / "metadata.yaml").write_text(manifest_content)
+
+        working_clone.index.add([
+            f"apps/{slug}/app.yaml",
+            ".bifrost/metadata.yaml",
+        ])
+        working_clone.index.commit("Add app with underscore slug")
+        working_clone.remotes.origin.push("main")
+
+        pull_result = await sync_service.desktop_pull()
+        assert pull_result.success, f"Pull failed: {pull_result.error}"
+
+        from src.models.orm.applications import Application
+        result = await db_session.execute(
+            select(Application).where(Application.slug == slug)
+        )
+        app = result.scalar_one_or_none()
+        assert app is not None, "App not imported"
+        assert app.repo_path == f"apps/{slug}"
