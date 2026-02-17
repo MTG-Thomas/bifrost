@@ -1,21 +1,19 @@
 """
 Folder Operations Service for File Storage.
 
-Handles folder creation, deletion, listing, and bulk operations.
+Handles folder creation, listing, and bulk operations.
 """
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select, delete
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings
 from src.models.orm.file_index import FileIndex
-from src.services.repo_storage import REPO_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -65,78 +63,14 @@ class FolderOperationsService:
         self,
         path: str,
         updated_by: str = "system",
-    ) -> FileEntry:
-        """
-        Create a folder marker in file_index.
+    ) -> None:
+        """Create a folder by writing a .gitkeep placeholder in S3."""
+        from src.services.repo_storage import RepoStorage
 
-        Folders are represented by paths ending with '/'.
-
-        Args:
-            path: Folder path (will be normalized to end with '/')
-            updated_by: User who created the folder
-
-        Returns:
-            FileEntry for the folder
-        """
-        folder_path = path.rstrip("/") + "/"
-        now = datetime.now(timezone.utc)
-
-        # Insert folder marker in file_index
-        stmt = insert(FileIndex).values(
-            path=folder_path,
-            content=None,
-            content_hash="",
-            updated_at=now,
-        ).on_conflict_do_update(
-            index_elements=[FileIndex.path],
-            set_={"updated_at": now},
-        )
-        await self.db.execute(stmt)
-
-        logger.info(f"Folder created: {folder_path} by {updated_by}")
-        return FileEntry(path=folder_path, content_type="inode/directory", updated_at=now)
-
-    async def delete_folder(self, path: str) -> None:
-        """
-        Delete a folder and all its contents.
-
-        Args:
-            path: Folder path (with or without trailing slash)
-        """
-        folder_path = path.rstrip("/") + "/"
-
-        # Find all files under this path
-        stmt = select(FileIndex.path).where(
-            FileIndex.path.startswith(folder_path),
-        )
-        result = await self.db.execute(stmt)
-        child_paths = [row[0] for row in result.fetchall()]
-
-        # Delete children from S3 _repo/ and clean up metadata
-        async with self._s3_client.get_client() as s3:
-            for child_path in child_paths:
-                if child_path.endswith("/"):
-                    continue
-
-                # Delete from S3 _repo/ prefix for all files
-                s3_key = f"{REPO_PREFIX}{child_path}"
-                try:
-                    await s3.delete_object(
-                        Bucket=self.settings.s3_bucket,
-                        Key=s3_key,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to delete S3 object {child_path}: {e}")
-
-                await self._remove_metadata(child_path)
-
-        # Delete all entries from file_index
-        del_stmt = delete(FileIndex).where(
-            FileIndex.path.startswith(folder_path),
-        )
-        await self.db.execute(del_stmt)
-
-        logger.info(f"Folder deleted: {folder_path}")
+        clean_path = path.strip("/")
+        gitkeep_path = f"{clean_path}/.gitkeep"
+        repo = RepoStorage()
+        await repo.write(gitkeep_path, b"")
 
     async def list_files(
         self,
@@ -220,31 +154,6 @@ class FolderOperationsService:
                         )
 
         return sorted(direct_children.values(), key=lambda f: f.path)
-
-    async def list_all_files(
-        self,
-        include_deleted: bool = False,
-    ) -> list[FileEntry]:
-        """
-        List all files in workspace.
-
-        Args:
-            include_deleted: Ignored (file_index has no soft delete)
-
-        Returns:
-            List of FileEntry records
-        """
-        stmt = select(FileIndex).order_by(FileIndex.path)
-        result = await self.db.execute(stmt)
-        return [
-            FileEntry(
-                path=fi.path,
-                content_hash=fi.content_hash or "",
-                size_bytes=len(fi.content.encode("utf-8")) if fi.content else 0,
-                updated_at=fi.updated_at,
-            )
-            for fi in result.scalars()
-        ]
 
     async def upload_from_directory(
         self,

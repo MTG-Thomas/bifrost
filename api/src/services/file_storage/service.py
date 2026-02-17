@@ -146,10 +146,6 @@ class FileStorageService:
         """Create a folder record."""
         await self._folder_ops.create_folder(path, updated_by)
 
-    async def delete_folder(self, path: str) -> None:
-        """Delete a folder and all its contents."""
-        await self._folder_ops.delete_folder(path)
-
     async def list_files(
         self,
         directory: str = "",
@@ -162,13 +158,6 @@ class FileStorageService:
             include_deleted=include_deleted,
             recursive=recursive,
         )
-
-    async def list_all_files(
-        self,
-        include_deleted: bool = False,
-    ) -> list:
-        """List all files in workspace (recursive)."""
-        return await self._folder_ops.list_all_files(include_deleted=include_deleted)
 
     async def upload_from_directory(
         self,

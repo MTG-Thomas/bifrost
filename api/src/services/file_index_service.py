@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # File extensions that should be indexed (text-searchable)
 TEXT_EXTENSIONS = frozenset({
-    ".py", ".yaml", ".yml", ".json", ".md", ".txt", ".rst",
+    ".py", ".yaml", ".yml", ".md", ".txt", ".rst",
     ".toml", ".ini", ".cfg", ".csv", ".tsx", ".ts", ".js",
     ".jsx", ".css", ".html", ".xml", ".sql", ".sh",
 })
@@ -95,13 +95,4 @@ class FileIndexService:
         )
         return [{"path": row.path, "content": row.content} for row in result.all()]
 
-    async def list_paths(self, prefix: str = "") -> list[str]:
-        """List all indexed file paths, optionally filtered by prefix."""
-        if prefix:
-            result = await self.db.execute(
-                select(FileIndex.path).where(FileIndex.path.like(f"{prefix}%"))
-            )
-        else:
-            result = await self.db.execute(select(FileIndex.path))
-        return [row[0] for row in result.all()]
 
