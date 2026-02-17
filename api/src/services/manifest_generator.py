@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import distinct, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.agents import Agent, AgentRole
@@ -21,7 +21,6 @@ from src.models.orm.config import Config
 from src.models.orm.events import EventSource, EventSubscription, ScheduleSource, WebhookSource
 from src.models.orm.forms import Form, FormRole
 from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
-from src.models.orm.knowledge_sources import KnowledgeNamespaceRole
 from src.models.orm.oauth import OAuthProvider
 from src.models.orm.organizations import Organization
 from src.models.orm.tables import Table
@@ -39,7 +38,6 @@ from src.services.manifest import (
     ManifestIntegration,
     ManifestIntegrationConfigSchema,
     ManifestIntegrationMapping,
-    ManifestKnowledgeNamespace,
     ManifestOAuthProvider,
     ManifestOrganization,
     ManifestRole,
@@ -170,40 +168,6 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
     # ------------------------------------------------------------------
     table_result = await db.execute(select(Table).order_by(Table.name))
     tables_list = table_result.scalars().all()
-
-    # ------------------------------------------------------------------
-    # Knowledge namespaces (derived from knowledge_namespace_roles + knowledge_store)
-    # ------------------------------------------------------------------
-    # Get all declared namespace-role assignments
-    ns_role_result = await db.execute(
-        select(KnowledgeNamespaceRole).order_by(KnowledgeNamespaceRole.namespace)
-    )
-    ns_roles_list = ns_role_result.scalars().all()
-
-    # Also get distinct namespaces from knowledge_store for completeness
-    from src.models.orm.knowledge import KnowledgeStore
-    ns_store_result = await db.execute(
-        select(distinct(KnowledgeStore.namespace)).order_by(KnowledgeStore.namespace)
-    )
-    store_namespaces = {row[0] for row in ns_store_result.all()}
-
-    # Merge: all namespaces from both sources
-    ns_data: dict[str, dict] = {}
-    for ns_role in ns_roles_list:
-        ns_name = ns_role.namespace
-        if ns_name not in ns_data:
-            ns_data[ns_name] = {
-                "organization_id": str(ns_role.organization_id) if ns_role.organization_id else None,
-                "roles": [],
-            }
-        ns_data[ns_name]["roles"].append(str(ns_role.role_id))
-    for ns_name in store_namespaces:
-        if ns_name not in ns_data:
-            ns_data[ns_name] = {"roles": []}
-
-    # Sort namespace role lists for deterministic output
-    for ns_entry in ns_data.values():
-        ns_entry["roles"].sort()
 
     # ------------------------------------------------------------------
     # Event sources + subscriptions
@@ -337,13 +301,6 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
                 **{"schema": table.schema},  # alias for table_schema
             )
             for table in tables_list
-        },
-        knowledge={
-            ns_name: ManifestKnowledgeNamespace(
-                organization_id=data.get("organization_id"),
-                roles=data.get("roles", []),
-            )
-            for ns_name, data in sorted(ns_data.items())
         },
         events={
             es.name: _build_event_source_manifest(

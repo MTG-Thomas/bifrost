@@ -22,7 +22,6 @@ from uuid import UUID
 import yaml
 from git import Repo as GitRepo
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings, get_settings
@@ -405,12 +404,17 @@ class GitHubSyncService:
             logger.error(f"Commit failed: {e}", exc_info=True)
             return CommitResult(success=False, error=str(e))
 
-    async def desktop_pull(self) -> "PullResult":
+    async def desktop_pull(self, job_id: str | None = None) -> "PullResult":
         """
         Pull remote changes. On success, import entities.
         On conflict, return PullResult with conflicts list.
         """
         from src.models.contracts.github import MergeConflict, PullResult
+
+        async def _progress(phase: str) -> None:
+            if job_id:
+                from src.core.pubsub import publish_git_progress
+                await publish_git_progress(job_id, phase)
 
         try:
             async with self.repo_manager.checkout() as work_dir:
@@ -422,6 +426,7 @@ class GitHubSyncService:
                 # manifest with DB state and stash it, causing conflicts with remote.
 
                 # Fetch first
+                await _progress("Fetching remote...")
                 remote_exists = True
                 try:
                     repo.remotes.origin.fetch(self.branch)
@@ -445,6 +450,7 @@ class GitHubSyncService:
                     logger.debug(f"Stash before pull: {e}")
 
                 # Attempt merge
+                await _progress("Merging changes...")
                 try:
                     repo.git.merge(f"origin/{self.branch}")
                 except Exception:
@@ -497,7 +503,18 @@ class GitHubSyncService:
                                 logger.warning("Failed to pop stash after merge failure")
                         raise
 
-                # Merge succeeded — pop stash to restore local changes
+                # Import entities from the clean merged state BEFORE popping stash.
+                # Stash pop can overwrite merged YAML with pre-merge content, so
+                # we must import while the working tree reflects the merged remote.
+                await _progress("Importing entities...")
+                async with self.db.begin_nested():
+                    pulled = await self._import_all_entities(work_dir)
+                    await self._delete_removed_entities(work_dir)
+                    await self._update_file_index(work_dir)
+                await self.db.commit()
+
+                # Pop stash to restore local changes (after import reads clean state)
+                await _progress("Cleaning up...")
                 if stashed:
                     try:
                         repo.git.stash("pop")
@@ -537,13 +554,6 @@ class GitHubSyncService:
                             conflicts=stash_conflicts,
                             error="Local changes conflict with pulled changes",
                         )
-
-                # Success - import entities atomically with savepoint
-                async with self.db.begin_nested():
-                    pulled = await self._import_all_entities(work_dir)
-                    await self._delete_removed_entities(work_dir)
-                    await self._update_file_index(work_dir)
-                await self.db.commit()
 
                 # Sync app preview files from repo to _apps/{id}/preview/
                 await self._sync_app_previews(work_dir)
@@ -1313,6 +1323,11 @@ class GitHubSyncService:
             "is_active": True,
             "organization_id": org_id,
             "access_level": getattr(mwf, "access_level", "role_based"),
+            "endpoint_enabled": getattr(mwf, "endpoint_enabled", False),
+            "timeout_seconds": getattr(mwf, "timeout_seconds", 1800),
+            "public_endpoint": getattr(mwf, "public_endpoint", False),
+            "category": getattr(mwf, "category", "General"),
+            "tags": getattr(mwf, "tags", []),
         }
 
         ops: list[SyncOp] = []
@@ -1456,7 +1471,7 @@ class GitHubSyncService:
         - Workflows, Forms, Agents, Apps: hard-delete (existing behavior)
         - Integrations, Configs, Events: hard-delete (manifest is source of truth)
         - Tables: soft-delete (keep data, set inactive — never created here currently)
-        - Knowledge: no-op (declarative only, no DB entity)
+        - Knowledge: not managed by git-sync (ephemeral, derived from documents)
         - Organizations, Roles: soft-delete (only git-sync created ones)
         """
         from uuid import UUID
@@ -1621,6 +1636,7 @@ class GitHubSyncService:
                     logger.info(f"Deactivating role {role_id} — removed from manifest")
                     ops.append(Deactivate(model=Role, id=UUID(role_id)))
 
+
         return ops
 
     async def _resolve_integration(self, integ_name: str, minteg) -> "list[SyncOp]":
@@ -1714,6 +1730,11 @@ class GitHubSyncService:
                 set_={
                     "display_name": op_data.display_name,
                     "oauth_flow_type": op_data.oauth_flow_type,
+                    **(
+                        {"client_id": op_data.client_id}
+                        if op_data.client_id and op_data.client_id != "__NEEDS_SETUP__"
+                        else {}
+                    ),
                     "authorization_url": op_data.authorization_url,
                     "token_url": op_data.token_url,
                     "token_url_defaults": op_data.token_url_defaults or {},
@@ -1911,8 +1932,15 @@ class GitHubSyncService:
     async def _resolve_table(self, table_name: str, mtable) -> "list[SyncOp]":
         """Resolve a table definition from manifest into SyncOps (schema only, no data).
 
-        Uses two-pass upsert: first try by ID, fall back to update-by-name if
-        a table with the same name but different ID already exists.
+        Two-pass natural-key lookup (mirrors _resolve_workflow):
+        1. Match by (name, organization_id) — if found, update including ID realignment
+        2. Match by ID — if found, update name/schema
+        3. Otherwise insert new
+
+        ID realignment ensures the DB row ID matches the manifest UUID so that
+        _resolve_deletions can correctly identify which tables are present.
+        Documents are preserved in all cases (cascade is on the table row, and
+        we never delete the row here).
         """
         from uuid import UUID
 
@@ -1922,41 +1950,68 @@ class GitHubSyncService:
         from src.models.orm.tables import Table
         from src.services.sync_ops import SyncOp  # noqa: F401
 
-        # Tables use a complex two-pass approach with IntegrityError fallback;
-        # execute directly and return empty ops list.
+        table_id = UUID(mtable.id)
+        org_id = UUID(mtable.organization_id) if mtable.organization_id else None
+        app_id = UUID(mtable.application_id) if mtable.application_id else None
         now = datetime.now(timezone.utc)
-        try:
-            async with self.db.begin_nested():
-                stmt = insert(Table).values(
-                    id=UUID(mtable.id),
-                    name=table_name,
-                    description=mtable.description,
-                    organization_id=UUID(mtable.organization_id) if mtable.organization_id else None,
-                    application_id=UUID(mtable.application_id) if mtable.application_id else None,
-                    schema=mtable.table_schema,
-                    created_by="git-sync",
-                ).on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={
-                        "name": table_name,
-                        "description": mtable.description,
-                        "schema": mtable.table_schema,
-                        "updated_at": now,
-                    },
+
+        # 1. Look up by natural key (name + org)
+        natural_q = select(Table.id).where(
+            Table.name == table_name,
+            Table.organization_id == org_id,
+        )
+        existing_by_natural = (await self.db.execute(natural_q)).scalar_one_or_none()
+
+        if existing_by_natural is not None:
+            if existing_by_natural != table_id:
+                # ID mismatch (cross-env) — realign the DB row's ID to the manifest ID.
+                # Documents have ON UPDATE CASCADE on table_id so they follow along.
+                logger.info(
+                    f"Realigning table {table_name!r}: DB id={existing_by_natural} → manifest id={table_id}"
                 )
-                await self.db.execute(stmt)
-        except IntegrityError:
-            # Name already exists with a different ID — update the existing row by name
-            stmt_update = (
+            await self.db.execute(
                 update(Table)
-                .where(Table.name == table_name)
+                .where(Table.id == existing_by_natural)
                 .values(
+                    id=table_id,
                     description=mtable.description,
+                    application_id=app_id,
                     schema=mtable.table_schema,
                     updated_at=now,
                 )
             )
-            await self.db.execute(stmt_update)
+            return []
+
+        # 2. Look up by ID (name changed, same ID)
+        existing_by_id = (
+            await self.db.execute(select(Table.id).where(Table.id == table_id))
+        ).scalar_one_or_none()
+
+        if existing_by_id is not None:
+            await self.db.execute(
+                update(Table)
+                .where(Table.id == table_id)
+                .values(
+                    name=table_name,
+                    description=mtable.description,
+                    application_id=app_id,
+                    schema=mtable.table_schema,
+                    updated_at=now,
+                )
+            )
+            return []
+
+        # 3. New table — insert
+        stmt = insert(Table).values(
+            id=table_id,
+            name=table_name,
+            description=mtable.description,
+            organization_id=org_id,
+            application_id=app_id,
+            schema=mtable.table_schema,
+            created_by="git-sync",
+        ).on_conflict_do_nothing()
+        await self.db.execute(stmt)
 
         return []
 

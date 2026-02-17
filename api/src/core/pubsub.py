@@ -515,6 +515,27 @@ async def publish_git_operation(
     await manager._publish_to_redis("scheduler:git-op", message)
 
 
+async def publish_git_progress(
+    job_id: str,
+    phase: str,
+) -> None:
+    """
+    Publish a git operation progress update to the frontend.
+
+    Args:
+        job_id: Unique job ID (matches the job that triggered the operation)
+        phase: Human-readable phase string (e.g. "Fetching remote...")
+    """
+    message: dict[str, Any] = {
+        "type": "git_progress",
+        "jobId": job_id,
+        "phase": phase,
+        "current": 0,
+        "total": 0,
+    }
+    await manager.broadcast(f"git:{job_id}", message)
+
+
 async def publish_git_op_completed(
     job_id: str,
     status: str,

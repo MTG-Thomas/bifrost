@@ -374,7 +374,7 @@ class Scheduler:
                     )
 
                 elif op_type == "git_pull":
-                    op_result = await sync_service.desktop_pull()
+                    op_result = await sync_service.desktop_pull(job_id=job_id)
                     status_str = "success" if op_result.success else ("conflict" if op_result.conflicts else "failed")
                     await publish_git_op_completed(
                         job_id, status=status_str, result_type="pull",
@@ -477,7 +477,7 @@ class Scheduler:
                     commit_result = await sync_service.desktop_commit("Sync from Bifrost")
 
                     # Step 2: Pull remote changes
-                    pull_result = await sync_service.desktop_pull()
+                    pull_result = await sync_service.desktop_pull(job_id=job_id)
                     if not pull_result.success:
                         if pull_result.conflicts and conflict_resolutions:
                             resolve_result = await sync_service.desktop_resolve(conflict_resolutions)

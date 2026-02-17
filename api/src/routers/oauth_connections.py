@@ -13,7 +13,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import (
@@ -177,8 +177,16 @@ class OAuthConnectionRepository:
                 OAuthProvider.provider_name == connection_name
             )
 
-        if org_id:
-            query = query.where(OAuthProvider.organization_id == org_id)
+        # Cascade: org-specific OR global (NULL), matching OrgScopedRepository pattern
+        if org_id is not None:
+            query = query.where(
+                or_(
+                    OAuthProvider.organization_id == org_id,
+                    OAuthProvider.organization_id.is_(None),
+                )
+            )
+        else:
+            query = query.where(OAuthProvider.organization_id.is_(None))
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
@@ -503,8 +511,8 @@ async def create_connection(
     # Use the integration name as the provider/connection name
     provider_name = integration.name
 
-    # Check for existing connection
-    existing = await repo.get_connection(provider_name, org_id)
+    # Check for existing connection (global check — top-level connections are org=NULL)
+    existing = await repo.get_connection(provider_name)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -518,7 +526,7 @@ async def create_connection(
         encrypted_secret = encrypt_secret(request.client_secret).encode()
 
     provider = OAuthProvider(
-        organization_id=org_id,
+        # organization_id omitted → NULL → global connection
         provider_name=provider_name,
         display_name=integration.name,
         description=request.description,

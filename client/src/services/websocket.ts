@@ -1222,6 +1222,26 @@ class WebSocketService {
 	}
 
 	/**
+	 * Subscribe to git operation progress updates for a specific job
+	 */
+	onGitProgress(
+		jobId: string,
+		callback: GitProgressCallback,
+	): () => void {
+		if (!this.gitProgressCallbacks.has(jobId)) {
+			this.gitProgressCallbacks.set(jobId, new Set());
+		}
+		this.gitProgressCallbacks.get(jobId)!.add(callback);
+
+		return () => {
+			this.gitProgressCallbacks.get(jobId)?.delete(callback);
+			if (this.gitProgressCallbacks.get(jobId)?.size === 0) {
+				this.gitProgressCallbacks.delete(jobId);
+			}
+		};
+	}
+
+	/**
 	 * Subscribe to git operation completion for a specific job
 	 */
 	onGitOpComplete(

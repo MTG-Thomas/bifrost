@@ -168,17 +168,26 @@ function getChangeBadge(changeType: string) {
 async function runGitOp<T>(
 	queueFn: () => Promise<{ job_id: string }>,
 	resultType: string,
+	onProgress?: (phase: string) => void,
 ): Promise<T> {
 	const { job_id } = await queueFn();
 	if (!job_id) throw new Error("Failed to queue operation");
 
 	await webSocketService.connectToGitSync(job_id);
 
+	let unsubProgress: (() => void) | undefined;
+	if (onProgress) {
+		unsubProgress = webSocketService.onGitProgress(job_id, (progress) => {
+			onProgress(progress.phase);
+		});
+	}
+
 	return new Promise<T>((resolve, reject) => {
 		const unsub = webSocketService.onGitOpComplete(
 			job_id,
 			(complete: GitOpComplete) => {
 				unsub();
+				unsubProgress?.();
 				if (complete.status === "success" || complete.resultType === resultType) {
 					if (complete.error && complete.status !== "success") {
 						reject(new GitOpError(complete.error, complete.data as Record<string, unknown>));
@@ -204,6 +213,7 @@ export function SourceControlPanel() {
 	const [conflicts, setConflicts] = useState<MergeConflict[]>([]);
 	const [conflictResolutions, setConflictResolutions] = useState<Record<string, "ours" | "theirs">>({});
 	const [loading, setLoading] = useState<"fetching" | "committing" | "pulling" | "pushing" | "resolving" | "loading_changes" | null>(null);
+	const [gitPhase, setGitPhase] = useState<string | null>(null);
 	const [commitsAhead, setCommitsAhead] = useState(0);
 	const [commitsBehind, setCommitsBehind] = useState(0);
 	const [commits, setCommits] = useState<
@@ -429,10 +439,12 @@ export function SourceControlPanel() {
 
 	const handlePull = useCallback(async () => {
 		setLoading("pulling");
+		setGitPhase(null);
 		try {
 			const result = await runGitOp<PullResult>(
 				() => pullOp.mutateAsync(),
 				"pull",
+				(phase) => setGitPhase(phase),
 			);
 			if (result.success) {
 				toast.success(
@@ -456,6 +468,7 @@ export function SourceControlPanel() {
 			toast.error(`Pull failed: ${msg}`);
 		} finally {
 			setLoading(null);
+			setGitPhase(null);
 		}
 	}, [pullOp, refreshStatus, loadChanges]);
 
@@ -735,6 +748,7 @@ export function SourceControlPanel() {
 					commitsBehind={commitsBehind}
 					commitsAhead={commitsAhead}
 					loading={loading}
+					gitPhase={gitPhase}
 					disabled={!!loading}
 					branch={status.current_branch || "main"}
 					showCleanupPrompt={showCleanupPrompt}
@@ -916,6 +930,7 @@ function ChangesSection({
 	commitsBehind,
 	commitsAhead,
 	loading,
+	gitPhase,
 	disabled,
 	branch,
 	showCleanupPrompt,
@@ -934,6 +949,7 @@ function ChangesSection({
 	commitsBehind: number;
 	commitsAhead: number;
 	loading: "fetching" | "committing" | "pulling" | "pushing" | "resolving" | "loading_changes" | null;
+	gitPhase?: string | null;
 	disabled: boolean;
 	branch: string;
 	showCleanupPrompt?: boolean;
@@ -987,25 +1003,30 @@ function ChangesSection({
 					{/* Action buttons */}
 					<div className="px-4 pb-2 flex-shrink-0 flex flex-col gap-1">
 						{commitsBehind > 0 && (
-							<Button
-								size="sm"
-								variant={hasChanges ? "outline" : "default"}
-								className="w-full gap-2 rounded-none"
-								onClick={onPull}
-								disabled={disabled}
-							>
-								{loading === "pulling" ? (
-									<>
-										<Loader2 className="h-3.5 w-3.5 animate-spin" />
-										Pulling...
-									</>
-								) : (
-									<>
-										<Download className="h-3.5 w-3.5" />
-										Pull ↓{commitsBehind}
-									</>
+							<div className="flex flex-col gap-0.5">
+								<Button
+									size="sm"
+									variant={hasChanges ? "outline" : "default"}
+									className="w-full gap-2 rounded-none"
+									onClick={onPull}
+									disabled={disabled}
+								>
+									{loading === "pulling" ? (
+										<>
+											<Loader2 className="h-3.5 w-3.5 animate-spin" />
+											Pulling...
+										</>
+									) : (
+										<>
+											<Download className="h-3.5 w-3.5" />
+											Pull ↓{commitsBehind}
+										</>
+									)}
+								</Button>
+								{loading === "pulling" && gitPhase && (
+									<p className="text-xs text-muted-foreground text-center">{gitPhase}</p>
 								)}
-							</Button>
+							</div>
 						)}
 						{hasChanges && (
 							<Button

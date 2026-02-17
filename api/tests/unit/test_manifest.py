@@ -524,15 +524,6 @@ def full_manifest_data():
                     },
                 },
             },
-            "knowledge": {
-                "tickets": {
-                    "organization_id": org_id,
-                    "roles": [role_id],
-                },
-                "docs": {
-                    "description": "Documentation namespace",
-                },
-            },
             "events": {
                 "Ticket Webhook": {
                     "id": event_source_id,
@@ -788,51 +779,6 @@ class TestTableManifest:
         assert "schema" in table_data["tables"]["ticket_cache"]
 
 
-class TestKnowledgeManifest:
-    """Tests for knowledge namespace manifest models."""
-
-    def test_parse_knowledge(self, full_manifest_data):
-        """Parse knowledge namespace entries."""
-        from src.services.manifest import parse_manifest
-
-        yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
-        manifest = parse_manifest(yaml_str)
-
-        assert "tickets" in manifest.knowledge
-        assert manifest.knowledge["tickets"].organization_id == full_manifest_data["org_id"]
-        assert full_manifest_data["role_id"] in manifest.knowledge["tickets"].roles
-
-        assert "docs" in manifest.knowledge
-        assert manifest.knowledge["docs"].description == "Documentation namespace"
-        assert manifest.knowledge["docs"].roles == []
-
-    def test_knowledge_round_trip(self, full_manifest_data):
-        """Knowledge namespaces survive round-trip."""
-        from src.services.manifest import parse_manifest, serialize_manifest
-
-        yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
-        original = parse_manifest(yaml_str)
-        output = serialize_manifest(original)
-        restored = parse_manifest(output)
-
-        assert len(restored.knowledge) == len(original.knowledge)
-        for ns in original.knowledge:
-            assert ns in restored.knowledge
-
-    def test_knowledge_split_file(self, full_manifest_data):
-        """Knowledge namespaces serialize to knowledge.yaml."""
-        from src.services.manifest import parse_manifest, serialize_manifest_dir
-
-        yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
-        manifest = parse_manifest(yaml_str)
-        files = serialize_manifest_dir(manifest)
-
-        assert "knowledge.yaml" in files
-        k_data = yaml.safe_load(files["knowledge.yaml"])
-        assert "knowledge" in k_data
-        assert "tickets" in k_data["knowledge"]
-
-
 class TestEventManifest:
     """Tests for event source + subscription manifest models."""
 
@@ -964,7 +910,6 @@ class TestFullManifestSplitRoundTrip:
             assert (bifrost_dir / "integrations.yaml").exists()
             assert (bifrost_dir / "configs.yaml").exists()
             assert (bifrost_dir / "tables.yaml").exists()
-            assert (bifrost_dir / "knowledge.yaml").exists()
             assert (bifrost_dir / "events.yaml").exists()
             assert (bifrost_dir / "forms.yaml").exists()
             assert (bifrost_dir / "agents.yaml").exists()
@@ -978,7 +923,6 @@ class TestFullManifestSplitRoundTrip:
         assert len(restored.integrations) == len(original.integrations)
         assert len(restored.configs) == len(original.configs)
         assert len(restored.tables) == len(original.tables)
-        assert len(restored.knowledge) == len(original.knowledge)
         assert len(restored.events) == len(original.events)
         assert len(restored.forms) == len(original.forms)
         assert len(restored.agents) == len(original.agents)
@@ -1062,28 +1006,6 @@ class TestValidateManifestNewTypes:
         manifest = parse_manifest(yaml_str)
         errors = validate_manifest(manifest)
         assert any("application" in e.lower() for e in errors)
-
-    def test_knowledge_bad_org_ref(self, full_manifest_data):
-        """Knowledge namespace referencing unknown org is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
-
-        data = full_manifest_data["manifest"]
-        data["knowledge"]["tickets"]["organization_id"] = str(uuid4())
-        yaml_str = yaml.dump(data, default_flow_style=False)
-        manifest = parse_manifest(yaml_str)
-        errors = validate_manifest(manifest)
-        assert any("organization" in e.lower() for e in errors)
-
-    def test_knowledge_bad_role_ref(self, full_manifest_data):
-        """Knowledge namespace referencing unknown role is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
-
-        data = full_manifest_data["manifest"]
-        data["knowledge"]["tickets"]["roles"] = [str(uuid4())]
-        yaml_str = yaml.dump(data, default_flow_style=False)
-        manifest = parse_manifest(yaml_str)
-        errors = validate_manifest(manifest)
-        assert any("role" in e.lower() for e in errors)
 
     def test_event_bad_org_ref(self, full_manifest_data):
         """Event source referencing unknown org is caught."""

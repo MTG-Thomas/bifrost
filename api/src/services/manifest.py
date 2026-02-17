@@ -32,7 +32,6 @@ MANIFEST_FILES: dict[str, str] = {
     "integrations": "integrations.yaml",
     "configs": "configs.yaml",
     "tables": "tables.yaml",
-    "knowledge": "knowledge.yaml",
     "events": "events.yaml",
     "forms": "forms.yaml",
     "agents": "agents.yaml",
@@ -179,13 +178,6 @@ class ManifestTable(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class ManifestKnowledgeNamespace(BaseModel):
-    """Knowledge namespace declaration (declarative only — no DB entity)."""
-    description: str | None = None
-    organization_id: str | None = None
-    roles: list[str] = Field(default_factory=list)  # Role UUIDs
-
-
 class ManifestEventSubscription(BaseModel):
     """Event subscription within an event source."""
     id: str
@@ -222,7 +214,6 @@ class Manifest(BaseModel):
     integrations: dict[str, ManifestIntegration] = Field(default_factory=dict)
     configs: dict[str, ManifestConfig] = Field(default_factory=dict)
     tables: dict[str, ManifestTable] = Field(default_factory=dict)
-    knowledge: dict[str, ManifestKnowledgeNamespace] = Field(default_factory=dict)
     events: dict[str, ManifestEventSource] = Field(default_factory=dict)
     forms: dict[str, ManifestForm] = Field(default_factory=dict)
     agents: dict[str, ManifestAgent] = Field(default_factory=dict)
@@ -434,14 +425,6 @@ def validate_manifest(manifest: Manifest) -> list[str]:
             errors.append(f"Table '{name}' references unknown organization: {table.organization_id}")
         if table.application_id and table.application_id not in app_ids:
             errors.append(f"Table '{name}' references unknown application: {table.application_id}")
-
-    # Knowledge: role refs
-    for ns_name, ns in manifest.knowledge.items():
-        if ns.organization_id and ns.organization_id not in org_ids:
-            errors.append(f"Knowledge namespace '{ns_name}' references unknown organization: {ns.organization_id}")
-        for role_id in ns.roles:
-            if role_id not in role_ids:
-                errors.append(f"Knowledge namespace '{ns_name}' references unknown role: {role_id}")
 
     # Events: source + subscription refs
     for name, evt in manifest.events.items():
