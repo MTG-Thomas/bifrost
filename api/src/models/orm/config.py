@@ -48,7 +48,7 @@ class Config(Base):
         ForeignKey("organizations.id"), default=None
     )
     integration_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("integrations.id"), default=None
+        ForeignKey("integrations.id", onupdate="CASCADE"), default=None
     )
     config_schema_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("integration_config_schema.id", ondelete="CASCADE"), default=None

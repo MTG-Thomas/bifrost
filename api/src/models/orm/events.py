@@ -115,7 +115,7 @@ class ScheduleSource(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_source_id: Mapped[UUID] = mapped_column(
-        ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False, unique=True
+        ForeignKey("event_sources.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, unique=True
     )
 
     # Schedule configuration
@@ -155,7 +155,7 @@ class WebhookSource(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_source_id: Mapped[UUID] = mapped_column(
-        ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False, unique=True
+        ForeignKey("event_sources.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, unique=True
     )
 
     # Adapter configuration
@@ -163,7 +163,7 @@ class WebhookSource(Base):
         String(100), default=None
     )  # NULL = generic
     integration_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("integrations.id", ondelete="SET NULL"), default=None
+        ForeignKey("integrations.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
 
@@ -213,7 +213,7 @@ class EventSubscription(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_source_id: Mapped[UUID] = mapped_column(
-        ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("event_sources.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
     workflow_id: Mapped[UUID] = mapped_column(
         ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
@@ -278,7 +278,7 @@ class Event(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_source_id: Mapped[UUID] = mapped_column(
-        ForeignKey("event_sources.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("event_sources.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
 
     # Event metadata

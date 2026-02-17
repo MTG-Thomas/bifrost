@@ -65,7 +65,7 @@ class Execution(Base):
     organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id"), default=None
     )
-    form_id: Mapped[UUID | None] = mapped_column(ForeignKey("forms.id"), default=None)
+    form_id: Mapped[UUID | None] = mapped_column(ForeignKey("forms.id", onupdate="CASCADE"), default=None)
     workflow_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )  # FK to the workflow that was executed (null for inline scripts/legacy)

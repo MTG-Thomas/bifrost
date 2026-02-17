@@ -27,7 +27,7 @@ class FormField(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     form_id: Mapped[UUID] = mapped_column(
-        ForeignKey("forms.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("forms.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     label: Mapped[str | None] = mapped_column(String(200), default=None)
@@ -141,7 +141,7 @@ class FormRole(Base):
 
     __tablename__ = "form_roles"
 
-    form_id: Mapped[UUID] = mapped_column(ForeignKey("forms.id"), primary_key=True)
+    form_id: Mapped[UUID] = mapped_column(ForeignKey("forms.id", onupdate="CASCADE"), primary_key=True)
     role_id: Mapped[UUID] = mapped_column(ForeignKey("roles.id"), primary_key=True)
     assigned_by: Mapped[str] = mapped_column(String(255))
     assigned_at: Mapped[datetime] = mapped_column(

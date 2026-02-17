@@ -88,7 +88,7 @@ class Document(Base):
         String(255), primary_key=True, default=lambda: str(uuid4())
     )
     table_id: Mapped[UUID] = mapped_column(
-        ForeignKey("tables.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("tables.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
     data: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

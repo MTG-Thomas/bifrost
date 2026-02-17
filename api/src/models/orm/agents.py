@@ -125,7 +125,7 @@ class AgentTool(Base):
     __tablename__ = "agent_tools"
 
     agent_id: Mapped[UUID] = mapped_column(
-        ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("agents.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
     )
     workflow_id: Mapped[UUID] = mapped_column(
         ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
@@ -138,10 +138,10 @@ class AgentDelegation(Base):
     __tablename__ = "agent_delegations"
 
     parent_agent_id: Mapped[UUID] = mapped_column(
-        ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("agents.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
     )
     child_agent_id: Mapped[UUID] = mapped_column(
-        ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("agents.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
     )
 
 
@@ -151,7 +151,7 @@ class AgentRole(Base):
     __tablename__ = "agent_roles"
 
     agent_id: Mapped[UUID] = mapped_column(
-        ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("agents.id", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True
     )
     role_id: Mapped[UUID] = mapped_column(
         ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
@@ -168,7 +168,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    agent_id: Mapped[UUID | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
+    agent_id: Mapped[UUID | None] = mapped_column(ForeignKey("agents.id", onupdate="CASCADE"), nullable=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     channel: Mapped[str] = mapped_column(String(50), default="chat")
     title: Mapped[str | None] = mapped_column(String(500), default=None)

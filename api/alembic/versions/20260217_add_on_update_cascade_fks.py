@@ -1,4 +1,4 @@
-"""add ON UPDATE CASCADE to workflow and application FKs
+"""add ON UPDATE CASCADE to workflow, application, and integration FKs
 
 Revision ID: 20260217_update_cascade
 Revises: 20260216_embed_secrets
@@ -32,6 +32,29 @@ _FK_DEFS = [
     ("app_roles", "app_id", "applications", "id", "CASCADE", "CASCADE"),
     ("tables", "application_id", "applications", "id", "SET NULL", "CASCADE"),
     ("app_embed_secrets", "application_id", "applications", "id", "CASCADE", "CASCADE"),
+    # ── integrations.id ──
+    ("integration_config_schema", "integration_id", "integrations", "id", "CASCADE", "CASCADE"),
+    ("integration_mappings", "integration_id", "integrations", "id", None, "CASCADE"),
+    ("oauth_providers", "integration_id", "integrations", "id", None, "CASCADE"),
+    ("configs", "integration_id", "integrations", "id", None, "CASCADE"),
+    ("webhook_sources", "integration_id", "integrations", "id", "SET NULL", "CASCADE"),
+    # ── agents.id ──
+    ("agent_tools", "agent_id", "agents", "id", "CASCADE", "CASCADE"),
+    ("agent_delegations", "parent_agent_id", "agents", "id", "CASCADE", "CASCADE"),
+    ("agent_delegations", "child_agent_id", "agents", "id", "CASCADE", "CASCADE"),
+    ("agent_roles", "agent_id", "agents", "id", "CASCADE", "CASCADE"),
+    ("conversations", "agent_id", "agents", "id", None, "CASCADE"),
+    # ── event_sources.id ──
+    ("schedule_sources", "event_source_id", "event_sources", "id", "CASCADE", "CASCADE"),
+    ("webhook_sources", "event_source_id", "event_sources", "id", "CASCADE", "CASCADE"),
+    ("event_subscriptions", "event_source_id", "event_sources", "id", "CASCADE", "CASCADE"),
+    ("events", "event_source_id", "event_sources", "id", "CASCADE", "CASCADE"),
+    # ── forms.id ──
+    ("form_fields", "form_id", "forms", "id", "CASCADE", "CASCADE"),
+    ("form_roles", "form_id", "forms", "id", None, "CASCADE"),
+    ("executions", "form_id", "forms", "id", None, "CASCADE"),
+    # ── tables.id ──
+    ("documents", "table_id", "tables", "id", "CASCADE", "CASCADE"),
 ]
 
 _FIND_FK_SQL = sa.text("""
