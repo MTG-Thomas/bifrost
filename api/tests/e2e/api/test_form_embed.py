@@ -20,6 +20,7 @@ class TestFormEmbed:
         # Create form
         r = e2e_client.post("/api/forms", headers=platform_admin.headers, json={
             "name": "Embed Test Form",
+            "form_schema": {"fields": []},
         })
         assert r.status_code == 201, r.text
         form = r.json()

@@ -373,8 +373,8 @@ async def get_form(
             detail="Form not found",
         )
 
-    # Check access - admins can see all forms
-    if ctx.user.is_superuser:
+    # Check access - admins and embed users can see all forms
+    if ctx.user.is_superuser or ctx.user.embed:
         return FormPublic.model_validate(form)
 
     # Non-admins can only see active forms

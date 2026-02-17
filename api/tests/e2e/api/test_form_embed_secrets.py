@@ -8,6 +8,7 @@ def _create_form(client, headers):
     r = client.post("/api/forms", headers=headers, json={
         "name": "Embed Secret Test Form",
         "description": "Test form for embed secrets",
+        "form_schema": {"fields": []},
     })
     assert r.status_code == 201, r.text
     return r.json()

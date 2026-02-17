@@ -191,14 +191,17 @@ async def get_current_user_optional(
         except ValueError:
             logger.warning(f"Token for user {user_id} has invalid org_id format: {org_id_str}")
             return None
-    elif not is_superuser:
-        # Non-superuser without org is invalid
+    elif not is_superuser and not payload.get("embed", False):
+        # Non-superuser without org is invalid (embed tokens are exempt —
+        # they may reference forms/apps in orgs without the token holder
+        # being a member, since access was already verified via HMAC)
         logger.error(
             f"Invalid token for user {user_id}: "
             "non-superuser must have organization_id"
         )
         return None
     # else: superuser with no org = system account (valid)
+    # else: embed token without org = valid (HMAC-verified)
 
     return UserPrincipal(
         user_id=user_id,
@@ -441,14 +444,15 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
         except ValueError:
             logger.warning(f"WebSocket token for user {user_id} has invalid org_id format: {org_id_str}")
             return None
-    elif not is_superuser:
-        # Non-superuser without org is invalid
+    elif not is_superuser and not payload.get("embed", False):
+        # Non-superuser without org is invalid (embed tokens exempt)
         logger.error(
             f"Invalid WebSocket token for user {user_id}: "
             "non-superuser must have organization_id"
         )
         return None
     # else: superuser with no org = system account (valid)
+    # else: embed token without org = valid (HMAC-verified)
 
     return UserPrincipal(
         user_id=user_id,
