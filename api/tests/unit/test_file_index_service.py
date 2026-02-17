@@ -85,3 +85,23 @@ def test_is_text_file():
     assert _is_text_file("test.png") is False
     assert _is_text_file("test.jpg") is False
     assert _is_text_file("test.md") is True
+
+
+def test_json_not_in_text_extensions():
+    """JSON files should go to S3 but not be indexed in file_index."""
+    from src.services.file_index_service import TEXT_EXTENSIONS
+    assert ".json" not in TEXT_EXTENSIONS
+
+
+@pytest.mark.asyncio
+async def test_write_skips_json_files(mock_db, mock_repo_storage):
+    """JSON files should be written to S3 but not indexed in DB."""
+    from src.services.file_index_service import FileIndexService
+
+    service = FileIndexService(mock_db, mock_repo_storage)
+    await service.write("apps/config.json", b'{"key": "value"}')
+
+    # S3 write happened
+    mock_repo_storage.write.assert_called_once()
+    # DB should NOT be updated for JSON files
+    assert not mock_db.execute.called
