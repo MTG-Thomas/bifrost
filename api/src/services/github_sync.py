@@ -17,6 +17,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import yaml
 from git import Repo as GitRepo
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
         ResolveResult,
         WorkingTreeStatus,
     )
+    from src.services.sync_ops import SyncOp
+
 from src.services.manifest import (
     Manifest,
     get_all_entity_ids,
@@ -751,8 +754,143 @@ class GitHubSyncService:
 
         return repo
 
+    async def _execute_ops(self, ops: "list[SyncOp]") -> int:
+        """Execute a list of SyncOps against the DB in order.
+
+        Returns the number of ops executed.
+        """
+        from src.services.sync_ops import SyncOp  # noqa: F401
+        for op in ops:
+            await op.execute(self.db)
+        return len(ops)
+
+    @staticmethod
+    def _ops_to_issues(ops: "list[SyncOp]") -> list[str]:
+        """Convert a list of SyncOps to human-readable validation issues.
+
+        Currently returns an empty list — resolution methods detect missing
+        refs by logging warnings and skipping. Future work can add issue
+        markers to ops for richer dry-run output.
+        """
+        return []
+
+    async def _plan_import(self, manifest: "Manifest", work_dir: Path) -> "list[SyncOp]":
+        """Build and execute SyncOps for importing a manifest (entities only).
+
+        Resolves and immediately executes ops in dependency order.
+        Deletions are handled separately by _delete_removed_entities / _resolve_deletions.
+        Indexer side-effects (WorkflowIndexer, FormIndexer, AgentIndexer) remain
+        in _import_all_entities.
+
+        Import order:
+        0a. Organizations (no deps)
+        0b. Roles (no deps)
+        1.  Workflows (refs org_id)
+        2.  Integrations (refs workflow UUIDs for data_provider)
+        3.  Configs (refs integration + org UUIDs)
+        4.  Apps (refs org UUIDs)
+        5.  Tables (refs org + app UUIDs)
+        6.  Event Sources + Subscriptions (refs integration + workflow UUIDs)
+        7.  Forms (refs workflow + org UUIDs) — metadata only
+        8.  Agents (refs workflow + org UUIDs) — metadata only
+
+        Returns the collected workflow + form + agent ops for callers that want
+        to inspect them (e.g. for logging or dry-run analysis).
+        """
+        from src.services.sync_ops import SyncOp  # noqa: F401
+
+        all_ops: list[SyncOp] = []
+
+        # 0a. Resolve organizations (no deps) — execute immediately
+        org_ops: list[SyncOp] = []
+        for morg in manifest.organizations:
+            org_ops.extend(await self._resolve_organization(morg))
+        for op in org_ops:
+            await op.execute(self.db)
+        all_ops.extend(org_ops)
+
+        # 0b. Resolve roles (no deps) — execute immediately
+        role_ops: list[SyncOp] = []
+        for mrole in manifest.roles:
+            role_ops.extend(await self._resolve_role(mrole))
+        for op in role_ops:
+            await op.execute(self.db)
+        all_ops.extend(role_ops)
+
+        # 1. Resolve workflows — execute immediately
+        for wf_name, mwf in manifest.workflows.items():
+            wf_path = work_dir / mwf.path
+            if wf_path.exists():
+                wf_ops = await self._resolve_workflow(wf_name, mwf)
+                for op in wf_ops:
+                    await op.execute(self.db)
+                all_ops.extend(wf_ops)
+
+        # 2. Resolve integrations (with config_schema, oauth_provider, mappings)
+        for integ_name, minteg in manifest.integrations.items():
+            integ_ops = await self._resolve_integration(integ_name, minteg)
+            for op in integ_ops:
+                await op.execute(self.db)
+            all_ops.extend(integ_ops)
+
+        # 3. Resolve configs
+        for _config_key, mcfg in manifest.configs.items():
+            cfg_ops = await self._resolve_config(mcfg)
+            for op in cfg_ops:
+                await op.execute(self.db)
+            all_ops.extend(cfg_ops)
+
+        # 4. Resolve apps (before tables — tables ref application_id)
+        for _app_name, mapp in manifest.apps.items():
+            app_path = work_dir / mapp.path
+            if app_path.exists():
+                content = app_path.read_bytes()
+                app_ops = await self._resolve_app(mapp, content)
+                for op in app_ops:
+                    await op.execute(self.db)
+                all_ops.extend(app_ops)
+
+        # 5. Resolve tables (refs org + app UUIDs)
+        for table_name, mtable in manifest.tables.items():
+            table_ops = await self._resolve_table(table_name, mtable)
+            for op in table_ops:
+                await op.execute(self.db)
+            all_ops.extend(table_ops)
+
+        # 6. Resolve event sources + subscriptions
+        for es_name, mes in manifest.events.items():
+            es_ops = await self._resolve_event_source(es_name, mes)
+            for op in es_ops:
+                await op.execute(self.db)
+            all_ops.extend(es_ops)
+
+        # 7. Resolve forms (metadata ops only — indexer called in _import_all_entities)
+        for _form_name, mform in manifest.forms.items():
+            form_path = work_dir / mform.path
+            if form_path.exists():
+                content = form_path.read_bytes()
+                form_ops = await self._resolve_form(mform, content)
+                for op in form_ops:
+                    await op.execute(self.db)
+                all_ops.extend(form_ops)
+
+        # 8. Resolve agents (metadata ops only — indexer called in _import_all_entities)
+        for _agent_name, magent in manifest.agents.items():
+            agent_path = work_dir / magent.path
+            if agent_path.exists():
+                content = agent_path.read_bytes()
+                agent_ops = await self._resolve_agent(magent, content)
+                for op in agent_ops:
+                    await op.execute(self.db)
+                all_ops.extend(agent_ops)
+
+        return all_ops
+
     async def _import_all_entities(self, work_dir: Path) -> int:
         """Import all entities from the working tree into the DB.
+
+        Delegates to _plan_import which resolves and immediately executes ops,
+        then runs indexer side-effects for workflows, forms, and agents.
 
         Import order follows dependency chain:
         0a. Organizations (no deps)
@@ -768,6 +906,8 @@ class GitHubSyncService:
 
         Returns count of entities imported.
         """
+        from uuid import UUID
+
         bifrost_dir = work_dir / ".bifrost"
         manifest = read_manifest_from_dir(bifrost_dir)
 
@@ -782,66 +922,84 @@ class GitHubSyncService:
 
         count = 0
 
-        # 0a. Import organizations (no deps)
-        for morg in manifest.organizations:
-            await self._import_organization(morg)
-            count += 1
+        # Run all resolve ops (including immediate execution inside _plan_import)
+        await self._plan_import(manifest, work_dir)
 
-        # 0b. Import roles (no deps)
-        for mrole in manifest.roles:
-            await self._import_role(mrole)
-            count += 1
+        # Count imported entities
+        count += len(manifest.organizations)
+        count += len(manifest.roles)
+        count += sum(1 for mwf in manifest.workflows.values() if (work_dir / mwf.path).exists())
+        count += len(manifest.integrations)
+        count += len(manifest.configs)
+        count += sum(1 for mapp in manifest.apps.values() if (work_dir / mapp.path).exists())
+        count += len(manifest.tables)
+        count += len(manifest.events)
 
-        # 1. Import workflows
-        for wf_name, mwf in manifest.workflows.items():
-            wf_path = work_dir / mwf.path
-            if wf_path.exists():
-                content = wf_path.read_bytes()
-                await self._import_workflow(wf_name, mwf, content)
-                count += 1
-
-        # 2. Import integrations (with config_schema, oauth_provider, mappings)
-        for integ_name, minteg in manifest.integrations.items():
-            await self._import_integration(integ_name, minteg)
-            count += 1
-
-        # 3. Import configs
-        for _config_key, mcfg in manifest.configs.items():
-            await self._import_config(mcfg)
-            count += 1
-
-        # 4. Import apps (before tables — tables ref application_id)
-        for _app_name, mapp in manifest.apps.items():
-            app_path = work_dir / mapp.path
-            if app_path.exists():
-                content = app_path.read_bytes()
-                await self._import_app(mapp, content)
-                count += 1
-
-        # 5. Import tables (refs org + app UUIDs)
-        for table_name, mtable in manifest.tables.items():
-            await self._import_table(table_name, mtable)
-            count += 1
-
-        # 6. Import event sources + subscriptions
-        for es_name, mes in manifest.events.items():
-            await self._import_event_source(es_name, mes)
-            count += 1
-
-        # 7. Import forms
+        # Indexer side-effects: FormIndexer for each form
+        from src.services.file_storage.indexers.form import FormIndexer
+        form_indexer = FormIndexer(self.db)
         for _form_name, mform in manifest.forms.items():
             form_path = work_dir / mform.path
             if form_path.exists():
                 content = form_path.read_bytes()
-                await self._import_form(mform, content)
+                data = yaml.safe_load(content.decode("utf-8"))
+                if data:
+                    data["id"] = mform.id
+                    # Resolve portable refs (path::function_name) to UUIDs
+                    await self._resolve_ref_field(data, "workflow_id")
+                    await self._resolve_ref_field(data, "launch_workflow_id")
+                    updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                    await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
+
+                    # Post-indexer: update org_id and access_level (indexer skips these)
+                    from sqlalchemy import update as sa_update
+                    from src.models.orm.forms import Form
+                    org_id_uuid = UUID(mform.organization_id) if mform.organization_id else None
+                    form_id_uuid = UUID(mform.id)
+                    post_values: dict = {}
+                    if org_id_uuid:
+                        post_values["organization_id"] = org_id_uuid
+                    if hasattr(mform, "access_level") and mform.access_level:
+                        post_values["access_level"] = mform.access_level
+                    if post_values:
+                        post_values["updated_at"] = datetime.now(timezone.utc)
+                        await self.db.execute(
+                            sa_update(Form).where(Form.id == form_id_uuid).values(**post_values)
+                        )
                 count += 1
 
-        # 8. Import agents
+        # Indexer side-effects: AgentIndexer for each agent
+        from src.services.file_storage.indexers.agent import AgentIndexer
+        agent_indexer = AgentIndexer(self.db)
         for _agent_name, magent in manifest.agents.items():
             agent_path = work_dir / magent.path
             if agent_path.exists():
                 content = agent_path.read_bytes()
-                await self._import_agent(magent, content)
+                data = yaml.safe_load(content.decode("utf-8"))
+                if data:
+                    data["id"] = magent.id
+                    # Resolve portable refs (path::function_name) to UUIDs in tool_ids
+                    await self._resolve_ref_field(data, "tool_ids")
+                    if "tools" in data and "tool_ids" not in data:
+                        await self._resolve_ref_field(data, "tools")
+                    updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                    await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
+
+                    # Post-indexer: update org_id and access_level (indexer skips these)
+                    from sqlalchemy import update as sa_update
+                    from src.models.orm.agents import Agent
+                    org_id_uuid = UUID(magent.organization_id) if magent.organization_id else None
+                    agent_id_uuid = UUID(magent.id)
+                    post_values_a: dict = {}
+                    if org_id_uuid:
+                        post_values_a["organization_id"] = org_id_uuid
+                    if hasattr(magent, "access_level") and magent.access_level:
+                        post_values_a["access_level"] = magent.access_level
+                    if post_values_a:
+                        post_values_a["updated_at"] = datetime.now(timezone.utc)
+                        await self.db.execute(
+                            sa_update(Agent).where(Agent.id == agent_id_uuid).values(**post_values_a)
+                        )
                 count += 1
 
         return count
@@ -849,209 +1007,12 @@ class GitHubSyncService:
     async def _delete_removed_entities(self, work_dir: Path) -> None:
         """Delete entities that disappeared from the manifest after a pull.
 
-        Git history provides the undo mechanism — no need for a DB recycle bin.
-        Compares manifest entity IDs against active DB entities to find deletions.
-
-        Deletion strategy per entity type:
-        - Workflows, Forms, Agents, Apps: hard-delete (existing behavior)
-        - Integrations, Configs, Events: hard-delete (manifest is source of truth)
-        - Tables: soft-delete (keep data, set inactive — never created here currently)
-        - Knowledge: no-op (declarative only, no DB entity)
+        Delegates to _resolve_deletions which returns ops, then executes them.
+        Kept as a separate method for backward compatibility with callers.
         """
-        from uuid import UUID
-
-        from sqlalchemy import delete as sa_delete
-
-        from src.models.orm.agents import Agent
-        from src.models.orm.applications import Application
-        from src.models.orm.config import Config
-        from src.models.orm.events import EventSource, EventSubscription
-        from src.models.orm.forms import Form
-        from src.models.orm.integrations import Integration
-        from src.models.orm.tables import Table
-        from src.models.orm.workflows import Workflow
-
-        manifest = read_manifest_from_dir(work_dir / ".bifrost")
-
-        # Collect IDs of entities present in the manifest AND whose files exist
-        present_wf_ids: set[str] = set()
-        for mwf in manifest.workflows.values():
-            if (work_dir / mwf.path).exists():
-                present_wf_ids.add(mwf.id)
-
-        present_form_ids: set[str] = set()
-        for mform in manifest.forms.values():
-            if (work_dir / mform.path).exists():
-                present_form_ids.add(mform.id)
-
-        present_agent_ids: set[str] = set()
-        for magent in manifest.agents.values():
-            if (work_dir / magent.path).exists():
-                present_agent_ids.add(magent.id)
-
-        present_app_ids: set[str] = set()
-        for mapp in manifest.apps.values():
-            if (work_dir / mapp.path).exists():
-                present_app_ids.add(mapp.id)
-
-        # IDs present in manifest (no file check needed for non-file entities)
-        present_integ_ids = {minteg.id for minteg in manifest.integrations.values()}
-        present_config_ids = {mcfg.id for mcfg in manifest.configs.values()}
-        present_table_ids = {mtable.id for mtable in manifest.tables.values()}
-        present_event_ids = {mes.id for mes in manifest.events.values()}
-        present_sub_ids: set[str] = set()
-        for mes in manifest.events.values():
-            for msub in mes.subscriptions:
-                present_sub_ids.add(msub.id)
-
-        # Delete workflows synced from git that are no longer present
-        wf_result = await self.db.execute(
-            select(Workflow.id).where(
-                Workflow.is_active == True,  # noqa: E712
-                Workflow.path.like("workflows/%"),
-            )
-        )
-        for row in wf_result.all():
-            wf_id = str(row[0])
-            if wf_id not in present_wf_ids:
-                logger.info(f"Deleting workflow {wf_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(Workflow).where(Workflow.id == UUID(wf_id))
-                )
-
-        # Delete integrations not in manifest
-        integ_result = await self.db.execute(
-            select(Integration.id).where(Integration.is_deleted == False)  # noqa: E712
-        )
-        for row in integ_result.all():
-            integ_id = str(row[0])
-            if integ_id not in present_integ_ids:
-                logger.info(f"Deleting integration {integ_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(Integration).where(Integration.id == UUID(integ_id))
-                )
-
-        # Delete configs not in manifest
-        config_result = await self.db.execute(select(Config.id))
-        for row in config_result.all():
-            config_id = str(row[0])
-            if config_id not in present_config_ids:
-                logger.info(f"Deleting config {config_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(Config).where(Config.id == UUID(config_id))
-                )
-
-        # Soft-delete tables not in manifest (keep data)
-        table_result = await self.db.execute(select(Table.id))
-        for row in table_result.all():
-            table_id = str(row[0])
-            if table_id not in present_table_ids:
-                logger.info(f"Table {table_id} not in manifest (data preserved)")
-
-        # Delete event subscriptions not in manifest
-        sub_result = await self.db.execute(select(EventSubscription.id))
-        for row in sub_result.all():
-            sub_id = str(row[0])
-            if sub_id not in present_sub_ids:
-                logger.info(f"Deleting event subscription {sub_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(EventSubscription).where(EventSubscription.id == UUID(sub_id))
-                )
-
-        # Delete event sources not in manifest
-        es_result = await self.db.execute(select(EventSource.id))
-        for row in es_result.all():
-            es_id = str(row[0])
-            if es_id not in present_event_ids:
-                logger.info(f"Deleting event source {es_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(EventSource).where(EventSource.id == UUID(es_id))
-                )
-
-        # Delete forms synced from git that are no longer present
-        form_result = await self.db.execute(
-            select(Form.id).where(
-                Form.created_by == "git-sync",
-            )
-        )
-        for row in form_result.all():
-            form_id = str(row[0])
-            if form_id not in present_form_ids:
-                logger.info(f"Deleting form {form_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(Form).where(Form.id == UUID(form_id))
-                )
-
-        # Delete agents synced from git that are no longer present
-        agent_result = await self.db.execute(
-            select(Agent.id).where(
-                Agent.created_by == "git-sync",
-            )
-        )
-        for row in agent_result.all():
-            agent_id = str(row[0])
-            if agent_id not in present_agent_ids:
-                logger.info(f"Deleting agent {agent_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(Agent).where(Agent.id == UUID(agent_id))
-                )
-
-        # Delete apps — check all apps in manifest scope
-        app_result = await self.db.execute(select(Application.id))
-        all_app_ids = {str(row[0]) for row in app_result.all()}
-        # Only delete apps that were in a previous manifest (have matching paths)
-        # For safety, only delete apps whose IDs appear in neither the manifest nor the present set
-        manifest_app_ids = {mapp.id for mapp in manifest.apps.values()}
-        for app_id in all_app_ids:
-            if app_id in manifest_app_ids and app_id not in present_app_ids:
-                logger.info(f"Deleting app {app_id} — removed from repo")
-                await self.db.execute(
-                    sa_delete(Application).where(Application.id == UUID(app_id))
-                )
-
-        # Soft-delete organizations not in manifest (only git-sync created ones)
-        from sqlalchemy import update as sa_update
-
-        from src.models.orm.organizations import Organization
-
-        present_org_ids = {morg.id for morg in manifest.organizations}
-        if present_org_ids:
-            org_result = await self.db.execute(
-                select(Organization.id).where(
-                    Organization.is_active == True,  # noqa: E712
-                    Organization.created_by == "git-sync",
-                )
-            )
-            for row in org_result.all():
-                org_id = str(row[0])
-                if org_id not in present_org_ids:
-                    logger.info(f"Deactivating organization {org_id} — removed from manifest")
-                    await self.db.execute(
-                        sa_update(Organization)
-                        .where(Organization.id == UUID(org_id))
-                        .values(is_active=False, updated_at=datetime.now(timezone.utc))
-                    )
-
-        # Soft-delete roles not in manifest (only git-sync created ones)
-        from src.models.orm.users import Role
-
-        present_role_ids = {mrole.id for mrole in manifest.roles}
-        if present_role_ids:
-            role_result = await self.db.execute(
-                select(Role.id).where(
-                    Role.is_active == True,  # noqa: E712
-                    Role.created_by == "git-sync",
-                )
-            )
-            for row in role_result.all():
-                role_id = str(row[0])
-                if role_id not in present_role_ids:
-                    logger.info(f"Deactivating role {role_id} — removed from manifest")
-                    await self.db.execute(
-                        sa_update(Role)
-                        .where(Role.id == UUID(role_id))
-                        .values(is_active=False, updated_at=datetime.now(timezone.utc))
-                    )
+        deletion_ops = await self._resolve_deletions(work_dir)
+        for op in deletion_ops:
+            await op.execute(self.db)
 
     # -----------------------------------------------------------------
     # App preview sync
@@ -1175,18 +1136,16 @@ class GitHubSyncService:
     # Internal: import entities from repo
     # -----------------------------------------------------------------
 
-    async def _import_organization(self, morg) -> None:
-        """Import an organization from manifest into the DB.
+    async def _resolve_organization(self, morg) -> "list[SyncOp]":
+        """Resolve an organization from manifest into SyncOps.
 
-        ID-first, name-fallback upsert. Preserves env-specific fields
-        (domain, is_provider, settings).
+        ID-first, name-fallback upsert strategy. Returns ops list without
+        executing — caller is responsible for execution order.
         """
         from uuid import UUID
 
-        from sqlalchemy import update
-        from sqlalchemy.dialects.postgresql import insert
-
         from src.models.orm.organizations import Organization
+        from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
         org_id = UUID(morg.id)
 
@@ -1197,17 +1156,12 @@ class GitHubSyncService:
         existing_by_id = by_id.scalar_one_or_none()
 
         if existing_by_id is not None:
-            stmt = (
-                update(Organization)
-                .where(Organization.id == org_id)
-                .values(
-                    name=morg.name,
-                    is_active=True,
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-            await self.db.execute(stmt)
-            return
+            return [Upsert(
+                model=Organization,
+                id=org_id,
+                values={"name": morg.name, "is_active": True},
+                match_on="id",
+            )]
 
         # 2. Try by name (cross-env ID sync)
         by_name = await self.db.execute(
@@ -1216,40 +1170,31 @@ class GitHubSyncService:
         existing_by_name = by_name.scalar_one_or_none()
 
         if existing_by_name is not None:
-            stmt = (
-                update(Organization)
-                .where(Organization.id == existing_by_name)
-                .values(
-                    id=org_id,
-                    name=morg.name,
-                    is_active=True,
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-            await self.db.execute(stmt)
-            return
+            return [Upsert(
+                model=Organization,
+                id=org_id,
+                values={"id": org_id, "name": morg.name, "is_active": True},
+                match_on="name",
+            )]
 
         # 3. Insert new
-        stmt = insert(Organization).values(
+        return [Upsert(
+            model=Organization,
             id=org_id,
-            name=morg.name,
-            is_active=True,
-            created_by="git-sync",
-        )
-        await self.db.execute(stmt)
+            values={"name": morg.name, "is_active": True, "created_by": "git-sync"},
+            match_on="id",
+        )]
 
-    async def _import_role(self, mrole) -> None:
-        """Import a role from manifest into the DB.
+    async def _resolve_role(self, mrole) -> "list[SyncOp]":
+        """Resolve a role from manifest into SyncOps.
 
-        ID-first, name-fallback upsert. Preserves env-specific fields
-        (description, permissions).
+        ID-first, name-fallback upsert strategy. Returns ops list without
+        executing — caller is responsible for execution order.
         """
         from uuid import UUID
 
-        from sqlalchemy import update
-        from sqlalchemy.dialects.postgresql import insert
-
         from src.models.orm.users import Role
+        from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
         role_id = UUID(mrole.id)
 
@@ -1260,17 +1205,12 @@ class GitHubSyncService:
         existing_by_id = by_id.scalar_one_or_none()
 
         if existing_by_id is not None:
-            stmt = (
-                update(Role)
-                .where(Role.id == role_id)
-                .values(
-                    name=mrole.name,
-                    is_active=True,
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-            await self.db.execute(stmt)
-            return
+            return [Upsert(
+                model=Role,
+                id=role_id,
+                values={"name": mrole.name, "is_active": True},
+                match_on="id",
+            )]
 
         # 2. Try by name (cross-env ID sync)
         by_name = await self.db.execute(
@@ -1279,63 +1219,20 @@ class GitHubSyncService:
         existing_by_name = by_name.scalar_one_or_none()
 
         if existing_by_name is not None:
-            stmt = (
-                update(Role)
-                .where(Role.id == existing_by_name)
-                .values(
-                    id=role_id,
-                    name=mrole.name,
-                    is_active=True,
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-            await self.db.execute(stmt)
-            return
+            return [Upsert(
+                model=Role,
+                id=role_id,
+                values={"id": role_id, "name": mrole.name, "is_active": True},
+                match_on="name",
+            )]
 
         # 3. Insert new
-        stmt = insert(Role).values(
+        return [Upsert(
+            model=Role,
             id=role_id,
-            name=mrole.name,
-            is_active=True,
-            created_by="git-sync",
-        )
-        await self.db.execute(stmt)
-
-    async def _resolve_workflow_ref(self, ref: str):
-        """Resolve a workflow reference: try UUID, then path::function_name, then name.
-
-        Returns UUID if found, None otherwise.
-        """
-        from uuid import UUID
-
-        from src.models.orm.workflows import Workflow
-
-        # 1. Try as UUID — direct ID match
-        try:
-            wf_id = UUID(ref)
-            result = await self.db.execute(select(Workflow.id).where(Workflow.id == wf_id))
-            if result.scalar_one_or_none():
-                return wf_id
-        except ValueError:
-            pass
-
-        # 2. Try as path::function_name
-        if "::" in ref:
-            path, func = ref.rsplit("::", 1)
-            result = await self.db.execute(
-                select(Workflow.id).where(Workflow.path == path, Workflow.function_name == func)
-            )
-            wf_id = result.scalar_one_or_none()
-            if wf_id:
-                return wf_id
-
-        # 3. Try as workflow name
-        result = await self.db.execute(select(Workflow.id).where(Workflow.name == ref))
-        wf_id = result.scalar_one_or_none()
-        if wf_id:
-            return wf_id
-
-        return None
+            values={"name": mrole.name, "is_active": True, "created_by": "git-sync"},
+            match_on="id",
+        )]
 
     async def _sync_role_assignments(self, entity_id, manifest_roles: list[str], junction_model, entity_fk_name: str) -> None:
         """Sync role assignments for an entity: add first, then remove (no permission gap).
@@ -1379,14 +1276,17 @@ class GitHubSyncService:
                 )
             )
 
-    async def _import_workflow(self, manifest_name: str, mwf, _content: bytes) -> None:
-        """Import a workflow from repo into the DB."""
+    async def _resolve_workflow(self, manifest_name: str, mwf) -> "list[SyncOp]":
+        """Resolve a workflow from manifest into SyncOps.
+
+        Uses natural-key (path+function_name) or ID lookup to determine the
+        correct upsert strategy. Returns ops list without executing.
+        """
         from uuid import UUID
 
-        from sqlalchemy import update
-        from sqlalchemy.dialects.postgresql import insert
-
+        from src.models.orm.workflow_roles import WorkflowRole
         from src.models.orm.workflows import Workflow
+        from src.services.sync_ops import SyncOp, SyncRoles, Upsert  # noqa: F401
 
         wf_id = UUID(mwf.id)
         org_id = UUID(mwf.organization_id) if mwf.organization_id else None
@@ -1405,7 +1305,7 @@ class GitHubSyncService:
         )
         existing_by_id = by_id.scalar_one_or_none()
 
-        update_values = {
+        wf_values = {
             "name": manifest_name,
             "function_name": mwf.function_name,
             "path": mwf.path,
@@ -1413,37 +1313,85 @@ class GitHubSyncService:
             "is_active": True,
             "organization_id": org_id,
             "access_level": getattr(mwf, "access_level", "role_based"),
-            "updated_at": datetime.now(timezone.utc),
         }
+
+        ops: list[SyncOp] = []
 
         if existing_by_natural is not None:
             # Match on natural key — update (including ID if it changed)
-            stmt = (
-                update(Workflow)
-                .where(Workflow.id == existing_by_natural)
-                .values(id=wf_id, **update_values)
-            )
-            await self.db.execute(stmt)
+            ops.append(Upsert(
+                model=Workflow,
+                id=existing_by_natural,
+                values={"id": wf_id, **wf_values},
+                match_on="id",
+            ))
         elif existing_by_id is not None:
             # Same ID but path/function changed (rename) — update
-            stmt = (
-                update(Workflow)
-                .where(Workflow.id == wf_id)
-                .values(**update_values)
-            )
-            await self.db.execute(stmt)
+            ops.append(Upsert(
+                model=Workflow,
+                id=wf_id,
+                values=wf_values,
+                match_on="id",
+            ))
         else:
             # New workflow — insert
-            stmt = insert(Workflow).values(
+            ops.append(Upsert(
+                model=Workflow,
                 id=wf_id,
-                **update_values,
-            )
-            await self.db.execute(stmt)
+                values=wf_values,
+                match_on="id",
+            ))
 
-        # Sync role assignments
+        # Role sync op
         if hasattr(mwf, "roles") and mwf.roles:
-            from src.models.orm.workflow_roles import WorkflowRole
-            await self._sync_role_assignments(wf_id, mwf.roles, WorkflowRole, "workflow_id")
+            role_ids = {UUID(r) for r in mwf.roles}
+            ops.append(SyncRoles(
+                junction_model=WorkflowRole,
+                entity_fk="workflow_id",
+                entity_id=wf_id,
+                role_ids=role_ids,
+            ))
+
+        return ops
+
+    async def _resolve_workflow_ref(self, ref: str) -> "UUID | None":
+        """Resolve a workflow reference: try UUID, then path::function_name, then name.
+
+        Used by event subscription sync to support flexible workflow_id formats
+        in the manifest (UUID, path::func, or workflow name).
+
+        Returns UUID if found, None otherwise.
+        """
+        from uuid import UUID
+
+        from src.models.orm.workflows import Workflow
+
+        # 1. Try as UUID — direct ID match
+        try:
+            wf_id = UUID(ref)
+            result = await self.db.execute(select(Workflow.id).where(Workflow.id == wf_id))
+            if result.scalar_one_or_none():
+                return wf_id
+        except ValueError:
+            pass
+
+        # 2. Try as path::function_name
+        if "::" in ref:
+            path, func = ref.rsplit("::", 1)
+            result = await self.db.execute(
+                select(Workflow.id).where(Workflow.path == path, Workflow.function_name == func)
+            )
+            wf_id = result.scalar_one_or_none()
+            if wf_id:
+                return wf_id
+
+        # 3. Try as workflow name
+        result = await self.db.execute(select(Workflow.id).where(Workflow.name == ref))
+        wf_id = result.scalar_one_or_none()
+        if wf_id:
+            return wf_id
+
+        return None
 
     async def _resolve_portable_ref(self, ref: str) -> str | None:
         """Resolve a path::function_name portable ref to a workflow UUID string.
@@ -1498,218 +1446,189 @@ class GitHubSyncService:
                     resolved_list.append(item)
             data[field_name] = resolved_list
 
-    async def _import_form(self, mform, content: bytes) -> None:
-        """Import a form from repo YAML into the DB using FormIndexer."""
+    async def _resolve_deletions(self, work_dir: Path) -> "list[SyncOp]":
+        """Compute delete/deactivate ops for entities removed from the manifest.
+
+        Git history provides the undo mechanism — no need for a DB recycle bin.
+        Compares manifest entity IDs against active DB entities to find deletions.
+
+        Deletion strategy per entity type:
+        - Workflows, Forms, Agents, Apps: hard-delete (existing behavior)
+        - Integrations, Configs, Events: hard-delete (manifest is source of truth)
+        - Tables: soft-delete (keep data, set inactive — never created here currently)
+        - Knowledge: no-op (declarative only, no DB entity)
+        - Organizations, Roles: soft-delete (only git-sync created ones)
+        """
         from uuid import UUID
-
-        from src.services.file_storage.indexers.form import FormIndexer
-
-        data = yaml.safe_load(content.decode("utf-8"))
-        if not data:
-            return
-
-        data["id"] = mform.id
-
-        # Resolve portable refs (path::function_name) to UUIDs
-        await self._resolve_ref_field(data, "workflow_id")
-        await self._resolve_ref_field(data, "launch_workflow_id")
-
-        org_id = UUID(mform.organization_id) if mform.organization_id else None
-        form_id = UUID(mform.id)
-
-        if org_id:
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-            from src.models.orm.forms import Form
-
-            stmt = pg_insert(Form).values(
-                id=form_id,
-                name=data.get("name", ""),
-                is_active=True,
-                created_by="git-sync",
-                organization_id=org_id,
-            ).on_conflict_do_nothing(index_elements=["id"])
-            await self.db.execute(stmt)
-
-        updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
-        indexer = FormIndexer(self.db)
-        await indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
-
-        # Post-indexer: update org_id and access_level (indexer skips these)
-        from sqlalchemy import update
-
-        from src.models.orm.forms import Form
-
-        post_values: dict = {}
-        if org_id:
-            post_values["organization_id"] = org_id
-        if hasattr(mform, "access_level") and mform.access_level:
-            post_values["access_level"] = mform.access_level
-        if post_values:
-            post_values["updated_at"] = datetime.now(timezone.utc)
-            await self.db.execute(
-                update(Form).where(Form.id == form_id).values(**post_values)
-            )
-
-        # Sync role assignments
-        if hasattr(mform, "roles") and mform.roles:
-            from src.models.orm.forms import FormRole
-            await self._sync_role_assignments(form_id, mform.roles, FormRole, "form_id")
-
-    async def _import_agent(self, magent, content: bytes) -> None:
-        """Import an agent from repo YAML into the DB using AgentIndexer."""
-        from uuid import UUID
-
-        from src.services.file_storage.indexers.agent import AgentIndexer
-
-        data = yaml.safe_load(content.decode("utf-8"))
-        if not data:
-            return
-
-        data["id"] = magent.id
-
-        # Resolve portable refs (path::function_name) to UUIDs in tool_ids
-        await self._resolve_ref_field(data, "tool_ids")
-        # Also handle 'tools' alias used by AgentIndexer
-        if "tools" in data and "tool_ids" not in data:
-            await self._resolve_ref_field(data, "tools")
-
-        org_id = UUID(magent.organization_id) if magent.organization_id else None
-        agent_id = UUID(magent.id)
-
-        if org_id:
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-            from src.models.orm.agents import Agent
-
-            stmt = pg_insert(Agent).values(
-                id=agent_id,
-                name=data.get("name", ""),
-                system_prompt=data.get("system_prompt", ""),
-                is_active=True,
-                created_by="git-sync",
-                organization_id=org_id,
-            ).on_conflict_do_nothing(index_elements=["id"])
-            await self.db.execute(stmt)
-
-        updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
-        indexer = AgentIndexer(self.db)
-        await indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
-
-        # Post-indexer: update org_id and access_level (indexer skips these)
-        from sqlalchemy import update
 
         from src.models.orm.agents import Agent
-
-        post_values: dict = {}
-        if org_id:
-            post_values["organization_id"] = org_id
-        if hasattr(magent, "access_level") and magent.access_level:
-            post_values["access_level"] = magent.access_level
-        if post_values:
-            post_values["updated_at"] = datetime.now(timezone.utc)
-            await self.db.execute(
-                update(Agent).where(Agent.id == agent_id).values(**post_values)
-            )
-
-        # Sync role assignments
-        if hasattr(magent, "roles") and magent.roles:
-            from src.models.orm.agents import AgentRole
-            await self._sync_role_assignments(agent_id, magent.roles, AgentRole, "agent_id")
-
-    async def _import_app(self, mapp, content: bytes) -> None:
-        """Import an app from repo into the DB (metadata only)."""
-        from pathlib import PurePosixPath
-        from uuid import UUID
-
-        from sqlalchemy import update
-        from sqlalchemy.dialects.postgresql import insert
-
         from src.models.orm.applications import Application
+        from src.models.orm.config import Config
+        from src.models.orm.events import EventSource, EventSubscription
+        from src.models.orm.forms import Form
+        from src.models.orm.integrations import Integration
+        from src.models.orm.organizations import Organization
+        from src.models.orm.tables import Table
+        from src.models.orm.users import Role
+        from src.models.orm.workflows import Workflow
+        from src.services.sync_ops import Deactivate, Delete, SyncOp  # noqa: F401
 
-        data = yaml.safe_load(content.decode("utf-8"))
-        if not data:
-            return
+        manifest = read_manifest_from_dir(work_dir / ".bifrost")
 
-        # Derive repo_path from the manifest's canonical path (e.g. "custom/path/app.yaml" -> "custom/path")
-        repo_path = str(PurePosixPath(mapp.path).parent) if mapp.path else None
+        # Collect IDs of entities present in the manifest AND whose files exist
+        present_wf_ids: set[str] = set()
+        for mwf in manifest.workflows.values():
+            if (work_dir / mwf.path).exists():
+                present_wf_ids.add(mwf.id)
 
-        # Slug from manifest entry, or derive from repo_path leaf
-        slug = mapp.slug or (PurePosixPath(repo_path).name if repo_path else None)
-        if not slug:
-            logger.warning(f"App {mapp.id} has no slug or path, skipping")
-            return
+        present_form_ids: set[str] = set()
+        for mform in manifest.forms.values():
+            if (work_dir / mform.path).exists():
+                present_form_ids.add(mform.id)
 
-        # Ensure repo_path is set even if only slug was available
-        if not repo_path:
-            repo_path = f"apps/{slug}"
+        present_agent_ids: set[str] = set()
+        for magent in manifest.agents.values():
+            if (work_dir / magent.path).exists():
+                present_agent_ids.add(magent.id)
 
-        app_id = UUID(mapp.id)
-        org_id = UUID(mapp.organization_id) if mapp.organization_id else None
+        present_app_ids: set[str] = set()
+        for mapp in manifest.apps.values():
+            if (work_dir / mapp.path).exists():
+                present_app_ids.add(mapp.id)
 
-        # Two-step: check for existing app by natural key (org_id, slug)
-        existing_query = select(Application.id).where(Application.slug == slug)
-        if org_id:
-            existing_query = existing_query.where(Application.organization_id == org_id)
-        else:
-            existing_query = existing_query.where(Application.organization_id.is_(None))
+        # IDs present in manifest (no file check needed for non-file entities)
+        present_integ_ids = {minteg.id for minteg in manifest.integrations.values()}
+        present_config_ids = {mcfg.id for mcfg in manifest.configs.values()}
+        present_table_ids = {mtable.id for mtable in manifest.tables.values()}
+        present_event_ids = {mes.id for mes in manifest.events.values()}
+        present_sub_ids: set[str] = set()
+        for mes in manifest.events.values():
+            for msub in mes.subscriptions:
+                present_sub_ids.add(msub.id)
+        present_org_ids = {morg.id for morg in manifest.organizations}
+        present_role_ids = {mrole.id for mrole in manifest.roles}
 
-        existing = await self.db.execute(existing_query)
-        existing_id = existing.scalar_one_or_none()
+        ops: list[SyncOp] = []
 
-        access_level = getattr(mapp, "access_level", "role_based")
+        # Delete workflows synced from git that are no longer present
+        wf_result = await self.db.execute(
+            select(Workflow.id).where(
+                Workflow.is_active == True,  # noqa: E712
+                Workflow.path.like("workflows/%"),
+            )
+        )
+        for row in wf_result.all():
+            wf_id = str(row[0])
+            if wf_id not in present_wf_ids:
+                logger.info(f"Deleting workflow {wf_id} — removed from repo")
+                ops.append(Delete(model=Workflow, id=UUID(wf_id)))
 
-        if existing_id is not None:
-            # Update existing row (including ID if it changed)
-            stmt = (
-                update(Application)
-                .where(Application.id == existing_id)
-                .values(
-                    id=app_id,
-                    name=data.get("name", ""),
-                    description=data.get("description"),
-                    slug=slug,
-                    repo_path=repo_path,
-                    organization_id=org_id,
-                    access_level=access_level,
-                    updated_at=datetime.now(timezone.utc),
+        # Delete integrations not in manifest
+        integ_result = await self.db.execute(
+            select(Integration.id).where(Integration.is_deleted == False)  # noqa: E712
+        )
+        for row in integ_result.all():
+            integ_id = str(row[0])
+            if integ_id not in present_integ_ids:
+                logger.info(f"Deleting integration {integ_id} — removed from repo")
+                ops.append(Delete(model=Integration, id=UUID(integ_id)))
+
+        # Delete configs not in manifest
+        config_result = await self.db.execute(select(Config.id))
+        for row in config_result.all():
+            config_id = str(row[0])
+            if config_id not in present_config_ids:
+                logger.info(f"Deleting config {config_id} — removed from repo")
+                ops.append(Delete(model=Config, id=UUID(config_id)))
+
+        # Soft-delete tables not in manifest (keep data)
+        table_result = await self.db.execute(select(Table.id))
+        for row in table_result.all():
+            table_id = str(row[0])
+            if table_id not in present_table_ids:
+                logger.info(f"Table {table_id} not in manifest (data preserved)")
+
+        # Delete event subscriptions not in manifest
+        sub_result = await self.db.execute(select(EventSubscription.id))
+        for row in sub_result.all():
+            sub_id = str(row[0])
+            if sub_id not in present_sub_ids:
+                logger.info(f"Deleting event subscription {sub_id} — removed from repo")
+                ops.append(Delete(model=EventSubscription, id=UUID(sub_id)))
+
+        # Delete event sources not in manifest
+        es_result = await self.db.execute(select(EventSource.id))
+        for row in es_result.all():
+            es_id = str(row[0])
+            if es_id not in present_event_ids:
+                logger.info(f"Deleting event source {es_id} — removed from repo")
+                ops.append(Delete(model=EventSource, id=UUID(es_id)))
+
+        # Delete forms synced from git that are no longer present
+        form_result = await self.db.execute(
+            select(Form.id).where(Form.created_by == "git-sync")
+        )
+        for row in form_result.all():
+            form_id = str(row[0])
+            if form_id not in present_form_ids:
+                logger.info(f"Deleting form {form_id} — removed from repo")
+                ops.append(Delete(model=Form, id=UUID(form_id)))
+
+        # Delete agents synced from git that are no longer present
+        agent_result = await self.db.execute(
+            select(Agent.id).where(Agent.created_by == "git-sync")
+        )
+        for row in agent_result.all():
+            agent_id = str(row[0])
+            if agent_id not in present_agent_ids:
+                logger.info(f"Deleting agent {agent_id} — removed from repo")
+                ops.append(Delete(model=Agent, id=UUID(agent_id)))
+
+        # Delete apps — check all apps in manifest scope
+        app_result = await self.db.execute(select(Application.id))
+        all_app_ids = {str(row[0]) for row in app_result.all()}
+        manifest_app_ids = {mapp.id for mapp in manifest.apps.values()}
+        for app_id in all_app_ids:
+            if app_id in manifest_app_ids and app_id not in present_app_ids:
+                logger.info(f"Deleting app {app_id} — removed from repo")
+                ops.append(Delete(model=Application, id=UUID(app_id)))
+
+        # Soft-delete organizations not in manifest (only git-sync created ones)
+        if present_org_ids:
+            org_result = await self.db.execute(
+                select(Organization.id).where(
+                    Organization.is_active == True,  # noqa: E712
+                    Organization.created_by == "git-sync",
                 )
             )
-            await self.db.execute(stmt)
-        else:
-            # Insert new row
-            stmt = insert(Application).values(
-                id=app_id,
-                name=data.get("name", ""),
-                description=data.get("description"),
-                slug=slug,
-                repo_path=repo_path,
-                organization_id=org_id,
-                access_level=access_level,
-            ).on_conflict_do_update(
-                index_elements=["id"],
-                set_={
-                    "name": data.get("name", ""),
-                    "description": data.get("description"),
-                    "slug": slug,
-                    "repo_path": repo_path,
-                    "organization_id": org_id,
-                    "access_level": access_level,
-                    "updated_at": datetime.now(timezone.utc),
-                },
+            for row in org_result.all():
+                org_id = str(row[0])
+                if org_id not in present_org_ids:
+                    logger.info(f"Deactivating organization {org_id} — removed from manifest")
+                    ops.append(Deactivate(model=Organization, id=UUID(org_id)))
+
+        # Soft-delete roles not in manifest (only git-sync created ones)
+        if present_role_ids:
+            role_result = await self.db.execute(
+                select(Role.id).where(
+                    Role.is_active == True,  # noqa: E712
+                    Role.created_by == "git-sync",
+                )
             )
-            await self.db.execute(stmt)
+            for row in role_result.all():
+                role_id = str(row[0])
+                if role_id not in present_role_ids:
+                    logger.info(f"Deactivating role {role_id} — removed from manifest")
+                    ops.append(Deactivate(model=Role, id=UUID(role_id)))
 
-        # Sync role assignments
-        if hasattr(mapp, "roles") and mapp.roles:
-            from src.models.orm.app_roles import AppRole
-            await self._sync_role_assignments(app_id, mapp.roles, AppRole, "app_id")
+        return ops
 
-    async def _import_integration(self, integ_name: str, minteg) -> None:
-        """Import an integration from manifest into the DB.
+    async def _resolve_integration(self, integ_name: str, minteg) -> "list[SyncOp]":
+        """Resolve an integration from manifest into SyncOps.
 
-        Upserts the integration, syncs config schema items, oauth provider
-        structure (with sentinel secrets), and org mappings.
+        Upserts the integration and directly executes config schema, oauth
+        provider, and mapping sub-operations (these are complex sub-object
+        syncs without their own resolution pattern).
         """
         from uuid import UUID
 
@@ -1717,6 +1636,7 @@ class GitHubSyncService:
 
         from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
         from src.models.orm.oauth import OAuthProvider
+        from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
         integ_id = UUID(minteg.id)
 
@@ -1726,7 +1646,7 @@ class GitHubSyncService:
         )
         existing_by_name = by_name.scalar_one_or_none()
 
-        integ_values = {
+        integ_values: dict = {
             "name": integ_name,
             "entity_id": minteg.entity_id,
             "entity_id_name": minteg.entity_id_name,
@@ -1736,30 +1656,26 @@ class GitHubSyncService:
                 if minteg.list_entities_data_provider_id else None
             ),
             "is_deleted": False,
-            "updated_at": datetime.now(timezone.utc),
         }
 
+        # Upsert integration row FIRST (must exist before config schema / mapping FKs)
         if existing_by_name is not None:
-            # Match on natural key — update (including ID if it changed)
-            from sqlalchemy import update as sa_update
-            stmt = (
-                sa_update(Integration)
-                .where(Integration.id == existing_by_name)
-                .values(id=integ_id, **integ_values)
+            upsert_op = Upsert(
+                model=Integration,
+                id=existing_by_name,
+                values={"id": integ_id, **integ_values},
+                match_on="id",
             )
-            await self.db.execute(stmt)
         else:
-            # Insert or update by ID (handles rename case: same ID, new name)
-            stmt = insert(Integration).values(
+            upsert_op = Upsert(
+                model=Integration,
                 id=integ_id,
-                **{k: v for k, v in integ_values.items() if k != "updated_at"},
-            ).on_conflict_do_update(
-                index_elements=["id"],
-                set_=integ_values,
+                values=integ_values,
+                match_on="id",
             )
-            await self.db.execute(stmt)
+        await upsert_op.execute(self.db)
 
-        # Sync config schema items: delete all + re-insert
+        # Sync config schema items: delete all + re-insert (direct execution — complex sub-object)
         from sqlalchemy import delete as sa_delete
         await self.db.execute(
             sa_delete(IntegrationConfigSchema).where(
@@ -1780,29 +1696,29 @@ class GitHubSyncService:
 
         # Sync OAuth provider (structure only — client_secret never imported)
         if minteg.oauth_provider:
-            op = minteg.oauth_provider
+            op_data = minteg.oauth_provider
             op_stmt = insert(OAuthProvider).values(
-                provider_name=op.provider_name,
-                display_name=op.display_name,
-                oauth_flow_type=op.oauth_flow_type,
-                client_id=op.client_id,
+                provider_name=op_data.provider_name,
+                display_name=op_data.display_name,
+                oauth_flow_type=op_data.oauth_flow_type,
+                client_id=op_data.client_id,
                 encrypted_client_secret=b"",  # placeholder — needs manual setup
-                authorization_url=op.authorization_url,
-                token_url=op.token_url,
-                token_url_defaults=op.token_url_defaults or {},
-                scopes=op.scopes or [],
-                redirect_uri=op.redirect_uri,
+                authorization_url=op_data.authorization_url,
+                token_url=op_data.token_url,
+                token_url_defaults=op_data.token_url_defaults or {},
+                scopes=op_data.scopes or [],
+                redirect_uri=op_data.redirect_uri,
                 integration_id=integ_id,
             ).on_conflict_do_update(
                 constraint="uq_oauth_providers_integration_id",
                 set_={
-                    "display_name": op.display_name,
-                    "oauth_flow_type": op.oauth_flow_type,
-                    "authorization_url": op.authorization_url,
-                    "token_url": op.token_url,
-                    "token_url_defaults": op.token_url_defaults or {},
-                    "scopes": op.scopes or [],
-                    "redirect_uri": op.redirect_uri,
+                    "display_name": op_data.display_name,
+                    "oauth_flow_type": op_data.oauth_flow_type,
+                    "authorization_url": op_data.authorization_url,
+                    "token_url": op_data.token_url,
+                    "token_url_defaults": op_data.token_url_defaults or {},
+                    "scopes": op_data.scopes or [],
+                    "redirect_uri": op_data.redirect_uri,
                     "updated_at": datetime.now(timezone.utc),
                 },
             )
@@ -1823,18 +1739,21 @@ class GitHubSyncService:
             )
             await self.db.execute(m_stmt)
 
-    async def _import_config(self, mcfg) -> None:
-        """Import a config entry from manifest into the DB.
+        # Return empty list — all operations executed directly above
+        return []
+
+    async def _resolve_config(self, mcfg) -> "list[SyncOp]":
+        """Resolve a config entry from manifest into SyncOps.
 
         Skips writing value if type=SECRET and existing value is non-null
-        (don't overwrite manually-entered secrets).
+        (don't overwrite manually-entered secrets). Returns ops list.
         """
         from uuid import UUID
 
-        from sqlalchemy import update
         from sqlalchemy.dialects.postgresql import insert
 
         from src.models.orm.config import Config
+        from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
         cfg_id = UUID(mcfg.id)
         integ_id = UUID(mcfg.integration_id) if mcfg.integration_id else None
@@ -1859,7 +1778,7 @@ class GitHubSyncService:
 
             # Secret with existing value — don't overwrite
             if mcfg.config_type == "secret" and existing_value is not None:
-                return
+                return []
 
             # Update existing row (including ID if it changed)
             update_values: dict = {
@@ -1870,19 +1789,18 @@ class GitHubSyncService:
                 "integration_id": integ_id,
                 "organization_id": org_id,
                 "updated_by": "git-sync",
-                "updated_at": datetime.now(timezone.utc),
             }
             if mcfg.config_type != "secret":
                 update_values["value"] = mcfg.value if mcfg.value is not None else {}
 
-            stmt = (
-                update(Config)
-                .where(Config.id == existing_id)
-                .values(**update_values)
-            )
-            await self.db.execute(stmt)
+            return [Upsert(
+                model=Config,
+                id=existing_id,
+                values=update_values,
+                match_on="id",
+            )]
         else:
-            # Insert new row
+            # Insert new row — use direct insert (Config has complex natural key)
             stmt = insert(Config).values(
                 id=cfg_id,
                 key=mcfg.key,
@@ -1906,9 +1824,92 @@ class GitHubSyncService:
                 },
             )
             await self.db.execute(stmt)
+            return []
 
-    async def _import_table(self, table_name: str, mtable) -> None:
-        """Import a table definition from manifest into the DB (schema only, no data).
+    async def _resolve_app(self, mapp, content: bytes) -> "list[SyncOp]":
+        """Resolve an app from repo into SyncOps (metadata only).
+
+        The indexer call (app.yaml parsing) is a side-effect performed in
+        _import_all_entities, not here.
+        """
+        from pathlib import PurePosixPath
+        from uuid import UUID
+
+        from src.models.orm.app_roles import AppRole
+        from src.models.orm.applications import Application
+        from src.services.sync_ops import SyncOp, SyncRoles, Upsert  # noqa: F401
+
+        data = yaml.safe_load(content.decode("utf-8"))
+        if not data:
+            return []
+
+        # Derive repo_path from the manifest's canonical path
+        repo_path = str(PurePosixPath(mapp.path).parent) if mapp.path else None
+
+        # Slug from manifest entry, or derive from repo_path leaf
+        slug = mapp.slug or (PurePosixPath(repo_path).name if repo_path else None)
+        if not slug:
+            logger.warning(f"App {mapp.id} has no slug or path, skipping")
+            return []
+
+        # Ensure repo_path is set even if only slug was available
+        if not repo_path:
+            repo_path = f"apps/{slug}"
+
+        app_id = UUID(mapp.id)
+        org_id = UUID(mapp.organization_id) if mapp.organization_id else None
+        access_level = getattr(mapp, "access_level", "role_based")
+
+        # Two-step: check for existing app by natural key (org_id, slug)
+        existing_query = select(Application.id).where(Application.slug == slug)
+        if org_id:
+            existing_query = existing_query.where(Application.organization_id == org_id)
+        else:
+            existing_query = existing_query.where(Application.organization_id.is_(None))
+
+        existing = await self.db.execute(existing_query)
+        existing_id = existing.scalar_one_or_none()
+
+        app_values = {
+            "name": data.get("name", ""),
+            "description": data.get("description"),
+            "slug": slug,
+            "repo_path": repo_path,
+            "organization_id": org_id,
+            "access_level": access_level,
+        }
+
+        ops: list[SyncOp] = []
+
+        if existing_id is not None:
+            ops.append(Upsert(
+                model=Application,
+                id=existing_id,
+                values={"id": app_id, **app_values},
+                match_on="id",
+            ))
+        else:
+            ops.append(Upsert(
+                model=Application,
+                id=app_id,
+                values=app_values,
+                match_on="id",
+            ))
+
+        # Role sync op
+        if hasattr(mapp, "roles") and mapp.roles:
+            role_ids = {UUID(r) for r in mapp.roles}
+            ops.append(SyncRoles(
+                junction_model=AppRole,
+                entity_fk="app_id",
+                entity_id=app_id,
+                role_ids=role_ids,
+            ))
+
+        return ops
+
+    async def _resolve_table(self, table_name: str, mtable) -> "list[SyncOp]":
+        """Resolve a table definition from manifest into SyncOps (schema only, no data).
 
         Uses two-pass upsert: first try by ID, fall back to update-by-name if
         a table with the same name but different ID already exists.
@@ -1919,7 +1920,10 @@ class GitHubSyncService:
         from sqlalchemy.dialects.postgresql import insert
 
         from src.models.orm.tables import Table
+        from src.services.sync_ops import SyncOp  # noqa: F401
 
+        # Tables use a complex two-pass approach with IntegrityError fallback;
+        # execute directly and return empty ops list.
         now = datetime.now(timezone.utc)
         try:
             async with self.db.begin_nested():
@@ -1954,13 +1958,20 @@ class GitHubSyncService:
             )
             await self.db.execute(stmt_update)
 
-    async def _import_event_source(self, es_name: str, mes) -> None:
-        """Import an event source + subscriptions from manifest into the DB."""
+        return []
+
+    async def _resolve_event_source(self, es_name: str, mes) -> "list[SyncOp]":
+        """Resolve an event source + subscriptions from manifest into SyncOps.
+
+        Event sources use PostgreSQL ON CONFLICT upserts (PostgreSQL-specific
+        constructs); executed directly here, returning empty ops list.
+        """
         from uuid import UUID
 
         from sqlalchemy.dialects.postgresql import insert
 
         from src.models.orm.events import EventSource, EventSubscription, ScheduleSource, WebhookSource
+        from src.services.sync_ops import SyncOp  # noqa: F401
 
         es_id = UUID(mes.id)
 
@@ -2020,19 +2031,29 @@ class GitHubSyncService:
             await self.db.execute(wh_stmt)
 
         # Sync subscriptions: upsert each
+        # workflow_id may be a UUID string, a path::function_name portable ref, or a name
         for msub in mes.subscriptions:
-            # Resolve workflow reference (UUID, path::func, or name)
-            resolved_wf_id = await self._resolve_workflow_ref(msub.workflow_id)
-            if resolved_wf_id is None:
-                logger.warning(
-                    f"Event subscription {msub.id}: could not resolve workflow ref '{msub.workflow_id}', skipping"
-                )
-                continue
+            wf_id: UUID | None = None
+            try:
+                wf_id = UUID(msub.workflow_id)
+            except (ValueError, AttributeError):
+                pass
+
+            if wf_id is None:
+                # Try path::function_name or name resolution
+                resolved = await self._resolve_workflow_ref(msub.workflow_id)
+                if resolved is None:
+                    logger.warning(
+                        f"Event subscription {msub.id}: could not resolve workflow ref "
+                        f"'{msub.workflow_id}', skipping"
+                    )
+                    continue
+                wf_id = resolved
 
             sub_stmt = insert(EventSubscription).values(
                 id=UUID(msub.id),
                 event_source_id=es_id,
-                workflow_id=resolved_wf_id,
+                workflow_id=wf_id,
                 event_type=msub.event_type,
                 filter_expression=msub.filter_expression,
                 input_mapping=msub.input_mapping,
@@ -2042,7 +2063,7 @@ class GitHubSyncService:
                 index_elements=["event_source_id", "workflow_id"],
                 set_={
                     "id": UUID(msub.id),
-                    "workflow_id": resolved_wf_id,
+                    "workflow_id": wf_id,
                     "event_type": msub.event_type,
                     "filter_expression": msub.filter_expression,
                     "input_mapping": msub.input_mapping,
@@ -2051,6 +2072,105 @@ class GitHubSyncService:
                 },
             )
             await self.db.execute(sub_stmt)
+
+        return []
+
+    async def _resolve_form(self, mform, content: bytes) -> "list[SyncOp]":
+        """Resolve form metadata from manifest into SyncOps.
+
+        The FormIndexer call (content parsing) is a side-effect performed in
+        _import_all_entities, not here. This method only handles metadata ops.
+        """
+        from uuid import UUID
+
+        from src.models.orm.forms import Form, FormRole
+        from src.services.sync_ops import SyncOp, SyncRoles, Upsert  # noqa: F401
+
+        data = yaml.safe_load(content.decode("utf-8"))
+        if not data:
+            return []
+
+        org_id = UUID(mform.organization_id) if mform.organization_id else None
+        form_id = UUID(mform.id)
+        ops: list[SyncOp] = []
+
+        if org_id:
+            form_values: dict = {
+                "name": data.get("name", ""),
+                "is_active": True,
+                "created_by": "git-sync",
+                "organization_id": org_id,
+            }
+            if hasattr(mform, "access_level") and mform.access_level:
+                form_values["access_level"] = mform.access_level
+            ops.append(Upsert(
+                model=Form,
+                id=form_id,
+                values=form_values,
+                match_on="id",
+            ))
+
+        # Role sync op (FormRole.assigned_by is NOT NULL — pass via extra_fields)
+        if hasattr(mform, "roles") and mform.roles:
+            role_ids = {UUID(r) for r in mform.roles}
+            ops.append(SyncRoles(
+                junction_model=FormRole,
+                entity_fk="form_id",
+                entity_id=form_id,
+                role_ids=role_ids,
+                extra_fields={"assigned_by": "git-sync"},
+            ))
+
+        return ops
+
+    async def _resolve_agent(self, magent, content: bytes) -> "list[SyncOp]":
+        """Resolve agent metadata from manifest into SyncOps.
+
+        The AgentIndexer call (content parsing) is a side-effect performed in
+        _import_all_entities, not here. This method only handles metadata ops.
+        """
+        from uuid import UUID
+
+        from src.models.orm.agents import Agent, AgentRole
+        from src.services.sync_ops import SyncOp, SyncRoles, Upsert  # noqa: F401
+
+        data = yaml.safe_load(content.decode("utf-8"))
+        if not data:
+            return []
+
+        org_id = UUID(magent.organization_id) if magent.organization_id else None
+        agent_id = UUID(magent.id)
+        ops: list[SyncOp] = []
+
+        if org_id:
+            agent_values: dict = {
+                "name": data.get("name", ""),
+                "system_prompt": data.get("system_prompt", ""),
+                "is_active": True,
+                "created_by": "git-sync",
+                "organization_id": org_id,
+            }
+            if hasattr(magent, "access_level") and magent.access_level:
+                agent_values["access_level"] = magent.access_level
+            ops.append(Upsert(
+                model=Agent,
+                id=agent_id,
+                values=agent_values,
+                match_on="id",
+            ))
+
+        # Role sync op (AgentRole.assigned_by is NOT NULL — pass via extra_fields)
+        if hasattr(magent, "roles") and magent.roles:
+            role_ids = {UUID(r) for r in magent.roles}
+            ops.append(SyncRoles(
+                junction_model=AgentRole,
+                entity_fk="agent_id",
+                entity_id=agent_id,
+                role_ids=role_ids,
+                extra_fields={"assigned_by": "git-sync"},
+            ))
+
+        return ops
 
     async def _update_file_index(self, work_dir: Path) -> None:
         """Update file_index from all files in the working tree, remove stale entries."""
