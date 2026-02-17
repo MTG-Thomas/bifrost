@@ -301,9 +301,10 @@ class FileMode(str, Enum):
     live = "live"
 
 
-def _repo_prefix(slug: str) -> str:
-    """Return the _repo/ path prefix for an app slug."""
-    return f"apps/{slug}/"
+def _repo_prefix(app) -> str:
+    """Return the _repo/ path prefix for an app."""
+    base = app.repo_path or f"apps/{app.slug}"
+    return f"{base.rstrip('/')}/"
 
 
 # =============================================================================
@@ -333,7 +334,7 @@ async def list_app_files(
     repo = RepoStorage()
 
     # List source files from S3 (source of truth)
-    repo_prefix = _repo_prefix(app.slug)
+    repo_prefix = _repo_prefix(app)
     source_paths = await repo.list(repo_prefix)
 
     if not source_paths:
@@ -398,7 +399,7 @@ async def read_app_file(
     app_storage = AppStorageService()
 
     # Source from S3 (_repo/)
-    repo_path = f"{_repo_prefix(app.slug)}{file_path}"
+    repo_path = f"{_repo_prefix(app)}{file_path}"
     repo = RepoStorage()
     try:
         source = (await repo.read(repo_path)).decode("utf-8", errors="replace")
@@ -447,7 +448,7 @@ async def write_app_file(
     # Validate path conventions
     validate_file_path(file_path)
 
-    prefix = _repo_prefix(app.slug)
+    prefix = _repo_prefix(app)
     full_path = f"{prefix}{file_path}"
     source = data.source or ""
 
@@ -488,7 +489,7 @@ async def delete_app_file(
     file_index cleanup, pubsub, and preview sync).
     """
     app = await get_application_or_404(ctx, app_id)
-    prefix = _repo_prefix(app.slug)
+    prefix = _repo_prefix(app)
     full_path = f"{prefix}{file_path}"
 
     storage = get_file_storage_service(ctx.db)
@@ -537,7 +538,7 @@ async def render_app(
     dependencies: dict[str, str] = {}
     try:
         repo = RepoStorage()
-        yaml_bytes = await repo.read(f"apps/{app.slug}/app.yaml")
+        yaml_bytes = await repo.read(f"{_repo_prefix(app)}app.yaml")
         yaml_content = yaml_bytes.decode("utf-8", errors="replace")
         dependencies = _parse_dependencies(yaml_content)
     except Exception:
@@ -624,7 +625,7 @@ async def get_dependencies(
     app = await get_application_or_404(ctx, app_id)
     repo = RepoStorage()
     try:
-        yaml_content = (await repo.read(f"apps/{app.slug}/app.yaml")).decode("utf-8", errors="replace")
+        yaml_content = (await repo.read(f"{_repo_prefix(app)}app.yaml")).decode("utf-8", errors="replace")
     except Exception:
         yaml_content = None
     return _parse_dependencies(yaml_content)
@@ -667,7 +668,7 @@ async def put_dependencies(
             )
 
     # Read existing app.yaml
-    yaml_path = f"apps/{app.slug}/app.yaml"
+    yaml_path = f"{_repo_prefix(app)}app.yaml"
     repo = RepoStorage()
     try:
         existing_yaml = (await repo.read(yaml_path)).decode("utf-8", errors="replace")

@@ -28,7 +28,7 @@ class Application(Base):
     """Application entity for App Builder.
 
     Applications hold app metadata. Files are stored in S3 at
-    _repo/apps/{slug}/ paths, indexed in file_index table.
+    _repo/{repo_path}/ paths (defaults to apps/{slug}), indexed in file_index table.
 
     - organization_id = NULL: Global application (platform-wide)
     - organization_id = UUID: Organization-scoped application
@@ -39,6 +39,7 @@ class Application(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    repo_path: Mapped[str | None] = mapped_column(String(500), default=None)
     organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), default=None
     )
