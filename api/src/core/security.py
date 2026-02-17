@@ -242,6 +242,41 @@ def decode_mfa_token(token: str, expected_purpose: str = "mfa_verify") -> dict[s
         return None
 
 
+def create_embed_token(
+    app_id: str,
+    org_id: str | None,
+    verified_params: dict[str, str],
+) -> str:
+    """Create an 8-hour JWT for embed iframe sessions.
+
+    Args:
+        app_id: Application UUID string.
+        org_id: Organization UUID string (from the app).
+        verified_params: HMAC-verified query parameters.
+
+    Returns:
+        Encoded JWT string with type="embed".
+    """
+    from src.core.constants import SYSTEM_USER_ID
+
+    settings = get_settings()
+    expire = datetime.now(timezone.utc) + timedelta(hours=8)
+
+    to_encode = {
+        "sub": SYSTEM_USER_ID,
+        "app_id": app_id,
+        "org_id": org_id,
+        "verified_params": verified_params,
+        "email": "embed@internal.gobifrost.com",
+        "exp": expire,
+        "type": "embed",
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+    }
+
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+
+
 # =============================================================================
 # Secret Encryption (for storing secrets in database)
 # =============================================================================
