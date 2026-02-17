@@ -166,6 +166,11 @@ class TableRepository(OrgScopedRepository[Table]):
         return True
 
 
+def _escape_like(value: str) -> str:
+    """Escape LIKE/ILIKE wildcard characters in user input."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _build_document_filters(base_query: Any, where: dict[str, Any]) -> Any:
     """Build SQLAlchemy filters from where clause with JSON-native operators.
 
@@ -196,11 +201,14 @@ def _build_document_filters(base_query: Any, where: dict[str, Any]) -> Any:
                         base_query = base_query.where(json_field.astext != str(op_value))
                 elif op == "contains":
                     # Case-insensitive substring search
-                    base_query = base_query.where(json_field.astext.ilike(f"%{op_value}%"))
+                    escaped = _escape_like(str(op_value))
+                    base_query = base_query.where(json_field.astext.ilike(f"%{escaped}%"))
                 elif op == "starts_with":
-                    base_query = base_query.where(json_field.astext.ilike(f"{op_value}%"))
+                    escaped = _escape_like(str(op_value))
+                    base_query = base_query.where(json_field.astext.ilike(f"{escaped}%"))
                 elif op == "ends_with":
-                    base_query = base_query.where(json_field.astext.ilike(f"%{op_value}"))
+                    escaped = _escape_like(str(op_value))
+                    base_query = base_query.where(json_field.astext.ilike(f"%{escaped}"))
                 elif op == "gt":
                     base_query = base_query.where(
                         cast(json_field.astext, String) > str(op_value)
@@ -313,10 +321,13 @@ class DocumentRepository:
         if query_params.where:
             base_query = _build_document_filters(base_query, query_params.where)
 
-        # Get total count before pagination
-        count_query = select(func.count()).select_from(base_query.subquery())
-        count_result = await self.session.execute(count_query)
-        total = count_result.scalar() or 0
+        # Get total count before pagination (skip if caller doesn't need it)
+        if not query_params.skip_count:
+            count_query = base_query.with_only_columns(func.count()).order_by(None)
+            count_result = await self.session.execute(count_query)
+            total = count_result.scalar() or 0
+        else:
+            total = -1
 
         # Apply ordering
         if query_params.order_by:
@@ -347,7 +358,7 @@ class DocumentRepository:
         if where:
             base_query = _build_document_filters(base_query, where)
 
-        count_query = select(func.count()).select_from(base_query.subquery())
+        count_query = base_query.with_only_columns(func.count()).order_by(None)
         result = await self.session.execute(count_query)
         return result.scalar() or 0
 

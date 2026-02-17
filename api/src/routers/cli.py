@@ -2405,6 +2405,11 @@ async def _find_or_create_table_for_sdk(
     return table
 
 
+def _escape_like(value: str) -> str:
+    """Escape LIKE/ILIKE wildcard characters in user input."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _build_jsonb_filters(
     base_query: Any,
     where: dict[str, Any] | None,
@@ -2452,16 +2457,19 @@ def _build_jsonb_filters(
                         base_query = base_query.where(json_field.astext != str(op_value))
                 elif op == "contains":
                     # Case-insensitive substring search
+                    escaped = _escape_like(str(op_value))
                     base_query = base_query.where(
-                        json_field.astext.ilike(f"%{op_value}%")
+                        json_field.astext.ilike(f"%{escaped}%")
                     )
                 elif op == "starts_with":
+                    escaped = _escape_like(str(op_value))
                     base_query = base_query.where(
-                        json_field.astext.ilike(f"{op_value}%")
+                        json_field.astext.ilike(f"{escaped}%")
                     )
                 elif op == "ends_with":
+                    escaped = _escape_like(str(op_value))
                     base_query = base_query.where(
-                        json_field.astext.ilike(f"%{op_value}")
+                        json_field.astext.ilike(f"%{escaped}")
                     )
                 elif op == "gt":
                     base_query = base_query.where(
@@ -2807,10 +2815,13 @@ async def cli_query_documents(
     # Apply where filters with operator support
     doc_query = _build_jsonb_filters(doc_query, request.where, Document.data)
 
-    # Get total count
-    count_query = select(func.count()).select_from(doc_query.subquery())
-    count_result = await db.execute(count_query)
-    total = count_result.scalar() or 0
+    # Get total count (skip if caller doesn't need it)
+    if not request.skip_count:
+        count_query = doc_query.with_only_columns(func.count()).order_by(None)
+        count_result = await db.execute(count_query)
+        total = count_result.scalar() or 0
+    else:
+        total = -1
 
     # Apply ordering
     if request.order_by:

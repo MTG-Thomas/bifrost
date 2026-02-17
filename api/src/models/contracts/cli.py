@@ -539,6 +539,10 @@ class SDKDocumentQueryRequest(BaseModel):
     order_dir: Literal["asc", "desc"] = Field(default="asc", description="Sort direction")
     limit: int = Field(default=100, ge=1, le=1000, description="Max documents")
     offset: int = Field(default=0, ge=0, description="Documents to skip")
+    skip_count: bool = Field(
+        default=False,
+        description="Skip the total count query (returns total=-1). Use for faster paginated fetches after the first page.",
+    )
     scope: str | None = Field(default=None, description="Organization scope")
     app: str | None = Field(default=None, description="Application UUID")
 

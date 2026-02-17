@@ -177,6 +177,10 @@ class DocumentQuery(BaseModel):
         ge=0,
         description="Number of documents to skip",
     )
+    skip_count: bool = Field(
+        default=False,
+        description="Skip the total count query (returns total=-1). Use for faster paginated fetches after the first page.",
+    )
 
     @field_validator("order_by")
     @classmethod

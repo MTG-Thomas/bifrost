@@ -499,6 +499,156 @@ class TestDocumentQueryOperators:
         assert amounts == {100, 200}
 
 
+class TestILIKEEscaping:
+    """Test that ILIKE wildcard characters in user input are properly escaped."""
+
+    @pytest_asyncio.fixture
+    async def test_table_with_wildcards(self, db_session: AsyncSession, test_org, test_user_email):
+        """Create a test table with documents containing LIKE wildcard characters."""
+        repo = TableRepository(db_session, test_org.id)
+
+        from src.models.contracts.tables import TableCreate
+        table_data = TableCreate(
+            name=f"test_ilike_{uuid4().hex[:8]}",
+        )
+        table = await repo.create_table(table_data, created_by=test_user_email)
+
+        doc_repo = DocumentRepository(db_session, table)
+
+        await doc_repo.insert({"name": "100% Complete", "code": "A_B"}, created_by=test_user_email)
+        await doc_repo.insert({"name": "50% Done", "code": "A_C"}, created_by=test_user_email)
+        await doc_repo.insert({"name": "Normal Name", "code": "AXB"}, created_by=test_user_email)
+        await doc_repo.insert({"name": "Another Normal", "code": "AXBC"}, created_by=test_user_email)
+
+        return table
+
+    @pytest.mark.asyncio
+    async def test_contains_escapes_percent(self, db_session: AsyncSession, test_table_with_wildcards):
+        """Test that % in contains search is treated as literal, not wildcard."""
+        doc_repo = DocumentRepository(db_session, test_table_with_wildcards)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        # Search for literal "%" — should only match documents with actual percent sign
+        query = DocumentQuery(where={"name": {"contains": "%"}})
+        documents, total = await doc_repo.query(query)
+        assert total == 2  # "100% Complete" and "50% Done"
+        assert all("%" in d.data["name"] for d in documents)
+
+    @pytest.mark.asyncio
+    async def test_contains_escapes_underscore(self, db_session: AsyncSession, test_table_with_wildcards):
+        """Test that _ in contains search is treated as literal, not single-char wildcard."""
+        doc_repo = DocumentRepository(db_session, test_table_with_wildcards)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        # Search for literal "_" — should only match documents with actual underscore
+        query = DocumentQuery(where={"code": {"contains": "_"}})
+        documents, total = await doc_repo.query(query)
+        assert total == 2  # "A_B" and "A_C"
+        assert all("_" in d.data["code"] for d in documents)
+
+    @pytest.mark.asyncio
+    async def test_starts_with_escapes_wildcards(self, db_session: AsyncSession, test_table_with_wildcards):
+        """Test that starts_with escapes wildcard characters."""
+        doc_repo = DocumentRepository(db_session, test_table_with_wildcards)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        # "A_B" as starts_with should NOT match "AXB" or "AXBC" (unescaped _ would match any char)
+        query = DocumentQuery(where={"code": {"starts_with": "A_B"}})
+        documents, total = await doc_repo.query(query)
+        assert total == 1  # Only "A_B", not "AXB"
+        assert documents[0].data["code"] == "A_B"
+
+    @pytest.mark.asyncio
+    async def test_ends_with_escapes_wildcards(self, db_session: AsyncSession, test_table_with_wildcards):
+        """Test that ends_with escapes wildcard characters."""
+        doc_repo = DocumentRepository(db_session, test_table_with_wildcards)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        query = DocumentQuery(where={"name": {"ends_with": "% Complete"}})
+        documents, total = await doc_repo.query(query)
+        assert total == 1  # Only "100% Complete"
+        assert documents[0].data["name"] == "100% Complete"
+
+
+class TestSkipCount:
+    """Test skip_count parameter for document queries."""
+
+    @pytest_asyncio.fixture
+    async def test_table_with_docs(self, db_session: AsyncSession, test_org, test_user_email):
+        """Create a test table with some documents."""
+        repo = TableRepository(db_session, test_org.id)
+
+        from src.models.contracts.tables import TableCreate
+        table_data = TableCreate(
+            name=f"test_skipcount_{uuid4().hex[:8]}",
+        )
+        table = await repo.create_table(table_data, created_by=test_user_email)
+
+        doc_repo = DocumentRepository(db_session, table)
+        for i in range(5):
+            await doc_repo.insert({"index": i}, created_by=test_user_email)
+
+        return table
+
+    @pytest.mark.asyncio
+    async def test_skip_count_returns_negative_one(self, db_session: AsyncSession, test_table_with_docs):
+        """Test that skip_count=True returns total=-1."""
+        doc_repo = DocumentRepository(db_session, test_table_with_docs)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        query = DocumentQuery(skip_count=True)
+        documents, total = await doc_repo.query(query)
+        assert total == -1
+        assert len(documents) == 5
+
+    @pytest.mark.asyncio
+    async def test_skip_count_false_returns_real_count(self, db_session: AsyncSession, test_table_with_docs):
+        """Test that skip_count=False (default) returns the real count."""
+        doc_repo = DocumentRepository(db_session, test_table_with_docs)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        query = DocumentQuery(skip_count=False)
+        documents, total = await doc_repo.query(query)
+        assert total == 5
+        assert len(documents) == 5
+
+    @pytest.mark.asyncio
+    async def test_skip_count_default_is_false(self, db_session: AsyncSession, test_table_with_docs):
+        """Test that the default is skip_count=False."""
+        doc_repo = DocumentRepository(db_session, test_table_with_docs)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        query = DocumentQuery()
+        documents, total = await doc_repo.query(query)
+        assert total == 5
+
+    @pytest.mark.asyncio
+    async def test_skip_count_with_pagination(self, db_session: AsyncSession, test_table_with_docs):
+        """Test skip_count works correctly with pagination."""
+        doc_repo = DocumentRepository(db_session, test_table_with_docs)
+
+        from src.models.contracts.tables import DocumentQuery
+
+        # First page with count
+        query = DocumentQuery(limit=2, offset=0, skip_count=False)
+        documents, total = await doc_repo.query(query)
+        assert total == 5
+        assert len(documents) == 2
+
+        # Second page without count
+        query = DocumentQuery(limit=2, offset=2, skip_count=True)
+        documents, total = await doc_repo.query(query)
+        assert total == -1
+        assert len(documents) == 2
+
+
 class TestTableCascadeDelete:
     """Test that deleting a table cascades to documents."""
 
