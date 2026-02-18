@@ -231,7 +231,7 @@ export function TableDetail() {
 			<div className="flex items-center justify-between">
 				<div>
 					<div className="flex items-center gap-3">
-						<Button variant="ghost" size="icon" asChild>
+						<Button variant="ghost" size="icon" asChild aria-label="Back to tables">
 							<Link to="/tables">
 								<ArrowLeft className="h-4 w-4" />
 							</Link>
@@ -252,6 +252,7 @@ export function TableDetail() {
 						size="icon"
 						onClick={() => refetch()}
 						title="Refresh"
+						aria-label="Refresh"
 					>
 						<RefreshCw className="h-4 w-4" />
 					</Button>
@@ -260,6 +261,7 @@ export function TableDetail() {
 						size="icon"
 						onClick={handleAdd}
 						title="Add Document"
+						aria-label="Add document"
 					>
 						<Plus className="h-4 w-4" />
 					</Button>
@@ -271,7 +273,7 @@ export function TableDetail() {
 				<SearchBox
 					value={searchTerm}
 					onChange={setSearchTerm}
-					placeholder="Search by ID or data content..."
+					placeholder="Search this page..."
 					className="w-64"
 				/>
 			</div>
@@ -435,6 +437,7 @@ export function TableDetail() {
 																handleEdit(doc)
 															}
 															title="Edit document"
+															aria-label="Edit document"
 														>
 															<Pencil className="h-4 w-4" />
 														</Button>
@@ -447,6 +450,7 @@ export function TableDetail() {
 																)
 															}
 															title="Delete document"
+															aria-label="Delete document"
 														>
 															<Trash2 className="h-4 w-4" />
 														</Button>
@@ -500,6 +504,7 @@ export function TableDetail() {
 											)
 										}
 										disabled={currentPage === 0}
+										aria-label="Previous page"
 									>
 										<ChevronLeft className="h-4 w-4" />
 									</Button>
@@ -516,6 +521,7 @@ export function TableDetail() {
 											)
 										}
 										disabled={currentPage >= totalPages - 1}
+										aria-label="Next page"
 									>
 										<ChevronRight className="h-4 w-4" />
 									</Button>
@@ -551,12 +557,11 @@ export function TableDetail() {
 								) : (
 									<Button
 										variant="outline"
-										size="icon"
 										onClick={handleAdd}
-										title="Add Document"
 										className="mt-4"
 									>
-										<Plus className="h-4 w-4" />
+										<Plus className="mr-2 h-4 w-4" />
+										Add a document
 									</Button>
 								)}
 							</CardContent>

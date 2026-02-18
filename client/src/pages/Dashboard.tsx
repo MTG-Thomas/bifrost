@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
 	Workflow,
 	FileText,
@@ -142,145 +142,157 @@ export function Dashboard() {
 			{/* Metrics Cards */}
 			<div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 				{/* Workflows */}
-				<Card>
-					<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-						<CardTitle className="text-sm font-medium">
-							Workflows
-						</CardTitle>
-						<Workflow className="h-4 w-4 text-muted-foreground" />
-					</CardHeader>
-					<CardContent>
-						{isLoading ? (
-							<Skeleton className="h-8 w-16" />
-						) : (
-							<div className="text-2xl font-bold">
-								{metrics?.workflow_count ?? 0}
-							</div>
-						)}
-						<p className="text-xs text-muted-foreground">
-							Available workflows
-						</p>
-					</CardContent>
-				</Card>
+				<Link to="/workflows" className="block">
+					<Card className="hover:border-primary/50 transition-colors cursor-pointer">
+						<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+							<CardTitle className="text-sm font-medium">
+								Workflows
+							</CardTitle>
+							<Workflow className="h-4 w-4 text-muted-foreground" />
+						</CardHeader>
+						<CardContent>
+							{isLoading ? (
+								<Skeleton className="h-8 w-16" />
+							) : (
+								<div className="text-2xl font-bold">
+									{metrics?.workflow_count ?? 0}
+								</div>
+							)}
+							<p className="text-xs text-muted-foreground">
+								Available workflows
+							</p>
+						</CardContent>
+					</Card>
+				</Link>
 
 				{/* Forms */}
-				<Card>
-					<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-						<CardTitle className="text-sm font-medium">
-							Forms
-						</CardTitle>
-						<FileText className="h-4 w-4 text-muted-foreground" />
-					</CardHeader>
-					<CardContent>
-						{isLoading ? (
-							<Skeleton className="h-8 w-16" />
-						) : (
-							<div className="text-2xl font-bold">
-								{metrics?.form_count ?? 0}
-							</div>
-						)}
-						<p className="text-xs text-muted-foreground">
-							Active forms
-						</p>
-					</CardContent>
-				</Card>
+				<Link to="/forms" className="block">
+					<Card className="hover:border-primary/50 transition-colors cursor-pointer">
+						<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+							<CardTitle className="text-sm font-medium">
+								Forms
+							</CardTitle>
+							<FileText className="h-4 w-4 text-muted-foreground" />
+						</CardHeader>
+						<CardContent>
+							{isLoading ? (
+								<Skeleton className="h-8 w-16" />
+							) : (
+								<div className="text-2xl font-bold">
+									{metrics?.form_count ?? 0}
+								</div>
+							)}
+							<p className="text-xs text-muted-foreground">
+								Active forms
+							</p>
+						</CardContent>
+					</Card>
+				</Link>
 
 				{/* Total Executions (30 days) */}
-				<Card>
-					<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-						<CardTitle className="text-sm font-medium">
-							Executions (30d)
-						</CardTitle>
-						<Zap className="h-4 w-4 text-muted-foreground" />
-					</CardHeader>
-					<CardContent>
-						{isLoading ? (
-							<Skeleton className="h-8 w-16" />
-						) : (
-							<div className="text-2xl font-bold">
-								{metrics?.execution_stats.total_executions ?? 0}
-							</div>
-						)}
-						<p className="text-xs text-muted-foreground">
-							Total workflow runs
-						</p>
-					</CardContent>
-				</Card>
+				<Link to="/history" className="block">
+					<Card className="hover:border-primary/50 transition-colors cursor-pointer">
+						<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+							<CardTitle className="text-sm font-medium">
+								Executions (30d)
+							</CardTitle>
+							<Zap className="h-4 w-4 text-muted-foreground" />
+						</CardHeader>
+						<CardContent>
+							{isLoading ? (
+								<Skeleton className="h-8 w-16" />
+							) : (
+								<div className="text-2xl font-bold">
+									{metrics?.execution_stats.total_executions ?? 0}
+								</div>
+							)}
+							<p className="text-xs text-muted-foreground">
+								Total workflow runs
+							</p>
+						</CardContent>
+					</Card>
+				</Link>
 
 				{/* Success Rate */}
-				<Card>
-					<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-						<CardTitle className="text-sm font-medium">
-							Success Rate
-						</CardTitle>
-						<TrendingUp className="h-4 w-4 text-muted-foreground" />
-					</CardHeader>
-					<CardContent>
-						{isLoading ? (
-							<Skeleton className="h-8 w-16" />
-						) : (
-							<div className="text-2xl font-bold">
-								{metrics?.execution_stats.success_rate?.toFixed(
-									1,
-								) ?? 0}
-								%
-							</div>
-						)}
-						<p className="text-xs text-muted-foreground">
-							Last 30 days
-						</p>
-					</CardContent>
-				</Card>
+				<Link to="/history" className="block">
+					<Card className="hover:border-primary/50 transition-colors cursor-pointer">
+						<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+							<CardTitle className="text-sm font-medium">
+								Success Rate
+							</CardTitle>
+							<TrendingUp className="h-4 w-4 text-muted-foreground" />
+						</CardHeader>
+						<CardContent>
+							{isLoading ? (
+								<Skeleton className="h-8 w-16" />
+							) : (
+								<div className="text-2xl font-bold">
+									{metrics?.execution_stats.success_rate?.toFixed(
+										1,
+									) ?? 0}
+									%
+								</div>
+							)}
+							<p className="text-xs text-muted-foreground">
+								Last 30 days
+							</p>
+						</CardContent>
+					</Card>
+				</Link>
 
 				{/* Time Saved (24h) */}
-				<Card>
-					<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-						<CardTitle className="text-sm font-medium">
-							Time Saved (24h)
-						</CardTitle>
-						<Clock className="h-4 w-4 text-muted-foreground" />
-					</CardHeader>
-					<CardContent>
-						{isLoading ? (
-							<Skeleton className="h-8 w-16" />
-						) : (
-							<div className="text-2xl font-bold">
-								{metrics?.roi_24h
-									? formatTimeSaved(
-											metrics.roi_24h.total_time_saved,
-										)
-									: "0m"}
-							</div>
-						)}
-						<p className="text-xs text-muted-foreground">
-							{metrics?.roi_24h?.time_saved_unit ?? "minutes"}
-						</p>
-					</CardContent>
-				</Card>
+				<Link to="/reports/roi" className="block">
+					<Card className="hover:border-primary/50 transition-colors cursor-pointer">
+						<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+							<CardTitle className="text-sm font-medium">
+								Time Saved (24h)
+							</CardTitle>
+							<Clock className="h-4 w-4 text-muted-foreground" />
+						</CardHeader>
+						<CardContent>
+							{isLoading ? (
+								<Skeleton className="h-8 w-16" />
+							) : (
+								<div className="text-2xl font-bold">
+									{metrics?.roi_24h
+										? formatTimeSaved(
+												metrics.roi_24h.total_time_saved,
+											)
+										: "0m"}
+								</div>
+							)}
+							<p className="text-xs text-muted-foreground">
+								{metrics?.roi_24h?.time_saved_unit ?? "minutes"}
+							</p>
+						</CardContent>
+					</Card>
+				</Link>
 
 				{/* Value Generated (24h) */}
-				<Card>
-					<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-						<CardTitle className="text-sm font-medium">
-							Value (24h)
-						</CardTitle>
-						<DollarSign className="h-4 w-4 text-muted-foreground" />
-					</CardHeader>
-					<CardContent>
-						{isLoading ? (
-							<Skeleton className="h-8 w-16" />
-						) : (
-							<div className="text-2xl font-bold">
-								{metrics?.roi_24h
-									? formatValue(metrics.roi_24h.total_value)
-									: "0"}
-							</div>
-						)}
-						<p className="text-xs text-muted-foreground">
-							{metrics?.roi_24h?.value_unit ?? "USD"}
-						</p>
-					</CardContent>
-				</Card>
+				<Link to="/reports/roi" className="block">
+					<Card className="hover:border-primary/50 transition-colors cursor-pointer">
+						<CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+							<CardTitle className="text-sm font-medium">
+								Value (24h)
+							</CardTitle>
+							<DollarSign className="h-4 w-4 text-muted-foreground" />
+						</CardHeader>
+						<CardContent>
+							{isLoading ? (
+								<Skeleton className="h-8 w-16" />
+							) : (
+								<div className="text-2xl font-bold">
+									{metrics?.roi_24h
+										? formatValue(metrics.roi_24h.total_value)
+										: "0"}
+								</div>
+							)}
+							<p className="text-xs text-muted-foreground">
+								{metrics?.roi_24h?.value_unit ?? "USD"}
+							</p>
+						</CardContent>
+					</Card>
+				</Link>
 			</div>
 
 			{/* Recent Failures - Compact */}
@@ -296,6 +308,12 @@ export function Dashboard() {
 							</CardDescription>
 						</div>
 						<div className="flex items-center gap-2">
+							<Link
+								to="/history?status=failed"
+								className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+							>
+								View all
+							</Link>
 							<Badge
 								variant={
 									metrics?.execution_stats.failed_count === 0

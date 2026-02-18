@@ -15,6 +15,13 @@ export {
 	isExecutionRunning,
 } from "./ExecutionStatusBadge";
 
+export { ExecutionSidebar } from "./ExecutionSidebar";
+
+export {
+	ExecutionCancelDialog,
+	ExecutionRerunDialog,
+} from "./ExecutionDialogs";
+
 // Existing components
 export { PrettyInputDisplay } from "./PrettyInputDisplay";
 export { SafeHTMLRenderer } from "./SafeHTMLRenderer";

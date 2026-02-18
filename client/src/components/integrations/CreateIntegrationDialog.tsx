@@ -29,6 +29,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { Combobox } from "@/components/ui/combobox";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -389,20 +390,17 @@ function CreateIntegrationForm({
 												</SelectContent>
 											</Select>
 											<label className="flex items-center gap-2 text-sm">
-												<input
-													type="checkbox"
+												<Checkbox
 													checked={field.required}
-													onChange={(e) =>
+													onCheckedChange={(checked) =>
 														updateConfigField(
 															index,
 															{
 																required:
-																	e.target
-																		.checked,
+																	checked === true,
 															},
 														)
 													}
-													className="rounded"
 												/>
 												Required
 											</label>

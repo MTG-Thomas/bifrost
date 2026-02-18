@@ -250,7 +250,7 @@ function CreateEventSourceDialogContent({
 
 			<div className="space-y-4 py-4">
 				{errors.length > 0 && (
-					<Alert variant="destructive">
+					<Alert variant="destructive" role="alert" aria-live="polite">
 						<AlertCircle className="h-4 w-4" />
 						<AlertDescription>
 							<ul className="list-disc list-inside">

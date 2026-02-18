@@ -1,20 +1,17 @@
 import { Outlet } from "react-router-dom";
-import { useState } from "react";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { NoAccess } from "@/components/NoAccess";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PasskeySetupBanner } from "@/components/PasskeySetupBanner";
+import { RouteErrorBoundary } from "@/components/PageErrorBoundary";
+import { useSidebar } from "@/hooks/useSidebar";
 
 export function Layout() {
 	const { isLoading, isPlatformAdmin, isOrgUser, hasRole } = useAuth();
 	const isEmbed = hasRole("EmbedUser");
-	const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-	const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-		// Load collapsed state from localStorage
-		return localStorage.getItem("sidebar-collapsed") === "true";
-	});
+	const { isMobileMenuOpen, setIsMobileMenuOpen, isSidebarCollapsed, toggleSidebar } = useSidebar();
 
 	const hasAccess = isPlatformAdmin || isOrgUser || isEmbed;
 
@@ -49,12 +46,6 @@ export function Layout() {
 		return <Outlet />;
 	}
 
-	const toggleSidebar = () => {
-		const newState = !isSidebarCollapsed;
-		setIsSidebarCollapsed(newState);
-		localStorage.setItem("sidebar-collapsed", String(newState));
-	};
-
 	return (
 		<div className="h-screen flex bg-background overflow-hidden">
 			{/* Sidebar - full height with logo */}
@@ -73,7 +64,9 @@ export function Layout() {
 				/>
 				<main className="flex-1 overflow-auto p-6 lg:p-8">
 					<PasskeySetupBanner />
-					<Outlet />
+					<RouteErrorBoundary>
+						<Outlet />
+					</RouteErrorBoundary>
 				</main>
 			</div>
 		</div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type MutableRefObject } from "react";
 import {
 	Play,
 	Loader2,
@@ -45,11 +45,15 @@ interface LogEntry {
 	source: string;
 }
 
+interface RunPanelProps {
+	executeRef?: MutableRefObject<(() => void) | null>;
+}
+
 /**
  * Run panel for executing workflows, data providers, and scripts
  * Shows detected file type and appropriate inputs
  */
-export function RunPanel() {
+export function RunPanel({ executeRef }: RunPanelProps) {
 	// Track render count for debugging
 	const renderCountRef = useRef(0);
 	renderCountRef.current += 1;
@@ -682,33 +686,34 @@ export function RunPanel() {
 		}
 	}, [openFile, fileContent, appendTerminalOutput, queryClient, orgId]);
 
-	// Listen for execute-editor-file event (dispatched after panel switch)
-	useEffect(() => {
-		const handleExecuteEvent = () => {
-			// Check if there are parameters (use selectedWorkflow for workflows)
-			const hasParameters =
-				detectedItem.type === "workflow" &&
-				selectedWorkflow &&
-				selectedWorkflow.parameters &&
-				(selectedWorkflow.parameters.length ?? 0) > 0;
+	// Register execute callback via ref so EditorLayout can call directly
+	const handleExecuteEvent = useCallback(() => {
+		// Check if there are parameters (use selectedWorkflow for workflows)
+		const hasParameters =
+			detectedItem.type === "workflow" &&
+			selectedWorkflow &&
+			selectedWorkflow.parameters &&
+			(selectedWorkflow.parameters.length ?? 0) > 0;
 
-			if (hasParameters && firstInputRef.current) {
-				// Focus first input if there are parameters
-				setTimeout(() => firstInputRef.current?.focus(), 50);
-			} else if (detectedItem.type === "script") {
-				// Execute script immediately if no parameters
-				handleExecuteScript();
+		if (hasParameters && firstInputRef.current) {
+			// Focus first input if there are parameters
+			setTimeout(() => firstInputRef.current?.focus(), 50);
+		} else if (detectedItem.type === "script") {
+			// Execute script immediately if no parameters
+			handleExecuteScript();
+		}
+	}, [detectedItem, selectedWorkflow, handleExecuteScript]);
+
+	useEffect(() => {
+		if (executeRef) {
+			executeRef.current = handleExecuteEvent;
+		}
+		return () => {
+			if (executeRef) {
+				executeRef.current = null;
 			}
 		};
-
-		window.addEventListener("execute-editor-file", handleExecuteEvent);
-		return () => {
-			window.removeEventListener(
-				"execute-editor-file",
-				handleExecuteEvent,
-			);
-		};
-	}, [detectedItem, selectedWorkflow, handleExecuteScript]);
+	}, [handleExecuteEvent, executeRef]);
 
 	// No file open
 	if (!openFile) {

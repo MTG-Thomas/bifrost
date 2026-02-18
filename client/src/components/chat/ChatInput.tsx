@@ -276,8 +276,9 @@ export function ChatInput({
 								type="button"
 								variant="ghost"
 								size="icon"
-								className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
-								disabled={disabled || isLoading}
+								className="h-8 w-8 rounded-full text-muted-foreground/50 cursor-not-allowed"
+								disabled
+								title="Coming soon"
 							>
 								<Plus className="h-5 w-5" />
 							</Button>
@@ -285,8 +286,9 @@ export function ChatInput({
 								type="button"
 								variant="ghost"
 								size="icon"
-								className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
-								disabled={disabled || isLoading}
+								className="h-8 w-8 rounded-full text-muted-foreground/50 cursor-not-allowed"
+								disabled
+								title="Coming soon"
 							>
 								<Paperclip className="h-4 w-4" />
 							</Button>

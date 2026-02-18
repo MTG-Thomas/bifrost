@@ -315,7 +315,8 @@ function FormRendererInner({
 				}
 			}
 		},
-		[fields, evaluateDataProviderInputs, dataProviderState.loading],
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally omit dataProviderState.loading to prevent infinite loop
+		[fields, evaluateDataProviderInputs],
 	);
 
 	// Load data providers on mount and when fieldBlurTrigger changes

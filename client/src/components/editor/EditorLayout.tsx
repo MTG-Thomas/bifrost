@@ -82,19 +82,18 @@ export function EditorLayout() {
 		setSidebarVisible((prev) => !prev);
 	});
 
+	const executeRef = useRef<(() => void) | null>(null);
+
 	// Listen for run-editor-file event and trigger execution
 	useEffect(() => {
 		const handleRunEvent = () => {
 			// Switch to Run panel and make sidebar visible
 			setSidebarPanel("run");
 			setSidebarVisible(true);
-
-			// Dispatch a secondary event after a delay to trigger actual execution
-			// This ensures the RunPanel has mounted and is ready
-			setTimeout(() => {
-				const executeEvent = new CustomEvent("execute-editor-file");
-				window.dispatchEvent(executeEvent);
-			}, 200);
+			// If RunPanel is already mounted, execute immediately
+			if (executeRef.current) {
+				executeRef.current();
+			}
 		};
 
 		window.addEventListener("run-editor-file", handleRunEvent);
@@ -256,7 +255,7 @@ export function EditorLayout() {
 								{sidebarPanel === "sourceControl" && (
 									<SourceControlPanel />
 								)}
-								{sidebarPanel === "run" && <RunPanel />}
+								{sidebarPanel === "run" && <RunPanel executeRef={executeRef} />}
 								{sidebarPanel === "packages" && (
 									<PackagePanel />
 								)}

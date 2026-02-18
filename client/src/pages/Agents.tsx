@@ -106,9 +106,6 @@ export function Agents() {
 		return org?.name || orgId;
 	};
 
-	// All authenticated users can manage agents (create private ones)
-	const canManageAgents = true;
-
 	// Use agents from API directly (backend handles org filtering)
 	// Cast to extended type that includes organization_id (pending type regeneration)
 	const scopeFilteredAgents = (agents ?? []) as AgentSummary[];
@@ -194,54 +191,50 @@ export function Agents() {
 						)}
 					</div>
 					<p className="mt-2 text-muted-foreground">
-						{canManageAgents
-							? "Create and manage AI agents with custom prompts and tools"
-							: "View available AI agents"}
+						Create and manage AI agents with custom prompts and tools
 					</p>
 				</div>
 				<div className="flex gap-2">
-					{canManageAgents && (
-						<ToggleGroup
-							type="single"
-							value={viewMode}
-							onValueChange={(value: string) =>
-								value && setViewMode(value as "grid" | "table")
-							}
+					<ToggleGroup
+						type="single"
+						value={viewMode}
+						onValueChange={(value: string) =>
+							value && setViewMode(value as "grid" | "table")
+						}
+					>
+						<ToggleGroupItem
+							value="grid"
+							aria-label="Grid view"
+							size="sm"
 						>
-							<ToggleGroupItem
-								value="grid"
-								aria-label="Grid view"
-								size="sm"
-							>
-								<LayoutGrid className="h-4 w-4" />
-							</ToggleGroupItem>
-							<ToggleGroupItem
-								value="table"
-								aria-label="Table view"
-								size="sm"
-							>
-								<TableIcon className="h-4 w-4" />
-							</ToggleGroupItem>
-						</ToggleGroup>
-					)}
+							<LayoutGrid className="h-4 w-4" />
+						</ToggleGroupItem>
+						<ToggleGroupItem
+							value="table"
+							aria-label="Table view"
+							size="sm"
+						>
+							<TableIcon className="h-4 w-4" />
+						</ToggleGroupItem>
+					</ToggleGroup>
 					<Button
 						variant="outline"
 						size="icon"
 						onClick={() => refetch()}
 						title="Refresh"
+						aria-label="Refresh"
 					>
 						<RefreshCw className="h-4 w-4" />
 					</Button>
-					{canManageAgents && (
-						<Button
-							variant="outline"
-							size="icon"
-							onClick={handleCreate}
-							title="Create Agent"
-						>
-							<Plus className="h-4 w-4" />
-						</Button>
-					)}
+					<Button
+						variant="outline"
+						size="icon"
+						onClick={handleCreate}
+						title="Create Agent"
+						aria-label="Create agent"
+					>
+						<Plus className="h-4 w-4" />
+					</Button>
 				</div>
 			</div>
 
@@ -268,7 +261,7 @@ export function Agents() {
 
 			{/* Content */}
 			{isLoading ? (
-				viewMode === "grid" || !canManageAgents ? (
+				viewMode === "grid" ? (
 					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
 						{[...Array(6)].map((_, i) => (
 							<Skeleton key={i} className="h-48 w-full" />
@@ -282,7 +275,7 @@ export function Agents() {
 					</div>
 				)
 			) : filteredAgents && filteredAgents.length > 0 ? (
-				viewMode === "grid" || !canManageAgents ? (
+				viewMode === "grid" ? (
 					// Grid View
 					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
 						{filteredAgents.map((agent) => (
@@ -291,19 +284,36 @@ export function Agents() {
 								className="hover:border-primary transition-colors flex flex-col"
 							>
 								<CardHeader className="pb-3">
-									<div className="flex items-center gap-2">
-										<Bot className="h-4 w-4 text-muted-foreground shrink-0" />
-										<CardTitle className="text-base truncate" title={agent.name}>
-											{agent.name}
-										</CardTitle>
+									<div className="flex items-start justify-between gap-3">
+										<div className="flex-1 min-w-0">
+											<div className="flex items-center gap-2">
+												<Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+												<CardTitle className="text-base break-words">
+													{agent.name}
+												</CardTitle>
+											</div>
+											<CardDescription className="mt-1.5 text-sm break-words line-clamp-2">
+												{agent.description || (
+													<span className="italic text-muted-foreground/60">
+														No description
+													</span>
+												)}
+											</CardDescription>
+										</div>
+										<div className="flex items-center gap-2 shrink-0">
+											<Switch
+												checked={agent.is_active}
+												onCheckedChange={() =>
+													handleToggleActive(
+														agent,
+													)
+												}
+												disabled={
+													updateAgent.isPending
+												}
+											/>
+										</div>
 									</div>
-									<CardDescription className="mt-1.5 text-sm break-words line-clamp-2">
-										{agent.description || (
-											<span className="italic text-muted-foreground/60">
-												No description
-											</span>
-										)}
-									</CardDescription>
 								</CardHeader>
 								<CardContent className="pt-0 mt-auto">
 									{/* Private badge */}
@@ -355,8 +365,7 @@ export function Agents() {
 									</div>
 
 									{/* Actions */}
-									{canManageAgents && (
-										<div className="flex items-center gap-2">
+									<div className="flex gap-2">
 											<Button
 												variant="outline"
 												size="sm"
@@ -375,6 +384,7 @@ export function Agents() {
 													agent.id && handleCopyMcpUrl(agent.id)
 												}
 												title="Copy MCP URL"
+												aria-label="Copy MCP URL"
 											>
 												{copiedId === agent.id ? (
 													<Check className="h-3 w-3" />
@@ -388,24 +398,11 @@ export function Agents() {
 												onClick={() =>
 													handleDelete(agent)
 												}
+												aria-label="Delete agent"
 											>
 												<Trash2 className="h-3 w-3" />
 											</Button>
-											<div className="shrink-0 ml-auto">
-												<Switch
-													checked={agent.is_active}
-													onCheckedChange={() =>
-														handleToggleActive(
-															agent,
-														)
-													}
-													disabled={
-														updateAgent.isPending
-													}
-												/>
-											</div>
-										</div>
-									)}
+									</div>
 								</CardContent>
 							</Card>
 						))}
@@ -496,6 +493,7 @@ export function Agents() {
 													onClick={() =>
 														agent.id && handleEdit(agent.id)
 													}
+													aria-label="Edit agent"
 												>
 													<Pencil className="h-4 w-4" />
 												</Button>
@@ -506,6 +504,7 @@ export function Agents() {
 														agent.id && handleCopyMcpUrl(agent.id)
 													}
 													title="Copy MCP URL"
+													aria-label="Copy MCP URL"
 												>
 													{copiedId === agent.id ? (
 														<Check className="h-4 w-4" />
@@ -519,6 +518,7 @@ export function Agents() {
 													onClick={() =>
 														handleDelete(agent)
 													}
+													aria-label="Delete agent"
 												>
 													<Trash2 className="h-4 w-4" />
 												</Button>
@@ -543,19 +543,16 @@ export function Agents() {
 						<p className="mt-2 text-sm text-muted-foreground">
 							{searchTerm
 								? "Try adjusting your search term or clear the filter"
-								: canManageAgents
-									? "Get started by creating your first AI agent"
-									: "No agents are currently available"}
+								: "Get started by creating your first AI agent"}
 						</p>
-						{canManageAgents && !searchTerm && (
+						{!searchTerm && (
 							<Button
 								variant="outline"
-								size="icon"
 								onClick={handleCreate}
 								className="mt-4"
-								title="Create Agent"
 							>
-								<Plus className="h-4 w-4" />
+								<Plus className="mr-2 h-4 w-4" />
+								Create your first agent
 							</Button>
 						)}
 					</CardContent>

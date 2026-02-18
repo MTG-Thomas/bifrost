@@ -192,6 +192,7 @@ export function Tables() {
 						size="icon"
 						onClick={() => refetch()}
 						title="Refresh"
+						aria-label="Refresh"
 					>
 						<RefreshCw className="h-4 w-4" />
 					</Button>
@@ -200,6 +201,7 @@ export function Tables() {
 						size="icon"
 						onClick={handleAdd}
 						title="Create Table"
+						aria-label="Create table"
 					>
 						<Plus className="h-4 w-4" />
 					</Button>
@@ -352,6 +354,7 @@ export function Tables() {
 													handleViewDocuments(table)
 												}
 												title="View documents"
+												aria-label="View documents"
 											>
 												<FileJson2 className="h-4 w-4" />
 											</Button>
@@ -362,6 +365,7 @@ export function Tables() {
 													handleEdit(table)
 												}
 												title="Edit table"
+												aria-label="Edit table"
 											>
 												<Pencil className="h-4 w-4" />
 											</Button>
@@ -372,6 +376,7 @@ export function Tables() {
 													handleDelete(table)
 												}
 												title="Delete table"
+												aria-label="Delete table"
 											>
 												<Trash2 className="h-4 w-4" />
 											</Button>
@@ -397,15 +402,16 @@ export function Tables() {
 								? "Try adjusting your search term or clear the filter"
 								: "Get started by creating your first data table"}
 						</p>
-						<Button
-							variant="outline"
-							size="icon"
-							onClick={handleAdd}
-							title="Create Table"
-							className="mt-4"
-						>
-							<Plus className="h-4 w-4" />
-						</Button>
+						{!searchTerm && (
+							<Button
+								variant="outline"
+								onClick={handleAdd}
+								className="mt-4"
+							>
+								<Plus className="mr-2 h-4 w-4" />
+								Create your first table
+							</Button>
+						)}
 					</CardContent>
 				</Card>
 			)}

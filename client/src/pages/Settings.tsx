@@ -41,6 +41,7 @@ export function Settings() {
 			</div>
 
 			<Tabs value={currentTab} onValueChange={handleTabChange}>
+				<div className="overflow-x-auto">
 				<TabsList>
 					<TabsTrigger value="ai">
 						<Bot className="h-4 w-4 mr-1" />
@@ -75,6 +76,7 @@ export function Settings() {
 						Maintenance
 					</TabsTrigger>
 				</TabsList>
+				</div>
 
 				<TabsContent value="ai" className="mt-6">
 					<LLMConfig />

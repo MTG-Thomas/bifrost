@@ -3,18 +3,8 @@ import { useParams, Link } from "react-router-dom";
 import {
 	Save,
 	Loader2,
-	Link as LinkIcon,
-	Unlink,
-	CheckCircle2,
 	XCircle,
-	Plus,
-	AlertCircle,
-	Clock,
-	RotateCw,
-	Settings,
 	Pencil,
-	MoreVertical,
-	Trash2,
 	Code,
 	Zap,
 } from "lucide-react";
@@ -27,24 +17,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
-import {
-	DataTable,
-	DataTableBody,
-	DataTableCell,
-	DataTableHead,
-	DataTableHeader,
-	DataTableRow,
-} from "@/components/ui/data-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogFooter,
-	DialogHeader,
-	DialogTitle,
-} from "@/components/ui/dialog";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -55,14 +28,6 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import {
 	useIntegration,
@@ -72,7 +37,6 @@ import {
 	useUpdateIntegration,
 	useUpdateIntegrationConfig,
 	useTestIntegration,
-	type IntegrationMapping,
 	type IntegrationTestResponse,
 } from "@/services/integrations";
 import { $api } from "@/lib/api-client";
@@ -81,70 +45,18 @@ import {
 	useRefreshOAuthToken,
 	useDeleteOAuthConnection,
 } from "@/hooks/useOAuth";
-import { getStatusLabel, isExpired, expiresSoon } from "@/lib/client-types";
+import { isExpired, expiresSoon } from "@/lib/client-types";
 import { CreateOAuthConnectionDialog } from "@/components/oauth/CreateOAuthConnectionDialog";
 import { CreateIntegrationDialog } from "@/components/integrations/CreateIntegrationDialog";
 import { OrgConfigDialog } from "@/components/integrations/OrgConfigDialog";
 import { ConfigOverridesTab } from "@/components/integrations/ConfigOverridesTab";
 import { useIntegrationEntities } from "@/hooks/useIntegrationEntities";
 import { useAutoMatch } from "@/hooks/useAutoMatch";
-import { EntitySelector } from "@/components/integrations/EntitySelector";
-import { AutoMatchControls } from "@/components/integrations/AutoMatchControls";
-import { MatchSuggestionBadge } from "@/components/integrations/MatchSuggestionBadge";
 import { GenerateSDKDialog } from "@/components/integrations/GenerateSDKDialog";
-import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
-
-// Format datetime with relative time for dates within 7 days
-const formatDateTime = (dateStr?: string | null) => {
-	if (!dateStr) return "Never";
-
-	// Parse the date - backend sends UTC timestamps without 'Z' suffix
-	// Add 'Z' to explicitly mark it as UTC, then JavaScript will convert to local time
-	const utcDateStr = dateStr.endsWith("Z") || dateStr.includes("+") || dateStr.includes("-", 10) ? dateStr : `${dateStr}Z`;
-	const date = new Date(utcDateStr);
-	const now = new Date();
-	const diffMs = date.getTime() - now.getTime();
-	const diffMins = Math.floor(Math.abs(diffMs) / 60000);
-	const diffHours = Math.floor(Math.abs(diffMs) / 3600000);
-	const diffDays = Math.floor(Math.abs(diffMs) / 86400000);
-
-	// For dates within 7 days, show relative time
-	if (diffDays < 7) {
-		// Past dates (negative diffMs) - show "X ago"
-		if (diffMs < 0) {
-			if (diffMins < 60) {
-				return `${diffMins} minute${diffMins !== 1 ? "s" : ""} ago`;
-			} else if (diffHours < 24) {
-				return `${diffHours} hour${diffHours !== 1 ? "s" : ""} ago`;
-			} else {
-				return `${diffDays} day${diffDays !== 1 ? "s" : ""} ago`;
-			}
-		}
-
-		// Future dates (positive diffMs) - show "in X"
-		if (diffMs > 0) {
-			if (diffMins < 60) {
-				return `in ${diffMins} minute${diffMins !== 1 ? "s" : ""}`;
-			} else if (diffHours < 24) {
-				return `in ${diffHours} hour${diffHours !== 1 ? "s" : ""}`;
-			} else {
-				return `in ${diffDays} day${diffDays !== 1 ? "s" : ""}`;
-			}
-		}
-
-		// Exactly now
-		return "just now";
-	}
-
-	// Absolute dates for far past/future (converts to user's local timezone)
-	return date.toLocaleString(undefined, {
-		month: "short",
-		day: "numeric",
-		year: "numeric",
-		hour: "numeric",
-		minute: "2-digit",
-	});
-};
+import { IntegrationOverview } from "@/components/integrations/IntegrationOverview";
+import { IntegrationMappingsTab, type OrgWithMapping } from "@/components/integrations/IntegrationMappingsTab";
+import { IntegrationTestPanel } from "@/components/integrations/IntegrationTestPanel";
+import { IntegrationDefaultsDialog } from "@/components/integrations/IntegrationDefaultsDialog";
 
 interface MappingFormData {
 	organization_id: string;
@@ -152,14 +64,6 @@ interface MappingFormData {
 	entity_name: string;
 	oauth_token_id?: string;
 	config: Record<string, unknown>;
-}
-
-interface OrgWithMapping {
-	id: string;
-	name: string;
-	mapping?: IntegrationMapping;
-	formData: MappingFormData;
-	isDirty: boolean;
 }
 
 export function IntegrationDetail() {
@@ -262,7 +166,7 @@ export function IntegrationDetail() {
 		!isOAuthExpired &&
 		expiresSoon(oauthConfig.expires_at, 15); // 15 minutes matches the refresh scheduler interval
 	const canUseAuthCodeFlow =
-		oauthConfig && oauthConfig.oauth_flow_type !== "client_credentials";
+		!!oauthConfig && oauthConfig.oauth_flow_type !== "client_credentials";
 
 	// Track dirty state for each org (user edits)
 	const [dirtyEdits, setDirtyEdits] = useState<
@@ -612,19 +516,6 @@ export function IntegrationDetail() {
 		}
 	};
 
-	const hasNonDefaultConfig = (org: OrgWithMapping): boolean => {
-		if (!org.mapping?.config || !integration?.config_schema) return false;
-
-		// Use config_defaults from the integration
-		const defaultConfig = integration.config_defaults ?? {};
-
-		return integration.config_schema.some((field) => {
-			const currentValue = org.mapping?.config?.[field.key];
-			const defaultValue = defaultConfig[field.key];
-			return currentValue !== defaultValue;
-		});
-	};
-
 	// Configuration Defaults Dialog handlers
 	const handleOpenDefaultsDialog = () => {
 		if (!integration?.config_schema) return;
@@ -857,333 +748,23 @@ export function IntegrationDetail() {
 			</div>
 
 			{/* Config Defaults & OAuth Status */}
-			<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-				{/* Configuration Defaults */}
-				<Card>
-					<CardHeader className="pb-3">
-						<div className="flex items-center justify-between">
-							<div>
-								<CardTitle className="text-base">
-									Configuration Defaults
-								</CardTitle>
-								<CardDescription>
-									Default config values for new mappings
-								</CardDescription>
-							</div>
-							{integration.config_schema &&
-								integration.config_schema.length > 0 && (
-									<Button
-										variant="outline"
-										size="sm"
-										onClick={handleOpenDefaultsDialog}
-									>
-										<Pencil className="h-3 w-3 mr-1" />
-										Edit
-									</Button>
-								)}
-						</div>
-					</CardHeader>
-					<CardContent>
-						{/* Default Entity ID section */}
-						<div className="mb-4">
-							<div className="flex items-center justify-between text-sm">
-								<div className="flex flex-col">
-									<span className="text-muted-foreground">
-										Default{" "}
-										{integration.entity_id_name ||
-											"Entity ID"}
-									</span>
-									<span className="text-xs text-muted-foreground/70">
-										Used when org mapping is not set
-									</span>
-								</div>
-								<div className="flex items-center gap-2">
-									<span className="font-mono text-xs bg-muted px-2 py-0.5 rounded">
-										{integration.default_entity_id || "—"}
-									</span>
-									<Button
-										variant="ghost"
-										size="sm"
-										className="h-6 w-6 p-0"
-										onClick={() => setEditDialogOpen(true)}
-										title="Edit integration settings"
-									>
-										<Pencil className="h-3 w-3" />
-									</Button>
-								</div>
-							</div>
-						</div>
-
-						{integration.config_schema &&
-						integration.config_schema.length > 0 ? (
-							<div className="space-y-2">
-								{integration.config_schema.map((field) => {
-									const defaultValue =
-										integration.config_defaults?.[
-											field.key
-										];
-									return (
-										<div
-											key={field.key}
-											className="flex items-center justify-between text-sm"
-										>
-											<span className="text-muted-foreground">
-												{field.key}
-												{field.required && (
-													<span className="text-destructive ml-1">
-														*
-													</span>
-												)}
-											</span>
-											<span className="font-mono text-xs bg-muted px-2 py-0.5 rounded">
-												{defaultValue !== null &&
-												defaultValue !== undefined
-													? field.type === "secret"
-														? "••••••••"
-														: String(defaultValue)
-													: "—"}
-											</span>
-										</div>
-									);
-								})}
-							</div>
-						) : null}
-					</CardContent>
-				</Card>
-
-				{/* Compact OAuth Status */}
-				<Card className="hover:shadow-md transition-shadow">
-					<CardHeader className="pb-3">
-						<div className="flex items-center justify-between">
-							<div>
-								<CardTitle className="text-base">
-									OAuth
-								</CardTitle>
-								<CardDescription>
-									Connection status and authentication
-								</CardDescription>
-							</div>
-							<div className="flex items-center gap-2">
-								{oauthConfig && (
-									<Badge
-										variant="outline"
-										className="text-xs"
-									>
-										{oauthConfig.oauth_flow_type}
-									</Badge>
-								)}
-								{isOAuthConnected ? (
-									<CheckCircle2 className="h-4 w-4 text-green-600" />
-								) : oauthConfig?.status === "failed" ? (
-									<XCircle className="h-4 w-4 text-red-600" />
-								) : integration.has_oauth_config ? (
-									<AlertCircle className="h-4 w-4 text-yellow-600" />
-								) : null}
-								{integration.has_oauth_config && (
-									<DropdownMenu>
-										<DropdownMenuTrigger asChild>
-											<Button
-												variant="ghost"
-												size="icon"
-												className="h-8 w-8"
-											>
-												<MoreVertical className="h-4 w-4" />
-											</Button>
-										</DropdownMenuTrigger>
-										<DropdownMenuContent align="end">
-											<DropdownMenuItem
-												onClick={() =>
-													setEditingOAuthConfig(true)
-												}
-											>
-												<Pencil className="h-4 w-4 mr-2" />
-												Edit Configuration
-											</DropdownMenuItem>
-											<DropdownMenuItem
-												onClick={() =>
-													setDeleteOAuthDialogOpen(
-														true,
-													)
-												}
-												className="text-destructive focus:text-destructive"
-											>
-												<Trash2 className="h-4 w-4 mr-2" />
-												Delete Configuration
-											</DropdownMenuItem>
-										</DropdownMenuContent>
-									</DropdownMenu>
-								)}
-							</div>
-						</div>
-					</CardHeader>
-					<CardContent>
-						{integration.has_oauth_config ? (
-							<div className="space-y-3">
-								{/* Expiration warnings */}
-								{isOAuthExpired && (
-									<div className="flex items-center gap-2 p-2 rounded bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 text-sm">
-										<AlertCircle className="h-4 w-4" />
-										Token expired - reconnect required
-									</div>
-								)}
-								{isOAuthExpiringSoon && !isOAuthExpired && (
-									<div className="flex items-center gap-2 p-2 rounded bg-yellow-50 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300 text-sm">
-										<Clock className="h-4 w-4" />
-										Token expires soon - consider refreshing
-									</div>
-								)}
-
-								{/* No refresh token warning - only show for authorization_code flow */}
-								{isOAuthConnected &&
-									oauthConfig &&
-									oauthConfig.has_refresh_token === false &&
-									canUseAuthCodeFlow && (
-										<div className="flex items-center gap-2 p-2 rounded bg-yellow-50 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300 text-sm">
-											<AlertCircle className="h-4 w-4" />
-											No refresh token - manual
-											reconnection required when token
-											expires
-										</div>
-									)}
-
-								{/* Connection status */}
-								<div className="flex items-center justify-between">
-									<span className="text-sm text-muted-foreground">
-										Status
-									</span>
-									<span className="text-sm font-medium">
-										{isOAuthConnected
-											? "Connected"
-											: oauthConfig?.status === "failed"
-												? "Failed"
-												: oauthConfig
-													? getStatusLabel(
-															oauthConfig.status,
-														)
-													: "Not Connected"}
-									</span>
-								</div>
-
-								{oauthConfig?.expires_at && !isOAuthExpired && (
-									<div className="flex items-center justify-between">
-										<span className="text-sm text-muted-foreground">
-											Expires
-										</span>
-										<span className="text-sm font-mono">
-											{formatDateTime(
-												oauthConfig.expires_at,
-											)}
-										</span>
-									</div>
-								)}
-
-								{/* Action buttons */}
-								<div className="flex items-center gap-2 pt-1">
-									{canUseAuthCodeFlow && (
-										<Button
-											variant={
-												isOAuthConnected
-													? "outline"
-													: "default"
-											}
-											size="sm"
-											className="flex-1"
-											onClick={
-												handleIntegrationOAuthConnect
-											}
-											disabled={
-												authorizeMutation.isPending
-											}
-										>
-											{authorizeMutation.isPending ? (
-												<>
-													<Loader2 className="mr-2 h-3 w-3 animate-spin" />
-													Connecting...
-												</>
-											) : isOAuthConnected ? (
-												"Reconnect"
-											) : (
-												"Connect"
-											)}
-										</Button>
-									)}
-									{/* For client_credentials flow when not connected, show Get Token button */}
-									{!canUseAuthCodeFlow &&
-										!isOAuthConnected &&
-										oauthConfig && (
-											<Button
-												variant="default"
-												size="sm"
-												className="flex-1"
-												onClick={
-													handleIntegrationOAuthRefresh
-												}
-												disabled={
-													refreshMutation.isPending
-												}
-											>
-												{refreshMutation.isPending ? (
-													<>
-														<Loader2 className="mr-2 h-3 w-3 animate-spin" />
-														Getting Token...
-													</>
-												) : oauthConfig?.status ===
-												  "failed" ? (
-													"Retry"
-												) : (
-													"Get Token"
-												)}
-											</Button>
-										)}
-									{isOAuthConnected &&
-										oauthConfig?.expires_at && (
-											<Button
-												variant="outline"
-												size="sm"
-												onClick={
-													handleIntegrationOAuthRefresh
-												}
-												disabled={
-													refreshMutation.isPending
-												}
-											>
-												{refreshMutation.isPending ? (
-													<>
-														<Loader2 className="mr-2 h-3 w-3 animate-spin" />
-														Refreshing...
-													</>
-												) : (
-													<>
-														<RotateCw className="mr-2 h-3 w-3" />
-														Refresh Token
-													</>
-												)}
-											</Button>
-										)}
-								</div>
-							</div>
-						) : (
-							<div className="text-center py-4">
-								<LinkIcon className="h-8 w-8 text-muted-foreground mx-auto" />
-								<p className="mt-2 text-sm text-muted-foreground">
-									No OAuth configured
-								</p>
-								<Button
-									variant="outline"
-									size="sm"
-									className="mt-3"
-									onClick={() =>
-										setOAuthConfigDialogOpen(true)
-									}
-								>
-									<Plus className="h-3 w-3 mr-2" />
-									Configure
-								</Button>
-							</div>
-						)}
-					</CardContent>
-				</Card>
-			</div>
+			<IntegrationOverview
+				integration={integration}
+				oauthConfig={oauthConfig}
+				isOAuthConnected={isOAuthConnected}
+				isOAuthExpired={isOAuthExpired}
+				isOAuthExpiringSoon={isOAuthExpiringSoon}
+				canUseAuthCodeFlow={canUseAuthCodeFlow}
+				onEditIntegration={() => setEditDialogOpen(true)}
+				onOpenDefaultsDialog={handleOpenDefaultsDialog}
+				onOAuthConnect={handleIntegrationOAuthConnect}
+				onOAuthRefresh={handleIntegrationOAuthRefresh}
+				onEditOAuthConfig={() => setEditingOAuthConfig(true)}
+				onDeleteOAuthConfig={() => setDeleteOAuthDialogOpen(true)}
+				onCreateOAuthConfig={() => setOAuthConfigDialogOpen(true)}
+				isAuthorizePending={authorizeMutation.isPending}
+				isRefreshPending={refreshMutation.isPending}
+			/>
 
 			{/* Tabs for Mappings and Config Overrides */}
 			<Tabs defaultValue="mappings" className="space-y-4">
@@ -1195,248 +776,27 @@ export function IntegrationDetail() {
 				</TabsList>
 
 				<TabsContent value="mappings">
-					<Card>
-						<CardHeader className="flex flex-row items-start justify-between space-y-0">
-							<div>
-								<CardTitle>Organization Mappings</CardTitle>
-								<CardDescription>
-									Configure how each organization maps to
-									external entities
-								</CardDescription>
-							</div>
-							{/* Auto-Match Controls in header */}
-							{integration.list_entities_data_provider_id &&
-								orgsWithMappings.length > 0 && (
-									<AutoMatchControls
-										onRunAutoMatch={runAutoMatch}
-										onAcceptAll={handleAcceptAllSuggestions}
-										onClear={clearSuggestions}
-										matchStats={matchStats}
-										hasSuggestions={
-											autoMatchSuggestions.size > 0
-										}
-										isMatching={isMatching}
-										disabled={isLoadingEntities}
-									/>
-								)}
-						</CardHeader>
-						<CardContent>
-							{!integration.list_entities_data_provider_id ? (
-								<div className="flex flex-col items-center justify-center py-12 text-center">
-									<Settings className="h-12 w-12 text-muted-foreground" />
-									<h3 className="mt-4 text-lg font-semibold">
-										No Data Provider Configured
-									</h3>
-									<p className="mt-2 text-sm text-muted-foreground max-w-md">
-										Configure a data provider to populate
-										the entity dropdown. Edit the
-										integration to select one.
-									</p>
-									<Button
-										variant="outline"
-										className="mt-4"
-										onClick={() => setEditDialogOpen(true)}
-									>
-										<Pencil className="h-4 w-4 mr-2" />
-										Edit Integration
-									</Button>
-								</div>
-							) : orgsWithMappings.length === 0 ? (
-								<div className="flex flex-col items-center justify-center py-12 text-center">
-									<LinkIcon className="h-12 w-12 text-muted-foreground" />
-									<h3 className="mt-4 text-lg font-semibold">
-										No organizations available
-									</h3>
-									<p className="mt-2 text-sm text-muted-foreground">
-										Create organizations first to set up
-										mappings
-									</p>
-								</div>
-							) : (
-								<div className="rounded-md border overflow-x-auto">
-									<DataTable>
-										<DataTableHeader>
-											<DataTableRow>
-												<DataTableHead className="w-48">
-													Organization
-												</DataTableHead>
-												<DataTableHead className="w-64">
-													External Entity
-												</DataTableHead>
-												<DataTableHead className="w-24">
-													Status
-												</DataTableHead>
-												<DataTableHead className="w-32 text-right">
-													Actions
-												</DataTableHead>
-											</DataTableRow>
-										</DataTableHeader>
-										<DataTableBody>
-											{orgsWithMappings.map((org) => {
-												// Filter out entities already mapped to other orgs
-												const usedEntityIds =
-													orgsWithMappings
-														.filter(
-															(o) =>
-																o.id !==
-																	org.id &&
-																o.formData
-																	.entity_id,
-														)
-														.map(
-															(o) =>
-																o.formData
-																	.entity_id,
-														);
-												const availableEntities =
-													entities.filter(
-														(e) =>
-															e.value ===
-																org.formData
-																	.entity_id ||
-															!usedEntityIds.includes(
-																e.value,
-															),
-													);
-
-												return (
-													<DataTableRow key={org.id}>
-														<DataTableCell className="font-medium">
-															{org.name}
-														</DataTableCell>
-														<DataTableCell>
-															{autoMatchSuggestions.has(
-																org.id,
-															) ? (
-																<MatchSuggestionBadge
-																	suggestion={
-																		autoMatchSuggestions.get(
-																			org.id,
-																		)!
-																	}
-																	onAccept={() =>
-																		handleAcceptSuggestion(
-																			org.id,
-																		)
-																	}
-																	onReject={() =>
-																		rejectSuggestion(
-																			org.id,
-																		)
-																	}
-																/>
-															) : (
-																<EntitySelector
-																	entities={
-																		availableEntities
-																	}
-																	value={
-																		org
-																			.formData
-																			.entity_id
-																	}
-																	onChange={(
-																		value,
-																		label,
-																	) =>
-																		updateOrgMapping(
-																			org.id,
-																			{
-																				entity_id:
-																					value,
-																				entity_name:
-																					label,
-																			},
-																		)
-																	}
-																	isLoading={
-																		isLoadingEntities
-																	}
-																	placeholder="Select entity..."
-																/>
-															)}
-														</DataTableCell>
-														<DataTableCell>
-															{org.mapping ? (
-																<Badge
-																	variant="default"
-																	className="bg-green-600"
-																>
-																	<CheckCircle2 className="h-3 w-3 mr-1" />
-																	Mapped
-																</Badge>
-															) : org.formData
-																	.entity_id ? (
-																<Badge variant="secondary">
-																	<Plus className="h-3 w-3 mr-1" />
-																	New
-																</Badge>
-															) : (
-																<Badge variant="outline">
-																	Not Mapped
-																</Badge>
-															)}
-															{org.isDirty && (
-																<Badge
-																	variant="secondary"
-																	className="ml-1"
-																>
-																	*
-																</Badge>
-															)}
-														</DataTableCell>
-														<DataTableCell className="text-right">
-															<div className="flex gap-1 justify-end">
-																<Button
-																	size="sm"
-																	variant="ghost"
-																	onClick={() =>
-																		handleOpenConfigDialog(
-																			org.id,
-																		)
-																	}
-																	title="Configure"
-																	className="relative"
-																>
-																	<Settings className="h-4 w-4" />
-																	{hasNonDefaultConfig(
-																		org,
-																	) && (
-																		<span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-blue-600" />
-																	)}
-																</Button>
-																<Button
-																	size="sm"
-																	variant="ghost"
-																	onClick={() =>
-																		handleDeleteMappingClick(
-																			org,
-																		)
-																	}
-																	disabled={
-																		!org.mapping ||
-																		deleteMutation.isPending
-																	}
-																	title={
-																		org.mapping
-																			? "Unlink mapping"
-																			: "No mapping to unlink"
-																	}
-																	className="text-red-600 hover:text-red-700 disabled:text-muted-foreground"
-																>
-																	<Unlink className="h-4 w-4" />
-																</Button>
-															</div>
-														</DataTableCell>
-													</DataTableRow>
-												);
-											})}
-										</DataTableBody>
-									</DataTable>
-								</div>
-							)}
-						</CardContent>
-					</Card>
+					<IntegrationMappingsTab
+						orgsWithMappings={orgsWithMappings}
+						entities={entities}
+						isLoadingEntities={isLoadingEntities}
+						hasDataProvider={!!integration.list_entities_data_provider_id}
+						configSchema={integration?.config_schema || []}
+						configDefaults={integration?.config_defaults}
+						autoMatchSuggestions={autoMatchSuggestions}
+						matchStats={matchStats}
+						isMatching={isMatching}
+						isDeletePending={deleteMutation.isPending}
+						onRunAutoMatch={runAutoMatch}
+						onAcceptAllSuggestions={handleAcceptAllSuggestions}
+						onClearSuggestions={clearSuggestions}
+						onAcceptSuggestion={handleAcceptSuggestion}
+						onRejectSuggestion={rejectSuggestion}
+						onUpdateOrgMapping={updateOrgMapping}
+						onOpenConfigDialog={handleOpenConfigDialog}
+						onDeleteMapping={handleDeleteMappingClick}
+						onEditIntegration={() => setEditDialogOpen(true)}
+					/>
 				</TabsContent>
 
 				<TabsContent value="config-overrides">
@@ -1500,123 +860,15 @@ export function IntegrationDetail() {
 			)}
 
 			{/* Configuration Defaults Dialog */}
-			<Dialog
+			<IntegrationDefaultsDialog
 				open={defaultsDialogOpen}
 				onOpenChange={setDefaultsDialogOpen}
-			>
-				<DialogContent className="max-w-md">
-					<form
-						onSubmit={(e) => {
-							e.preventDefault();
-							handleSaveDefaults();
-						}}
-					>
-						<DialogHeader>
-							<DialogTitle>
-								Edit Configuration Defaults
-							</DialogTitle>
-							<DialogDescription>
-								Set default values for new organization mappings
-							</DialogDescription>
-						</DialogHeader>
-						<div className="space-y-4 py-4">
-							{integration?.config_schema?.map((field) => (
-								<div key={field.key} className="space-y-2">
-									<Label htmlFor={`default-${field.key}`}>
-										{field.key}
-										{field.required && (
-											<span className="text-destructive ml-1">
-												*
-											</span>
-										)}
-										<span className="text-muted-foreground text-xs ml-2">
-											({field.type})
-										</span>
-									</Label>
-									{field.type === "bool" ? (
-										<select
-											id={`default-${field.key}`}
-											value={String(
-												defaultsFormValues[field.key] ??
-													"",
-											)}
-											onChange={(e) =>
-												setDefaultsFormValues(
-													(prev) => ({
-														...prev,
-														[field.key]:
-															e.target.value ===
-															"true",
-													}),
-												)
-											}
-											className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-										>
-											<option value="">
-												— Not set —
-											</option>
-											<option value="true">True</option>
-											<option value="false">False</option>
-										</select>
-									) : (
-										<Input
-											id={`default-${field.key}`}
-											type={
-												field.type === "secret"
-													? "password"
-													: "text"
-											}
-											placeholder={`Default ${field.key}`}
-											value={String(
-												defaultsFormValues[field.key] ??
-													"",
-											)}
-											onChange={(e) =>
-												setDefaultsFormValues(
-													(prev) => ({
-														...prev,
-														[field.key]:
-															field.type === "int"
-																? parseInt(
-																		e.target
-																			.value,
-																	) || ""
-																: e.target
-																		.value,
-													}),
-												)
-											}
-										/>
-									)}
-								</div>
-							))}
-						</div>
-						<DialogFooter>
-							<Button
-								type="button"
-								variant="outline"
-								onClick={() => setDefaultsDialogOpen(false)}
-								disabled={updateIntegrationMutation.isPending}
-							>
-								Cancel
-							</Button>
-							<Button
-								type="submit"
-								disabled={updateIntegrationMutation.isPending}
-							>
-								{updateIntegrationMutation.isPending ? (
-									<>
-										<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-										Saving...
-									</>
-								) : (
-									"Save Defaults"
-								)}
-							</Button>
-						</DialogFooter>
-					</form>
-				</DialogContent>
-			</Dialog>
+				configSchema={integration?.config_schema || []}
+				formValues={defaultsFormValues}
+				onFormValuesChange={setDefaultsFormValues}
+				onSave={handleSaveDefaults}
+				isSaving={updateIntegrationMutation.isPending}
+			/>
 
 			{/* Delete Mapping Confirmation Dialog */}
 			<AlertDialog
@@ -1703,132 +955,18 @@ export function IntegrationDetail() {
 			)}
 
 			{/* Test Connection Dialog */}
-			<Dialog open={testDialogOpen} onOpenChange={setTestDialogOpen}>
-				<DialogContent className="max-w-md">
-					<DialogHeader>
-						<DialogTitle>Test Integration Connection</DialogTitle>
-						<DialogDescription>
-							Test connectivity by making a GET request to the
-							specified endpoint.
-						</DialogDescription>
-					</DialogHeader>
-					<div className="space-y-4 py-4">
-						<div className="space-y-2">
-							<Label htmlFor="test-org">Organization</Label>
-							<OrganizationSelect
-								value={testOrgId}
-								onChange={(value) => {
-									// OrganizationSelect uses undefined for "All", but we only care about null (Global) or string (org)
-									setTestOrgId(
-										value === undefined ? null : value,
-									);
-									setTestResult(null);
-								}}
-								showGlobal={true}
-								showAll={false}
-								placeholder="Select organization..."
-							/>
-							<p className="text-sm text-muted-foreground">
-								Select "Global" to test with integration
-								defaults only, or choose an organization to test
-								with merged config and OAuth.
-							</p>
-						</div>
-
-						<div className="space-y-2">
-							<Label htmlFor="test-endpoint">Endpoint</Label>
-							<Input
-								id="test-endpoint"
-								value={testEndpoint}
-								onChange={(e) => {
-									setTestEndpoint(e.target.value);
-									setTestResult(null);
-								}}
-								placeholder="/api/users"
-							/>
-							<p className="text-sm text-muted-foreground">
-								API endpoint path to test. Will be appended to
-								the integration's base_url.
-							</p>
-						</div>
-
-						{/* Test Result Display */}
-						{testResult && (
-							<div
-								className={`p-4 rounded-lg border ${
-									testResult.success
-										? "bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800"
-										: "bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800"
-								}`}
-							>
-								<div className="flex items-start gap-2">
-									{testResult.success ? (
-										<CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400 mt-0.5" />
-									) : (
-										<XCircle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5" />
-									)}
-									<div className="flex-1 min-w-0">
-										<p
-											className={`font-medium ${
-												testResult.success
-													? "text-green-800 dark:text-green-200"
-													: "text-red-800 dark:text-red-200"
-											}`}
-										>
-											{testResult.message}
-										</p>
-										{testResult.method_called && (
-											<p className="text-sm text-muted-foreground mt-1">
-												Method:{" "}
-												<code className="bg-muted px-1 rounded">
-													{testResult.method_called}()
-												</code>
-											</p>
-										)}
-										{testResult.duration_ms && (
-											<p className="text-sm text-muted-foreground">
-												Duration:{" "}
-												{testResult.duration_ms}
-												ms
-											</p>
-										)}
-										{testResult.error_details && (
-											<p className="text-sm text-red-600 dark:text-red-400 mt-2 break-words">
-												{testResult.error_details}
-											</p>
-										)}
-									</div>
-								</div>
-							</div>
-						)}
-					</div>
-					<DialogFooter>
-						<Button
-							type="button"
-							variant="outline"
-							onClick={() => setTestDialogOpen(false)}
-						>
-							Close
-						</Button>
-						<Button
-							onClick={handleTestConnection}
-							disabled={testMutation.isPending}
-						>
-							{testMutation.isPending ? (
-								<>
-									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-									Testing...
-								</>
-							) : (
-								<>
-									<Zap className="h-4 w-4 mr-2" />
-									Test
-								</>
-							)}
-						</Button>
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
+			<IntegrationTestPanel
+				open={testDialogOpen}
+				onOpenChange={setTestDialogOpen}
+				testOrgId={testOrgId}
+				onTestOrgIdChange={setTestOrgId}
+				testEndpoint={testEndpoint}
+				onTestEndpointChange={setTestEndpoint}
+				testResult={testResult}
+				onClearResult={() => setTestResult(null)}
+				onTest={handleTestConnection}
+				isTestPending={testMutation.isPending}
+			/>
 		</div>
 	);
 }

@@ -375,6 +375,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 												<FormControl>
 													<Input
 														placeholder="Sales Assistant"
+														autoFocus
 														{...field}
 													/>
 												</FormControl>
@@ -1452,14 +1453,36 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 													name="llm_temperature"
 													render={({ field }) => (
 														<FormItem>
-															<FormLabel>
-																Temperature:{" "}
-																{field.value?.toFixed(
-																	1,
-																) ?? "default"}
-															</FormLabel>
+															<div className="flex items-center justify-between">
+																<FormLabel>
+																	Temperature:{" "}
+																	{field.value?.toFixed(
+																		1,
+																	) ??
+																		"default"}
+																</FormLabel>
+																{field.value !==
+																	null && (
+																	<Button
+																		type="button"
+																		variant="ghost"
+																		size="sm"
+																		onClick={() =>
+																			field.onChange(
+																				null,
+																			)
+																		}
+																		className="h-6 text-xs"
+																	>
+																		Reset
+																		to
+																		default
+																	</Button>
+																)}
+															</div>
 															<FormControl>
-																<div className="flex items-center gap-4">
+																{field.value !==
+																null ? (
 																	<Slider
 																		min={0}
 																		max={2}
@@ -1467,8 +1490,7 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																			0.1
 																		}
 																		value={[
-																			field.value ??
-																				0.7,
+																			field.value,
 																		]}
 																		onValueChange={([
 																			val,
@@ -1479,19 +1501,22 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																		}
 																		className="flex-1"
 																	/>
+																) : (
 																	<Button
 																		type="button"
-																		variant="ghost"
+																		variant="outline"
 																		size="sm"
+																		className="w-full"
 																		onClick={() =>
 																			field.onChange(
-																				null,
+																				0.7,
 																			)
 																		}
 																	>
-																		Reset
+																		Customize
+																		temperature
 																	</Button>
-																</div>
+																)}
 															</FormControl>
 															<FormDescription>
 																0 =

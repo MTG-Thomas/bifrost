@@ -15155,6 +15155,8 @@ export interface components {
              * @default true
              */
             is_active: boolean;
+            /** Permissions */
+            permissions?: Record<string, unknown> | null;
         };
         /**
          * RoleFormsResponse
@@ -15210,6 +15212,8 @@ export interface components {
             description?: string | null;
             /** Is Active */
             is_active?: boolean | null;
+            /** Permissions */
+            permissions?: Record<string, unknown> | null;
         };
         /**
          * RoleUsersResponse

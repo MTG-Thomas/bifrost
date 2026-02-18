@@ -1,54 +1,21 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { createPortal } from "react-dom";
+import { useState, useMemo, useCallback } from "react";
 import {
-	Workflow,
-	FileText,
-	Bot,
-	AppWindow,
-	Globe,
-	Building2,
-	Shield,
-	GripVertical,
 	RefreshCw,
 	Filter,
 	X,
-	Check,
 	ArrowUp,
 	ArrowDown,
-	Calendar,
 	Loader2,
 	Network,
-	Link,
 	Trash2,
-	AlertTriangle,
+	Building2,
+	Shield,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import {
-	Popover,
-	PopoverContent,
-	PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-	Command,
-	CommandEmpty,
-	CommandGroup,
-	CommandInput,
-	CommandItem,
-	CommandList,
-	CommandSeparator,
-} from "@/components/ui/command";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogHeader,
-	DialogTitle,
-} from "@/components/ui/dialog";
 import { useWorkflows, useUpdateWorkflow } from "@/hooks/useWorkflows";
 import { useForms, useUpdateForm } from "@/hooks/useForms";
 import { useAgents, useUpdateAgent } from "@/hooks/useAgents";
@@ -58,743 +25,26 @@ import { useRoles } from "@/hooks/useRoles";
 import {
 	useDependencyGraph,
 	type EntityType as DependencyEntityType,
-	type GraphNode,
-	type GraphEdge,
 } from "@/hooks/useDependencyGraph";
-import { DependencyGraph } from "@/components/dependencies/DependencyGraph";
 import { WorkflowDeactivationDialog } from "@/components/editor/WorkflowDeactivationDialog";
-import {
-	draggable,
-	dropTargetForElements,
-} from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
-import { setCustomNativeDragPreview } from "@atlaskit/pragmatic-drag-and-drop/element/set-custom-native-drag-preview";
 import { authFetch } from "@/lib/api-client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { formatDateShort } from "@/lib/utils";
 import type { components } from "@/lib/v1";
 
-type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
-type FormPublic = components["schemas"]["FormPublic"];
-type AgentSummary = components["schemas"]["AgentSummary"];
-type ApplicationPublic = components["schemas"]["ApplicationPublic"];
-type Organization = components["schemas"]["OrganizationPublic"];
-type Role = components["schemas"]["RolePublic"];
-
-// Unified entity type for the management view
-type EntityType = "workflow" | "form" | "agent" | "app";
-
-interface EntityWithScope {
-	id: string;
-	name: string;
-	entityType: EntityType;
-	organizationId: string | null;
-	accessLevel: string | null;
-	createdAt: string;
-	usedByCount: number | null; // null means count not available for this entity type
-	original: WorkflowMetadata | FormPublic | AgentSummary | ApplicationPublic;
-}
-
-// Relationship filter state
-interface RelationshipFilter {
-	entityId: string;
-	entityType: EntityType;
-	entityName: string;
-}
-
-// Sort options
-type SortOption = "name" | "date" | "type";
-
-// Helper to normalize entities into unified format
-function normalizeEntities(
-	workflows: WorkflowMetadata[] = [],
-	forms: FormPublic[] = [],
-	agents: AgentSummary[] = [],
-	apps: ApplicationPublic[] = [],
-): EntityWithScope[] {
-	const entities: EntityWithScope[] = [];
-
-	for (const w of workflows) {
-		entities.push({
-			id: w.id,
-			name: w.name,
-			entityType: "workflow",
-			organizationId: w.organization_id ?? null,
-			accessLevel: w.access_level ?? null,
-			createdAt: w.created_at,
-			usedByCount: w.used_by_count ?? 0,
-			original: w,
-		});
-	}
-
-	for (const f of forms) {
-		if (!f.is_active) continue;
-		// FormPublic excludes organization_id, access_level, created_at from API response
-		// Use defaults since these aren't available
-		entities.push({
-			id: f.id,
-			name: f.name,
-			entityType: "form",
-			organizationId: null, // Forms don't expose organization_id in API response
-			accessLevel: "role_based", // Default access level
-			createdAt: new Date().toISOString(), // Forms don't expose created_at in API response
-			usedByCount: null,
-			original: f,
-		});
-	}
-
-	for (const a of agents) {
-		if (!a.is_active || !a.id) continue;
-		entities.push({
-			id: a.id,
-			name: a.name,
-			entityType: "agent",
-			organizationId: (a as { organization_id?: string | null }).organization_id ?? null,
-			accessLevel: (a as { access_level?: string | null }).access_level ?? null,
-			createdAt: a.created_at,
-			usedByCount: null,
-			original: a,
-		});
-	}
-
-	for (const app of apps) {
-		entities.push({
-			id: app.id,
-			name: app.name,
-			entityType: "app",
-			organizationId: app.organization_id ?? null,
-			accessLevel: app.access_level ?? null,
-			createdAt: app.created_at ?? new Date().toISOString(),
-			usedByCount: null,
-			original: app,
-		});
-	}
-
-	return entities;
-}
-
-// Entity type icons and colors
-const ENTITY_CONFIG = {
-	workflow: {
-		icon: Workflow,
-		color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-		label: "Workflow",
-	},
-	form: {
-		icon: FileText,
-		color: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-		label: "Form",
-	},
-	agent: {
-		icon: Bot,
-		color: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
-		label: "Agent",
-	},
-	app: {
-		icon: AppWindow,
-		color: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
-		label: "App",
-	},
-} as const;
-
-// Drag Preview Component
-function DragPreview({
-	count,
-	entityName,
-}: {
-	count: number;
-	entityName: string;
-}) {
-	return (
-		<div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 shadow-lg">
-			<GripVertical className="h-4 w-4 text-muted-foreground" />
-			<span className="font-medium">
-				{count > 1 ? `${count} entities` : entityName}
-			</span>
-			{count > 1 && (
-				<Badge variant="secondary" className="ml-1">
-					{count}
-				</Badge>
-			)}
-		</div>
-	);
-}
-
-// Entity Card Component
-interface EntityCardProps {
-	entity: EntityWithScope;
-	selected: boolean;
-	onSelect: (selected: boolean) => void;
-	onShowRelationships: (entityId: string, entityType: EntityType, entityName: string) => void;
-	onDelete?: (entityId: string, entityName: string, entityType: EntityType) => void;
-	organizations: Organization[];
-	selectedIds: Set<string>;
-	allEntities: EntityWithScope[];
-}
-
-function EntityCard({
-	entity,
-	selected,
-	onSelect,
-	onShowRelationships,
-	onDelete,
-	organizations,
-	selectedIds,
-	allEntities,
-}: EntityCardProps) {
-	const ref = useRef<HTMLDivElement>(null);
-	const [dragging, setDragging] = useState(false);
-	const [previewContainer, setPreviewContainer] = useState<HTMLElement | null>(
-		null,
-	);
-
-	const config = ENTITY_CONFIG[entity.entityType];
-	const Icon = config.icon;
-
-	const orgName = entity.organizationId
-		? organizations.find((o) => o.id === entity.organizationId)?.name ??
-			"Unknown Org"
-		: "Global";
-
-	// Calculate drag count for preview
-	const dragCount = selected ? selectedIds.size : 1;
-
-	useEffect(() => {
-		const el = ref.current;
-		if (!el) return;
-
-		return draggable({
-			element: el,
-			getInitialData: () => {
-				const idsToMove = selected ? Array.from(selectedIds) : [entity.id];
-
-				return {
-					type: "entity",
-					entityIds: idsToMove,
-					entityCount: idsToMove.length,
-					entityTypes: idsToMove.map((id) => {
-						const e = allEntities.find((ent) => ent.id === id);
-						return e?.entityType ?? "unknown";
-					}),
-				};
-			},
-			onGenerateDragPreview: ({ nativeSetDragImage }) => {
-				setCustomNativeDragPreview({
-					nativeSetDragImage,
-					render: ({ container }) => {
-						setPreviewContainer(container);
-					},
-				});
-			},
-			onDragStart: () => setDragging(true),
-			onDrop: () => {
-				setDragging(false);
-				setPreviewContainer(null);
-			},
-		});
-	}, [entity.id, entity.name, selected, selectedIds, allEntities]);
-
-	return (
-		<>
-			<div
-				ref={ref}
-				className={cn(
-					"flex items-start gap-3 rounded-lg border p-3 transition-all cursor-grab active:cursor-grabbing",
-					dragging && "opacity-50 scale-95",
-					selected
-						? "border-primary bg-accent"
-						: "bg-card hover:border-primary/50",
-				)}
-			>
-				<Checkbox
-					checked={selected}
-					onCheckedChange={onSelect}
-					onClick={(e) => e.stopPropagation()}
-					className="mt-0.5"
-				/>
-
-				<GripVertical className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
-
-				<div className="flex-1 min-w-0 space-y-1">
-					{/* Row 1: Name + Type badge + Actions */}
-					<div className="flex items-center justify-between gap-2">
-						<div className="flex items-center gap-2 min-w-0">
-							<Icon className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-							<p className="font-medium truncate">{entity.name}</p>
-						</div>
-						<div className="flex items-center gap-1.5 shrink-0">
-							<Badge variant="outline" className={cn(config.color)}>
-								{config.label}
-							</Badge>
-							<Button
-								variant="outline"
-								size="icon"
-								onClick={(e) => {
-									e.stopPropagation();
-									onShowRelationships(entity.id, entity.entityType, entity.name);
-								}}
-								title="Show dependencies"
-							>
-								<Network className="h-4 w-4" />
-							</Button>
-							{onDelete && (
-								<Button
-									variant="outline"
-									size="icon"
-									onClick={(e) => {
-										e.stopPropagation();
-										onDelete(entity.id, entity.name, entity.entityType);
-									}}
-									title={`Delete ${config.label.toLowerCase()}`}
-									className="text-destructive hover:text-destructive hover:bg-destructive/10"
-								>
-									<Trash2 className="h-4 w-4" />
-								</Button>
-							)}
-						</div>
-					</div>
-
-					{/* Row 2: Organization */}
-					<div className="flex items-center gap-1 text-xs text-muted-foreground">
-						{entity.organizationId ? (
-							<Building2 className="h-3 w-3 shrink-0" />
-						) : (
-							<Globe className="h-3 w-3 shrink-0" />
-						)}
-						<span>{orgName}</span>
-					</div>
-
-					{/* Row 3: Access Level + Date + Used By Count */}
-					<div className="flex items-center gap-4 text-xs text-muted-foreground">
-						<span className="flex items-center gap-1">
-							<Shield className="h-3 w-3 shrink-0" />
-							{entity.accessLevel ?? "—"}
-						</span>
-						<span className="flex items-center gap-1">
-							<Calendar className="h-3 w-3 shrink-0" />
-							{formatDateShort(entity.createdAt)}
-						</span>
-						{entity.usedByCount !== null && (
-							<span
-								className={cn(
-									"flex items-center gap-1",
-									entity.usedByCount === 0
-										? "text-muted-foreground/50"
-										: "text-muted-foreground",
-								)}
-							>
-								<Link className="h-3 w-3 shrink-0" />
-								{entity.usedByCount === 0
-									? "No refs"
-									: `${entity.usedByCount} ref${entity.usedByCount === 1 ? "" : "s"}`}
-							</span>
-						)}
-					</div>
-				</div>
-			</div>
-			{previewContainer &&
-				createPortal(
-					<DragPreview count={dragCount} entityName={entity.name} />,
-					previewContainer,
-				)}
-		</>
-	);
-}
-
-// Organization Drop Target Component
-interface OrgDropTargetProps {
-	organization: Organization | null;
-	onDrop: (entityIds: string[], orgId: string | null) => void;
-}
-
-function OrgDropTarget({ organization, onDrop }: OrgDropTargetProps) {
-	const ref = useRef<HTMLDivElement>(null);
-	const [isDraggedOver, setIsDraggedOver] = useState(false);
-	const [dragCount, setDragCount] = useState(0);
-
-	const isGlobal = organization === null;
-	const name = isGlobal ? "Global" : organization.name;
-
-	useEffect(() => {
-		const el = ref.current;
-		if (!el) return;
-
-		return dropTargetForElements({
-			element: el,
-			getData: () => ({
-				type: "org-target",
-				orgId: isGlobal ? null : organization.id,
-			}),
-			canDrop: ({ source }) => source.data["type"] === "entity",
-			onDragEnter: ({ source }) => {
-				setIsDraggedOver(true);
-				setDragCount((source.data["entityCount"] as number) || 1);
-			},
-			onDragLeave: () => {
-				setIsDraggedOver(false);
-				setDragCount(0);
-			},
-			onDrop: ({ source }) => {
-				setIsDraggedOver(false);
-				setDragCount(0);
-				const entityIds = source.data["entityIds"] as string[];
-				onDrop(entityIds, isGlobal ? null : organization.id);
-			},
-		});
-	}, [organization, isGlobal, onDrop]);
-
-	return (
-		<div
-			ref={ref}
-			className={cn(
-				"flex items-center gap-2 px-4 py-4 rounded-lg border-2 border-dashed transition-all",
-				isDraggedOver
-					? "border-primary bg-primary/10"
-					: "border-muted-foreground/25 hover:border-muted-foreground/50",
-			)}
-		>
-			{isGlobal ? (
-				<Globe className="h-4 w-4 text-muted-foreground" />
-			) : (
-				<Building2 className="h-4 w-4 text-muted-foreground" />
-			)}
-			<span className="text-sm font-medium">{name}</span>
-			{isDraggedOver && dragCount > 1 && (
-				<Badge variant="secondary" className="ml-auto">
-					{dragCount}
-				</Badge>
-			)}
-		</div>
-	);
-}
-
-// Role Drop Target Component
-interface RoleDropTargetProps {
-	role: Role | "authenticated" | "clear-roles";
-	onDrop: (entityIds: string[], roleOrAccessLevel: string) => void;
-}
-
-function RoleDropTarget({ role, onDrop }: RoleDropTargetProps) {
-	const ref = useRef<HTMLDivElement>(null);
-	const [isDraggedOver, setIsDraggedOver] = useState(false);
-	const [dragCount, setDragCount] = useState(0);
-
-	const isAuthenticated = role === "authenticated";
-	const isClearRoles = role === "clear-roles";
-	const name = isAuthenticated
-		? "Authenticated"
-		: isClearRoles
-			? "Clear Roles"
-			: role.name;
-	const id = isAuthenticated
-		? "authenticated"
-		: isClearRoles
-			? "clear-roles"
-			: role.id;
-
-	useEffect(() => {
-		const el = ref.current;
-		if (!el) return;
-
-		return dropTargetForElements({
-			element: el,
-			getData: () => ({
-				type: "role-target",
-				roleId: id,
-				isAccessLevel: isAuthenticated,
-				isClearRoles: isClearRoles,
-			}),
-			canDrop: ({ source }) => source.data["type"] === "entity",
-			onDragEnter: ({ source }) => {
-				setIsDraggedOver(true);
-				setDragCount((source.data["entityCount"] as number) || 1);
-			},
-			onDragLeave: () => {
-				setIsDraggedOver(false);
-				setDragCount(0);
-			},
-			onDrop: ({ source }) => {
-				setIsDraggedOver(false);
-				setDragCount(0);
-				const entityIds = source.data["entityIds"] as string[];
-				onDrop(entityIds, id);
-			},
-		});
-	}, [id, isAuthenticated, isClearRoles, onDrop]);
-
-	return (
-		<div
-			ref={ref}
-			className={cn(
-				"flex items-center gap-2 px-4 py-4 rounded-lg border-2 border-dashed transition-all",
-				isDraggedOver
-					? "border-primary bg-primary/10"
-					: isClearRoles
-						? "border-destructive/25 hover:border-destructive/50"
-						: "border-muted-foreground/25 hover:border-muted-foreground/50",
-			)}
-		>
-			<Shield className="h-4 w-4 text-muted-foreground" />
-			<span className={cn("text-sm font-medium", isClearRoles && "text-destructive")}>
-				{name}
-			</span>
-			{isDraggedOver && dragCount > 1 && (
-				<Badge variant="secondary" className="ml-auto">
-					{dragCount}
-				</Badge>
-			)}
-		</div>
-	);
-}
-
-// Filter Popover Component
-interface FilterPopoverProps {
-	typeFilter: string;
-	setTypeFilter: (v: string) => void;
-	orgFilter: string;
-	setOrgFilter: (v: string) => void;
-	accessFilter: string;
-	setAccessFilter: (v: string) => void;
-	usageFilter: string;
-	setUsageFilter: (v: string) => void;
-	organizations: Organization[];
-	activeFilterCount: number;
-	onClearFilters: () => void;
-}
-
-function FilterPopover({
-	typeFilter,
-	setTypeFilter,
-	orgFilter,
-	setOrgFilter,
-	accessFilter,
-	setAccessFilter,
-	usageFilter,
-	setUsageFilter,
-	organizations,
-	activeFilterCount,
-	onClearFilters,
-}: FilterPopoverProps) {
-	const [open, setOpen] = useState(false);
-
-	const typeOptions = [
-		{ value: "all", label: "All Types" },
-		{ value: "workflow", label: "Workflows" },
-		{ value: "form", label: "Forms" },
-		{ value: "agent", label: "Agents" },
-		{ value: "app", label: "Apps" },
-	];
-
-	const orgOptions = [
-		{ value: "all", label: "All Organizations" },
-		{ value: "global", label: "Global" },
-		...organizations.map((org) => ({ value: org.id, label: org.name })),
-	];
-
-	const accessOptions = [
-		{ value: "all", label: "All Access Levels" },
-		{ value: "authenticated", label: "Authenticated" },
-		{ value: "role_based", label: "Role-based" },
-	];
-
-	const usageOptions = [
-		{ value: "all", label: "All Usage" },
-		{ value: "unused", label: "Unused (0 refs)" },
-		{ value: "in_use", label: "In Use" },
-	];
-
-	return (
-		<Popover open={open} onOpenChange={setOpen}>
-			<PopoverTrigger asChild>
-				<Button variant="outline" size="icon" className="h-9 w-9 relative">
-					<Filter className="h-4 w-4" />
-					{activeFilterCount > 0 && (
-						<Badge
-							variant="secondary"
-							className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-[10px]"
-						>
-							{activeFilterCount}
-						</Badge>
-					)}
-				</Button>
-			</PopoverTrigger>
-			<PopoverContent className="w-80 p-0" align="start">
-				<Command>
-					<CommandInput placeholder="Search filters..." />
-					<CommandList className="max-h-80">
-						<CommandGroup heading="Entity Type">
-							{typeOptions.map((option) => (
-								<CommandItem
-									key={option.value}
-									value={option.label}
-									onSelect={() => setTypeFilter(option.value)}
-								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											typeFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
-									{option.label}
-								</CommandItem>
-							))}
-						</CommandGroup>
-						<CommandSeparator />
-						<CommandGroup heading="Organization">
-							{orgOptions.map((option) => (
-								<CommandItem
-									key={option.value}
-									value={option.label}
-									onSelect={() => setOrgFilter(option.value)}
-								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											orgFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
-									{option.label}
-								</CommandItem>
-							))}
-						</CommandGroup>
-						<CommandSeparator />
-						<CommandGroup heading="Access Level">
-							{accessOptions.map((option) => (
-								<CommandItem
-									key={option.value}
-									value={option.label}
-									onSelect={() => setAccessFilter(option.value)}
-								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											accessFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
-									{option.label}
-								</CommandItem>
-							))}
-						</CommandGroup>
-						<CommandSeparator />
-						<CommandGroup heading="Usage">
-							{usageOptions.map((option) => (
-								<CommandItem
-									key={option.value}
-									value={option.label}
-									onSelect={() => setUsageFilter(option.value)}
-								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											usageFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
-									{option.label}
-								</CommandItem>
-							))}
-						</CommandGroup>
-						<CommandEmpty>No filters found.</CommandEmpty>
-					</CommandList>
-				</Command>
-				{activeFilterCount > 0 && (
-					<div className="p-2 border-t">
-						<Button
-							variant="ghost"
-							size="sm"
-							className="w-full"
-							onClick={() => {
-								onClearFilters();
-								setOpen(false);
-							}}
-						>
-							<X className="h-4 w-4 mr-2" />
-							Clear all filters
-						</Button>
-					</div>
-				)}
-			</PopoverContent>
-		</Popover>
-	);
-}
-
-// Dependency Graph Dialog Component
-interface DependencyGraphDialogProps {
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-	entityName: string;
-	entityType: EntityType | null;
-	graphData: {
-		nodes?: GraphNode[];
-		edges?: GraphEdge[];
-		root_id: string;
-	} | null;
-	isLoading: boolean;
-}
-
-function DependencyGraphDialog({
-	open,
-	onOpenChange,
-	entityName,
-	entityType,
-	graphData,
-	isLoading,
-}: DependencyGraphDialogProps) {
-	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-[90vw] h-[80vh] flex flex-col">
-				<DialogHeader>
-					<DialogTitle className="flex items-center gap-2">
-						<Network className="h-5 w-5" />
-						Dependency Graph: {entityName}
-						{entityType === "app" && (
-							<span className="text-xs font-normal text-muted-foreground ml-2">
-								(All Versions)
-							</span>
-						)}
-					</DialogTitle>
-				</DialogHeader>
-				<div className="flex-1 min-h-0 rounded-lg border bg-background/50 overflow-hidden">
-					{isLoading ? (
-						<div className="h-full flex items-center justify-center">
-							<div className="flex flex-col items-center gap-4">
-								<Skeleton className="h-32 w-32 rounded-full" />
-								<div className="text-sm text-muted-foreground">
-									Loading dependency graph...
-								</div>
-							</div>
-						</div>
-					) : graphData && graphData.nodes && graphData.edges ? (
-						<DependencyGraph
-							nodes={graphData.nodes}
-							edges={graphData.edges}
-							rootId={graphData.root_id}
-						/>
-					) : (
-						<div className="h-full flex items-center justify-center">
-							<div className="text-center max-w-md">
-								<Network className="h-16 w-16 text-muted-foreground/50 mx-auto mb-4" />
-								<h3 className="text-lg font-semibold text-muted-foreground mb-2">
-									No Dependencies Found
-								</h3>
-								<p className="text-sm text-muted-foreground">
-									This entity has no dependencies to visualize.
-								</p>
-							</div>
-						</div>
-					)}
-				</div>
-			</DialogContent>
-		</Dialog>
-	);
-}
+import {
+	EntityCard,
+	OrgDropTarget,
+	RoleDropTarget,
+	FilterPopover,
+	DependencyGraphDialog,
+	DeleteConfirmDialog,
+	normalizeEntities,
+	type EntityType,
+	type RelationshipFilter,
+	type SortOption,
+	type ApplicationPublic,
+} from "@/components/entity-management";
 
 export function EntityManagement() {
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -885,8 +135,6 @@ export function EntityManagement() {
 
 		const ids = new Set<string>();
 		for (const node of graphData.nodes) {
-			// Node IDs from the graph are prefixed with type (e.g., "workflow:uuid")
-			// We need to extract just the UUID part
 			const parts = node.id.split(":");
 			if (parts.length === 2) {
 				ids.add(parts[1]);
@@ -901,7 +149,6 @@ export function EntityManagement() {
 	const filteredEntities = useMemo(() => {
 		let result = allEntities;
 
-		// Apply relationship filter first (if active)
 		if (relationshipFilter && relatedEntityIds) {
 			result = result.filter((e) => relatedEntityIds.has(e.id));
 		}
@@ -1025,7 +272,6 @@ export function EntityManagement() {
 			setDeletingWorkflowId(workflowId);
 
 			try {
-				// First call without force — check for deactivation conflicts
 				const response = await authFetch(`/api/workflows/${workflowId}`, {
 					method: "DELETE",
 					headers: { "Content-Type": "application/json" },
@@ -1033,13 +279,11 @@ export function EntityManagement() {
 				});
 
 				if (response.status === 409) {
-					// Workflow has dependencies/history — show deactivation dialog
 					const conflict = await response.json();
 					setPendingDeactivations(conflict.pending_deactivations ?? []);
 					setAvailableReplacements(conflict.available_replacements ?? []);
 					setDeleteDialogOpen(true);
 				} else if (response.ok) {
-					// Deleted successfully (no conflicts)
 					toast.success("Workflow deleted");
 					refetchWorkflows();
 					setDeletingWorkflowId(null);
@@ -1057,7 +301,6 @@ export function EntityManagement() {
 	);
 
 	const handleForceDeactivate = useCallback(async () => {
-		// Determine which workflow IDs to process: bulk conflicts or single delete
 		const idsToProcess = conflictWorkflowIds.length > 0
 			? conflictWorkflowIds
 			: deletingWorkflowId ? [deletingWorkflowId] : [];
@@ -1111,7 +354,6 @@ export function EntityManagement() {
 
 	const handleApplyReplacements = useCallback(
 		async (replacements: Record<string, string>) => {
-			// Determine which workflow IDs to process: bulk conflicts or single delete
 			const idsToProcess = conflictWorkflowIds.length > 0
 				? conflictWorkflowIds
 				: deletingWorkflowId ? [deletingWorkflowId] : [];
@@ -1182,7 +424,6 @@ export function EntityManagement() {
 				handleDeleteWorkflow(entityId);
 				return;
 			}
-			// For non-workflow types, find the entity to get slug if it's an app
 			const entity = allEntities.find((e) => e.id === entityId);
 			const slug =
 				entityType === "app" && entity
@@ -1213,11 +454,9 @@ export function EntityManagement() {
 	const handleConfirmDelete = useCallback(async () => {
 		setIsDeleting(true);
 		const totalCount = confirmDeleteEntities.length;
-		// Capture before closing the dialog
 		const nonWorkflows = confirmDeleteEntities.filter((e) => e.entityType !== "workflow");
-		const workflows = confirmDeleteEntities.filter((e) => e.entityType === "workflow");
+		const workflowsToDelete = confirmDeleteEntities.filter((e) => e.entityType === "workflow");
 
-		// Close the confirm dialog immediately and show progress in the selection bar
 		setConfirmDeleteOpen(false);
 		setConfirmDeleteEntities([]);
 		setIsDeleting(false);
@@ -1256,14 +495,12 @@ export function EntityManagement() {
 				}
 			}
 
-			// Process workflows sequentially — they may share source files, so
-			// parallel deletes cause race conditions (read-modify-write conflicts)
-			if (workflows.length > 0) {
+			if (workflowsToDelete.length > 0) {
 				const allConflictDeactivations: components["schemas"]["PendingDeactivation"][] = [];
 				const allConflictReplacements: components["schemas"]["AvailableReplacement"][] = [];
 				const conflictIds: string[] = [];
 
-				for (const wf of workflows) {
+				for (const wf of workflowsToDelete) {
 					try {
 						const response = await authFetch(`/api/workflows/${wf.id}`, {
 							method: "DELETE",
@@ -1291,7 +528,6 @@ export function EntityManagement() {
 					}
 				}
 
-				// If there are conflicts, show a single combined deactivation dialog
 				if (conflictIds.length > 0) {
 					setConflictWorkflowIds(conflictIds);
 					setPendingDeactivations(allConflictDeactivations);
@@ -1396,7 +632,6 @@ export function EntityManagement() {
 					try {
 						if (entity.entityType === "workflow") {
 							if (isClearRoles) {
-								// Set to role_based and clear all roles
 								await updateWorkflow.mutateAsync(entityId, {
 									access_level: "role_based",
 									clear_roles: true,
@@ -1766,8 +1001,6 @@ export function EntityManagement() {
 				onResolve={(replacements, workflowsToDeactivate) => {
 					const hasReplacements = Object.keys(replacements).length > 0;
 					const hasDeactivations = workflowsToDeactivate.length > 0;
-					// In entity management context, all items are being deleted.
-					// If any have replacements, apply them; otherwise force-deactivate.
 					if (hasReplacements) {
 						handleApplyReplacements(replacements);
 					} else if (hasDeactivations) {
@@ -1778,67 +1011,22 @@ export function EntityManagement() {
 			/>
 
 			{/* Confirm Delete Dialog */}
-			<Dialog open={confirmDeleteOpen} onOpenChange={(open) => {
-				if (!open && !isDeleting) {
+			<DeleteConfirmDialog
+				open={confirmDeleteOpen}
+				onOpenChange={(open) => {
+					if (!open && !isDeleting) {
+						setConfirmDeleteOpen(false);
+						setConfirmDeleteEntities([]);
+					}
+				}}
+				entities={confirmDeleteEntities}
+				isDeleting={isDeleting}
+				onConfirm={handleConfirmDelete}
+				onCancel={() => {
 					setConfirmDeleteOpen(false);
 					setConfirmDeleteEntities([]);
-				}
-			}}>
-				<DialogContent>
-					<DialogHeader>
-						<DialogTitle className="flex items-center gap-2">
-							<AlertTriangle className="h-5 w-5 text-destructive" />
-							Confirm Delete
-						</DialogTitle>
-						<DialogDescription>
-							This action cannot be undone for workflows and apps. Forms and agents will be deactivated.
-						</DialogDescription>
-					</DialogHeader>
-					<div className="space-y-3">
-						<div className="space-y-2 max-h-60 overflow-y-auto">
-							{confirmDeleteEntities.map((entity) => {
-								const config = ENTITY_CONFIG[entity.entityType];
-								return (
-									<div
-										key={entity.id}
-										className="flex items-center gap-2 p-2 rounded border"
-									>
-										<Badge variant="outline" className={cn(config.color)}>
-											{config.label}
-										</Badge>
-										<span className="text-sm truncate">{entity.name}</span>
-									</div>
-								);
-							})}
-						</div>
-						{confirmDeleteEntities.some((e) => e.entityType === "app") && (
-							<p className="text-sm text-destructive">
-								Apps will be permanently deleted.
-							</p>
-						)}
-						<div className="flex justify-end gap-2 pt-2">
-							<Button
-								variant="outline"
-								onClick={() => {
-									setConfirmDeleteOpen(false);
-									setConfirmDeleteEntities([]);
-								}}
-								disabled={isDeleting}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="destructive"
-								onClick={handleConfirmDelete}
-								disabled={isDeleting}
-							>
-								{isDeleting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-								Delete {confirmDeleteEntities.length === 1 ? confirmDeleteEntities[0].name : `${confirmDeleteEntities.length} entities`}
-							</Button>
-						</div>
-					</div>
-				</DialogContent>
-			</Dialog>
+				}}
+			/>
 		</div>
 	);
 }

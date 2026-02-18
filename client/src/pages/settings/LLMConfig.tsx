@@ -26,6 +26,16 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
 	Dialog,
 	DialogContent,
 	DialogDescription,
@@ -709,31 +719,23 @@ export function LLMConfig() {
 			</Card>
 
 			{/* Delete Confirmation Dialog */}
-			<Dialog
-				open={showDeleteConfirm}
-				onOpenChange={setShowDeleteConfirm}
-			>
-				<DialogContent>
-					<DialogHeader>
-						<DialogTitle>Remove AI Configuration</DialogTitle>
-						<DialogDescription>
-							Are you sure you want to remove the AI provider
-							configuration? This will disable AI chat
-							functionality until reconfigured.
-						</DialogDescription>
-					</DialogHeader>
-					<DialogFooter>
-						<Button
-							variant="outline"
-							onClick={() => setShowDeleteConfirm(false)}
-							disabled={saving}
-						>
+			<AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Remove AI Configuration</AlertDialogTitle>
+						<AlertDialogDescription>
+							Are you sure you want to remove the AI provider configuration?
+							This will disable AI chat functionality until reconfigured.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel disabled={saving}>
 							Cancel
-						</Button>
-						<Button
-							variant="destructive"
+						</AlertDialogCancel>
+						<AlertDialogAction
 							onClick={handleDelete}
 							disabled={saving}
+							className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
 						>
 							{saving ? (
 								<>
@@ -743,10 +745,10 @@ export function LLMConfig() {
 							) : (
 								"Remove Configuration"
 							)}
-						</Button>
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }

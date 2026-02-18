@@ -1,42 +1,14 @@
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import {
 	ArrowLeft,
-	CheckCircle,
 	XCircle,
 	Loader2,
-	Clock,
-	PlayCircle,
-	RefreshCw,
 	Code2,
-	Sparkles,
-	ChevronDown,
+	RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
-} from "@/components/ui/card";
-import {
-	Collapsible,
-	CollapsibleContent,
-	CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { PageLoader } from "@/components/PageLoader";
 import { useExecution, cancelExecution } from "@/hooks/useExecutions";
 import { useAuth } from "@/contexts/AuthContext";
@@ -45,25 +17,22 @@ import { useWorkflowsMetadata } from "@/hooks/useWorkflows";
 import { useEditorStore } from "@/stores/editorStore";
 import { fileService } from "@/services/fileService";
 import { toast } from "sonner";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useExecutionStream } from "@/hooks/useExecutionStream";
 import {
 	useExecutionStreamStore,
 	type StreamingLog,
 } from "@/stores/executionStreamStore";
-import { PrettyInputDisplay } from "@/components/execution/PrettyInputDisplay";
-import { SafeHTMLRenderer } from "@/components/execution/SafeHTMLRenderer";
-import { VariablesTreeView } from "@/components/ui/variables-tree-view";
 import {
-	formatDate,
-	formatBytes,
-	formatNumber,
-	formatCost,
-	formatDuration,
-} from "@/lib/utils";
+	ExecutionResultPanel,
+	ExecutionLogsPanel,
+	ExecutionSidebar,
+	ExecutionCancelDialog,
+	ExecutionRerunDialog,
+	type LogEntry,
+} from "@/components/execution";
 import type { components } from "@/lib/v1";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 
 type ExecutionStatus =
 	| components["schemas"]["ExecutionStatus"]
@@ -74,17 +43,11 @@ type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
 type FileMetadata = components["schemas"]["FileMetadata"];
 type WorkflowExecutionResponse =
 	components["schemas"]["WorkflowExecutionResponse"];
-type AIUsagePublicSimple = components["schemas"]["AIUsagePublicSimple"];
 
 // Type for metadata response from useWorkflowsMetadata hook
 interface WorkflowsMetadataResponse {
 	workflows: WorkflowMetadata[];
 	dataProviders: unknown[];
-}
-// Type for execution result response
-interface ExecutionResultData {
-	result?: unknown;
-	result_type?: string;
 }
 
 // Type for execution log entry
@@ -155,10 +118,6 @@ export function ExecutionDetails({
 		!hasNavigationState,
 	);
 
-	const logsEndRef = useRef<HTMLDivElement>(null);
-	const logsContainerRef = useRef<HTMLDivElement>(null);
-	const [autoScroll, setAutoScroll] = useState(true);
-
 	// Get streaming logs from store
 	// Use stable selector to avoid infinite loops
 	const streamState = useExecutionStreamStore((state) =>
@@ -193,9 +152,6 @@ export function ExecutionDetails({
 	const [showRerunDialog, setShowRerunDialog] = useState(false);
 	const [isRerunning, setIsRerunning] = useState(false);
 	const [isOpeningInEditor, setIsOpeningInEditor] = useState(false);
-
-	// State for collapsible sections
-	const [isAiUsageOpen, setIsAiUsageOpen] = useState(true);
 
 	// Editor store actions
 	const openFileInTab = useEditorStore((state) => state.openFileInTab);
@@ -261,7 +217,6 @@ export function ExecutionDetails({
 	// Loading states - all data comes at once now
 	const isLoadingResult = isLoading;
 	const isLoadingLogs = isLoading;
-	const isLoadingVariables = isLoading;
 
 	// Enable WebSocket for running executions
 	// Only disable when stream explicitly completes (not when status changes in cache)
@@ -315,155 +270,6 @@ export function ExecutionDetails({
 			);
 		}
 	}, [streamStatus, executionId, queryClient]);
-
-	// Auto-scroll to bottom when new streaming logs arrive
-	useEffect(() => {
-		const container = logsContainerRef.current;
-		if (
-			autoScroll &&
-			logsEndRef.current &&
-			streamingLogs.length > 0 &&
-			container
-		) {
-			// Only scroll if content exceeds container height
-			if (container.scrollHeight > container.clientHeight) {
-				logsEndRef.current.scrollIntoView({ behavior: "smooth" });
-			}
-		}
-	}, [streamingLogs.length, autoScroll]);
-
-	// Handle scroll to detect if user has scrolled up (pause auto-scroll)
-	const handleLogsScroll = useCallback(() => {
-		const container = logsContainerRef.current;
-		if (!container) return;
-
-		// Check if scrolled to bottom (with 50px threshold)
-		const isAtBottom =
-			container.scrollHeight -
-				container.scrollTop -
-				container.clientHeight <
-			50;
-		setAutoScroll(isAtBottom);
-	}, []);
-
-	const getStatusBadge = (status: ExecutionStatus) => {
-		switch (status) {
-			case "Success":
-				return (
-					<Badge variant="default" className="bg-green-500">
-						<CheckCircle className="mr-1 h-3 w-3" />
-						Completed
-					</Badge>
-				);
-			case "Failed":
-				return (
-					<Badge variant="destructive">
-						<XCircle className="mr-1 h-3 w-3" />
-						Failed
-					</Badge>
-				);
-			case "Running":
-				return (
-					<Badge variant="secondary">
-						<PlayCircle className="mr-1 h-3 w-3" />
-						Running
-					</Badge>
-				);
-			case "Pending": {
-				// Show queue position or memory pressure info from stream state
-				const queuePosition = streamState?.queuePosition;
-				const waitReason = streamState?.waitReason;
-				const availableMemory = streamState?.availableMemoryMb;
-				const requiredMemory = streamState?.requiredMemoryMb;
-
-				if (waitReason === "queued" && queuePosition) {
-					return (
-						<Badge variant="outline">
-							<Clock className="mr-1 h-3 w-3" />
-							Queued - Position {queuePosition}
-						</Badge>
-					);
-				} else if (waitReason === "memory_pressure") {
-					return (
-						<Badge variant="outline" className="border-orange-500">
-							<Loader2 className="mr-1 h-3 w-3 animate-spin" />
-							Heavy Load ({availableMemory ?? "?"}MB /{" "}
-							{requiredMemory ?? "?"}MB)
-						</Badge>
-					);
-				}
-				return (
-					<Badge variant="outline">
-						<Clock className="mr-1 h-3 w-3" />
-						Pending
-					</Badge>
-				);
-			}
-			case "Cancelling":
-				return (
-					<Badge
-						variant="secondary"
-						className="bg-orange-500 text-white"
-					>
-						<Loader2 className="mr-1 h-3 w-3 animate-spin" />
-						Cancelling
-					</Badge>
-				);
-			case "Cancelled":
-				return (
-					<Badge
-						variant="outline"
-						className="border-gray-500 text-gray-600 dark:text-gray-400"
-					>
-						<XCircle className="mr-1 h-3 w-3" />
-						Cancelled
-					</Badge>
-				);
-			case "CompletedWithErrors":
-				return (
-					<Badge variant="secondary" className="bg-yellow-500">
-						<XCircle className="mr-1 h-3 w-3" />
-						Completed with Errors
-					</Badge>
-				);
-			case "Timeout":
-				return (
-					<Badge variant="destructive">
-						<XCircle className="mr-1 h-3 w-3" />
-						Timeout
-					</Badge>
-				);
-			default:
-				return null;
-		}
-	};
-
-	const getStatusIcon = (status: ExecutionStatus) => {
-		switch (status) {
-			case "Success":
-				return <CheckCircle className="h-12 w-12 text-green-500" />;
-			case "Failed":
-				return <XCircle className="h-12 w-12 text-red-500" />;
-			case "Running":
-				return (
-					<Loader2 className="h-12 w-12 text-blue-500 animate-spin" />
-				);
-			case "Pending":
-				return <Clock className="h-12 w-12 text-gray-500" />;
-			case "Cancelling":
-				return (
-					<Loader2 className="h-12 w-12 text-orange-500 animate-spin" />
-				);
-			case "Cancelled":
-				return <XCircle className="h-12 w-12 text-gray-500" />;
-			case "CompletedWithErrors":
-				return <XCircle className="h-12 w-12 text-yellow-500" />;
-			case "Timeout":
-				return <XCircle className="h-12 w-12 text-red-500" />;
-			default:
-				return null;
-		}
-	};
 
 	const handleCancelExecution = async () => {
 		if (!executionId || !execution) return;
@@ -595,6 +401,19 @@ export function ExecutionDetails({
 			setIsOpeningInEditor(false);
 		}
 	};
+
+	// Compute merged logs for the logs panel
+	const mergedLogs = (() => {
+		const existingLogs = (logsData as ExecutionLogEntry[]) || [];
+		if (
+			executionStatus === "Running" ||
+			executionStatus === "Pending" ||
+			executionStatus === "Cancelling"
+		) {
+			return mergeLogsWithDedup(existingLogs, streamingLogs);
+		}
+		return existingLogs;
+	})();
 
 	// Show "waiting" state when we came from trigger and haven't received data yet
 	// This happens before shouldFetchExecution becomes true (waiting for WebSocket or 5s fallback)
@@ -756,1013 +575,78 @@ export function ExecutionDetails({
 								animate={{ opacity: 1, y: 0 }}
 								transition={{ duration: 0.3 }}
 							>
-								<Card>
-									<CardHeader>
-										<CardTitle>Result</CardTitle>
-										<CardDescription>
-											Workflow execution result
-										</CardDescription>
-									</CardHeader>
-									<CardContent>
-										<AnimatePresence mode="wait">
-											{isLoadingResult ? (
-												<motion.div
-													key="loading"
-													initial={{ opacity: 0 }}
-													animate={{ opacity: 1 }}
-													exit={{ opacity: 0 }}
-													transition={{
-														duration: 0.2,
-													}}
-													className="space-y-3"
-												>
-													<Skeleton className="h-4 w-full" />
-													<Skeleton className="h-4 w-3/4" />
-													<Skeleton className="h-4 w-5/6" />
-												</motion.div>
-											) : (
-													resultData as ExecutionResultData
-											  )?.result === null ? (
-												<motion.div
-													key="empty"
-													initial={{ opacity: 0 }}
-													animate={{ opacity: 1 }}
-													exit={{ opacity: 0 }}
-													transition={{
-														duration: 0.2,
-													}}
-													className="text-center text-muted-foreground py-8"
-												>
-													No result returned
-												</motion.div>
-											) : (
-												<motion.div
-													key="content"
-													initial={{ opacity: 0 }}
-													animate={{ opacity: 1 }}
-													exit={{ opacity: 0 }}
-													transition={{
-														duration: 0.2,
-													}}
-												>
-													{(
-														resultData as ExecutionResultData
-													)?.result_type === "json" &&
-														typeof (
-															resultData as ExecutionResultData
-														)?.result ===
-															"object" && (
-															<PrettyInputDisplay
-																inputData={
-																	(
-																		resultData as ExecutionResultData
-																	)
-																		.result as Record<
-																		string,
-																		unknown
-																	>
-																}
-																showToggle={
-																	true
-																}
-																defaultView="pretty"
-															/>
-														)}
-													{(
-														resultData as ExecutionResultData
-													)?.result_type === "html" &&
-														typeof (
-															resultData as ExecutionResultData
-														)?.result ===
-															"string" && (
-															<SafeHTMLRenderer
-																html={
-																	(
-																		resultData as ExecutionResultData
-																	)
-																		.result as string
-																}
-																title={`${execution.workflow_name} - Execution Result`}
-															/>
-														)}
-													{(
-														resultData as ExecutionResultData
-													)?.result_type === "text" &&
-														typeof (
-															resultData as ExecutionResultData
-														)?.result ===
-															"string" && (
-															<pre className="whitespace-pre-wrap font-mono text-sm bg-muted p-4 rounded">
-																{
-																	(
-																		resultData as ExecutionResultData
-																	)
-																		.result as string
-																}
-															</pre>
-														)}
-													{!(
-														resultData as ExecutionResultData
-													)?.result_type &&
-														typeof (
-															resultData as ExecutionResultData
-														)?.result ===
-															"object" &&
-														(
-															resultData as ExecutionResultData
-														)?.result !== null && (
-															<PrettyInputDisplay
-																inputData={
-																	(
-																		resultData as ExecutionResultData
-																	)
-																		.result as Record<
-																		string,
-																		unknown
-																	>
-																}
-																showToggle={
-																	true
-																}
-																defaultView="pretty"
-															/>
-														)}
-												</motion.div>
-											)}
-										</AnimatePresence>
-									</CardContent>
-								</Card>
+								<ExecutionResultPanel
+									result={resultData?.result}
+									resultType={resultData?.result_type}
+									workflowName={execution.workflow_name}
+									isLoading={isLoadingResult}
+								/>
 							</motion.div>
 						)}
 
-						{/* Error Section */}
-						{execution.error_message && (
-							<motion.div
-								initial={{ opacity: 0, y: 20 }}
-								animate={{ opacity: 1, y: 0 }}
-								transition={{ duration: 0.3 }}
-							>
-								<Card className="border-destructive">
-									<CardHeader>
-										<CardTitle className="flex items-center gap-2 text-destructive">
-											<XCircle className="h-5 w-5" />
-											Error
-										</CardTitle>
-										<CardDescription>
-											Workflow execution failed
-										</CardDescription>
-									</CardHeader>
-									<CardContent>
-										<pre className="text-sm whitespace-pre-wrap break-words font-mono bg-destructive/10 p-4 rounded-md overflow-x-auto">
-											{execution.error_message}
-										</pre>
-									</CardContent>
-								</Card>
-							</motion.div>
-						)}
-
-						{/* Logs Section - All users (DEBUG logs filtered for non-admins) */}
+						{/* Logs Section */}
 						<motion.div
 							initial={{ opacity: 0, y: 20 }}
 							animate={{ opacity: 1, y: 0 }}
 							transition={{ duration: 0.3, delay: 0.1 }}
 						>
-							<Card>
-								<CardHeader>
-									<CardTitle className="flex items-center gap-2">
-										Logs
-										{isConnected &&
-											(execution?.status === "Running" ||
-												execution?.status ===
-													"Pending") && (
-												<Badge
-													variant="secondary"
-													className="text-xs"
-												>
-													<Loader2 className="mr-1 h-3 w-3 animate-spin" />
-													Live
-												</Badge>
-											)}
-									</CardTitle>
-									<CardDescription>
-										Python logger output from workflow
-										execution
-										{!isPlatformAdmin &&
-											" (INFO, WARNING, ERROR only)"}
-									</CardDescription>
-								</CardHeader>
-								<CardContent>
-									{/* Show streaming logs during execution, progressively loaded logs when complete */}
-									{(() => {
-										// During execution, show existing logs + streaming logs
-										if (
-											executionStatus === "Running" ||
-											executionStatus === "Pending" ||
-											executionStatus === "Cancelling"
-										) {
-											// Merge API logs with streaming logs, deduplicating by ID
-											const existingLogs =
-												(logsData as ExecutionLogEntry[]) ||
-												[];
-											const logsToDisplay =
-												mergeLogsWithDedup(
-													existingLogs,
-													streamingLogs,
-												);
-
-											if (
-												logsToDisplay.length === 0 &&
-												!isLoadingLogs
-											) {
-												return (
-													<div className="text-center text-muted-foreground py-8">
-														Waiting for logs...
-													</div>
-												);
-											}
-
-											if (
-												isLoadingLogs &&
-												logsToDisplay.length === 0
-											) {
-												return (
-													<div className="text-center text-muted-foreground py-8">
-														<Loader2 className="h-4 w-4 animate-spin inline mr-2" />
-														Loading logs...
-													</div>
-												);
-											}
-
-											return (
-												<div
-													ref={logsContainerRef}
-													onScroll={handleLogsScroll}
-													className="space-y-2 max-h-[70vh] overflow-y-auto"
-												>
-													{logsToDisplay.map(
-														(
-															log: ExecutionLogEntry,
-															index: number,
-														) => {
-															const level =
-																(
-																	log.level as string
-																)?.toLowerCase() ||
-																"info";
-															const levelColor =
-																{
-																	debug: "text-gray-500",
-																	info: "text-blue-600",
-																	warning:
-																		"text-yellow-600",
-																	error: "text-red-600",
-																	traceback:
-																		"text-orange-600",
-																}[
-																	level as
-																		| "debug"
-																		| "info"
-																		| "warning"
-																		| "error"
-																		| "traceback"
-																] ||
-																"text-gray-600";
-
-															return (
-																<div
-																	key={index}
-																	className="flex gap-3 text-sm font-mono border-b pb-2 last:border-0"
-																>
-																	<span className="text-muted-foreground whitespace-nowrap">
-																		{log.timestamp
-																			? new Date(
-																					log.timestamp,
-																				).toLocaleTimeString()
-																			: ""}
-																	</span>
-																	<span
-																		className={`font-semibold uppercase min-w-[60px] ${levelColor}`}
-																	>
-																		{
-																			log.level
-																		}
-																	</span>
-																	<span className="flex-1 whitespace-pre-wrap">
-																		{
-																			log.message
-																		}
-																	</span>
-																	{log.data &&
-																		Object.keys(
-																			log.data,
-																		)
-																			.length >
-																			0 && (
-																			<details className="text-xs">
-																				<summary className="cursor-pointer text-muted-foreground">
-																					data
-																				</summary>
-																				<pre className="mt-1 p-2 bg-muted rounded">
-																					{JSON.stringify(
-																						log.data,
-																						null,
-																						2,
-																					)}
-																				</pre>
-																			</details>
-																		)}
-																</div>
-															);
-														},
-													)}
-													{/* Scroll anchor for auto-scroll */}
-													<div ref={logsEndRef} />
-												</div>
-											);
-										}
-
-										// When complete, show progressively loaded logs
-										if (isComplete) {
-											return (
-												<AnimatePresence mode="wait">
-													{isLoadingLogs ? (
-														<motion.div
-															key="loading"
-															initial={{
-																opacity: 0,
-															}}
-															animate={{
-																opacity: 1,
-															}}
-															exit={{
-																opacity: 0,
-															}}
-															transition={{
-																duration: 0.2,
-															}}
-															className="space-y-2"
-														>
-															<Skeleton className="h-4 w-full" />
-															<Skeleton className="h-4 w-5/6" />
-															<Skeleton className="h-4 w-4/5" />
-														</motion.div>
-													) : (
-														(() => {
-															const completedLogs =
-																(logsData as ExecutionLogEntry[]) ||
-																[];
-
-															if (
-																completedLogs.length ===
-																0
-															) {
-																return (
-																	<motion.div
-																		key="empty"
-																		initial={{
-																			opacity: 0,
-																		}}
-																		animate={{
-																			opacity: 1,
-																		}}
-																		exit={{
-																			opacity: 0,
-																		}}
-																		transition={{
-																			duration: 0.2,
-																		}}
-																		className="text-center text-muted-foreground py-8"
-																	>
-																		No logs
-																		captured
-																	</motion.div>
-																);
-															}
-
-															return (
-																<motion.div
-																	key="content"
-																	initial={{
-																		opacity: 0,
-																	}}
-																	animate={{
-																		opacity: 1,
-																	}}
-																	exit={{
-																		opacity: 0,
-																	}}
-																	transition={{
-																		duration: 0.2,
-																	}}
-																	ref={
-																		logsContainerRef
-																	}
-																	className="space-y-2 max-h-[70vh] overflow-y-auto"
-																>
-																	{completedLogs.map(
-																		(
-																			log: ExecutionLogEntry,
-																			index: number,
-																		) => {
-																			const level =
-																				(
-																					log.level as string
-																				)?.toLowerCase() ||
-																				"info";
-																			const levelColor =
-																				{
-																					debug: "text-gray-500",
-																					info: "text-blue-600",
-																					warning:
-																						"text-yellow-600",
-																					error: "text-red-600",
-																					traceback:
-																						"text-orange-600",
-																				}[
-																					level as
-																						| "debug"
-																						| "info"
-																						| "warning"
-																						| "error"
-																						| "traceback"
-																				] ||
-																				"text-gray-600";
-
-																			return (
-																				<div
-																					key={
-																						index
-																					}
-																					className="flex gap-3 text-sm font-mono border-b pb-2 last:border-0"
-																				>
-																					<span className="text-muted-foreground whitespace-nowrap">
-																						{log.timestamp
-																							? new Date(
-																									log.timestamp,
-																								).toLocaleTimeString()
-																							: ""}
-																					</span>
-																					<span
-																						className={`font-semibold uppercase min-w-[60px] ${levelColor}`}
-																					>
-																						{
-																							log.level
-																						}
-																					</span>
-																					<span className="flex-1 whitespace-pre-wrap">
-																						{
-																							log.message
-																						}
-																					</span>
-																					{log.data &&
-																						Object.keys(
-																							log.data,
-																						)
-																							.length >
-																							0 && (
-																							<details className="text-xs">
-																								<summary className="cursor-pointer text-muted-foreground">
-																									data
-																								</summary>
-																								<pre className="mt-1 p-2 bg-muted rounded">
-																									{JSON.stringify(
-																										log.data,
-																										null,
-																										2,
-																									)}
-																								</pre>
-																							</details>
-																						)}
-																				</div>
-																			);
-																		},
-																	)}
-																</motion.div>
-															);
-														})()
-													)}
-												</AnimatePresence>
-											);
-										}
-
-										return null;
-									})()}
-								</CardContent>
-							</Card>
+							<ExecutionLogsPanel
+								logs={mergedLogs as LogEntry[]}
+								streamingLogs={streamingLogs}
+								status={executionStatus}
+								isConnected={isConnected}
+								isLoading={isLoadingLogs}
+								isPlatformAdmin={isPlatformAdmin}
+								maxHeight="70vh"
+							/>
 						</motion.div>
 					</div>
 
 					{/* Right Column - Sidebar (1/3 width) */}
-					<div className="space-y-6">
-						{/* Status Card */}
-						<Card>
-							<CardHeader>
-								<CardTitle>Execution Status</CardTitle>
-							</CardHeader>
-							<CardContent>
-								<div className="flex flex-col items-center justify-center py-4 text-center">
-									{getStatusIcon(execution.status)}
-									<div className="mt-4">
-										{getStatusBadge(execution.status)}
-									</div>
-								</div>
-							</CardContent>
-						</Card>
-
-						{/* Workflow Information Card */}
-						<Card>
-							<CardHeader>
-								<CardTitle>Workflow Information</CardTitle>
-							</CardHeader>
-							<CardContent className="space-y-4">
-								<div>
-									<p className="text-sm font-medium text-muted-foreground">
-										Workflow Name
-									</p>
-									<p className="font-mono text-sm mt-1">
-										{execution.workflow_name}
-									</p>
-								</div>
-								<div>
-									<p className="text-sm font-medium text-muted-foreground">
-										Executed By
-									</p>
-									<p className="text-sm mt-1">
-										{execution.executed_by_name}
-									</p>
-								</div>
-								<div>
-									<p className="text-sm font-medium text-muted-foreground">
-										Effective Scope
-									</p>
-									<p className="text-sm mt-1">
-										{execution.org_name || "Global"}
-									</p>
-								</div>
-								<div>
-									<p className="text-sm font-medium text-muted-foreground">
-										Started At
-									</p>
-									<p className="text-sm mt-1">
-										{execution.started_at
-											? formatDate(execution.started_at)
-											: "N/A"}
-									</p>
-								</div>
-								{execution.completed_at && (
-									<div>
-										<p className="text-sm font-medium text-muted-foreground">
-											Completed At
-										</p>
-										<p className="text-sm mt-1">
-											{formatDate(execution.completed_at)}
-										</p>
-									</div>
-								)}
-							</CardContent>
-						</Card>
-
-						{/* Input Parameters - All users */}
-						<Card>
-							<CardHeader>
-								<CardTitle>Input Parameters</CardTitle>
-								<CardDescription>
-									Workflow parameters that were passed in
-								</CardDescription>
-							</CardHeader>
-							<CardContent>
-								<PrettyInputDisplay
-									inputData={execution.input_data}
-									showToggle={true}
-									defaultView="pretty"
-								/>
-							</CardContent>
-						</Card>
-
-						{/* Runtime Variables - Platform admins only */}
-						{isPlatformAdmin && isComplete && (
-							<motion.div
-								initial={{ opacity: 0, y: 20 }}
-								animate={{ opacity: 1, y: 0 }}
-								transition={{ duration: 0.3, delay: 0.2 }}
-							>
-								<Card>
-									<CardHeader>
-										<CardTitle>Runtime Variables</CardTitle>
-										<CardDescription>
-											Variables captured from script
-											namespace (admin only)
-										</CardDescription>
-									</CardHeader>
-									<CardContent>
-										<AnimatePresence mode="wait">
-											{isLoadingVariables ? (
-												<motion.div
-													key="loading"
-													initial={{ opacity: 0 }}
-													animate={{ opacity: 1 }}
-													exit={{ opacity: 0 }}
-													transition={{
-														duration: 0.2,
-													}}
-													className="space-y-2"
-												>
-													<Skeleton className="h-4 w-full" />
-													<Skeleton className="h-4 w-4/5" />
-													<Skeleton className="h-4 w-3/4" />
-												</motion.div>
-											) : !variablesData ||
-											  Object.keys(variablesData)
-													.length === 0 ? (
-												<motion.div
-													key="empty"
-													initial={{ opacity: 0 }}
-													animate={{ opacity: 1 }}
-													exit={{ opacity: 0 }}
-													transition={{
-														duration: 0.2,
-													}}
-													className="text-center text-muted-foreground py-8"
-												>
-													No variables captured
-												</motion.div>
-											) : (
-												<motion.div
-													key="content"
-													initial={{ opacity: 0 }}
-													animate={{ opacity: 1 }}
-													exit={{ opacity: 0 }}
-													transition={{
-														duration: 0.2,
-													}}
-													className="overflow-x-auto"
-												>
-													<VariablesTreeView
-														data={
-															variablesData as Record<
-																string,
-																unknown
-															>
-														}
-													/>
-												</motion.div>
-											)}
-										</AnimatePresence>
-									</CardContent>
-								</Card>
-							</motion.div>
-						)}
-
-						{/* Usage Card - Compute resources (admin) + AI usage (all users) */}
-						{isComplete &&
-							((isPlatformAdmin &&
-								(execution?.peak_memory_bytes ||
-									execution?.cpu_total_seconds)) ||
-								(execution?.ai_usage &&
-									execution.ai_usage.length > 0)) && (
-								<motion.div
-									initial={{ opacity: 0, y: 20 }}
-									animate={{ opacity: 1, y: 0 }}
-									transition={{ duration: 0.3, delay: 0.2 }}
-								>
-									<Card>
-										<CardHeader className="pb-3">
-											<CardTitle>Usage</CardTitle>
-											<CardDescription>
-												Execution metrics and costs
-											</CardDescription>
-										</CardHeader>
-										<CardContent className="space-y-4">
-											{/* Compute Resources - Platform admins only */}
-											{isPlatformAdmin &&
-												(execution?.peak_memory_bytes ||
-													execution?.cpu_total_seconds) && (
-													<div className="space-y-3">
-														{execution?.peak_memory_bytes && (
-															<div>
-																<p className="text-sm font-medium text-muted-foreground">
-																	Peak Memory
-																</p>
-																<p className="text-sm font-mono">
-																	{formatBytes(
-																		execution.peak_memory_bytes,
-																	)}
-																</p>
-															</div>
-														)}
-														{execution?.cpu_total_seconds && (
-															<div>
-																<p className="text-sm font-medium text-muted-foreground">
-																	CPU Time
-																</p>
-																<p className="text-sm font-mono">
-																	{execution.cpu_total_seconds.toFixed(
-																		3,
-																	)}
-																	s
-																</p>
-															</div>
-														)}
-														{execution?.duration_ms && (
-															<div>
-																<p className="text-sm font-medium text-muted-foreground">
-																	Duration
-																</p>
-																<p className="text-sm font-mono">
-																	{(
-																		execution.duration_ms /
-																		1000
-																	).toFixed(
-																		2,
-																	)}
-																	s
-																</p>
-															</div>
-														)}
-													</div>
-												)}
-
-											{/* Divider when both sections are shown */}
-											{isPlatformAdmin &&
-												(execution?.peak_memory_bytes ||
-													execution?.cpu_total_seconds) &&
-												execution?.ai_usage &&
-												execution.ai_usage.length >
-													0 && (
-													<div className="border-t pt-4" />
-												)}
-
-											{/* AI Usage - Available to all users */}
-											{execution?.ai_usage &&
-												execution.ai_usage.length >
-													0 && (
-													<Collapsible
-														open={isAiUsageOpen}
-														onOpenChange={
-															setIsAiUsageOpen
-														}
-													>
-														<div className="flex items-center justify-between">
-															<div className="flex items-center gap-2">
-																<Sparkles className="h-4 w-4 text-purple-500" />
-																<span className="text-sm font-medium">
-																	AI Usage
-																</span>
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	{execution
-																		.ai_totals
-																		?.call_count ||
-																		execution
-																			.ai_usage
-																			.length}{" "}
-																	{(execution
-																		.ai_totals
-																		?.call_count ||
-																		execution
-																			.ai_usage
-																			.length) ===
-																	1
-																		? "call"
-																		: "calls"}
-																</Badge>
-															</div>
-															<CollapsibleTrigger
-																asChild
-															>
-																<Button
-																	variant="ghost"
-																	size="sm"
-																>
-																	<ChevronDown
-																		className={`h-4 w-4 transition-transform duration-200 ${
-																			isAiUsageOpen
-																				? "rotate-180"
-																				: ""
-																		}`}
-																	/>
-																</Button>
-															</CollapsibleTrigger>
-														</div>
-														{execution.ai_totals && (
-															<p className="mt-1 text-xs text-muted-foreground">
-																Total:{" "}
-																{formatNumber(
-																	execution
-																		.ai_totals
-																		.total_input_tokens,
-																)}{" "}
-																in /{" "}
-																{formatNumber(
-																	execution
-																		.ai_totals
-																		.total_output_tokens,
-																)}{" "}
-																out tokens
-																{execution
-																	.ai_totals
-																	.total_cost &&
-																	` | ${formatCost(execution.ai_totals.total_cost)}`}
-															</p>
-														)}
-														<CollapsibleContent>
-															<div className="mt-3 overflow-x-auto">
-																<table className="w-full text-xs">
-																	<thead>
-																		<tr className="border-b">
-																			<th className="text-left py-2 pr-2 font-medium text-muted-foreground">
-																				Provider
-																			</th>
-																			<th className="text-left py-2 pr-2 font-medium text-muted-foreground">
-																				Model
-																			</th>
-																			<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
-																				In
-																			</th>
-																			<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
-																				Out
-																			</th>
-																			<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
-																				Cost
-																			</th>
-																			<th className="text-right py-2 font-medium text-muted-foreground">
-																				Time
-																			</th>
-																		</tr>
-																	</thead>
-																	<tbody>
-																		{(
-																			execution.ai_usage as AIUsagePublicSimple[]
-																		).map(
-																			(
-																				usage,
-																				index,
-																			) => (
-																				<tr
-																					key={
-																						index
-																					}
-																					className="border-b last:border-0"
-																				>
-																					<td className="py-2 pr-2 capitalize">
-																						{
-																							usage.provider
-																						}
-																					</td>
-																					<td className="py-2 pr-2 font-mono text-muted-foreground">
-																						{usage
-																							.model
-																							.length >
-																						20
-																							? `${usage.model.substring(0, 18)}...`
-																							: usage.model}
-																					</td>
-																					<td className="py-2 pr-2 text-right font-mono">
-																						{formatNumber(
-																							usage.input_tokens,
-																						)}
-																					</td>
-																					<td className="py-2 pr-2 text-right font-mono">
-																						{formatNumber(
-																							usage.output_tokens,
-																						)}
-																					</td>
-																					<td className="py-2 pr-2 text-right font-mono">
-																						{formatCost(
-																							usage.cost,
-																						)}
-																					</td>
-																					<td className="py-2 text-right font-mono">
-																						{formatDuration(
-																							usage.duration_ms,
-																						)}
-																					</td>
-																				</tr>
-																			),
-																		)}
-																	</tbody>
-																	{execution.ai_totals && (
-																		<tfoot>
-																			<tr className="bg-muted/50 font-medium">
-																				<td
-																					colSpan={
-																						2
-																					}
-																					className="py-2 pr-2"
-																				>
-																					Total
-																				</td>
-																				<td className="py-2 pr-2 text-right font-mono">
-																					{formatNumber(
-																						execution
-																							.ai_totals
-																							.total_input_tokens,
-																					)}
-																				</td>
-																				<td className="py-2 pr-2 text-right font-mono">
-																					{formatNumber(
-																						execution
-																							.ai_totals
-																							.total_output_tokens,
-																					)}
-																				</td>
-																				<td className="py-2 pr-2 text-right font-mono">
-																					{formatCost(
-																						execution
-																							.ai_totals
-																							.total_cost,
-																					)}
-																				</td>
-																				<td className="py-2 text-right font-mono">
-																					{formatDuration(
-																						execution
-																							.ai_totals
-																							.total_duration_ms,
-																					)}
-																				</td>
-																			</tr>
-																		</tfoot>
-																	)}
-																</table>
-															</div>
-														</CollapsibleContent>
-													</Collapsible>
-												)}
-										</CardContent>
-									</Card>
-								</motion.div>
-							)}
-					</div>
+					<ExecutionSidebar
+						status={execution.status as ExecutionStatus}
+						workflowName={execution.workflow_name}
+						executedByName={execution.executed_by_name}
+						orgName={execution.org_name}
+						startedAt={execution.started_at}
+						completedAt={execution.completed_at}
+						inputData={execution.input_data}
+						isComplete={isComplete}
+						isPlatformAdmin={isPlatformAdmin}
+						isLoading={isLoading}
+						variablesData={variablesData}
+						peakMemoryBytes={execution.peak_memory_bytes}
+						cpuTotalSeconds={execution.cpu_total_seconds}
+						durationMs={execution.duration_ms}
+						aiUsage={execution.ai_usage}
+						aiTotals={execution.ai_totals}
+						streamState={streamState ? {
+							queuePosition: streamState.queuePosition,
+							waitReason: streamState.waitReason,
+							availableMemoryMb: streamState.availableMemoryMb,
+							requiredMemoryMb: streamState.requiredMemoryMb,
+						} : undefined}
+						errorMessage={execution.error_message}
+					/>
 				</div>
 			</div>
 
 			{/* Cancel Confirmation Dialog */}
-			<AlertDialog
+			<ExecutionCancelDialog
 				open={showCancelDialog}
 				onOpenChange={setShowCancelDialog}
-			>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>Cancel Execution?</AlertDialogTitle>
-						<AlertDialogDescription>
-							Are you sure you want to cancel the execution of{" "}
-							<span className="font-semibold">
-								{execution.workflow_name}
-							</span>
-							? This action cannot be undone.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogCancel>No, keep running</AlertDialogCancel>
-						<AlertDialogAction
-							onClick={handleCancelExecution}
-							className="bg-destructive hover:bg-destructive/90"
-						>
-							Yes, cancel execution
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+				workflowName={execution.workflow_name}
+				onConfirm={handleCancelExecution}
+			/>
 
 			{/* Rerun Confirmation Dialog */}
-			<AlertDialog
+			<ExecutionRerunDialog
 				open={showRerunDialog}
 				onOpenChange={setShowRerunDialog}
-			>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>Rerun Workflow?</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will execute{" "}
-							<span className="font-semibold">
-								{execution.workflow_name}
-							</span>{" "}
-							again with the same input parameters. You will be
-							redirected to the new execution.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogCancel disabled={isRerunning}>
-							Cancel
-						</AlertDialogCancel>
-						<AlertDialogAction
-							onClick={handleRerunExecution}
-							disabled={isRerunning}
-						>
-							{isRerunning ? (
-								<>
-									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-									Rerunning...
-								</>
-							) : (
-								"Yes, rerun workflow"
-							)}
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+				workflowName={execution.workflow_name}
+				isRerunning={isRerunning}
+				onConfirm={handleRerunExecution}
+			/>
 		</div>
 	);
 }

@@ -60,7 +60,7 @@ export function RoleDialog({ role, open, onClose }: RoleDialogProps) {
 			form.reset({
 				name: role.name,
 				description: role.description || "",
-				can_promote_agent: (role as unknown as { permissions?: { can_promote_agent?: boolean } }).permissions?.can_promote_agent ?? false,
+				can_promote_agent: (role.permissions as Record<string, boolean>)?.can_promote_agent ?? false,
 			});
 		} else {
 			form.reset({
@@ -78,6 +78,7 @@ export function RoleDialog({ role, open, onClose }: RoleDialogProps) {
 				body: {
 					name: values.name,
 					description: values.description || null,
+					permissions: { can_promote_agent: values.can_promote_agent },
 				},
 			});
 		} else {
@@ -86,6 +87,7 @@ export function RoleDialog({ role, open, onClose }: RoleDialogProps) {
 					name: values.name,
 					description: values.description || null,
 					is_active: true,
+					permissions: { can_promote_agent: values.can_promote_agent },
 				},
 			});
 		}

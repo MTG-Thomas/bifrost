@@ -312,6 +312,7 @@ export function Workflows() {
 						variant="outline"
 						size="icon"
 						onClick={() => refetch()}
+						aria-label="Refresh"
 					>
 						<RefreshCw className="h-4 w-4" />
 					</Button>
@@ -891,7 +892,8 @@ export function Workflows() {
 																)
 															}
 														>
-															<PlayCircle className="h-4 w-4" />
+															<PlayCircle className="mr-1 h-4 w-4" />
+															Execute
 														</Button>
 													</div>
 												</DataTableCell>
@@ -915,6 +917,16 @@ export function Workflows() {
 										? "Try adjusting your search term or clear the filter"
 										: "No workflows have been registered in the workflow engine"}
 								</p>
+								{!searchTerm && (
+									<Button
+										variant="outline"
+										onClick={() => openEditor()}
+										className="mt-4"
+									>
+										<Code className="mr-2 h-4 w-4" />
+										Open editor
+									</Button>
+								)}
 							</CardContent>
 						</Card>
 					)}

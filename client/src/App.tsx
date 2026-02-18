@@ -4,6 +4,7 @@ import { Layout } from "@/components/layout/Layout";
 import { ContentLayout } from "@/components/layout/ContentLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { PageErrorBoundary } from "@/components/PageErrorBoundary";
 import { EditorOverlay } from "@/components/editor/EditorOverlay";
 import { UnifiedDock } from "@/components/layout/UnifiedDock";
 import { QuickAccess } from "@/components/quick-access/QuickAccess";
@@ -196,7 +197,9 @@ function AppRoutes() {
 			/>
 
 			{/* Editor Overlay - Rendered globally on top of all pages */}
-			<EditorOverlay />
+			<PageErrorBoundary>
+				<EditorOverlay />
+			</PageErrorBoundary>
 
 			{/* Unified Dock - Shows minimized editor */}
 			<UnifiedDock />

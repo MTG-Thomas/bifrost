@@ -286,6 +286,15 @@ export function BasicInfo() {
 							onDragLeave={handleDragLeave}
 							onDrop={handleDrop}
 							onClick={() => fileInputRef.current?.click()}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" || e.key === " ") {
+									e.preventDefault();
+									fileInputRef.current?.click();
+								}
+							}}
+							tabIndex={0}
+							role="button"
+							aria-label="Upload profile picture"
 						>
 							<Avatar className="h-24 w-24">
 								<AvatarImage src={avatarUrl || undefined} />
@@ -357,50 +366,54 @@ export function BasicInfo() {
 						This is how your name appears to other users
 					</CardDescription>
 				</CardHeader>
-				<CardContent className="space-y-4">
-					<div className="space-y-2">
-						<Label htmlFor="name">Name</Label>
-						<Input
-							id="name"
-							placeholder="Enter your name"
-							value={name}
-							onChange={(e) => setName(e.target.value)}
-						/>
-					</div>
+				<CardContent>
+					<form onSubmit={(e) => { e.preventDefault(); handleSaveName(); }}>
+						<div className="space-y-4">
+							<div className="space-y-2">
+								<Label htmlFor="name">Name</Label>
+								<Input
+									id="name"
+									placeholder="Enter your name"
+									value={name}
+									onChange={(e) => setName(e.target.value)}
+								/>
+							</div>
 
-					<div className="space-y-2">
-						<Label htmlFor="email">Email</Label>
-						<Input
-							id="email"
-							value={profile?.email || user?.email || ""}
-							disabled
-							className="bg-muted"
-						/>
-						<p className="text-xs text-muted-foreground">
-							Email cannot be changed
-						</p>
-					</div>
+							<div className="space-y-2">
+								<Label htmlFor="email">Email</Label>
+								<Input
+									id="email"
+									value={profile?.email || user?.email || ""}
+									disabled
+									className="bg-muted"
+								/>
+								<p className="text-xs text-muted-foreground">
+									Email cannot be changed
+								</p>
+							</div>
 
-					<div className="flex justify-end">
-						<Button
-							onClick={handleSaveName}
-							disabled={savingName || !nameChanged}
-						>
-							{savingName ? (
-								<>
-									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-									Saving...
-								</>
-							) : nameChanged ? (
-								"Save Changes"
-							) : (
-								<>
-									<Check className="h-4 w-4 mr-2" />
-									Saved
-								</>
-							)}
-						</Button>
-					</div>
+							<div className="flex justify-end">
+								<Button
+									type="submit"
+									disabled={savingName || !nameChanged}
+								>
+									{savingName ? (
+										<>
+											<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+											Saving...
+										</>
+									) : nameChanged ? (
+										"Save Changes"
+									) : (
+										<>
+											<Check className="h-4 w-4 mr-2" />
+											Saved
+										</>
+									)}
+								</Button>
+							</div>
+						</div>
+					</form>
 				</CardContent>
 			</Card>
 
@@ -416,135 +429,139 @@ export function BasicInfo() {
 							: "Add a password to your account for email/password login"}
 					</CardDescription>
 				</CardHeader>
-				<CardContent className="space-y-4">
-					{passwordError && (
-						<Alert variant="destructive">
-							<AlertCircle className="h-4 w-4" />
-							<AlertDescription>{passwordError}</AlertDescription>
-						</Alert>
-					)}
+				<CardContent>
+					<form onSubmit={(e) => { e.preventDefault(); handleChangePassword(); }}>
+						<div className="space-y-4">
+							{passwordError && (
+								<Alert variant="destructive">
+									<AlertCircle className="h-4 w-4" />
+									<AlertDescription>{passwordError}</AlertDescription>
+								</Alert>
+							)}
 
-					{profile?.has_password && (
-						<div className="space-y-2">
-							<Label htmlFor="current-password">
-								Current Password
-							</Label>
-							<div className="relative">
-								<Input
-									id="current-password"
-									type={showCurrentPassword ? "text" : "password"}
-									value={currentPassword}
-									onChange={(e) =>
-										setCurrentPassword(e.target.value)
-									}
-									placeholder="Enter current password"
-								/>
+							{profile?.has_password && (
+								<div className="space-y-2">
+									<Label htmlFor="current-password">
+										Current Password
+									</Label>
+									<div className="relative">
+										<Input
+											id="current-password"
+											type={showCurrentPassword ? "text" : "password"}
+											value={currentPassword}
+											onChange={(e) =>
+												setCurrentPassword(e.target.value)
+											}
+											placeholder="Enter current password"
+										/>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+											onClick={() =>
+												setShowCurrentPassword(!showCurrentPassword)
+											}
+										>
+											{showCurrentPassword ? (
+												<EyeOff className="h-4 w-4 text-muted-foreground" />
+											) : (
+												<Eye className="h-4 w-4 text-muted-foreground" />
+											)}
+										</Button>
+									</div>
+								</div>
+							)}
+
+							<div className="space-y-2">
+								<Label htmlFor="new-password">
+									{profile?.has_password ? "New Password" : "Password"}
+								</Label>
+								<div className="relative">
+									<Input
+										id="new-password"
+										type={showNewPassword ? "text" : "password"}
+										value={newPassword}
+										onChange={(e) => setNewPassword(e.target.value)}
+										placeholder={profile?.has_password ? "Enter new password" : "Enter password"}
+									/>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+										onClick={() =>
+											setShowNewPassword(!showNewPassword)
+										}
+									>
+										{showNewPassword ? (
+											<EyeOff className="h-4 w-4 text-muted-foreground" />
+										) : (
+											<Eye className="h-4 w-4 text-muted-foreground" />
+										)}
+									</Button>
+								</div>
+								<p className="text-xs text-muted-foreground">
+									Minimum 8 characters
+								</p>
+							</div>
+
+							<div className="space-y-2">
+								<Label htmlFor="confirm-password">
+									Confirm Password
+								</Label>
+								<div className="relative">
+									<Input
+										id="confirm-password"
+										type={showConfirmPassword ? "text" : "password"}
+										value={confirmPassword}
+										onChange={(e) =>
+											setConfirmPassword(e.target.value)
+										}
+										placeholder="Confirm password"
+									/>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+										onClick={() =>
+											setShowConfirmPassword(!showConfirmPassword)
+										}
+									>
+										{showConfirmPassword ? (
+											<EyeOff className="h-4 w-4 text-muted-foreground" />
+										) : (
+											<Eye className="h-4 w-4 text-muted-foreground" />
+										)}
+									</Button>
+								</div>
+							</div>
+
+							<div className="flex justify-end">
 								<Button
-									type="button"
-									variant="ghost"
-									size="icon"
-									className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
-									onClick={() =>
-										setShowCurrentPassword(!showCurrentPassword)
+									type="submit"
+									disabled={
+										changingPassword ||
+										(profile?.has_password && !currentPassword) ||
+										!newPassword ||
+										!confirmPassword
 									}
 								>
-									{showCurrentPassword ? (
-										<EyeOff className="h-4 w-4 text-muted-foreground" />
+									{changingPassword ? (
+										<>
+											<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+											{profile?.has_password ? "Changing..." : "Setting..."}
+										</>
+									) : profile?.has_password ? (
+										"Change Password"
 									) : (
-										<Eye className="h-4 w-4 text-muted-foreground" />
+										"Set Password"
 									)}
 								</Button>
 							</div>
 						</div>
-					)}
-
-					<div className="space-y-2">
-						<Label htmlFor="new-password">
-							{profile?.has_password ? "New Password" : "Password"}
-						</Label>
-						<div className="relative">
-							<Input
-								id="new-password"
-								type={showNewPassword ? "text" : "password"}
-								value={newPassword}
-								onChange={(e) => setNewPassword(e.target.value)}
-								placeholder={profile?.has_password ? "Enter new password" : "Enter password"}
-							/>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
-								onClick={() =>
-									setShowNewPassword(!showNewPassword)
-								}
-							>
-								{showNewPassword ? (
-									<EyeOff className="h-4 w-4 text-muted-foreground" />
-								) : (
-									<Eye className="h-4 w-4 text-muted-foreground" />
-								)}
-							</Button>
-						</div>
-						<p className="text-xs text-muted-foreground">
-							Minimum 8 characters
-						</p>
-					</div>
-
-					<div className="space-y-2">
-						<Label htmlFor="confirm-password">
-							Confirm Password
-						</Label>
-						<div className="relative">
-							<Input
-								id="confirm-password"
-								type={showConfirmPassword ? "text" : "password"}
-								value={confirmPassword}
-								onChange={(e) =>
-									setConfirmPassword(e.target.value)
-								}
-								placeholder="Confirm password"
-							/>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
-								onClick={() =>
-									setShowConfirmPassword(!showConfirmPassword)
-								}
-							>
-								{showConfirmPassword ? (
-									<EyeOff className="h-4 w-4 text-muted-foreground" />
-								) : (
-									<Eye className="h-4 w-4 text-muted-foreground" />
-								)}
-							</Button>
-						</div>
-					</div>
-
-					<div className="flex justify-end">
-						<Button
-							onClick={handleChangePassword}
-							disabled={
-								changingPassword ||
-								(profile?.has_password && !currentPassword) ||
-								!newPassword ||
-								!confirmPassword
-							}
-						>
-							{changingPassword ? (
-								<>
-									<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-									{profile?.has_password ? "Changing..." : "Setting..."}
-								</>
-							) : profile?.has_password ? (
-								"Change Password"
-							) : (
-								"Set Password"
-							)}
-						</Button>
-					</div>
+					</form>
 				</CardContent>
 			</Card>
 		</div>
