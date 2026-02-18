@@ -44,6 +44,7 @@ async def list_users(
         description="Filter scope: omit for all (superusers), 'global' for global only, "
         "or org UUID for specific org."
     ),
+    include_inactive: bool = Query(False, description="Include inactive (disabled) users"),
 ) -> list[UserPublic]:
     """List users with optional filtering.
 
@@ -59,11 +60,14 @@ async def list_users(
             detail=str(e),
         )
 
-    # Filter out system accounts (they have no organization_id)
+    # Filter out system users - never visible in the UI
     query = select(UserORM).where(
-        UserORM.is_active,
-        UserORM.organization_id.isnot(None),
+        UserORM.is_system.is_(False),
     )
+
+    # By default only show active users
+    if not include_inactive:
+        query = query.where(UserORM.is_active.is_(True))
 
     if type:
         if type.lower() == "platform":
@@ -187,6 +191,13 @@ async def update_user(
             detail="User not found",
         )
 
+    # Protect system user from modification
+    if db_user.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="System user cannot be modified",
+        )
+
     if request.email is not None:
         db_user.email = request.email
     if request.name is not None:
@@ -225,7 +236,7 @@ async def delete_user(
     user: CurrentSuperuser,
     db: DbSession,
 ) -> None:
-    """Delete a user (soft delete via is_active)."""
+    """Permanently delete a user. User must be inactive first."""
     # Users cannot delete themselves
     if user_id == str(user.user_id) or user_id == user.email:
         raise HTTPException(
@@ -248,11 +259,21 @@ async def delete_user(
             detail="User not found",
         )
 
-    db_user.is_active = False
-    db_user.updated_at = datetime.now(timezone.utc)
+    if db_user.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="System user cannot be deleted",
+        )
 
+    if db_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User must be disabled before permanent deletion",
+        )
+
+    await db.delete(db_user)
     await db.flush()
-    logger.info(f"Deleted user {user_id}")
+    logger.info(f"Permanently deleted user {user_id}")
 
 
 @router.get(

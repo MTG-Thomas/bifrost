@@ -142,7 +142,7 @@ export function Integrations() {
 	};
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -180,7 +180,7 @@ export function Integrations() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search integrations by name, OAuth provider, or data provider..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 				<div className="flex items-center gap-2 ml-auto">
 					{selectedIds.size > 0 && (
@@ -233,10 +233,10 @@ export function Integrations() {
 									/>
 								</DataTableHead>
 								<DataTableHead>Name</DataTableHead>
-								<DataTableHead>OAuth Status</DataTableHead>
-								<DataTableHead>Data Provider</DataTableHead>
-								<DataTableHead>Config Fields</DataTableHead>
-								<DataTableHead className="text-right" />
+								<DataTableHead className="w-0 whitespace-nowrap">Data Provider</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Config Fields</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">OAuth Status</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap text-right" />
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
@@ -264,21 +264,7 @@ export function Integrations() {
 									<DataTableCell className="font-medium">
 										{integration.name}
 									</DataTableCell>
-									<DataTableCell>
-										{integration.has_oauth_config ? (
-											<Badge
-												variant="default"
-												className="text-xs bg-blue-600 hover:bg-blue-700"
-											>
-												Configured
-											</Badge>
-										) : (
-											<span className="text-muted-foreground text-sm">
-												Not configured
-											</span>
-										)}
-									</DataTableCell>
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										{integration.list_entities_data_provider_id ? (
 											<Badge variant="outline">
 												{
@@ -291,7 +277,7 @@ export function Integrations() {
 											</span>
 										)}
 									</DataTableCell>
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										{integration.config_schema &&
 										integration.config_schema.length > 0 ? (
 											<div className="flex gap-1">
@@ -325,8 +311,22 @@ export function Integrations() {
 											</span>
 										)}
 									</DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
+										{integration.has_oauth_config ? (
+											<Badge
+												variant="default"
+												className="text-xs bg-blue-600 hover:bg-blue-700"
+											>
+												Configured
+											</Badge>
+										) : (
+											<span className="text-muted-foreground text-sm">
+												Not configured
+											</span>
+										)}
+									</DataTableCell>
 									<DataTableCell
-										className="text-right"
+										className="w-0 whitespace-nowrap text-right"
 										onClick={(e) => e.stopPropagation()}
 									>
 										<div className="flex gap-1 justify-end">

@@ -76,6 +76,7 @@ class UserBase(BaseModel):
     is_superuser: bool = Field(default=False)
     is_verified: bool = Field(default=False)
     is_registered: bool = Field(default=True)
+    is_system: bool = Field(default=False)
     mfa_enabled: bool = Field(default=False)
 
 

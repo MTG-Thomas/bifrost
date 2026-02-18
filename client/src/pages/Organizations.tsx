@@ -141,7 +141,7 @@ export function Organizations() {
 	};
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			{/* Header: title left, actions right */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -178,7 +178,7 @@ export function Organizations() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search organizations by name or domain..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 			</div>
 
@@ -195,11 +195,11 @@ export function Organizations() {
 						<DataTableHeader>
 							<DataTableRow>
 								<DataTableHead>Name</DataTableHead>
-								<DataTableHead>Domain</DataTableHead>
-								<DataTableHead>Organization ID</DataTableHead>
-								<DataTableHead>Status</DataTableHead>
-								<DataTableHead>Created</DataTableHead>
-								<DataTableHead className="text-right"></DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Domain</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Organization ID</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Status</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Created</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap text-right"></DataTableHead>
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
@@ -228,13 +228,13 @@ export function Organizations() {
 											)}
 										</div>
 									</DataTableCell>
-									<DataTableCell className="text-sm text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
 										{org.domain || "-"}
 									</DataTableCell>
-									<DataTableCell className="font-mono text-xs text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap font-mono text-xs text-muted-foreground">
 										{org.id}
 									</DataTableCell>
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										<Badge
 											variant={
 												org.is_active
@@ -247,14 +247,14 @@ export function Organizations() {
 												: "Inactive"}
 										</Badge>
 									</DataTableCell>
-									<DataTableCell className="text-sm">
+									<DataTableCell className="w-0 whitespace-nowrap text-sm">
 										{org.created_at
 											? new Date(
 													org.created_at,
 												).toLocaleDateString()
 											: "N/A"}
 									</DataTableCell>
-									<DataTableCell className="text-right">
+									<DataTableCell className="w-0 whitespace-nowrap text-right">
 										<div className="flex items-center justify-end gap-2">
 											<Button
 												variant="ghost"

@@ -175,7 +175,7 @@ export function Tables() {
 	};
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -214,7 +214,7 @@ export function Tables() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search tables by name or description..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 				{isPlatformAdmin && (
 					<div className="w-64">
@@ -281,11 +281,11 @@ export function Tables() {
 										/>
 									</DataTableHead>
 								)}
-								<DataTableHead>Scope</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Scope</DataTableHead>
 								<DataTableHead>Name</DataTableHead>
 								<DataTableHead>Description</DataTableHead>
-								<DataTableHead>Created</DataTableHead>
-								<DataTableHead className="text-right" />
+								<DataTableHead className="w-0 whitespace-nowrap">Created</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap text-right" />
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
@@ -310,7 +310,7 @@ export function Tables() {
 											/>
 										</DataTableCell>
 									)}
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										{table.organization_id ? (
 											<Badge
 												variant="outline"
@@ -339,10 +339,10 @@ export function Tables() {
 									<DataTableCell className="max-w-xs truncate text-muted-foreground">
 										{table.description || "-"}
 									</DataTableCell>
-									<DataTableCell className="text-sm text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
 										{formatDate(table.created_at)}
 									</DataTableCell>
-									<DataTableCell className="text-right">
+									<DataTableCell className="w-0 whitespace-nowrap text-right">
 										<div
 											className="flex justify-end gap-2"
 											onClick={(e) => e.stopPropagation()}

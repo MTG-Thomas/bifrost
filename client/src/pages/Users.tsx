@@ -22,6 +22,13 @@ import {
 } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -34,7 +41,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
-import { useUsersFiltered, useDeleteUser } from "@/hooks/useUsers";
+import {
+	useUsersFiltered,
+	useDeleteUser,
+	useUpdateUser,
+} from "@/hooks/useUsers";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
@@ -51,7 +62,9 @@ export function Users() {
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [isEditOpen, setIsEditOpen] = useState(false);
 	const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+	const [isDisableOpen, setIsDisableOpen] = useState(false);
 	const [searchTerm, setSearchTerm] = useState("");
+	const [showDisabled, setShowDisabled] = useState(false);
 	const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(
 		undefined,
 	);
@@ -64,8 +77,12 @@ export function Users() {
 		data: users,
 		isLoading,
 		refetch,
-	} = useUsersFiltered(isPlatformAdmin ? filterOrgId : undefined);
+	} = useUsersFiltered(
+		isPlatformAdmin ? filterOrgId : undefined,
+		showDisabled,
+	);
 	const deleteMutation = useDeleteUser();
+	const updateMutation = useUpdateUser();
 
 	// Fetch organizations for the org name lookup (platform admins only)
 	const { data: organizations } = useOrganizations({
@@ -89,9 +106,64 @@ export function Users() {
 		setIsEditOpen(true);
 	};
 
+	const handleToggleActive = (user: User) => {
+		if (user.is_active) {
+			// Disabling requires confirmation
+			setSelectedUser(user);
+			setIsDisableOpen(true);
+		} else {
+			// Enabling is instant
+			handleEnableUser(user);
+		}
+	};
+
 	const handleDeleteUser = (user: User) => {
 		setSelectedUser(user);
 		setIsDeleteOpen(true);
+	};
+
+	const handleConfirmDisable = async () => {
+		if (!selectedUser) return;
+
+		try {
+			await updateMutation.mutateAsync({
+				params: { path: { user_id: selectedUser.id } },
+				body: { is_active: false },
+			});
+			toast.success("User disabled", {
+				description: `${selectedUser.name || selectedUser.email} has been disabled`,
+			});
+			setIsDisableOpen(false);
+			setSelectedUser(undefined);
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error
+					? error.message
+					: "Unknown error occurred";
+			toast.error("Failed to disable user", {
+				description: errorMessage,
+			});
+		}
+	};
+
+	const handleEnableUser = async (user: User) => {
+		try {
+			await updateMutation.mutateAsync({
+				params: { path: { user_id: user.id } },
+				body: { is_active: true },
+			});
+			toast.success("User enabled", {
+				description: `${user.name || user.email} has been re-enabled`,
+			});
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error
+					? error.message
+					: "Unknown error occurred";
+			toast.error("Failed to enable user", {
+				description: errorMessage,
+			});
+		}
 	};
 
 	const handleConfirmDelete = async () => {
@@ -101,8 +173,8 @@ export function Users() {
 			await deleteMutation.mutateAsync({
 				params: { path: { user_id: selectedUser.id } },
 			});
-			toast.success("User deleted successfully", {
-				description: `${selectedUser.name || selectedUser.email} has been removed from the platform`,
+			toast.success("User permanently deleted", {
+				description: `${selectedUser.name || selectedUser.email} has been permanently removed`,
 			});
 			setIsDeleteOpen(false);
 			setSelectedUser(undefined);
@@ -136,8 +208,11 @@ export function Users() {
 		);
 	};
 
+	const isSelf = (user: User) =>
+		!!(currentUser && user.id === currentUser.id);
+
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			<div className="flex items-center justify-between">
 				<div>
 					<h1 className="text-4xl font-extrabold tracking-tight">
@@ -175,7 +250,7 @@ export function Users() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search users by email or name..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 				{isPlatformAdmin && (
 					<div className="w-64">
@@ -188,6 +263,19 @@ export function Users() {
 						/>
 					</div>
 				)}
+				<div className="flex items-center gap-2 ml-auto">
+					<Switch
+						id="show-disabled"
+						checked={showDisabled}
+						onCheckedChange={setShowDisabled}
+					/>
+					<Label
+						htmlFor="show-disabled"
+						className="text-sm text-muted-foreground cursor-pointer"
+					>
+						Show disabled
+					</Label>
+				</div>
 			</div>
 
 			{/* Content */}
@@ -203,22 +291,28 @@ export function Users() {
 						<DataTableHeader>
 							<DataTableRow>
 								{isPlatformAdmin && (
-									<DataTableHead>Organization</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap">Organization</DataTableHead>
 								)}
 								<DataTableHead>Name</DataTableHead>
-								<DataTableHead>Email</DataTableHead>
-								<DataTableHead>Type</DataTableHead>
-								<DataTableHead>Status</DataTableHead>
-								<DataTableHead>Created</DataTableHead>
-								<DataTableHead>Last Login</DataTableHead>
-								<DataTableHead className="text-right"></DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Email</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Type</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Created</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Last Login</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap text-right"></DataTableHead>
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
 							{filteredUsers.map((user) => (
-								<DataTableRow key={user.id}>
+								<DataTableRow
+									key={user.id}
+									className={
+										!user.is_active
+											? "opacity-60"
+											: undefined
+									}
+								>
 									{isPlatformAdmin && (
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											{(() => {
 												const orgInfo = getOrgInfo(
 													user.organization_id,
@@ -250,41 +344,57 @@ export function Users() {
 									<DataTableCell className="font-medium">
 										{user.name || user.email}
 									</DataTableCell>
-									<DataTableCell className="text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap text-muted-foreground">
 										{user.email}
 									</DataTableCell>
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										{getUserTypeBadge(user.is_superuser)}
 									</DataTableCell>
-									<DataTableCell>
-										<Badge
-											variant={
-												user.is_active
-													? "default"
-													: "secondary"
-											}
-										>
-											{user.is_active
-												? "Active"
-												: "Inactive"}
-										</Badge>
-									</DataTableCell>
-									<DataTableCell className="text-sm text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
 										{user.created_at
 											? new Date(
 													user.created_at,
 												).toLocaleDateString()
 											: "N/A"}
 									</DataTableCell>
-									<DataTableCell className="text-sm text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
 										{user.last_login
 											? new Date(
 													user.last_login,
 												).toLocaleDateString()
 											: "Never"}
 									</DataTableCell>
-									<DataTableCell className="text-right">
+									<DataTableCell className="w-0 whitespace-nowrap text-right">
 										<div className="flex items-center justify-end gap-2">
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<div className="w-fit">
+														<Switch
+															checked={
+																user.is_active
+															}
+															onCheckedChange={() =>
+																handleToggleActive(
+																	user,
+																)
+															}
+															disabled={
+																isSelf(
+																	user,
+																) ||
+																updateMutation.isPending
+															}
+														/>
+													</div>
+												</TooltipTrigger>
+												<TooltipContent>
+													{isSelf(user)
+														? "You cannot disable your own account"
+														: user.is_active
+															? "Enabled — click to disable"
+															: "Disabled — click to enable"}
+												</TooltipContent>
+											</Tooltip>
 											<Button
 												variant="ghost"
 												size="icon"
@@ -295,23 +405,21 @@ export function Users() {
 											>
 												<Edit className="h-4 w-4" />
 											</Button>
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() =>
-													handleDeleteUser(user)
-												}
-												title="Delete user"
-												disabled={
-													!!(
-														currentUser &&
-														user.id ===
-															currentUser.id
-													)
-												}
-											>
-												<Trash2 className="h-4 w-4" />
-											</Button>
+											{!user.is_active && (
+												<Button
+													variant="ghost"
+													size="icon"
+													onClick={() =>
+														handleDeleteUser(
+															user,
+														)
+													}
+													title="Permanently delete"
+													disabled={isSelf(user)}
+												>
+													<Trash2 className="h-4 w-4 text-destructive" />
+												</Button>
+											)}
 										</div>
 									</DataTableCell>
 								</DataTableRow>
@@ -346,14 +454,39 @@ export function Users() {
 				onOpenChange={handleEditClose}
 			/>
 
+			{/* Disable confirmation dialog */}
+			<AlertDialog open={isDisableOpen} onOpenChange={setIsDisableOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Disable User</AlertDialogTitle>
+						<AlertDialogDescription>
+							Are you sure you want to disable{" "}
+							{selectedUser?.name || selectedUser?.email}? They
+							will no longer be able to access the platform. You
+							can re-enable them later.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction onClick={handleConfirmDisable}>
+							Disable
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+
+			{/* Permanent delete confirmation dialog */}
 			<AlertDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete User</AlertDialogTitle>
+						<AlertDialogTitle>
+							Permanently Delete User
+						</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete{" "}
+							Are you sure you want to permanently delete{" "}
 							{selectedUser?.name || selectedUser?.email}? This
-							action cannot be undone.
+							action cannot be undone and all associated data will
+							be removed.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -362,7 +495,7 @@ export function Users() {
 							onClick={handleConfirmDelete}
 							className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
 						>
-							Delete
+							Permanently Delete
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

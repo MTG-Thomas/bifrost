@@ -88,7 +88,7 @@ export function Roles() {
 	};
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -126,7 +126,7 @@ export function Roles() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search roles by name or description..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 			</div>
 
@@ -144,9 +144,9 @@ export function Roles() {
 							<DataTableRow>
 								<DataTableHead>Name</DataTableHead>
 								<DataTableHead>Description</DataTableHead>
-								<DataTableHead>Status</DataTableHead>
-								<DataTableHead>Created</DataTableHead>
-								<DataTableHead className="text-right">
+								<DataTableHead className="w-0 whitespace-nowrap">Status</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Created</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap text-right">
 									Actions
 								</DataTableHead>
 							</DataTableRow>
@@ -160,7 +160,7 @@ export function Roles() {
 									<DataTableCell className="max-w-xs truncate text-muted-foreground">
 										{role.description || "-"}
 									</DataTableCell>
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										<Badge
 											variant={
 												role.is_active
@@ -173,14 +173,14 @@ export function Roles() {
 												: "Inactive"}
 										</Badge>
 									</DataTableCell>
-									<DataTableCell className="text-sm text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
 										{role.created_at
 											? new Date(
 													role.created_at,
 												).toLocaleDateString()
 											: "N/A"}
 									</DataTableCell>
-									<DataTableCell className="text-right">
+									<DataTableCell className="w-0 whitespace-nowrap text-right">
 										<div className="flex justify-end gap-2">
 											<Button
 												variant="ghost"

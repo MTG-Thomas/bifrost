@@ -39,10 +39,9 @@ function EditUserDialogContent({
 }) {
 	const [displayName, setDisplayName] = useState(user.name || "");
 	const [isActive, setIsActive] = useState(user.is_active);
-	const [isPlatformUser, setIsPlatformUser] = useState(
+	const [isPlatformAdmin, setIsPlatformAdmin] = useState(
 		user.is_superuser,
 	);
-	const [isSuperuser, setIsSuperuser] = useState(user.is_superuser);
 	const [orgId, setOrgId] = useState<string>(user.organization_id || "");
 	const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -50,29 +49,24 @@ function EditUserDialogContent({
 	const { data: organizations, isLoading: orgsLoading } = useOrganizations();
 	const { user: currentUser } = useAuth();
 
-	// Find the provider org (for auto-selecting when promoting to platform user)
+	// Find the provider org (for auto-selecting when promoting to platform admin)
 	const providerOrg = organizations?.find((org: Organization) => org.is_provider);
-
-	// Get current org name for display
-	const currentOrgName = user.organization_id
-		? organizations?.find((org: Organization) => org.id === user.organization_id)?.name || user.organization_id
-		: "Platform (no org)";
 
 	// Check if editing own account
 	const isEditingSelf = !!(currentUser && user.id === currentUser.id);
 
-	const isRoleChanging = user.is_superuser !== isPlatformUser;
-	const isDemoting = user.is_superuser && !isPlatformUser;
-	const isPromoting = !user.is_superuser && isPlatformUser;
+	const isRoleChanging = user.is_superuser !== isPlatformAdmin;
+	const isDemoting = user.is_superuser && !isPlatformAdmin;
+	const isPromoting = !user.is_superuser && isPlatformAdmin;
 
-	// Auto-select provider org when promoting to platform user
+	// Auto-select provider org when promoting to platform admin
 	const handleUserTypeChange = (value: string) => {
 		const isAdmin = value === "platform";
-		setIsPlatformUser(isAdmin);
+		setIsPlatformAdmin(isAdmin);
 		if (isAdmin && providerOrg) {
 			setOrgId(providerOrg.id);
-		} else if (!isAdmin && !user.organization_id) {
-			// When demoting, they need to select an org
+		} else if (!isAdmin && orgId === providerOrg?.id) {
+			// Clear provider org if switching to org user
 			setOrgId("");
 		}
 	};
@@ -82,16 +76,8 @@ function EditUserDialogContent({
 			setValidationError("Please enter a display name");
 			return false;
 		}
-		if (isDemoting && !orgId) {
-			setValidationError(
-				"Please select an organization when demoting to org user",
-			);
-			return false;
-		}
-		if (isPlatformUser && orgId) {
-			setValidationError(
-				"Platform users cannot be assigned to an organization",
-			);
+		if (!orgId) {
+			setValidationError("Please select an organization");
 			return false;
 		}
 		setValidationError(null);
@@ -105,9 +91,7 @@ function EditUserDialogContent({
 			return;
 		}
 
-		// Build request body with all fields (nulls for unchanged)
-		// When editing self, only allow displayName changes
-		// Note: is_superuser now determines platform admin status (user_type was removed)
+		// Build request body - only send changed fields
 		const body = {
 			name:
 				displayName.trim() !== (user.name || "")
@@ -117,10 +101,12 @@ function EditUserDialogContent({
 				!isEditingSelf && isActive !== user.is_active ? isActive : null,
 			is_superuser:
 				!isEditingSelf && isRoleChanging
-					? isPlatformUser
+					? isPlatformAdmin
 					: null,
 			organization_id:
-				!isEditingSelf && isDemoting ? orgId || null : null,
+				!isEditingSelf && orgId !== (user.organization_id || "")
+					? orgId || null
+					: null,
 		};
 
 		// If no actual changes, just close
@@ -232,15 +218,15 @@ function EditUserDialogContent({
 					<Label htmlFor="userType">User Type</Label>
 					<Combobox
 						id="userType"
-						value={isPlatformUser ? "platform" : "org"}
+						value={isPlatformAdmin ? "platform" : "org"}
 						onValueChange={handleUserTypeChange}
 						disabled={isEditingSelf}
 						options={[
 							{
 								value: "platform",
-								label: "Platform User",
+								label: "Platform Administrator",
 								description:
-									"Access to all organizations and settings",
+									"Full access to all organizations and settings",
 							},
 							{
 								value: "org",
@@ -253,126 +239,64 @@ function EditUserDialogContent({
 					/>
 				</div>
 
-				{/* Show current org (read-only) when not changing role */}
-				{!isRoleChanging && (
-					<div className="space-y-2">
-						<Label>Organization</Label>
-						<div className="flex items-center gap-2 px-3 py-2 rounded-md border bg-muted">
-							<span className="text-sm">{currentOrgName}</span>
-						</div>
-						<p className="text-xs text-muted-foreground">
-							Organization cannot be changed without changing user type
-						</p>
-					</div>
-				)}
-
-				{isPlatformUser && (
-					<div className="flex items-center justify-between rounded-lg border p-4">
-						<div className="space-y-0.5">
-							<Label htmlFor="superuser">Superuser</Label>
-							<p className="text-xs text-muted-foreground">
-								{isSuperuser
-									? "Full administrative privileges"
-									: "Standard platform user"}
-							</p>
-						</div>
-						<Switch
-							id="superuser"
-							checked={isSuperuser}
-							onCheckedChange={setIsSuperuser}
-							disabled={isEditingSelf}
-						/>
-					</div>
-				)}
-
-				{isDemoting && (
-					<>
-						<div className="space-y-2">
-							<Label htmlFor="organization">Organization</Label>
-							<Combobox
-								id="organization"
-								value={orgId}
-								onValueChange={setOrgId}
-								options={
-									organizations?.map((org: Organization) => {
-										const option: {
-											value: string;
-											label: string;
-											description?: string;
-										} = {
-											value: org.id,
-											label: org.name,
-										};
-										if (org.domain) {
-											option.description = `@${org.domain}`;
-										}
-										return option;
-									}) ?? []
+				<div className="space-y-2">
+					<Label htmlFor="organization">Organization</Label>
+					<Combobox
+						id="organization"
+						value={orgId}
+						onValueChange={setOrgId}
+						disabled={isPlatformAdmin || isEditingSelf}
+						options={
+							organizations?.map((org: Organization) => {
+								const option: {
+									value: string;
+									label: string;
+									description?: string;
+								} = {
+									value: org.id,
+									label: org.is_provider
+										? `${org.name} (Provider)`
+										: org.name,
+								};
+								if (org.domain) {
+									option.description = `@${org.domain}`;
 								}
-								placeholder="Select an organization..."
-								searchPlaceholder="Search organizations..."
-								emptyText="No organizations found."
-								isLoading={orgsLoading}
-							/>
-							<p className="text-xs text-muted-foreground">
-								Required when demoting from Platform User
-							</p>
-						</div>
+								return option;
+							}) ?? []
+						}
+						placeholder="Select an organization..."
+						searchPlaceholder="Search organizations..."
+						emptyText="No organizations found."
+						isLoading={orgsLoading}
+					/>
+					<p className="text-xs text-muted-foreground">
+						{isPlatformAdmin
+							? "Platform administrators are assigned to the provider organization"
+							: "The organization this user belongs to"}
+					</p>
+				</div>
 
-						<Alert variant="destructive">
-							<AlertTriangle className="h-4 w-4" />
-							<AlertDescription>
-								You are demoting this user from Platform User to
-								Organization User. They will lose access to all
-								other organizations and platform settings.
-							</AlertDescription>
-						</Alert>
-					</>
-				)}
-
-				{isPromoting && (
+				{isPlatformAdmin && isPromoting && (
 					<Alert>
 						<Shield className="h-4 w-4" />
 						<AlertDescription>
-							You are promoting this user to Platform User. They
-							will gain access to all features and organizations.
+							You are promoting this user to Platform
+							Administrator. They will gain unrestricted access
+							to all features, organizations, and settings.
 						</AlertDescription>
 					</Alert>
 				)}
 
-				{isRoleChanging && (
-					<div className="rounded-md bg-muted p-4 text-sm">
-						<p className="font-medium mb-1">Role Change Summary:</p>
-						<ul className="list-disc list-inside space-y-1 text-muted-foreground">
-							{isPromoting && (
-								<>
-									<li>
-										User will be promoted to Platform User
-									</li>
-									<li>
-										Organization assignments will be removed
-									</li>
-									<li>
-										Full platform access will be granted
-									</li>
-								</>
-							)}
-							{isDemoting && (
-								<>
-									<li>
-										User will be demoted to Organization
-										User
-									</li>
-									<li>
-										Platform-wide access will be revoked
-									</li>
-									<li>
-										Access limited to selected organization
-									</li>
-								</>
-							)}
-						</ul>
-					</div>
+				{isDemoting && (
+					<Alert variant="destructive">
+						<AlertTriangle className="h-4 w-4" />
+						<AlertDescription>
+							You are demoting this user from Platform
+							Administrator to Organization User. They will
+							lose access to all other organizations and
+							platform settings.
+						</AlertDescription>
+					</Alert>
 				)}
 
 				<DialogFooter>

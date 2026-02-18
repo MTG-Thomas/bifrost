@@ -198,7 +198,7 @@ export function Config() {
 	};
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			<div className="flex items-center justify-between">
 				<div>
 					<div className="flex items-center gap-3">
@@ -258,7 +258,7 @@ export function Config() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search config by key, value, type, or description..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 				{isPlatformAdmin && (
 					<div className="w-64">
@@ -324,13 +324,13 @@ export function Config() {
 									</DataTableHead>
 								)}
 								{isPlatformAdmin && (
-									<DataTableHead>Organization</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap">Organization</DataTableHead>
 								)}
 								<DataTableHead>Key</DataTableHead>
-								<DataTableHead>Value</DataTableHead>
-								<DataTableHead>Type</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Value</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Type</DataTableHead>
 								<DataTableHead>Description</DataTableHead>
-								<DataTableHead className="text-right" />
+								<DataTableHead className="w-0 whitespace-nowrap text-right" />
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
@@ -353,7 +353,7 @@ export function Config() {
 										</DataTableCell>
 									)}
 									{isPlatformAdmin && (
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											{config.org_id ? (
 												<Badge
 													variant="outline"
@@ -376,16 +376,16 @@ export function Config() {
 									<DataTableCell className="font-mono">
 										{config.key}
 									</DataTableCell>
-									<DataTableCell className="max-w-xs truncate">
+									<DataTableCell className="w-0 whitespace-nowrap max-w-xs truncate">
 										{maskValue(config.value, config.type)}
 									</DataTableCell>
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										{getTypeBadge(config.type)}
 									</DataTableCell>
 									<DataTableCell className="max-w-xs truncate text-muted-foreground">
 										{config.description || "-"}
 									</DataTableCell>
-									<DataTableCell className="text-right">
+									<DataTableCell className="w-0 whitespace-nowrap text-right">
 										<div className="flex justify-end gap-2">
 											<Button
 												variant="ghost"

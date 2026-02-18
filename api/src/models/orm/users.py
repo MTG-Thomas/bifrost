@@ -35,6 +35,7 @@ class User(Base):
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     is_registered: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mfa_enforced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     organization_id: Mapped[UUID | None] = mapped_column(

@@ -292,7 +292,7 @@ export function Knowledge() {
 	};
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -328,7 +328,7 @@ export function Knowledge() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search documents..."
-					className="w-64"
+					className="flex-1"
 				/>
 				<Select
 					value={filterNamespace ?? "__ALL__"}
@@ -429,12 +429,11 @@ export function Knowledge() {
 											/>
 										</DataTableHead>
 									)}
-									<DataTableHead>Scope</DataTableHead>
-									<DataTableHead>Namespace</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap">Scope</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap">Namespace</DataTableHead>
 									<DataTableHead>Key</DataTableHead>
-									<DataTableHead>Preview</DataTableHead>
-									<DataTableHead>Created</DataTableHead>
-									<DataTableHead className="text-right" />
+									<DataTableHead className="w-0 whitespace-nowrap">Created</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap text-right" />
 								</DataTableRow>
 							</DataTableHeader>
 							<DataTableBody>
@@ -459,7 +458,7 @@ export function Knowledge() {
 												/>
 											</DataTableCell>
 										)}
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											{doc.organization_id ? (
 												<Badge
 													variant="outline"
@@ -480,7 +479,7 @@ export function Knowledge() {
 												</Badge>
 											)}
 										</DataTableCell>
-										<DataTableCell className="font-medium">
+										<DataTableCell className="w-0 whitespace-nowrap">
 											<div className="flex items-center gap-2">
 												<BookOpen className="h-4 w-4 text-muted-foreground shrink-0" />
 												{doc.namespace}
@@ -489,18 +488,14 @@ export function Knowledge() {
 										<DataTableCell className="font-mono text-xs">
 											{doc.key || "-"}
 										</DataTableCell>
-										<DataTableCell className="max-w-xs truncate text-muted-foreground text-sm">
-											{doc.content_preview ||
-												"No content"}
-										</DataTableCell>
-										<DataTableCell className="text-xs text-muted-foreground">
+										<DataTableCell className="w-0 whitespace-nowrap text-xs text-muted-foreground">
 											{doc.created_at
 												? new Date(
 														doc.created_at,
 													).toLocaleDateString()
 												: "-"}
 										</DataTableCell>
-										<DataTableCell className="text-right">
+										<DataTableCell className="w-0 whitespace-nowrap text-right">
 											<Button
 												variant="ghost"
 												size="icon-sm"
@@ -519,7 +514,7 @@ export function Knowledge() {
 								<DataTableFooter>
 									<DataTableRow>
 										<DataTableCell
-											colSpan={isPlatformAdmin ? 7 : 6}
+											colSpan={isPlatformAdmin ? 6 : 5}
 											className="p-0"
 										>
 											<div className="px-6 py-4 flex items-center justify-center">

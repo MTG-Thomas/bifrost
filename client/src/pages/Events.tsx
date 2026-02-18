@@ -208,7 +208,7 @@ export function Events() {
 	}
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -250,7 +250,7 @@ export function Events() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search event sources..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 				{isPlatformAdmin && (
 					<div className="w-64">
@@ -323,20 +323,20 @@ export function Events() {
 						<DataTableHeader>
 							<DataTableRow>
 								{isPlatformAdmin && (
-									<DataTableHead>Organization</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap">Organization</DataTableHead>
 								)}
 								<DataTableHead>Name</DataTableHead>
-								<DataTableHead>Type</DataTableHead>
-								<DataTableHead className="text-right">
+								<DataTableHead className="w-0 whitespace-nowrap">Type</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap text-right">
 									Events (24h)
 								</DataTableHead>
-								<DataTableHead>Created</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Created</DataTableHead>
 								{isPlatformAdmin && (
 									<>
-										<DataTableHead className="text-right w-[80px]">
+										<DataTableHead className="w-0 whitespace-nowrap text-right">
 											Status
 										</DataTableHead>
-										<DataTableHead className="text-right w-[100px]" />
+										<DataTableHead className="w-0 whitespace-nowrap text-right" />
 									</>
 								)}
 							</DataTableRow>
@@ -349,7 +349,7 @@ export function Events() {
 									onClick={() => handleSourceClick(source)}
 								>
 									{isPlatformAdmin && (
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											{source.organization_id ? (
 												<Badge
 													variant="outline"
@@ -378,13 +378,13 @@ export function Events() {
 											{source.name}
 										</div>
 									</DataTableCell>
-									<DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
 										{getSourceTypeLabel(source.source_type)}
 									</DataTableCell>
-									<DataTableCell className="text-right">
+									<DataTableCell className="w-0 whitespace-nowrap text-right">
 										{source.event_count_24h || 0}
 									</DataTableCell>
-									<DataTableCell className="text-muted-foreground">
+									<DataTableCell className="w-0 whitespace-nowrap text-muted-foreground">
 										{formatDistanceToNow(
 											new Date(source.created_at),
 											{
@@ -394,7 +394,7 @@ export function Events() {
 									</DataTableCell>
 									{isPlatformAdmin && (
 										<>
-											<DataTableCell className="text-right">
+											<DataTableCell className="w-0 whitespace-nowrap text-right">
 												<Switch
 													checked={source.is_active}
 													onCheckedChange={() => {}}
@@ -409,7 +409,7 @@ export function Events() {
 													}
 												/>
 											</DataTableCell>
-											<DataTableCell className="text-right">
+											<DataTableCell className="w-0 whitespace-nowrap text-right">
 												<div className="flex items-center justify-end gap-1">
 													<Button
 														variant="ghost"

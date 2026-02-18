@@ -1,10 +1,13 @@
 """
 E2E tests for user management.
 
-Tests user creation, listing, and profile operations.
+Tests user creation, listing, profile operations,
+disable/enable, permanent delete, and system user protection.
 """
 
 import pytest
+
+from src.core.constants import SYSTEM_USER_ID
 
 
 @pytest.mark.e2e
@@ -46,6 +49,72 @@ class TestUserListing:
         assert org1_user.email in emails
         assert org2_user.email in emails
 
+    def test_system_user_hidden_from_listing(self, e2e_client, platform_admin):
+        """System user should never appear in user listings."""
+        response = e2e_client.get(
+            "/api/users",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        users = response.json()
+
+        user_ids = [u["id"] for u in users]
+        assert SYSTEM_USER_ID not in user_ids
+
+        # Also check is_system flag — all returned users should have is_system=false
+        for u in users:
+            assert u["is_system"] is False, f"System user leaked in listing: {u['email']}"
+
+    def test_inactive_users_hidden_by_default(self, e2e_client, platform_admin, org1):
+        """Inactive users should be hidden when include_inactive is not set."""
+        # Create a user to disable
+        create_resp = e2e_client.post(
+            "/api/users",
+            headers=platform_admin.headers,
+            json={
+                "email": "inactive-test@gobifrost.dev",
+                "name": "Inactive Test",
+                "organization_id": org1["id"],
+                "is_superuser": False,
+            },
+        )
+        assert create_resp.status_code == 201
+        user_id = create_resp.json()["id"]
+
+        # Disable the user
+        disable_resp = e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": False},
+        )
+        assert disable_resp.status_code == 200
+
+        # Default listing should NOT include inactive user
+        list_resp = e2e_client.get(
+            "/api/users",
+            headers=platform_admin.headers,
+        )
+        assert list_resp.status_code == 200
+        user_ids = [u["id"] for u in list_resp.json()]
+        assert user_id not in user_ids
+
+        # With include_inactive=true, it SHOULD appear
+        list_resp = e2e_client.get(
+            "/api/users",
+            headers=platform_admin.headers,
+            params={"include_inactive": "true"},
+        )
+        assert list_resp.status_code == 200
+        user_ids = [u["id"] for u in list_resp.json()]
+        assert user_id in user_ids
+
+        # Cleanup: permanently delete (already inactive)
+        del_resp = e2e_client.delete(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+        )
+        assert del_resp.status_code == 204
+
 
 @pytest.mark.e2e
 class TestUserProfile:
@@ -68,3 +137,172 @@ class TestUserProfile:
         assert response.status_code == 200
         data = response.json()
         assert data["mfa_enabled"] is True
+
+
+@pytest.mark.e2e
+class TestSystemUserProtection:
+    """Test that system user cannot be modified or deleted."""
+
+    def test_cannot_update_system_user(self, e2e_client, platform_admin):
+        """System user cannot be modified via PATCH."""
+        response = e2e_client.patch(
+            f"/api/users/{SYSTEM_USER_ID}",
+            headers=platform_admin.headers,
+            json={"name": "Hacked System User"},
+        )
+        assert response.status_code == 403
+        assert "system user" in response.json()["detail"].lower()
+
+    def test_cannot_delete_system_user(self, e2e_client, platform_admin):
+        """System user cannot be deleted."""
+        response = e2e_client.delete(
+            f"/api/users/{SYSTEM_USER_ID}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 403
+        assert "system user" in response.json()["detail"].lower()
+
+
+@pytest.mark.e2e
+class TestSelfProtection:
+    """Test that admins cannot demote or delete themselves."""
+
+    def test_cannot_delete_self(self, e2e_client, platform_admin):
+        """Admin cannot delete themselves."""
+        response = e2e_client.delete(
+            f"/api/users/{platform_admin.user_id}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 400
+        assert "yourself" in response.json()["detail"].lower()
+
+
+@pytest.mark.e2e
+class TestDisableEnableUser:
+    """Test disabling and re-enabling users."""
+
+    def test_disable_and_reenable_user(self, e2e_client, platform_admin, org1):
+        """Admin can disable and then re-enable a user via PATCH."""
+        # Create a test user
+        create_resp = e2e_client.post(
+            "/api/users",
+            headers=platform_admin.headers,
+            json={
+                "email": "toggle-test@gobifrost.dev",
+                "name": "Toggle Test",
+                "organization_id": org1["id"],
+                "is_superuser": False,
+            },
+        )
+        assert create_resp.status_code == 201
+        user_id = create_resp.json()["id"]
+
+        # Disable the user
+        disable_resp = e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": False},
+        )
+        assert disable_resp.status_code == 200
+        assert disable_resp.json()["is_active"] is False
+
+        # Re-enable the user
+        enable_resp = e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": True},
+        )
+        assert enable_resp.status_code == 200
+        assert enable_resp.json()["is_active"] is True
+
+        # Cleanup: disable then delete
+        e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": False},
+        )
+        e2e_client.delete(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+        )
+
+
+@pytest.mark.e2e
+class TestPermanentDelete:
+    """Test permanent user deletion."""
+
+    def test_cannot_delete_active_user(self, e2e_client, platform_admin, org1):
+        """Cannot permanently delete an active user — must disable first."""
+        # Create a test user (active by default)
+        create_resp = e2e_client.post(
+            "/api/users",
+            headers=platform_admin.headers,
+            json={
+                "email": "nodelete-active@gobifrost.dev",
+                "name": "No Delete Active",
+                "organization_id": org1["id"],
+                "is_superuser": False,
+            },
+        )
+        assert create_resp.status_code == 201
+        user_id = create_resp.json()["id"]
+
+        # Try to delete while active
+        del_resp = e2e_client.delete(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+        )
+        assert del_resp.status_code == 400
+        assert "disabled" in del_resp.json()["detail"].lower() or "inactive" in del_resp.json()["detail"].lower()
+
+        # Cleanup: disable then delete
+        e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": False},
+        )
+        e2e_client.delete(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+        )
+
+    def test_can_permanently_delete_disabled_user(self, e2e_client, platform_admin, org1):
+        """Can permanently delete a disabled user."""
+        # Create a test user
+        create_resp = e2e_client.post(
+            "/api/users",
+            headers=platform_admin.headers,
+            json={
+                "email": "permadelete@gobifrost.dev",
+                "name": "Perma Delete",
+                "organization_id": org1["id"],
+                "is_superuser": False,
+            },
+        )
+        assert create_resp.status_code == 201
+        user_id = create_resp.json()["id"]
+
+        # Disable first
+        disable_resp = e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": False},
+        )
+        assert disable_resp.status_code == 200
+
+        # Now permanently delete
+        del_resp = e2e_client.delete(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+        )
+        assert del_resp.status_code == 204
+
+        # Verify user is gone (even with include_inactive)
+        list_resp = e2e_client.get(
+            "/api/users",
+            headers=platform_admin.headers,
+            params={"include_inactive": "true"},
+        )
+        assert list_resp.status_code == 200
+        user_ids = [u["id"] for u in list_resp.json()]
+        assert user_id not in user_ids

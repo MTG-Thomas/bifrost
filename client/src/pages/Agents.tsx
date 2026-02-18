@@ -163,7 +163,7 @@ export function Agents() {
 	};
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -244,7 +244,7 @@ export function Agents() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search agents by name or description..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 				{isPlatformAdmin && (
 					<div className="w-64">
@@ -414,22 +414,22 @@ export function Agents() {
 							<DataTableHeader>
 								<DataTableRow>
 									{isPlatformAdmin && (
-										<DataTableHead>
+										<DataTableHead className="w-0 whitespace-nowrap">
 											Organization
 										</DataTableHead>
 									)}
 									<DataTableHead>Name</DataTableHead>
 									<DataTableHead>Description</DataTableHead>
-									<DataTableHead>Channels</DataTableHead>
-									<DataTableHead>Status</DataTableHead>
-									<DataTableHead className="text-right" />
+									<DataTableHead className="w-0 whitespace-nowrap">Channels</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap">Status</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap text-right" />
 								</DataTableRow>
 							</DataTableHeader>
 							<DataTableBody>
 								{filteredAgents.map((agent) => (
 									<DataTableRow key={agent.id}>
 										{isPlatformAdmin && (
-											<DataTableCell>
+											<DataTableCell className="w-0 whitespace-nowrap">
 												{agent.organization_id ? (
 													<Badge
 														variant="outline"
@@ -461,7 +461,7 @@ export function Agents() {
 											{agent.description ||
 												"No description"}
 										</DataTableCell>
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											<div className="flex flex-wrap gap-1">
 												{agent.channels?.map(
 													(channel) => (
@@ -476,7 +476,7 @@ export function Agents() {
 												)}
 											</div>
 										</DataTableCell>
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											<Switch
 												checked={agent.is_active}
 												onCheckedChange={() =>
@@ -485,7 +485,7 @@ export function Agents() {
 												disabled={updateAgent.isPending}
 											/>
 										</DataTableCell>
-										<DataTableCell className="text-right">
+										<DataTableCell className="w-0 whitespace-nowrap text-right">
 											<div className="flex justify-end gap-2">
 												<Button
 													variant="ghost"

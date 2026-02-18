@@ -145,7 +145,7 @@ export function Applications() {
 	]);
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6 max-w-7xl mx-auto">
 			<div className="flex items-center justify-between">
 				<div>
 					<div className="flex items-center gap-3">
@@ -229,7 +229,7 @@ export function Applications() {
 					value={searchTerm}
 					onChange={setSearchTerm}
 					placeholder="Search applications by name, description, or slug..."
-					className="max-w-md"
+					className="flex-1"
 				/>
 				{isPlatformAdmin && (
 					<div className="w-64">
@@ -399,22 +399,22 @@ export function Applications() {
 							<DataTableHeader>
 								<DataTableRow>
 									{isPlatformAdmin && (
-										<DataTableHead>
+										<DataTableHead className="w-0 whitespace-nowrap">
 											Organization
 										</DataTableHead>
 									)}
 									<DataTableHead>Name</DataTableHead>
 									<DataTableHead>Description</DataTableHead>
-									<DataTableHead>Status</DataTableHead>
-									<DataTableHead>Version</DataTableHead>
-									<DataTableHead className="text-right" />
+									<DataTableHead className="w-0 whitespace-nowrap">Status</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap">Version</DataTableHead>
+									<DataTableHead className="w-0 whitespace-nowrap text-right" />
 								</DataTableRow>
 							</DataTableHeader>
 							<DataTableBody>
 								{filteredApps.map((app) => (
 									<DataTableRow key={app.id}>
 										{isPlatformAdmin && (
-											<DataTableCell>
+											<DataTableCell className="w-0 whitespace-nowrap">
 												{app.organization_id ? (
 													<Badge
 														variant="outline"
@@ -436,17 +436,17 @@ export function Applications() {
 												)}
 											</DataTableCell>
 										)}
-										<DataTableCell className="font-medium break-all max-w-xs">
+										<DataTableCell className="font-medium">
 											{app.name}
 										</DataTableCell>
-										<DataTableCell className="max-w-xs break-words text-muted-foreground">
+										<DataTableCell className="max-w-xs truncate text-muted-foreground">
 											{app.description || (
 												<span className="italic">
 													No description
 												</span>
 											)}
 										</DataTableCell>
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											<div className="flex gap-1">
 												{app.is_published && (
 													<Badge
@@ -475,10 +475,10 @@ export function Applications() {
 													)}
 											</div>
 										</DataTableCell>
-										<DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
 											{app.is_published ? "Published" : "-"}
 										</DataTableCell>
-										<DataTableCell className="text-right">
+										<DataTableCell className="w-0 whitespace-nowrap text-right">
 											<div className="flex gap-1 justify-end">
 												<Button
 													size="sm"

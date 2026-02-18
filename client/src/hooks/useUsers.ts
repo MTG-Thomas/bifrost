@@ -21,13 +21,19 @@ export function useUsers() {
  *   - null: global/platform users only (no org assignment)
  *   - UUID string: users in that specific org
  */
-export function useUsersFiltered(scope?: string | null) {
+export function useUsersFiltered(
+	scope?: string | null,
+	includeInactive?: boolean,
+) {
 	// Build query params - convert null to "global" for the API
-	const queryParams: { scope?: string } = {};
+	const queryParams: { scope?: string; include_inactive?: boolean } = {};
 	if (scope === null) {
 		queryParams.scope = "global";
 	} else if (scope !== undefined) {
 		queryParams.scope = scope;
+	}
+	if (includeInactive) {
+		queryParams.include_inactive = true;
 	}
 
 	return $api.useQuery("get", "/api/users", {
