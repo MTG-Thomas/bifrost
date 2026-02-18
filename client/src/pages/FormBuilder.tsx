@@ -504,6 +504,7 @@ export function FormBuilder() {
 			<FormInfoDialog
 				open={isInfoDialogOpen}
 				onClose={() => setIsInfoDialogOpen(false)}
+				formId={formId}
 				onSave={(info) => {
 					setFormName(info.formName);
 					setFormDescription(info.formDescription);

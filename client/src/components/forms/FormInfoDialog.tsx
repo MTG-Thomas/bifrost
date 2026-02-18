@@ -33,6 +33,7 @@ import { useWorkflowsMetadata } from "@/hooks/useWorkflows";
 import { useRoles } from "@/hooks/useRoles";
 import { useAuth } from "@/contexts/AuthContext";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
+import { FormEmbedSection } from "@/components/forms/FormEmbedSection";
 import type { components } from "@/lib/v1";
 
 type WorkflowParameter = components["schemas"]["WorkflowParameter"];
@@ -64,6 +65,8 @@ interface FormInfoDialogProps {
 	};
 	/** Whether this is editing an existing form (org cannot be changed) */
 	isEditing?: boolean;
+	/** Form ID for embed settings (only available when editing) */
+	formId?: string;
 }
 
 export function FormInfoDialog({
@@ -72,6 +75,7 @@ export function FormInfoDialog({
 	onSave,
 	initialData,
 	isEditing = false,
+	formId,
 }: FormInfoDialogProps) {
 	const [rolesPopoverOpen, setRolesPopoverOpen] = useState(false);
 	const { isPlatformAdmin, user } = useAuth();
@@ -683,6 +687,10 @@ export function FormInfoDialog({
 							</div>
 						)}
 				</div>
+
+				{isEditing && formId && (
+					<FormEmbedSection formId={formId} />
+				)}
 
 				<DialogFooter>
 					<Button type="button" variant="outline" onClick={onClose}>
