@@ -246,7 +246,7 @@ export function Applications() {
 
 			{isLoading ? (
 				viewMode === "grid" || !canManageApps ? (
-					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
 						{[...Array(6)].map((_, i) => (
 							<Skeleton key={i} className="h-48 w-full" />
 						))}
@@ -260,7 +260,7 @@ export function Applications() {
 				)
 			) : filteredApps && filteredApps.length > 0 ? (
 				viewMode === "grid" || !canManageApps ? (
-					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
 						{filteredApps.map((app) => (
 							<Card
 								key={app.id}

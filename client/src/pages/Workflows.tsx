@@ -394,7 +394,7 @@ export function Workflows() {
 				<div className="flex-1 min-w-0 overflow-auto">
 					{isLoading ? (
 						viewMode === "grid" ? (
-							<div className={`grid gap-4 ${sidebarOpen ? "lg:grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3" : "lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"}`}>
+							<div className={"grid gap-4 grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"}>
 								{[...Array(6)].map((_, i) => (
 									<Skeleton key={i} className="h-56 w-full" />
 								))}
@@ -408,7 +408,7 @@ export function Workflows() {
 						)
 					) : filteredWorkflows.length > 0 ? (
 						viewMode === "grid" ? (
-							<div className={`grid gap-4 ${sidebarOpen ? "lg:grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3" : "lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"}`}>
+							<div className={"grid gap-4 grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"}>
 								{filteredWorkflows.map((workflow) => (
 									<Card
 										key={workflow.id ?? workflow.name}

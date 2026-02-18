@@ -269,7 +269,7 @@ export function Agents() {
 			{/* Content */}
 			{isLoading ? (
 				viewMode === "grid" || !canManageAgents ? (
-					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
 						{[...Array(6)].map((_, i) => (
 							<Skeleton key={i} className="h-48 w-full" />
 						))}
@@ -284,45 +284,26 @@ export function Agents() {
 			) : filteredAgents && filteredAgents.length > 0 ? (
 				viewMode === "grid" || !canManageAgents ? (
 					// Grid View
-					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
 						{filteredAgents.map((agent) => (
 							<Card
 								key={agent.id}
 								className="hover:border-primary transition-colors flex flex-col"
 							>
 								<CardHeader className="pb-3">
-									<div className="flex items-start justify-between gap-3">
-										<div className="flex-1 min-w-0">
-											<div className="flex items-center gap-2">
-												<Bot className="h-4 w-4 text-muted-foreground shrink-0" />
-												<CardTitle className="text-base break-words">
-													{agent.name}
-												</CardTitle>
-											</div>
-											<CardDescription className="mt-1.5 text-sm break-words line-clamp-2">
-												{agent.description || (
-													<span className="italic text-muted-foreground/60">
-														No description
-													</span>
-												)}
-											</CardDescription>
-										</div>
-										{canManageAgents && (
-											<div className="flex items-center gap-2 shrink-0">
-												<Switch
-													checked={agent.is_active}
-													onCheckedChange={() =>
-														handleToggleActive(
-															agent,
-														)
-													}
-													disabled={
-														updateAgent.isPending
-													}
-												/>
-											</div>
-										)}
+									<div className="flex items-center gap-2">
+										<Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+										<CardTitle className="text-base truncate" title={agent.name}>
+											{agent.name}
+										</CardTitle>
 									</div>
+									<CardDescription className="mt-1.5 text-sm break-words line-clamp-2">
+										{agent.description || (
+											<span className="italic text-muted-foreground/60">
+												No description
+											</span>
+										)}
+									</CardDescription>
 								</CardHeader>
 								<CardContent className="pt-0 mt-auto">
 									{/* Private badge */}
@@ -375,7 +356,7 @@ export function Agents() {
 
 									{/* Actions */}
 									{canManageAgents && (
-										<div className="flex gap-2">
+										<div className="flex items-center gap-2">
 											<Button
 												variant="outline"
 												size="sm"
@@ -410,6 +391,19 @@ export function Agents() {
 											>
 												<Trash2 className="h-3 w-3" />
 											</Button>
+											<div className="shrink-0 ml-auto">
+												<Switch
+													checked={agent.is_active}
+													onCheckedChange={() =>
+														handleToggleActive(
+															agent,
+														)
+													}
+													disabled={
+														updateAgent.isPending
+													}
+												/>
+											</div>
 										</div>
 									)}
 								</CardContent>
