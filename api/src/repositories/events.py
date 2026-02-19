@@ -351,6 +351,7 @@ class EventDeliveryRepository(BaseRepository[EventDelivery]):
             .options(
                 joinedload(EventDelivery.workflow),
                 joinedload(EventDelivery.execution),
+                joinedload(EventDelivery.subscription),
             )
             .where(EventDelivery.event_id == event_id)
             .order_by(EventDelivery.created_at)

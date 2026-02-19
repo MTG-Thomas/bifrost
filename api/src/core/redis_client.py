@@ -444,7 +444,7 @@ class RedisClient:
     # Endpoint Workflow Cache (for fast webhook execution)
     # =========================================================================
 
-    async def get_endpoint_workflow_cache(self, workflow_name: str) -> dict[str, Any] | None:
+    async def get_endpoint_workflow_cache(self, workflow_id: str) -> dict[str, Any] | None:
         """
         Get cached endpoint workflow metadata.
 
@@ -452,13 +452,13 @@ class RedisClient:
         Returns: {workflow_id, file_path, execution_mode, timeout_seconds, allowed_methods}
 
         Args:
-            workflow_name: Workflow name
+            workflow_id: Workflow UUID string
 
         Returns:
             Cached metadata dict or None if not cached
         """
         redis_client = await self._get_redis()
-        key = f"{ENDPOINT_WORKFLOW_CACHE_PREFIX}{workflow_name}"
+        key = f"{ENDPOINT_WORKFLOW_CACHE_PREFIX}{workflow_id}"
 
         try:
             data = await redis_client.get(key)
@@ -466,12 +466,11 @@ class RedisClient:
                 return None
             return json.loads(data)
         except Exception as e:
-            logger.warning(f"Failed to get endpoint workflow cache for {workflow_name}: {e}")
+            logger.warning(f"Failed to get endpoint workflow cache for {workflow_id}: {e}")
             return None
 
     async def set_endpoint_workflow_cache(
         self,
-        workflow_name: str,
         workflow_id: str,
         file_path: str,
         execution_mode: str,
@@ -484,15 +483,14 @@ class RedisClient:
         Called after loading workflow metadata to speed up future requests.
 
         Args:
-            workflow_name: Workflow name (cache key)
-            workflow_id: Workflow UUID from database
+            workflow_id: Workflow UUID string (cache key)
             file_path: Relative file path (e.g., "workflows/my_workflow.py")
             execution_mode: "sync" or "async"
             timeout_seconds: Execution timeout
             allowed_methods: List of allowed HTTP methods ["GET", "POST", etc.]
         """
         redis_client = await self._get_redis()
-        key = f"{ENDPOINT_WORKFLOW_CACHE_PREFIX}{workflow_name}"
+        key = f"{ENDPOINT_WORKFLOW_CACHE_PREFIX}{workflow_id}"
 
         data = {
             "workflow_id": workflow_id,
@@ -508,28 +506,28 @@ class RedisClient:
                 ENDPOINT_WORKFLOW_CACHE_TTL_SECONDS,
                 json.dumps(data),
             )
-            logger.debug(f"Cached endpoint workflow: {workflow_name}")
+            logger.debug(f"Cached endpoint workflow: {workflow_id}")
         except Exception as e:
-            logger.warning(f"Failed to cache endpoint workflow {workflow_name}: {e}")
+            logger.warning(f"Failed to cache endpoint workflow {workflow_id}: {e}")
             # Don't raise - cache failure shouldn't fail the request
 
-    async def invalidate_endpoint_workflow_cache(self, workflow_name: str) -> None:
+    async def invalidate_endpoint_workflow_cache(self, workflow_id: str) -> None:
         """
         Invalidate cached endpoint workflow metadata.
 
         Called when workflow file is modified or deleted.
 
         Args:
-            workflow_name: Workflow name to invalidate
+            workflow_id: Workflow UUID string to invalidate
         """
         redis_client = await self._get_redis()
-        key = f"{ENDPOINT_WORKFLOW_CACHE_PREFIX}{workflow_name}"
+        key = f"{ENDPOINT_WORKFLOW_CACHE_PREFIX}{workflow_id}"
 
         try:
             await redis_client.delete(key)
-            logger.debug(f"Invalidated endpoint workflow cache: {workflow_name}")
+            logger.debug(f"Invalidated endpoint workflow cache: {workflow_id}")
         except Exception as e:
-            logger.warning(f"Failed to invalidate endpoint workflow cache {workflow_name}: {e}")
+            logger.warning(f"Failed to invalidate endpoint workflow cache {workflow_id}: {e}")
 
     async def invalidate_all_endpoint_workflow_caches(self) -> int:
         """

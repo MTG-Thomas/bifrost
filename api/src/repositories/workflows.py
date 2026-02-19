@@ -368,6 +368,26 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
             workflow.api_key_last_used_at = datetime.now(timezone.utc)
             await self.session.flush()
 
+    async def get_endpoint_workflow_by_id(self, workflow_id: UUID) -> Workflow | None:
+        """
+        Get endpoint-enabled workflow by UUID.
+
+        Used by the /api/endpoints/{workflow_id} route.
+
+        Args:
+            workflow_id: Workflow UUID
+
+        Returns:
+            Workflow if found, active, and endpoint-enabled; None otherwise
+        """
+        result = await self.session.execute(
+            select(Workflow)
+            .where(Workflow.id == workflow_id)
+            .where(Workflow.endpoint_enabled.is_(True))
+            .where(Workflow.is_active.is_(True))
+        )
+        return result.scalar_one_or_none()
+
     async def get_endpoint_workflow_by_name(self, name: str) -> Workflow | None:
         """
         Get endpoint-enabled workflow by name.
@@ -407,34 +427,35 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
     async def validate_api_key(
         self,
         key_hash: str,
-        workflow_name: str | None = None,
+        workflow_id: UUID | None = None,
     ) -> tuple[bool, UUID | None]:
         """
         Validate an API key.
 
         Args:
             key_hash: SHA-256 hash of the API key
-            workflow_name: If provided, validates key works for this workflow
+            workflow_id: If provided, validates key works for this workflow
 
         Returns:
             Tuple of (is_valid, workflow_id)
         """
         # Check for workflow-specific key
-        result = await self.session.execute(
+        stmt = (
             select(Workflow)
             .where(Workflow.api_key_hash == key_hash)
             .where(Workflow.api_key_enabled.is_(True))
             .where(Workflow.is_active.is_(True))
         )
+
+        if workflow_id:
+            stmt = stmt.where(Workflow.id == workflow_id)
+
+        result = await self.session.execute(stmt)
         workflow = result.scalar_one_or_none()
 
         if workflow:
             # Check expiration
             if workflow.api_key_expires_at and workflow.api_key_expires_at < datetime.now(timezone.utc):
-                return False, None
-
-            # If workflow_name provided, verify it matches
-            if workflow_name and workflow.name != workflow_name:
                 return False, None
 
             return True, workflow.id

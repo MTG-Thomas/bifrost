@@ -59,10 +59,6 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 		return "plaintext";
 	};
 
-	// Labels depend on whether this is a conflict or uncommitted change
-	const leftLabel = preview.isConflict ? "Ours (Platform)" : "Working Tree";
-	const rightLabel = preview.isConflict ? "Theirs (Git)" : "Last Commit";
-
 	return (
 		<div className="flex flex-col h-full bg-background">
 			{/* Header */}
@@ -85,16 +81,6 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 				</Button>
 			</div>
 
-			{/* Diff labels */}
-			<div className="flex border-b text-xs">
-				<div className="flex-1 px-3 py-1 bg-red-500/10 text-center">
-					{leftLabel}
-				</div>
-				<div className="flex-1 px-3 py-1 bg-green-500/10 text-center">
-					{rightLabel}
-				</div>
-			</div>
-
 			{/* Diff editor or loading state */}
 			<div className="flex-1 min-h-0">
 				{isLoading ? (
@@ -106,14 +92,14 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 						height="100%"
 						language={getLanguage(preview.path)}
 						theme={theme === "dark" ? "vs-dark" : "light"}
-						original={preview.localContent ?? ""}
-						modified={preview.remoteContent ?? ""}
+						original={preview.remoteContent ?? ""}
+						modified={preview.localContent ?? ""}
 						onMount={handleMount}
 						options={{
 							readOnly: true,
 							minimap: { enabled: false },
 							scrollBeyondLastLine: false,
-							renderSideBySide: true,
+							renderSideBySide: false,
 						}}
 					/>
 				)}

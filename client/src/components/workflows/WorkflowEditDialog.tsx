@@ -69,7 +69,7 @@ import {
 	useAssignRolesToWorkflow,
 	useRemoveRoleFromWorkflow,
 } from "@/hooks/useWorkflowRoles";
-import { useWorkflowKeys, useCreateWorkflowKey } from "@/hooks/useWorkflowKeys";
+import { useWorkflowKeys, useCreateWorkflowKey, useRevokeWorkflowKey } from "@/hooks/useWorkflowKeys";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import type { components } from "@/lib/v1";
 
@@ -157,10 +157,11 @@ export function WorkflowEditDialog({
 
 	// API key management for endpoint tab
 	const { data: existingKeys, refetch: refetchKeys } = useWorkflowKeys({
-		workflowId: workflow?.name ?? undefined,
+		workflowId: workflow?.id ?? undefined,
 		includeRevoked: false,
 	});
 	const createKeyMutation = useCreateWorkflowKey();
+	const revokeKeyMutation = useRevokeWorkflowKey();
 	const workflowKey = existingKeys?.[0];
 	const displayKey = newlyGeneratedKey || workflowKey?.masked_key || "";
 	const hasKey = !!workflowKey || !!newlyGeneratedKey;
@@ -293,10 +294,14 @@ export function WorkflowEditDialog({
 	};
 
 	const handleGenerateKey = async () => {
-		if (!workflow?.name) return;
+		if (!workflow?.id) return;
 		try {
+			// If already has a key, revoke it first
+			if (workflowKey) {
+				await revokeKeyMutation.mutateAsync(workflowKey.id);
+			}
 			const result = await createKeyMutation.mutateAsync({
-				workflow_name: workflow.name,
+				workflow_id: workflow.id,
 				disable_global_key: false,
 			});
 			if (result.raw_key) {
@@ -326,7 +331,7 @@ export function WorkflowEditDialog({
 	const baseUrl = typeof window !== "undefined"
 		? `${window.location.protocol}//${window.location.host}`
 		: "";
-	const endpointUrl = workflow?.name ? `${baseUrl}/api/endpoints/${workflow.name}` : "";
+	const endpointUrl = workflow?.id ? `${baseUrl}/api/endpoints/${workflow.id}` : "";
 	const isPublicEndpoint = publicEndpoint;
 	const apiKeyValue = displayKey || "YOUR_API_KEY";
 
@@ -813,10 +818,10 @@ export function WorkflowEditDialog({
 														variant="outline"
 														size="sm"
 														onClick={handleGenerateKey}
-														disabled={createKeyMutation.isPending}
+														disabled={createKeyMutation.isPending || revokeKeyMutation.isPending}
 														title="Regenerate API key"
 													>
-														<RefreshCw className={cn("h-4 w-4", createKeyMutation.isPending && "animate-spin")} />
+														<RefreshCw className={cn("h-4 w-4", (createKeyMutation.isPending || revokeKeyMutation.isPending) && "animate-spin")} />
 													</Button>
 												</div>
 											) : (

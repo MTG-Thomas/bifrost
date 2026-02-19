@@ -135,10 +135,10 @@ class WorkflowIndexer:
                     function_name = node.name
 
                     # Look up existing workflow by path + function_name
+                    # Include inactive rows so we can reactivate them
                     stmt = select(Workflow).where(
                         Workflow.path == path,
                         Workflow.function_name == function_name,
-                        Workflow.is_active.is_(True),
                     )
                     result = await self.db.execute(stmt)
                     existing_workflow = result.scalar_one_or_none()
@@ -160,71 +160,66 @@ class WorkflowIndexer:
                         if docstring:
                             description = docstring.strip().split("\n")[0].strip()
 
-                    category = kwargs.get("category", "General")
-                    tags = kwargs.get("tags", [])
-                    endpoint_enabled = kwargs.get("endpoint_enabled", False)
-                    allowed_methods = kwargs.get("allowed_methods", ["POST"])
-                    execution_mode = kwargs.get("execution_mode")
-                    if execution_mode is None:
-                        execution_mode = "sync" if endpoint_enabled else "async"
                     is_tool = kwargs.get("is_tool", False)
-                    tool_description = kwargs.get("tool_description")
-                    time_saved = kwargs.get("time_saved", 0)
-                    value = kwargs.get("value", 0.0)
-                    timeout_seconds = kwargs.get("timeout_seconds", 1800)
                     workflow_type = "tool" if is_tool else "workflow"
                     parameters_schema = self._extract_parameters_from_ast(node)
+
+                    # Only update code-derived fields and valid decorator params.
+                    # Operational settings (execution_mode, timeout_seconds,
+                    # endpoint_enabled, allowed_methods, time_saved, value,
+                    # tool_description) are API/UI-only — never set from code.
+                    was_inactive = not existing_workflow.is_active
+
+                    update_values: dict[str, Any] = {
+                        "name": workflow_name,
+                        "function_name": function_name,
+                        "path": path,
+                        "description": description,
+                        "category": kwargs.get("category", "General"),
+                        "tags": kwargs.get("tags", []),
+                        "parameters_schema": parameters_schema,
+                        "type": workflow_type,
+                        "is_active": True,
+                        "is_orphaned": False,
+                        "last_seen_at": now,
+                        "updated_at": now,
+                    }
+
+                    if was_inactive:
+                        logger.info(f"Reactivating workflow: {workflow_name} ({function_name}) from {path}")
 
                     # Enrich existing record with content-derived fields
                     stmt = (
                         update(Workflow)
                         .where(Workflow.id == workflow_uuid)
-                        .values(
-                            name=workflow_name,
-                            function_name=function_name,
-                            path=path,
-                            description=description,
-                            category=category,
-                            parameters_schema=parameters_schema,
-                            tags=tags,
-                            endpoint_enabled=endpoint_enabled,
-                            allowed_methods=allowed_methods,
-                            execution_mode=execution_mode,
-                            type=workflow_type,
-                            tool_description=tool_description,
-                            timeout_seconds=timeout_seconds,
-                            time_saved=time_saved,
-                            value=value,
-                            is_active=True,
-                            last_seen_at=now,
-                            updated_at=now,
-                        )
+                        .values(**update_values)
                     )
                     await self.db.execute(stmt)
                     logger.debug(f"Enriched workflow: {workflow_name} ({function_name}) from {path}")
 
+                    # Re-fetch to get merged DB values (decorator + API settings)
+                    result = await self.db.execute(
+                        select(Workflow).where(Workflow.id == workflow_uuid)
+                    )
+                    workflow = result.scalar_one()
+
                     # Refresh endpoint registration if endpoint_enabled
-                    if endpoint_enabled:
-                        # Re-fetch for the refresh call
-                        result = await self.db.execute(
-                            select(Workflow).where(Workflow.id == workflow_uuid)
-                        )
-                        workflow = result.scalar_one()
+                    if workflow.endpoint_enabled:
                         await self.refresh_workflow_endpoint(workflow)
 
-                    # Update Redis caches
+                    # Update Redis caches with merged values from DB
                     try:
                         from src.core.redis_client import get_redis_client
                         redis_client = get_redis_client()
-                        await redis_client.invalidate_endpoint_workflow_cache(workflow_name)
+                        await redis_client.invalidate_endpoint_workflow_cache(str(workflow_uuid))
                         await redis_client.set_workflow_metadata_cache(
                             workflow_id=str(workflow_uuid),
-                            name=workflow_name,
-                            file_path=path,
-                            timeout_seconds=timeout_seconds,
-                            time_saved=time_saved,
-                            value=value,
-                            execution_mode=execution_mode,
+                            name=workflow.name,
+                            file_path=workflow.path,
+                            timeout_seconds=workflow.timeout_seconds,
+                            time_saved=workflow.time_saved,
+                            value=workflow.value,
+                            execution_mode=workflow.execution_mode,
                         )
                     except Exception as e:
                         logger.warning(f"Failed to update caches for workflow {workflow_name}: {e}")
@@ -233,11 +228,10 @@ class WorkflowIndexer:
                     provider_name = kwargs.get("name") or node.name
                     function_name = node.name
 
-                    # Look up existing data_provider
+                    # Look up existing data_provider (include inactive for reactivation)
                     stmt = select(Workflow).where(
                         Workflow.path == path,
                         Workflow.function_name == function_name,
-                        Workflow.is_active.is_(True),
                     )
                     result = await self.db.execute(stmt)
                     existing_dp = result.scalar_one_or_none()
@@ -249,25 +243,26 @@ class WorkflowIndexer:
                         continue
 
                     description = kwargs.get("description")
-                    category = kwargs.get("category", "General")
-                    tags = kwargs.get("tags", [])
-                    timeout_seconds = kwargs.get("timeout_seconds", 300)
-                    cache_ttl_seconds = kwargs.get("cache_ttl_seconds", 300)
                     parameters_schema = self._extract_parameters_from_ast(node)
 
+                    if not existing_dp.is_active:
+                        logger.info(f"Reactivating data provider: {provider_name} ({function_name}) from {path}")
+
+                    # Only update code-derived fields and valid decorator params.
+                    # Operational settings (timeout_seconds, cache_ttl_seconds)
+                    # are API/UI-only — never set from code.
                     stmt = (
                         update(Workflow)
                         .where(Workflow.id == existing_dp.id)
                         .values(
                             name=provider_name,
                             description=description,
-                            category=category,
-                            tags=tags,
+                            category=kwargs.get("category", "General"),
+                            tags=kwargs.get("tags", []),
                             parameters_schema=parameters_schema,
                             type="data_provider",
-                            timeout_seconds=timeout_seconds,
-                            cache_ttl_seconds=cache_ttl_seconds,
                             is_active=True,
+                            is_orphaned=False,
                             last_seen_at=now,
                             updated_at=now,
                         )

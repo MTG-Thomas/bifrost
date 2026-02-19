@@ -64,12 +64,20 @@ async def list_keys(
     ctx: Context,
     user: CurrentSuperuser,
     db: DbSession,
+    workflow_id: str | None = None,
 ) -> list[WorkflowKeyResponse]:
     """List all workflows with API keys enabled."""
     query = select(Workflow).where(
         Workflow.api_key_hash.isnot(None),  # Has an API key
-        Workflow.api_key_enabled == True  # noqa: E712
+        Workflow.api_key_enabled == True,  # noqa: E712
+        Workflow.is_active == True,  # noqa: E712
     ).order_by(Workflow.api_key_created_at.desc())
+
+    if workflow_id:
+        try:
+            query = query.where(Workflow.id == UUID(workflow_id))
+        except ValueError:
+            return []
 
     result = await db.execute(query)
     workflows = result.scalars().all()
@@ -77,6 +85,7 @@ async def list_keys(
     return [
         WorkflowKeyResponse(
             id=str(wf.id),
+            workflow_id=str(wf.id),
             workflow_name=wf.name,
             raw_key=None,  # Never return raw key in list
             masked_key=mask_key(wf.api_key_hash or ""),
@@ -106,30 +115,41 @@ async def create_key(
 ) -> WorkflowKeyCreatedResponse:
     """Create a new workflow API key. Each workflow can have one API key."""
 
-    # Workflow name is now required
-    if not request.workflow_name:
+    # Workflow ID is now required
+    if not request.workflow_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="workflow_name is required (global keys are no longer supported)"
+            detail="workflow_id is required (global keys are no longer supported)"
         )
 
-    # Look up the workflow
+    # Look up the workflow by ID
+    try:
+        wf_uuid = UUID(request.workflow_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid workflow_id format (expected UUID)"
+        )
+
     result = await db.execute(
-        select(Workflow).where(Workflow.name == request.workflow_name)
+        select(Workflow).where(
+            Workflow.id == wf_uuid,
+            Workflow.is_active == True,  # noqa: E712
+        )
     )
     workflow = result.scalar_one_or_none()
 
     if not workflow:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow '{request.workflow_name}' not found"
+            detail=f"Workflow '{request.workflow_id}' not found"
         )
 
     # Check if workflow already has a key
     if workflow.api_key_hash and workflow.api_key_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Workflow '{request.workflow_name}' already has an active API key. Revoke it first."
+            detail=f"Workflow '{workflow.name}' already has an active API key. Revoke it first."
         )
 
     # Generate new key
@@ -150,10 +170,11 @@ async def create_key(
     await db.flush()
     await db.refresh(workflow)
 
-    logger.info(f"Created API key for workflow '{request.workflow_name}' by {user.email}")
+    logger.info(f"Created API key for workflow '{workflow.name}' (ID: {workflow.id}) by {user.email}")
 
     return WorkflowKeyCreatedResponse(
         id=str(workflow.id),
+        workflow_id=str(workflow.id),
         workflow_name=workflow.name,
         masked_key=mask_key(hashed_key),
         raw_key=raw_key,
@@ -217,7 +238,7 @@ async def revoke_key(
 async def validate_workflow_key(
     db: DbSession,
     api_key: str,
-    workflow_name: str | None = None,
+    workflow_id: str | None = None,
 ) -> tuple[bool, UUID | None]:
     """
     Validate an API key for workflow execution.
@@ -225,7 +246,7 @@ async def validate_workflow_key(
     Args:
         db: Database session
         api_key: Raw API key to validate
-        workflow_name: Workflow name to validate against (required for new system)
+        workflow_id: Workflow UUID string to validate against
 
     Returns:
         Tuple of (is_valid, workflow_id)
@@ -237,15 +258,19 @@ async def validate_workflow_key(
     query = select(Workflow).where(
         Workflow.api_key_hash == hashed_key,
         Workflow.api_key_enabled == True,  # noqa: E712
+        Workflow.is_active == True,  # noqa: E712
         or_(
             Workflow.api_key_expires_at.is_(None),
             Workflow.api_key_expires_at > now,
         ),
     )
 
-    # If workflow_name provided, filter by name
-    if workflow_name:
-        query = query.where(Workflow.name == workflow_name)
+    # If workflow_id provided, filter by ID
+    if workflow_id:
+        try:
+            query = query.where(Workflow.id == UUID(workflow_id))
+        except ValueError:
+            return (False, None)
 
     result = await db.execute(query)
     workflow = result.scalar_one_or_none()

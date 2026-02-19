@@ -136,6 +136,80 @@ def test_dup_wf(message: str):
             headers=platform_admin.headers,
         )
 
+    def test_reindex_reactivates_inactive_workflow(self, e2e_client, platform_admin):
+        """Re-uploading a file reactivates deactivated workflows with the same UUID."""
+        file_content = '''
+from bifrost import workflow
+
+@workflow(name="Reactivation Test Workflow")
+def test_reactivate_wf(message: str):
+    """A test workflow for reactivation."""
+    return {"message": message}
+'''
+        # Write file and register
+        e2e_client.put(
+            "/api/files/editor/content",
+            headers=platform_admin.headers,
+            json={
+                "path": "workflows/test_reactivate.py",
+                "content": file_content,
+                "encoding": "utf-8",
+            },
+        )
+        reg_resp = e2e_client.post(
+            "/api/workflows/register",
+            headers=platform_admin.headers,
+            json={"path": "workflows/test_reactivate.py", "function_name": "test_reactivate_wf"},
+        )
+        assert reg_resp.status_code == 201, f"First register failed: {reg_resp.text}"
+        original_id = reg_resp.json()["id"]
+
+        # Delete the source file to deactivate the workflow
+        del_resp = e2e_client.delete(
+            "/api/files/editor?path=workflows/test_reactivate.py",
+            headers=platform_admin.headers,
+        )
+        assert del_resp.status_code in (200, 204), f"Delete failed: {del_resp.text}"
+
+        # Verify workflow is no longer listed (is_active=False)
+        list_resp = e2e_client.get(
+            "/api/workflows",
+            headers=platform_admin.headers,
+        )
+        assert list_resp.status_code == 200
+        active_ids = [w["id"] for w in list_resp.json()]
+        assert original_id not in active_ids, "Workflow should be inactive after file deletion"
+
+        # Re-upload the file — indexer should reactivate the workflow automatically
+        write_resp = e2e_client.put(
+            "/api/files/editor/content",
+            headers=platform_admin.headers,
+            json={
+                "path": "workflows/test_reactivate.py",
+                "content": file_content,
+                "encoding": "utf-8",
+            },
+        )
+        assert write_resp.status_code == 200, f"Re-upload failed: {write_resp.text}"
+
+        # Verify workflow is active again with the same UUID
+        list_resp = e2e_client.get(
+            "/api/workflows",
+            headers=platform_admin.headers,
+        )
+        assert list_resp.status_code == 200
+        reactivated = [w for w in list_resp.json() if w["id"] == original_id]
+        assert len(reactivated) == 1, (
+            f"Expected workflow {original_id} to be reactivated in workflow list"
+        )
+        assert reactivated[0]["name"] == "Reactivation Test Workflow"
+
+        # Cleanup
+        e2e_client.delete(
+            "/api/files/editor?path=workflows/test_reactivate.py",
+            headers=platform_admin.headers,
+        )
+
     def test_register_non_python_file_fails(self, e2e_client, platform_admin):
         """Registration fails for non-.py files."""
         # Write a non-Python file first so the endpoint finds it and

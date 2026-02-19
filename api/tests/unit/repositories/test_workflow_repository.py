@@ -250,13 +250,15 @@ class TestWorkflowRepository:
         assert workflow_id is None
 
     async def test_validate_api_key_wrong_workflow(self, repository, mock_session, mock_workflow):
-        """Test validating API key for wrong workflow."""
+        """Test validating API key for wrong workflow (different ID)."""
+        from uuid import uuid4
+        # When filtering by a different workflow_id, no result is found
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_workflow
+        mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
 
         is_valid, workflow_id = await repository.validate_api_key(
-            "abc123", workflow_name="other-workflow"
+            "abc123", workflow_id=uuid4()
         )
 
         assert is_valid is False

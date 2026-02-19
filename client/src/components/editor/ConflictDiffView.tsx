@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { useTheme } from "@/contexts/ThemeContext";
 import type * as Monaco from "monaco-editor";
@@ -41,12 +41,6 @@ export function ConflictDiffView({
 	const handleMount: DiffOnMount = (editor) => {
 		editorRef.current = editor;
 	};
-
-	useEffect(() => {
-		return () => {
-			editorRef.current?.dispose();
-		};
-	}, []);
 
 	const confirmChoice = (selectedChoice: "current" | "incoming") => {
 		setChoice(selectedChoice);

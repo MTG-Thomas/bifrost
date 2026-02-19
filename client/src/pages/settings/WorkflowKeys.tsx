@@ -96,11 +96,10 @@ export function WorkflowKeys() {
 			.filter(
 				(w: WorkflowMetadata) =>
 					w.endpoint_enabled && !w.public_endpoint,
-			) // Only endpoint-enabled non-public workflows
-			.map((w: WorkflowMetadata) => w.name)
-			.filter((name): name is string => !!name)
-			.sort();
+			)
+			.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
 	}, [workflowsData]);
+
 
 	// Get workflows available for key creation (endpoint-enabled, non-public, and no existing key)
 	const availableWorkflows = useMemo(() => {
@@ -108,7 +107,7 @@ export function WorkflowKeys() {
 
 		// Get set of workflow IDs that already have keys
 		const workflowsWithKeys = new Set(
-			keys.filter((k) => k.workflow_name).map((k) => k.workflow_name),
+			keys.filter((k) => k.workflow_id).map((k) => k.workflow_id),
 		);
 
 		return workflowsData.workflows
@@ -116,31 +115,32 @@ export function WorkflowKeys() {
 				(w: WorkflowMetadata) =>
 					w.endpoint_enabled &&
 					!w.public_endpoint &&
-					!workflowsWithKeys.has(w.name ?? ""),
+					!workflowsWithKeys.has(w.id ?? ""),
 			)
-			.map((w: WorkflowMetadata) => w.name)
-			.filter((name): name is string => !!name)
-			.sort();
+			.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
 	}, [workflowsData, keys]);
+
+	// Set of workflow IDs for orphan checking
+	const workflowIdSet = useMemo(() => {
+		return new Set(workflows.map((w) => w.id));
+	}, [workflows]);
 
 	// Sort and categorize keys
 	const sortedKeys = useMemo(() => {
 		if (!keys) return [];
 
-		const workflowNames = new Set(workflows);
-
 		return [...keys].sort((a, b) => {
 			// Global keys first
-			const aIsGlobal = !a.workflow_name;
-			const bIsGlobal = !b.workflow_name;
+			const aIsGlobal = !a.workflow_id;
+			const bIsGlobal = !b.workflow_id;
 			if (aIsGlobal && !bIsGlobal) return -1;
 			if (!aIsGlobal && bIsGlobal) return 1;
 
 			// Then check for orphaned keys (workflow-specific but workflow doesn't exist)
 			const aIsOrphaned =
-				a.workflow_name && !workflowNames.has(a.workflow_name);
+				a.workflow_id && !workflowIdSet.has(a.workflow_id);
 			const bIsOrphaned =
-				b.workflow_name && !workflowNames.has(b.workflow_name);
+				b.workflow_id && !workflowIdSet.has(b.workflow_id);
 			if (!aIsOrphaned && bIsOrphaned) return -1;
 			if (aIsOrphaned && !bIsOrphaned) return 1;
 
@@ -150,12 +150,12 @@ export function WorkflowKeys() {
 				new Date(a.created_at || 0).getTime()
 			);
 		});
-	}, [keys, workflows]);
+	}, [keys, workflowIdSet]);
 
 	// Check if a key is orphaned
 	const isOrphaned = (key: WorkflowKeyResponse) => {
-		if (!key.workflow_name) return false;
-		return !workflows.includes(key.workflow_name);
+		if (!key.workflow_id) return false;
+		return !workflowIdSet.has(key.workflow_id);
 	};
 
 	// Check if form is valid
@@ -187,7 +187,7 @@ export function WorkflowKeys() {
 
 		try {
 			const result = await createMutation.mutateAsync({
-				workflow_name: formData.isGlobal
+				workflow_id: formData.isGlobal
 					? undefined
 					: formData.workflowId,
 				expires_in_days: formData.expiresInDays
@@ -537,9 +537,9 @@ export function WorkflowKeys() {
 											})
 										}
 										options={availableWorkflows.map(
-											(workflow: string) => ({
-												value: workflow,
-												label: workflow,
+											(wf: WorkflowMetadata) => ({
+												value: wf.id,
+												label: wf.name,
 											}),
 										)}
 										placeholder="Select a workflow..."
@@ -660,11 +660,11 @@ export function WorkflowKeys() {
 								<pre className="text-xs overflow-x-auto">
 									<code>{`curl -X POST ${
 										window.location.protocol
-									}//${window.location.host}/api/workflows/${
-										createdKey?.workflow_name ||
-										"{workflowName}"
+									}//${window.location.host}/api/endpoints/${
+										createdKey?.workflow_id ||
+										"{workflowId}"
 									} \\
-  -H "Authorization: Bearer ${createdKey?.raw_key}" \\
+  -H "X-Bifrost-Key: ${createdKey?.raw_key}" \\
   -H "Content-Type: application/json" \\
   -d '{"input": "your data"}'`}</code>
 								</pre>

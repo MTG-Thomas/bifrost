@@ -1,7 +1,7 @@
 """
 E2E tests for workflow endpoint execution.
 
-Tests the /api/endpoints/{workflow_name} functionality including:
+Tests the /api/endpoints/{workflow_id} functionality including:
 - Dynamic OpenAPI generation for endpoint-enabled workflows
 - API key authentication via X-Bifrost-Key header
 - HTTP method restrictions
@@ -105,25 +105,36 @@ def post_only_workflow_file(e2e_client, platform_admin):
 
 
 @pytest.fixture(scope="module")
+def endpoint_workflow_id(endpoint_workflow_file):
+    """Get the workflow UUID from the registered workflow."""
+    return endpoint_workflow_file["id"]
+
+
+@pytest.fixture(scope="module")
+def post_only_workflow_id(post_only_workflow_file):
+    """Get the workflow UUID from the registered workflow."""
+    return post_only_workflow_file["id"]
+
+
+@pytest.fixture(scope="module")
 def endpoint_api_key(e2e_client, platform_admin, endpoint_workflow_file):
     """
     Create an API key for the endpoint workflow.
 
     Returns the raw API key (only available on creation).
     """
+    workflow_id = endpoint_workflow_file["id"]
+
     # Revoke existing key if present
     list_response = e2e_client.get(
         "/api/workflow-keys",
         headers=platform_admin.headers,
+        params={"workflow_id": workflow_id},
     )
 
     if list_response.status_code == 200:
         keys = list_response.json()
-        existing_key = next(
-            (k for k in keys if k.get("workflow_name") == "e2e_endpoint_workflow"),
-            None
-        )
-        if existing_key:
+        for existing_key in keys:
             e2e_client.delete(
                 f"/api/workflow-keys/{existing_key['id']}",
                 headers=platform_admin.headers,
@@ -134,7 +145,7 @@ def endpoint_api_key(e2e_client, platform_admin, endpoint_workflow_file):
         "/api/workflow-keys",
         headers=platform_admin.headers,
         json={
-            "workflow_name": "e2e_endpoint_workflow",
+            "workflow_id": workflow_id,
             "description": "E2E test API key",
         },
     )
@@ -156,19 +167,18 @@ def endpoint_api_key(e2e_client, platform_admin, endpoint_workflow_file):
 @pytest.fixture(scope="module")
 def post_only_api_key(e2e_client, platform_admin, post_only_workflow_file):
     """Create an API key for the POST-only workflow."""
+    workflow_id = post_only_workflow_file["id"]
+
     # Revoke existing key if present
     list_response = e2e_client.get(
         "/api/workflow-keys",
         headers=platform_admin.headers,
+        params={"workflow_id": workflow_id},
     )
 
     if list_response.status_code == 200:
         keys = list_response.json()
-        existing_key = next(
-            (k for k in keys if k.get("workflow_name") == "e2e_endpoint_post_only"),
-            None
-        )
-        if existing_key:
+        for existing_key in keys:
             e2e_client.delete(
                 f"/api/workflow-keys/{existing_key['id']}",
                 headers=platform_admin.headers,
@@ -179,7 +189,7 @@ def post_only_api_key(e2e_client, platform_admin, post_only_workflow_file):
         "/api/workflow-keys",
         headers=platform_admin.headers,
         json={
-            "workflow_name": "e2e_endpoint_post_only",
+            "workflow_id": workflow_id,
             "description": "E2E test POST-only key",
         },
     )
@@ -242,19 +252,27 @@ class TestWorkflowEndpointOpenAPI:
 class TestWorkflowEndpointAuthentication:
     """Test API key authentication for workflow endpoints."""
 
-    def test_endpoint_requires_api_key(self, e2e_client):
+    def test_endpoint_requires_api_key(self, e2e_client, endpoint_workflow_id):
         """Endpoint returns 422 without X-Bifrost-Key header."""
-        response = e2e_client.post("/api/endpoints/any_workflow")
+        response = e2e_client.post(f"/api/endpoints/{endpoint_workflow_id}")
         assert response.status_code == 422, f"Expected 422, got: {response.status_code}"
 
-    def test_invalid_api_key_returns_401(self, e2e_client):
+    def test_invalid_api_key_returns_401(self, e2e_client, endpoint_workflow_id):
         """Endpoint returns 401 for invalid API key."""
         response = e2e_client.post(
-            "/api/endpoints/any_workflow",
+            f"/api/endpoints/{endpoint_workflow_id}",
             headers={"X-Bifrost-Key": "invalid_key_12345"},
         )
         assert response.status_code == 401, f"Expected 401, got: {response.status_code}"
         assert "Invalid" in response.json().get("detail", "")
+
+    def test_invalid_uuid_returns_400(self, e2e_client):
+        """Endpoint returns 400 for invalid UUID format."""
+        response = e2e_client.post(
+            "/api/endpoints/not-a-uuid",
+            headers={"X-Bifrost-Key": "some_key"},
+        )
+        assert response.status_code == 400, f"Expected 400, got: {response.status_code}"
 
 
 @pytest.mark.e2e
@@ -265,11 +283,12 @@ class TestWorkflowEndpointExecution:
         self,
         e2e_client,
         endpoint_workflow_file,
+        endpoint_workflow_id,
         endpoint_api_key,
     ):
         """Execute workflow endpoint via POST with JSON body."""
         response = e2e_client.post(
-            "/api/endpoints/e2e_endpoint_workflow",
+            f"/api/endpoints/{endpoint_workflow_id}",
             headers={"X-Bifrost-Key": endpoint_api_key},
             json={"message": "Hello E2E", "count": 3},
             timeout=60.0,
@@ -292,11 +311,12 @@ class TestWorkflowEndpointExecution:
         self,
         e2e_client,
         endpoint_workflow_file,
+        endpoint_workflow_id,
         endpoint_api_key,
     ):
         """Execute workflow endpoint via GET with query parameters."""
         response = e2e_client.get(
-            "/api/endpoints/e2e_endpoint_workflow",
+            f"/api/endpoints/{endpoint_workflow_id}",
             headers={"X-Bifrost-Key": endpoint_api_key},
             params={"message": "Hello GET", "count": "2"},
             timeout=60.0,
@@ -312,11 +332,12 @@ class TestWorkflowEndpointExecution:
         self,
         e2e_client,
         endpoint_workflow_file,
+        endpoint_workflow_id,
         endpoint_api_key,
     ):
         """Endpoint returns 405 for disallowed HTTP methods."""
         response = e2e_client.delete(
-            "/api/endpoints/e2e_endpoint_workflow",
+            f"/api/endpoints/{endpoint_workflow_id}",
             headers={"X-Bifrost-Key": endpoint_api_key},
         )
 
@@ -324,9 +345,9 @@ class TestWorkflowEndpointExecution:
         assert "not allowed" in response.json().get("detail", "").lower()
 
     def test_workflow_not_found(self, e2e_client, endpoint_api_key):
-        """Endpoint returns 401/404 for non-existent workflow."""
+        """Endpoint returns 401/404 for non-existent workflow UUID."""
         response = e2e_client.post(
-            "/api/endpoints/nonexistent_workflow",
+            "/api/endpoints/00000000-0000-0000-0000-000000000000",
             headers={"X-Bifrost-Key": endpoint_api_key},
         )
 
@@ -343,11 +364,12 @@ class TestPostOnlyEndpoint:
         self,
         e2e_client,
         post_only_workflow_file,
+        post_only_workflow_id,
         post_only_api_key,
     ):
         """POST-only workflow rejects GET requests with 405."""
         response = e2e_client.get(
-            "/api/endpoints/e2e_endpoint_post_only",
+            f"/api/endpoints/{post_only_workflow_id}",
             headers={"X-Bifrost-Key": post_only_api_key},
         )
 
@@ -357,11 +379,12 @@ class TestPostOnlyEndpoint:
         self,
         e2e_client,
         post_only_workflow_file,
+        post_only_workflow_id,
         post_only_api_key,
     ):
         """POST-only workflow accepts POST requests."""
         response = e2e_client.post(
-            "/api/endpoints/e2e_endpoint_post_only",
+            f"/api/endpoints/{post_only_workflow_id}",
             headers={"X-Bifrost-Key": post_only_api_key},
             json={"data": "test data"},
             timeout=60.0,
@@ -380,11 +403,12 @@ class TestEndpointExecutionResult:
         self,
         e2e_client,
         endpoint_workflow_file,
+        endpoint_workflow_id,
         endpoint_api_key,
     ):
         """Result includes execution_id."""
         response = e2e_client.post(
-            "/api/endpoints/e2e_endpoint_workflow",
+            f"/api/endpoints/{endpoint_workflow_id}",
             headers={"X-Bifrost-Key": endpoint_api_key},
             json={"message": "Result test", "count": 1},
             timeout=60.0,
@@ -398,11 +422,12 @@ class TestEndpointExecutionResult:
         self,
         e2e_client,
         endpoint_workflow_file,
+        endpoint_workflow_id,
         endpoint_api_key,
     ):
         """Result includes status field."""
         response = e2e_client.post(
-            "/api/endpoints/e2e_endpoint_workflow",
+            f"/api/endpoints/{endpoint_workflow_id}",
             headers={"X-Bifrost-Key": endpoint_api_key},
             json={"message": "Status test", "count": 1},
             timeout=60.0,
@@ -415,11 +440,12 @@ class TestEndpointExecutionResult:
         self,
         e2e_client,
         endpoint_workflow_file,
+        endpoint_workflow_id,
         endpoint_api_key,
     ):
         """Result contains the workflow's return value."""
         response = e2e_client.post(
-            "/api/endpoints/e2e_endpoint_workflow",
+            f"/api/endpoints/{endpoint_workflow_id}",
             headers={"X-Bifrost-Key": endpoint_api_key},
             json={"message": "Output test", "count": 2},
             timeout=60.0,

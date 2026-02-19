@@ -18,7 +18,7 @@ Architecture:
 
 import logging
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel
@@ -74,14 +74,14 @@ class EndpointExecuteResponse(BaseModel):
 
 
 @router.api_route(
-    "/{workflow_name}",
+    "/{workflow_id}",
     methods=["GET", "POST", "PUT", "DELETE"],
     response_model=EndpointExecuteResponse,
     summary="Execute workflow via API key",
     description="Execute an endpoint-enabled workflow using an API key for authentication",
 )
 async def execute_endpoint(
-    workflow_name: str,
+    workflow_id: str,
     request: Request,
     x_bifrost_key: str = Header(..., alias="X-Bifrost-Key"),
 ) -> EndpointExecuteResponse:
@@ -94,21 +94,30 @@ async def execute_endpoint(
     The workflow must have `endpoint_enabled=True` in its decorator.
 
     Args:
-        workflow_name: Name of the workflow to execute
+        workflow_id: UUID of the workflow to execute
         request: FastAPI request (for body/query params)
         x_bifrost_key: API key from X-Bifrost-Key header
 
     Returns:
         Execution response with result or async execution ID
     """
+    # Validate UUID format
+    try:
+        wf_uuid = UUID(workflow_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid workflow ID format (expected UUID)",
+        )
+
     redis_client = get_redis_client()
 
     # Try to get workflow metadata from cache (FAST path - skips module loading)
-    cached = await redis_client.get_endpoint_workflow_cache(workflow_name)
+    cached = await redis_client.get_endpoint_workflow_cache(workflow_id)
     workflow_metadata: CachedWorkflowMetadata | None = None
 
     if cached:
-        logger.debug(f"Cache hit for endpoint workflow: {workflow_name}")
+        logger.debug(f"Cache hit for endpoint workflow: {workflow_id}")
         workflow_metadata = CachedWorkflowMetadata(
             workflow_id=cached["workflow_id"],
             file_path=cached["file_path"],
@@ -119,39 +128,31 @@ async def execute_endpoint(
 
     async with get_db_context() as db:
         # Validate API key
-        is_valid, key_id = await validate_workflow_key(db, x_bifrost_key, workflow_name)
+        is_valid, key_id = await validate_workflow_key(db, x_bifrost_key, workflow_id)
 
         if not is_valid:
-            logger.warning(f"Invalid API key for workflow endpoint: {workflow_name}")
+            logger.warning(f"Invalid API key for workflow endpoint: {workflow_id}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired API key",
             )
 
-        logger.debug(f"API key validated for workflow: {workflow_name} (key_id: {key_id})")
+        logger.debug(f"API key validated for workflow: {workflow_id} (key_id: {key_id})")
 
         # If no cache hit, load from DB and module
         if workflow_metadata is None:
-            logger.debug(f"Cache miss for endpoint workflow: {workflow_name}")
+            logger.debug(f"Cache miss for endpoint workflow: {workflow_id}")
 
-            # Get workflow from database (need the UUID for execution)
+            # Get workflow from database
             # System-level access: org_id=None, is_superuser=True bypasses cascade scoping
             workflow_repo = WorkflowRepository(db, org_id=None, is_superuser=True)
-            try:
-                workflow = await workflow_repo.get_endpoint_workflow_by_name(workflow_name)
-            except ValueError as e:
-                # Multiple workflows with same name and endpoint_enabled
-                logger.error(f"Duplicate endpoint workflows: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=str(e),
-                )
+            workflow = await workflow_repo.get_endpoint_workflow_by_id(wf_uuid)
 
             if not workflow:
-                logger.warning(f"Endpoint workflow not found: {workflow_name}")
+                logger.warning(f"Endpoint workflow not found: {workflow_id}")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Endpoint workflow '{workflow_name}' not found or not enabled",
+                    detail=f"Endpoint workflow '{workflow_id}' not found or not enabled",
                 )
 
             # Build cached metadata from DB workflow record
@@ -166,8 +167,7 @@ async def execute_endpoint(
 
             # Cache for future requests
             await redis_client.set_endpoint_workflow_cache(
-                workflow_name=workflow_name,
-                workflow_id=workflow_metadata.workflow_id,
+                workflow_id=workflow_id,
                 file_path=workflow_metadata.file_path,
                 execution_mode=workflow_metadata.execution_mode,
                 timeout_seconds=workflow_metadata.timeout_seconds,
@@ -177,7 +177,7 @@ async def execute_endpoint(
     # Check HTTP method
     http_method = request.method
     if http_method not in workflow_metadata.allowed_methods:
-        logger.warning(f"Method {http_method} not allowed for {workflow_name}")
+        logger.warning(f"Method {http_method} not allowed for {workflow_id}")
         raise HTTPException(
             status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
             detail=f"Method {http_method} not allowed. Allowed: {', '.join(workflow_metadata.allowed_methods)}",
@@ -206,7 +206,7 @@ async def execute_endpoint(
         is_platform_admin=False,
         is_function_key=True,
         execution_id=str(uuid4()),
-        workflow_name=workflow_name,  # Workflow name for context
+        workflow_name=workflow_id,  # Workflow ID for context
         public_url=get_settings().public_url,
     )
 
@@ -215,7 +215,7 @@ async def execute_endpoint(
         return await _execute_async(
             context=context,
             workflow_id=workflow_metadata.workflow_id,
-            workflow_name=workflow_name,
+            workflow_name=workflow_id,
             input_data=input_data,
             api_key_id=workflow_metadata.workflow_id,
             file_path=workflow_metadata.file_path,
@@ -225,7 +225,7 @@ async def execute_endpoint(
     return await _execute_sync(
         context=context,
         workflow_id=workflow_metadata.workflow_id,
-        workflow_name=workflow_name,
+        workflow_name=workflow_id,
         input_data=input_data,
         timeout_seconds=workflow_metadata.timeout_seconds,
         api_key_id=workflow_metadata.workflow_id,

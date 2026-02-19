@@ -214,7 +214,7 @@ class WorkflowKey(BaseModel):
 
 class WorkflowKeyCreateRequest(BaseModel):
     """Request model for creating a workflow API key"""
-    workflow_name: str | None = Field(default=None, description="Workflow-specific key, or None for global")
+    workflow_id: str | None = Field(default=None, description="Workflow UUID for workflow-specific key")
     expires_in_days: int | None = Field(default=None, description="Days until key expires (default: no expiration)")
     description: str | None = Field(default=None, description="Optional key description")
     disable_global_key: bool = Field(default=False, description="If true, workflow opts out of global API keys")
@@ -225,6 +225,7 @@ class WorkflowKeyResponse(BaseModel):
     id: str
     raw_key: str | None = Field(default=None, description="Raw API key (only returned on creation)")
     masked_key: str | None = Field(default=None, description="Last 4 characters for display")
+    workflow_id: str | None = None
     workflow_name: str | None = None
     created_by: str
     created_at: datetime

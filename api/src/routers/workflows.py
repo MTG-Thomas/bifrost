@@ -956,32 +956,42 @@ async def register_workflow(
             detail=f"No decorated function '{request.function_name}' found in {request.path}",
         )
 
-    # 3. Check if already registered
+    # 3. Check if already registered (include inactive rows for reactivation)
     existing = await db.execute(
         select(WorkflowORM).where(
             WorkflowORM.path == request.path,
             WorkflowORM.function_name == request.function_name,
-            WorkflowORM.is_active.is_(True),
         )
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Workflow already registered")
+    existing_wf = existing.scalar_one_or_none()
 
-    # 4. Create minimal DB record
-    workflow_id = uuid4()
     wf_type = "data_provider" if target_decorator_type == "data_provider" else (
         "tool" if target_decorator_type == "tool" else "workflow"
     )
-    new_wf = WorkflowORM(
-        id=workflow_id,
-        name=request.function_name,
-        function_name=request.function_name,
-        path=request.path,
-        type=wf_type,
-        is_active=True,
-    )
-    db.add(new_wf)
-    await db.flush()
+
+    if existing_wf and existing_wf.is_active:
+        raise HTTPException(status_code=409, detail="Workflow already registered")
+    elif existing_wf and not existing_wf.is_active:
+        # Reactivate the existing inactive workflow, preserving its UUID
+        workflow_id = existing_wf.id
+        existing_wf.is_active = True
+        existing_wf.is_orphaned = False
+        existing_wf.type = wf_type
+        existing_wf.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+    else:
+        # 4. Create minimal DB record
+        workflow_id = uuid4()
+        new_wf = WorkflowORM(
+            id=workflow_id,
+            name=request.function_name,
+            function_name=request.function_name,
+            path=request.path,
+            type=wf_type,
+            is_active=True,
+        )
+        db.add(new_wf)
+        await db.flush()
 
     # 5. Run indexer to enrich with content-derived fields
     indexer = WorkflowIndexer(db)
@@ -1165,6 +1175,15 @@ async def update_workflow(
 
         await db.commit()
         await db.refresh(workflow)
+
+        # Invalidate Redis caches so changes take effect immediately
+        try:
+            from src.core.redis_client import get_redis_client
+            redis_client = get_redis_client()
+            await redis_client.invalidate_endpoint_workflow_cache(str(workflow.id))
+            await redis_client.invalidate_workflow_metadata_cache(str(workflow.id))
+        except Exception as e:
+            logger.warning(f"Failed to invalidate caches for workflow {workflow.name}: {e}")
 
         logger.info(f"Updated workflow '{workflow.name}' organization_id={workflow.organization_id}, access_level={workflow.access_level}")
         return _convert_workflow_orm_to_schema(workflow)
