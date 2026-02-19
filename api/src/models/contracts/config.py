@@ -28,6 +28,10 @@ class ConfigResponse(BaseModel):
         default="org", description="GLOBAL for MSP-wide or 'org' for org-specific")
     org_id: str | None = Field(
         default=None, description="Organization ID (only for org-specific config)")
+    integration_id: str | None = Field(
+        default=None, description="Integration ID (if config is managed by an integration)")
+    integration_name: str | None = Field(
+        default=None, description="Integration name (if config is managed by an integration)")
     description: str | None = None
     updated_at: datetime | None = None
     updated_by: str | None = None

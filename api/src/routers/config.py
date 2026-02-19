@@ -62,40 +62,48 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         self,
         filter_type: OrgFilterType = OrgFilterType.ORG_PLUS_GLOBAL,
     ) -> list[ConfigResponse]:
-        """List configs with specified filter type.
+        """List configs with specified filter type."""
+        from src.models.orm.integrations import Integration
+        from sqlalchemy import and_
 
-        Args:
-            filter_type: How to filter by organization scope
-
-        Filter types:
-            - ALL: No filter, show everything (superuser only)
-            - GLOBAL_ONLY: Only org_id IS NULL
-            - ORG_ONLY: Only specific org, NO global fallback
-            - ORG_PLUS_GLOBAL: Specific org + global records (cascade scoping)
-        """
-        query = select(self.model)
+        query = select(self.model, Integration.name.label("integration_name")).outerjoin(
+            Integration,
+            and_(
+                self.model.integration_id == Integration.id,
+                Integration.is_deleted.is_(False),
+            )
+        )
 
         # Apply filter based on filter_type
         if filter_type == OrgFilterType.ALL:
-            # No filter - superuser sees everything
             pass
         elif filter_type == OrgFilterType.GLOBAL_ONLY:
-            # Only global configs
             query = query.where(self.model.organization_id.is_(None))
         elif filter_type == OrgFilterType.ORG_ONLY:
-            # Only specific org, no global fallback
             query = query.where(self.model.organization_id == self.org_id)
         else:
-            # ORG_PLUS_GLOBAL - use cascade scoping from base class
-            query = self._apply_cascade_scope(query)
+            # Inline cascade scope to avoid type mismatch with joined query
+            from sqlalchemy import or_
+            if self.org_id is not None:
+                query = query.where(
+                    or_(
+                        self.model.organization_id == self.org_id,
+                        self.model.organization_id.is_(None),
+                    )
+                )
+            else:
+                query = query.where(self.model.organization_id.is_(None))
 
         query = query.order_by(self.model.key)
 
         result = await self.session.execute(query)
-        configs = result.scalars().all()
+        rows = result.all()
 
         schemas = []
-        for c in configs:
+        for row in rows:
+            c = row[0]  # ConfigModel
+            integration_name = row[1]  # Integration.name or None
+
             raw_value = c.value.get("value") if isinstance(c.value, dict) else c.value
             # Mask secret values in list responses
             if c.config_type == ConfigTypeEnum.SECRET:
@@ -111,6 +119,8 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
                     type=ConfigType(c.config_type.value) if c.config_type else ConfigType.STRING,
                     scope="org" if c.organization_id else "GLOBAL",
                     org_id=str(c.organization_id) if c.organization_id else None,
+                    integration_id=str(c.integration_id) if c.integration_id else None,
+                    integration_name=integration_name,
                     description=c.description,
                     updated_at=c.updated_at,
                     updated_by=c.updated_by,

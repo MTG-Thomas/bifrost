@@ -97,6 +97,7 @@ export function Config() {
 		"value",
 		"type",
 		"description",
+		"integration_name",
 	]);
 
 	// React Query automatically refetches when scope changes (via orgId in query key)
@@ -327,6 +328,7 @@ export function Config() {
 									<DataTableHead className="w-0 whitespace-nowrap">Organization</DataTableHead>
 								)}
 								<DataTableHead>Key</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">Integration</DataTableHead>
 								<DataTableHead className="w-0 whitespace-nowrap">Value</DataTableHead>
 								<DataTableHead className="w-0 whitespace-nowrap">Type</DataTableHead>
 								<DataTableHead>Description</DataTableHead>
@@ -375,6 +377,15 @@ export function Config() {
 									)}
 									<DataTableCell className="font-mono">
 										{config.key}
+									</DataTableCell>
+									<DataTableCell className="w-0 whitespace-nowrap">
+										{config.integration_name ? (
+											<Badge variant="outline" className="text-xs">
+												{config.integration_name}
+											</Badge>
+										) : (
+											<span className="text-muted-foreground">-</span>
+										)}
 									</DataTableCell>
 									<DataTableCell className="w-0 whitespace-nowrap max-w-xs truncate">
 										{maskValue(config.value, config.type)}
