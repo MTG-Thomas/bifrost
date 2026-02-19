@@ -188,7 +188,7 @@ export function AppInfoDialog({
 
 	const onSubmit = async (values: FormValues) => {
 		try {
-			if (isEditing && appId && existingApp) {
+			if (isEditing && existingApp) {
 				// Check if slug changed - we'll need to update the URL
 				const slugChanged = values.slug !== existingApp.slug;
 
