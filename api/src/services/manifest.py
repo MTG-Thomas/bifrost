@@ -138,6 +138,7 @@ class ManifestIntegrationMapping(BaseModel):
     organization_id: str | None = None
     entity_id: str
     entity_name: str | None = None
+    oauth_token_id: str | None = None
 
 
 class ManifestIntegration(BaseModel):

@@ -416,6 +416,7 @@ def full_manifest_data():
     config_id = str(uuid4())
     secret_config_id = str(uuid4())
     table_id = str(uuid4())
+    oauth_token_id = str(uuid4())
     event_source_id = str(uuid4())
     event_sub_id = str(uuid4())
 
@@ -430,6 +431,7 @@ def full_manifest_data():
         "integ_id": integ_id,
         "config_id": config_id,
         "secret_config_id": secret_config_id,
+        "oauth_token_id": oauth_token_id,
         "table_id": table_id,
         "event_source_id": event_source_id,
         "event_sub_id": event_sub_id,
@@ -486,6 +488,7 @@ def full_manifest_data():
                             "organization_id": org_id,
                             "entity_id": "tenant-123",
                             "entity_name": "My Tenant",
+                            "oauth_token_id": oauth_token_id,
                         },
                     ],
                 },
@@ -609,6 +612,7 @@ class TestIntegrationManifest:
         assert len(integ.mappings) == 1
         assert integ.mappings[0].entity_id == "tenant-123"
         assert integ.mappings[0].organization_id == full_manifest_data["org_id"]
+        assert integ.mappings[0].oauth_token_id == full_manifest_data["oauth_token_id"]
 
     def test_integration_round_trip(self, full_manifest_data):
         """Integration survives serialize → parse round-trip."""
@@ -646,6 +650,31 @@ class TestIntegrationManifest:
         assert "oauth_provider" not in integ
         assert "mappings" not in integ
         assert "entity_id" not in integ
+
+    def test_mapping_oauth_token_id_round_trip(self):
+        """Mapping oauth_token_id survives serialize → parse round-trip."""
+        from src.services.manifest import (
+            Manifest, ManifestIntegration, ManifestIntegrationMapping,
+            serialize_manifest, parse_manifest,
+        )
+
+        token_id = str(uuid4())
+        manifest = Manifest(
+            integrations={
+                "TestInteg": ManifestIntegration(
+                    id=str(uuid4()),
+                    mappings=[
+                        ManifestIntegrationMapping(
+                            entity_id="tenant-1",
+                            oauth_token_id=token_id,
+                        ),
+                    ],
+                ),
+            },
+        )
+        output = serialize_manifest(manifest)
+        restored = parse_manifest(output)
+        assert restored.integrations["TestInteg"].mappings[0].oauth_token_id == token_id
 
     def test_integration_split_file(self, full_manifest_data):
         """Integrations serialize to integrations.yaml in split format."""
