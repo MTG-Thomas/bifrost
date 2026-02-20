@@ -124,3 +124,18 @@ def get_default_scope() -> str | None:
     if ctx is None:
         return None  # Not in workflow context - let API handle it
     return ctx.org_id  # Returns None for GLOBAL scope, org UUID otherwise
+
+
+def register_secret(value: "str | None") -> None:
+    """
+    Register a plaintext secret value with the active ExecutionContext.
+
+    Called by SDK modules after receiving decrypted secrets from the API
+    so the engine scrubber will redact them from outputs and logs.
+
+    Safe to call outside a workflow execution — silently no-ops.
+    """
+    ctx = _execution_context.get()
+    if ctx is None:
+        return
+    ctx._register_dynamic_secret(value)
