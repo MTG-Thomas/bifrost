@@ -252,6 +252,9 @@ def main(args: list[str] | None = None) -> int:
     if command == "push":
         return handle_push(args[1:])
 
+    if command == "api":
+        return handle_api(args[1:])
+
     # Unknown command
     print(f"Unknown command: {command}", file=sys.stderr)
     print_help()
@@ -270,6 +273,7 @@ Commands:
   run         Run a workflow file with web-based parameter input
   sync        Sync with Bifrost platform via GitHub
   push        Push local files to Bifrost platform
+  api         Generic authenticated API request
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
@@ -282,6 +286,9 @@ Examples:
   bifrost sync --resolve workflows/billing.py=keep_remote
   bifrost push apps/my-app
   bifrost push apps/my-app --clean
+  bifrost push --watch apps/my-app
+  bifrost api GET /api/workflows
+  bifrost api POST /api/applications/my-app/validate
   bifrost login
   bifrost login --url https://app.gobifrost.com
   bifrost logout
@@ -792,22 +799,50 @@ def handle_push(args: list[str]) -> int:
     Handle 'bifrost push' command.
 
     Pushes local files to Bifrost _repo/ via the /api/files/push endpoint.
+    Gates on repo-status check (git must be configured, no uncommitted platform changes).
 
     Usage:
-      bifrost push <path> [--clean] [--validate]
+      bifrost push <path> [--clean] [--validate] [--watch]
 
     Args:
-      path: Local directory to push (e.g., apps/my-app, workflows/)
+      path: Local directory to push (defaults to ".")
       --clean: Delete remote files not present locally
       --validate: Validate after push (for apps)
+      --watch: Watch for file changes and auto-push
     """
-    if not args:
-        print("Usage: bifrost push <path> [--clean] [--validate]", file=sys.stderr)
-        return 1
+    if args and args[0] in ("--help", "-h"):
+        print("""
+Usage: bifrost push [path] [options]
+
+Push local files to Bifrost platform.
+
+Before pushing, checks that:
+  1. Git integration is configured
+  2. No uncommitted platform changes exist (run 'bifrost sync' first)
+
+Arguments:
+  path                  Local directory to push (default: current directory)
+
+Options:
+  --clean               Delete remote files not present locally
+  --validate            Validate after push (for apps)
+  --watch               Watch for file changes and auto-push
+  --force               Skip repo dirty check
+  --help, -h            Show this help message
+
+Examples:
+  bifrost push apps/my-app
+  bifrost push apps/my-app --clean
+  bifrost push --watch apps/my-app
+  bifrost push .
+""".strip())
+        return 0
 
     local_path = None
     clean = False
     validate = False
+    watch = False
+    force = False
 
     i = 0
     while i < len(args):
@@ -816,6 +851,10 @@ def handle_push(args: list[str]) -> int:
             clean = True
         elif arg == "--validate":
             validate = True
+        elif arg == "--watch":
+            watch = True
+        elif arg == "--force":
+            force = True
         elif arg.startswith("--"):
             print(f"Unknown option: {arg}", file=sys.stderr)
             return 1
@@ -827,10 +866,64 @@ def handle_push(args: list[str]) -> int:
         i += 1
 
     if not local_path:
-        print("Error: path argument required", file=sys.stderr)
+        local_path = "."
+
+    return asyncio.run(_push_with_precheck(
+        local_path, clean=clean, validate=validate, watch=watch, force=force,
+    ))
+
+
+async def _check_repo_status(client: BifrostClient) -> bool:
+    """Check if repo is clean enough to push. Returns True if OK to proceed."""
+    try:
+        response = await client.get("/api/github/repo-status")
+        if response.status_code != 200:
+            print("Warning: could not check repo status. Proceeding anyway.", file=sys.stderr)
+            return True
+
+        data = response.json()
+
+        if not data.get("git_configured"):
+            print("Error: Git is not configured. Set up GitHub integration first.", file=sys.stderr)
+            print("  Configure at: Settings > GitHub", file=sys.stderr)
+            return False
+
+        if data.get("dirty"):
+            since = data.get("dirty_since", "unknown")
+            print(f"Error: Platform has uncommitted changes (since {since}).", file=sys.stderr)
+            print("  Run 'bifrost sync' to commit and reconcile before pushing.", file=sys.stderr)
+            return False
+
+        return True
+    except Exception as e:
+        print(f"Warning: could not check repo status: {e}. Proceeding anyway.", file=sys.stderr)
+        return True
+
+
+async def _push_with_precheck(
+    local_path: str,
+    clean: bool = False,
+    validate: bool = False,
+    watch: bool = False,
+    force: bool = False,
+) -> int:
+    """Push files with repo status pre-check."""
+    # Get authenticated client
+    try:
+        client = BifrostClient.get_instance(require_auth=True)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    return asyncio.run(_push_files(local_path, clean=clean, validate=validate))
+    # Check repo status (unless --force)
+    if not force:
+        if not await _check_repo_status(client):
+            return 1
+
+    if watch:
+        return await _watch_and_push(local_path, clean=clean, validate=validate, client=client)
+    else:
+        return await _push_files(local_path, clean=clean, validate=validate)
 
 
 async def _push_files(local_path: str, clean: bool = False, validate: bool = False) -> int:
