@@ -1142,3 +1142,78 @@ class TestGetAllEntityIdsNewTypes:
         assert full_manifest_data["table_id"] in ids
         assert full_manifest_data["event_source_id"] in ids
         assert full_manifest_data["event_sub_id"] in ids
+
+
+class TestManifestSchemaCoverage:
+    """Verify that all DB columns are either tracked in manifest models or explicitly ignored.
+
+    When a developer adds a new column to an integration ORM model, this test
+    forces them to decide: is this field managed by git (add to manifest model)
+    or managed exclusively by the UI/runtime (add to the ignored set)?
+    """
+
+    # Columns that are intentionally NOT in the manifest — either internal
+    # bookkeeping or UI-managed state.
+    INTEGRATION_IGNORED = {
+        "id",            # manifest uses dict key (name) for identity; id is a field inside
+        "name",          # used as the manifest dict key, not a model field
+        "is_deleted",    # soft-delete flag, internal
+        "created_at",
+        "updated_at",
+    }
+
+    CONFIG_SCHEMA_IGNORED = {
+        "id",              # DB surrogate key, not in manifest
+        "integration_id",  # implicit from parent integration
+        "created_at",
+        "updated_at",
+    }
+
+    MAPPING_IGNORED = {
+        "id",              # DB surrogate key
+        "integration_id",  # implicit from parent integration
+        "created_at",
+        "updated_at",
+    }
+
+    def test_integration_columns_tracked(self):
+        """All Integration DB columns are in ManifestIntegration or explicitly ignored."""
+        from sqlalchemy import inspect as sa_inspect
+        from src.models.orm.integrations import Integration
+        from src.services.manifest import ManifestIntegration
+
+        db_columns = {c.name for c in sa_inspect(Integration).columns}
+        manifest_fields = set(ManifestIntegration.model_fields.keys())
+        untracked = db_columns - manifest_fields - self.INTEGRATION_IGNORED
+        assert not untracked, (
+            f"New Integration DB columns not tracked in manifest or ignored: {untracked}. "
+            "Add them to ManifestIntegration or to INTEGRATION_IGNORED in this test."
+        )
+
+    def test_config_schema_columns_tracked(self):
+        """All IntegrationConfigSchema DB columns are in ManifestIntegrationConfigSchema or ignored."""
+        from sqlalchemy import inspect as sa_inspect
+        from src.models.orm.integrations import IntegrationConfigSchema
+        from src.services.manifest import ManifestIntegrationConfigSchema
+
+        db_columns = {c.name for c in sa_inspect(IntegrationConfigSchema).columns}
+        manifest_fields = set(ManifestIntegrationConfigSchema.model_fields.keys())
+        untracked = db_columns - manifest_fields - self.CONFIG_SCHEMA_IGNORED
+        assert not untracked, (
+            f"New IntegrationConfigSchema DB columns not tracked in manifest or ignored: {untracked}. "
+            "Add them to ManifestIntegrationConfigSchema or to CONFIG_SCHEMA_IGNORED in this test."
+        )
+
+    def test_mapping_columns_tracked(self):
+        """All IntegrationMapping DB columns are in ManifestIntegrationMapping or ignored."""
+        from sqlalchemy import inspect as sa_inspect
+        from src.models.orm.integrations import IntegrationMapping
+        from src.services.manifest import ManifestIntegrationMapping
+
+        db_columns = {c.name for c in sa_inspect(IntegrationMapping).columns}
+        manifest_fields = set(ManifestIntegrationMapping.model_fields.keys())
+        untracked = db_columns - manifest_fields - self.MAPPING_IGNORED
+        assert not untracked, (
+            f"New IntegrationMapping DB columns not tracked in manifest or ignored: {untracked}. "
+            "Add them to ManifestIntegrationMapping or to MAPPING_IGNORED in this test."
+        )

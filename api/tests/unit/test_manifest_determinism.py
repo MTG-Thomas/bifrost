@@ -18,9 +18,6 @@ WF_ID = uuid4()
 FORM_ID = uuid4()
 AGENT_ID = uuid4()
 APP_ID = uuid4()
-ORG_ID = uuid4()
-NS_ROLE_A_ID = uuid4()
-NS_ROLE_B_ID = uuid4()
 EVENT_SOURCE_ID = uuid4()
 
 
@@ -102,14 +99,6 @@ def _mock_app_role(app_id, role_id):
     return r
 
 
-def _mock_ns_role(namespace, role_id, org_id=None):
-    r = MagicMock()
-    r.namespace = namespace
-    r.role_id = role_id
-    r.organization_id = org_id
-    return r
-
-
 def _mock_event_source(source_id=EVENT_SOURCE_ID, name="det_source"):
     es = MagicMock()
     es.id = source_id
@@ -137,13 +126,6 @@ def _make_result(items):
     return result
 
 
-def _make_row_result(rows):
-    """Create a mock result for raw row queries (like distinct namespace)."""
-    result = MagicMock()
-    result.all.return_value = rows
-    result.scalars.return_value.all.return_value = rows
-    return result
-
 
 def _build_side_effects(
     *,
@@ -151,12 +133,13 @@ def _build_side_effects(
     form_roles_order: list,
     agent_roles_order: list,
     app_roles_order: list,
-    ns_roles_order: list,
-    store_namespaces: list[str],
     mappings_order: list | None = None,
     subs_order: list | None = None,
 ):
-    """Build a db.execute side_effect list with specified orderings."""
+    """Build a db.execute side_effect list with specified orderings.
+
+    Order matches generate_manifest() query sequence exactly.
+    """
     wf = _mock_workflow()
     form = _mock_form()
     agent = _mock_agent()
@@ -165,9 +148,6 @@ def _build_side_effects(
     ss = _mock_schedule_source()
 
     empty = _make_result([])
-
-    # Build namespace store rows (tuples for distinct query)
-    ns_store_rows = [(ns,) for ns in store_namespaces]
 
     return [
         _make_result([wf]),           # workflows
@@ -186,8 +166,6 @@ def _build_side_effects(
         _make_result(mappings_order or []),  # integration_mappings
         empty,                        # configs
         empty,                        # tables
-        _make_result(ns_roles_order),     # knowledge_namespace_roles
-        _make_row_result(ns_store_rows),  # knowledge_store namespaces
         _make_result([es]),           # event_sources
         _make_result([ss]),           # schedule_sources
         empty,                        # webhook_sources
@@ -221,8 +199,6 @@ async def test_role_order_does_not_affect_output():
         form_roles_order=[form_r_a, form_r_b],
         agent_roles_order=[agent_r_a, agent_r_b],
         app_roles_order=[app_r_a, app_r_b],
-        ns_roles_order=[],
-        store_namespaces=[],
     ))
     m1 = await generate_manifest(db1)
     files1 = serialize_manifest_dir(m1)
@@ -234,52 +210,11 @@ async def test_role_order_does_not_affect_output():
         form_roles_order=[form_r_b, form_r_a],
         agent_roles_order=[agent_r_b, agent_r_a],
         app_roles_order=[app_r_b, app_r_a],
-        ns_roles_order=[],
-        store_namespaces=[],
     ))
     m2 = await generate_manifest(db2)
     files2 = serialize_manifest_dir(m2)
 
     assert files1 == files2, "Role ordering should not affect serialized output"
-
-
-@pytest.mark.asyncio
-async def test_knowledge_namespace_order_does_not_affect_output():
-    """Namespace dict key order and role order should be deterministic."""
-    from src.services.manifest_generator import generate_manifest
-    from src.services.manifest import serialize_manifest_dir
-
-    ns_r1 = _mock_ns_role("alpha_ns", ROLE_A, ORG_ID)
-    ns_r2 = _mock_ns_role("alpha_ns", ROLE_B, ORG_ID)
-    ns_r3 = _mock_ns_role("beta_ns", ROLE_C, ORG_ID)
-
-    # Order 1: alpha roles first (A, B), then beta, store_namespaces adds "gamma" first
-    db1 = AsyncMock()
-    db1.execute = AsyncMock(side_effect=_build_side_effects(
-        wf_roles_order=[],
-        form_roles_order=[],
-        agent_roles_order=[],
-        app_roles_order=[],
-        ns_roles_order=[ns_r1, ns_r2, ns_r3],
-        store_namespaces=["gamma_ns"],
-    ))
-    m1 = await generate_manifest(db1)
-    files1 = serialize_manifest_dir(m1)
-
-    # Order 2: beta first, then alpha roles reversed (B, A)
-    db2 = AsyncMock()
-    db2.execute = AsyncMock(side_effect=_build_side_effects(
-        wf_roles_order=[],
-        form_roles_order=[],
-        agent_roles_order=[],
-        app_roles_order=[],
-        ns_roles_order=[ns_r3, ns_r2, ns_r1],
-        store_namespaces=["gamma_ns"],
-    ))
-    m2 = await generate_manifest(db2)
-    files2 = serialize_manifest_dir(m2)
-
-    assert files1 == files2, "Knowledge namespace ordering should not affect serialized output"
 
 
 def test_event_subscription_query_has_secondary_sort():
@@ -316,8 +251,6 @@ async def test_full_manifest_idempotent_serialization():
 
     wf_r_a = _mock_wf_role(WF_ID, ROLE_A)
     wf_r_b = _mock_wf_role(WF_ID, ROLE_B)
-    ns_r1 = _mock_ns_role("ns_one", ROLE_A, ORG_ID)
-    ns_r2 = _mock_ns_role("ns_two", ROLE_B, ORG_ID)
 
     results: list[dict[str, str]] = []
     for _ in range(3):
@@ -327,12 +260,9 @@ async def test_full_manifest_idempotent_serialization():
             form_roles_order=[],
             agent_roles_order=[],
             app_roles_order=[],
-            ns_roles_order=[ns_r2, ns_r1],
-            store_namespaces=["ns_three"],
         ))
         m = await generate_manifest(db)
         results.append(serialize_manifest_dir(m))
 
     assert results[0] == results[1] == results[2], "Repeated serialization should be identical"
     assert "workflows.yaml" in results[0]
-    assert "knowledge.yaml" in results[0]

@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 REPO_PREFIX = "_repo/"
 
 
+_shared_session = None
+
+
+def _get_shared_session():
+    """Reuse a single aiobotocore session to share the connection pool."""
+    global _shared_session
+    if _shared_session is None:
+        _shared_session = get_session()
+    return _shared_session
+
+
 class RepoStorage:
     """S3 storage scoped to _repo/ prefix."""
 
@@ -30,7 +41,7 @@ class RepoStorage:
 
     @asynccontextmanager
     async def _get_client(self):
-        session = get_session()
+        session = _get_shared_session()
         async with session.create_client(
             "s3",
             endpoint_url=self._settings.s3_endpoint_url,

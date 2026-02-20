@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { webSocketService, type GitOpComplete } from "@/services/websocket";
 import {
@@ -233,6 +233,7 @@ export function SourceControlPanel() {
 	const sidebarPanel = useEditorStore((state) => state.sidebarPanel);
 	const setDiffPreview = useEditorStore((state) => state.setDiffPreview);
 	const queryClient = useQueryClient();
+	const diffCacheRef = useRef<Map<string, DiffResult>>(new Map());
 
 	// Query hooks
 	const { data: status, isLoading } = useGitStatus();
@@ -290,6 +291,11 @@ export function SourceControlPanel() {
 			setLoading(null);
 		}
 	}, [changesOp]);
+
+	// Clear diff cache when changed files list changes (after fetch, commit, pull, discard)
+	useEffect(() => {
+		diffCacheRef.current.clear();
+	}, [changedFiles]);
 
 	// --- Operations ---
 
@@ -528,6 +534,21 @@ export function SourceControlPanel() {
 	}, [conflicts, conflictResolutions, resolveOp, refreshStatus, loadChanges]);
 
 	const handleShowDiff = useCallback(async (file: ChangedFile) => {
+		// Check cache first
+		const cached = diffCacheRef.current.get(file.path);
+		if (cached) {
+			setDiffPreview({
+				path: file.path,
+				displayName: file.display_name || file.path,
+				entityType: file.entity_type || "workflow",
+				localContent: cached.working_content ?? null,
+				remoteContent: cached.head_content ?? null,
+				isConflict: false,
+				isLoading: false,
+			});
+			return;
+		}
+
 		setDiffPreview({
 			path: file.path,
 			displayName: file.display_name || file.path,
@@ -543,6 +564,8 @@ export function SourceControlPanel() {
 				() => diffOp.mutateAsync(file.path),
 				"diff",
 			);
+			// Store in cache
+			diffCacheRef.current.set(file.path, result);
 			setDiffPreview({
 				path: file.path,
 				displayName: file.display_name || file.path,

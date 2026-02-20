@@ -63,6 +63,21 @@ class GitRepoManager:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @asynccontextmanager
+    async def checkout_readonly(self) -> AsyncIterator[Path]:
+        """
+        Like checkout() but skips sync_up. For read-only git operations
+        (diff, status) that don't modify persistent state.
+        """
+        tmp_dir = Path(tempfile.mkdtemp(prefix="bifrost-repo-"))
+        try:
+            async with self._acquire_lock():
+                await self.sync_down(tmp_dir)
+                yield tmp_dir
+                # No sync_up — caller promises not to modify persistent state
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @asynccontextmanager
     async def _acquire_lock(self) -> AsyncIterator[None]:
         """Acquire a Redis lock for the duration of a git operation."""
         redis_url = self._settings.redis_url

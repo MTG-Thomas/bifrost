@@ -425,17 +425,14 @@ class Scheduler:
                     )
 
                 elif op_type == "git_sync_preview":
-                    # Sync preview: fetch + status (no preflight — that runs
-                    # during execute after pull, when the working tree is correct)
-                    fetch_result = await sync_service.desktop_fetch()
+                    # Sync preview: fetch + status in a single S3 round-trip
+                    fetch_result, status_result = await sync_service.desktop_fetch_and_status()
                     if not fetch_result.success:
                         await publish_git_op_completed(
                             job_id, status="failed", result_type="sync_preview",
                             error=fetch_result.error,
                         )
                     else:
-                        status_result = await sync_service.desktop_status()
-
                         # Build to_push from local changed files
                         to_push = [
                             {
@@ -472,40 +469,38 @@ class Scheduler:
                         )
 
                 elif op_type == "git_sync_execute":
-                    # Full sync: commit + pull + push
-                    # Commit first to lock local platform state into git history,
-                    # then pull merges remote changes via three-way merge.
+                    # Full sync: commit + pull + push in a single S3 round-trip
                     conflict_resolutions = data.get("conflict_resolutions", {})
 
-                    # Step 1: Commit local changes (regenerates manifest from DB)
-                    commit_result = await sync_service.desktop_commit("Sync from Bifrost")
+                    commit_result, pull_result, push_result, resolve_result = (
+                        await sync_service.desktop_sync_execute(
+                            "Sync from Bifrost",
+                            job_id=job_id,
+                            conflict_resolutions=conflict_resolutions or None,
+                        )
+                    )
 
-                    # Step 2: Pull remote changes
-                    pull_result = await sync_service.desktop_pull(job_id=job_id)
                     if not pull_result.success:
-                        if pull_result.conflicts and conflict_resolutions:
-                            resolve_result = await sync_service.desktop_resolve(conflict_resolutions)
-                            if not resolve_result.success:
-                                await publish_git_op_completed(
-                                    job_id, status="conflict", result_type="sync_execute",
-                                    error=resolve_result.error,
-                                )
-                            else:
-                                # Resolution succeeded — fall through to push
-                                push_result = await sync_service.desktop_push()
-                                await publish_git_op_completed(
-                                    job_id,
-                                    status="success" if push_result.success else "failed",
-                                    result_type="sync_execute",
-                                    pulled=pull_result.pulled if pull_result.success else 0,
-                                    pushed=(commit_result.files_committed if commit_result and commit_result.success else 0),
-                                    commit_sha=push_result.commit_sha,
-                                    error=push_result.error if not push_result.success else None,
-                                )
-                        elif pull_result.conflicts:
+                        if resolve_result and not resolve_result.success:
+                            await publish_git_op_completed(
+                                job_id, status="conflict", result_type="sync_execute",
+                                error=resolve_result.error,
+                            )
+                        elif pull_result.conflicts and not resolve_result:
                             await publish_git_op_completed(
                                 job_id, status="conflict", result_type="sync_execute",
                                 error="Merge conflicts detected",
+                            )
+                        elif resolve_result and resolve_result.success:
+                            # Resolution succeeded, push happened
+                            await publish_git_op_completed(
+                                job_id,
+                                status="success" if push_result.success else "failed",
+                                result_type="sync_execute",
+                                pulled=pull_result.pulled if pull_result.success else 0,
+                                pushed=(commit_result.files_committed if commit_result and commit_result.success else 0),
+                                commit_sha=push_result.commit_sha,
+                                error=push_result.error if not push_result.success else None,
                             )
                         else:
                             await publish_git_op_completed(
@@ -513,8 +508,6 @@ class Scheduler:
                                 error=pull_result.error,
                             )
                     else:
-                        # Step 3: Push
-                        push_result = await sync_service.desktop_push()
                         await publish_git_op_completed(
                             job_id,
                             status="success" if push_result.success else "failed",
