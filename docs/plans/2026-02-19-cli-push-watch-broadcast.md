@@ -17,7 +17,37 @@
 
 ---
 
-## Task 1: Repo Dirty Flag (Backend)
+## Progress
+
+**Branch:** `feature/cli-push-watch-broadcast` (worktree at `.worktrees/cli-push-watch-broadcast`)
+
+**Worktree Docker fix:** After creating a worktree, you MUST run `mkdir -p api/src/services/app_compiler/node_modules` before `./test.sh` will work. The directory is gitignored and Docker needs it for the anonymous volume mount.
+
+| Task | Status | Commit | Notes |
+|------|--------|--------|-------|
+| 1. Repo Dirty Flag | **DONE** | `fface2a8` | Unit + E2E tests pass |
+| 2. Activity Broadcast | **DONE** | `85a85e1d` | Unit test passes |
+| 3. CLI Push Pre-Check | **DONE** | `dfe6cbee` | `_watch_and_push` and `handle_api` not yet defined (Task 4/5) |
+| 4. CLI Watch Mode | TODO | | Implement `_watch_and_push`, extract `_do_push`, add watchdog dep |
+| 5. CLI `bifrost api` | TODO | | Implement `handle_api` |
+| 6. Frontend Store/Hook/WS | TODO | | Zustand store, WebSocket callback, hook |
+| 7. Header Indicator | TODO | | FileActivityIndicator component |
+| 8. Editor StatusBar | TODO | | Activity in StatusBar right-side div |
+
+**Implementation notes from completed tasks:**
+- `get_shared_redis()` returns `decode_responses=True`, so values are `str` not `bytes`
+- `UserPrincipal` has `user_id`, `email`, `name` (str, defaults to "")
+- `publish_file_activity()` added at end of `api/src/core/pubsub.py`
+- `file-activity` channel authorized for superusers in `websocket.py` line ~270
+- Watch endpoints: `POST /api/files/watch` and `GET /api/files/watchers`
+- Push broadcast uses `X-Bifrost-Watch` header and `request_obj: Request` param
+- `write_file()` has new `skip_dirty_flag: bool = False` param
+- Dirty flag cleared in `scheduler/main.py` after successful `desktop_sync_execute`
+- `RepoStatusResponse` model in `api/src/models/contracts/github.py`
+
+---
+
+## Task 1: Repo Dirty Flag (Backend) ✅ DONE
 
 Track when the platform has uncommitted changes so CLI push pre-check is instant (~0ms) instead of running full git status (~10s).
 
@@ -220,7 +250,7 @@ git commit -m "feat: add repo dirty flag for fast CLI push pre-check"
 
 ---
 
-## Task 2: Activity Broadcast (Backend)
+## Task 2: Activity Broadcast (Backend) ✅ DONE
 
 Broadcast file push events and watch session state over WebSocket to admins.
 
@@ -399,7 +429,7 @@ git commit -m "feat: add file activity broadcast and watch session tracking"
 
 ---
 
-## Task 3: Rework CLI `bifrost push` with Pre-Check
+## Task 3: Rework CLI `bifrost push` with Pre-Check ✅ DONE
 
 Gate push on repo-status check. Require git configured. Add `--watch` flag parsing.
 
