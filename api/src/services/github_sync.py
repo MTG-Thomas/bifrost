@@ -543,7 +543,7 @@ class GitHubSyncService:
         }
         manifest.apps = {
             k: v for k, v in manifest.apps.items()
-            if (work_dir / v.path).exists()
+            if (work_dir / v.path).is_dir()
         }
 
         # Filter configs to only include those whose integration_id is present
@@ -963,13 +963,10 @@ class GitHubSyncService:
 
         # 4. Resolve apps (before tables — tables ref application_id)
         for _app_name, mapp in manifest.apps.items():
-            app_path = work_dir / mapp.path
-            if app_path.exists():
-                content = app_path.read_bytes()
-                app_ops = await self._resolve_app(mapp, content)
-                for op in app_ops:
-                    await op.execute(self.db)
-                all_ops.extend(app_ops)
+            app_ops = await self._resolve_app(mapp)
+            for op in app_ops:
+                await op.execute(self.db)
+            all_ops.extend(app_ops)
 
         # 5. Resolve tables (refs org + app UUIDs)
         for table_name, mtable in manifest.tables.items():
@@ -1052,7 +1049,7 @@ class GitHubSyncService:
         count += sum(1 for mwf in manifest.workflows.values() if (work_dir / mwf.path).exists())
         count += len(manifest.integrations)
         count += len(manifest.configs)
-        count += sum(1 for mapp in manifest.apps.values() if (work_dir / mapp.path).exists())
+        count += len(manifest.apps)
         count += len(manifest.tables)
         count += len(manifest.events)
 
@@ -1156,8 +1153,8 @@ class GitHubSyncService:
         app_storage = AppStorageService(self.repo_manager._settings)
 
         for _app_name, mapp in manifest.apps.items():
-            # Derive source directory from app path (e.g. "apps/tickbox-grc/app.yaml" -> "apps/tickbox-grc")
-            app_source_dir = str(Path(mapp.path).parent)
+            # mapp.path is already the source directory (e.g. "apps/tickbox-grc")
+            app_source_dir = mapp.path
 
             try:
                 synced, compile_errors = await app_storage.sync_preview_compiled(
@@ -1619,7 +1616,7 @@ class GitHubSyncService:
 
         present_app_ids: set[str] = set()
         for mapp in manifest.apps.values():
-            if (work_dir / mapp.path).exists():
+            if (work_dir / mapp.path).is_dir():
                 present_app_ids.add(mapp.id)
 
         # IDs present in manifest (no file check needed for non-file entities)
@@ -2005,12 +2002,8 @@ class GitHubSyncService:
             await self.db.execute(stmt)
             return []
 
-    async def _resolve_app(self, mapp, content: bytes) -> "list[SyncOp]":
-        """Resolve an app from repo into SyncOps (metadata only).
-
-        The indexer call (app.yaml parsing) is a side-effect performed in
-        _import_all_entities, not here.
-        """
+    async def _resolve_app(self, mapp) -> "list[SyncOp]":
+        """Resolve an app from manifest into SyncOps (metadata only)."""
         from pathlib import PurePosixPath
         from uuid import UUID
 
@@ -2018,12 +2011,8 @@ class GitHubSyncService:
         from src.models.orm.applications import Application
         from src.services.sync_ops import SyncOp, SyncRoles, Upsert  # noqa: F401
 
-        data = yaml.safe_load(content.decode("utf-8"))
-        if not data:
-            return []
-
-        # Derive repo_path from the manifest's canonical path
-        repo_path = str(PurePosixPath(mapp.path).parent) if mapp.path else None
+        # repo_path is now the directory directly (no /app.yaml to strip)
+        repo_path = mapp.path.rstrip("/") if mapp.path else None
 
         # Slug from manifest entry, or derive from repo_path leaf
         slug = mapp.slug or (PurePosixPath(repo_path).name if repo_path else None)
@@ -2031,7 +2020,6 @@ class GitHubSyncService:
             logger.warning(f"App {mapp.id} has no slug or path, skipping")
             return []
 
-        # Ensure repo_path is set even if only slug was available
         if not repo_path:
             repo_path = f"apps/{slug}"
 
@@ -2050,12 +2038,13 @@ class GitHubSyncService:
         existing_id = existing.scalar_one_or_none()
 
         app_values = {
-            "name": data.get("name", ""),
-            "description": data.get("description"),
+            "name": mapp.name or "",
+            "description": mapp.description,
             "slug": slug,
             "repo_path": repo_path,
             "organization_id": org_id,
             "access_level": access_level,
+            "dependencies": mapp.dependencies or None,
         }
 
         ops: list[SyncOp] = []
