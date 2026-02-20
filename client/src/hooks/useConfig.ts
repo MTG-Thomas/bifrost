@@ -64,6 +64,28 @@ export function useSetConfig() {
 	});
 }
 
+export function useUpdateConfig() {
+	const queryClient = useQueryClient();
+
+	return $api.useMutation("put", "/api/config/{config_id}", {
+		onSuccess: (_, variables) => {
+			queryClient.invalidateQueries({ queryKey: ["get", "/api/config"] });
+			toast.success("Configuration saved", {
+				description: `Config key "${variables.body.key}" has been updated`,
+			});
+		},
+		onError: (error) => {
+			const errorMessage =
+				typeof error === "object" && error && "detail" in error
+					? String((error as Record<string, unknown>)["detail"])
+					: "Unknown error";
+			toast.error("Failed to save configuration", {
+				description: errorMessage,
+			});
+		},
+	});
+}
+
 export function useDeleteConfig() {
 	const queryClient = useQueryClient();
 

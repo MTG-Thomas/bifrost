@@ -56,6 +56,7 @@ services:
       BIFROST_DATABASE_URL_SYNC: postgresql://bifrost:${POSTGRES_PASSWORD:-bifrost_dev}@pgbouncer:5432/bifrost
     volumes:
       - ./api/src:/app/src:ro
+      - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/scripts:/app/scripts:ro
       - ./api/alembic:/app/alembic:ro
@@ -81,6 +82,7 @@ services:
       - "5678:5678"  # debugpy port for VS Code attachment
     volumes:
       - ./api/src:/app/src:ro
+      - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
       - ./api/alembic:/app/alembic:ro
@@ -108,6 +110,7 @@ services:
       BIFROST_PUBLIC_URL: ${BIFROST_PUBLIC_URL:-http://localhost:8000}
     volumes:
       - ./api/src:/app/src:ro
+      - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
     command: >
@@ -130,6 +133,7 @@ services:
       BIFROST_USE_THREAD_WORKERS: "true"
     volumes:
       - ./api/src:/app/src:ro
+      - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
     command: >

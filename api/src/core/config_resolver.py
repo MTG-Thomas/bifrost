@@ -119,7 +119,8 @@ class ConfigResolver:
             from src.core.security import decrypt_secret
 
             logger.debug(f"Decrypting secret for config '{config_key}'")
-            return decrypt_secret(encrypted_value)
+            from src.core.secret_string import SecretString
+            return SecretString(decrypt_secret(encrypted_value))
 
         except Exception as e:
             error_msg = f"Failed to decrypt secret for config '{config_key}': {str(e)}"

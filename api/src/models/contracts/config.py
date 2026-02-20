@@ -43,6 +43,7 @@ class SetConfigRequest(BaseModel):
     value: str = Field(..., description="Config value. For SECRET type, this will be encrypted before storage.")
     type: ConfigType
     description: str | None = Field(default=None, description="Optional description of this config entry")
+    organization_id: UUID | None = Field(default=None, description="Organization ID. Null for global config.")
 
 
 # CRUD Pattern Models for Config

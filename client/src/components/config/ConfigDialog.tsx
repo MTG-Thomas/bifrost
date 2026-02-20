@@ -30,7 +30,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { useSetConfig } from "@/hooks/useConfig";
+import { useSetConfig, useUpdateConfig } from "@/hooks/useConfig";
 import { useAuth } from "@/contexts/AuthContext";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import type { components } from "@/lib/v1";
@@ -58,6 +58,7 @@ interface ConfigDialogProps {
 
 export function ConfigDialog({ config, open, onClose }: ConfigDialogProps) {
 	const setConfig = useSetConfig();
+	const updateConfig = useUpdateConfig();
 	const { isPlatformAdmin, user } = useAuth();
 	const isEditing = !!config;
 
@@ -103,18 +104,26 @@ export function ConfigDialog({ config, open, onClose }: ConfigDialogProps) {
 	}, [config, form, open, defaultOrgId]);
 
 	const onSubmit = async (values: FormValues) => {
-		// Build body with organization_id (may not be in generated types yet)
 		const body = {
 			key: values.key,
 			value: values.value,
 			type: values.type,
 			description: values.description ?? null,
 			organization_id: values.organization_id,
-		} as Parameters<typeof setConfig.mutateAsync>[0]["body"];
+		};
 
-		await setConfig.mutateAsync({ body });
+		if (isEditing && config.id) {
+			await updateConfig.mutateAsync({
+				params: { path: { config_id: config.id } },
+				body,
+			});
+		} else {
+			await setConfig.mutateAsync({ body });
+		}
 		onClose();
 	};
+
+	const isSaving = setConfig.isPending || updateConfig.isPending;
 
 	return (
 		<Dialog open={open} onOpenChange={onClose}>
@@ -293,14 +302,14 @@ export function ConfigDialog({ config, open, onClose }: ConfigDialogProps) {
 							<Button
 								type="submit"
 								disabled={
-									setConfig.isPending ||
+									isSaving ||
 									!form.formState.isValid
 								}
 							>
-								{setConfig.isPending && (
+								{isSaving && (
 									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
 								)}
-								{setConfig.isPending
+								{isSaving
 									? "Saving..."
 									: isEditing
 										? "Update"

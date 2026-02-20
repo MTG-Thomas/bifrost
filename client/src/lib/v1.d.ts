@@ -2079,7 +2079,11 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /**
+         * Update configuration value by ID
+         * @description Update an existing configuration value, including its organization scope
+         */
+        put: operations["update_config_api_config__config_id__put"];
         post?: never;
         /**
          * Delete configuration value
@@ -4920,6 +4924,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/integrations/{integration_id}/mappings/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch upsert integration mappings
+         * @description Create or update multiple mappings in a single request (Platform admin only)
+         */
+        post: operations["batch_upsert_mappings_api_integrations__integration_id__mappings_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/integrations/{integration_id}/oauth": {
         parameters: {
             query?: never;
@@ -5742,7 +5766,7 @@ export interface paths {
         post?: never;
         /**
          * Delete event source
-         * @description Delete an event source and all related data (Platform admin only).
+         * @description Soft delete (deactivate) an event source (Platform admin only).
          */
         delete: operations["delete_source_api_events_sources__source_id__delete"];
         options?: never;
@@ -6572,15 +6596,14 @@ export interface paths {
         };
         /**
          * Get app dependencies
-         * @description Return the validated dependencies dict from app.yaml.
+         * @description Return the app's npm dependencies.
          */
         get: operations["get_dependencies_api_applications__app_id__dependencies_get"];
         /**
          * Update app dependencies
-         * @description Replace the dependencies section of app.yaml.
+         * @description Replace the app's npm dependencies.
          *
-         *     Validates every package name and version, enforces the max-dependency
-         *     limit, then writes back to app.yaml preserving other fields.
+         *     Validates every package name and version, enforces the max-dependency limit.
          */
         put: operations["put_dependencies_api_applications__app_id__dependencies_put"];
         post?: never;
@@ -7642,7 +7665,7 @@ export interface components {
             total: number;
             /**
              * Dependencies
-             * @description npm dependencies from app.yaml {name: version} for esm.sh loading
+             * @description npm dependencies {name: version} for esm.sh loading
              */
             dependencies?: {
                 [key: string]: string;
@@ -12148,6 +12171,60 @@ export interface components {
             total: number;
         };
         /**
+         * IntegrationMappingBatchItem
+         * @description A single mapping in a batch upsert request.
+         */
+        IntegrationMappingBatchItem: {
+            /**
+             * Organization Id
+             * Format: uuid
+             * @description Organization ID to map
+             */
+            organization_id: string;
+            /**
+             * Entity Id
+             * @description External entity ID
+             */
+            entity_id: string;
+            /**
+             * Entity Name
+             * @description Display name for the external entity
+             */
+            entity_name?: string | null;
+        };
+        /**
+         * IntegrationMappingBatchRequest
+         * @description Batch upsert request for integration mappings.
+         */
+        IntegrationMappingBatchRequest: {
+            /**
+             * Mappings
+             * @description List of mappings to create or update
+             */
+            mappings: components["schemas"]["IntegrationMappingBatchItem"][];
+        };
+        /**
+         * IntegrationMappingBatchResponse
+         * @description Response from batch mapping upsert.
+         */
+        IntegrationMappingBatchResponse: {
+            /**
+             * Created
+             * @description Number of new mappings created
+             */
+            created: number;
+            /**
+             * Updated
+             * @description Number of existing mappings updated
+             */
+            updated: number;
+            /**
+             * Errors
+             * @description Error messages for failed items
+             */
+            errors?: string[];
+        };
+        /**
          * IntegrationMappingCreate
          * @description Request model for creating an integration mapping.
          *     POST /api/integrations/{integration_id}/mappings
@@ -16245,6 +16322,11 @@ export interface components {
              * @description Optional description of this config entry
              */
             description?: string | null;
+            /**
+             * Organization Id
+             * @description Organization ID. Null for global config.
+             */
+            organization_id?: string | null;
         };
         /**
          * SetupPasskeyOptionsRequest
@@ -21167,7 +21249,7 @@ export interface operations {
     set_config_api_config_post: {
         parameters: {
             query?: {
-                /** @description Target scope: 'global' for global config, or org UUID for org-specific config. If omitted, uses the user's current organization context. */
+                /** @description Deprecated: use organization_id in the request body instead. Target scope: 'global' for global config, or org UUID for org-specific config. If omitted, uses the user's current organization context. */
                 scope?: string | null;
             };
             header?: never;
@@ -21182,6 +21264,41 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_config_api_config__config_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                config_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -26236,6 +26353,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IntegrationMappingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    batch_upsert_mappings_api_integrations__integration_id__mappings_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IntegrationMappingBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrationMappingBatchResponse"];
                 };
             };
             /** @description Validation Error */

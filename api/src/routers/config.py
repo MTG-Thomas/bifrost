@@ -209,6 +209,55 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
             updated_by=config.updated_by,
         )
 
+    async def update_config_by_id(
+        self,
+        config_id: UUID,
+        request: SetConfigRequest,
+        updated_by: str,
+    ) -> ConfigResponse | None:
+        """Update a config by ID. Allows changing organization scope."""
+        query = select(self.model).where(self.model.id == config_id)
+        result = await self.session.execute(query)
+        config = result.scalar_one_or_none()
+        if not config:
+            return None
+
+        now = datetime.now(timezone.utc)
+
+        # Handle secret encryption
+        stored_value = request.value
+        if request.type == ConfigType.SECRET:
+            from src.core.security import encrypt_secret
+            stored_value = encrypt_secret(request.value)
+
+        config_value = {"value": stored_value}
+        db_config_type = ConfigTypeEnum(request.type.value) if request.type else ConfigTypeEnum.STRING
+
+        config.key = request.key
+        config.value = config_value
+        config.config_type = db_config_type
+        config.description = request.description
+        config.organization_id = request.organization_id
+        config.updated_at = now
+        config.updated_by = updated_by
+        await self.session.flush()
+        await self.session.refresh(config)
+
+        logger.info(f"Updated config {config.key} (id={config_id}) org={request.organization_id}")
+
+        stored_value = config.value.get("value") if isinstance(config.value, dict) else config.value
+        return ConfigResponse(
+            id=config.id,
+            key=config.key,
+            value=stored_value,
+            type=request.type if request.type else ConfigType.STRING,
+            scope="org" if config.organization_id else "GLOBAL",
+            org_id=str(config.organization_id) if config.organization_id else None,
+            description=config.description,
+            updated_at=config.updated_at,
+            updated_by=config.updated_by,
+        )
+
     async def delete_config(self, config_id: UUID) -> ConfigModel | None:
         """Delete config by ID. Returns the deleted config or None if not found."""
         query = select(self.model).where(self.model.id == config_id)
@@ -277,22 +326,33 @@ async def set_config(
     user: CurrentSuperuser,
     scope: str | None = Query(
         default=None,
-        description="Target scope: 'global' for global config, or org UUID for org-specific config. "
+        description="Deprecated: use organization_id in the request body instead. "
+        "Target scope: 'global' for global config, or org UUID for org-specific config. "
         "If omitted, uses the user's current organization context.",
     ),
 ) -> ConfigResponse:
     """Set a configuration key-value pair.
 
-    Superusers can specify a scope to create configs in a specific organization
-    or explicitly create global configs.
+    Superusers can specify organization_id in the request body to target a
+    specific organization, or set it to null for global configs.
+    The scope query param is supported for backward compatibility.
     """
-    try:
-        target_org_id = resolve_target_org(ctx.user, scope, ctx.org_id)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(e),
-        )
+    # Prefer organization_id from request body; fall back to scope query param
+    if scope is not None:
+        # Legacy: scope query param takes precedence if explicitly provided
+        try:
+            target_org_id = resolve_target_org(ctx.user, scope, ctx.org_id)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(e),
+            )
+    elif "organization_id" in (request.model_fields_set or set()):
+        # Body explicitly included organization_id (even if null → global)
+        target_org_id = request.organization_id
+    else:
+        # Neither provided — default to user's current org
+        target_org_id = ctx.org_id
 
     # Config endpoints are superuser-only, so is_superuser=True (no role checks)
     repo = ConfigRepository(ctx.db, org_id=target_org_id, is_superuser=True)
@@ -315,6 +375,43 @@ async def set_config(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to set configuration",
         )
+
+
+@router.put(
+    "/api/config/{config_id}",
+    response_model=ConfigResponse,
+    summary="Update configuration value by ID",
+    description="Update an existing configuration value, including its organization scope",
+)
+async def update_config(
+    config_id: UUID,
+    request: SetConfigRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+) -> ConfigResponse:
+    """Update a configuration by ID.
+
+    Unlike POST (which upserts by key within an org scope), this updates the
+    specific config row by ID — allowing changes to organization_id (scope).
+    """
+    # Use is_superuser=True; org scoping not needed since we look up by ID
+    repo = ConfigRepository(ctx.db, org_id=ctx.org_id, is_superuser=True)
+
+    result = await repo.update_config_by_id(config_id, request, updated_by=user.email)
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Configuration not found",
+        )
+
+    # Upsert to cache after successful write
+    if CACHE_AVAILABLE and upsert_config:
+        org_id_str = str(request.organization_id) if request.organization_id else None
+        config_type_str = request.type.value if request.type else "string"
+        stored_value = result.value
+        await upsert_config(org_id_str, request.key, stored_value, config_type_str)
+
+    return result
 
 
 @router.delete(

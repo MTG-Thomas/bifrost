@@ -43,7 +43,7 @@ export function FileTabConflictMenu({
 					<CloudAlert className="h-3.5 w-3.5 text-orange-500" />
 				</button>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="start" className="w-56">
+			<DropdownMenuContent align="start" className="w-56 z-[100]">
 				<div className="px-2 py-1.5 text-sm font-semibold text-orange-600 dark:text-orange-400 flex items-center gap-2">
 					<AlertCircle className="h-4 w-4" />
 					<span>File Conflict</span>
