@@ -2597,10 +2597,10 @@ class TestCrossInstanceManifestReconciliation:
         persistent_dir = sync_service._persistent_dir
         final_manifest = read_manifest_from_dir(persistent_dir / ".bifrost")
 
-        config_keys = set(final_manifest.configs.keys())
-        assert "keep_this" in config_keys, f"config-1 should be preserved, got: {config_keys}"
-        assert "new_from_dev" in config_keys, f"dev's new config should be merged in, got: {config_keys}"
-        assert "delete_this" not in config_keys, f"config-2 should be deleted, got: {config_keys}"
+        config_key_names = {c.key for c in final_manifest.configs.values()}
+        assert "keep_this" in config_key_names, f"config-1 should be preserved, got: {config_key_names}"
+        assert "new_from_dev" in config_key_names, f"dev's new config should be merged in, got: {config_key_names}"
+        assert "delete_this" not in config_key_names, f"config-2 should be deleted, got: {config_key_names}"
 
     async def test_empty_repo_pull_imports_remote_state(
         self,
