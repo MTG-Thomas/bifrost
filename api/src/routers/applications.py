@@ -633,7 +633,7 @@ def _resolve_target_org_safe(ctx: Context, scope: str | None) -> UUID | None:
 async def get_application_or_404(
     ctx: Context,
     slug: str,
-    scope: str | None = None,  # noqa: ARG001 - kept for API compatibility
+    scope: str | None = None,
 ) -> Application:
     """Get application by slug with access control.
 
@@ -647,9 +647,10 @@ async def get_application_or_404(
     Raises:
         HTTPException 404 if not found or access denied
     """
+    target_org_id = _resolve_target_org_safe(ctx, scope)
     repo = ApplicationRepository(
         session=ctx.db,
-        org_id=ctx.org_id,
+        org_id=target_org_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_platform_admin,
     )
@@ -665,7 +666,7 @@ async def get_application_or_404(
 async def get_application_by_id_or_404(
     ctx: Context,
     app_id: UUID,
-    scope: str | None = None,  # noqa: ARG001 - kept for API compatibility
+    scope: str | None = None,
 ) -> Application:
     """Get application by UUID with access control.
 
@@ -679,9 +680,10 @@ async def get_application_by_id_or_404(
     Raises:
         HTTPException 404 if not found or access denied
     """
+    target_org_id = _resolve_target_org_safe(ctx, scope)
     repo = ApplicationRepository(
         session=ctx.db,
-        org_id=ctx.org_id,
+        org_id=target_org_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_platform_admin,
     )

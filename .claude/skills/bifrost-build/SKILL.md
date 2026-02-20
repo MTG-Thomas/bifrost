@@ -98,7 +98,7 @@ Best for: quick iterations, non-developers, working without a local git repo.
 
 ## Workspace Structure (SDK-First)
 
-The git repo mirrors the platform's `_repo/` storage in S3:
+The git repo mirrors the platform's storage in S3:
 
 ```
 my-workspace/
@@ -355,7 +355,7 @@ Clarify with the user:
 | Create event triggers | `create_event_source`, `create_event_subscription` | Webhooks and schedules |
 | Manage events | `update_event_source`, `delete_event_source` | Modify triggers |
 | Validate an app | `validate_app` or `bifrost push --validate` | Static analysis: bad components, workflow refs |
-| Push files to platform | `bifrost push <path>` (CLI) | Batch push local files to `_repo/` — use `--clean` to delete remote-only files, `--validate` for apps |
+| Push files to platform | `bifrost push <path>` (CLI) | Batch push local files to S3 — use `--clean` to delete remote-only files, `--validate` for apps |
 | Get app dependencies | `get_app_dependencies` | Read npm deps from app.yaml |
 | Update app dependencies | `update_app_dependencies` | Add/remove/update npm deps in app.yaml |
 
