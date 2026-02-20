@@ -754,3 +754,28 @@ async def publish_pool_progress(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     await manager.broadcast("platform_workers", payload)
+
+
+# =============================================================================
+# File Activity Broadcast (CLI push/watch awareness)
+# =============================================================================
+
+
+async def publish_file_activity(
+    user_id: str,
+    user_name: str,
+    activity_type: str,  # "file_push" | "watch_start" | "watch_stop"
+    prefix: str,
+    file_count: int = 0,
+    is_watch: bool = False,
+) -> None:
+    """Broadcast file activity to admin-only file-activity channel."""
+    await manager.broadcast("file-activity", {
+        "type": activity_type,
+        "user_id": user_id,
+        "user_name": user_name,
+        "prefix": prefix,
+        "file_count": file_count,
+        "is_watch": is_watch,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })

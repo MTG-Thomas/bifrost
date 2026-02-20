@@ -265,6 +265,10 @@ async def websocket_connect(
             app_id = channel.split(":", 2)[2]
             if await can_access_app(user, app_id):
                 allowed_channels.append(channel)
+        elif channel == "file-activity":
+            # File activity channel - platform admins only
+            if user.is_superuser:
+                allowed_channels.append(channel)
         elif channel == "system":
             allowed_channels.append(channel)
         elif channel == "platform_workers":

@@ -10,11 +10,12 @@ Auth: CurrentSuperuser (platform admins and workflow engine)
 
 import base64
 import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -263,6 +264,7 @@ async def file_exists(
 @router.post("/push", response_model=FilePushResponse)
 async def push_files(
     request: FilePushRequest,
+    request_obj: Request,
     ctx: Context,
     user: CurrentSuperuser,
     db: AsyncSession = Depends(get_db),
@@ -343,6 +345,24 @@ async def push_files(
 
     await db.commit()
 
+    # Broadcast file activity to admins
+    total_changed = created + updated + deleted
+    if total_changed > 0:
+        from src.core.pubsub import publish_file_activity
+        is_watch = request_obj.headers.get("X-Bifrost-Watch") == "true"
+        prefix = request.delete_missing_prefix or next(iter(request.files.keys()), "").rsplit("/", 1)[0]
+        try:
+            await publish_file_activity(
+                user_id=str(user.user_id),
+                user_name=user.name or user.email or "CLI",
+                activity_type="file_push",
+                prefix=prefix,
+                file_count=total_changed,
+                is_watch=is_watch,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast file activity: {e}")
+
     return FilePushResponse(
         created=created,
         updated=updated,
@@ -350,6 +370,69 @@ async def push_files(
         unchanged=unchanged,
         errors=errors,
     )
+
+
+# =============================================================================
+# Watch Session Endpoints (CLI watch mode)
+# =============================================================================
+
+
+class WatchSessionRequest(BaseModel):
+    """Request to manage a CLI watch session."""
+    action: Literal["start", "stop", "heartbeat"]
+    prefix: str
+
+
+@router.post("/watch")
+async def manage_watch_session(
+    request: WatchSessionRequest,
+    user: CurrentSuperuser,
+) -> dict:
+    """Register, heartbeat, or deregister a CLI watch session."""
+    from src.core.cache.redis_client import get_shared_redis
+    from src.core.pubsub import publish_file_activity
+
+    key = f"bifrost:watch:{user.user_id}:{request.prefix}"
+    r = await get_shared_redis()
+
+    if request.action in ("start", "heartbeat"):
+        await r.setex(key, 120, json.dumps({
+            "user_id": str(user.user_id),
+            "user_name": user.name or user.email or "CLI",
+            "prefix": request.prefix,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        if request.action == "start":
+            await publish_file_activity(
+                user_id=str(user.user_id),
+                user_name=user.name or user.email or "CLI",
+                activity_type="watch_start",
+                prefix=request.prefix,
+            )
+    elif request.action == "stop":
+        await r.delete(key)
+        await publish_file_activity(
+            user_id=str(user.user_id),
+            user_name=user.name or user.email or "CLI",
+            activity_type="watch_stop",
+            prefix=request.prefix,
+        )
+    return {"ok": True}
+
+
+@router.get("/watchers")
+async def list_active_watchers(user: CurrentSuperuser) -> dict:
+    """List active CLI watch sessions."""
+    from src.core.cache.redis_client import get_shared_redis
+
+    r = await get_shared_redis()
+    keys = [k async for k in r.scan_iter("bifrost:watch:*")]
+    watchers = []
+    for key in keys:
+        data = await r.get(key)
+        if data:
+            watchers.append(json.loads(data))
+    return {"watchers": watchers}
 
 
 # =============================================================================
