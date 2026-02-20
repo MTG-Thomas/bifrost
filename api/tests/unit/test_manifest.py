@@ -494,7 +494,7 @@ def full_manifest_data():
                 },
             },
             "configs": {
-                "halopsa/api_url": {
+                config_id: {
                     "id": config_id,
                     "integration_id": integ_id,
                     "key": "halopsa/api_url",
@@ -503,7 +503,7 @@ def full_manifest_data():
                     "organization_id": org_id,
                     "value": "https://api.halopsa.com",
                 },
-                "halopsa/api_key": {
+                secret_config_id: {
                     "id": secret_config_id,
                     "integration_id": integ_id,
                     "key": "halopsa/api_key",
@@ -705,16 +705,19 @@ class TestConfigManifest:
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
 
-        assert "halopsa/api_url" in manifest.configs
-        cfg = manifest.configs["halopsa/api_url"]
-        assert cfg.id == full_manifest_data["config_id"]
+        config_id = full_manifest_data["config_id"]
+        secret_config_id = full_manifest_data["secret_config_id"]
+
+        assert config_id in manifest.configs
+        cfg = manifest.configs[config_id]
+        assert cfg.id == config_id
         assert cfg.config_type == "string"
         assert cfg.value == "https://api.halopsa.com"
         assert cfg.integration_id == full_manifest_data["integ_id"]
         assert cfg.organization_id == full_manifest_data["org_id"]
 
         # Secret config has null value
-        secret_cfg = manifest.configs["halopsa/api_key"]
+        secret_cfg = manifest.configs[secret_config_id]
         assert secret_cfg.config_type == "secret"
         assert secret_cfg.value is None
 
@@ -744,7 +747,7 @@ class TestConfigManifest:
         assert "configs.yaml" in files
         cfg_data = yaml.safe_load(files["configs.yaml"])
         assert "configs" in cfg_data
-        assert "halopsa/api_url" in cfg_data["configs"]
+        assert full_manifest_data["config_id"] in cfg_data["configs"]
 
 
 class TestTableManifest:
@@ -997,7 +1000,8 @@ class TestValidateManifestNewTypes:
         from src.services.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
-        data["configs"]["halopsa/api_url"]["integration_id"] = str(uuid4())
+        config_id = full_manifest_data["config_id"]
+        data["configs"][config_id]["integration_id"] = str(uuid4())
         yaml_str = yaml.dump(data, default_flow_style=False)
         manifest = parse_manifest(yaml_str)
         errors = validate_manifest(manifest)
@@ -1008,7 +1012,8 @@ class TestValidateManifestNewTypes:
         from src.services.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
-        data["configs"]["halopsa/api_url"]["organization_id"] = str(uuid4())
+        config_id = full_manifest_data["config_id"]
+        data["configs"][config_id]["organization_id"] = str(uuid4())
         yaml_str = yaml.dump(data, default_flow_style=False)
         manifest = parse_manifest(yaml_str)
         errors = validate_manifest(manifest)
@@ -1068,6 +1073,49 @@ class TestValidateManifestNewTypes:
         manifest = parse_manifest(yaml_str)
         errors = validate_manifest(manifest)
         assert any("workflow" in e.lower() for e in errors)
+
+
+class TestConfigDictKeyCollision:
+    """Verify configs with same key name but different scopes don't collide."""
+
+    def test_configs_with_same_key_different_orgs_survive_round_trip(self):
+        """Two configs with same key but different org_ids both survive serialization."""
+        from src.services.manifest import Manifest, ManifestConfig, serialize_manifest, parse_manifest
+
+        config_id_1 = str(uuid4())
+        config_id_2 = str(uuid4())
+        org_id_1 = str(uuid4())
+        org_id_2 = str(uuid4())
+        integ_id = str(uuid4())
+
+        manifest = Manifest(
+            configs={
+                config_id_1: ManifestConfig(
+                    id=config_id_1,
+                    integration_id=integ_id,
+                    key="api_url",
+                    config_type="string",
+                    organization_id=org_id_1,
+                    value="https://org1.example.com",
+                ),
+                config_id_2: ManifestConfig(
+                    id=config_id_2,
+                    integration_id=integ_id,
+                    key="api_url",
+                    config_type="string",
+                    organization_id=org_id_2,
+                    value="https://org2.example.com",
+                ),
+            },
+        )
+        output = serialize_manifest(manifest)
+        restored = parse_manifest(output)
+
+        assert len(restored.configs) == 2
+        assert config_id_1 in restored.configs
+        assert config_id_2 in restored.configs
+        assert restored.configs[config_id_1].value == "https://org1.example.com"
+        assert restored.configs[config_id_2].value == "https://org2.example.com"
 
 
 class TestGetAllEntityIdsNewTypes:

@@ -280,8 +280,8 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
             for integ in integrations_list
         },
         configs={
-            # Key by "integration_name/key" or just "key" for non-integration configs
-            f"{cfg.key}": ManifestConfig(
+            # Key by config UUID to avoid cross-org collisions on same key name
+            str(cfg.id): ManifestConfig(
                 id=str(cfg.id),
                 integration_id=str(cfg.integration_id) if cfg.integration_id else None,
                 key=cfg.key,
