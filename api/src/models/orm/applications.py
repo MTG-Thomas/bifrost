@@ -61,6 +61,7 @@ class Application(Base):
 
     # Metadata
     description: Mapped[str | None] = mapped_column(Text, default=None)
+    dependencies: Mapped[dict | None] = mapped_column(JSON, default=None, nullable=True)
     icon: Mapped[str | None] = mapped_column(String(50), default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
