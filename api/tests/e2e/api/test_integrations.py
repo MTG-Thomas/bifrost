@@ -1298,3 +1298,237 @@ class TestIntegrationsAuthorization:
     # Note: SDK endpoint (/api/integrations/sdk/{name}) authentication is tested
     # implicitly in other test classes that use it successfully with auth headers.
     # The endpoint requires Context dependency which enforces authentication.
+
+
+@pytest.mark.e2e
+class TestBatchMappingUpsert:
+    """Test batch upsert of integration mappings."""
+
+    @pytest.fixture
+    def integration_for_batch(self, e2e_client, platform_admin):
+        """Create an integration for batch mapping tests."""
+        integration_name = f"e2e_batch_integration_{uuid4().hex[:8]}"
+        response = e2e_client.post(
+            "/api/integrations",
+            headers=platform_admin.headers,
+            json={"name": integration_name},
+        )
+        assert response.status_code == 201
+        integration = response.json()
+
+        yield integration
+
+        # Cleanup
+        e2e_client.delete(
+            f"/api/integrations/{integration['id']}",
+            headers=platform_admin.headers,
+        )
+
+    def test_batch_create_new_mappings(
+        self, e2e_client, platform_admin, integration_for_batch, org1, org2
+    ):
+        """Batch upsert creates new mappings for unmapped orgs."""
+        integration = integration_for_batch
+
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings/batch",
+            headers=platform_admin.headers,
+            json={
+                "mappings": [
+                    {
+                        "organization_id": str(org1["id"]),
+                        "entity_id": "batch-entity-1",
+                        "entity_name": "Batch Org 1",
+                    },
+                    {
+                        "organization_id": str(org2["id"]),
+                        "entity_id": "batch-entity-2",
+                        "entity_name": "Batch Org 2",
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 200, f"Batch upsert failed: {response.text}"
+        data = response.json()
+        assert data["created"] == 2
+        assert data["updated"] == 0
+        assert data["errors"] == []
+
+        # Verify mappings were created
+        response = e2e_client.get(
+            f"/api/integrations/{integration['id']}/mappings",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        mappings = response.json()["items"]
+        entity_ids = {m["entity_id"] for m in mappings}
+        assert "batch-entity-1" in entity_ids
+        assert "batch-entity-2" in entity_ids
+
+        # Cleanup
+        for m in mappings:
+            e2e_client.delete(
+                f"/api/integrations/{integration['id']}/mappings/{m['id']}",
+                headers=platform_admin.headers,
+            )
+
+    def test_batch_update_existing_mappings(
+        self, e2e_client, platform_admin, integration_for_batch, org1
+    ):
+        """Batch upsert updates existing mappings."""
+        integration = integration_for_batch
+
+        # Create a mapping first
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": str(org1["id"]),
+                "entity_id": "original-entity",
+                "entity_name": "Original Name",
+            },
+        )
+        assert response.status_code == 201
+        original_mapping = response.json()
+
+        # Batch upsert with same org should update
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings/batch",
+            headers=platform_admin.headers,
+            json={
+                "mappings": [
+                    {
+                        "organization_id": str(org1["id"]),
+                        "entity_id": "updated-entity",
+                        "entity_name": "Updated Name",
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 200, f"Batch upsert failed: {response.text}"
+        data = response.json()
+        assert data["created"] == 0
+        assert data["updated"] == 1
+        assert data["errors"] == []
+
+        # Verify mapping was updated (same mapping ID, new values)
+        response = e2e_client.get(
+            f"/api/integrations/{integration['id']}/mappings/by-org/{org1['id']}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        updated = response.json()
+        assert updated["id"] == original_mapping["id"]
+        assert updated["entity_id"] == "updated-entity"
+        assert updated["entity_name"] == "Updated Name"
+
+        # Cleanup
+        e2e_client.delete(
+            f"/api/integrations/{integration['id']}/mappings/{updated['id']}",
+            headers=platform_admin.headers,
+        )
+
+    def test_batch_mixed_create_and_update(
+        self, e2e_client, platform_admin, integration_for_batch, org1, org2
+    ):
+        """Batch upsert handles a mix of creates and updates."""
+        integration = integration_for_batch
+
+        # Pre-create a mapping for org1
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": str(org1["id"]),
+                "entity_id": "existing-entity",
+                "entity_name": "Existing",
+            },
+        )
+        assert response.status_code == 201
+
+        # Batch upsert: org1 (update) + org2 (create)
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings/batch",
+            headers=platform_admin.headers,
+            json={
+                "mappings": [
+                    {
+                        "organization_id": str(org1["id"]),
+                        "entity_id": "updated-existing",
+                        "entity_name": "Updated Existing",
+                    },
+                    {
+                        "organization_id": str(org2["id"]),
+                        "entity_id": "new-entity",
+                        "entity_name": "New Entity",
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 200, f"Batch upsert failed: {response.text}"
+        data = response.json()
+        assert data["created"] == 1
+        assert data["updated"] == 1
+        assert data["errors"] == []
+
+        # Verify org1 was updated
+        response = e2e_client.get(
+            f"/api/integrations/{integration['id']}/mappings/by-org/{org1['id']}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["entity_id"] == "updated-existing"
+
+        # Verify org2 was created
+        response = e2e_client.get(
+            f"/api/integrations/{integration['id']}/mappings/by-org/{org2['id']}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["entity_id"] == "new-entity"
+
+        # Cleanup
+        mappings_resp = e2e_client.get(
+            f"/api/integrations/{integration['id']}/mappings",
+            headers=platform_admin.headers,
+        )
+        for m in mappings_resp.json()["items"]:
+            e2e_client.delete(
+                f"/api/integrations/{integration['id']}/mappings/{m['id']}",
+                headers=platform_admin.headers,
+            )
+
+    def test_batch_empty_list_rejected(
+        self, e2e_client, platform_admin, integration_for_batch
+    ):
+        """Batch upsert rejects an empty mappings list with 422."""
+        integration = integration_for_batch
+
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings/batch",
+            headers=platform_admin.headers,
+            json={"mappings": []},
+        )
+        assert response.status_code == 422, (
+            f"Expected 422 for empty mappings list, got {response.status_code}: {response.text}"
+        )
+
+    def test_batch_nonexistent_integration(self, e2e_client, platform_admin, org1):
+        """Batch upsert returns 404 for a nonexistent integration."""
+        fake_id = str(uuid4())
+
+        response = e2e_client.post(
+            f"/api/integrations/{fake_id}/mappings/batch",
+            headers=platform_admin.headers,
+            json={
+                "mappings": [
+                    {
+                        "organization_id": str(org1["id"]),
+                        "entity_id": "entity-1",
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 404, (
+            f"Expected 404 for nonexistent integration, got {response.status_code}: {response.text}"
+        )
