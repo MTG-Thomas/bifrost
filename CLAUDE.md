@@ -92,6 +92,10 @@ The git sync system uses a **manifest** (`.bifrost/*.yaml`) to round-trip platfo
 | Mappings | `ManifestIntegrationMapping` (list in integration) | `IntegrationMapping` | `(integration_id, organization_id)` |
 | Config values | `ManifestConfig` (separate `configs` dict) | `Config` | `id` (UUID) |
 
+### App sync
+
+`ManifestApp` in `.bifrost/apps.yaml` carries all app metadata (name, description, dependencies, access_level, roles). The `path` field points to the app source directory (e.g. `apps/my-app`), which contains only TSX/TS/CSS source code — no metadata files. App npm dependencies are stored in the `Application.dependencies` JSON column in the DB.
+
 ### Critical: non-destructive upsert pattern
 
 `_resolve_integration` syncs config schema and mappings using **upsert-by-natural-key** (not delete-all + re-insert):
