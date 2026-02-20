@@ -300,7 +300,7 @@ class TestReadContentLines:
         code = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10"
 
         with patch(
-            "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
             new_callable=AsyncMock,
             return_value=code,
         ):
@@ -348,7 +348,7 @@ class TestGetContent:
         code = "line 1\nline 2\nline 3"
 
         with patch(
-            "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
             new_callable=AsyncMock,
             return_value=code,
         ):
@@ -370,7 +370,7 @@ class TestGetContent:
         from src.services.mcp_server.tools.code_editor import get_content
 
         with patch(
-            "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -399,7 +399,7 @@ class TestPatchContent:
 '''
 
         with patch(
-            "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
             new_callable=AsyncMock,
             return_value=code,
         ):
@@ -434,7 +434,7 @@ def func2():
 '''
 
         with patch(
-            "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
             new_callable=AsyncMock,
             return_value=code,
         ):
@@ -456,7 +456,7 @@ def func2():
         from src.services.mcp_server.tools.code_editor import patch_content
 
         with patch(
-            "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
             new_callable=AsyncMock,
             return_value="some code here",
         ):
@@ -797,7 +797,7 @@ async def get_ticket(ticket_id: str):
 '''
 
         with patch(
-            "src.services.mcp_server.tools.code_editor._read_from_cache_or_s3",
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
             new_callable=AsyncMock,
             return_value=code,
         ):

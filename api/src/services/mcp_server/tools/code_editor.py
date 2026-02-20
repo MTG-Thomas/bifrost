@@ -149,12 +149,17 @@ def _find_match_locations(content: str, search_string: str) -> list[dict[str, An
     return locations
 
 
-async def _read_from_cache_or_s3(path: str) -> str | None:
-    """Load file content via Redis→S3 cache chain."""
-    from src.core.module_cache import get_module
-
-    cached = await get_module(path)
-    return cached["content"] if cached else None
+async def _read_from_s3(path: str) -> str | None:
+    """Read file content directly from S3 (source of truth)."""
+    try:
+        repo = RepoStorage()
+        content_bytes = await repo.read(path)
+    except Exception:
+        return None
+    try:
+        return content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return None  # Binary file
 
 
 async def _get_content_by_path(
@@ -171,7 +176,7 @@ async def _get_content_by_path(
         - If successful: (content_str, {"path": ...}, None)
         - If error: (None, None, "error message")
     """
-    content = await _read_from_cache_or_s3(path)
+    content = await _read_from_s3(path)
     if content is None:
         return None, None, f"File not found: {path}"
     return content, {"path": path}, None
