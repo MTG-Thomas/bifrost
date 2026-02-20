@@ -92,7 +92,7 @@ def llm_anthropic_configured(
 
     config = {
         "provider": "anthropic",
-        "model": "claude-3-5-haiku-20241022",
+        "model": "claude-haiku-4-5-20251001",
         "api_key": llm_test_anthropic_key,
         "max_tokens": 1024,
         "temperature": 0.7,
@@ -103,7 +103,9 @@ def llm_anthropic_configured(
         json=config,
         headers=platform_admin.headers,
     )
-    assert response.status_code == 200, f"Failed to configure Anthropic: {response.text}"
+    assert response.status_code == 200, (
+        f"Failed to configure Anthropic: {response.text}"
+    )
 
     logger.info("Configured Anthropic LLM provider")
     yield config

@@ -8,7 +8,7 @@ radio, and datetime fields maintain their types through the execution pipeline.
 
 import pytest
 
-from tests.e2e.conftest import write_and_register
+from tests.e2e.conftest import write_and_register, execute_form_sync
 
 
 @pytest.mark.e2e
@@ -215,7 +215,9 @@ async def e2e_all_fields_workflow(
 
     def test_form_has_all_field_types(self, all_fields_form):
         """Verify the form includes all required field types."""
-        field_types = {f["name"]: f["type"] for f in all_fields_form["form_schema"]["fields"]}
+        field_types = {
+            f["name"]: f["type"] for f in all_fields_form["form_schema"]["fields"]
+        }
 
         assert field_types["text_field"] == "text"
         assert field_types["email_field"] == "email"
@@ -228,345 +230,317 @@ async def e2e_all_fields_workflow(
         assert field_types["datetime_field"] == "datetime"
         assert field_types["optional_field"] == "text"
 
-    def test_execute_form_text_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_text_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify text field type is preserved as string."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Hello World",
-                    "email_field": "test@example.com",
-                    "number_field": 42,
-                    "select_field": "opt1",
-                    "checkbox_field": True,
-                    "textarea_field": "Line 1\nLine 2\nLine 3",
-                    "radio_field": "r1",
-                    "datetime_field": "2025-12-09T10:30:00Z",
-                    "float_field": 3.14,
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Hello World",
+                "email_field": "test@example.com",
+                "number_field": 42,
+                "select_field": "opt1",
+                "checkbox_field": True,
+                "textarea_field": "Line 1\nLine 2\nLine 3",
+                "radio_field": "r1",
+                "datetime_field": "2025-12-09T10:30:00Z",
+                "float_field": 3.14,
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify text field value and type
         assert result["received"]["text"] == "Hello World"
         assert result["types"]["text"] == "str"
 
-    def test_execute_form_email_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_email_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify email field type is preserved as string."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "user@example.com",
-                    "number_field": 10,
-                    "select_field": "opt2",
-                    "checkbox_field": False,
-                    "textarea_field": "Some text",
-                    "radio_field": "r2",
-                    "datetime_field": "2025-12-09T14:00:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "user@example.com",
+                "number_field": 10,
+                "select_field": "opt2",
+                "checkbox_field": False,
+                "textarea_field": "Some text",
+                "radio_field": "r2",
+                "datetime_field": "2025-12-09T14:00:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify email field value and type
         assert result["received"]["email"] == "user@example.com"
         assert result["types"]["email"] == "str"
 
-    def test_execute_form_int_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_int_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify integer field type is preserved."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 100,
-                    "select_field": "opt1",
-                    "checkbox_field": True,
-                    "textarea_field": "Multi\nline\ntext",
-                    "radio_field": "r1",
-                    "datetime_field": "2025-12-09T15:45:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 100,
+                "select_field": "opt1",
+                "checkbox_field": True,
+                "textarea_field": "Multi\nline\ntext",
+                "radio_field": "r1",
+                "datetime_field": "2025-12-09T15:45:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify int field value and type
         assert result["received"]["number"] == 100
         assert result["types"]["number"] == "int"
 
-    def test_execute_form_float_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_float_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify float field type is preserved."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 42,
-                    "float_field": 2.71828,
-                    "select_field": "opt3",
-                    "checkbox_field": False,
-                    "textarea_field": "Text",
-                    "radio_field": "r2",
-                    "datetime_field": "2025-12-09T16:20:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 42,
+                "float_field": 2.71828,
+                "select_field": "opt3",
+                "checkbox_field": False,
+                "textarea_field": "Text",
+                "radio_field": "r2",
+                "datetime_field": "2025-12-09T16:20:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify float field value and type
         assert result["received"]["float"] == 2.71828
         assert result["types"]["float"] == "float"
 
-    def test_execute_form_select_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_select_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify select field type is preserved as string."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 5,
-                    "select_field": "opt2",
-                    "checkbox_field": True,
-                    "textarea_field": "Content",
-                    "radio_field": "r1",
-                    "datetime_field": "2025-12-09T17:00:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 5,
+                "select_field": "opt2",
+                "checkbox_field": True,
+                "textarea_field": "Content",
+                "radio_field": "r1",
+                "datetime_field": "2025-12-09T17:00:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify select field value and type
         assert result["received"]["select"] == "opt2"
         assert result["types"]["select"] == "str"
 
-    def test_execute_form_checkbox_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_checkbox_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify checkbox field type is preserved as boolean."""
-        # Test True value
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 20,
-                    "select_field": "opt1",
-                    "checkbox_field": True,
-                    "textarea_field": "Test text",
-                    "radio_field": "r2",
-                    "datetime_field": "2025-12-09T18:00:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 20,
+                "select_field": "opt1",
+                "checkbox_field": True,
+                "textarea_field": "Test text",
+                "radio_field": "r2",
+                "datetime_field": "2025-12-09T18:00:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
         assert result["received"]["checkbox"] is True
         assert result["types"]["checkbox"] == "bool"
 
-        # Test False value
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 15,
-                    "select_field": "opt2",
-                    "checkbox_field": False,
-                    "textarea_field": "More text",
-                    "radio_field": "r1",
-                    "datetime_field": "2025-12-09T19:00:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 15,
+                "select_field": "opt2",
+                "checkbox_field": False,
+                "textarea_field": "More text",
+                "radio_field": "r1",
+                "datetime_field": "2025-12-09T19:00:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
         assert result["received"]["checkbox"] is False
         assert result["types"]["checkbox"] == "bool"
 
-    def test_execute_form_textarea_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_textarea_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify textarea field type is preserved as string with newlines."""
         multiline_text = "First line\nSecond line\nThird line\n\nWith blank line"
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 88,
-                    "select_field": "opt3",
-                    "checkbox_field": True,
-                    "textarea_field": multiline_text,
-                    "radio_field": "r2",
-                    "datetime_field": "2025-12-09T20:00:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 88,
+                "select_field": "opt3",
+                "checkbox_field": True,
+                "textarea_field": multiline_text,
+                "radio_field": "r2",
+                "datetime_field": "2025-12-09T20:00:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify textarea field preserves newlines
         assert result["received"]["textarea"] == multiline_text
         assert result["types"]["textarea"] == "str"
         assert "\n" in result["received"]["textarea"]
 
-    def test_execute_form_radio_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_radio_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify radio field type is preserved as string."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 33,
-                    "select_field": "opt1",
-                    "checkbox_field": False,
-                    "textarea_field": "Radio test",
-                    "radio_field": "r2",
-                    "datetime_field": "2025-12-09T21:00:00Z",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 33,
+                "select_field": "opt1",
+                "checkbox_field": False,
+                "textarea_field": "Radio test",
+                "radio_field": "r2",
+                "datetime_field": "2025-12-09T21:00:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify radio field value and type
         assert result["received"]["radio"] == "r2"
         assert result["types"]["radio"] == "str"
 
-    def test_execute_form_datetime_field_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_datetime_field_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify datetime field type is preserved as ISO string."""
         iso_datetime = "2025-12-09T22:30:45Z"
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 77,
-                    "select_field": "opt2",
-                    "checkbox_field": True,
-                    "textarea_field": "DateTime test",
-                    "radio_field": "r1",
-                    "datetime_field": iso_datetime,
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 77,
+                "select_field": "opt2",
+                "checkbox_field": True,
+                "textarea_field": "DateTime test",
+                "radio_field": "r1",
+                "datetime_field": iso_datetime,
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify datetime field value and type
         assert result["received"]["datetime"] == iso_datetime
         assert result["types"]["datetime"] == "str"
 
-    def test_execute_form_optional_field_none_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_optional_field_none_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify optional field with None value is preserved."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 44,
-                    "select_field": "opt1",
-                    "checkbox_field": False,
-                    "textarea_field": "Optional test",
-                    "radio_field": "r2",
-                    "datetime_field": "2025-12-09T23:00:00Z",
-                    # optional_field not provided
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 44,
+                "select_field": "opt1",
+                "checkbox_field": False,
+                "textarea_field": "Optional test",
+                "radio_field": "r2",
+                "datetime_field": "2025-12-09T23:00:00Z",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify optional field is None when not provided
         assert result["received"]["optional"] is None
         assert result["types"]["optional"] == "NoneType"
 
-    def test_execute_form_optional_field_with_value_preserved(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_optional_field_with_value_preserved(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form and verify optional field with value is preserved as string."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Test",
-                    "email_field": "test@example.com",
-                    "number_field": 55,
-                    "select_field": "opt3",
-                    "checkbox_field": True,
-                    "textarea_field": "Optional with value",
-                    "radio_field": "r1",
-                    "datetime_field": "2025-12-10T00:00:00Z",
-                    "optional_field": "Optional Value",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Test",
+                "email_field": "test@example.com",
+                "number_field": 55,
+                "select_field": "opt3",
+                "checkbox_field": True,
+                "textarea_field": "Optional with value",
+                "radio_field": "r1",
+                "datetime_field": "2025-12-10T00:00:00Z",
+                "optional_field": "Optional Value",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
-        # Verify optional field has the provided value
         assert result["received"]["optional"] == "Optional Value"
         assert result["types"]["optional"] == "str"
 
-    def test_execute_form_all_fields_together(self, e2e_client, platform_admin, all_fields_form):
+    def test_execute_form_all_fields_together(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Execute form with all fields and verify complete type preservation."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Sample Text",
-                    "email_field": "user@domain.com",
-                    "number_field": 999,
-                    "float_field": 1.618,
-                    "select_field": "opt1",
-                    "checkbox_field": True,
-                    "textarea_field": "Multi\nLine\nContent",
-                    "radio_field": "r1",
-                    "datetime_field": "2025-12-10T12:30:45Z",
-                    "optional_field": "Complete test",
-                }
+        data = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Sample Text",
+                "email_field": "user@domain.com",
+                "number_field": 999,
+                "float_field": 1.618,
+                "select_field": "opt1",
+                "checkbox_field": True,
+                "textarea_field": "Multi\nLine\nContent",
+                "radio_field": "r1",
+                "datetime_field": "2025-12-10T12:30:45Z",
+                "optional_field": "Complete test",
             },
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
         result = data.get("result", {})
 
         # Verify all fields are present and correctly typed
@@ -600,28 +574,29 @@ async def e2e_all_fields_workflow(
         assert result["received"]["optional"] == "Complete test"
         assert result["types"]["optional"] == "str"
 
-    def test_form_execution_captures_user_context(self, e2e_client, platform_admin, all_fields_form):
+    def test_form_execution_captures_user_context(
+        self, e2e_client, platform_admin, all_fields_form
+    ):
         """Verify form execution captures user context information."""
-        response = e2e_client.post(
-            f"/api/forms/{all_fields_form['id']}/execute",
-            headers=platform_admin.headers,
-            json={
-                "form_data": {
-                    "text_field": "Context test",
-                    "email_field": "test@example.com",
-                    "number_field": 123,
-                    "select_field": "opt1",
-                    "checkbox_field": True,
-                    "textarea_field": "Testing context",
-                    "radio_field": "r1",
-                    "datetime_field": "2025-12-10T13:00:00Z",
-                }
+        result = execute_form_sync(
+            e2e_client,
+            platform_admin.headers,
+            all_fields_form["id"],
+            {
+                "text_field": "Context test",
+                "email_field": "test@example.com",
+                "number_field": 123,
+                "select_field": "opt1",
+                "checkbox_field": True,
+                "textarea_field": "Testing context",
+                "radio_field": "r1",
+                "datetime_field": "2025-12-10T13:00:00Z",
             },
+            max_wait=30.0,
         )
-        assert response.status_code == 200, f"Form execution failed: {response.text}"
-        data = response.json()
-        result = data.get("result", {})
+
+        workflow_result = result.get("result", {})
 
         # Verify user context is captured
-        assert result["user"] == platform_admin.email
-        assert result["scope"]  # Should have a scope (org or GLOBAL)
+        assert workflow_result["user"] == platform_admin.email
+        assert workflow_result["scope"]  # Should have a scope (org or GLOBAL)

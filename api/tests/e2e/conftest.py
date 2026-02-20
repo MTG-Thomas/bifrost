@@ -34,7 +34,7 @@ def pytest_configure(config):
     """Register e2e marker."""
     config.addinivalue_line(
         "markers",
-        "e2e: End-to-end tests requiring full API stack (auto-skipped if API not available)"
+        "e2e: End-to-end tests requiring full API stack (auto-skipped if API not available)",
     )
 
 
@@ -86,7 +86,9 @@ def e2e_client():
         yield client
 
 
-def write_and_register(e2e_client, headers, path: str, content: str, function_name: str) -> dict:
+def write_and_register(
+    e2e_client, headers, path: str, content: str, function_name: str
+) -> dict:
     """Write a Python file and register its decorated function.
 
     Returns the RegisterWorkflowResponse dict with keys: id, name, function_name, path, type, description.
@@ -97,7 +99,9 @@ def write_and_register(e2e_client, headers, path: str, content: str, function_na
         headers=headers,
         json={"path": path, "content": content, "encoding": "utf-8"},
     )
-    assert resp.status_code in (200, 201), f"File write failed: {resp.status_code} {resp.text}"
+    assert resp.status_code in (200, 201), (
+        f"File write failed: {resp.status_code} {resp.text}"
+    )
 
     # Register the decorated function
     resp = e2e_client.post(
@@ -108,7 +112,9 @@ def write_and_register(e2e_client, headers, path: str, content: str, function_na
     if resp.status_code == 409:
         # Already registered from a previous test run — look up and return existing
         list_resp = e2e_client.get("/api/workflows", headers=headers)
-        assert list_resp.status_code == 200, f"Workflow list failed: {list_resp.status_code}"
+        assert list_resp.status_code == 200, (
+            f"Workflow list failed: {list_resp.status_code}"
+        )
         for w in list_resp.json():
             if w.get("function_name") == function_name and w.get("path") == path:
                 return w
@@ -116,6 +122,123 @@ def write_and_register(e2e_client, headers, path: str, content: str, function_na
         for w in list_resp.json():
             if w.get("function_name") == function_name:
                 return w
-        raise AssertionError(f"409 but could not find existing workflow {function_name} at {path}")
-    assert resp.status_code in (200, 201), f"Register failed for {function_name} at {path}: {resp.status_code} {resp.text}"
+        raise AssertionError(
+            f"409 but could not find existing workflow {function_name} at {path}"
+        )
+    assert resp.status_code in (200, 201), (
+        f"Register failed for {function_name} at {path}: {resp.status_code} {resp.text}"
+    )
     return resp.json()
+
+
+def execute_workflow_sync(
+    e2e_client,
+    headers,
+    workflow_id: str,
+    input_data: dict | None = None,
+    max_wait: float = 30.0,
+) -> dict:
+    """Execute a workflow and poll until completion.
+
+    The /api/workflows/execute endpoint is async by default - it queues the
+    execution and returns immediately with status=Pending. This helper polls
+    the execution status until it reaches a terminal state (Success/Failed).
+
+    Args:
+        e2e_client: HTTP client for API requests
+        headers: Auth headers
+        workflow_id: UUID of workflow to execute
+        input_data: Input parameters for the workflow
+        max_wait: Maximum time to wait for completion (seconds)
+
+    Returns:
+        The execution result dict with status, result, error, etc.
+
+    Raises:
+        AssertionError: If execution fails or times out
+    """
+    response = e2e_client.post(
+        "/api/workflows/execute",
+        headers=headers,
+        json={
+            "workflow_id": workflow_id,
+            "input_data": input_data or {},
+        },
+    )
+    assert response.status_code == 200, f"Execute failed: {response.text}"
+    data = response.json()
+    execution_id = data.get("execution_id")
+
+    if data["status"] in ("Success", "Failed"):
+        return data
+
+    def check_completion():
+        resp = e2e_client.get(
+            f"/api/executions/{execution_id}",
+            headers=headers,
+        )
+        if resp.status_code == 200:
+            result = resp.json()
+            if result.get("status") in ("Success", "Failed", "Completed"):
+                return result
+        return None
+
+    result = poll_until(check_completion, max_wait=max_wait, interval=0.2)
+    assert result is not None, f"Execution {execution_id} timed out after {max_wait}s"
+    return result
+
+
+def execute_form_sync(
+    e2e_client,
+    headers,
+    form_id: str,
+    form_data: dict,
+    max_wait: float = 30.0,
+) -> dict:
+    """Execute a form and poll until completion.
+
+    The /api/forms/{form_id}/execute endpoint is async by default - it queues
+    the execution and returns immediately with status=Pending. This helper polls
+    the execution status until it reaches a terminal state (Success/Failed).
+
+    Args:
+        e2e_client: HTTP client for API requests
+        headers: Auth headers
+        form_id: UUID of form to execute
+        form_data: Form field values
+        max_wait: Maximum time to wait for completion (seconds)
+
+    Returns:
+        The execution result dict with status, result, error, etc.
+
+    Raises:
+        AssertionError: If execution fails or times out
+    """
+    response = e2e_client.post(
+        f"/api/forms/{form_id}/execute",
+        headers=headers,
+        json={"form_data": form_data},
+    )
+    assert response.status_code == 200, f"Form execute failed: {response.text}"
+    data = response.json()
+    execution_id = data.get("execution_id")
+
+    if data["status"] in ("Success", "Failed"):
+        return data
+
+    def check_completion():
+        resp = e2e_client.get(
+            f"/api/executions/{execution_id}",
+            headers=headers,
+        )
+        if resp.status_code == 200:
+            result = resp.json()
+            if result.get("status") in ("Success", "Failed", "Completed"):
+                return result
+        return None
+
+    result = poll_until(check_completion, max_wait=max_wait, interval=0.2)
+    assert result is not None, (
+        f"Form execution {execution_id} timed out after {max_wait}s"
+    )
+    return result

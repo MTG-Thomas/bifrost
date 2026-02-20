@@ -6,7 +6,7 @@ Tests sync/async execution, polling, cancellation, and execution history.
 
 import pytest
 
-from tests.e2e.conftest import poll_until, write_and_register
+from tests.e2e.conftest import poll_until, write_and_register, execute_workflow_sync
 
 
 # Module-level fixtures for workflows used across multiple test classes
@@ -89,35 +89,26 @@ class TestSyncExecution:
 
     def test_execute_sync_workflow(self, e2e_client, platform_admin, sync_workflow):
         """Platform admin executes sync workflow."""
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {
-                    "message": "Hello from E2E test",
-                    "count": 42,
-                },
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Hello from E2E test", "count": 42},
         )
-        assert response.status_code == 200, f"Execute failed: {response.text}"
-        data = response.json()
 
         assert data["status"] == "Success", f"Unexpected status: {data}"
         assert "execution_id" in data or "executionId" in data
 
-    def test_sync_execution_returns_result(self, e2e_client, platform_admin, sync_workflow):
+    def test_sync_execution_returns_result(
+        self, e2e_client, platform_admin, sync_workflow
+    ):
         """Sync execution returns expected result."""
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Test message", "count": 10},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Test message", "count": 10},
         )
-        assert response.status_code == 200, f"Workflow execution failed: {response.text}"
-        data = response.json()
 
         result = data.get("result", {})
         assert result.get("status") == "success"
@@ -139,12 +130,16 @@ class TestAsyncExecution:
                 "input_data": {"delay_seconds": 1},
             },
         )
-        assert response.status_code in [200, 202], f"Async execute failed: {response.text}"
+        assert response.status_code in [200, 202], (
+            f"Async execute failed: {response.text}"
+        )
         data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
         assert execution_id, "Should return execution_id"
 
-    def test_async_execution_eventually_completes(self, e2e_client, platform_admin, async_workflow):
+    def test_async_execution_eventually_completes(
+        self, e2e_client, platform_admin, async_workflow
+    ):
         """Poll until async execution completes."""
         # Start execution
         response = e2e_client.post(
@@ -192,8 +187,9 @@ class TestExecutionAccess:
         )
         # Either 403 (access denied) or 404 (workflow not found) is acceptable
         # Both indicate the org user cannot execute this workflow
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             f"Org user should not execute directly: {response.status_code}"
+        )
 
     def test_org_user_can_list_own_executions(self, e2e_client, org1_user):
         """Org user can list their own executions."""
@@ -258,7 +254,9 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
             headers=platform_admin.headers,
         )
 
-    def test_cancel_running_workflow(self, e2e_client, platform_admin, cancellable_workflow):
+    def test_cancel_running_workflow(
+        self, e2e_client, platform_admin, cancellable_workflow
+    ):
         """Platform admin can cancel a running execution."""
         # Start execution
         response = e2e_client.post(
@@ -368,12 +366,14 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
             headers=platform_admin.headers,
         )
         # API is idempotent - returns 200 for re-cancellation
-        assert response.status_code == 200, \
+        assert response.status_code == 200, (
             f"Expected 200 for idempotent cancel, got {response.status_code}"
+        )
         cancel_data = response.json()
         # Status should be Cancelled
-        assert cancel_data.get("status") in ["Cancelling", "Cancelled"], \
+        assert cancel_data.get("status") in ["Cancelling", "Cancelled"], (
             f"Expected cancelled status: {cancel_data}"
+        )
 
     def test_org_user_cancel_access_behavior(
         self, e2e_client, platform_admin, org1_user, async_workflow
@@ -402,17 +402,16 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
         )
         # Current API behavior: returns 200 (no ownership check for cancel)
         # If access control is added, this should change to 403
-        assert response.status_code in [200, 403], \
+        assert response.status_code in [200, 403], (
             f"Unexpected cancel response: {response.status_code}"
+        )
 
 
 @pytest.mark.e2e
 class TestExecutionDetails:
     """Test execution details retrieval with access control."""
 
-    def test_org_user_gets_own_execution_details(
-        self, e2e_client, org1_user
-    ):
+    def test_org_user_gets_own_execution_details(self, e2e_client, org1_user):
         """Org user can retrieve details of their own execution."""
         # This test verifies org users can see their own executions
         # It checks existing executions rather than creating new ones
@@ -431,8 +430,9 @@ class TestExecutionDetails:
                 f"/api/executions/{execution_id}",
                 headers=org1_user.headers,
             )
-            assert response.status_code == 200, \
+            assert response.status_code == 200, (
                 f"Org user should see own execution: {response.text}"
+            )
             execution_details = response.json()
             assert execution_details["execution_id"] == execution_id
 
@@ -440,16 +440,12 @@ class TestExecutionDetails:
         self, e2e_client, platform_admin, org1_user, sync_workflow
     ):
         """Org user cannot access another user's execution details."""
-        # Platform admin executes workflow
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Test", "count": 1},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Test", "count": 1},
         )
-        data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
         # Org user attempts to access admin's execution
@@ -457,23 +453,20 @@ class TestExecutionDetails:
             f"/api/executions/{execution_id}",
             headers=org1_user.headers,
         )
-        assert response.status_code == 403, \
+        assert response.status_code == 403, (
             f"Org user should not see others' execution, got {response.status_code}"
+        )
 
     def test_org_user_cannot_see_variables(
         self, e2e_client, platform_admin, org1_user, sync_workflow
     ):
         """Org users cannot access execution variables endpoint."""
-        # Platform admin executes workflow
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Test", "count": 1},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Test", "count": 1},
         )
-        data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
         # Org user attempts to access variables
@@ -481,23 +474,20 @@ class TestExecutionDetails:
             f"/api/executions/{execution_id}/variables",
             headers=org1_user.headers,
         )
-        assert response.status_code == 403, \
+        assert response.status_code == 403, (
             f"Org user should not access variables, got {response.status_code}"
+        )
 
     def test_platform_admin_sees_variables(
         self, e2e_client, platform_admin, sync_workflow
     ):
         """Platform admin can access execution variables."""
-        # Platform admin executes workflow
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Test", "count": 5},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Test", "count": 5},
         )
-        data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
         # Platform admin can access variables
@@ -505,8 +495,9 @@ class TestExecutionDetails:
             f"/api/executions/{execution_id}/variables",
             headers=platform_admin.headers,
         )
-        assert response.status_code == 200, \
+        assert response.status_code == 200, (
             f"Platform admin should access variables: {response.text}"
+        )
         variables = response.json()
         assert isinstance(variables, dict)
 
@@ -514,16 +505,12 @@ class TestExecutionDetails:
         self, e2e_client, platform_admin, sync_workflow
     ):
         """Progressive result loading endpoint works correctly."""
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Result test", "count": 7},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Result test", "count": 7},
         )
-        assert response.status_code == 200
-        data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
         # Get result via endpoint
@@ -542,16 +529,12 @@ class TestExecutionDetails:
         self, e2e_client, platform_admin, sync_workflow
     ):
         """Progressive logs loading endpoint works correctly."""
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Logs test", "count": 3},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Logs test", "count": 3},
         )
-        assert response.status_code == 200
-        data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
         # Get logs via endpoint
@@ -566,8 +549,9 @@ class TestExecutionDetails:
         assert isinstance(logs, list), "Logs should be a list"
         # Each log entry should have expected fields
         for log in logs:
-            assert "timestamp" in log or "level" in log or "message" in log, \
+            assert "timestamp" in log or "level" in log or "message" in log, (
                 f"Log entry missing expected fields: {log}"
+            )
 
 
 @pytest.mark.e2e
@@ -578,17 +562,12 @@ class TestExecutionLogAccess:
         self, e2e_client, platform_admin, org1_user, sync_workflow
     ):
         """Org user cannot access debug log level for others' executions."""
-        # Platform admin executes workflow
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Debug test", "count": 1},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Debug test", "count": 1},
         )
-        assert response.status_code == 200
-        data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
         # Org user attempts to access logs with debug level
@@ -598,28 +577,22 @@ class TestExecutionLogAccess:
             params={"level": "debug"},
         )
         # Should either be forbidden (403) or return empty/filtered logs
-        assert response.status_code in [200, 403], \
+        assert response.status_code in [200, 403], (
             f"Unexpected status for debug logs: {response.status_code}"
+        )
         if response.status_code == 200:
-            # If 200, org user shouldn't see others' execution logs
-            # The actual behavior depends on API implementation
             pass
 
     def test_platform_admin_sees_debug_logs(
         self, e2e_client, platform_admin, sync_workflow
     ):
         """Platform admin can access all log levels including debug."""
-        # Execute workflow
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": sync_workflow["id"],
-                "input_data": {"message": "Admin debug test", "count": 1},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Admin debug test", "count": 1},
         )
-        assert response.status_code == 200
-        data = response.json()
         execution_id = data.get("execution_id") or data.get("executionId")
 
         # Platform admin can access debug logs
@@ -628,7 +601,9 @@ class TestExecutionLogAccess:
             headers=platform_admin.headers,
             params={"level": "debug"},
         )
-        assert response.status_code == 200, f"Admin should access debug logs: {response.text}"
+        assert response.status_code == 200, (
+            f"Admin should access debug logs: {response.text}"
+        )
         logs = response.json()
         assert isinstance(logs, list), "Logs should be a list"
 
@@ -661,8 +636,9 @@ class TestExecutionConcurrency:
                     "input_data": {"delay_seconds": 2},
                 },
             )
-            assert response.status_code in [200, 202], \
+            assert response.status_code in [200, 202], (
                 f"Execute {i} failed: {response.text}"
+            )
             data = response.json()
             execution_id = data.get("execution_id") or data.get("executionId")
             execution_ids.append(execution_id)
@@ -670,7 +646,13 @@ class TestExecutionConcurrency:
         assert len(execution_ids) == 3, "Should have 3 execution IDs"
 
         # Terminal statuses that indicate execution is complete
-        terminal_statuses = ["Success", "Failed", "Timeout", "CompletedWithErrors", "Cancelled"]
+        terminal_statuses = [
+            "Success",
+            "Failed",
+            "Timeout",
+            "CompletedWithErrors",
+            "Cancelled",
+        ]
 
         # Poll until all executions complete using exponential backoff
         def check_all_completed():
@@ -698,8 +680,9 @@ class TestExecutionConcurrency:
             )
             assert response.status_code == 200
             data = response.json()
-            assert data.get("status") == "Success", \
+            assert data.get("status") == "Success", (
                 f"Execution {eid} did not complete successfully: {data.get('status')}"
+            )
             executions_data.append(data)
 
         # Parse timestamps
@@ -711,11 +694,15 @@ class TestExecutionConcurrency:
             return datetime.fromisoformat(ts_str)
 
         started_times = [parse_timestamp(e.get("started_at")) for e in executions_data]
-        completed_times = [parse_timestamp(e.get("completed_at")) for e in executions_data]
+        completed_times = [
+            parse_timestamp(e.get("completed_at")) for e in executions_data
+        ]
 
         # All timestamps should be present
         assert all(started_times), f"Missing started_at timestamps: {started_times}"
-        assert all(completed_times), f"Missing completed_at timestamps: {completed_times}"
+        assert all(completed_times), (
+            f"Missing completed_at timestamps: {completed_times}"
+        )
 
         # Calculate execution span: from first start to last completion
         first_start = min(started_times)  # type: ignore[type-var]
@@ -782,25 +769,28 @@ async def {workflow_name}():
     return {{"message": "Hello World", "version": 1}}
 '''
         reg_result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, v1_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            v1_content,
+            workflow_name,
         )
         workflow_id = reg_result["id"]
 
         try:
             # Step 2: Execute v1 and verify
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {}},
-                timeout=120.0,
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {},
+                max_wait=60.0,
             )
-            assert response.status_code == 200, f"Execute v1 failed: {response.text}"
-            data = response.json()
             assert data["status"] == "Success", f"v1 execution failed: {data}"
             result = data.get("result", {})
-            assert result.get("message") == "Hello World", \
+            assert result.get("message") == "Hello World", (
                 f"Expected 'Hello World', got: {result}"
+            )
             assert result.get("version") == 1, f"Expected version 1, got: {result}"
 
             # Step 3: Update to v2
@@ -827,20 +817,21 @@ async def {workflow_name}():
             assert response.status_code == 200, f"Update to v2 failed: {response.text}"
 
             # Step 4: Execute v2 and verify NEW code runs
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {}},
-                timeout=120.0,
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {},
+                max_wait=60.0,
             )
-            assert response.status_code == 200, f"Execute v2 failed: {response.text}"
-            data = response.json()
             assert data["status"] == "Success", f"v2 execution failed: {data}"
             result = data.get("result", {})
-            assert result.get("message") == "Hello World Again", \
+            assert result.get("message") == "Hello World Again", (
                 f"Expected 'Hello World Again' (v2), got stale result: {result}"
-            assert result.get("version") == 2, \
+            )
+            assert result.get("version") == 2, (
                 f"Expected version 2, got stale version: {result}"
+            )
 
         finally:
             # Cleanup
@@ -898,24 +889,27 @@ async def {workflow_name}():
     return {{"value": value}}
 '''
         reg_result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, workflow_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            workflow_content,
+            workflow_name,
         )
         workflow_id = reg_result["id"]
 
         try:
             # Step 3: Execute and verify "original"
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {}},
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {},
             )
-            assert response.status_code == 200, f"Execute v1 failed: {response.text}"
-            data = response.json()
             assert data["status"] == "Success", f"v1 execution failed: {data}"
             result = data.get("result", {})
-            assert result.get("value") == "original", \
+            assert result.get("value") == "original", (
                 f"Expected 'original', got: {result}"
+            )
 
             # Step 4: Update module to v2
             module_v2_content = '''"""Hot Reload Module v2"""
@@ -932,20 +926,22 @@ def get_value():
                     "encoding": "utf-8",
                 },
             )
-            assert response.status_code == 200, f"Update module v2 failed: {response.text}"
+            assert response.status_code == 200, (
+                f"Update module v2 failed: {response.text}"
+            )
 
             # Step 5: Execute and verify "updated" (not cached "original")
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {}},
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {},
             )
-            assert response.status_code == 200, f"Execute v2 failed: {response.text}"
-            data = response.json()
             assert data["status"] == "Success", f"v2 execution failed: {data}"
             result = data.get("result", {})
-            assert result.get("value") == "updated", \
+            assert result.get("value") == "updated", (
                 f"Expected 'updated' (v2), got stale cached result: {result}"
+            )
 
         finally:
             # Cleanup
@@ -958,9 +954,7 @@ def get_value():
                 headers=platform_admin.headers,
             )
 
-    def test_package_available_after_installation(
-        self, e2e_client, platform_admin
-    ):
+    def test_package_available_after_installation(self, e2e_client, platform_admin):
         """Newly installed packages are available in next execution.
 
         Tests:
@@ -1003,24 +997,26 @@ async def {workflow_name}(number: int = 1000000):
     return {{"humanized": humanize.intcomma(number)}}
 '''
         reg_result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, workflow_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            workflow_content,
+            workflow_name,
         )
         workflow_id = reg_result["id"]
 
         try:
             # Step 2: Execute - should fail due to missing package
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {"number": 1234567}},
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {"number": 1234567},
             )
-            # Execution might return 200 but with Failed status, or might return error
-            if response.status_code == 200:
-                data = response.json()
-                # Expected to fail because humanize is not installed
-                assert data["status"] == "Failed", \
-                    f"Expected Failed status (missing package), got: {data}"
+            # Expected to fail because humanize is not installed
+            assert data["status"] == "Failed", (
+                f"Expected Failed status (missing package), got: {data}"
+            )
 
             # Step 3: Install the package
             response = e2e_client.post(
@@ -1028,9 +1024,13 @@ async def {workflow_name}(number: int = 1000000):
                 headers=platform_admin.headers,
                 json={"package_name": package_name},
             )
-            assert response.status_code == 200, f"Install request failed: {response.text}"
+            assert response.status_code == 200, (
+                f"Install request failed: {response.text}"
+            )
             install_data = response.json()
-            assert install_data.get("status") == "queued", f"Unexpected install status: {install_data}"
+            assert install_data.get("status") == "queued", (
+                f"Unexpected install status: {install_data}"
+            )
 
             # Step 4: Poll until package appears in installed list
             def check_package_installed():
@@ -1048,18 +1048,19 @@ async def {workflow_name}(number: int = 1000000):
             assert installed, f"Package '{package_name}' not installed within timeout"
 
             # Step 5: Execute again - should succeed now
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {"number": 1234567}},
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {"number": 1234567},
             )
-            assert response.status_code == 200, f"Execute failed: {response.text}"
-            data = response.json()
-            assert data["status"] == "Success", \
+            assert data["status"] == "Success", (
                 f"Expected Success after package install, got: {data}"
+            )
             result = data.get("result", {})
-            assert result.get("humanized") == "1,234,567", \
+            assert result.get("humanized") == "1,234,567", (
                 f"Expected '1,234,567', got: {result}"
+            )
 
         finally:
             # Cleanup: delete workflow
@@ -1073,9 +1074,7 @@ async def {workflow_name}(number: int = 1000000):
                 headers=platform_admin.headers,
             )
 
-    def test_nested_module_package_update_reflected(
-        self, e2e_client, platform_admin
-    ):
+    def test_nested_module_package_update_reflected(self, e2e_client, platform_admin):
         """Updates to nested package modules are reflected immediately.
 
         Tests:
@@ -1104,7 +1103,9 @@ async def {workflow_name}(number: int = 1000000):
                 "encoding": "utf-8",
             },
         )
-        assert response.status_code == 200, f"Create __init__.py failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Create __init__.py failed: {response.text}"
+        )
 
         # Create utils.py v1
         utils_v1_content = '''"""Utils module v1"""
@@ -1140,26 +1141,30 @@ async def {workflow_name}():
     return {{"data": data, "constant": CONSTANT}}
 '''
         reg_result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, workflow_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            workflow_content,
+            workflow_name,
         )
         workflow_id = reg_result["id"]
 
         try:
             # Step 3: Execute and verify original values
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {}},
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {},
             )
-            assert response.status_code == 200, f"Execute v1 failed: {response.text}"
-            data = response.json()
             assert data["status"] == "Success", f"v1 execution failed: {data}"
             result = data.get("result", {})
-            assert result.get("constant") == "original_constant", \
+            assert result.get("constant") == "original_constant", (
                 f"Expected 'original_constant', got: {result}"
-            assert result.get("data", {}).get("value") == "original", \
+            )
+            assert result.get("data", {}).get("value") == "original", (
                 f"Expected 'original', got: {result}"
+            )
 
             # Step 4: Update utils.py to v2
             utils_v2_content = '''"""Utils module v2"""
@@ -1178,22 +1183,25 @@ def get_data():
                     "encoding": "utf-8",
                 },
             )
-            assert response.status_code == 200, f"Update utils.py v2 failed: {response.text}"
+            assert response.status_code == 200, (
+                f"Update utils.py v2 failed: {response.text}"
+            )
 
             # Step 5: Execute and verify updated values
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={"workflow_id": workflow_id, "input_data": {}},
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                workflow_id,
+                {},
             )
-            assert response.status_code == 200, f"Execute v2 failed: {response.text}"
-            data = response.json()
             assert data["status"] == "Success", f"v2 execution failed: {data}"
             result = data.get("result", {})
-            assert result.get("constant") == "updated_constant", \
+            assert result.get("constant") == "updated_constant", (
                 f"Expected 'updated_constant' (v2), got stale: {result}"
-            assert result.get("data", {}).get("value") == "updated", \
+            )
+            assert result.get("data", {}).get("value") == "updated", (
                 f"Expected 'updated' (v2), got stale: {result}"
+            )
 
         finally:
             # Cleanup
@@ -1246,9 +1254,13 @@ def get_data():
             headers=platform_admin.headers,
             json={"package_name": package_name},
         )
-        assert install_response.status_code == 200, f"Install failed: {install_response.text}"
+        assert install_response.status_code == 200, (
+            f"Install failed: {install_response.text}"
+        )
         install_data = install_response.json()
-        assert install_data.get("status") == "queued", f"Unexpected install status: {install_data}"
+        assert install_data.get("status") == "queued", (
+            f"Unexpected install status: {install_data}"
+        )
 
         # Poll until package appears in installed list (confirms installation completed)
         def check_package_installed():
@@ -1275,9 +1287,12 @@ def get_data():
 
         assert file is not None, "requirements.txt should be stored in file_index"
         assert file.content is not None, "requirements.txt should have content"
-        assert package_name in file.content.lower(), \
+        assert package_name in file.content.lower(), (
             f"requirements.txt should contain '{package_name}', got: {file.content}"
-        assert file.content_hash is not None, "requirements.txt should have content hash"
+        )
+        assert file.content_hash is not None, (
+            "requirements.txt should have content hash"
+        )
 
         # Cleanup: uninstall package
         e2e_client.delete(
@@ -1286,9 +1301,7 @@ def get_data():
         )
 
     @pytest.mark.asyncio
-    async def test_requirements_cached_in_redis(
-        self, e2e_client, platform_admin
-    ):
+    async def test_requirements_cached_in_redis(self, e2e_client, platform_admin):
         """
         Test that installing a package updates Redis cache.
 
@@ -1320,9 +1333,13 @@ def get_data():
             headers=platform_admin.headers,
             json={"package_name": package_name},
         )
-        assert install_response.status_code == 200, f"Install failed: {install_response.text}"
+        assert install_response.status_code == 200, (
+            f"Install failed: {install_response.text}"
+        )
         install_data = install_response.json()
-        assert install_data.get("status") == "queued", f"Unexpected install status: {install_data}"
+        assert install_data.get("status") == "queued", (
+            f"Unexpected install status: {install_data}"
+        )
 
         # Poll until package appears in installed list (confirms installation completed)
         def check_package_installed():
@@ -1342,8 +1359,9 @@ def get_data():
         # Check Redis cache
         cached = await get_requirements()
         assert cached is not None, "requirements.txt should be cached in Redis"
-        assert package_name in cached["content"].lower(), \
+        assert package_name in cached["content"].lower(), (
             f"Redis cache should contain '{package_name}', got: {cached['content']}"
+        )
 
         # Cleanup: uninstall package
         e2e_client.delete(

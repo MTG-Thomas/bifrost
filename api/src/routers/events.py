@@ -276,9 +276,7 @@ async def list_sources(
     source_type: EventSourceType | None = Query(
         None, description="Filter by source type"
     ),
-    organization_id: UUID | None = Query(
-        None, description="Filter by organization"
-    ),
+    organization_id: UUID | None = Query(None, description="Filter by organization"),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Skip results"),
 ) -> EventSourceListResponse:
@@ -429,7 +427,9 @@ async def create_source(
     result = await db.execute(
         select(EventSource)
         .options(
-            joinedload(EventSource.webhook_source).joinedload(WebhookSource.integration),
+            joinedload(EventSource.webhook_source).joinedload(
+                WebhookSource.integration
+            ),
             joinedload(EventSource.schedule_source),
             joinedload(EventSource.organization),
         )
@@ -525,7 +525,9 @@ async def update_source(
     result = await db.execute(
         select(EventSource)
         .options(
-            joinedload(EventSource.webhook_source).joinedload(WebhookSource.integration),
+            joinedload(EventSource.webhook_source).joinedload(
+                WebhookSource.integration
+            ),
             joinedload(EventSource.schedule_source),
             joinedload(EventSource.organization),
         )
@@ -542,7 +544,7 @@ async def update_source(
     "/sources/{source_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete event source",
-    description="Delete an event source and all related data (Platform admin only).",
+    description="Soft delete (deactivate) an event source (Platform admin only).",
 )
 async def delete_source(
     source_id: UUID,
@@ -551,11 +553,11 @@ async def delete_source(
     db: DbSession,
 ) -> None:
     """
-    Delete an event source.
+    Soft delete an event source.
 
     This will:
     1. Call adapter unsubscribe (for external subscriptions)
-    2. Hard delete the source and all related data (cascades)
+    2. Set is_active=False to deactivate the source
     """
     repo = EventSourceRepository(db)
     source = await repo.get_by_id_with_details(source_id)
@@ -565,6 +567,9 @@ async def delete_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event source not found",
         )
+
+    if not source.is_active:
+        return
 
     # Call adapter unsubscribe for webhooks
     if source.source_type == EventSourceType.WEBHOOK and source.webhook_source:
@@ -579,12 +584,11 @@ async def delete_source(
                 )
             except Exception as e:
                 logger.warning(f"Failed to unsubscribe webhook: {e}")
-                # Continue with delete anyway
 
-    await db.delete(source)
+    source.is_active = False
     await db.flush()
 
-    logger.info(f"Deleted event source {source_id}")
+    logger.info(f"Deactivated event source {source_id}")
 
 
 # =============================================================================
@@ -809,10 +813,18 @@ async def list_events(
     ctx: Context,
     user: CurrentSuperuser,
     db: DbSession,
-    event_status: str | None = Query(None, alias="status", description="Filter by status (received, processing, completed, failed)"),
+    event_status: str | None = Query(
+        None,
+        alias="status",
+        description="Filter by status (received, processing, completed, failed)",
+    ),
     event_type: str | None = Query(None, description="Filter by event type"),
-    since: datetime | None = Query(None, description="Filter events received after this time"),
-    until: datetime | None = Query(None, description="Filter events received before this time"),
+    since: datetime | None = Query(
+        None, description="Filter events received after this time"
+    ),
+    until: datetime | None = Query(
+        None, description="Filter events received before this time"
+    ),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Skip results"),
 ) -> EventListResponse:
@@ -869,8 +881,12 @@ async def list_events(
         delivery_repo = EventDeliveryRepository(db)
         deliveries = await delivery_repo.get_by_event(event.id)
         total_deliveries = len(deliveries)
-        success_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS)
-        failed_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.FAILED)
+        success_count = sum(
+            1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS
+        )
+        failed_count = sum(
+            1 for d in deliveries if d.status == EventDeliveryStatus.FAILED
+        )
 
         items.append(
             EventResponse(
@@ -926,7 +942,9 @@ async def get_event(
     delivery_repo = EventDeliveryRepository(db)
     deliveries = await delivery_repo.get_by_event(event_id)
     total_deliveries = len(deliveries)
-    success_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS)
+    success_count = sum(
+        1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS
+    )
     failed_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.FAILED)
 
     return EventResponse(
@@ -1002,7 +1020,9 @@ async def list_deliveries(
                 workflow_id=delivery.workflow_id,
                 workflow_name=delivery.workflow.name if delivery.workflow else None,
                 execution_id=delivery.execution_id,
-                status=delivery.status.value if hasattr(delivery.status, 'value') else delivery.status,
+                status=delivery.status.value
+                if hasattr(delivery.status, "value")
+                else delivery.status,
                 error_message=delivery.error_message,
                 attempt_count=delivery.attempt_count,
                 next_retry_at=delivery.next_retry_at,
@@ -1027,7 +1047,9 @@ async def list_deliveries(
                     event_id=event_id,
                     event_subscription_id=subscription.id,
                     workflow_id=subscription.workflow_id,
-                    workflow_name=subscription.workflow.name if subscription.workflow else None,
+                    workflow_name=subscription.workflow.name
+                    if subscription.workflow
+                    else None,
                     execution_id=None,
                     status="not_delivered",
                     error_message=None,
@@ -1132,7 +1154,9 @@ async def create_delivery(
         delivery.error_message = str(e)
         await db.flush()
 
-    logger.info(f"Created delivery {delivery.id} for event {event_id} subscription {subscription.id}")
+    logger.info(
+        f"Created delivery {delivery.id} for event {event_id} subscription {subscription.id}"
+    )
 
     return EventDeliveryResponse(
         id=delivery.id,
@@ -1141,7 +1165,9 @@ async def create_delivery(
         workflow_id=delivery.workflow_id,
         workflow_name=subscription.workflow.name if subscription.workflow else None,
         execution_id=delivery.execution_id,
-        status=delivery.status.value if hasattr(delivery.status, 'value') else delivery.status,
+        status=delivery.status.value
+        if hasattr(delivery.status, "value")
+        else delivery.status,
         error_message=delivery.error_message,
         attempt_count=delivery.attempt_count,
         next_retry_at=delivery.next_retry_at,

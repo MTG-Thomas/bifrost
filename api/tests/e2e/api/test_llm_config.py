@@ -63,7 +63,7 @@ class TestLLMConfigurationCRUD:
             "/api/admin/llm/config",
             json={
                 "provider": "anthropic",
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "api_key": llm_test_anthropic_key,
                 "max_tokens": 2048,
                 "temperature": 0.5,
@@ -74,7 +74,7 @@ class TestLLMConfigurationCRUD:
 
         data = response.json()
         assert data["provider"] == "anthropic"
-        assert data["model"] == "claude-3-5-haiku-20241022"
+        assert data["model"] == "claude-haiku-4-5-20251001"
         assert data["max_tokens"] == 2048
         assert data["temperature"] == 0.5
         assert data["is_configured"] is True
@@ -160,7 +160,7 @@ class TestLLMConfigurationCRUD:
             "/api/admin/llm/config",
             json={
                 "provider": "anthropic",
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "api_key": llm_test_anthropic_key,
                 "max_tokens": 1024,
                 "temperature": 0.5,
@@ -281,7 +281,7 @@ class TestLLMConnectionTests:
             "/api/admin/llm/test",
             json={
                 "provider": "anthropic",
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "api_key": llm_test_anthropic_key,
             },
             headers=platform_admin.headers,
@@ -333,7 +333,7 @@ class TestLLMConnectionTests:
             "/api/admin/llm/test",
             json={
                 "provider": "anthropic",
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "api_key": "invalid-api-key-12345",
             },
             headers=platform_admin.headers,
@@ -355,7 +355,9 @@ class TestLLMConnectionTests:
             "/api/admin/llm/test-saved",
             headers=platform_admin.headers,
         )
-        assert response.status_code == 200, f"Test saved connection failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Test saved connection failed: {response.text}"
+        )
 
         data = response.json()
         assert data["success"] is True
@@ -471,7 +473,7 @@ class TestLLMAccessControl:
             "/api/admin/llm/config",
             json={
                 "provider": "anthropic",
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "api_key": "fake-key",
             },
             headers=org1_user.headers,
@@ -500,7 +502,7 @@ class TestLLMAccessControl:
             "/api/admin/llm/test",
             json={
                 "provider": "anthropic",
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "api_key": "fake-key",
             },
             headers=org1_user.headers,
@@ -531,7 +533,7 @@ class TestLLMAccessControl:
             "/api/admin/llm/config",
             json={
                 "provider": "anthropic",
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "api_key": "fake-key",
             },
         )

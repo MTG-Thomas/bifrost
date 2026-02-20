@@ -15,7 +15,7 @@ import logging
 import os
 import pytest
 
-from tests.e2e.conftest import write_and_register
+from tests.e2e.conftest import write_and_register, execute_workflow_sync
 
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,9 @@ def org1_table_data(
         params={"scope": org1["id"]},
         json={"data": {"scope_marker": "org1", "name": "Org 1 Test Record"}},
     )
-    assert response.status_code == 201, f"Failed to create org1 document: {response.text}"
+    assert response.status_code == 201, (
+        f"Failed to create org1 document: {response.text}"
+    )
     doc = response.json()
 
     yield {"org_id": org1["id"], "doc_id": doc["id"], "scope_marker": "org1"}
@@ -76,7 +78,9 @@ def org2_table_data(
         params={"scope": org2["id"]},
         json={"data": {"scope_marker": "org2", "name": "Org 2 Test Record"}},
     )
-    assert response.status_code == 201, f"Failed to create org2 document: {response.text}"
+    assert response.status_code == 201, (
+        f"Failed to create org2 document: {response.text}"
+    )
     doc = response.json()
 
     yield {"org_id": org2["id"], "doc_id": doc["id"], "scope_marker": "org2"}
@@ -102,7 +106,9 @@ def global_table_data(
         params={"scope": "global"},
         json={"data": {"scope_marker": "global", "name": "Global Test Record"}},
     )
-    assert response.status_code == 201, f"Failed to create global document: {response.text}"
+    assert response.status_code == 201, (
+        f"Failed to create global document: {response.text}"
+    )
     doc = response.json()
 
     yield {"org_id": None, "doc_id": doc["id"], "scope_marker": "global"}
@@ -200,7 +206,9 @@ def global_config_data(
             "scope": "global",
         },
     )
-    assert response.status_code == 204, f"Failed to create global config: {response.text}"
+    assert response.status_code == 204, (
+        f"Failed to create global config: {response.text}"
+    )
 
     yield {"org_id": None, "scope_marker": "global"}
 
@@ -249,7 +257,9 @@ def embedding_config_for_scope_tests(
         json=config,
         headers=platform_admin.headers,
     )
-    assert response.status_code == 200, f"Failed to configure embeddings: {response.text}"
+    assert response.status_code == 200, (
+        f"Failed to configure embeddings: {response.text}"
+    )
 
     logger.info("Configured OpenAI embedding provider for scope tests")
     yield config
@@ -285,7 +295,9 @@ def org1_knowledge_data(
             "scope": org1["id"],
         },
     )
-    assert response.status_code == 200, f"Failed to create org1 knowledge: {response.text}"
+    assert response.status_code == 200, (
+        f"Failed to create org1 knowledge: {response.text}"
+    )
 
     yield {"org_id": org1["id"], "scope_marker": "org1"}
 
@@ -321,7 +333,9 @@ def org2_knowledge_data(
             "scope": org2["id"],
         },
     )
-    assert response.status_code == 200, f"Failed to create org2 knowledge: {response.text}"
+    assert response.status_code == 200, (
+        f"Failed to create org2 knowledge: {response.text}"
+    )
 
     yield {"org_id": org2["id"], "scope_marker": "org2"}
 
@@ -356,7 +370,9 @@ def global_knowledge_data(
             "scope": "global",
         },
     )
-    assert response.status_code == 200, f"Failed to create global knowledge: {response.text}"
+    assert response.status_code == 200, (
+        f"Failed to create global knowledge: {response.text}"
+    )
 
     yield {"org_id": None, "scope_marker": "global"}
 
@@ -475,8 +491,11 @@ async def {workflow_name}():
     return results
 '''
     result = write_and_register(
-        e2e_client, platform_admin.headers,
-        workflow_path, workflow_content, workflow_name,
+        e2e_client,
+        platform_admin.headers,
+        workflow_path,
+        workflow_content,
+        workflow_name,
     )
     workflow_id = result["id"]
 
@@ -598,8 +617,11 @@ async def {workflow_name}():
     return results
 '''
     result = write_and_register(
-        e2e_client, platform_admin.headers,
-        workflow_path, workflow_content, workflow_name,
+        e2e_client,
+        platform_admin.headers,
+        workflow_path,
+        workflow_content,
+        workflow_name,
     )
     workflow_id = result["id"]
 
@@ -662,16 +684,11 @@ class TestComprehensiveSdkScoping:
         assert org1_knowledge_data is not None
         assert org2_knowledge_data is not None
 
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": comprehensive_scope_workflow["id"],
-                "input_data": {},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            comprehensive_scope_workflow["id"],
         )
-        assert response.status_code == 200, f"Execute failed: {response.text}"
-        data = response.json()
         assert data["status"] == "Success", f"Execution failed: {data}"
 
         result = data.get("result", {})
@@ -754,16 +771,11 @@ class TestComprehensiveSdkScoping:
         assert response.status_code == 200, f"Set context failed: {response.text}"
 
         try:
-            response = e2e_client.post(
-                "/api/workflows/execute",
-                headers=platform_admin.headers,
-                json={
-                    "workflow_id": global_comprehensive_workflow["id"],
-                    "input_data": {},
-                },
+            data = execute_workflow_sync(
+                e2e_client,
+                platform_admin.headers,
+                global_comprehensive_workflow["id"],
             )
-            assert response.status_code == 200, f"Execute failed: {response.text}"
-            data = response.json()
             assert data["status"] == "Success", f"Execution failed: {data}"
 
             result = data.get("result", {})
@@ -801,7 +813,9 @@ class TestComprehensiveSdkScoping:
             assert "error" not in knowledge_result.get("search", {}), (
                 f"knowledge.search() failed: {knowledge_result.get('search', {}).get('error')}"
             )
-            knowledge_markers = knowledge_result.get("search", {}).get("scope_markers", [])
+            knowledge_markers = knowledge_result.get("search", {}).get(
+                "scope_markers", []
+            )
             assert "org2" in knowledge_markers, (
                 f"knowledge.search() should see org2 data. Got: {knowledge_markers}"
             )
@@ -952,8 +966,11 @@ async def {workflow_name}():
     return results
 '''
         result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, workflow_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            workflow_content,
+            workflow_name,
         )
         workflow_id = result["id"]
 
@@ -1002,16 +1019,11 @@ async def {workflow_name}():
         assert org1_knowledge_data is not None
         assert org2_knowledge_data is not None
 
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": scope_override_workflow["id"],
-                "input_data": {},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            scope_override_workflow["id"],
         )
-        assert response.status_code == 200, f"Execute failed: {response.text}"
-        data = response.json()
         assert data["status"] == "Success", f"Execution failed: {data}"
 
         result = data.get("result", {})
@@ -1089,8 +1101,11 @@ async def {workflow_name}():
     }}
 '''
         result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, workflow_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            workflow_content,
+            workflow_name,
         )
         workflow_id = result["id"]
 
@@ -1103,7 +1118,9 @@ async def {workflow_name}():
                 "access_level": "authenticated",
             },
         )
-        assert response.status_code == 200, f"Set workflow org/access_level failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Set workflow org/access_level failed: {response.text}"
+        )
 
         yield {
             "id": workflow_id,
@@ -1149,8 +1166,11 @@ async def {workflow_name}():
     }}
 '''
         result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, workflow_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            workflow_content,
+            workflow_name,
         )
         workflow_id = result["id"]
 
@@ -1163,7 +1183,9 @@ async def {workflow_name}():
                 "access_level": "authenticated",
             },
         )
-        assert response.status_code == 200, f"Set workflow access_level failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Set workflow access_level failed: {response.text}"
+        )
 
         yield {
             "id": workflow_id,
@@ -1210,8 +1232,11 @@ async def {workflow_name}():
     }}
 '''
         result = write_and_register(
-            e2e_client, platform_admin.headers,
-            workflow_path, workflow_content, workflow_name,
+            e2e_client,
+            platform_admin.headers,
+            workflow_path,
+            workflow_content,
+            workflow_name,
         )
         workflow_id = result["id"]
 
@@ -1224,7 +1249,9 @@ async def {workflow_name}():
                 "access_level": "authenticated",
             },
         )
-        assert response.status_code == 200, f"Set workflow org/access_level failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Set workflow org/access_level failed: {response.text}"
+        )
 
         yield {
             "id": workflow_id,
@@ -1251,16 +1278,11 @@ async def {workflow_name}():
 
         org1_user executing org1's authenticated workflow should succeed.
         """
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=org1_user.headers,
-            json={
-                "workflow_id": org1_authenticated_workflow["id"],
-                "input_data": {},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            org1_user.headers,
+            org1_authenticated_workflow["id"],
         )
-        assert response.status_code == 200, f"Execute failed: {response.text}"
-        data = response.json()
         assert data["status"] == "Success", f"Execution failed: {data}"
 
         result = data.get("result", {})
@@ -1283,16 +1305,11 @@ async def {workflow_name}():
         org1_user executing global workflow should succeed,
         with workflow using org1_user's org context.
         """
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=org1_user.headers,
-            json={
-                "workflow_id": global_authenticated_workflow["id"],
-                "input_data": {},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            org1_user.headers,
+            global_authenticated_workflow["id"],
         )
-        assert response.status_code == 200, f"Execute failed: {response.text}"
-        data = response.json()
         assert data["status"] == "Success", f"Execution failed: {data}"
 
         result = data.get("result", {})
@@ -1342,29 +1359,19 @@ async def {workflow_name}():
         should be able to execute org-scoped workflows.
         """
         # Execute org1 workflow
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": org1_authenticated_workflow["id"],
-                "input_data": {},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            org1_authenticated_workflow["id"],
         )
-        assert response.status_code == 200, f"Execute org1 workflow failed: {response.text}"
-        data = response.json()
         assert data["status"] == "Success", f"Execution failed: {data}"
         assert data.get("result", {}).get("org_id") == org1["id"]
 
         # Execute org2 workflow
-        response = e2e_client.post(
-            "/api/workflows/execute",
-            headers=platform_admin.headers,
-            json={
-                "workflow_id": org2_authenticated_workflow["id"],
-                "input_data": {},
-            },
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            org2_authenticated_workflow["id"],
         )
-        assert response.status_code == 200, f"Execute org2 workflow failed: {response.text}"
-        data = response.json()
         assert data["status"] == "Success", f"Execution failed: {data}"
         assert data.get("result", {}).get("org_id") == org2["id"]

@@ -54,6 +54,7 @@ CSRF_EXEMPT_PATHS = {
 # Path prefixes that are exempt from CSRF (public webhook endpoints)
 CSRF_EXEMPT_PREFIXES = (
     "/api/hooks/",  # Webhook receiver - called by external services, no auth
+    "/api/endpoints/",  # API key auth - called with X-Bifrost-Key header
     "/embed/",  # Embed entry points - HMAC-verified, no cookie auth
 )
 
@@ -115,8 +116,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                     extra={
                         "has_cookie": bool(csrf_cookie),
                         "has_header": bool(csrf_header),
-                        "client_ip": request.client.host if request.client else "unknown",
-                    }
+                        "client_ip": request.client.host
+                        if request.client
+                        else "unknown",
+                    },
                 )
                 return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -127,8 +130,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 logger.warning(
                     f"CSRF token mismatch for {request.method} {path}",
                     extra={
-                        "client_ip": request.client.host if request.client else "unknown",
-                    }
+                        "client_ip": request.client.host
+                        if request.client
+                        else "unknown",
+                    },
                 )
                 return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,

@@ -11,7 +11,7 @@ Tests the complete file upload workflow:
 import httpx
 import pytest
 
-from tests.e2e.conftest import write_and_register
+from tests.e2e.conftest import write_and_register, execute_workflow_sync
 
 
 @pytest.mark.e2e
@@ -63,7 +63,9 @@ class TestFileUploads:
                 "file_size": 1024,
             },
         )
-        assert response.status_code == 200, f"Generate upload URL failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Generate upload URL failed: {response.text}"
+        )
         data = response.json()
 
         # Verify response structure
@@ -73,7 +75,9 @@ class TestFileUploads:
         assert "file_metadata" in data, "Missing file_metadata"
 
         # Verify blob_uri format
-        assert data["blob_uri"].startswith("uploads/"), f"Invalid blob_uri: {data['blob_uri']}"
+        assert data["blob_uri"].startswith("uploads/"), (
+            f"Invalid blob_uri: {data['blob_uri']}"
+        )
 
         # Verify file metadata
         metadata = data["file_metadata"]
@@ -97,7 +101,9 @@ class TestFileUploads:
                 "file_size": 47,  # Actual size of content below
             },
         )
-        assert response.status_code == 200, f"Generate upload URL failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Generate upload URL failed: {response.text}"
+        )
         data = response.json()
         upload_url = data["upload_url"]
         # blob_uri available in data["blob_uri"] if needed
@@ -113,10 +119,13 @@ class TestFileUploads:
                 headers={"Content-Type": "text/plain"},
             )
         # S3/Minio accepts 200, 201, or 204 for successful upload
-        assert response.status_code in [200, 201, 204], \
+        assert response.status_code in [200, 201, 204], (
             f"S3 upload failed with status {response.status_code}: {response.text}"
+        )
 
-    def test_workflow_can_read_uploaded_file(self, e2e_client, platform_admin, test_form):
+    def test_workflow_can_read_uploaded_file(
+        self, e2e_client, platform_admin, test_form
+    ):
         """Create workflow that reads uploaded file and verify it can access the content."""
         # First, upload a file
         response = e2e_client.post(
@@ -128,7 +137,9 @@ class TestFileUploads:
                 "file_size": 47,
             },
         )
-        assert response.status_code == 200, f"Generate upload URL failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Generate upload URL failed: {response.text}"
+        )
         upload_data = response.json()
         upload_url = upload_data["upload_url"]
         blob_uri = upload_data["blob_uri"]
@@ -141,8 +152,9 @@ class TestFileUploads:
                 content=file_content,
                 headers={"Content-Type": "text/plain"},
             )
-        assert s3_response.status_code in [200, 201, 204], \
+        assert s3_response.status_code in [200, 201, 204], (
             f"S3 upload failed: {s3_response.status_code}"
+        )
 
         # Strip the "uploads/" prefix since location="uploads" adds it
         # blob_uri is like "uploads/form_id/uuid/filename.txt"
@@ -170,50 +182,38 @@ async def e2e_file_read_workflow(file_path: str):
     }
 '''
         result = write_and_register(
-            e2e_client, platform_admin.headers,
-            "e2e_file_read_workflow.py", workflow_content,
+            e2e_client,
+            platform_admin.headers,
+            "e2e_file_read_workflow.py",
+            workflow_content,
             "e2e_file_read_workflow",
         )
         workflow_id = result["id"]
 
-        # Execute workflow with the file path (without uploads/ prefix)
-        # Retry on timeout — the sync execution can occasionally lose results
-        # due to process pool recycling races under test load.
-        result = None
-        last_error = None
-        for attempt in range(3):
-            try:
-                response = e2e_client.post(
-                    "/api/workflows/execute",
-                    headers=platform_admin.headers,
-                    json={
-                        "workflow_id": workflow_id,
-                        "input_data": {"file_path": file_path_for_workflow},
-                    },
-                    timeout=120.0,
-                )
-                assert response.status_code == 200, f"Execute workflow failed: {response.text}"
-                result = response.json()
-                break
-            except httpx.ReadTimeout:
-                last_error = f"Attempt {attempt + 1}: sync execution timed out"
-                print(f"\n{last_error}, retrying...")
-                continue
-
-        assert result is not None, f"Workflow execution failed after 3 attempts: {last_error}"
+        result = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            workflow_id,
+            {"file_path": file_path_for_workflow},
+            max_wait=60.0,
+        )
 
         # Verify the workflow could read the file content
         assert "result" in result, "Missing result in execution response"
         workflow_result = result["result"]
-        assert isinstance(workflow_result, dict), \
+        assert isinstance(workflow_result, dict), (
             f"Result should be a dict, got {type(workflow_result)}: {workflow_result}"
+        )
         assert "content" in workflow_result, "Missing content in workflow result"
-        assert workflow_result["content"] == file_content.decode("utf-8"), \
+        assert workflow_result["content"] == file_content.decode("utf-8"), (
             f"File content mismatch: expected {file_content}, got {workflow_result['content']}"
-        assert workflow_result["length"] == len(file_content), \
+        )
+        assert workflow_result["length"] == len(file_content), (
             f"File length mismatch: expected {len(file_content)}, got {workflow_result['length']}"
-        assert workflow_result["file_path"] == file_path_for_workflow, \
+        )
+        assert workflow_result["file_path"] == file_path_for_workflow, (
             f"File path mismatch: expected {file_path_for_workflow}, got {workflow_result['file_path']}"
+        )
 
         # Cleanup
         e2e_client.delete(
@@ -267,7 +267,9 @@ class TestFileUploadAccessControl:
                 "file_size": 100,
             },
         )
-        assert response.status_code == 200, f"Upload URL generation failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Upload URL generation failed: {response.text}"
+        )
         data = response.json()
         assert "upload_url" in data
         assert "blob_uri" in data
@@ -275,7 +277,9 @@ class TestFileUploadAccessControl:
     def test_anonymous_cannot_generate_upload_url(self, e2e_client, upload_form):
         """Anonymous user cannot generate upload URL."""
         # Use a fresh client with no cookies to simulate anonymous access
-        with httpx.Client(base_url=str(e2e_client.base_url), timeout=60.0) as anon_client:
+        with httpx.Client(
+            base_url=str(e2e_client.base_url), timeout=60.0
+        ) as anon_client:
             response = anon_client.post(
                 f"/api/forms/{upload_form['id']}/upload",
                 json={
@@ -285,8 +289,9 @@ class TestFileUploadAccessControl:
                 },
             )
         # Should get 401 or 403 depending on form access level
-        assert response.status_code in [401, 403], \
+        assert response.status_code in [401, 403], (
             f"Should deny access to anonymous user: {response.status_code}"
+        )
 
 
 @pytest.mark.e2e
@@ -345,7 +350,9 @@ class TestFileUploadEdgeCases:
                 "file_size": 100,
             },
         )
-        assert response.status_code == 200, f"Upload URL generation failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Upload URL generation failed: {response.text}"
+        )
         data = response.json()
 
         # Verify filename doesn't allow path traversal
@@ -365,6 +372,8 @@ class TestFileUploadEdgeCases:
                 "file_size": 5 * 1024 * 1024 * 1024,  # 5 GB
             },
         )
-        assert response.status_code == 200, f"Upload URL generation failed: {response.text}"
+        assert response.status_code == 200, (
+            f"Upload URL generation failed: {response.text}"
+        )
         data = response.json()
         assert "upload_url" in data

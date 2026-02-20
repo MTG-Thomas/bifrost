@@ -4,13 +4,12 @@ from src.services.model_registry import normalize_model_name
 
 
 class TestNormalizeModelName:
-
     @pytest.mark.parametrize(
         "model_id, expected",
         [
             # Anthropic format: -YYYYMMDD
             ("claude-opus-4-5-20251101", "claude-opus-4-5"),
-            ("claude-3-5-haiku-20241022", "claude-3-5-haiku"),
+            ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
             ("claude-3-5-sonnet-20241022", "claude-3-5-sonnet"),
             ("claude-sonnet-4-5-20250514", "claude-sonnet-4-5"),
             # OpenAI format: -YYYY-MM-DD
