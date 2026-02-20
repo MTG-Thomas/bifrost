@@ -921,3 +921,227 @@ class TestOrgScopedRepositoryRegularUserAccess:
 
         # Should NOT find the workflow (no roles to check)
         assert result is None
+
+
+# =============================================================================
+# Application Cross-Org Slug Lookup Tests
+# =============================================================================
+
+
+def make_application(slug: str, org_id=None) -> "Application":
+    """Create an Application instance for testing."""
+    from src.models.orm.applications import Application
+
+    return Application(
+        id=uuid4(),
+        name=slug.replace("-", " ").title(),
+        slug=slug,
+        organization_id=org_id,
+        access_level="authenticated",
+    )
+
+
+class TestApplicationCrossOrgSlugLookup:
+    """
+    Tests for application slug resolution across orgs.
+
+    Scenario: 3 apps exist:
+    - global-app: organization_id=NULL (global)
+    - org-a-app: organization_id=org_a
+    - org-b-app: organization_id=org_b
+
+    Verifies:
+    - Regular users can access their org's apps + global apps by slug
+    - Regular users cannot access other orgs' apps by slug
+    - Superusers can access any app by slug (including cross-org)
+    """
+
+    @pytest.fixture
+    def mock_session(self):
+        session = AsyncMock()
+        session.execute = AsyncMock()
+        return session
+
+    @pytest.fixture
+    def org_a_id(self):
+        return uuid4()
+
+    @pytest.fixture
+    def org_b_id(self):
+        return uuid4()
+
+    @pytest.fixture
+    def user_id(self):
+        return uuid4()
+
+    @pytest.fixture
+    def global_app(self):
+        return make_application("global-app", None)
+
+    @pytest.fixture
+    def org_a_app(self, org_a_id):
+        return make_application("org-a-app", org_a_id)
+
+    @pytest.fixture
+    def org_b_app(self, org_b_id):
+        return make_application("org-b-app", org_b_id)
+
+    # --- Regular user: can access own org by slug ---
+
+    async def test_regular_user_accesses_own_org_app_by_slug(
+        self, mock_session, org_a_id, user_id, org_a_app
+    ):
+        """User in org A can access org A's app by slug."""
+        from src.routers.applications import ApplicationRepository
+
+        # Org-specific query finds the app
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = org_a_app
+        mock_session.execute.return_value = mock_result
+
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, user_id=user_id, is_superuser=False
+        )
+        result = await repo.get(slug="org-a-app")
+
+        assert result is not None
+        assert result.slug == "org-a-app"
+        assert result.organization_id == org_a_id
+
+    # --- Regular user: can access global by slug ---
+
+    async def test_regular_user_accesses_global_app_by_slug(
+        self, mock_session, org_a_id, user_id, global_app
+    ):
+        """User in org A can access global app by slug (cascade fallback)."""
+        from src.routers.applications import ApplicationRepository
+
+        # Org-specific query returns None
+        mock_result_org = MagicMock()
+        mock_result_org.scalar_one_or_none.return_value = None
+
+        # Global query returns the app
+        mock_result_global = MagicMock()
+        mock_result_global.scalar_one_or_none.return_value = global_app
+
+        mock_session.execute.side_effect = [mock_result_org, mock_result_global]
+
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, user_id=user_id, is_superuser=False
+        )
+        result = await repo.get(slug="global-app")
+
+        assert result is not None
+        assert result.slug == "global-app"
+        assert result.organization_id is None
+
+    # --- Regular user: cannot access other org by slug ---
+
+    async def test_regular_user_cannot_access_other_org_app_by_slug(
+        self, mock_session, org_a_id, user_id
+    ):
+        """User in org A cannot access org B's app by slug."""
+        from src.routers.applications import ApplicationRepository
+
+        # Org-specific query (org A) returns None
+        mock_result_org = MagicMock()
+        mock_result_org.scalar_one_or_none.return_value = None
+
+        # Global query returns None
+        mock_result_global = MagicMock()
+        mock_result_global.scalar_one_or_none.return_value = None
+
+        mock_session.execute.side_effect = [mock_result_org, mock_result_global]
+
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, user_id=user_id, is_superuser=False
+        )
+        result = await repo.get(slug="org-b-app")
+
+        # Should NOT find org B's app — not in user's scope
+        assert result is None
+
+    # --- Superuser: can access own org by slug ---
+
+    async def test_superuser_accesses_own_org_app_by_slug(
+        self, mock_session, org_a_id, org_a_app
+    ):
+        """Superuser in org A can access org A's app by slug."""
+        from src.routers.applications import ApplicationRepository
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = org_a_app
+        mock_session.execute.return_value = mock_result
+
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, is_superuser=True
+        )
+        result = await repo.get(slug="org-a-app")
+
+        assert result is not None
+        assert result.slug == "org-a-app"
+        assert result.organization_id == org_a_id
+
+    # --- Superuser: can access global by slug ---
+
+    async def test_superuser_accesses_global_app_by_slug(
+        self, mock_session, org_a_id, global_app
+    ):
+        """Superuser in org A can access global app by slug."""
+        from src.routers.applications import ApplicationRepository
+
+        # Org-specific query returns None
+        mock_result_org = MagicMock()
+        mock_result_org.scalar_one_or_none.return_value = None
+
+        # Global query returns the app
+        mock_result_global = MagicMock()
+        mock_result_global.scalar_one_or_none.return_value = global_app
+
+        mock_session.execute.side_effect = [mock_result_org, mock_result_global]
+
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, is_superuser=True
+        )
+        result = await repo.get(slug="global-app")
+
+        assert result is not None
+        assert result.slug == "global-app"
+        assert result.organization_id is None
+
+    # --- Superuser: can access OTHER org by slug (the bug fix) ---
+
+    async def test_superuser_accesses_other_org_app_by_slug(
+        self, mock_session, org_a_id, org_b_app
+    ):
+        """Superuser in org A can access org B's app by slug (cross-org)."""
+        from src.routers.applications import ApplicationRepository
+
+        # Step 1: Org-specific query (org A) returns None
+        mock_result_org = MagicMock()
+        mock_result_org.scalar_one_or_none.return_value = None
+
+        # Step 2: Global query returns None
+        mock_result_global = MagicMock()
+        mock_result_global.scalar_one_or_none.return_value = None
+
+        # Step 3: Cross-org query (no org filter) returns org B's app
+        mock_result_any = MagicMock()
+        mock_result_any.scalar_one_or_none.return_value = org_b_app
+
+        mock_session.execute.side_effect = [
+            mock_result_org,
+            mock_result_global,
+            mock_result_any,
+        ]
+
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, is_superuser=True
+        )
+        result = await repo.get(slug="org-b-app")
+
+        assert result is not None
+        assert result.slug == "org-b-app"
+        assert result.organization_id == org_b_app.organization_id
+        # 3 queries: org A, global, then cross-org fallback
+        assert mock_session.execute.call_count == 3

@@ -173,6 +173,14 @@ class OrgScopedRepository(Generic[ModelT]):
 
         if entity and (self.is_superuser or await self._can_access_entity(entity)):
             return entity
+
+        # Step 3: Superusers can access entities in any org
+        if self.is_superuser:
+            result = await self.session.execute(query)
+            entity = result.scalar_one_or_none()
+            if entity:
+                return entity
+
         return None
 
     async def can_access(self, **filters: Any) -> ModelT:
