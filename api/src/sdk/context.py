@@ -123,6 +123,7 @@ class ExecutionContext:
     _config_resolver: ConfigResolver = field(default_factory=ConfigResolver)
     _integration_cache: dict = field(default_factory=dict)
     _integration_calls: list = field(default_factory=list)
+    _dynamic_secrets: set[str] = field(default_factory=set, repr=False)
 
     # ==================== COMPUTED PROPERTIES ====================
 
@@ -234,6 +235,34 @@ class ExecutionContext:
         return {
             "integration_calls": self._integration_calls,
         }
+
+    def _collect_secret_values(self) -> set[str]:
+        """
+        Collect all decrypted secret values from config for scrubbing.
+
+        Returns a set of plaintext secret values that should be redacted
+        from execution output. Skips secrets shorter than 4 characters
+        to avoid false positive redactions.
+        """
+        from src.core.secret_string import _MIN_SECRET_LENGTH
+
+        secrets: set[str] = set()
+        for entry in self._config.values():
+            if isinstance(entry, dict) and entry.get("type") == "secret":
+                try:
+                    from src.core.security import decrypt_secret
+                    decrypted = decrypt_secret(entry["value"])
+                    if len(decrypted) >= _MIN_SECRET_LENGTH:
+                        secrets.add(decrypted)
+                except Exception:
+                    pass  # Skip entries that fail to decrypt
+        return secrets | self._dynamic_secrets
+
+    def _register_dynamic_secret(self, value: str | None) -> None:
+        """Register a dynamically obtained secret value for output scrubbing."""
+        from src.core.secret_string import _MIN_SECRET_LENGTH
+        if value and len(value) >= _MIN_SECRET_LENGTH:
+            self._dynamic_secrets.add(value)
 
 
 # Backward compatibility alias
