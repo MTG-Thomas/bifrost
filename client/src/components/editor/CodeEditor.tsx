@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import Editor, { type OnMount, type BeforeMount } from "@monaco-editor/react";
 import { useEditorStore } from "@/stores/editorStore";
 import { useEditorSession } from "@/hooks/useEditorSession";
@@ -20,6 +20,7 @@ import { SyncDiffView } from "./SyncDiffView";
 import { IndexingOverlay } from "./IndexingOverlay";
 import { WorkflowIdConflictDialog } from "./WorkflowIdConflictDialog";
 import { WorkflowDeactivationDialog } from "./WorkflowDeactivationDialog";
+import { RegisterWorkflowDialog } from "./RegisterWorkflowDialog";
 
 /**
  * Monaco editor component wrapper
@@ -88,22 +89,42 @@ export function CodeEditor() {
 	// Workflow registration support for CodeLens
 	const reloadWorkflows = useReloadWorkflowFile();
 
+	// Register dialog state
+	const [registerDialog, setRegisterDialog] = useState<{
+		open: boolean;
+		filePath: string;
+		functionName: string;
+	}>({ open: false, filePath: "", functionName: "" });
+
 	// Keep Monaco CodeLens provider aware of the current file path
 	useEffect(() => {
 		setCurrentFilePath(openFile?.path ?? null);
 		return () => setCurrentFilePath(null);
 	}, [openFile?.path]);
 
-	// Listen for CodeLens "Register" button clicks
+	// Listen for CodeLens "Register" button clicks — open dialog instead of registering directly
 	useEffect(() => {
-		const handler = async (e: Event) => {
+		const handler = (e: Event) => {
 			const { filePath, functionName } = (e as CustomEvent).detail as {
 				filePath: string;
 				functionName: string;
 			};
+			setRegisterDialog({ open: true, filePath, functionName });
+		};
+		window.addEventListener("bifrost-register-decorator", handler);
+		return () =>
+			window.removeEventListener("bifrost-register-decorator", handler);
+	}, []);
+
+	// Handle confirmed registration from dialog
+	const handleRegisterConfirm = useCallback(
+		async (orgId: string | null) => {
+			const { filePath, functionName } = registerDialog;
+			setRegisterDialog({ open: false, filePath: "", functionName: "" });
 			try {
-				await registerWorkflow(filePath, functionName);
-				toast.success(`Registered ${functionName}`);
+				const result = await registerWorkflow(filePath, functionName, orgId);
+				const orgLabel = result.organization_id ? "" : " (Global)";
+				toast.success(`Registered ${functionName}${orgLabel}`);
 				// Refresh workflow store so CodeLens updates
 				await reloadWorkflows.mutate();
 				// Force CodeLens to re-evaluate by toggling language
@@ -122,11 +143,9 @@ export function CodeEditor() {
 						err instanceof Error ? err.message : String(err),
 				});
 			}
-		};
-		window.addEventListener("bifrost-register-decorator", handler);
-		return () =>
-			window.removeEventListener("bifrost-register-decorator", handler);
-	}, [reloadWorkflows]);
+		},
+		[registerDialog, reloadWorkflows],
+	);
 
 	// Check for conflicts by comparing etags
 	const checkForConflict = useCallback(async () => {
@@ -697,6 +716,16 @@ export function CodeEditor() {
 					onCancel={() => {
 						resolveWorkflowIdConflict("cancel");
 					}}
+				/>
+
+				{/* Register workflow dialog */}
+				<RegisterWorkflowDialog
+					open={registerDialog.open}
+					functionName={registerDialog.functionName}
+					onConfirm={handleRegisterConfirm}
+					onCancel={() =>
+						setRegisterDialog({ open: false, filePath: "", functionName: "" })
+					}
 				/>
 
 				{/* Workflow Deactivation dialog */}

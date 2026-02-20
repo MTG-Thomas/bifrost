@@ -226,64 +226,6 @@ async def validate_workflow(context: Any, file_path: str) -> ToolResult:
         return error_result(f"Error validating workflow: {str(e)}")
 
 
-async def create_workflow(context: Any, file_path: str, code: str) -> ToolResult:
-    """Create a new workflow file after validation."""
-    import ast
-
-    from src.core.database import get_db_context
-    from src.services.file_storage import FileStorageService
-
-    logger.info(f"MCP create_workflow called with file_path={file_path}")
-
-    if not file_path:
-        return error_result("file_path is required")
-    if not code:
-        return error_result("code is required")
-
-    # Validate syntax first
-    try:
-        ast.parse(code)
-    except SyntaxError as e:
-        return error_result(
-            f"Syntax error in code at line {e.lineno}: {e.msg}",
-            {"line": e.lineno, "message": e.msg},
-        )
-
-    # Check for workflow/tool/data_provider decorator
-    has_decorator = "@workflow" in code or "@data_provider" in code or "@tool" in code
-    if not has_decorator:
-        return error_result("Missing decorator. Your code must include a function decorated with @workflow, @data_provider, or @tool.")
-
-    # Ensure .py extension
-    if not file_path.endswith(".py"):
-        file_path = f"{file_path}.py"
-
-    try:
-        async with get_db_context() as db:
-            service = FileStorageService(db)
-
-            # Check if file exists
-            try:
-                existing = await service.read_file(file_path)
-                if existing:
-                    return error_result(f"File already exists: {file_path}. Use file tools to update it or choose a different path.")
-            except FileNotFoundError:
-                pass  # Good - file doesn't exist
-
-            # Write the file (encode string to bytes)
-            await service.write_file(file_path, code.encode('utf-8'))
-
-            data = {
-                "success": True,
-                "file_path": file_path,
-                "message": "Workflow file created. Use register_workflow to register the function.",
-            }
-            return success_result(f"Workflow created at '{file_path}'", data)
-
-    except Exception as e:
-        logger.exception(f"Error creating workflow via MCP: {e}")
-        return error_result(f"Error creating workflow: {str(e)}")
-
 
 async def get_workflow(
     context: Any,
@@ -345,14 +287,14 @@ async def get_workflow(
         return error_result(f"Error getting workflow: {str(e)}")
 
 
-async def register_workflow(context: Any, path: str, function_name: str) -> ToolResult:
+async def register_workflow(context: Any, path: str, function_name: str, organization_id: str = "") -> ToolResult:
     """Register a decorated Python function as a workflow.
 
     Takes a file path and function name, validates the function has a
     @workflow/@tool/@data_provider decorator, and registers it in the system.
     """
     import ast
-    from uuid import uuid4
+    from uuid import UUID, uuid4
 
     from sqlalchemy import select
 
@@ -425,6 +367,7 @@ async def register_workflow(context: Any, path: str, function_name: str) -> Tool
             wf_type = "data_provider" if decorator_type == "data_provider" else (
                 "tool" if decorator_type == "tool" else "workflow"
             )
+            org_uuid = UUID(organization_id) if organization_id else None
             workflow_id = uuid4()
             new_wf = WorkflowORM(
                 id=workflow_id,
@@ -433,6 +376,7 @@ async def register_workflow(context: Any, path: str, function_name: str) -> Tool
                 path=path,
                 type=wf_type,
                 is_active=True,
+                organization_id=org_uuid,
             )
             db.add(new_wf)
             await db.flush()
@@ -467,9 +411,8 @@ TOOLS = [
     ("execute_workflow", "Execute Workflow", "Execute a Bifrost workflow by ID or name and return the results. Use list_workflows to get workflow IDs."),
     ("list_workflows", "List Workflows", "List workflows registered in Bifrost."),
     ("validate_workflow", "Validate Workflow", "Validate a workflow Python file for syntax and decorator issues."),
-    ("create_workflow", "Create Workflow", "Create a new workflow by validating Python code and writing to workspace."),
     ("get_workflow", "Get Workflow", "Get detailed metadata for a specific workflow by ID or name."),
-    ("register_workflow", "Register Workflow", "Register a decorated Python function as a workflow. Takes a file path and function name."),
+    ("register_workflow", "Register Workflow", "Register a decorated Python function as a workflow. Takes a file path, function name, and optional organization_id."),
 ]
 
 
@@ -481,7 +424,6 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "execute_workflow": execute_workflow,
         "list_workflows": list_workflows,
         "validate_workflow": validate_workflow,
-        "create_workflow": create_workflow,
         "get_workflow": get_workflow,
         "register_workflow": register_workflow,
     }

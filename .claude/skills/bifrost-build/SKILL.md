@@ -40,7 +40,7 @@ echo "Source: $BIFROST_HAS_SOURCE | Path: $BIFROST_SOURCE_PATH | URL: $BIFROST_D
 - Execution/logs (`execute_workflow`, `get_execution`) — for forms/apps/agents that need the platform runtime
 - Platform state verification (`list_workflows`, etc.) — ONLY when debugging sync divergence
 
-**Never use MCP for:** discovery (`list_*`), reading code (`list_content`, `search_content`, `read_content_lines`), or creating artifacts (`create_workflow`, etc.) when a local workspace exists.
+**Never use MCP for:** discovery (`list_*`), reading code (`list_content`, `search_content`, `read_content_lines`), or creating artifacts when a local workspace exists.
 
 ## Development Mode
 
@@ -91,7 +91,7 @@ Best for: quick iterations, non-developers, working without a local git repo.
 **Flow:**
 1. Understand the goal
 2. Read SDK docs via `get_workflow_schema`, `get_sdk_schema`
-3. Create artifact via MCP (`create_workflow`, `create_form`, `create_app`)
+3. Write workflow file via `replace_content`, then `register_workflow` to register it. For forms/apps use `create_form`, `create_app`.
 4. Test via `execute_workflow` or access preview URL
 5. Check logs via `get_execution` if issues
 6. Iterate with `patch_content` or `replace_content`
@@ -496,7 +496,7 @@ Three patterns for connecting triggers to workflows:
 
 ### Form
 ```
-1. Sync workflow to platform (bifrost sync or create_workflow)
+1. Sync workflow to platform (bifrost sync or register_workflow)
 2. create_form(name="New User", workflow_id=<id>, fields=[...])
    -> returns form URL
 ```

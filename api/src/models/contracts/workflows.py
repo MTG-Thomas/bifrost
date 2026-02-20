@@ -158,6 +158,7 @@ class RegisterWorkflowRequest(BaseModel):
     """Request model for explicit workflow registration."""
     path: str = Field(..., description="Workspace-relative path to the .py file")
     function_name: str = Field(..., description="Name of the decorated function to register")
+    organization_id: str | None = Field(default=None, description="Organization ID to scope the workflow to, or null for global scope")
 
 
 class RegisterWorkflowResponse(BaseModel):
@@ -168,6 +169,7 @@ class RegisterWorkflowResponse(BaseModel):
     path: str = Field(..., description="File path")
     type: str = Field(..., description="Executable type: workflow, tool, or data_provider")
     description: str | None = Field(default=None, description="Workflow description")
+    organization_id: str | None = Field(default=None, description="Organization ID if org-scoped, null for global")
 
 
 # ==================== WORKFLOW VALIDATION ====================

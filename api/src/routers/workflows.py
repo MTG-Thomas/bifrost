@@ -969,6 +969,9 @@ async def register_workflow(
         "tool" if target_decorator_type == "tool" else "workflow"
     )
 
+    # Parse organization_id if provided
+    org_uuid = UUID(request.organization_id) if request.organization_id else None
+
     if existing_wf and existing_wf.is_active:
         raise HTTPException(status_code=409, detail="Workflow already registered")
     elif existing_wf and not existing_wf.is_active:
@@ -977,6 +980,7 @@ async def register_workflow(
         existing_wf.is_active = True
         existing_wf.is_orphaned = False
         existing_wf.type = wf_type
+        existing_wf.organization_id = org_uuid
         existing_wf.updated_at = datetime.now(timezone.utc)
         await db.flush()
     else:
@@ -989,6 +993,7 @@ async def register_workflow(
             path=request.path,
             type=wf_type,
             is_active=True,
+            organization_id=org_uuid,
         )
         db.add(new_wf)
         await db.flush()
@@ -1010,6 +1015,7 @@ async def register_workflow(
         path=workflow.path,
         type=workflow.type,
         description=workflow.description,
+        organization_id=str(workflow.organization_id) if workflow.organization_id else None,
     )
 
 

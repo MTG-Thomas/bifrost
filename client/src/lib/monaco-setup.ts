@@ -208,8 +208,16 @@ export async function initializeMonaco(monaco: typeof Monaco) {
 			const filePath = getCurrentFilePath();
 			if (!filePath) return { lenses: [], dispose() {} };
 
-			const registeredFns =
-				useWorkflowsStore.getState().getRegisteredFunctions(filePath);
+			const state = useWorkflowsStore.getState();
+			const registeredFns = state.getRegisteredFunctions(filePath);
+
+			// Build a function_name -> workflow lookup for org info
+			const workflowsByFn = new Map<string, { organization_id?: string | null }>();
+			for (const wf of state.workflows) {
+				if (wf.relative_file_path === filePath && wf.function_name) {
+					workflowsByFn.set(wf.function_name, wf);
+				}
+			}
 
 			const lenses: Monaco.languages.CodeLens[] = [];
 			const lineCount = model.getLineCount();
@@ -240,24 +248,36 @@ export async function initializeMonaco(monaco: typeof Monaco) {
 
 				const isRegistered = registeredFns.has(functionName);
 
-				lenses.push({
-					range: {
-						startLineNumber: i,
-						startColumn: 1,
-						endLineNumber: i,
-						endColumn: 1,
-					},
-					command: isRegistered
-						? {
-								id: "bifrost.noop",
-								title: `$(check) Registered ${decoratorType}`,
-							}
-						: {
-								id: "bifrost.registerDecorator",
-								title: `$(play) Register ${decoratorType}`,
-								arguments: [filePath, functionName],
-							},
-				});
+				if (isRegistered) {
+					const wf = workflowsByFn.get(functionName);
+					const scopeLabel = wf?.organization_id ? "Org-scoped" : "Global";
+					lenses.push({
+						range: {
+							startLineNumber: i,
+							startColumn: 1,
+							endLineNumber: i,
+							endColumn: 1,
+						},
+						command: {
+							id: "bifrost.noop",
+							title: `$(check) Registered ${decoratorType} (${scopeLabel})`,
+						},
+					});
+				} else {
+					lenses.push({
+						range: {
+							startLineNumber: i,
+							startColumn: 1,
+							endLineNumber: i,
+							endColumn: 1,
+						},
+						command: {
+							id: "bifrost.registerDecorator",
+							title: `$(play) Register ${decoratorType}`,
+							arguments: [filePath, functionName],
+						},
+					});
+				}
 			}
 
 			return { lenses, dispose() {} };

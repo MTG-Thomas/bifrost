@@ -253,10 +253,15 @@ export async function executeWorkflowWithContext(
 export async function registerWorkflow(
 	path: string,
 	functionName: string,
-): Promise<{ id: string; name: string; function_name: string; path: string; type: string; description?: string | null }> {
+	organizationId?: string | null,
+): Promise<{ id: string; name: string; function_name: string; path: string; type: string; description?: string | null; organization_id?: string | null }> {
+	const body: Record<string, string> = { path, function_name: functionName };
+	if (organizationId) {
+		body.organization_id = organizationId;
+	}
 	const response = await authFetch("/api/workflows/register", {
 		method: "POST",
-		body: JSON.stringify({ path, function_name: functionName }),
+		body: JSON.stringify(body),
 	});
 
 	if (!response.ok) {

@@ -8,6 +8,13 @@
 
 **Tech Stack:** Python (watchdog, httpx), Redis (dirty flag + watch session tracking), WebSocket (existing pubsub infrastructure), React (Zustand store, shadcn components)
 
+**Key Design Decisions (from review):**
+- **Redis:** Use `get_shared_redis()` (shared connection) in API route code, NOT `async with get_redis()` (per-call, for workers)
+- **WebSocket:** Add proper `onFileActivity()` callback method to `WebSocketService` — do NOT use the unsafe `ws?.addEventListener` pattern from Header.tsx
+- **CLI Watch:** Reuse `_push_files` for initial push. Extract a `_do_push()` helper for the API call so incremental watch pushes share the same code path as full pushes. No separate `_push_changed_files` function
+- **Watch UI:** Active watch = "user is live" green pulse. Tooltip shows last N file changes on hover. Non-watch pushes show briefly then fade
+- **Watch sessions:** Use `get_shared_redis()` for watch endpoint Redis calls (API route context)
+
 ---
 
 ## Task 1: Repo Dirty Flag (Backend)
@@ -34,7 +41,7 @@ from unittest.mock import AsyncMock, patch
 @pytest.mark.asyncio
 async def test_mark_repo_dirty_sets_redis_key():
     mock_redis = AsyncMock()
-    with patch("src.core.repo_dirty.get_redis", return_value=mock_redis):
+    with patch("src.core.repo_dirty.get_shared_redis", return_value=mock_redis):
         from src.core.repo_dirty import mark_repo_dirty
         await mark_repo_dirty()
         mock_redis.set.assert_called_once()
@@ -44,7 +51,7 @@ async def test_mark_repo_dirty_sets_redis_key():
 @pytest.mark.asyncio
 async def test_clear_repo_dirty_deletes_redis_key():
     mock_redis = AsyncMock()
-    with patch("src.core.repo_dirty.get_redis", return_value=mock_redis):
+    with patch("src.core.repo_dirty.get_shared_redis", return_value=mock_redis):
         from src.core.repo_dirty import clear_repo_dirty
         await clear_repo_dirty()
         mock_redis.delete.assert_called_once_with("bifrost:repo_dirty")
@@ -53,7 +60,7 @@ async def test_clear_repo_dirty_deletes_redis_key():
 async def test_is_repo_dirty_returns_timestamp_when_set():
     mock_redis = AsyncMock()
     mock_redis.get.return_value = b"2026-02-19T12:00:00+00:00"
-    with patch("src.core.repo_dirty.get_redis", return_value=mock_redis):
+    with patch("src.core.repo_dirty.get_shared_redis", return_value=mock_redis):
         from src.core.repo_dirty import get_repo_dirty_since
         result = await get_repo_dirty_since()
         assert result == "2026-02-19T12:00:00+00:00"
@@ -62,7 +69,7 @@ async def test_is_repo_dirty_returns_timestamp_when_set():
 async def test_is_repo_dirty_returns_none_when_clean():
     mock_redis = AsyncMock()
     mock_redis.get.return_value = None
-    with patch("src.core.repo_dirty.get_redis", return_value=mock_redis):
+    with patch("src.core.repo_dirty.get_shared_redis", return_value=mock_redis):
         from src.core.repo_dirty import get_repo_dirty_since
         result = await get_repo_dirty_since()
         assert result is None
@@ -87,28 +94,28 @@ Checked by: GET /api/github/repo-status
 """
 from datetime import datetime, timezone
 
-from src.core.cache.redis_client import get_redis
+from src.core.cache.redis_client import get_shared_redis
 
 DIRTY_KEY = "bifrost:repo_dirty"
 
 
 async def mark_repo_dirty() -> None:
     """Mark repo as having uncommitted platform changes."""
-    async with get_redis() as r:
-        await r.set(DIRTY_KEY, datetime.now(timezone.utc).isoformat())
+    r = await get_shared_redis()
+    await r.set(DIRTY_KEY, datetime.now(timezone.utc).isoformat())
 
 
 async def clear_repo_dirty() -> None:
     """Clear dirty flag after successful git sync."""
-    async with get_redis() as r:
-        await r.delete(DIRTY_KEY)
+    r = await get_shared_redis()
+    await r.delete(DIRTY_KEY)
 
 
 async def get_repo_dirty_since() -> str | None:
     """Return ISO timestamp if dirty, None if clean."""
-    async with get_redis() as r:
-        val = await r.get(DIRTY_KEY)
-        return val.decode() if val else None
+    r = await get_shared_redis()
+    val = await r.get(DIRTY_KEY)
+    return val.decode() if val else None
 ```
 
 **Step 4: Run test to verify it passes**
@@ -139,13 +146,19 @@ await clear_repo_dirty()
 
 **Step 7: Add `/api/github/repo-status` endpoint**
 
-In `api/src/routers/github.py`:
+Add `RepoStatusResponse` to `api/shared/models.py`:
 
 ```python
 class RepoStatusResponse(BaseModel):
     git_configured: bool
     dirty: bool
     dirty_since: str | None = None
+```
+
+In `api/src/routers/github.py`:
+
+```python
+from src.core.repo_dirty import get_repo_dirty_since
 
 @router.get("/repo-status", response_model=RepoStatusResponse)
 async def get_repo_status(user: CurrentSuperuser, db: DbSession):
@@ -294,10 +307,11 @@ elif channel == "file-activity":
 
 **Step 6: Add watch session endpoints to files router**
 
-In `api/src/routers/files.py`, add:
+In `api/src/routers/files.py`, add. **Use `get_shared_redis()` (not `get_redis()`) since these are API route handlers:**
 
 ```python
 from src.core.pubsub import publish_file_activity
+from src.core.cache.redis_client import get_shared_redis
 
 class WatchSessionRequest(BaseModel):
     action: Literal["start", "stop", "heartbeat"]
@@ -310,15 +324,15 @@ async def manage_watch_session(
 ):
     """Register, heartbeat, or deregister a CLI watch session."""
     key = f"bifrost:watch:{user.id}:{request.prefix}"
+    r = await get_shared_redis()
 
     if request.action in ("start", "heartbeat"):
-        async with get_redis() as r:
-            await r.setex(key, 120, json.dumps({
-                "user_id": str(user.id),
-                "user_name": user.name or user.email,
-                "prefix": request.prefix,
-                "started_at": datetime.now(timezone.utc).isoformat(),
-            }))
+        await r.setex(key, 120, json.dumps({
+            "user_id": str(user.id),
+            "user_name": user.name or user.email,
+            "prefix": request.prefix,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }))
         if request.action == "start":
             await publish_file_activity(
                 user_id=str(user.id),
@@ -327,8 +341,7 @@ async def manage_watch_session(
                 prefix=request.prefix,
             )
     elif request.action == "stop":
-        async with get_redis() as r:
-            await r.delete(key)
+        await r.delete(key)
         await publish_file_activity(
             user_id=str(user.id),
             user_name=user.name or user.email or "CLI",
@@ -340,13 +353,13 @@ async def manage_watch_session(
 @router.get("/watchers")
 async def list_active_watchers(user: CurrentSuperuser):
     """List active CLI watch sessions."""
-    async with get_redis() as r:
-        keys = [k async for k in r.scan_iter("bifrost:watch:*")]
-        watchers = []
-        for key in keys:
-            data = await r.get(key)
-            if data:
-                watchers.append(json.loads(data))
+    r = await get_shared_redis()
+    keys = [k async for k in r.scan_iter("bifrost:watch:*")]
+    watchers = []
+    for key in keys:
+        data = await r.get(key)
+        if data:
+            watchers.append(json.loads(data))
     return {"watchers": watchers}
 ```
 
@@ -460,10 +473,10 @@ git commit -m "feat: gate CLI push on repo dirty check, add --watch flag"
 
 ## Task 4: CLI `bifrost push --watch` (File Watcher)
 
-Continuous file watching with debounced auto-push.
+Continuous file watching with debounced auto-push. Reuses the same push API call as full push.
 
 **Files:**
-- Modify: `api/bifrost/cli.py` (add `_watch_and_push`, `_push_changed_files`)
+- Modify: `api/bifrost/cli.py` (add `_watch_and_push`, extract `_do_push` helper)
 - Modify: `api/bifrost/pyproject.toml` (add watchdog dependency)
 
 **Step 1: Add watchdog dependency**
@@ -477,7 +490,43 @@ dependencies = [
 ]
 ```
 
-**Step 2: Implement `_watch_and_push`**
+**Step 2: Extract `_do_push` helper from `_push_files`**
+
+Refactor the existing `_push_files` function to extract the API call + result printing into a reusable helper:
+
+```python
+async def _do_push(
+    files: dict[str, str],
+    delete_missing_prefix: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Push a files dict to the API. Returns the response JSON or None on error."""
+    client = BifrostClient.get_instance(require_auth=True)
+    payload: dict[str, Any] = {"files": files}
+    if delete_missing_prefix:
+        payload["delete_missing_prefix"] = delete_missing_prefix
+
+    try:
+        response = await client.post(
+            "/api/files/push",
+            json=payload,
+            headers=extra_headers or {},
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Push failed: {response.status_code}", file=sys.stderr)
+            if response.text:
+                print(response.text, file=sys.stderr)
+            return None
+    except Exception as e:
+        print(f"Push error: {e}", file=sys.stderr)
+        return None
+```
+
+Then update `_push_files` to call `_do_push` instead of making the API call directly. The watch function also calls `_do_push`.
+
+**Step 3: Implement `_watch_and_push`**
 
 ```python
 async def _watch_and_push(
@@ -516,7 +565,7 @@ async def _watch_and_push(
     except Exception:
         pass  # Non-fatal
 
-    # Initial full push
+    # Initial full push (reuses existing _push_files)
     print(f"Initial push of {path}...")
     await _push_files(local_path, clean=clean, validate=validate)
 
@@ -569,7 +618,30 @@ async def _watch_and_push(
                     changes = set()
 
             if changes:
-                await _push_changed_files(changes, path, repo_prefix, client)
+                # Build files dict from changed paths
+                files: dict[str, str] = {}
+                for abs_path_str in changes:
+                    abs_path = pathlib.Path(abs_path_str)
+                    if abs_path.exists():
+                        try:
+                            content = abs_path.read_text(encoding="utf-8")
+                            rel = abs_path.relative_to(path)
+                            repo_path = f"{repo_prefix}/{rel}"
+                            files[repo_path] = content
+                        except (UnicodeDecodeError, OSError):
+                            continue
+
+                if files:
+                    result = await _do_push(
+                        files,
+                        extra_headers={"X-Bifrost-Watch": "true"},
+                    )
+                    if result:
+                        parts_msg = []
+                        if result.get("created"): parts_msg.append(f"{result['created']} created")
+                        if result.get("updated"): parts_msg.append(f"{result['updated']} updated")
+                        if parts_msg:
+                            print(f"  [{datetime.now().strftime('%H:%M:%S')}] {', '.join(parts_msg)}")
 
             # Heartbeat
             now = asyncio.get_event_loop().time()
@@ -595,60 +667,6 @@ async def _watch_and_push(
             pass
 
     return 0
-```
-
-**Step 3: Implement `_push_changed_files`**
-
-```python
-async def _push_changed_files(
-    changed_paths: set[str],
-    root: "pathlib.Path",
-    repo_prefix: str,
-    client: "BifrostClient",
-) -> None:
-    """Push only the changed files."""
-    import pathlib
-
-    files: dict[str, str] = {}
-    deleted: list[str] = []
-
-    for abs_path_str in changed_paths:
-        abs_path = pathlib.Path(abs_path_str)
-        rel = abs_path.relative_to(root)
-        repo_path = f"{repo_prefix}/{rel}"
-
-        if abs_path.exists():
-            try:
-                content = abs_path.read_text(encoding="utf-8")
-                files[repo_path] = content
-            except (UnicodeDecodeError, OSError):
-                continue
-        else:
-            # File was deleted
-            deleted.append(repo_path)
-
-    if not files and not deleted:
-        return
-
-    # Push changed files
-    if files:
-        try:
-            response = await client.post(
-                "/api/files/push",
-                json={"files": files},
-                headers={"X-Bifrost-Watch": "true"},
-            )
-            if response.status_code == 200:
-                result = response.json()
-                parts = []
-                if result.get("created"): parts.append(f"{result['created']} created")
-                if result.get("updated"): parts.append(f"{result['updated']} updated")
-                if parts:
-                    print(f"  [{datetime.now().strftime('%H:%M:%S')}] {', '.join(parts)}")
-        except Exception as e:
-            print(f"  Push error: {e}", file=sys.stderr)
-
-    # TODO: Handle deletes (would need a delete endpoint or push with delete_missing_prefix)
 ```
 
 **Step 4: Manual test**
@@ -777,20 +795,21 @@ git commit -m "feat: add bifrost api command for generic authenticated requests"
 
 ---
 
-## Task 6: Frontend - File Activity Store and Hook
+## Task 6: Frontend - File Activity Store, Hook, and WebSocket Integration
 
-Zustand store and WebSocket hook for file activity events.
+Zustand store, typed WebSocket callback, and hook for file activity events.
 
 **Files:**
 - Create: `client/src/stores/fileActivityStore.ts`
 - Create: `client/src/hooks/useFileActivity.ts`
+- Modify: `client/src/services/websocket.ts` (add `FileActivityEvent` type, `file_activity` to message union, `onFileActivity` callback, dispatch handler)
 
-**Step 1: Create Zustand store**
+**Step 1: Add file activity support to WebSocket service**
 
+In `client/src/services/websocket.ts`:
+
+1. Add the event interface:
 ```typescript
-// client/src/stores/fileActivityStore.ts
-import { create } from "zustand";
-
 export interface FileActivityEvent {
   type: "file_push" | "watch_start" | "watch_stop";
   user_id: string;
@@ -800,6 +819,43 @@ export interface FileActivityEvent {
   is_watch: boolean;
   timestamp: string;
 }
+```
+
+2. Add to the `WebSocketMessage` union type:
+```typescript
+| { type: "file_push" | "watch_start" | "watch_stop"; user_id: string; user_name: string; prefix: string; file_count: number; is_watch: boolean; timestamp: string }
+```
+
+3. Add callback set to the class:
+```typescript
+private fileActivityCallbacks = new Set<(event: FileActivityEvent) => void>();
+```
+
+4. Add `handleMessage` cases for `file_push`, `watch_start`, `watch_stop`:
+```typescript
+case "file_push":
+case "watch_start":
+case "watch_stop":
+    this.fileActivityCallbacks.forEach((cb) => cb(message as FileActivityEvent));
+    break;
+```
+
+5. Add typed callback registration method (follows existing `onPoolMessage` pattern for global callbacks):
+```typescript
+onFileActivity(callback: (event: FileActivityEvent) => void): () => void {
+    this.fileActivityCallbacks.add(callback);
+    return () => {
+        this.fileActivityCallbacks.delete(callback);
+    };
+}
+```
+
+**Step 2: Create Zustand store**
+
+```typescript
+// client/src/stores/fileActivityStore.ts
+import { create } from "zustand";
+import type { FileActivityEvent } from "@/services/websocket";
 
 interface FileActivityState {
   recentPushes: FileActivityEvent[];
@@ -846,14 +902,14 @@ export const useFileActivityStore = create<FileActivityState>((set) => ({
 }));
 ```
 
-**Step 2: Create WebSocket hook**
+**Step 3: Create WebSocket hook (using proper typed callback)**
 
 ```typescript
 // client/src/hooks/useFileActivity.ts
 import { useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { webSocketService } from "@/services/websocket";
-import { useFileActivityStore, type FileActivityEvent } from "@/stores/fileActivityStore";
+import { useFileActivityStore } from "@/stores/fileActivityStore";
 
 export function useFileActivity() {
   const { isPlatformAdmin } = useAuth();
@@ -862,40 +918,26 @@ export function useFileActivity() {
   useEffect(() => {
     if (!isPlatformAdmin) return;
 
-    const channel = "file-activity";
-    webSocketService.subscribe(channel);
+    // Subscribe to the file-activity channel
+    webSocketService.subscribe("file-activity");
 
-    const handleMessage = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (
-          data.type === "file_push" ||
-          data.type === "watch_start" ||
-          data.type === "watch_stop"
-        ) {
-          addEvent(data as FileActivityEvent);
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    // Access the underlying WebSocket (following pattern from Header.tsx)
-    const ws = (webSocketService as unknown as { ws: WebSocket | null }).ws;
-    ws?.addEventListener("message", handleMessage);
+    // Register typed callback (returns unsubscribe function)
+    const unsubscribe = webSocketService.onFileActivity(addEvent);
 
     return () => {
-      ws?.removeEventListener("message", handleMessage);
-      webSocketService.unsubscribe(channel);
+      unsubscribe();
+      webSocketService.unsubscribe("file-activity");
     };
   }, [isPlatformAdmin, addEvent]);
 }
 ```
 
-**Step 3: Commit**
+**Step 4: Commit**
 
 ```bash
-git add client/src/stores/fileActivityStore.ts client/src/hooks/useFileActivity.ts
+git add client/src/services/websocket.ts \
+  client/src/stores/fileActivityStore.ts \
+  client/src/hooks/useFileActivity.ts
 git commit -m "feat: add file activity Zustand store and WebSocket hook"
 ```
 
@@ -903,7 +945,7 @@ git commit -m "feat: add file activity Zustand store and WebSocket hook"
 
 ## Task 7: Frontend - Header Activity Indicator
 
-Show other admins' file activity in the Header bar.
+Show other admins' file activity in the Header bar. Active watch = green pulse ("user is live"). Tooltip shows recent file changes on hover.
 
 **Files:**
 - Create: `client/src/components/layout/FileActivityIndicator.tsx`
@@ -931,22 +973,23 @@ export function FileActivityIndicator() {
 
   // Filter out own activity
   const otherWatchers = activeWatchers.filter((w) => w.user_id !== user?.id);
-  const otherPushes = recentPushes.filter(
+  const recentOtherPushes = recentPushes.filter(
     (p) =>
       p.user_id !== user?.id &&
       Date.now() - new Date(p.timestamp).getTime() < 60_000 // last 60s
   );
 
-  if (otherWatchers.length === 0 && otherPushes.length === 0) return null;
+  if (otherWatchers.length === 0 && recentOtherPushes.length === 0) return null;
 
-  const label =
-    otherWatchers.length > 1
+  const hasLiveWatcher = otherWatchers.length > 0;
+
+  const label = hasLiveWatcher
+    ? otherWatchers.length > 1
       ? `${otherWatchers.length} developers active`
-      : otherWatchers.length === 1
-        ? `${otherWatchers[0].user_name} editing ${otherWatchers[0].prefix}`
-        : otherPushes.length > 0
-          ? `${otherPushes[otherPushes.length - 1].user_name} pushed files`
-          : "";
+      : `${otherWatchers[0].user_name} editing ${otherWatchers[0].prefix}`
+    : recentOtherPushes.length > 0
+      ? `${recentOtherPushes[recentOtherPushes.length - 1].user_name} pushed files`
+      : "";
 
   return (
     <Tooltip>
@@ -955,7 +998,7 @@ export function FileActivityIndicator() {
           <Radio
             className={cn(
               "h-3.5 w-3.5",
-              otherWatchers.length > 0
+              hasLiveWatcher
                 ? "text-green-500 animate-pulse"
                 : "text-blue-500"
             )}
@@ -974,10 +1017,10 @@ export function FileActivityIndicator() {
             ))}
           </div>
         )}
-        {otherPushes.length > 0 && (
+        {recentOtherPushes.length > 0 && (
           <div className="space-y-1 mt-1">
-            <p className="font-medium">Recent pushes:</p>
-            {otherPushes.slice(-3).map((p, i) => (
+            <p className="font-medium">Recent file changes:</p>
+            {recentOtherPushes.slice(-5).map((p, i) => (
               <p key={i}>
                 {p.user_name} — {p.file_count} files to {p.prefix}
               </p>
@@ -1034,7 +1077,7 @@ Show file activity in the Editor's bottom status bar, regardless of tab.
 
 **Step 1: Add activity section to StatusBar**
 
-In the right-side `<div>` of StatusBar, before the language/cursor items, add a file activity section:
+In the right-side `<div>` of StatusBar (the `flex items-center gap-4 shrink-0` div), before the language/cursor items, add a file activity section:
 
 ```tsx
 import { useFileActivityStore } from "@/stores/fileActivityStore";
@@ -1051,7 +1094,7 @@ const latestPush = recentPushes
 
 // In the right-side div, before language/cursor:
 {activeWatchers.length > 0 && (
-  <span className="flex items-center gap-1 text-green-600">
+  <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
     <Radio className="h-3 w-3 animate-pulse" />
     {activeWatchers.length === 1
       ? `CLI watch (${activeWatchers[0].user_name})`
@@ -1068,7 +1111,7 @@ const latestPush = recentPushes
 
 **Step 2: Verify styling**
 
-The StatusBar is `h-6 text-xs`. The new elements should fit within this constraint. Use the same `text-xs text-muted-foreground` pattern as existing elements.
+The StatusBar is `h-6 text-xs`. The new elements should fit within this constraint. Use the same `text-xs text-muted-foreground` pattern as existing elements. Include dark mode classes (`dark:text-green-400`).
 
 **Step 3: Commit**
 

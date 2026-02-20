@@ -157,13 +157,13 @@ This is where `from bifrost import x` comes from. Use this to understand platfor
 Before declaring any artifact complete, you MUST test it:
 
 ### Workflow/Tool Testing
-1. Create via `create_workflow` (validates automatically)
+1. Write the .py file using file tools, then register via `register_workflow`
 2. Verify it appears in `list_workflows`
 3. Execute with sample data via `execute_workflow`
 4. Verify the result matches expectations
 
 ### Data Provider Testing
-1. Create via `create_workflow` with type='data_provider' (validates automatically)
+1. Write the .py file with @data_provider decorator, then register via `register_workflow`
 2. Verify it appears in `list_workflows` with type='data_provider'
 3. Execute via `execute_workflow`
 4. Verify output is `[{"label": "...", "value": "..."}]` format
