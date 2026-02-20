@@ -518,6 +518,14 @@ class Scheduler:
                             error=push_result.error if not push_result.success else None,
                         )
 
+                    # Clear repo dirty flag after successful sync
+                    if push_result.success:
+                        from src.core.repo_dirty import clear_repo_dirty
+                        try:
+                            await clear_repo_dirty()
+                        except Exception as e:
+                            logger.warning(f"Failed to clear repo dirty flag: {e}")
+
                 else:
                     await publish_git_op_completed(
                         job_id, status="failed", result_type=result_type,

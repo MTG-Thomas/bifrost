@@ -207,6 +207,13 @@ class CommitInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RepoStatusResponse(BaseModel):
+    """Fast repo status check for CLI push pre-check."""
+    git_configured: bool = Field(..., description="Whether GitHub integration is configured")
+    dirty: bool = Field(..., description="Whether platform has uncommitted changes")
+    dirty_since: str | None = Field(default=None, description="ISO timestamp when repo became dirty")
+
+
 class GitRefreshStatusResponse(BaseModel):
     """
     Unified response after fetching and getting complete Git status.

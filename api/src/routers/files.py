@@ -306,6 +306,7 @@ async def push_files(
                 path=repo_path,
                 content=content_bytes,
                 updated_by=user.email or "cli",
+                skip_dirty_flag=True,
             )
 
             if was_new:

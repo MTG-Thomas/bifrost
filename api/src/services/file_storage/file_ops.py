@@ -170,6 +170,7 @@ class FileOperationsService:
         force_deactivation: bool = False,
         replacements: dict[str, str] | None = None,
         workflows_to_deactivate: list[str] | None = None,
+        skip_dirty_flag: bool = False,
     ) -> WriteResult:
         """
         Write file content to storage and update index.
@@ -350,6 +351,14 @@ class FileOperationsService:
                 )
             except Exception as e:
                 logger.warning(f"Failed to publish app file update for {path}: {e}")
+
+        # Mark repo as having uncommitted changes (skip for CLI pushes)
+        if not skip_dirty_flag:
+            from src.core.repo_dirty import mark_repo_dirty
+            try:
+                await mark_repo_dirty()
+            except Exception as e:
+                logger.warning(f"Failed to mark repo dirty: {e}")
 
         logger.info(f"File written: {path} ({size_bytes} bytes) by {updated_by}")
         return WriteResult(

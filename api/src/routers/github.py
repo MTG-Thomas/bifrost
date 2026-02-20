@@ -30,6 +30,7 @@ from src.models import (
     GitHubSetupResponse,
     GitJobResponse,
     GitRefreshStatusResponse,
+    RepoStatusResponse,
     ResolveRequest,
     SyncExecuteRequest,
     ValidateTokenRequest,
@@ -189,6 +190,29 @@ async def get_github_status(
             last_synced=None,
             error=str(e),
         )
+
+
+@router.get(
+    "/repo-status",
+    response_model=RepoStatusResponse,
+    summary="Fast repo status for CLI push pre-check",
+    description="Check if platform has uncommitted changes and if git is configured",
+)
+async def get_repo_status(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> RepoStatusResponse:
+    """Fast repo status check used by CLI push to gate on dirty state."""
+    from src.core.repo_dirty import get_repo_dirty_since
+
+    config = await get_github_config(db, ctx.org_id)
+    dirty_since = await get_repo_dirty_since()
+    return RepoStatusResponse(
+        git_configured=config is not None and bool(config.repo_url),
+        dirty=dirty_since is not None,
+        dirty_since=dirty_since,
+    )
 
 
 @router.post(
