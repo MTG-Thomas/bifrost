@@ -21,6 +21,7 @@ from src.sdk.error_handling import WorkflowError
 from src.sdk.errors import UserError, WorkflowExecutionException
 from src.models.enums import ExecutionStatus
 from src.core.cache import get_cached_data_provider, cache_data_provider_result
+from src.core.secret_string import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,25 @@ def _coerce_params_to_type_hints(func: Any, params: dict[str, Any]) -> dict[str,
             result[key] = value
 
     return result
+
+
+def _scrub_outputs(
+    context: ExecutionContext,
+    result: Any = None,
+    variables: dict[str, Any] | None = None,
+    logs: list[dict[str, Any]] | None = None,
+    error_message: str | None = None,
+) -> tuple[Any, dict[str, Any] | None, list[dict[str, Any]] | None, str | None]:
+    """Scrub secret values from execution outputs before returning."""
+    secret_values = context._collect_secret_values()
+    if not secret_values:
+        return result, variables, logs, error_message
+    return (
+        redact_secrets(result, secret_values) if result is not None else None,
+        redact_secrets(variables, secret_values) if variables is not None else None,
+        redact_secrets(logs, secret_values) if logs is not None else None,
+        redact_secrets(error_message, secret_values) if error_message is not None else None,
+    )
 
 
 async def execute(request: ExecutionRequest) -> ExecutionResult:
@@ -377,6 +397,10 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             "value": context.roi.value,
         }
 
+        result, captured_variables, logger_output, _ = _scrub_outputs(
+            context, result, captured_variables, logger_output
+        )
+
         return ExecutionResult(
             execution_id=request.execution_id,
             status=status,
@@ -463,6 +487,10 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         else:
             status = ExecutionStatus.FAILED
 
+        _, captured_variables, logger_output, error_message = _scrub_outputs(
+            context, None, captured_variables, logger_output, error_message
+        )
+
         return ExecutionResult(
             execution_id=request.execution_id,
             status=status,
@@ -498,15 +526,20 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                     'source': 'workflow'
                 })
 
+        _wf_err_msg = str(e)
+        _, captured_variables, logger_output, _wf_err_msg = _scrub_outputs(
+            context, None, captured_variables, logger_output, _wf_err_msg
+        )
+
         return ExecutionResult(
             execution_id=request.execution_id,
             status=ExecutionStatus.FAILED,
             result=None,
             duration_ms=duration_ms,
             logs=logger_output,
-            variables=captured_variables,  # Return captured variables even on error
+            variables=captured_variables,
             integration_calls=context._integration_calls,
-            error_message=str(e),
+            error_message=_wf_err_msg,
             error_type=type(e).__name__
         )
 
@@ -553,15 +586,20 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                         'source': 'script' if request.code else 'workflow'
                     })
 
+        _gen_err_msg = str(e)
+        _, captured_variables, logger_output, _gen_err_msg = _scrub_outputs(
+            context, None, captured_variables, logger_output, _gen_err_msg
+        )
+
         return ExecutionResult(
             execution_id=request.execution_id,
             status=ExecutionStatus.FAILED,
             result=None,
             duration_ms=duration_ms,
             logs=logger_output,
-            variables=captured_variables,  # Return captured variables even on error
+            variables=captured_variables,
             integration_calls=context._integration_calls,
-            error_message=str(e),
+            error_message=_gen_err_msg,
             error_type=type(e).__name__
         )
 
@@ -777,7 +815,11 @@ async def _execute_workflow_with_trace(
                 return
 
             # Format: [LEVEL] message
-            log_entry = f"[{record.levelname}] {record.getMessage()}"
+            message = record.getMessage()
+            _current_secrets = context._collect_secret_values()
+            if _current_secrets:
+                message = redact_secrets(message, _current_secrets)
+            log_entry = f"[{record.levelname}] {message}"
             workflow_logs.append(log_entry)
 
             # Real-time log processing - stream to Redis pub/sub for WebSocket delivery
@@ -796,7 +838,7 @@ async def _execute_workflow_with_trace(
                 log_dict = {
                     "executionLogId": log_id,
                     "level": record.levelname,
-                    "message": record.getMessage(),
+                    "message": message,
                     "timestamp": timestamp,
                     "sequence": sequence
                 }
@@ -811,7 +853,7 @@ async def _execute_workflow_with_trace(
                         log_and_broadcast(
                             execution_id=execution_id,
                             level=record.levelname,
-                            message=record.getMessage(),
+                            message=message,
                         )
                     # Fallback: logs are still captured in log_buffer for batch save at end
                 except Exception as e:
@@ -850,6 +892,11 @@ async def _execute_workflow_with_trace(
         seen.add(obj_id)
 
         try:
+            # Redact SecretString before serialization — json.dumps bypasses __str__
+            from src.core.secret_string import SecretString, REDACTED
+            if isinstance(obj, SecretString):
+                return REDACTED
+
             if isinstance(obj, dict):
                 return {k: remove_circular_refs(v, seen) for k, v in obj.items()}
             elif isinstance(obj, (list, tuple)):
