@@ -37,6 +37,7 @@ import {
 	useUpdateIntegration,
 	useUpdateIntegrationConfig,
 	useTestIntegration,
+	useBatchUpsertMappings,
 	type IntegrationTestResponse,
 } from "@/services/integrations";
 import { $api } from "@/lib/api-client";
@@ -113,6 +114,7 @@ export function IntegrationDetail() {
 	const refreshMutation = useRefreshOAuthToken();
 	const deleteOAuthMutation = useDeleteOAuthConnection();
 	const testMutation = useTestIntegration();
+	const batchMutation = useBatchUpsertMappings();
 
 	// Memoize to stabilize references for the useEffect that combines them
 	const organizations = useMemo(
@@ -444,25 +446,36 @@ export function IntegrationDetail() {
 
 		setIsSavingAll(true);
 		try {
-			let successCount = 0;
-			let errorCount = 0;
+			const result = await batchMutation.mutateAsync({
+				params: { path: { integration_id: integrationId! } },
+				body: {
+					mappings: dirtyMappings.map((org) => ({
+						organization_id: org.id,
+						entity_id: org.formData.entity_id,
+						entity_name: org.formData.entity_name || undefined,
+					})),
+				},
+			});
 
-			for (const org of dirtyMappings) {
-				try {
-					await handleSaveMapping(org);
-					successCount++;
-				} catch {
-					errorCount++;
+			// Clear dirty state for all saved mappings
+			setDirtyEdits((prev) => {
+				const next = new Map(prev);
+				for (const org of dirtyMappings) {
+					next.delete(org.id);
 				}
-			}
+				return next;
+			});
 
-			if (errorCount === 0) {
-				toast.success(`Saved ${successCount} mapping(s)`);
+			const total = result.created + result.updated;
+			if (result.errors.length === 0) {
+				toast.success(`Saved ${total} mapping(s)`);
 			} else {
 				toast.warning(
-					`Saved ${successCount} mapping(s), ${errorCount} failed`,
+					`Saved ${total} mapping(s), ${result.errors.length} failed`,
 				);
 			}
+		} catch {
+			toast.error("Failed to save mappings");
 		} finally {
 			setIsSavingAll(false);
 		}

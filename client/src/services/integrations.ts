@@ -232,6 +232,30 @@ export function useGenerateSDK() {
 	);
 }
 
+/**
+ * Hook to batch upsert integration mappings
+ */
+export function useBatchUpsertMappings() {
+	const queryClient = useQueryClient();
+
+	return $api.useMutation(
+		"post",
+		"/api/integrations/{integration_id}/mappings/batch",
+		{
+			onSuccess: (_, variables) => {
+				const integrationId = variables.params.path.integration_id;
+				queryClient.invalidateQueries({
+					queryKey: [
+						"get",
+						"/api/integrations/{integration_id}",
+						{ params: { path: { integration_id: integrationId } } },
+					],
+				});
+			},
+		},
+	);
+}
+
 // Re-export test response type
 export type IntegrationTestResponse =
 	components["schemas"]["IntegrationTestResponse"];
