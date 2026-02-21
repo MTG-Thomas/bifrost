@@ -2027,13 +2027,8 @@ class GitHubSyncService:
         org_id = UUID(mapp.organization_id) if mapp.organization_id else None
         access_level = getattr(mapp, "access_level", "role_based")
 
-        # Two-step: check for existing app by natural key (org_id, slug)
+        # Check for existing app by slug (globally unique)
         existing_query = select(Application.id).where(Application.slug == slug)
-        if org_id:
-            existing_query = existing_query.where(Application.organization_id == org_id)
-        else:
-            existing_query = existing_query.where(Application.organization_id.is_(None))
-
         existing = await self.db.execute(existing_query)
         existing_id = existing.scalar_one_or_none()
 

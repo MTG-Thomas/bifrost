@@ -261,3 +261,17 @@ class DocumentList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class BatchResult(BaseModel):
+    """Batch insert/upsert result with documents and count."""
+
+    documents: list[DocumentData]
+    count: int
+
+
+class BatchDeleteResult(BaseModel):
+    """Batch delete result with deleted IDs and count."""
+
+    deleted_ids: list[str]
+    count: int

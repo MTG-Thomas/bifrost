@@ -119,7 +119,56 @@ Data providers are stored as workflows with type='data_provider'.
 Use `list_workflows` to see available data providers. For `@data_provider` decorator docs, use `get_sdk_schema`.
 """
 
+    file_upload_docs = """
+## File Upload Fields
+
+Use `type: "file"` to accept file uploads in forms. Uploaded files are stored in S3 and the workflow receives their paths as strings.
+
+### What the workflow receives
+
+| Scenario | Parameter value |
+|----------|----------------|
+| Single file (`multiple: false`) | `"uploads/abc123/report.pdf"` (string) |
+| Multiple files (`multiple: true`) | `["uploads/abc123/a.pdf", "uploads/abc123/b.pdf"]` (list of strings) |
+
+### Reading uploaded files in a workflow
+
+```python
+from bifrost import workflow, files
+
+@workflow
+async def process_upload(document: str) -> dict:
+    content = await files.read(document, location="uploads")
+    return {"size": len(content)}
+```
+
+### File field options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| allowed_types | list[str] | [] (any) | MIME types or extensions, e.g. `[".pdf", "image/*"]` |
+| multiple | bool | false | Allow selecting more than one file |
+| max_size_mb | number | 10 | Maximum file size in megabytes |
+
+### Example form field definition
+
+```json
+{
+  "name": "attachments",
+  "type": "file",
+  "label": "Upload Documents",
+  "required": true,
+  "options": {
+    "allowed_types": [".pdf", ".docx", "image/*"],
+    "multiple": true,
+    "max_size_mb": 25
+  }
+}
+```
+"""
+
     schema_doc += data_provider_docs
+    schema_doc += file_upload_docs
     return success_result("Form schema documentation", {"schema": schema_doc})
 
 

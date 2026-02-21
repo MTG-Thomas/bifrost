@@ -26,6 +26,14 @@ class TestTablesSDKImports:
         assert hasattr(tables, 'query')
         assert hasattr(tables, 'count')
 
+    def test_import_bifrost_tables_batch_methods(self):
+        """Test importing batch methods from tables module."""
+        from bifrost import tables
+
+        assert hasattr(tables, 'insert_batch')
+        assert hasattr(tables, 'upsert_batch')
+        assert hasattr(tables, 'delete_batch')
+
     def test_import_table_models(self):
         """Test importing table models."""
         from bifrost import TableInfo, DocumentData, DocumentList
@@ -33,6 +41,13 @@ class TestTablesSDKImports:
         assert TableInfo is not None
         assert DocumentData is not None
         assert DocumentList is not None
+
+    def test_import_batch_models(self):
+        """Test importing batch result models."""
+        from bifrost import BatchResult, BatchDeleteResult
+
+        assert BatchResult is not None
+        assert BatchDeleteResult is not None
 
     def test_table_info_model_fields(self):
         """Test TableInfo model has expected fields."""
@@ -92,6 +107,34 @@ class TestTablesSDKImports:
         assert doc_list.total == 100
         assert doc_list.limit == 10
         assert doc_list.offset == 0
+
+
+    def test_batch_result_model_fields(self):
+        """Test BatchResult model has expected fields."""
+        from bifrost import BatchResult, DocumentData
+
+        doc = DocumentData(
+            id="doc-id",
+            table_id="table-id",
+            data={"name": "Acme"},
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+        )
+
+        result = BatchResult(documents=[doc], count=1)
+
+        assert len(result.documents) == 1
+        assert result.count == 1
+        assert result.documents[0].id == "doc-id"
+
+    def test_batch_delete_result_model_fields(self):
+        """Test BatchDeleteResult model has expected fields."""
+        from bifrost import BatchDeleteResult
+
+        result = BatchDeleteResult(deleted_ids=["id-1", "id-2"], count=2)
+
+        assert result.deleted_ids == ["id-1", "id-2"]
+        assert result.count == 2
 
 
 class TestTablesSDKWithoutContext:

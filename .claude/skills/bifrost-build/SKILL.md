@@ -215,7 +215,13 @@ form_schema:
         - { label: E1, value: E1 }
         - { label: E3, value: E3 }
         - { label: E5, value: E5 }
+    - name: resume
+      type: file
+      label: Upload Resume
+      options: { allowed_types: [".pdf", ".docx"], max_size_mb: 10 }
 ```
+
+File fields pass S3 paths to workflows as strings (or lists if `multiple: true`). Read them with `await files.read(path, location="uploads")`.
 
 **Form manifest entry** (`.bifrost/forms.yaml`):
 ```yaml

@@ -229,6 +229,31 @@ class TestApplicationDuplicateSlugs:
         # Cleanup
         _delete_app(e2e_client, platform_admin.headers, app1["id"])
 
+    def test_duplicate_slug_cross_scope_rejected(self, e2e_client, platform_admin):
+        """Creating app with same slug in different scope (global vs org) is rejected.
+
+        Slugs are globally unique — the same slug cannot exist in both an org
+        and global scope.
+        """
+        # Create in org scope (default)
+        app1 = _create_app(
+            e2e_client, platform_admin.headers, "cross-scope-dup",
+            name="Org App",
+        )
+
+        # Try to create with same slug in global scope
+        response2 = e2e_client.post(
+            "/api/applications",
+            headers=platform_admin.headers,
+            json={"name": "Global App", "slug": "cross-scope-dup"},
+            params={"scope": "global"},
+        )
+        assert response2.status_code == 409, \
+            f"Expected 409 Conflict for cross-scope duplicate slug, got {response2.status_code}"
+
+        # Cleanup
+        _delete_app(e2e_client, platform_admin.headers, app1["id"])
+
 
 @pytest.mark.e2e
 class TestApplicationVersioning:

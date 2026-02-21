@@ -88,7 +88,7 @@ class Application(Base):
 
     __table_args__ = (
         Index("ix_applications_organization_id", "organization_id"),
-        # Partial unique indexes handled in migration
+        # Global unique index on slug handled in migration
     )
 
     @property

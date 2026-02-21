@@ -75,6 +75,11 @@ from src.models.contracts.cli import (
     SDKDocumentCountRequest,
     SDKDocumentData,
     SDKDocumentList,
+    SDKDocumentInsertBatchRequest,
+    SDKDocumentUpsertBatchRequest,
+    SDKDocumentDeleteBatchRequest,
+    SDKBatchDocumentResponse,
+    SDKBatchDeleteResponse,
 )
 from src.core.cache import config_hash_key, get_redis
 from src.core.pubsub import publish_cli_session_update, publish_execution_log, publish_execution_update, publish_history_update
@@ -2780,6 +2785,182 @@ async def cli_delete_document(
     await db.commit()
 
     return True
+
+
+# =========================================================================
+# Batch Document Operations
+# =========================================================================
+
+
+@router.post(
+    "/tables/documents/insert/batch",
+    summary="Batch insert documents",
+)
+async def cli_insert_documents_batch(
+    request: SDKDocumentInsertBatchRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> SDKBatchDocumentResponse:
+    """Batch insert documents into a table via SDK.
+
+    Auto-creates the table if it doesn't exist.
+    All documents are inserted atomically — if any ID conflicts, the entire batch rolls back.
+    """
+    from sqlalchemy.dialects.postgresql import insert
+    from sqlalchemy.exc import IntegrityError
+
+    from src.models.orm.tables import Document
+
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+    org_uuid = UUID(org_id) if org_id else None
+    app_uuid = UUID(request.app) if request.app else None
+
+    table = await _find_or_create_table_for_sdk(
+        db, request.table, org_uuid, app_uuid, current_user.email
+    )
+
+    now = datetime.now(timezone.utc)
+    values = [
+        {
+            "id": item.id if item.id else str(uuid4()),
+            "table_id": table.id,
+            "data": item.data,
+            "created_by": current_user.email,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for item in request.documents
+    ]
+
+    stmt = insert(Document).values(values).returning(Document)
+
+    try:
+        result = await db.execute(stmt)
+        docs = result.scalars().all()
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Duplicate document ID in batch for table '{request.table}'",
+        )
+
+    doc_responses = [
+        SDKDocumentData(
+            id=doc.id,
+            table_id=str(doc.table_id),
+            data=doc.data,
+            created_at=doc.created_at.isoformat(),
+            updated_at=doc.updated_at.isoformat(),
+        )
+        for doc in docs
+    ]
+    return SDKBatchDocumentResponse(documents=doc_responses, count=len(doc_responses))
+
+
+@router.post(
+    "/tables/documents/upsert/batch",
+    summary="Batch upsert documents",
+)
+async def cli_upsert_documents_batch(
+    request: SDKDocumentUpsertBatchRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> SDKBatchDocumentResponse:
+    """Batch upsert (create or replace) documents via SDK.
+
+    Auto-creates the table if it doesn't exist.
+    Uses atomic INSERT ... ON CONFLICT DO UPDATE for each document.
+    """
+    from sqlalchemy.dialects.postgresql import insert
+
+    from src.models.orm.tables import Document
+
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+    org_uuid = UUID(org_id) if org_id else None
+    app_uuid = UUID(request.app) if request.app else None
+
+    table = await _find_or_create_table_for_sdk(
+        db, request.table, org_uuid, app_uuid, current_user.email
+    )
+
+    now = datetime.now(timezone.utc)
+    values = [
+        {
+            "id": item.id,
+            "table_id": table.id,
+            "data": item.data,
+            "created_by": current_user.email,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for item in request.documents
+    ]
+
+    insert_stmt = insert(Document).values(values)
+    stmt = insert_stmt.on_conflict_do_update(
+        index_elements=["table_id", "id"],
+        set_={
+            "data": insert_stmt.excluded.data,
+            "updated_by": current_user.email,
+            "updated_at": now,
+        },
+    ).returning(Document)
+
+    result = await db.execute(stmt)
+    docs = result.scalars().all()
+    await db.commit()
+
+    doc_responses = [
+        SDKDocumentData(
+            id=doc.id,
+            table_id=str(doc.table_id),
+            data=doc.data,
+            created_at=doc.created_at.isoformat(),
+            updated_at=doc.updated_at.isoformat(),
+        )
+        for doc in docs
+    ]
+    return SDKBatchDocumentResponse(documents=doc_responses, count=len(doc_responses))
+
+
+@router.post(
+    "/tables/documents/delete/batch",
+    summary="Batch delete documents",
+)
+async def cli_delete_documents_batch(
+    request: SDKDocumentDeleteBatchRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> SDKBatchDeleteResponse:
+    """Batch delete documents via SDK.
+
+    Returns the IDs of documents that were actually deleted.
+    Non-existent IDs are silently skipped.
+    """
+    from sqlalchemy import delete
+
+    from src.models.orm.tables import Document
+
+    org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+    org_uuid = UUID(org_id) if org_id else None
+    app_uuid = UUID(request.app) if request.app else None
+
+    table = await _find_table_for_sdk(db, request.table, org_uuid, app_uuid)
+
+    if not table:
+        return SDKBatchDeleteResponse(deleted_ids=[], count=0)
+
+    stmt = (
+        delete(Document)
+        .where(Document.table_id == table.id, Document.id.in_(request.doc_ids))
+        .returning(Document.id)
+    )
+    result = await db.execute(stmt)
+    deleted_ids = [row[0] for row in result.fetchall()]
+    await db.commit()
+
+    return SDKBatchDeleteResponse(deleted_ids=deleted_ids, count=len(deleted_ids))
 
 
 @router.post(

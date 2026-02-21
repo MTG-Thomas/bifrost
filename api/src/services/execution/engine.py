@@ -4,6 +4,7 @@ Single source of truth for all code execution (workflows, scripts, data provider
 """
 
 import inspect
+import json
 import logging
 import os
 import sys
@@ -24,6 +25,16 @@ from src.core.cache import get_cached_data_provider, cache_data_provider_result
 from src.core.secret_string import redact_secrets
 
 logger = logging.getLogger(__name__)
+
+
+def _human_size(num_bytes: int) -> str:
+    """Format byte count as human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(num_bytes) < 1024:
+            return f"{num_bytes:.1f}{unit}" if unit != "B" else f"{num_bytes}{unit}"
+        num_bytes /= 1024  # type: ignore[assignment]
+    return f"{num_bytes:.1f}TB"
+
 
 # Import unified log streaming (Redis Stream + PubSub)
 try:
@@ -909,12 +920,14 @@ async def _execute_workflow_with_trace(
                 return remove_circular_refs(obj.model_dump(), seen)
             else:
                 # Test if primitive type is JSON serializable
-                import json
                 json.dumps(obj)
                 return obj
         except (TypeError, ValueError):
             # Not serializable - return type name
             return f"<{type(obj).__name__}>"
+
+    # Max size per variable before truncation (10KB)
+    MAX_VARIABLE_SIZE = 10_000
 
     # Helper to capture variables from locals
     def capture_variables_from_locals(local_vars: dict[str, Any]) -> None:
@@ -929,7 +942,16 @@ async def _execute_workflow_with_trace(
                 and not isinstance(v, type(sys))):
                 # Remove circular references to make JSON serializable
                 cleaned_value = remove_circular_refs(v)
-                captured_vars[k] = cleaned_value
+                # Truncate large values to avoid freezing the UI
+                try:
+                    serialized = json.dumps(cleaned_value, default=str)
+                    if len(serialized) > MAX_VARIABLE_SIZE:
+                        size_desc = _human_size(len(serialized))
+                        captured_vars[k] = f"<{type(v).__name__}: {size_desc}, truncated>"
+                    else:
+                        captured_vars[k] = cleaned_value
+                except (TypeError, ValueError):
+                    captured_vars[k] = f"<{type(v).__name__}>"
 
     exception_to_raise = None
 

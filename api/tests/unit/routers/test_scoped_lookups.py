@@ -945,7 +945,11 @@ class TestApplicationCrossOrgSlugLookup:
     """
     Tests for application slug resolution across orgs.
 
-    Scenario: 3 apps exist:
+    App slugs are globally unique. Each slug exists at most once across
+    all orgs. These tests verify cascade lookup (org → global → cross-org
+    for superusers) still works correctly for the read path.
+
+    Scenario: 3 apps exist (each with a DIFFERENT slug):
     - global-app: organization_id=NULL (global)
     - org-a-app: organization_id=org_a
     - org-b-app: organization_id=org_b
@@ -954,6 +958,7 @@ class TestApplicationCrossOrgSlugLookup:
     - Regular users can access their org's apps + global apps by slug
     - Regular users cannot access other orgs' apps by slug
     - Superusers can access any app by slug (including cross-org)
+    - get_by_slug_global checks globally (no org filter)
     """
 
     @pytest.fixture
@@ -1145,3 +1150,42 @@ class TestApplicationCrossOrgSlugLookup:
         assert result.organization_id == org_b_app.organization_id
         # 3 queries: org A, global, then cross-org fallback
         assert mock_session.execute.call_count == 3
+
+    # --- get_by_slug_global checks globally (no org filter) ---
+
+    async def test_get_by_slug_global_finds_app_in_any_org(
+        self, mock_session, org_a_id, org_b_id, org_b_app
+    ):
+        """get_by_slug_global finds app regardless of which org it belongs to."""
+        from src.routers.applications import ApplicationRepository
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = org_b_app
+        mock_session.execute.return_value = mock_result
+
+        # Repo is scoped to org A, but get_by_slug_global has no org filter
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, user_id=uuid4(), is_superuser=False
+        )
+        result = await repo.get_by_slug_global("org-b-app")
+
+        assert result is not None
+        assert result.slug == "org-b-app"
+        assert result.organization_id == org_b_id
+
+    async def test_get_by_slug_global_returns_none_when_not_found(
+        self, mock_session, org_a_id
+    ):
+        """get_by_slug_global returns None when no app has that slug."""
+        from src.routers.applications import ApplicationRepository
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        repo = ApplicationRepository(
+            mock_session, org_id=org_a_id, user_id=uuid4(), is_superuser=False
+        )
+        result = await repo.get_by_slug_global("nonexistent")
+
+        assert result is None

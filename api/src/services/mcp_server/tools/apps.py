@@ -128,13 +128,9 @@ async def create_app(
 
     try:
         async with get_db_context() as db:
-            query = select(Application).where(Application.slug == slug)
-            if effective_org_id:
-                query = query.where(Application.organization_id == effective_org_id)
-            else:
-                query = query.where(Application.organization_id.is_(None))
-
-            existing = await db.execute(query)
+            existing = await db.execute(
+                select(Application).where(Application.slug == slug)
+            )
             if existing.scalar_one_or_none():
                 return error_result(f"Application with slug '{slug}' already exists")
 

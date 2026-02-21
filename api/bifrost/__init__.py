@@ -108,6 +108,8 @@ from .models import (
     TableInfo,
     DocumentData,
     DocumentList,
+    BatchResult,
+    BatchDeleteResult,
 )
 
 # Import decorators - try platform module first, fall back to local SDK version
@@ -211,6 +213,8 @@ __all__ = [
     'TableInfo',
     'DocumentData',
     'DocumentList',
+    'BatchResult',
+    'BatchDeleteResult',
     # Decorators
     'workflow',
     'data_provider',

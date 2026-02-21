@@ -22,21 +22,6 @@ class OrganizationRepository(BaseRepository[Organization]):  # type: ignore[type
     def __init__(self, session: AsyncSession):
         super().__init__(session)
 
-    async def get_by_slug(self, slug: str) -> Organization | None:
-        """
-        Get organization by slug.
-
-        Args:
-            slug: Organization slug (unique identifier)
-
-        Returns:
-            Organization or None if not found
-        """
-        result = await self.session.execute(
-            select(Organization).where(Organization.slug == slug)
-        )
-        return result.scalar_one_or_none()
-
     async def get_by_domain(self, domain: str) -> Organization | None:
         """
         Get organization by email domain.
@@ -74,7 +59,6 @@ class OrganizationRepository(BaseRepository[Organization]):  # type: ignore[type
     async def create_organization(
         self,
         name: str,
-        slug: str,
         created_by: str,
         domain: str | None = None,
     ) -> Organization:
@@ -83,7 +67,6 @@ class OrganizationRepository(BaseRepository[Organization]):  # type: ignore[type
 
         Args:
             name: Organization display name
-            slug: URL-friendly unique identifier
             created_by: User ID who created the org
             domain: Email domain for auto-provisioning
 
@@ -92,7 +75,6 @@ class OrganizationRepository(BaseRepository[Organization]):  # type: ignore[type
         """
         org = Organization(
             name=name,
-            slug=slug,
             domain=domain.lower() if domain else None,
             created_by=created_by,
             is_active=True,
