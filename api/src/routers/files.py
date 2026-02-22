@@ -448,75 +448,25 @@ async def pull_files(
     db: AsyncSession = Depends(get_db),
 ) -> FilePullResponse:
     """
-    Pull files from server that differ from local state.
+    Pull manifest files from server that differ from local state.
 
-    Compares local file hashes against S3 content.
-    Always includes regenerated .bifrost/*.yaml from DB.
+    Only returns regenerated .bifrost/*.yaml from DB state.
+    Code file reconciliation is handled by git, not by this endpoint.
     """
-    from src.services.repo_storage import RepoStorage
     from src.services.manifest_generator import generate_manifest
     from src.services.manifest import serialize_manifest_dir
 
-    repo = RepoStorage()
-    changed_files: dict[str, str] = {}
-    deleted_paths: list[str] = []
-
-    # List server files under prefix
-    prefix = request.prefix
-    if prefix and not prefix.endswith("/"):
-        prefix += "/"
-
-    try:
-        server_paths = await repo.list(prefix)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list files: {e}")
-
-    server_path_set = set(server_paths)
-    local_path_set = set(request.local_hashes.keys())
-
-    # Find files that differ or are new on server
-    for server_path in server_paths:
-        # Skip .bifrost/ files from S3 - we regenerate from DB below
-        parts = server_path.replace("\\", "/").split("/")
-        if ".bifrost" in parts:
-            continue
-
-        try:
-            content = await repo.read(server_path)
-            server_hash = hashlib.sha256(content).hexdigest()
-            local_hash = request.local_hashes.get(server_path)
-
-            if local_hash != server_hash:
-                try:
-                    changed_files[server_path] = content.decode("utf-8")
-                except UnicodeDecodeError:
-                    pass  # Skip binary files
-        except Exception as e:
-            logger.warning(f"Error reading {server_path}: {e}")
-
-    # Find files deleted on server (exist locally but not on server)
-    for local_path in local_path_set:
-        parts = local_path.replace("\\", "/").split("/")
-        if ".bifrost" in parts:
-            continue
-        if local_path not in server_path_set:
-            deleted_paths.append(local_path)
-
-    # Generate manifest from DB — only include files that differ from local
     manifest_files: dict[str, str] = {}
     try:
         manifest = await generate_manifest(db)
         all_manifest_files = serialize_manifest_dir(manifest)
         for filename, content in all_manifest_files.items():
-            # Manifest files are stored under .bifrost/ prefix in local_hashes
-            # The CLI hashes them as e.g. "agents/.bifrost/workflows.yaml" or ".bifrost/workflows.yaml"
-            # Check all possible key formats
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             local_hash = None
             for key_candidate in [
                 f".bifrost/{filename}",
-                f"{prefix}.bifrost/{filename}" if prefix else None,
-                f"{prefix.rstrip('/')}/.bifrost/{filename}" if prefix else None,
+                f"{request.prefix}/.bifrost/{filename}" if request.prefix else None,
+                f"{request.prefix.rstrip('/')}/.bifrost/{filename}" if request.prefix else None,
             ]:
                 if key_candidate and key_candidate in request.local_hashes:
                     local_hash = request.local_hashes[key_candidate]
@@ -527,8 +477,8 @@ async def pull_files(
         logger.warning(f"Error generating manifest: {e}")
 
     return FilePullResponse(
-        files=changed_files,
-        deleted=deleted_paths,
+        files={},
+        deleted=[],
         manifest_files=manifest_files,
     )
 

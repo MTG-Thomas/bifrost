@@ -70,8 +70,8 @@ def test_push_manifest_response_shape(e2e_client, platform_admin):
     assert isinstance(data.get("warnings"), list)
 
 
-def test_pull_returns_changed_files(e2e_client, platform_admin):
-    """Pull should return files that differ from local hashes."""
+def test_pull_only_returns_manifests(e2e_client, platform_admin):
+    """Pull should only return manifest files, not code files."""
     content = "# pull test file"
     e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {"modules/pull_test.py": content},
@@ -82,33 +82,56 @@ def test_pull_returns_changed_files(e2e_client, platform_admin):
     })
     assert resp.status_code == 200
     data = resp.json()
-    assert "modules/pull_test.py" in data["files"]
-    assert data["files"]["modules/pull_test.py"] == content
+    assert "modules/pull_test.py" not in data["files"]
 
 
-def test_pull_skips_matching_files(e2e_client, platform_admin):
-    """Pull should NOT return files whose hash matches local."""
-    content = "# pull match test"
-    e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
-        "files": {"modules/pull_match.py": content},
-    })
-    correct_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
+def test_pull_skips_matching_manifest_files(e2e_client, platform_admin):
+    """Pull should NOT return manifest files whose hash matches local."""
+    # First get the current manifest from server
+    resp1 = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
         "prefix": "modules",
-        "local_hashes": {"modules/pull_match.py": correct_hash},
+        "local_hashes": {},
     })
-    data = resp.json()
-    assert "modules/pull_match.py" not in data["files"]
+    data1 = resp1.json()
+    manifest_files = data1.get("manifest_files", {})
+
+    if manifest_files:
+        # Now pull again with correct hashes — should get empty manifest_files
+        local_hashes = {}
+        for filename, content in manifest_files.items():
+            h = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            local_hashes[f".bifrost/{filename}"] = h
+
+        resp2 = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
+            "prefix": "modules",
+            "local_hashes": local_hashes,
+        })
+        data2 = resp2.json()
+        assert data2["manifest_files"] == {}
 
 
-def test_pull_returns_deleted_files(e2e_client, platform_admin):
-    """Pull should list files that exist locally but not on server."""
+def test_pull_does_not_return_deleted_files(e2e_client, platform_admin):
+    """Pull should NOT list code files as deleted — git handles reconciliation."""
     resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
         "prefix": "modules",
         "local_hashes": {"modules/nonexistent_file.py": "abc123"},
     })
     data = resp.json()
-    assert "modules/nonexistent_file.py" in data["deleted"]
+    assert data["deleted"] == []
+
+
+def test_pull_new_local_file_not_in_deleted(e2e_client, platform_admin):
+    """Files that exist locally but not on server should NOT appear in deleted.
+
+    The pull endpoint should only return manifest data, not try to reconcile
+    code files — git handles that.
+    """
+    resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
+        "prefix": "apps/new-app",
+        "local_hashes": {"apps/new-app/brand-new.tsx": "abc123"},
+    })
+    data = resp.json()
+    assert "apps/new-app/brand-new.tsx" not in data.get("deleted", [])
 
 
 def test_pull_manifest_files(e2e_client, platform_admin):
@@ -153,10 +176,3 @@ def test_push_delete_missing_prefix(e2e_client, platform_admin):
     })
     data = resp.json()
     assert data["deleted"] >= 1
-
-    pull_resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
-        "prefix": "apps/cleanup",
-        "local_hashes": {"apps/cleanup/remove.tsx": "abc"},
-    })
-    pull_data = pull_resp.json()
-    assert "apps/cleanup/remove.tsx" in pull_data["deleted"]

@@ -1291,29 +1291,10 @@ async def _pull_from_server(
     local_root: pathlib.Path,
     repo_prefix: str,
 ) -> bool:
-    """Pull files from server at session start. Returns True if successful."""
+    """Pull manifest files from server at session start. Returns True if successful."""
 
-    # Compute local file hashes
+    # Compute local manifest hashes
     local_hashes: dict[str, str] = {}
-
-    for file_path in sorted(local_root.rglob("*")):
-        if file_path.is_dir():
-            continue
-        rel_parts = file_path.relative_to(local_root).parts
-        if any(p.startswith(".") and p != ".bifrost" for p in rel_parts):
-            continue
-        if any(p in ("__pycache__", "node_modules") for p in rel_parts):
-            continue
-        if file_path.suffix.lower() in BINARY_EXTENSIONS:
-            continue
-        try:
-            content = file_path.read_bytes()
-            repo_path = f"{repo_prefix}/{file_path.relative_to(local_root)}"
-            local_hashes[repo_path] = hashlib.sha256(content).hexdigest()
-        except (OSError, UnicodeDecodeError):
-            continue
-
-    # Also hash .bifrost/ manifest files from workspace root (may be above local_root)
     bifrost_dir = _find_bifrost_dir(local_root)
 
     if bifrost_dir.exists() and bifrost_dir.is_dir():
@@ -1321,7 +1302,6 @@ async def _pull_from_server(
             if bf.is_file() and bf.suffix in (".yaml", ".yml"):
                 try:
                     content = bf.read_bytes()
-                    # Use .bifrost/filename as the key (no prefix — manifest is global)
                     local_hashes[f".bifrost/{bf.name}"] = hashlib.sha256(content).hexdigest()
                 except (OSError, UnicodeDecodeError):
                     continue
@@ -1334,96 +1314,28 @@ async def _pull_from_server(
         })
         if response.status_code != 200:
             print(f"Warning: pull failed ({response.status_code})", file=sys.stderr)
-            return True  # Continue anyway
+            return True
 
         data = response.json()
     except Exception as e:
         print(f"Warning: pull failed: {e}", file=sys.stderr)
-        return True  # Continue anyway
+        return True
 
-    changed_files = data.get("files", {})
-    deleted_files = data.get("deleted", [])
     manifest_files = data.get("manifest_files", {})
 
-    # Separate truly new files (not on local disk) from files that differ
-    new_files = {}
-    for repo_path, content in changed_files.items():
-        if repo_path.startswith(repo_prefix + "/"):
-            rel = repo_path[len(repo_prefix) + 1:]
-        elif repo_path.startswith(repo_prefix):
-            rel = repo_path[len(repo_prefix):]
-        else:
-            rel = repo_path
-        check_path = local_root / rel
-        if not check_path.exists():
-            new_files[repo_path] = content
-
-    # Only count actionable changes: new files, manifest updates, deletions
-    total_changes = len(new_files) + len(deleted_files) + len(manifest_files)
-    if total_changes == 0:
-        return True  # Silently continue — local files are fine
-
-    # Show summary
-    print(f"Server has updates ({total_changes} file(s)):")
-    if new_files:
-        print(f"  {len(new_files)} new file(s) from server")
-    if deleted_files:
-        print(f"  {len(deleted_files)} file(s) deleted on server")
-    if manifest_files:
-        print(f"  {len(manifest_files)} manifest file(s)")
-
-    # Ask for confirmation
-    try:
-        answer = input("Pull server updates to local? [Y/n] ").strip().lower()
-        if answer and answer not in ("y", "yes"):
-            print("Pull declined. Aborting.", file=sys.stderr)
-            return False
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted.", file=sys.stderr)
-        return False
-
-    # Write changed files — only files that are NEW on server (not present locally).
-    # Files that exist locally and differ are intentional local edits about to be pushed.
-    written = 0
-    for repo_path, content in changed_files.items():
-        if repo_path.startswith(repo_prefix + "/"):
-            rel = repo_path[len(repo_prefix) + 1:]
-        elif repo_path.startswith(repo_prefix):
-            rel = repo_path[len(repo_prefix):]
-        else:
-            rel = repo_path
-        local_path = local_root / rel
-        if local_path.exists():
-            # File exists locally — user may have intentionally modified it.
-            # Don't overwrite; their version will be pushed.
-            continue
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_text(content, encoding="utf-8")
-        written += 1
+    if not manifest_files:
+        return True
 
     # Write manifest files — always authoritative from server
-    # Write to the .bifrost/ directory (may be above local_root at workspace root)
     manifest_dir = bifrost_dir if bifrost_dir.exists() else local_root / ".bifrost"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
     for filename, content in manifest_files.items():
         local_path = manifest_dir / filename
-        local_path.parent.mkdir(parents=True, exist_ok=True)
         local_path.write_text(content, encoding="utf-8")
         written += 1
 
-    # Delete files that were removed on server
-    for repo_path in deleted_files:
-        if repo_path.startswith(repo_prefix + "/"):
-            rel = repo_path[len(repo_prefix) + 1:]
-        elif repo_path.startswith(repo_prefix):
-            rel = repo_path[len(repo_prefix):]
-        else:
-            rel = repo_path
-        local_path = local_root / rel
-        if local_path.exists():
-            local_path.unlink()
-            written += 1
-
-    print(f"  Pulled {written} file(s) from server.")
+    print(f"  Updated {written} manifest file(s) from server.")
     return True
 
 
