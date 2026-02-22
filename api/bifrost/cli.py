@@ -942,6 +942,34 @@ def _detect_repo_prefix(path: pathlib.Path) -> str:
     return path.name
 
 
+def _find_bifrost_dir(local_root: pathlib.Path) -> pathlib.Path:
+    """Find the .bifrost/ manifest directory relative to a push root.
+
+    Resolution order:
+    1. If local_root IS the .bifrost/ directory, return it
+    2. Check local_root/.bifrost/
+    3. Walk up parent directories (max 10 levels) looking for .bifrost/
+    4. Fallback: return local_root/.bifrost/ (may not exist)
+    """
+    if local_root.name == ".bifrost":
+        return local_root
+
+    candidate = local_root / ".bifrost"
+    if candidate.exists() and candidate.is_dir():
+        return candidate
+
+    search = local_root.parent
+    for _ in range(10):
+        candidate = search / ".bifrost"
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+        if search.parent == search:
+            break  # Hit filesystem root
+        search = search.parent
+
+    return local_root / ".bifrost"  # Fallback (may not exist)
+
+
 async def _push_with_precheck(
     local_path: str,
     clean: bool = False,
@@ -1208,20 +1236,7 @@ def _write_back_server_files(
     """
     written = 0
 
-    # Find .bifrost/ directory (may be above local_root at workspace root)
-    # If local_root IS the .bifrost/ directory, use it directly
-    if local_root.name == ".bifrost":
-        manifest_dir = local_root
-    else:
-        manifest_dir = local_root / ".bifrost"
-        if not manifest_dir.exists():
-            search = local_root.parent
-            for _ in range(5):
-                candidate = search / ".bifrost"
-                if candidate.exists() and candidate.is_dir():
-                    manifest_dir = candidate
-                    break
-                search = search.parent
+    manifest_dir = _find_bifrost_dir(local_root)
 
     # Write back regenerated .bifrost/ manifest files (only if changed)
     for filename, content in result.get("manifest_files", {}).items():
@@ -1289,20 +1304,7 @@ async def _pull_from_server(
             continue
 
     # Also hash .bifrost/ manifest files from workspace root (may be above local_root)
-    # If local_root IS the .bifrost/ directory, use it directly
-    if local_root.name == ".bifrost":
-        bifrost_dir = local_root
-    else:
-        bifrost_dir = local_root / ".bifrost"
-        if not bifrost_dir.exists():
-            # Try parent directories (e.g. pushing apps/my-app, .bifrost is at workspace root)
-            search = local_root.parent
-            for _ in range(5):  # Max 5 levels up
-                candidate = search / ".bifrost"
-                if candidate.exists() and candidate.is_dir():
-                    bifrost_dir = candidate
-                    break
-                search = search.parent
+    bifrost_dir = _find_bifrost_dir(local_root)
 
     if bifrost_dir.exists() and bifrost_dir.is_dir():
         for bf in sorted(bifrost_dir.iterdir()):
