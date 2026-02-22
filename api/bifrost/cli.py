@@ -1157,17 +1157,9 @@ async def _watch_and_push(
                         extra_headers={"X-Bifrost-Watch": "true"},
                     )
                     if result:
-                        parts_msg = []
-                        if result.get("created"):
-                            parts_msg.append(f"{result['created']} created")
-                        if result.get("updated"):
-                            parts_msg.append(f"{result['updated']} updated")
-                        if parts_msg:
-                            print(f"  [{datetime.now().strftime('%H:%M:%S')}] {', '.join(parts_msg)}", flush=True)
-
-                        # Print warnings
-                        for warning in result.get("warnings", []):
-                            print(f"    warning: {warning}", flush=True)
+                        ts = datetime.now().strftime('%H:%M:%S')
+                        print(f"  [{ts}]", end="", flush=True)
+                        _print_push_summary(result)
 
                         # Write back server files (pause watcher to avoid re-trigger)
                         if result.get("manifest_files") or result.get("modified_files"):
@@ -1435,6 +1427,65 @@ async def _pull_from_server(
     return True
 
 
+def _collect_push_files(
+    path: pathlib.Path,
+    repo_prefix: str,
+) -> tuple[dict[str, str], int]:
+    """Walk a directory and collect text files for push.
+
+    Returns (files_dict, skipped_count).
+    """
+    files: dict[str, str] = {}
+    skipped = 0
+
+    for file_path in sorted(path.rglob("*")):
+        if file_path.is_dir():
+            continue
+        rel_parts = file_path.relative_to(path).parts
+        if any(part.startswith(".") and part != ".bifrost" for part in rel_parts):
+            continue
+        if file_path.name in ("__pycache__", ".DS_Store", "node_modules"):
+            continue
+        if any(part == "__pycache__" or part == "node_modules" for part in rel_parts):
+            continue
+        if file_path.suffix.lower() in BINARY_EXTENSIONS:
+            skipped += 1
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8")
+            repo_path = f"{repo_prefix}/{file_path.relative_to(path)}"
+            files[repo_path] = content
+        except UnicodeDecodeError:
+            skipped += 1
+            continue
+
+    return files, skipped
+
+
+def _print_push_summary(result: dict[str, Any]) -> None:
+    """Print push result summary."""
+    summary_parts = []
+    if result.get("created"):
+        summary_parts.append(f"{result['created']} created")
+    if result.get("updated"):
+        summary_parts.append(f"{result['updated']} updated")
+    if result.get("deleted"):
+        summary_parts.append(f"{result['deleted']} deleted")
+    if result.get("unchanged"):
+        summary_parts.append(f"{result['unchanged']} unchanged")
+    print(f"  {', '.join(summary_parts) if summary_parts else 'No changes'}")
+
+    if result.get("errors"):
+        print(f"\n  Errors ({len(result['errors'])}):")
+        for error in result["errors"]:
+            print(f"    - {error}")
+
+    if result.get("warnings"):
+        print(f"\n  Warnings ({len(result['warnings'])}):")
+        for warning in result["warnings"]:
+            print(f"    - {warning}")
+
+
 async def _push_files(local_path: str, clean: bool = False, validate: bool = False) -> int:
     """Push local directory to Bifrost _repo/."""
     import pathlib
@@ -1452,34 +1503,7 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
     repo_prefix = _detect_repo_prefix(path)
 
     # Walk the directory and collect files
-    files: dict[str, str] = {}
-    skipped = 0
-
-    for file_path in sorted(path.rglob("*")):
-        if file_path.is_dir():
-            continue
-
-        # Skip hidden files and common non-content files (but allow .bifrost/)
-        rel_parts = file_path.relative_to(path).parts
-        if any(part.startswith(".") and part != ".bifrost" for part in rel_parts):
-            continue
-        if file_path.name in ("__pycache__", ".DS_Store", "node_modules"):
-            continue
-        if any(part == "__pycache__" or part == "node_modules" for part in rel_parts):
-            continue
-
-        # Skip binary files
-        if file_path.suffix.lower() in BINARY_EXTENSIONS:
-            skipped += 1
-            continue
-
-        try:
-            content = file_path.read_text(encoding="utf-8")
-            repo_path = f"{repo_prefix}/{file_path.relative_to(path)}"
-            files[repo_path] = content
-        except UnicodeDecodeError:
-            skipped += 1
-            continue
+    files, skipped = _collect_push_files(path, repo_prefix)
 
     if not files:
         print("No files found to push.", file=sys.stderr)
@@ -1507,28 +1531,7 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
         return 1
 
     # Print summary
-    summary_parts = []
-    if result.get("created"):
-        summary_parts.append(f"{result['created']} created")
-    if result.get("updated"):
-        summary_parts.append(f"{result['updated']} updated")
-    if result.get("deleted"):
-        summary_parts.append(f"{result['deleted']} deleted")
-    if result.get("unchanged"):
-        summary_parts.append(f"{result['unchanged']} unchanged")
-
-    print(f"  {', '.join(summary_parts) if summary_parts else 'No changes'}")
-
-    if result.get("errors"):
-        print(f"\n  Errors ({len(result['errors'])}):")
-        for error in result["errors"]:
-            print(f"    - {error}")
-
-    # Print warnings from server (diagnostics, manifest import)
-    if result.get("warnings"):
-        print(f"\n  Warnings ({len(result['warnings'])}):")
-        for warning in result["warnings"]:
-            print(f"    - {warning}")
+    _print_push_summary(result)
 
     # Write back manifest files and modified files from server response
     if result.get("manifest_files") or result.get("modified_files"):
