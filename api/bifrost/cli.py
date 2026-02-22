@@ -40,7 +40,7 @@ BINARY_EXTENSIONS = frozenset({
 
 KNOWN_ROOTS = frozenset({"apps", "workflows", "modules", "agents", "forms", ".bifrost"})
 
-# Watch session heartbeat must be < Redis TTL (120s in API /files/watch endpoint)
+# Watch session heartbeat must be < Redis TTL (WATCH_SESSION_TTL_SECONDS in files.py)
 WATCH_HEARTBEAT_SECONDS = 60
 
 

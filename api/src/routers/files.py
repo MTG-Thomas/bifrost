@@ -46,6 +46,9 @@ from src.services.editor.search import search_files_db
 from src.services.file_backend import get_backend
 from src.services.file_storage import FileStorageService
 
+# Watch session TTL — must be > CLI heartbeat interval (WATCH_HEARTBEAT_SECONDS in bifrost.cli)
+WATCH_SESSION_TTL_SECONDS = 120
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/files", tags=["Files"])
@@ -562,7 +565,7 @@ async def manage_watch_session(
     r = await get_shared_redis()
 
     if request.action in ("start", "heartbeat"):
-        await r.setex(key, 120, json.dumps({
+        await r.setex(key, WATCH_SESSION_TTL_SECONDS, json.dumps({
             "user_id": str(user.user_id),
             "user_name": user.name or user.email or "CLI",
             "prefix": request.prefix,
