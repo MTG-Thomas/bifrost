@@ -59,6 +59,7 @@ const DEFAULT_QUERY: DocumentQuery = {
 	order_dir: "asc",
 	limit: 100,
 	offset: 0,
+	skip_count: false,
 };
 
 // =============================================================================

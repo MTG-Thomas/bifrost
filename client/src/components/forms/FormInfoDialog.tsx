@@ -58,7 +58,7 @@ const formInfoSchema = z.object({
 	description: z.string(),
 	workflow_id: z.string().min(1, "Linked workflow is required"),
 	launch_workflow_id: z.string(),
-	default_launch_params: z.record(z.unknown()),
+	default_launch_params: z.record(z.string(), z.unknown()),
 	access_level: z.enum(["authenticated", "role_based"]),
 	role_ids: z.array(z.string()),
 	organization_id: z.string().nullable(),
