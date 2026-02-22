@@ -47,6 +47,131 @@
 
 ---
 
+## Testing Plan
+
+All implementation tasks are complete. The following manual testing steps validate the full feature end-to-end against bifrostdev.
+
+**Prerequisites:**
+- Worktree: `.worktrees/cli-push-watch-broadcast` (branch `feature/cli-push-watch-broadcast`)
+- Dev stack running in the worktree: `cd .worktrees/cli-push-watch-broadcast && ./debug.sh`
+  - May need to copy `.env` from main repo and stop conflicting containers (e.g. `grader-dev-db-1` on port 5432)
+- Working directory for CLI testing: `~/GitHub/bifrost-workspace`
+
+### Step 1: Reinstall CLI and Login
+
+```bash
+# Force-reinstall CLI from bifrostdev (no versioning, so --force)
+pip install --force-reinstall https://bifrostdev.musick.gg/api/cli/download
+
+# Login to bifrostdev instance
+bifrost login --url https://bifrostdev.musick.gg
+# User handles the device auth flow in browser
+```
+
+### Step 2: Test `bifrost push`
+
+```bash
+cd ~/GitHub/bifrost-workspace
+
+# Basic push of a directory (e.g. an app or workflow folder)
+bifrost push apps/some-app
+
+# Push with --clean (deletes remote files not present locally)
+bifrost push apps/some-app --clean
+
+# Push with --validate (validates app after push)
+bifrost push apps/some-app --validate
+```
+
+**Verify:**
+- Files appear in bifrostdev.musick.gg file browser
+- Repo dirty pre-check works (should fail if platform has uncommitted changes)
+- `--force` flag skips the pre-check
+
+### Step 3: Test `bifrost push --watch`
+
+```bash
+cd ~/GitHub/bifrost-workspace
+
+# Start watch mode
+bifrost push --watch apps/some-app
+```
+
+Then in another terminal, edit a file:
+```bash
+echo "// test change" >> ~/GitHub/bifrost-workspace/apps/some-app/page.tsx
+```
+
+**Verify in CLI terminal:**
+- Initial push succeeds with file count
+- Incremental change shows timestamp + "1 updated"
+- Heartbeat runs silently every 60s
+- Ctrl+C cleanly stops watch
+
+**Verify in browser (bifrostdev.musick.gg) using Chrome extension:**
+- Header shows FileActivityIndicator (green pulse for active watch, with user name)
+- Open Editor/Shell — StatusBar shows "CLI watch (YourName)"
+- After Ctrl+C, indicator disappears
+- Recent non-watch pushes show briefly as blue icon then fade
+
+### Step 4: Test `bifrost api`
+
+```bash
+# GET request
+bifrost api GET /api/workflows
+
+# GET repo status
+bifrost api GET /api/github/repo-status
+
+# POST request (validate an app)
+bifrost api POST /api/applications/some-app/validate
+```
+
+**Verify:**
+- JSON response is pretty-printed
+- Auth is handled automatically
+- Non-200 responses return exit code 1
+
+### Step 5: Test App Push Safety
+
+Push an app update and verify it doesn't corrupt or break the app:
+
+```bash
+# Push an existing app
+bifrost push apps/some-app --validate
+
+# Check the app still works in bifrostdev preview
+```
+
+**Verify in browser:**
+- App preview still renders correctly after push
+- No compilation errors
+- Live updates appear if using --watch
+
+### Step 6: Test Dirty Check Flow
+
+```bash
+# 1. Make a platform edit (via MCP or UI editor in bifrostdev)
+# 2. Try to push — should fail with "Platform has uncommitted changes"
+bifrost push apps/some-app
+
+# 3. Sync to clear dirty state
+bifrost sync
+
+# 4. Push again — should succeed
+bifrost push apps/some-app
+
+# 5. Or use --force to skip the check
+bifrost push apps/some-app --force
+```
+
+### Known Issues / Pre-existing Errors
+
+- 2 pre-existing TypeScript errors from main merge (FormInfoDialog.tsx, tables.ts) — not related to this feature
+- `grader-dev-db-1` container may hold port 5432 — stop it before starting bifrost dev stack
+
+---
+
 ## Task 1: Repo Dirty Flag (Backend) ✅ DONE
 
 Track when the platform has uncommitted changes so CLI push pre-check is instant (~0ms) instead of running full git status (~10s).
