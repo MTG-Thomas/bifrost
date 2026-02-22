@@ -12,9 +12,11 @@ to avoid dependencies on src.* modules that only exist in the Docker environment
 """
 
 import asyncio
+import hashlib
 import inspect
 import json
 import os
+import pathlib
 import sys
 import time
 import webbrowser
@@ -27,6 +29,19 @@ import httpx
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
 from bifrost.client import BifrostClient
+
+# Shared constants for file operations
+BINARY_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+    ".woff", ".woff2", ".ttf", ".eot",
+    ".zip", ".tar", ".gz", ".bz2",
+    ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
+})
+
+KNOWN_ROOTS = frozenset({"apps", "workflows", "modules", "agents", "forms", ".bifrost"})
+
+# Watch session heartbeat must be < Redis TTL (120s in API /files/watch endpoint)
+WATCH_HEARTBEAT_SECONDS = 60
 
 
 async def refresh_tokens() -> bool:
@@ -890,14 +905,41 @@ async def _check_repo_status(client: BifrostClient) -> bool:
 
         if data.get("dirty"):
             since = data.get("dirty_since", "unknown")
-            print(f"Error: Platform has uncommitted changes (since {since}).", file=sys.stderr)
-            print("  Run 'bifrost sync' to commit and reconcile before pushing.", file=sys.stderr)
-            return False
+            print(f"Platform has uncommitted changes (since {since}).", file=sys.stderr)
+            print("  You can pull the latest server state to reconcile,", file=sys.stderr)
+            print("  or run 'bifrost sync' to commit first.", file=sys.stderr)
+            try:
+                answer = input("Pull server changes and continue? [Y/n] ").strip().lower()
+                if answer and answer not in ("y", "yes"):
+                    return False
+                # Caller (_push_with_precheck) will run _pull_from_server next
+                return True
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted.", file=sys.stderr)
+                return False
 
         return True
     except Exception as e:
         print(f"Warning: could not check repo status: {e}. Proceeding anyway.", file=sys.stderr)
         return True
+
+
+def _detect_repo_prefix(path: pathlib.Path) -> str:
+    """Detect the repo prefix from a local path by finding the first known root directory.
+
+    Examples:
+        /home/user/workspace/apps/my-app -> "apps/my-app"
+        /home/user/workspace/.bifrost     -> ".bifrost"
+        /home/user/workspace/foo          -> "foo" (fallback with warning)
+    """
+    for i, part in enumerate(path.parts):
+        if part in KNOWN_ROOTS:
+            return "/".join(path.parts[i:])
+
+    # Fallback: use the directory name itself
+    print(f"Warning: could not detect repo prefix from path. Using '{path.name}'.", file=sys.stderr)
+    print("  Hint: path should contain apps/, workflows/, modules/, etc.", file=sys.stderr)
+    return path.name
 
 
 async def _push_with_precheck(
@@ -907,7 +949,7 @@ async def _push_with_precheck(
     watch: bool = False,
     force: bool = False,
 ) -> int:
-    """Push files with repo status pre-check."""
+    """Push files with repo status pre-check and initial pull."""
     # Get authenticated client
     try:
         client = BifrostClient.get_instance(require_auth=True)
@@ -918,6 +960,14 @@ async def _push_with_precheck(
     # Check repo status (unless --force)
     if not force:
         if not await _check_repo_status(client):
+            return 1
+
+    # Pull at session start: sync server state to local before pushing
+    path = pathlib.Path(local_path).resolve()
+    if path.exists() and path.is_dir():
+        repo_prefix = _detect_repo_prefix(path)
+
+        if not await _pull_from_server(client, path, repo_prefix):
             return 1
 
     if watch:
@@ -973,16 +1023,7 @@ async def _watch_and_push(
         print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
         return 1
 
-    # Determine repo_prefix (same logic as _push_files)
-    parts = path.parts
-    repo_prefix = None
-    known_roots = {"apps", "workflows", "modules", "agents", "forms"}
-    for i, part in enumerate(parts):
-        if part in known_roots:
-            repo_prefix = "/".join(parts[i:])
-            break
-    if repo_prefix is None:
-        repo_prefix = path.name
+    repo_prefix = _detect_repo_prefix(path)
 
     # Notify server: watch started
     try:
@@ -993,32 +1034,28 @@ async def _watch_and_push(
         pass  # Non-fatal
 
     # Initial full push (reuses existing _push_files)
-    print(f"Initial push of {path}...")
+    print(f"Initial push of {path}...", flush=True)
     await _push_files(str(path), clean=clean, validate=validate)
 
     # File change tracking
     pending_changes: set[str] = set()
     lock = threading.Lock()
-
-    binary_extensions = {
-        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
-        ".woff", ".woff2", ".ttf", ".eot",
-        ".zip", ".tar", ".gz", ".bz2",
-        ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
-    }
+    writeback_paused = False  # Pause watcher during server file writeback
 
     class ChangeHandler(FileSystemEventHandler):
         def on_any_event(self, event: FileSystemEvent) -> None:
+            if writeback_paused:
+                return
             if event.is_directory:
                 return
             src = str(event.src_path)
             rel_parts = pathlib.Path(src).relative_to(path).parts
-            # Skip hidden, __pycache__, node_modules, binary
-            if any(p.startswith(".") for p in rel_parts):
+            # Skip hidden (but allow .bifrost/), __pycache__, node_modules, binary
+            if any(p.startswith(".") and p != ".bifrost" for p in rel_parts):
                 return
             if any(p in ("__pycache__", "node_modules") for p in rel_parts):
                 return
-            if pathlib.Path(src).suffix.lower() in binary_extensions:
+            if pathlib.Path(src).suffix.lower() in BINARY_EXTENSIONS:
                 return
             with lock:
                 pending_changes.add(src)
@@ -1027,9 +1064,9 @@ async def _watch_and_push(
     observer.schedule(ChangeHandler(), str(path), recursive=True)
     observer.start()
 
-    print(f"Watching {path} for changes... (Ctrl+C to stop)")
+    print(f"Watching {path} for changes... (Ctrl+C to stop)", flush=True)
 
-    heartbeat_interval = 60  # seconds
+    heartbeat_interval = WATCH_HEARTBEAT_SECONDS
     last_heartbeat = asyncio.get_event_loop().time()
 
     try:
@@ -1059,6 +1096,17 @@ async def _watch_and_push(
                             continue
 
                 if push_files:
+                    # Local manifest validation before push
+                    bifrost_in_push = {k: v for k, v in push_files.items() if ".bifrost/" in k}
+                    if bifrost_in_push:
+                        val_errors = _validate_manifest_locally(bifrost_in_push)
+                        if val_errors:
+                            ts = datetime.now().strftime('%H:%M:%S')
+                            print(f"  [{ts}] Manifest invalid, push skipped:", flush=True)
+                            for err in val_errors:
+                                print(f"    - {err}", flush=True)
+                            continue
+
                     result = await _do_push(
                         push_files,
                         extra_headers={"X-Bifrost-Watch": "true"},
@@ -1070,7 +1118,23 @@ async def _watch_and_push(
                         if result.get("updated"):
                             parts_msg.append(f"{result['updated']} updated")
                         if parts_msg:
-                            print(f"  [{datetime.now().strftime('%H:%M:%S')}] {', '.join(parts_msg)}")
+                            print(f"  [{datetime.now().strftime('%H:%M:%S')}] {', '.join(parts_msg)}", flush=True)
+
+                        # Print warnings
+                        for warning in result.get("warnings", []):
+                            print(f"    warning: {warning}", flush=True)
+
+                        # Write back server files (pause watcher to avoid re-trigger)
+                        if result.get("manifest_files") or result.get("modified_files"):
+                            writeback_paused = True
+                            try:
+                                _write_back_server_files(path, repo_prefix, result)
+                            finally:
+                                # Brief sleep to let watcher drain queued events
+                                await asyncio.sleep(0.2)
+                                with lock:
+                                    pending_changes.clear()
+                                writeback_paused = False
 
             # Heartbeat
             now = asyncio.get_event_loop().time()
@@ -1084,7 +1148,7 @@ async def _watch_and_push(
                 last_heartbeat = now
 
     except KeyboardInterrupt:
-        print("\nStopping watch...")
+        print("\nStopping watch...", flush=True)
     finally:
         observer.stop()
         observer.join()
@@ -1096,6 +1160,259 @@ async def _watch_and_push(
             pass
 
     return 0
+
+
+def _validate_manifest_locally(bifrost_files: dict[str, str]) -> list[str]:
+    """Validate .bifrost/ manifest files locally before pushing.
+
+    Uses the same parse_manifest_dir + validate_manifest from bifrost.manifest
+    that the server uses during git sync — single source of truth.
+    """
+    from bifrost.manifest import parse_manifest_dir, validate_manifest, MANIFEST_FILES
+
+    # Extract just the filename from the repo paths
+    # e.g. "some/prefix/.bifrost/workflows.yaml" -> "workflows.yaml"
+    yaml_files: dict[str, str] = {}
+    for repo_path, content in bifrost_files.items():
+        parts = repo_path.replace("\\", "/").split("/")
+        try:
+            bifrost_idx = parts.index(".bifrost")
+            filename = "/".join(parts[bifrost_idx + 1:])
+            if filename in MANIFEST_FILES.values():
+                yaml_files[filename] = content
+        except ValueError:
+            continue
+
+    if not yaml_files:
+        return []
+
+    # Parse and validate
+    errors: list[str] = []
+    try:
+        manifest = parse_manifest_dir(yaml_files)
+    except Exception as e:
+        return [f"Failed to parse manifest: {e}"]
+
+    errors.extend(validate_manifest(manifest))
+    return errors
+
+
+def _write_back_server_files(
+    local_root: pathlib.Path,
+    repo_prefix: str,
+    result: dict[str, Any],
+) -> None:
+    """Write manifest_files and modified_files from server response back to local disk.
+
+    Only writes files that actually differ from local content.
+    """
+    written = 0
+
+    # Find .bifrost/ directory (may be above local_root at workspace root)
+    # If local_root IS the .bifrost/ directory, use it directly
+    if local_root.name == ".bifrost":
+        manifest_dir = local_root
+    else:
+        manifest_dir = local_root / ".bifrost"
+        if not manifest_dir.exists():
+            search = local_root.parent
+            for _ in range(5):
+                candidate = search / ".bifrost"
+                if candidate.exists() and candidate.is_dir():
+                    manifest_dir = candidate
+                    break
+                search = search.parent
+
+    # Write back regenerated .bifrost/ manifest files (only if changed)
+    for filename, content in result.get("manifest_files", {}).items():
+        local_path = manifest_dir / filename
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        # Skip if local file already has identical content
+        if local_path.exists():
+            try:
+                if local_path.read_text(encoding="utf-8") == content:
+                    continue
+            except OSError:
+                pass
+        local_path.write_text(content, encoding="utf-8")
+        written += 1
+
+    # Write back modified source files (e.g. forms/agents with resolved refs)
+    for repo_path, content in result.get("modified_files", {}).items():
+        if repo_path.startswith(repo_prefix + "/"):
+            rel = repo_path[len(repo_prefix) + 1:]
+        elif repo_path.startswith(repo_prefix):
+            rel = repo_path[len(repo_prefix):]
+        else:
+            rel = repo_path
+        local_path = local_root / rel
+        # Skip if local file already has identical content
+        if local_path.exists():
+            try:
+                if local_path.read_text(encoding="utf-8") == content:
+                    continue
+            except OSError:
+                pass
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text(content, encoding="utf-8")
+        written += 1
+
+    if written:
+        print(f"  Wrote back {written} file(s) from server.")
+
+
+async def _pull_from_server(
+    client: BifrostClient,
+    local_root: pathlib.Path,
+    repo_prefix: str,
+) -> bool:
+    """Pull files from server at session start. Returns True if successful."""
+
+    # Compute local file hashes
+    local_hashes: dict[str, str] = {}
+
+    for file_path in sorted(local_root.rglob("*")):
+        if file_path.is_dir():
+            continue
+        rel_parts = file_path.relative_to(local_root).parts
+        if any(p.startswith(".") and p != ".bifrost" for p in rel_parts):
+            continue
+        if any(p in ("__pycache__", "node_modules") for p in rel_parts):
+            continue
+        if file_path.suffix.lower() in BINARY_EXTENSIONS:
+            continue
+        try:
+            content = file_path.read_bytes()
+            repo_path = f"{repo_prefix}/{file_path.relative_to(local_root)}"
+            local_hashes[repo_path] = hashlib.sha256(content).hexdigest()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+    # Also hash .bifrost/ manifest files from workspace root (may be above local_root)
+    # If local_root IS the .bifrost/ directory, use it directly
+    if local_root.name == ".bifrost":
+        bifrost_dir = local_root
+    else:
+        bifrost_dir = local_root / ".bifrost"
+        if not bifrost_dir.exists():
+            # Try parent directories (e.g. pushing apps/my-app, .bifrost is at workspace root)
+            search = local_root.parent
+            for _ in range(5):  # Max 5 levels up
+                candidate = search / ".bifrost"
+                if candidate.exists() and candidate.is_dir():
+                    bifrost_dir = candidate
+                    break
+                search = search.parent
+
+    if bifrost_dir.exists() and bifrost_dir.is_dir():
+        for bf in sorted(bifrost_dir.iterdir()):
+            if bf.is_file() and bf.suffix in (".yaml", ".yml"):
+                try:
+                    content = bf.read_bytes()
+                    # Use .bifrost/filename as the key (no prefix — manifest is global)
+                    local_hashes[f".bifrost/{bf.name}"] = hashlib.sha256(content).hexdigest()
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+    # Call pull endpoint
+    try:
+        response = await client.post("/api/files/pull", json={
+            "prefix": repo_prefix,
+            "local_hashes": local_hashes,
+        })
+        if response.status_code != 200:
+            print(f"Warning: pull failed ({response.status_code})", file=sys.stderr)
+            return True  # Continue anyway
+
+        data = response.json()
+    except Exception as e:
+        print(f"Warning: pull failed: {e}", file=sys.stderr)
+        return True  # Continue anyway
+
+    changed_files = data.get("files", {})
+    deleted_files = data.get("deleted", [])
+    manifest_files = data.get("manifest_files", {})
+
+    # Separate truly new files (not on local disk) from files that differ
+    new_files = {}
+    for repo_path, content in changed_files.items():
+        if repo_path.startswith(repo_prefix + "/"):
+            rel = repo_path[len(repo_prefix) + 1:]
+        elif repo_path.startswith(repo_prefix):
+            rel = repo_path[len(repo_prefix):]
+        else:
+            rel = repo_path
+        check_path = local_root / rel
+        if not check_path.exists():
+            new_files[repo_path] = content
+
+    # Only count actionable changes: new files, manifest updates, deletions
+    total_changes = len(new_files) + len(deleted_files) + len(manifest_files)
+    if total_changes == 0:
+        return True  # Silently continue — local files are fine
+
+    # Show summary
+    print(f"Server has updates ({total_changes} file(s)):")
+    if new_files:
+        print(f"  {len(new_files)} new file(s) from server")
+    if deleted_files:
+        print(f"  {len(deleted_files)} file(s) deleted on server")
+    if manifest_files:
+        print(f"  {len(manifest_files)} manifest file(s)")
+
+    # Ask for confirmation
+    try:
+        answer = input("Pull server updates to local? [Y/n] ").strip().lower()
+        if answer and answer not in ("y", "yes"):
+            print("Pull declined. Aborting.", file=sys.stderr)
+            return False
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.", file=sys.stderr)
+        return False
+
+    # Write changed files — only files that are NEW on server (not present locally).
+    # Files that exist locally and differ are intentional local edits about to be pushed.
+    written = 0
+    for repo_path, content in changed_files.items():
+        if repo_path.startswith(repo_prefix + "/"):
+            rel = repo_path[len(repo_prefix) + 1:]
+        elif repo_path.startswith(repo_prefix):
+            rel = repo_path[len(repo_prefix):]
+        else:
+            rel = repo_path
+        local_path = local_root / rel
+        if local_path.exists():
+            # File exists locally — user may have intentionally modified it.
+            # Don't overwrite; their version will be pushed.
+            continue
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text(content, encoding="utf-8")
+        written += 1
+
+    # Write manifest files — always authoritative from server
+    # Write to the .bifrost/ directory (may be above local_root at workspace root)
+    manifest_dir = bifrost_dir if bifrost_dir.exists() else local_root / ".bifrost"
+    for filename, content in manifest_files.items():
+        local_path = manifest_dir / filename
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text(content, encoding="utf-8")
+        written += 1
+
+    # Delete files that were removed on server
+    for repo_path in deleted_files:
+        if repo_path.startswith(repo_prefix + "/"):
+            rel = repo_path[len(repo_prefix) + 1:]
+        elif repo_path.startswith(repo_prefix):
+            rel = repo_path[len(repo_prefix):]
+        else:
+            rel = repo_path
+        local_path = local_root / rel
+        if local_path.exists():
+            local_path.unlink()
+            written += 1
+
+    print(f"  Pulled {written} file(s) from server.")
+    return True
 
 
 async def _push_files(local_path: str, clean: bool = False, validate: bool = False) -> int:
@@ -1112,44 +1429,19 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
         print(f"Error: path is not a directory: {local_path}", file=sys.stderr)
         return 1
 
-    # Determine repo prefix from path structure
-    # Look for known top-level dirs (apps, workflows, modules, agents, forms) in the path
-    # e.g., "/home/user/workspace/apps/my-app" -> "apps/my-app"
-    # e.g., "/home/user/workspace/workflows" -> "workflows"
-    parts = path.parts
-    repo_prefix = None
-    known_roots = {"apps", "workflows", "modules", "agents", "forms"}
-    for i, part in enumerate(parts):
-        if part in known_roots:
-            repo_prefix = "/".join(parts[i:])
-            break
-
-    if repo_prefix is None:
-        # Fallback: use the directory name itself
-        repo_prefix = path.name
-        print(f"Warning: could not detect repo prefix from path. Using '{repo_prefix}'.", file=sys.stderr)
-        print("  Hint: path should contain apps/, workflows/, modules/, etc.", file=sys.stderr)
+    repo_prefix = _detect_repo_prefix(path)
 
     # Walk the directory and collect files
     files: dict[str, str] = {}
     skipped = 0
 
-    # Binary file extensions to skip
-    binary_extensions = {
-        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
-        ".woff", ".woff2", ".ttf", ".eot",
-        ".zip", ".tar", ".gz", ".bz2",
-        ".pyc", ".pyo", ".so", ".dll",
-        ".exe", ".bin",
-    }
-
     for file_path in sorted(path.rglob("*")):
         if file_path.is_dir():
             continue
 
-        # Skip hidden files and common non-content files
+        # Skip hidden files and common non-content files (but allow .bifrost/)
         rel_parts = file_path.relative_to(path).parts
-        if any(part.startswith(".") for part in rel_parts):
+        if any(part.startswith(".") and part != ".bifrost" for part in rel_parts):
             continue
         if file_path.name in ("__pycache__", ".DS_Store", "node_modules"):
             continue
@@ -1157,7 +1449,7 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
             continue
 
         # Skip binary files
-        if file_path.suffix.lower() in binary_extensions:
+        if file_path.suffix.lower() in BINARY_EXTENSIONS:
             skipped += 1
             continue
 
@@ -1172,6 +1464,16 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
     if not files:
         print("No files found to push.", file=sys.stderr)
         return 1
+
+    # Local manifest validation before push
+    bifrost_files = {k: v for k, v in files.items() if ".bifrost/" in k or ".bifrost\\" in k}
+    if bifrost_files:
+        validation_errors = _validate_manifest_locally(bifrost_files)
+        if validation_errors:
+            print("Manifest validation errors (push skipped):", file=sys.stderr)
+            for err in validation_errors:
+                print(f"  - {err}", file=sys.stderr)
+            return 1
 
     print(f"Pushing {len(files)} file(s) to {repo_prefix}/...")
     if skipped:
@@ -1201,6 +1503,19 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
         print(f"\n  Errors ({len(result['errors'])}):")
         for error in result["errors"]:
             print(f"    - {error}")
+
+    # Print warnings from server (diagnostics, manifest import)
+    if result.get("warnings"):
+        print(f"\n  Warnings ({len(result['warnings'])}):")
+        for warning in result["warnings"]:
+            print(f"    - {warning}")
+
+    # Write back manifest files and modified files from server response
+    if result.get("manifest_files") or result.get("modified_files"):
+        _write_back_server_files(path, repo_prefix, result)
+
+    if result.get("manifest_applied"):
+        print("  Manifest applied to platform.")
 
     # Validate if requested
     if validate and repo_prefix.startswith("apps/"):
