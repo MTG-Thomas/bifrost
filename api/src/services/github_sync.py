@@ -14,6 +14,7 @@ Key principles:
 import hashlib
 import logging
 import subprocess
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -86,6 +87,204 @@ def _walk_tree(root: Path) -> dict[str, bytes]:
             continue
         files[rel] = p.read_bytes()
     return files
+
+
+# =============================================================================
+# Standalone manifest import (no git, reads from S3)
+# =============================================================================
+
+@dataclass
+class ManifestImportResult:
+    """Result of importing manifest from repo."""
+    applied: bool = False
+    warnings: list[str] = field(default_factory=list)
+    manifest_files: dict[str, str] = field(default_factory=dict)
+    modified_files: dict[str, str] = field(default_factory=dict)
+
+
+async def import_manifest_from_repo(db: AsyncSession) -> ManifestImportResult:
+    """Import manifest from S3 _repo/.bifrost/ into DB.
+
+    Standalone function (not a method on GitHubSyncService) that:
+    1. Reads .bifrost/*.yaml from S3 via RepoStorage
+    2. Parses with parse_manifest_dir()
+    3. Validates with validate_manifest()
+    4. Resolves entities to DB using GitHubSyncService.plan_import
+    5. Runs indexer side-effects for forms/agents
+    6. Regenerates manifest from DB
+    7. Returns ManifestImportResult
+    """
+    from src.services.repo_storage import RepoStorage
+    from src.services.manifest import (
+        MANIFEST_FILES,
+        parse_manifest_dir,
+        serialize_manifest_dir,
+        validate_manifest,
+    )
+    from src.services.manifest_generator import generate_manifest
+
+    result = ManifestImportResult()
+    repo = RepoStorage()
+
+    # 1. Read .bifrost/*.yaml from S3
+    manifest_yaml_files: dict[str, str] = {}
+    for _entity_type, filename in MANIFEST_FILES.items():
+        s3_path = f".bifrost/{filename}"
+        try:
+            content = await repo.read(s3_path)
+            manifest_yaml_files[filename] = content.decode("utf-8")
+        except Exception:
+            pass  # File doesn't exist in S3, skip
+
+    if not manifest_yaml_files:
+        result.warnings.append("No .bifrost/ manifest files found in repo")
+        return result
+
+    # 2. Parse
+    try:
+        manifest = parse_manifest_dir(manifest_yaml_files)
+    except Exception as e:
+        result.warnings.append(f"Failed to parse manifest: {e}")
+        return result
+
+    # 3. Validate
+    validation_errors = validate_manifest(manifest)
+    if validation_errors:
+        result.warnings.extend(validation_errors)
+        return result
+
+    # 4. Create a temporary directory structure for plan_import
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        work_dir = Path(tmp_dir)
+
+        # Write manifest files to temp .bifrost/
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir()
+        for filename, file_content in manifest_yaml_files.items():
+            (bifrost_dir / filename).write_text(file_content)
+
+        # Download workflow/form/agent source files from S3 to temp dir
+        for _wf_name, mwf in manifest.workflows.items():
+            local_path = work_dir / mwf.path
+            try:
+                content_bytes = await repo.read(mwf.path)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(content_bytes)
+            except Exception:
+                pass
+
+        for _form_name, mform in manifest.forms.items():
+            local_path = work_dir / mform.path
+            try:
+                content_bytes = await repo.read(mform.path)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(content_bytes)
+            except Exception:
+                pass
+
+        for _agent_name, magent in manifest.agents.items():
+            local_path = work_dir / magent.path
+            try:
+                content_bytes = await repo.read(magent.path)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(content_bytes)
+            except Exception:
+                pass
+
+        # 5. Run entity resolution via GitHubSyncService
+        service = GitHubSyncService(db, repo_url="", branch="main")
+
+        try:
+            await service.plan_import(manifest, work_dir)
+
+            # Run indexer side-effects (same as _import_all_entities)
+            from src.services.file_storage.indexers.form import FormIndexer
+            form_indexer = FormIndexer(db)
+            for _form_name, mform in manifest.forms.items():
+                form_path = work_dir / mform.path
+                if form_path.exists():
+                    content_bytes = form_path.read_bytes()
+                    original_data = yaml.safe_load(content_bytes.decode("utf-8"))
+                    if original_data:
+                        data = dict(original_data)
+                        data["id"] = mform.id
+                        await service._resolve_ref_field(data, "workflow_id")
+                        await service._resolve_ref_field(data, "launch_workflow_id")
+                        updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                        await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
+
+                        # Only mark as modified if data actually changed (not just formatting)
+                        if data != original_data:
+                            result.modified_files[mform.path] = updated_content.decode("utf-8")
+
+                        # Post-indexer: update org_id and access_level
+                        from sqlalchemy import update as sa_update
+                        from src.models.orm.forms import Form
+                        org_id_uuid = UUID(mform.organization_id) if mform.organization_id else None
+                        form_id_uuid = UUID(mform.id)
+                        post_values: dict = {}
+                        if org_id_uuid:
+                            post_values["organization_id"] = org_id_uuid
+                        if mform.access_level:
+                            post_values["access_level"] = mform.access_level
+                        if post_values:
+                            post_values["updated_at"] = datetime.now(timezone.utc)
+                            await db.execute(
+                                sa_update(Form).where(Form.id == form_id_uuid).values(**post_values)
+                            )
+
+            from src.services.file_storage.indexers.agent import AgentIndexer
+            agent_indexer = AgentIndexer(db)
+            for _agent_name, magent in manifest.agents.items():
+                agent_path = work_dir / magent.path
+                if agent_path.exists():
+                    content_bytes = agent_path.read_bytes()
+                    original_data = yaml.safe_load(content_bytes.decode("utf-8"))
+                    if original_data:
+                        data = dict(original_data)
+                        data["id"] = magent.id
+                        await service._resolve_ref_field(data, "tool_ids")
+                        if "tools" in data and "tool_ids" not in data:
+                            await service._resolve_ref_field(data, "tools")
+                        updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                        await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
+
+                        # Only mark as modified if data actually changed (not just formatting)
+                        if data != original_data:
+                            result.modified_files[magent.path] = updated_content.decode("utf-8")
+
+                        # Post-indexer: update org_id and access_level
+                        from sqlalchemy import update as sa_update
+                        from src.models.orm.agents import Agent
+                        org_id_uuid = UUID(magent.organization_id) if magent.organization_id else None
+                        agent_id_uuid = UUID(magent.id)
+                        post_values_a: dict = {}
+                        if org_id_uuid:
+                            post_values_a["organization_id"] = org_id_uuid
+                        if magent.access_level:
+                            post_values_a["access_level"] = magent.access_level
+                        if post_values_a:
+                            post_values_a["updated_at"] = datetime.now(timezone.utc)
+                            await db.execute(
+                                sa_update(Agent).where(Agent.id == agent_id_uuid).values(**post_values_a)
+                            )
+
+            result.applied = True
+
+        except Exception as e:
+            result.warnings.append(f"Entity resolution failed: {e}")
+            logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)
+
+    # 6. Regenerate manifest from DB
+    try:
+        new_manifest = await generate_manifest(db)
+        result.manifest_files = serialize_manifest_dir(new_manifest)
+    except Exception as e:
+        result.warnings.append(f"Manifest regeneration failed: {e}")
+
+    return result
 
 
 # =============================================================================
@@ -895,7 +1094,7 @@ class GitHubSyncService:
         """
         return []
 
-    async def _plan_import(self, manifest: "Manifest", work_dir: Path) -> "list[SyncOp]":
+    async def plan_import(self, manifest: "Manifest", work_dir: Path) -> "list[SyncOp]":
         """Build and execute SyncOps for importing a manifest (entities only).
 
         Resolves and immediately executes ops in dependency order.
@@ -1007,7 +1206,7 @@ class GitHubSyncService:
     async def _import_all_entities(self, work_dir: Path) -> int:
         """Import all entities from the working tree into the DB.
 
-        Delegates to _plan_import which resolves and immediately executes ops,
+        Delegates to plan_import which resolves and immediately executes ops,
         then runs indexer side-effects for workflows, forms, and agents.
 
         Import order follows dependency chain:
@@ -1040,8 +1239,8 @@ class GitHubSyncService:
 
         count = 0
 
-        # Run all resolve ops (including immediate execution inside _plan_import)
-        await self._plan_import(manifest, work_dir)
+        # Run all resolve ops (including immediate execution inside plan_import)
+        await self.plan_import(manifest, work_dir)
 
         # Count imported entities
         count += len(manifest.organizations)

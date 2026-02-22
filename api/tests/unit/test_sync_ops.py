@@ -837,15 +837,15 @@ class TestManifestFieldCoverage:
         )
 
     def test_plan_import_method_exists(self) -> None:
-        """_plan_import must exist and be callable."""
+        """plan_import must exist and be callable."""
         from src.services.github_sync import GitHubSyncService
         import inspect
 
-        assert hasattr(GitHubSyncService, "_plan_import"), (
-            "_plan_import method is missing from GitHubSyncService"
+        assert hasattr(GitHubSyncService, "plan_import"), (
+            "plan_import method is missing from GitHubSyncService"
         )
-        assert inspect.iscoroutinefunction(GitHubSyncService._plan_import), (
-            "_plan_import must be an async method"
+        assert inspect.iscoroutinefunction(GitHubSyncService.plan_import), (
+            "plan_import must be an async method"
         )
 
     def test_execute_ops_method_exists(self) -> None:
