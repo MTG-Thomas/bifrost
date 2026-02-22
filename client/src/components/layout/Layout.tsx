@@ -7,11 +7,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PasskeySetupBanner } from "@/components/PasskeySetupBanner";
 import { RouteErrorBoundary } from "@/components/PageErrorBoundary";
 import { useSidebar } from "@/hooks/useSidebar";
+import { useFileActivity } from "@/hooks/useFileActivity";
 
 export function Layout() {
 	const { isLoading, isPlatformAdmin, isOrgUser, hasRole } = useAuth();
 	const isEmbed = hasRole("EmbedUser");
 	const { isMobileMenuOpen, setIsMobileMenuOpen, isSidebarCollapsed, toggleSidebar } = useSidebar();
+	useFileActivity();
 
 	const hasAccess = isPlatformAdmin || isOrgUser || isEmbed;
 

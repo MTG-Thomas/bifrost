@@ -27,12 +27,12 @@
 |------|--------|--------|-------|
 | 1. Repo Dirty Flag | **DONE** | `fface2a8` | Unit + E2E tests pass |
 | 2. Activity Broadcast | **DONE** | `85a85e1d` | Unit test passes |
-| 3. CLI Push Pre-Check | **DONE** | `dfe6cbee` | `_watch_and_push` and `handle_api` not yet defined (Task 4/5) |
-| 4. CLI Watch Mode | TODO | | Implement `_watch_and_push`, extract `_do_push`, add watchdog dep |
-| 5. CLI `bifrost api` | TODO | | Implement `handle_api` |
-| 6. Frontend Store/Hook/WS | TODO | | Zustand store, WebSocket callback, hook |
-| 7. Header Indicator | TODO | | FileActivityIndicator component |
-| 8. Editor StatusBar | TODO | | Activity in StatusBar right-side div |
+| 3. CLI Push Pre-Check | **DONE** | `dfe6cbee` | Includes `_watch_and_push`, `_do_push`, `handle_api` |
+| 4. CLI Watch Mode | **DONE** | `dfe6cbee` | Implemented in Task 3 commit (watchdog, `_watch_and_push`, `_do_push`) |
+| 5. CLI `bifrost api` | **DONE** | `dfe6cbee` | Implemented in Task 3 commit (`handle_api`) |
+| 6. Frontend Store/Hook/WS | **DONE** | | Zustand store, WebSocket callback, hook — WS plumbing was already in place |
+| 7. Header Indicator | **DONE** | | FileActivityIndicator component + Header/Layout wiring |
+| 8. Editor StatusBar | **DONE** | | Activity in StatusBar right-side div |
 
 **Implementation notes from completed tasks:**
 - `get_shared_redis()` returns `decode_responses=True`, so values are `str` not `bytes`

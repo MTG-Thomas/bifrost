@@ -18,6 +18,17 @@ import type { Notification } from "@/stores/notificationStore";
 // Wait reasons for pending executions
 export type WaitReason = "queued" | "memory_pressure";
 
+// File activity events from CLI push/watch
+export interface FileActivityEvent {
+	type: "file_push" | "watch_start" | "watch_stop";
+	user_id: string;
+	user_name: string;
+	prefix: string;
+	file_count: number;
+	is_watch: boolean;
+	timestamp: string;
+}
+
 // App Builder live update types
 export interface AppDraftUpdate {
 	type: "app_draft_update";
@@ -380,7 +391,8 @@ type WebSocketMessage =
 	| AppDraftUpdate
 	| AppCodeFileUpdate
 	| AppPublishedUpdate
-	| PoolMessage;
+	| PoolMessage
+	| FileActivityEvent;
 
 // Notification payload from backend (snake_case)
 interface NotificationPayload {
@@ -431,6 +443,7 @@ type AppDraftUpdateCallback = (update: AppDraftUpdate) => void;
 type AppCodeFileUpdateCallback = (update: AppCodeFileUpdate) => void;
 type AppPublishedUpdateCallback = (update: AppPublishedUpdate) => void;
 type PoolMessageCallback = (message: PoolMessage) => void;
+type FileActivityCallback = (event: FileActivityEvent) => void;
 
 /**
  * Check if a JWT token is an embed token by inspecting its claims.
@@ -496,6 +509,7 @@ class WebSocketService {
 		Set<AppPublishedUpdateCallback>
 	>();
 	private poolMessageCallbacks = new Set<PoolMessageCallback>();
+	private fileActivityCallbacks = new Set<FileActivityCallback>();
 	private connectionStatusCallbacks = new Set<(connected: boolean) => void>();
 
 	// Track subscribed channels
@@ -842,6 +856,13 @@ class WebSocketService {
 
 			case "app_published":
 				this.dispatchAppPublished(message as AppPublishedUpdate);
+				break;
+
+			// File activity events from CLI push/watch
+			case "file_push":
+			case "watch_start":
+			case "watch_stop":
+				this.fileActivityCallbacks.forEach((cb) => cb(message as FileActivityEvent));
 				break;
 
 			// Pool/worker message types for diagnostics
@@ -1536,6 +1557,16 @@ class WebSocketService {
 		this.poolMessageCallbacks.add(callback);
 		return () => {
 			this.poolMessageCallbacks.delete(callback);
+		};
+	}
+
+	/**
+	 * Subscribe to file activity events (push/watch from CLI)
+	 */
+	onFileActivity(callback: FileActivityCallback): () => void {
+		this.fileActivityCallbacks.add(callback);
+		return () => {
+			this.fileActivityCallbacks.delete(callback);
 		};
 	}
 

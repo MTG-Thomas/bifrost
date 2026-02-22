@@ -29,6 +29,7 @@ import { NotificationCenter } from "@/components/layout/NotificationCenter";
 import { useProfile } from "@/hooks/useProfile";
 import { profileService } from "@/services/profile";
 import { webSocketService } from "@/services/websocket";
+import { FileActivityIndicator } from "@/components/layout/FileActivityIndicator";
 import { cn } from "@/lib/utils";
 
 interface HeaderProps {
@@ -196,6 +197,9 @@ export function Header({
 						)}
 					</Button>
 				)}
+
+				{/* File Activity Indicator (Platform Admin only) */}
+				{isPlatformAdmin && <FileActivityIndicator />}
 
 				{/* Notification Center */}
 				<div className="mr-2">

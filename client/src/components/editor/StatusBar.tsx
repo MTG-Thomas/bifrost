@@ -1,6 +1,7 @@
 import { useEditorStore } from "@/stores/editorStore";
 import { useWorkflowsStore } from "@/stores/workflowsStore";
 import { useUploadProgress } from "@/stores/uploadStore";
+import { useFileActivityStore } from "@/stores/fileActivityStore";
 import {
 	Circle,
 	Workflow,
@@ -8,9 +9,10 @@ import {
 	CheckCircle,
 	AlertCircle,
 	Lock,
+	Radio,
 	X,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Progress } from "@/components/ui/progress";
 import { isBifrostSystemFile } from "@/lib/file-filter";
 
@@ -26,6 +28,23 @@ export function StatusBar() {
 		resetState: resetUpload,
 		cancelUpload,
 	} = useUploadProgress();
+	const activeWatchers = useFileActivityStore((s) => s.activeWatchers);
+	const recentPushes = useFileActivityStore((s) => s.recentPushes);
+
+	// Tick every 30s to re-evaluate recency filtering
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		const timer = setInterval(() => setNow(Date.now()), 30_000);
+		return () => clearInterval(timer);
+	}, []);
+
+	// Most recent push in last 2 minutes
+	const latestPush = useMemo(() => {
+		const filtered = recentPushes.filter(
+			(p) => now - new Date(p.timestamp).getTime() < 120_000,
+		);
+		return filtered.length > 0 ? filtered[filtered.length - 1] : undefined;
+	}, [recentPushes, now]);
 
 	// Compute active tab from state
 	const activeTab =
@@ -182,6 +201,22 @@ export function StatusBar() {
 			</div>
 
 			<div className="flex items-center gap-4 shrink-0">
+				{/* CLI Watch Activity */}
+				{activeWatchers.length > 0 && (
+					<span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+						<Radio className="h-3 w-3 animate-pulse" />
+						{activeWatchers.length === 1
+							? `CLI watch (${activeWatchers[0].user_name})`
+							: `${activeWatchers.length} CLI watchers`}
+					</span>
+				)}
+				{!activeWatchers.length && latestPush && (
+					<span className="flex items-center gap-1 text-muted-foreground">
+						{latestPush.user_name} pushed {latestPush.file_count}{" "}
+						files to {latestPush.prefix}
+					</span>
+				)}
+
 				{/* Language */}
 				{selectedLanguage && (
 					<span className="capitalize">{selectedLanguage}</span>

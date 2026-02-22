@@ -926,6 +926,178 @@ async def _push_with_precheck(
         return await _push_files(local_path, clean=clean, validate=validate)
 
 
+async def _do_push(
+    files: dict[str, str],
+    delete_missing_prefix: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Push a files dict to the API. Returns the response JSON or None on error."""
+    client = BifrostClient.get_instance(require_auth=True)
+    payload: dict[str, Any] = {"files": files}
+    if delete_missing_prefix:
+        payload["delete_missing_prefix"] = delete_missing_prefix
+
+    try:
+        response = await client.post(
+            "/api/files/push",
+            json=payload,
+            headers=extra_headers or {},
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Push failed: {response.status_code}", file=sys.stderr)
+            if response.text:
+                print(response.text, file=sys.stderr)
+            return None
+    except Exception as e:
+        print(f"Push error: {e}", file=sys.stderr)
+        return None
+
+
+async def _watch_and_push(
+    local_path: str,
+    clean: bool,
+    validate: bool,
+    client: "BifrostClient",
+) -> int:
+    """Watch directory for changes and auto-push."""
+    import pathlib
+    import threading
+
+    from watchdog.events import FileSystemEvent, FileSystemEventHandler
+    from watchdog.observers import Observer
+
+    path = pathlib.Path(local_path).resolve()
+    if not path.exists() or not path.is_dir():
+        print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
+        return 1
+
+    # Determine repo_prefix (same logic as _push_files)
+    parts = path.parts
+    repo_prefix = None
+    known_roots = {"apps", "workflows", "modules", "agents", "forms"}
+    for i, part in enumerate(parts):
+        if part in known_roots:
+            repo_prefix = "/".join(parts[i:])
+            break
+    if repo_prefix is None:
+        repo_prefix = path.name
+
+    # Notify server: watch started
+    try:
+        await client.post("/api/files/watch", json={
+            "action": "start", "prefix": repo_prefix,
+        })
+    except Exception:
+        pass  # Non-fatal
+
+    # Initial full push (reuses existing _push_files)
+    print(f"Initial push of {path}...")
+    await _push_files(str(path), clean=clean, validate=validate)
+
+    # File change tracking
+    pending_changes: set[str] = set()
+    lock = threading.Lock()
+
+    binary_extensions = {
+        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+        ".woff", ".woff2", ".ttf", ".eot",
+        ".zip", ".tar", ".gz", ".bz2",
+        ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
+    }
+
+    class ChangeHandler(FileSystemEventHandler):
+        def on_any_event(self, event: FileSystemEvent) -> None:
+            if event.is_directory:
+                return
+            src = str(event.src_path)
+            rel_parts = pathlib.Path(src).relative_to(path).parts
+            # Skip hidden, __pycache__, node_modules, binary
+            if any(p.startswith(".") for p in rel_parts):
+                return
+            if any(p in ("__pycache__", "node_modules") for p in rel_parts):
+                return
+            if pathlib.Path(src).suffix.lower() in binary_extensions:
+                return
+            with lock:
+                pending_changes.add(src)
+
+    observer = Observer()
+    observer.schedule(ChangeHandler(), str(path), recursive=True)
+    observer.start()
+
+    print(f"Watching {path} for changes... (Ctrl+C to stop)")
+
+    heartbeat_interval = 60  # seconds
+    last_heartbeat = asyncio.get_event_loop().time()
+
+    try:
+        while True:
+            await asyncio.sleep(0.5)
+
+            # Debounce: collect changes
+            with lock:
+                if pending_changes:
+                    changes = pending_changes.copy()
+                    pending_changes.clear()
+                else:
+                    changes = set()
+
+            if changes:
+                # Build files dict from changed paths
+                push_files: dict[str, str] = {}
+                for abs_path_str in changes:
+                    abs_p = pathlib.Path(abs_path_str)
+                    if abs_p.exists():
+                        try:
+                            content = abs_p.read_text(encoding="utf-8")
+                            rel = abs_p.relative_to(path)
+                            repo_path = f"{repo_prefix}/{rel}"
+                            push_files[repo_path] = content
+                        except (UnicodeDecodeError, OSError):
+                            continue
+
+                if push_files:
+                    result = await _do_push(
+                        push_files,
+                        extra_headers={"X-Bifrost-Watch": "true"},
+                    )
+                    if result:
+                        parts_msg = []
+                        if result.get("created"):
+                            parts_msg.append(f"{result['created']} created")
+                        if result.get("updated"):
+                            parts_msg.append(f"{result['updated']} updated")
+                        if parts_msg:
+                            print(f"  [{datetime.now().strftime('%H:%M:%S')}] {', '.join(parts_msg)}")
+
+            # Heartbeat
+            now = asyncio.get_event_loop().time()
+            if now - last_heartbeat > heartbeat_interval:
+                try:
+                    await client.post("/api/files/watch", json={
+                        "action": "heartbeat", "prefix": repo_prefix,
+                    })
+                except Exception:
+                    pass
+                last_heartbeat = now
+
+    except KeyboardInterrupt:
+        print("\nStopping watch...")
+    finally:
+        observer.stop()
+        observer.join()
+        try:
+            await client.post("/api/files/watch", json={
+                "action": "stop", "prefix": repo_prefix,
+            })
+        except Exception:
+            pass
+
+    return 0
+
+
 async def _push_files(local_path: str, clean: bool = False, validate: bool = False) -> int:
     """Push local directory to Bifrost _repo/."""
     import pathlib
@@ -1005,86 +1177,143 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
     if skipped:
         print(f"  (skipped {skipped} binary file(s))")
 
-    # Get authenticated client
+    # Push files via _do_push helper
+    delete_prefix = repo_prefix if clean else None
+    result = await _do_push(files, delete_missing_prefix=delete_prefix)
+
+    if result is None:
+        return 1
+
+    # Print summary
+    summary_parts = []
+    if result.get("created"):
+        summary_parts.append(f"{result['created']} created")
+    if result.get("updated"):
+        summary_parts.append(f"{result['updated']} updated")
+    if result.get("deleted"):
+        summary_parts.append(f"{result['deleted']} deleted")
+    if result.get("unchanged"):
+        summary_parts.append(f"{result['unchanged']} unchanged")
+
+    print(f"  {', '.join(summary_parts) if summary_parts else 'No changes'}")
+
+    if result.get("errors"):
+        print(f"\n  Errors ({len(result['errors'])}):")
+        for error in result["errors"]:
+            print(f"    - {error}")
+
+    # Validate if requested
+    if validate and repo_prefix.startswith("apps/"):
+        slug = repo_prefix.split("/")[1] if "/" in repo_prefix else repo_prefix
+        print(f"\nValidating app '{slug}'...")
+
+        try:
+            client = BifrostClient.get_instance(require_auth=True)
+            # Look up app by slug
+            val_response = await client.get(f"/api/applications/{slug}")
+            if val_response.status_code == 200:
+                app_data = val_response.json()
+                app_id = app_data.get("id")
+                if app_id:
+                    val_result = await client.post(f"/api/applications/{app_id}/validate")
+                    if val_result.status_code == 200:
+                        val_data = val_result.json()
+                        if val_data.get("errors"):
+                            print(f"  Errors ({len(val_data['errors'])}):")
+                            for err in val_data["errors"]:
+                                print(f"    - [{err.get('severity', 'error')}] {err.get('message', err)}")
+                        elif val_data.get("warnings"):
+                            print(f"  Warnings ({len(val_data['warnings'])}):")
+                            for warn in val_data["warnings"]:
+                                print(f"    - {warn.get('message', warn)}")
+                        else:
+                            print("  No issues found.")
+                    else:
+                        print(f"  Validation failed: {val_result.status_code}", file=sys.stderr)
+            else:
+                print(f"  Could not find app '{slug}' for validation", file=sys.stderr)
+        except Exception as e:
+            print(f"  Validation error: {e}", file=sys.stderr)
+
+    return 0 if not result.get("errors") else 1
+
+
+def handle_api(args: list[str]) -> int:
+    """bifrost api <METHOD> <endpoint> [json-body]"""
+    if not args or args[0] in ("--help", "-h"):
+        print("""
+Usage: bifrost api <METHOD> <endpoint> [json-body]
+
+Make an authenticated API request to Bifrost.
+
+Arguments:
+  METHOD                HTTP method (GET, POST, PUT, PATCH, DELETE)
+  endpoint              API endpoint path (e.g., /api/workflows)
+  json-body             Optional JSON body (inline or @filename)
+
+Examples:
+  bifrost api GET /api/workflows
+  bifrost api GET /api/github/repo-status
+  bifrost api POST /api/applications/my-app/validate
+  bifrost api POST /api/files/push @payload.json
+""".strip())
+        return 0 if args and args[0] in ("--help", "-h") else 1
+
+    if len(args) < 2:
+        print("Usage: bifrost api <METHOD> <endpoint> [json-body]", file=sys.stderr)
+        return 1
+
+    method = args[0].upper()
+    endpoint = args[1]
+    body = None
+
+    if len(args) > 2:
+        import pathlib
+        raw = args[2]
+        # Support @filename for reading body from file
+        if raw.startswith("@"):
+            try:
+                body = json.loads(pathlib.Path(raw[1:]).read_text())
+            except Exception as e:
+                print(f"Error reading file: {e}", file=sys.stderr)
+                return 1
+        else:
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError as e:
+                print(f"Invalid JSON: {e}", file=sys.stderr)
+                return 1
+
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        print(f"Unsupported method: {method}", file=sys.stderr)
+        return 1
+
+    return asyncio.run(_api_request(method, endpoint, body))
+
+
+async def _api_request(method: str, endpoint: str, body: Any | None) -> int:
     try:
         client = BifrostClient.get_instance(require_auth=True)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    # Push files
-    payload: dict[str, Any] = {"files": files}
-    if clean:
-        payload["delete_missing_prefix"] = repo_prefix
+    http_fn = getattr(client, method.lower())
+    kwargs: dict[str, Any] = {}
+    if body is not None:
+        kwargs["json"] = body
 
     try:
-        response = await client.post("/api/files/push", json=payload)
-
-        if response.status_code != 200:
-            print(f"Error: server returned {response.status_code}", file=sys.stderr)
-            try:
-                detail = response.json().get("detail", response.text)
-                print(f"  {detail}", file=sys.stderr)
-            except Exception:
-                print(f"  {response.text}", file=sys.stderr)
-            return 1
-
-        result = response.json()
-
-        # Print summary
-        parts = []
-        if result.get("created"):
-            parts.append(f"{result['created']} created")
-        if result.get("updated"):
-            parts.append(f"{result['updated']} updated")
-        if result.get("deleted"):
-            parts.append(f"{result['deleted']} deleted")
-        if result.get("unchanged"):
-            parts.append(f"{result['unchanged']} unchanged")
-
-        print(f"  {', '.join(parts) if parts else 'No changes'}")
-
-        if result.get("errors"):
-            print(f"\n  Errors ({len(result['errors'])}):")
-            for error in result["errors"]:
-                print(f"    - {error}")
-
-        # Validate if requested
-        if validate and repo_prefix.startswith("apps/"):
-            slug = repo_prefix.split("/")[1] if "/" in repo_prefix else repo_prefix
-            print(f"\nValidating app '{slug}'...")
-
-            try:
-                # Look up app by slug
-                val_response = await client.get(f"/api/applications/{slug}")
-                if val_response.status_code == 200:
-                    app_data = val_response.json()
-                    app_id = app_data.get("id")
-                    if app_id:
-                        val_result = await client.post(f"/api/applications/{app_id}/validate")
-                        if val_result.status_code == 200:
-                            val_data = val_result.json()
-                            if val_data.get("errors"):
-                                print(f"  Errors ({len(val_data['errors'])}):")
-                                for err in val_data["errors"]:
-                                    print(f"    - [{err.get('severity', 'error')}] {err.get('message', err)}")
-                            elif val_data.get("warnings"):
-                                print(f"  Warnings ({len(val_data['warnings'])}):")
-                                for warn in val_data["warnings"]:
-                                    print(f"    - {warn.get('message', warn)}")
-                            else:
-                                print("  No issues found.")
-                        else:
-                            print(f"  Validation failed: {val_result.status_code}", file=sys.stderr)
-                else:
-                    print(f"  Could not find app '{slug}' for validation", file=sys.stderr)
-            except Exception as e:
-                print(f"  Validation error: {e}", file=sys.stderr)
-
-        return 0 if not result.get("errors") else 1
-
+        response = await http_fn(endpoint, **kwargs)
+        # Pretty-print response
+        try:
+            data = response.json()
+            print(json.dumps(data, indent=2, default=str))
+        except Exception:
+            print(response.text)
+        return 0 if response.status_code < 400 else 1
     except httpx.ConnectError:
-        print("Error: could not connect to Bifrost API. Is the server running?", file=sys.stderr)
+        print("Error: could not connect to Bifrost API.", file=sys.stderr)
         return 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
