@@ -906,17 +906,10 @@ async def _check_repo_status(client: BifrostClient) -> bool:
         if data.get("dirty"):
             since = data.get("dirty_since", "unknown")
             print(f"Platform has uncommitted changes (since {since}).", file=sys.stderr)
-            print("  You can pull the latest server state to reconcile,", file=sys.stderr)
-            print("  or run 'bifrost sync' to commit first.", file=sys.stderr)
-            try:
-                answer = input("Pull server changes and continue? [Y/n] ").strip().lower()
-                if answer and answer not in ("y", "yes"):
-                    return False
-                # Caller (_push_with_precheck) will run _pull_from_server next
-                return True
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborted.", file=sys.stderr)
-                return False
+            print("  Run 'bifrost sync' to commit platform changes first,", file=sys.stderr)
+            print("  then 'git pull' locally to get them.", file=sys.stderr)
+            print("  Or use --force to push anyway (platform changes will be overwritten).", file=sys.stderr)
+            return False
 
         return True
     except Exception as e:
