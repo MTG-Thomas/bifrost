@@ -2296,6 +2296,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pull Files
+         * @description Pull files from server that differ from local state.
+         *
+         *     Compares local file hashes against S3 content.
+         *     Always includes regenerated .bifrost/*.yaml from DB.
+         */
+        post: operations["pull_files_api_files_pull_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Manifest
+         * @description Return regenerated manifest files from DB state.
+         */
+        get: operations["get_manifest_api_files_manifest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/watch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Manage Watch Session
+         * @description Register, heartbeat, or deregister a CLI watch session.
+         */
+        post: operations["manage_watch_session_api_files_watch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/watchers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Active Watchers
+         * @description List active CLI watch sessions.
+         */
+        get: operations["list_active_watchers_api_files_watchers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/editor": {
         parameters: {
             query?: never;
@@ -2761,6 +2844,26 @@ export interface paths {
          * @description Get current GitHub repository connection and sync status
          */
         get: operations["get_github_status_api_github_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/repo-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fast repo status for CLI push pre-check
+         * @description Check if platform has uncommitted changes and if git is configured
+         */
+        get: operations["get_repo_status_api_github_repo_status_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3316,22 +3419,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4068,6 +4171,75 @@ export interface paths {
          * @description Delete a document via SDK.
          */
         post: operations["cli_delete_document_api_cli_tables_documents_delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cli/tables/documents/insert/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch insert documents
+         * @description Batch insert documents into a table via SDK.
+         *
+         *     Auto-creates the table if it doesn't exist.
+         *     All documents are inserted atomically — if any ID conflicts, the entire batch rolls back.
+         */
+        post: operations["cli_insert_documents_batch_api_cli_tables_documents_insert_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cli/tables/documents/upsert/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch upsert documents
+         * @description Batch upsert (create or replace) documents via SDK.
+         *
+         *     Auto-creates the table if it doesn't exist.
+         *     Uses atomic INSERT ... ON CONFLICT DO UPDATE for each document.
+         */
+        post: operations["cli_upsert_documents_batch_api_cli_tables_documents_upsert_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cli/tables/documents/delete/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch delete documents
+         * @description Batch delete documents via SDK.
+         *
+         *     Returns the IDs of documents that were actually deleted.
+         *     Non-existent IDs are silently skipped.
+         */
+        post: operations["cli_delete_documents_batch_api_cli_tables_documents_delete_batch_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -11024,6 +11196,49 @@ export interface components {
          */
         FileMode: "draft" | "live";
         /**
+         * FilePullRequest
+         * @description Request to pull files from server.
+         */
+        FilePullRequest: {
+            /**
+             * Prefix
+             * @description Repo prefix to pull from
+             */
+            prefix: string;
+            /**
+             * Local Hashes
+             * @description Map of path to sha256 hash
+             */
+            local_hashes?: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * FilePullResponse
+         * @description Response for file pull.
+         */
+        FilePullResponse: {
+            /**
+             * Files
+             * @description Map of path to content for changed files
+             */
+            files?: {
+                [key: string]: string;
+            };
+            /**
+             * Deleted
+             * @description Paths that exist locally but not on server
+             */
+            deleted?: string[];
+            /**
+             * Manifest Files
+             * @description Regenerated .bifrost/*.yaml
+             */
+            manifest_files?: {
+                [key: string]: string;
+            };
+        };
+        /**
          * FilePushRequest
          * @description Request to push multiple files to _repo/.
          */
@@ -11068,6 +11283,21 @@ export interface components {
             unchanged: number;
             /** Errors */
             errors?: string[];
+            /** Warnings */
+            warnings?: string[];
+            /**
+             * Manifest Applied
+             * @default false
+             */
+            manifest_applied: boolean;
+            /** Manifest Files */
+            manifest_files?: {
+                [key: string]: string;
+            };
+            /** Modified Files */
+            modified_files?: {
+                [key: string]: string;
+            };
         };
         /**
          * FileReadRequest
@@ -15193,6 +15423,11 @@ export interface components {
              * @description Name of the decorated function to register
              */
             function_name: string;
+            /**
+             * Organization Id
+             * @description Organization ID to scope the workflow to, or null for global scope
+             */
+            organization_id?: string | null;
         };
         /**
          * RegisterWorkflowResponse
@@ -15229,6 +15464,11 @@ export interface components {
              * @description Workflow description
              */
             description?: string | null;
+            /**
+             * Organization Id
+             * @description Organization ID if org-scoped, null for global
+             */
+            organization_id?: string | null;
         };
         /**
          * ReimportJobResponse
@@ -15298,6 +15538,27 @@ export interface components {
              * @description New file path for the workflow
              */
             new_path: string;
+        };
+        /**
+         * RepoStatusResponse
+         * @description Fast repo status check for CLI push pre-check.
+         */
+        RepoStatusResponse: {
+            /**
+             * Git Configured
+             * @description Whether GitHub integration is configured
+             */
+            git_configured: boolean;
+            /**
+             * Dirty
+             * @description Whether platform has uncommitted changes
+             */
+            dirty: boolean;
+            /**
+             * Dirty Since
+             * @description ISO timestamp when repo became dirty
+             */
+            dirty_since?: string | null;
         };
         /**
          * ResolveRequest
@@ -15507,6 +15768,38 @@ export interface components {
             user_ids: string[];
         };
         /**
+         * SDKBatchDeleteResponse
+         * @description Batch delete response.
+         */
+        SDKBatchDeleteResponse: {
+            /**
+             * Deleted Ids
+             * @description IDs of deleted documents
+             */
+            deleted_ids: string[];
+            /**
+             * Count
+             * @description Number of documents deleted
+             */
+            count: number;
+        };
+        /**
+         * SDKBatchDocumentResponse
+         * @description Batch insert/upsert response.
+         */
+        SDKBatchDocumentResponse: {
+            /**
+             * Documents
+             * @description Created/updated documents
+             */
+            documents: components["schemas"]["SDKDocumentData"][];
+            /**
+             * Count
+             * @description Number of documents affected
+             */
+            count: number;
+        };
+        /**
          * SDKDocumentCountRequest
          * @description SDK request for counting documents.
          */
@@ -15568,6 +15861,32 @@ export interface components {
             updated_at: string;
         };
         /**
+         * SDKDocumentDeleteBatchRequest
+         * @description SDK request for batch deleting documents.
+         */
+        SDKDocumentDeleteBatchRequest: {
+            /**
+             * Table
+             * @description Table name
+             */
+            table: string;
+            /**
+             * Doc Ids
+             * @description Document IDs to delete (max 1000)
+             */
+            doc_ids: string[];
+            /**
+             * Scope
+             * @description Organization scope
+             */
+            scope?: string | null;
+            /**
+             * App
+             * @description Application UUID
+             */
+            app?: string | null;
+        };
+        /**
          * SDKDocumentDeleteRequest
          * @description SDK request for deleting a document.
          */
@@ -15608,6 +15927,50 @@ export interface components {
              * @description Document UUID
              */
             doc_id: string;
+            /**
+             * Scope
+             * @description Organization scope
+             */
+            scope?: string | null;
+            /**
+             * App
+             * @description Application UUID
+             */
+            app?: string | null;
+        };
+        /**
+         * SDKDocumentInsertBatchItem
+         * @description Single item in a batch insert request.
+         */
+        SDKDocumentInsertBatchItem: {
+            /**
+             * Id
+             * @description Document ID (optional, auto-generated if not provided)
+             */
+            id?: string | null;
+            /**
+             * Data
+             * @description Document data
+             */
+            data: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * SDKDocumentInsertBatchRequest
+         * @description SDK request for batch inserting documents.
+         */
+        SDKDocumentInsertBatchRequest: {
+            /**
+             * Table
+             * @description Table name
+             */
+            table: string;
+            /**
+             * Documents
+             * @description Documents to insert (max 1000)
+             */
+            documents: components["schemas"]["SDKDocumentInsertBatchItem"][];
             /**
              * Scope
              * @description Organization scope
@@ -15765,6 +16128,50 @@ export interface components {
             data: {
                 [key: string]: unknown;
             };
+            /**
+             * Scope
+             * @description Organization scope
+             */
+            scope?: string | null;
+            /**
+             * App
+             * @description Application UUID
+             */
+            app?: string | null;
+        };
+        /**
+         * SDKDocumentUpsertBatchItem
+         * @description Single item in a batch upsert request.
+         */
+        SDKDocumentUpsertBatchItem: {
+            /**
+             * Id
+             * @description Document ID (required for upsert)
+             */
+            id: string;
+            /**
+             * Data
+             * @description Document data
+             */
+            data: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * SDKDocumentUpsertBatchRequest
+         * @description SDK request for batch upserting documents.
+         */
+        SDKDocumentUpsertBatchRequest: {
+            /**
+             * Table
+             * @description Table name
+             */
+            table: string;
+            /**
+             * Documents
+             * @description Documents to upsert (max 1000)
+             */
+            documents: components["schemas"]["SDKDocumentUpsertBatchItem"][];
             /**
              * Scope
              * @description Organization scope
@@ -17236,6 +17643,19 @@ export interface components {
              * @enum {string}
              */
             severity: "error" | "warning";
+        };
+        /**
+         * WatchSessionRequest
+         * @description Request to manage a CLI watch session.
+         */
+        WatchSessionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "start" | "stop" | "heartbeat";
+            /** Prefix */
+            prefix: string;
         };
         /**
          * WebhookAdapterInfo
@@ -21767,6 +22187,118 @@ export interface operations {
             };
         };
     };
+    pull_files_api_files_pull_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FilePullRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePullResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_manifest_api_files_manifest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    manage_watch_session_api_files_watch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_active_watchers_api_files_watchers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     list_files_editor_api_files_editor_get: {
         parameters: {
             query: {
@@ -22520,6 +23052,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GitRefreshStatusResponse"];
+                };
+            };
+        };
+    };
+    get_repo_status_api_github_repo_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoStatusResponse"];
                 };
             };
         };
@@ -23379,7 +23931,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -23412,7 +23964,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -23445,7 +23997,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -23478,7 +24030,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24712,6 +25264,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": boolean;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cli_insert_documents_batch_api_cli_tables_documents_insert_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKDocumentInsertBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKBatchDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cli_upsert_documents_batch_api_cli_tables_documents_upsert_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKDocumentUpsertBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKBatchDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cli_delete_documents_batch_api_cli_tables_documents_delete_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKDocumentDeleteBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKBatchDeleteResponse"];
                 };
             };
             /** @description Validation Error */
