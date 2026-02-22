@@ -1157,14 +1157,17 @@ async def _watch_and_push(
                         # Write back server files (pause watcher to avoid re-trigger)
                         if result.get("manifest_files") or result.get("modified_files"):
                             writeback_paused = True
+                            writeback_paths: set[str] = set()
                             try:
-                                _write_back_server_files(path, repo_prefix, result)
+                                writeback_paths = _write_back_server_files(path, repo_prefix, result)
                             finally:
-                                # Brief sleep to let watcher drain queued events
+                                # Brief sleep to let watcher drain queued events from writeback
                                 await asyncio.sleep(0.2)
                                 with lock:
-                                    pending_changes.clear()
-                                    pending_deletes.clear()
+                                    # Only discard events caused by our writeback, not user edits
+                                    if writeback_paths:
+                                        pending_changes -= writeback_paths
+                                        pending_deletes -= writeback_paths
                                 writeback_paused = False
 
             # Heartbeat
@@ -1232,12 +1235,13 @@ def _write_back_server_files(
     local_root: pathlib.Path,
     repo_prefix: str,
     result: dict[str, Any],
-) -> None:
+) -> set[str]:
     """Write manifest_files and modified_files from server response back to local disk.
 
     Only writes files that actually differ from local content.
+    Returns set of absolute paths that were actually written (for watch mode event filtering).
     """
-    written = 0
+    written_paths: set[str] = set()
 
     manifest_dir = _find_bifrost_dir(local_root)
 
@@ -1253,7 +1257,7 @@ def _write_back_server_files(
             except OSError:
                 pass
         local_path.write_text(content, encoding="utf-8")
-        written += 1
+        written_paths.add(str(local_path))
 
     # Write back modified source files (e.g. forms/agents with resolved refs)
     for repo_path, content in result.get("modified_files", {}).items():
@@ -1273,10 +1277,12 @@ def _write_back_server_files(
                 pass
         local_path.parent.mkdir(parents=True, exist_ok=True)
         local_path.write_text(content, encoding="utf-8")
-        written += 1
+        written_paths.add(str(local_path))
 
-    if written:
-        print(f"  Wrote back {written} file(s) from server.")
+    if written_paths:
+        print(f"  Wrote back {len(written_paths)} file(s) from server.")
+
+    return written_paths
 
 
 async def _pull_from_server(
