@@ -1067,6 +1067,7 @@ async def _watch_and_push(
 
     # File change tracking
     pending_changes: set[str] = set()
+    pending_deletes: set[str] = set()
     lock = threading.Lock()
     writeback_paused = False  # Pause watcher during server file writeback
 
@@ -1086,7 +1087,12 @@ async def _watch_and_push(
             if pathlib.Path(src).suffix.lower() in BINARY_EXTENSIONS:
                 return
             with lock:
-                pending_changes.add(src)
+                if event.event_type == "deleted":
+                    pending_deletes.add(src)
+                    pending_changes.discard(src)
+                else:
+                    pending_changes.add(src)
+                    pending_deletes.discard(src)
 
     observer = Observer()
     observer.schedule(ChangeHandler(), str(path), recursive=True)
@@ -1103,13 +1109,16 @@ async def _watch_and_push(
 
             # Debounce: collect changes
             with lock:
-                if pending_changes:
+                if pending_changes or pending_deletes:
                     changes = pending_changes.copy()
+                    deletes = pending_deletes.copy()
                     pending_changes.clear()
+                    pending_deletes.clear()
                 else:
                     changes = set()
+                    deletes = set()
 
-            if changes:
+            if changes or deletes:
                 # Build files dict from changed paths
                 push_files: dict[str, str] = {}
                 for abs_path_str in changes:
@@ -1122,6 +1131,14 @@ async def _watch_and_push(
                             push_files[repo_path] = content
                         except (UnicodeDecodeError, OSError):
                             continue
+
+                # Log deletions (CLI push doesn't support individual file deletes)
+                for abs_path_str in deletes:
+                    abs_p = pathlib.Path(abs_path_str)
+                    if not abs_p.exists():  # Confirm actually deleted
+                        rel = abs_p.relative_to(path)
+                        ts = datetime.now().strftime('%H:%M:%S')
+                        print(f"  [{ts}] Deleted: {rel} (use 'bifrost push --clean' to sync deletions)", flush=True)
 
                 if push_files:
                     # Local manifest validation before push
@@ -1162,6 +1179,7 @@ async def _watch_and_push(
                                 await asyncio.sleep(0.2)
                                 with lock:
                                     pending_changes.clear()
+                                    pending_deletes.clear()
                                 writeback_paused = False
 
             # Heartbeat
