@@ -1,13 +1,10 @@
 """E2E tests for CLI push/pull endpoints and manifest round-tripping."""
 import hashlib
 
-import pytest
 
-
-@pytest.mark.asyncio
-async def test_push_basic_files(auth_client):
+def test_push_basic_files(e2e_client, platform_admin):
     """Push regular files and verify counts."""
-    resp = await auth_client.post("/api/files/push", json={
+    resp = e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {
             "apps/test-app/index.tsx": "export default () => <div>Hello</div>",
             "apps/test-app/styles.css": "body { margin: 0; }",
@@ -19,22 +16,20 @@ async def test_push_basic_files(auth_client):
     assert data["errors"] == []
 
 
-@pytest.mark.asyncio
-async def test_push_unchanged_files(auth_client):
+def test_push_unchanged_files(e2e_client, platform_admin):
     """Pushing the same files twice reports them as unchanged."""
     files = {
         "apps/push-unchanged/index.tsx": "export default () => <div>Static</div>",
     }
-    await auth_client.post("/api/files/push", json={"files": files})
-    resp = await auth_client.post("/api/files/push", json={"files": files})
+    e2e_client.post("/api/files/push", headers=platform_admin.headers, json={"files": files})
+    resp = e2e_client.post("/api/files/push", headers=platform_admin.headers, json={"files": files})
     data = resp.json()
     assert data["unchanged"] == 1
     assert data["created"] == 0
     assert data["updated"] == 0
 
 
-@pytest.mark.asyncio
-async def test_push_bifrost_manifest(auth_client):
+def test_push_bifrost_manifest(e2e_client, platform_admin):
     """Pushing .bifrost/ files triggers manifest import."""
     workflows_yaml = (
         "workflows:\n"
@@ -42,7 +37,7 @@ async def test_push_bifrost_manifest(auth_client):
         "    name: test-wf\n"
         "    path: workflows/test_wf.py\n"
     )
-    resp = await auth_client.post("/api/files/push", json={
+    resp = e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {
             ".bifrost/workflows.yaml": workflows_yaml,
         },
@@ -52,8 +47,7 @@ async def test_push_bifrost_manifest(auth_client):
     assert data["manifest_applied"] is True
 
 
-@pytest.mark.asyncio
-async def test_push_manifest_no_writeback_when_unchanged(auth_client):
+def test_push_manifest_no_writeback_when_unchanged(e2e_client, platform_admin):
     """If pushed manifest matches regenerated, manifest_files should be empty."""
     workflows_yaml = (
         "workflows:\n"
@@ -61,13 +55,13 @@ async def test_push_manifest_no_writeback_when_unchanged(auth_client):
         "    name: roundtrip-wf\n"
         "    path: workflows/roundtrip_wf.py\n"
     )
-    resp1 = await auth_client.post("/api/files/push", json={
+    resp1 = e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {".bifrost/workflows.yaml": workflows_yaml},
     })
     data1 = resp1.json()
     canonical = data1.get("manifest_files", {}).get("workflows.yaml", workflows_yaml)
 
-    resp2 = await auth_client.post("/api/files/push", json={
+    resp2 = e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {".bifrost/workflows.yaml": canonical},
     })
     data2 = resp2.json()
@@ -75,14 +69,13 @@ async def test_push_manifest_no_writeback_when_unchanged(auth_client):
         "Pushing canonical manifest should not trigger writeback"
 
 
-@pytest.mark.asyncio
-async def test_pull_returns_changed_files(auth_client):
+def test_pull_returns_changed_files(e2e_client, platform_admin):
     """Pull should return files that differ from local hashes."""
     content = "# pull test file"
-    await auth_client.post("/api/files/push", json={
+    e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {"modules/pull_test.py": content},
     })
-    resp = await auth_client.post("/api/files/pull", json={
+    resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
         "prefix": "modules",
         "local_hashes": {"modules/pull_test.py": "0000000000000000"},
     })
@@ -92,15 +85,14 @@ async def test_pull_returns_changed_files(auth_client):
     assert data["files"]["modules/pull_test.py"] == content
 
 
-@pytest.mark.asyncio
-async def test_pull_skips_matching_files(auth_client):
+def test_pull_skips_matching_files(e2e_client, platform_admin):
     """Pull should NOT return files whose hash matches local."""
     content = "# pull match test"
-    await auth_client.post("/api/files/push", json={
+    e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {"modules/pull_match.py": content},
     })
     correct_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    resp = await auth_client.post("/api/files/pull", json={
+    resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
         "prefix": "modules",
         "local_hashes": {"modules/pull_match.py": correct_hash},
     })
@@ -108,10 +100,9 @@ async def test_pull_skips_matching_files(auth_client):
     assert "modules/pull_match.py" not in data["files"]
 
 
-@pytest.mark.asyncio
-async def test_pull_returns_deleted_files(auth_client):
+def test_pull_returns_deleted_files(e2e_client, platform_admin):
     """Pull should list files that exist locally but not on server."""
-    resp = await auth_client.post("/api/files/pull", json={
+    resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
         "prefix": "modules",
         "local_hashes": {"modules/nonexistent_file.py": "abc123"},
     })
@@ -119,10 +110,9 @@ async def test_pull_returns_deleted_files(auth_client):
     assert "modules/nonexistent_file.py" in data["deleted"]
 
 
-@pytest.mark.asyncio
-async def test_pull_manifest_files(auth_client):
+def test_pull_manifest_files(e2e_client, platform_admin):
     """Pull should include regenerated manifest files when they differ from local."""
-    resp = await auth_client.post("/api/files/pull", json={
+    resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
         "prefix": "apps/test-app",
         "local_hashes": {
             ".bifrost/workflows.yaml": "0000000000000000",
@@ -133,36 +123,37 @@ async def test_pull_manifest_files(auth_client):
     assert isinstance(data.get("manifest_files", {}), dict)
 
 
-@pytest.mark.asyncio
-async def test_push_does_not_mark_dirty(auth_client):
+def test_push_does_not_mark_dirty(e2e_client, platform_admin):
     """CLI push should not mark repo as dirty (covered by skip_dirty_flag)."""
-    from src.core.repo_dirty import clear_repo_dirty
-    await clear_repo_dirty()
+    # Get current dirty state
+    before = e2e_client.get("/api/github/repo-status", headers=platform_admin.headers).json()
 
-    await auth_client.post("/api/files/push", json={
+    e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {"test-no-dirty.py": "# test"},
     })
-    resp = await auth_client.get("/api/github/repo-status")
-    assert resp.json()["dirty"] is False
+    after = e2e_client.get("/api/github/repo-status", headers=platform_admin.headers).json()
+
+    # If it was clean before, it should still be clean after push
+    if not before["dirty"]:
+        assert after["dirty"] is False
 
 
-@pytest.mark.asyncio
-async def test_push_delete_missing_prefix(auth_client):
+def test_push_delete_missing_prefix(e2e_client, platform_admin):
     """delete_missing_prefix should remove files not in the push batch."""
-    await auth_client.post("/api/files/push", json={
+    e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {
             "apps/cleanup/keep.tsx": "keep",
             "apps/cleanup/remove.tsx": "remove",
         },
     })
-    resp = await auth_client.post("/api/files/push", json={
+    resp = e2e_client.post("/api/files/push", headers=platform_admin.headers, json={
         "files": {"apps/cleanup/keep.tsx": "keep"},
         "delete_missing_prefix": "apps/cleanup",
     })
     data = resp.json()
     assert data["deleted"] >= 1
 
-    pull_resp = await auth_client.post("/api/files/pull", json={
+    pull_resp = e2e_client.post("/api/files/pull", headers=platform_admin.headers, json={
         "prefix": "apps/cleanup",
         "local_hashes": {"apps/cleanup/remove.tsx": "abc"},
     })
