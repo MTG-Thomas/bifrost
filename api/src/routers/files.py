@@ -20,6 +20,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import Context, CurrentSuperuser
+from src.models.contracts.files import (
+    FilePullRequest,
+    FilePullResponse,
+    FilePushRequest,
+    FilePushResponse,
+    WatchSessionRequest,
+)
 from src.core.database import get_db
 from src.models import (
     AffectedEntity,
@@ -105,23 +112,6 @@ class FileExistsResponse(BaseModel):
     """Response for file existence check."""
     exists: bool = Field(..., description="True if file exists")
 
-
-class FilePushRequest(BaseModel):
-    """Request to push multiple files to _repo/."""
-    files: dict[str, str] = Field(..., description="Map of repo_path to content")
-    delete_missing_prefix: str | None = Field(
-        default=None,
-        description="If set, delete files under this prefix not in the push batch",
-    )
-
-
-class FilePushResponse(BaseModel):
-    """Response for file push."""
-    created: int = 0
-    updated: int = 0
-    deleted: int = 0
-    unchanged: int = 0
-    errors: list[str] = Field(default_factory=list)
 
 
 # =============================================================================
@@ -283,10 +273,21 @@ async def push_files(
     unchanged = 0
     deleted = 0
     errors = []
+    warnings = []
 
+    # Partition files into .bifrost/ manifest files vs regular files
+    bifrost_files: dict[str, str] = {}
+    regular_files: dict[str, str] = {}
     for repo_path, content in request.files.items():
+        parts = repo_path.replace("\\", "/").split("/")
+        if ".bifrost" in parts:
+            bifrost_files[repo_path] = content
+        else:
+            regular_files[repo_path] = content
+
+    # Process regular files (existing logic)
+    for repo_path, content in regular_files.items():
         try:
-            # Check if file already exists with same content
             from src.models.orm.file_index import FileIndex
             from sqlalchemy import select
 
@@ -295,7 +296,6 @@ async def push_files(
             )
             existing_hash = existing.scalar_one_or_none()
 
-            # Compute hash of new content
             content_bytes = content.encode("utf-8")
             new_hash = hashlib.sha256(content_bytes).hexdigest()
 
@@ -304,12 +304,17 @@ async def push_files(
                 continue
 
             was_new = existing_hash is None
-            await file_storage.write_file(
+            write_result = await file_storage.write_file(
                 path=repo_path,
                 content=content_bytes,
                 updated_by=user.email or "cli",
                 skip_dirty_flag=True,
             )
+
+            # Collect diagnostics as warnings
+            if write_result.diagnostics:
+                for d in write_result.diagnostics:
+                    warnings.append(f"{repo_path}:{d.line or 0}: [{d.severity}] {d.message}")
 
             if was_new:
                 created += 1
@@ -320,7 +325,7 @@ async def push_files(
             logger.warning(f"Error pushing file {repo_path}: {e}")
             errors.append(f"{repo_path}: {str(e)}")
 
-    # Handle delete_missing_prefix
+    # Handle delete_missing_prefix (exclude .bifrost/ from deletion)
     if request.delete_missing_prefix:
         prefix = request.delete_missing_prefix
         if not prefix.endswith("/"):
@@ -336,12 +341,63 @@ async def push_files(
         push_paths = set(request.files.keys())
 
         for path_to_delete in existing_paths - push_paths:
+            # Don't delete .bifrost/ files via prefix cleanup
+            parts = path_to_delete.replace("\\", "/").split("/")
+            if ".bifrost" in parts:
+                continue
             try:
                 await file_storage.delete_file(path_to_delete)
                 deleted += 1
             except Exception as e:
                 logger.warning(f"Error deleting file {path_to_delete}: {e}")
                 errors.append(f"delete {path_to_delete}: {str(e)}")
+
+    # Process .bifrost/ manifest files
+    manifest_applied = False
+    manifest_files_response: dict[str, str] = {}
+    modified_files_response: dict[str, str] = {}
+
+    if bifrost_files:
+        from src.services.repo_storage import RepoStorage
+        from src.services.github_sync import import_manifest_from_repo
+
+        repo = RepoStorage()
+
+        # Write .bifrost/ files to S3 (not counted in created/updated tallies)
+        for repo_path, content in bifrost_files.items():
+            try:
+                content_bytes = content.encode("utf-8")
+                await repo.write(repo_path, content_bytes)
+            except Exception as e:
+                logger.warning(f"Error writing manifest file {repo_path}: {e}")
+                errors.append(f"{repo_path}: {str(e)}")
+
+        # Import manifest from repo (reads .bifrost/ from S3, resolves to DB)
+        try:
+            import_result = await import_manifest_from_repo(db)
+            manifest_applied = import_result.applied
+            warnings.extend(import_result.warnings)
+
+            # Only return manifest files that differ from what was pushed
+            pushed_hashes: dict[str, str] = {}
+            for rp, c in bifrost_files.items():
+                # Normalize key to just the filename (e.g. "workflows.yaml")
+                parts = rp.replace("\\", "/").split("/")
+                try:
+                    idx = parts.index(".bifrost")
+                    fname = "/".join(parts[idx + 1:])
+                    pushed_hashes[fname] = hashlib.sha256(c.encode("utf-8")).hexdigest()
+                except ValueError:
+                    pass
+            for filename, content in import_result.manifest_files.items():
+                regen_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if pushed_hashes.get(filename) != regen_hash:
+                    manifest_files_response[filename] = content
+
+            modified_files_response = import_result.modified_files
+        except Exception as e:
+            logger.warning(f"Error importing manifest: {e}")
+            warnings.append(f"Manifest import failed: {str(e)}")
 
     await db.commit()
 
@@ -369,18 +425,128 @@ async def push_files(
         deleted=deleted,
         unchanged=unchanged,
         errors=errors,
+        warnings=warnings,
+        manifest_applied=manifest_applied,
+        manifest_files=manifest_files_response,
+        modified_files=modified_files_response,
     )
+
+
+# =============================================================================
+# Pull & Manifest Endpoints (CLI-focused)
+# =============================================================================
+
+
+@router.post("/pull", response_model=FilePullResponse)
+async def pull_files(
+    request: FilePullRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> FilePullResponse:
+    """
+    Pull files from server that differ from local state.
+
+    Compares local file hashes against S3 content.
+    Always includes regenerated .bifrost/*.yaml from DB.
+    """
+    from src.services.repo_storage import RepoStorage
+    from src.services.manifest_generator import generate_manifest
+    from src.services.manifest import serialize_manifest_dir
+
+    repo = RepoStorage()
+    changed_files: dict[str, str] = {}
+    deleted_paths: list[str] = []
+
+    # List server files under prefix
+    prefix = request.prefix
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+
+    try:
+        server_paths = await repo.list(prefix)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {e}")
+
+    server_path_set = set(server_paths)
+    local_path_set = set(request.local_hashes.keys())
+
+    # Find files that differ or are new on server
+    for server_path in server_paths:
+        # Skip .bifrost/ files from S3 - we regenerate from DB below
+        parts = server_path.replace("\\", "/").split("/")
+        if ".bifrost" in parts:
+            continue
+
+        try:
+            content = await repo.read(server_path)
+            server_hash = hashlib.sha256(content).hexdigest()
+            local_hash = request.local_hashes.get(server_path)
+
+            if local_hash != server_hash:
+                try:
+                    changed_files[server_path] = content.decode("utf-8")
+                except UnicodeDecodeError:
+                    pass  # Skip binary files
+        except Exception as e:
+            logger.warning(f"Error reading {server_path}: {e}")
+
+    # Find files deleted on server (exist locally but not on server)
+    for local_path in local_path_set:
+        parts = local_path.replace("\\", "/").split("/")
+        if ".bifrost" in parts:
+            continue
+        if local_path not in server_path_set:
+            deleted_paths.append(local_path)
+
+    # Generate manifest from DB — only include files that differ from local
+    manifest_files: dict[str, str] = {}
+    try:
+        manifest = await generate_manifest(db)
+        all_manifest_files = serialize_manifest_dir(manifest)
+        for filename, content in all_manifest_files.items():
+            # Manifest files are stored under .bifrost/ prefix in local_hashes
+            # The CLI hashes them as e.g. "agents/.bifrost/workflows.yaml" or ".bifrost/workflows.yaml"
+            # Check all possible key formats
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            local_hash = None
+            for key_candidate in [
+                f".bifrost/{filename}",
+                f"{prefix}.bifrost/{filename}" if prefix else None,
+                f"{prefix.rstrip('/')}/.bifrost/{filename}" if prefix else None,
+            ]:
+                if key_candidate and key_candidate in request.local_hashes:
+                    local_hash = request.local_hashes[key_candidate]
+                    break
+            if local_hash != content_hash:
+                manifest_files[filename] = content
+    except Exception as e:
+        logger.warning(f"Error generating manifest: {e}")
+
+    return FilePullResponse(
+        files=changed_files,
+        deleted=deleted_paths,
+        manifest_files=manifest_files,
+    )
+
+
+@router.get("/manifest")
+async def get_manifest(
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Return regenerated manifest files from DB state."""
+    from src.services.manifest_generator import generate_manifest
+    from src.services.manifest import serialize_manifest_dir
+
+    manifest = await generate_manifest(db)
+    return serialize_manifest_dir(manifest)
 
 
 # =============================================================================
 # Watch Session Endpoints (CLI watch mode)
 # =============================================================================
-
-
-class WatchSessionRequest(BaseModel):
-    """Request to manage a CLI watch session."""
-    action: Literal["start", "stop", "heartbeat"]
-    prefix: str
 
 
 @router.post("/watch")

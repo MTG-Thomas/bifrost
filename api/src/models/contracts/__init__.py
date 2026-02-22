@@ -268,6 +268,15 @@ from src.models.contracts.editor import (
     WorkflowIdConflict,
 )
 
+# File Operations (CLI push/pull)
+from src.models.contracts.files import (
+    FilePullRequest,
+    FilePullResponse,
+    FilePushRequest,
+    FilePushResponse,
+    WatchSessionRequest,
+)
+
 # Common models
 from src.models.contracts.common import (
     BrandingSettings,
@@ -918,6 +927,12 @@ __all__ = [
     "RecycleProcessResponse",
     "StuckHistoryResponse",
     "StuckWorkflowStats",
+    # File Operations (CLI push/pull)
+    "FilePushRequest",
+    "FilePushResponse",
+    "FilePullRequest",
+    "FilePullResponse",
+    "WatchSessionRequest",
     # Export/Import
     "ExportMetadata",
     "KnowledgeExportFile",
