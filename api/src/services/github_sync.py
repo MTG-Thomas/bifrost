@@ -213,7 +213,7 @@ async def import_manifest_from_repo(db: AsyncSession) -> ManifestImportResult:
                             data["id"] = mform.id
                             await service._resolve_ref_field(data, "workflow_id")
                             await service._resolve_ref_field(data, "launch_workflow_id")
-                            updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
                             await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
 
                             # Only mark as modified if data actually changed (not just formatting)
@@ -249,7 +249,7 @@ async def import_manifest_from_repo(db: AsyncSession) -> ManifestImportResult:
                             await service._resolve_ref_field(data, "tool_ids")
                             if "tools" in data and "tool_ids" not in data:
                                 await service._resolve_ref_field(data, "tools")
-                            updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
                             await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
 
                             # Only mark as modified if data actually changed (not just formatting)
@@ -1266,7 +1266,7 @@ class GitHubSyncService:
                     # Resolve portable refs (path::function_name) to UUIDs
                     await self._resolve_ref_field(data, "workflow_id")
                     await self._resolve_ref_field(data, "launch_workflow_id")
-                    updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
                     await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
 
                     # Post-indexer: update org_id and access_level (indexer skips these)
@@ -1300,7 +1300,7 @@ class GitHubSyncService:
                     await self._resolve_ref_field(data, "tool_ids")
                     if "tools" in data and "tool_ids" not in data:
                         await self._resolve_ref_field(data, "tools")
-                    updated_content = yaml.dump(data, default_flow_style=False, sort_keys=False).encode("utf-8")
+                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
                     await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
 
                     # Post-indexer: update org_id and access_level (indexer skips these)
