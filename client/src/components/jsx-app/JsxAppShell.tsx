@@ -36,6 +36,7 @@ interface AppRenderResponse {
 	files: Array<{ path: string; code: string }>;
 	total: number;
 	dependencies?: Record<string, string>;
+	styles?: Record<string, string>;
 }
 
 interface JsxAppShellProps {
@@ -76,6 +77,7 @@ export function useJsxAppContext(): JsxAppContext {
 interface FetchResult {
 	files: AppCodeFile[];
 	dependencies: Record<string, string>;
+	styles: Record<string, string>;
 }
 
 async function fetchAppFiles(
@@ -101,6 +103,7 @@ async function fetchAppFiles(
 			compiled: f.code,
 		})),
 		dependencies: data.dependencies ?? {},
+		styles: data.styles ?? {},
 	};
 }
 
@@ -471,6 +474,7 @@ export function JsxAppShell({
 }: JsxAppShellProps) {
 	const [files, setFiles] = useState<AppCodeFile[] | null>(null);
 	const [externalDeps, setExternalDeps] = useState<Record<string, Record<string, unknown>>>({});
+	const [appStyles, setAppStyles] = useState<Record<string, string>>({});
 	const [error, setError] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const setAppContext = useAppBuilderStore((state) => state.setAppContext);
@@ -507,7 +511,7 @@ export function JsxAppShell({
 			setError(null);
 
 			try {
-				const { files: appFiles, dependencies } = await fetchAppFiles(appId, mode, controller.signal);
+				const { files: appFiles, dependencies, styles } = await fetchAppFiles(appId, mode, controller.signal);
 
 				if (controller.signal.aborted) return;
 
@@ -520,6 +524,7 @@ export function JsxAppShell({
 
 				setFiles(appFiles);
 				setExternalDeps(loadedDeps);
+				setAppStyles(styles || {});
 			} catch (err) {
 				if (controller.signal.aborted) return;
 				setError(
@@ -540,6 +545,21 @@ export function JsxAppShell({
 			controller.abort();
 		};
 	}, [appId, mode, updateCounter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+	// Inject app CSS styles into the document head
+	useEffect(() => {
+		const cssContent = Object.values(appStyles).join("\n");
+		if (!cssContent) return;
+
+		const styleEl = document.createElement("style");
+		styleEl.dataset.bifrostApp = appId;
+		styleEl.textContent = cssContent;
+		document.head.appendChild(styleEl);
+
+		return () => {
+			styleEl.remove();
+		};
+	}, [appStyles, appId]);
 
 	// Compute user component names from files list (memoized)
 	// Must be called before any conditional returns to satisfy React Hooks rules
