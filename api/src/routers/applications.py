@@ -617,6 +617,12 @@ async def get_application_or_404(
         is_superuser=ctx.user.is_platform_admin,
     )
     try:
+        if ctx.user.is_platform_admin:
+            # Slugs are globally unique — super admins can resolve across orgs
+            app = await repo.get_by_slug_global(slug)
+            if not app:
+                raise AccessDeniedError(f"Application '{slug}' not found")
+            return app
         return await repo.can_access(slug=slug)
     except AccessDeniedError:
         raise HTTPException(

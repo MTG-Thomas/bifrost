@@ -267,19 +267,19 @@ dependencies:
 
 Max 20 packages. Loaded at runtime from esm.sh CDN.
 
-### Sandbox Constraints
+### Runtime Environment
 
-Apps run in an isolated scope. You **cannot** access:
-- `window`, `document`, `fetch`, `XMLHttpRequest`
-- Node.js APIs
-- ES dynamic `import()`
+Apps run inside the Bifrost shell (not in an iframe). Browser globals (`window`, `document`, `fetch`, `ResizeObserver`, `MutationObserver`, etc.) are accessible — use them directly when needed. External npm packages that depend on DOM APIs (rich text editors, drag-and-drop libraries, charting with DOM measurement) work normally.
 
-Use `useWorkflowQuery`/`useWorkflowMutation` for data fetching (calls Bifrost workflows, which can access any external API).
+**Cannot use:**
+- ES dynamic `import()` — all dependencies must be declared in `app.yaml`
+- Node.js APIs (`fs`, `path`, `process`, etc.)
 
-### Layout Tips
+Use `useWorkflowQuery`/`useWorkflowMutation` for calling backend workflows. Use `fetch` directly for external HTTP calls that don't need backend logic.
 
-- `_layout.tsx`: Use `<Outlet />` with `h-full overflow-hidden` on root div
-- Scrollable pages: `flex flex-col h-full overflow-hidden` on page root, `shrink-0` on headers, `flex-1 min-h-0 overflow-auto` on scrollable content
+### Layout
+
+Your app renders in a fixed-height container. The platform does not scroll the page for you — if a page needs scrolling, add `overflow-auto` to the element that should scroll.
 
 ## Tables
 

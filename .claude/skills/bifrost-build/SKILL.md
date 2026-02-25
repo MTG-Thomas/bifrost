@@ -116,17 +116,16 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 | Event triggers | `create_event_source`, `create_event_subscription` |
 | RAG search | `search_knowledge` |
 | Validate an app | `validate_app` or `bifrost push --validate` |
-| Push files | `bifrost push <path>` (use `--clean` to delete remote-only files) |
 | App dependencies | `get_app_dependencies`, `update_app_dependencies` |
 
-### Sync & Preflight
+### Syncing
 
-- `bifrost watch` — auto-syncs on save, prints preflight errors
-- `bifrost sync` — manual sync with preview, preflight, conflict resolution
-- `bifrost sync --preview` — preview only
-- `bifrost sync --resolve file=keep_local` — resolve conflicts
+**`bifrost watch` handles all syncing.** Do NOT run `bifrost push` or `bifrost sync` while watch is running — watch already pushes every file change automatically.
 
-Preflight validates: manifest YAML, file existence, Python syntax, ruff linting, UUID cross-references, orphan detection.
+- `bifrost sync` is for git-integrated deployments (bi-directional GitHub sync with conflict resolution). Only use when the user explicitly requests it.
+- `bifrost push` is a one-off direct upload. Only use when the user explicitly requests it or watch is not running.
+
+Preflight (runs automatically in watch): manifest YAML, file existence, Python syntax, ruff linting, UUID cross-references, orphan detection.
 
 ## MCP-Only Mode
 
@@ -145,28 +144,26 @@ Prefer `patch_content` for surgical edits. Use `replace_content` for full file r
 
 ### Design Workflow
 
-Before writing any app code, understand what you're building visually.
+Before writing any app code, design what you're building.
 
 **New app:**
 1. Ask: "What should this app feel like? Any products you'd like it inspired by?"
-2. If a product is named as inspiration, identify the interactions that *define* that product's experience — the things a user would point to and say "that's what makes it feel like [product]"
-3. Build those defining interactions as custom components in `components/`
-4. Use pre-included shadcn for everything else — forms, dialogs, navigation, data tables
-5. Plan `styles.css` for visual identity — colors, typography, spacing, dark mode
-6. Then start building
+2. If a product is named, **describe the specific visual patterns** that define it — not abstract qualities ("clean", "modern") but concrete observations: "full-height dark sidebar with icon+label nav items, content area with a sticky toolbar row above the main editor, right panel for live preview with a simulated email client frame, generous whitespace between sections, muted borders instead of heavy dividers."
+3. Write a visual spec for each key screen: what elements exist, their spatial relationships, which are fixed vs. scrollable, where the visual weight sits, how the eye flows. This is the design — get it right before writing code.
+4. Plan `styles.css` for visual identity — color palette, typography scale, spacing rhythm, dark mode variants.
+5. Decide what's a custom component vs. pre-included shadcn. shadcn is for standard interactions (settings forms, confirmation dialogs, data tables). Custom components are for the interactions that define the app's identity — a project management app needs a custom kanban board, not a `<Table>`; an email tool needs a simulated inbox, not a textarea in a split pane.
+6. Then start building.
 
 **Existing app:**
 1. Read existing `styles.css` and `components/` first
 2. Match established design patterns
-
-**Component strategy:** Pre-included shadcn components are for standard interactions (settings forms, confirmation dialogs, nav tabs, data tables). Custom components are for the interactions that define the app's experience. A project management app needs a custom kanban board, not a `<Table>`. A messaging app needs a custom thread view, not a `<Card>` list. Use shadcn as infrastructure, custom components for the experience.
 
 ### Critical App Rules
 
 1. **Imports:** `import { Button, useWorkflowQuery, useState } from "bifrost"` — everything from one import
 2. **Root layout:** `_layout.tsx` uses `<Outlet />`, NOT `{children}`
 3. **Workflow hooks:** Always use UUIDs, never names — `useWorkflowQuery("uuid-here")`
-4. **Scrollable content:** parent `flex flex-col h-full`, child `flex-1 overflow-auto`
+4. **Fixed-height container:** Your app renders in a fixed-height box — manage your own scrolling
 5. **Custom CSS:** `styles.css` at app root, dark mode via `.dark` selector
 6. **Dependencies:** Declare npm packages in `app.yaml` (max 20, loaded from esm.sh)
 
@@ -176,7 +173,7 @@ For component lists, hooks API, CSS examples, sandbox constraints — grep `/tmp
 
 1. Write files in `apps/{slug}/`
 2. Add entry to `.bifrost/apps.yaml`
-3. `bifrost watch` auto-syncs (or `bifrost push apps/{slug}`)
+3. `bifrost watch` auto-syncs
 4. Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`
 5. Validate with `bifrost push apps/{slug} --validate`
 

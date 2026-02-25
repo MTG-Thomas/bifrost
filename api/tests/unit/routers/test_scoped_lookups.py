@@ -1186,3 +1186,103 @@ class TestApplicationCrossOrgSlugLookup:
         result = await repo.get_by_slug_global("nonexistent")
 
         assert result is None
+
+
+# =============================================================================
+# get_application_or_404 Superuser Cross-Org Slug Lookup
+# =============================================================================
+
+
+class TestGetApplicationOr404SuperuserSlug:
+    """
+    Tests that get_application_or_404 uses get_by_slug_global for super admins,
+    allowing cross-org slug resolution without ?scope= param.
+    """
+
+    @pytest.fixture
+    def org_a_id(self):
+        return uuid4()
+
+    @pytest.fixture
+    def org_b_id(self):
+        return uuid4()
+
+    @pytest.fixture
+    def org_b_app(self, org_b_id):
+        return make_application("org-b-app", org_b_id)
+
+    @pytest.fixture
+    def mock_ctx(self, org_a_id):
+        """Create a mock Context with a platform admin user in org A."""
+        ctx = MagicMock()
+        ctx.db = AsyncMock()
+        ctx.org_id = org_a_id
+        ctx.user.user_id = uuid4()
+        ctx.user.is_platform_admin = True
+        return ctx
+
+    async def test_superuser_resolves_cross_org_slug(self, mock_ctx, org_b_app):
+        """Super admin can resolve an app slug belonging to another org."""
+        from unittest.mock import patch
+
+        from src.routers.applications import get_application_or_404
+
+        with patch(
+            "src.routers.applications.ApplicationRepository"
+        ) as MockRepo:
+            repo_instance = MockRepo.return_value
+            repo_instance.get_by_slug_global = AsyncMock(
+                return_value=org_b_app
+            )
+
+            result = await get_application_or_404(
+                ctx=mock_ctx, slug="org-b-app", scope=None
+            )
+
+        assert result is org_b_app
+        repo_instance.get_by_slug_global.assert_called_once_with("org-b-app")
+        # can_access should NOT be called for superuser path
+        repo_instance.can_access.assert_not_called()
+
+    async def test_superuser_gets_404_for_nonexistent_slug(self, mock_ctx):
+        """Super admin gets 404 when slug doesn't exist anywhere."""
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        from src.routers.applications import get_application_or_404
+
+        with patch(
+            "src.routers.applications.ApplicationRepository"
+        ) as MockRepo:
+            repo_instance = MockRepo.return_value
+            repo_instance.get_by_slug_global = AsyncMock(return_value=None)
+
+            with pytest.raises(HTTPException) as exc_info:
+                await get_application_or_404(
+                    ctx=mock_ctx, slug="nonexistent", scope=None
+                )
+
+        assert exc_info.value.status_code == 404
+
+    async def test_regular_user_uses_can_access(self, mock_ctx, org_b_app):
+        """Non-superuser uses can_access (not get_by_slug_global)."""
+        from unittest.mock import patch
+
+        from src.routers.applications import get_application_or_404
+
+        mock_ctx.user.is_platform_admin = False
+
+        with patch(
+            "src.routers.applications.ApplicationRepository"
+        ) as MockRepo:
+            repo_instance = MockRepo.return_value
+            repo_instance.can_access = AsyncMock(return_value=org_b_app)
+
+            result = await get_application_or_404(
+                ctx=mock_ctx, slug="org-b-app", scope=None
+            )
+
+        assert result is org_b_app
+        repo_instance.can_access.assert_called_once_with(slug="org-b-app")
+        repo_instance.get_by_slug_global.assert_not_called()
