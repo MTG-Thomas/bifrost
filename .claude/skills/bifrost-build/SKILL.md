@@ -158,7 +158,7 @@ Before writing any app code, understand what you're building visually.
 1. Read existing `styles.css` and `components/` first
 2. Match established design patterns
 
-**Key principle:** Don't default to the simplest component that technically works. A rich text editor is not a `<Textarea>`. An email composer is not an `<Input>`. Build custom components when the UX demands it.
+**Key principle:** Match the component to the interaction. If a pre-included shadcn component doesn't fit, build a custom one in `components/`. Check llms.txt for what's available before building from scratch.
 
 ### Critical App Rules
 
