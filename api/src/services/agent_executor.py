@@ -88,6 +88,7 @@ class AgentExecutor:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.tool_registry = ToolRegistry(session)
+        self._tool_workflow_id_map: dict[str, UUID] = {}  # normalized tool name → workflow UUID
 
     async def _switch_agent(
         self,
@@ -550,6 +551,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                     )
                 else:
                     seen_names[td.name] = f"workflow '{td.workflow_name}'"
+                    self._tool_workflow_id_map[td.name] = td.id
                     tools.append(
                         ToolDefinition(
                             name=td.name,
@@ -970,13 +972,20 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             return await self._execute_system_tool(tool_call, agent, conversation)
 
         try:
-            # Get the workflow for this tool
-            result = await self.session.execute(
-                select(Workflow)
-                .where(Workflow.name == tool_call.name)
-                .where(Workflow.type == "tool")
-                .where(Workflow.is_active.is_(True))
-            )
+            # Get the workflow for this tool — prefer ID lookup (handles normalized names)
+            workflow_id = self._tool_workflow_id_map.get(tool_call.name)
+            if workflow_id:
+                result = await self.session.execute(
+                    select(Workflow).where(Workflow.id == workflow_id)
+                )
+            else:
+                # Fallback: try by name (for non-prefixed tools or edge cases)
+                result = await self.session.execute(
+                    select(Workflow)
+                    .where(Workflow.name == tool_call.name)
+                    .where(Workflow.type == "tool")
+                    .where(Workflow.is_active.is_(True))
+                )
             workflow = result.scalar_one_or_none()
 
             if not workflow:

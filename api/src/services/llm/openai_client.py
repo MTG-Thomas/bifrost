@@ -115,11 +115,12 @@ class OpenAIClient(BaseLLMClient):
         tool_call_builders: dict[int, dict[str, Any]] = {}
         input_tokens = None
         output_tokens = None
+        finish_reason = None
 
         try:
             async with await self.client.chat.completions.create(**kwargs) as stream:
                 async for chunk in stream:
-                    # Handle usage info (comes at the end)
+                    # Handle usage info (may arrive after finish_reason in a separate chunk)
                     if chunk.usage:
                         input_tokens = chunk.usage.prompt_tokens
                         output_tokens = chunk.usage.completion_tokens
@@ -159,6 +160,8 @@ class OpenAIClient(BaseLLMClient):
 
                     # Handle finish reason
                     if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+
                         # Emit any completed tool calls
                         for tc_data in tool_call_builders.values():
                             if tc_data["id"] and tc_data["name"]:
@@ -177,13 +180,14 @@ class OpenAIClient(BaseLLMClient):
                                     ),
                                 )
 
-                        # Emit done chunk
-                        yield LLMStreamChunk(
-                            type="done",
-                            finish_reason=choice.finish_reason,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                        )
+            # Emit done after stream ends so usage data from trailing chunks is captured
+            if finish_reason:
+                yield LLMStreamChunk(
+                    type="done",
+                    finish_reason=finish_reason,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
 
         except Exception as e:
             logger.error(f"OpenAI streaming error: {e}")

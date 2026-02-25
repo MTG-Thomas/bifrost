@@ -252,6 +252,8 @@ class SDKIntegrationsGetResponse(BaseModel):
     )
     oauth: SDKIntegrationsOAuthData | None = Field(
         None, description="Full OAuth credentials and configuration")
+    config_secret_keys: list[str] = Field(
+        default_factory=list, description="Config keys that contain secret values (for log masking)")
 
     model_config = ConfigDict(from_attributes=True)
 

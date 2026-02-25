@@ -137,6 +137,7 @@ class IntegrationData(BaseModel):
     entity_name: str | None
     config: dict
     oauth: "OAuthCredentials | None" = None
+    config_secret_keys: list[str] = []
 
 
 class OAuthCredentials(BaseModel):

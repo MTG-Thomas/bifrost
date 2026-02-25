@@ -97,6 +97,72 @@ class TestConfigGetDecryptsSecrets:
         assert result.config_type == "string"
 
 
+class TestConfigListMasksSecrets:
+    """Verify that cli_list_config always masks secret values with [SECRET]."""
+
+    @pytest.mark.asyncio
+    async def test_list_config_masks_secret_values(self):
+        """config/list should return '[SECRET]' for secret-type values, never the encrypted ciphertext."""
+        from src.routers.cli import cli_list_config
+        from src.models.contracts.cli import CLIConfigListRequest
+        from src.core.security import encrypt_secret
+
+        encrypted = encrypt_secret("real_api_key_value")
+
+        # Redis hgetall returns all config entries
+        all_data = {
+            "normal_key": json.dumps({"value": "normal_value", "type": "string"}),
+            "secret_key": json.dumps({"value": encrypted, "type": "secret"}),
+        }
+
+        mock_redis = AsyncMock()
+        mock_redis.hgetall = AsyncMock(return_value=all_data)
+        mock_redis.__aenter__ = AsyncMock(return_value=mock_redis)
+        mock_redis.__aexit__ = AsyncMock(return_value=False)
+
+        mock_user = MagicMock()
+        mock_user.user_id = "test-user-id"
+
+        request = CLIConfigListRequest()
+
+        with patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value="org-123"), \
+             patch("src.routers.cli.get_redis", return_value=mock_redis):
+            result = await cli_list_config(request=request, current_user=mock_user, db=AsyncMock())
+
+        assert result["normal_key"] == "normal_value"
+        assert result["secret_key"] == "[SECRET]", (
+            f"Secret should be masked as '[SECRET]', got '{result['secret_key']}'"
+        )
+        # Ensure encrypted ciphertext is NOT returned
+        assert result["secret_key"] != encrypted
+
+    @pytest.mark.asyncio
+    async def test_list_config_masks_empty_secret(self):
+        """config/list should return '[SECRET]' even for empty/null secret values."""
+        from src.routers.cli import cli_list_config
+        from src.models.contracts.cli import CLIConfigListRequest
+
+        all_data = {
+            "empty_secret": json.dumps({"value": None, "type": "secret"}),
+        }
+
+        mock_redis = AsyncMock()
+        mock_redis.hgetall = AsyncMock(return_value=all_data)
+        mock_redis.__aenter__ = AsyncMock(return_value=mock_redis)
+        mock_redis.__aexit__ = AsyncMock(return_value=False)
+
+        mock_user = MagicMock()
+        mock_user.user_id = "test-user-id"
+
+        request = CLIConfigListRequest()
+
+        with patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value="org-123"), \
+             patch("src.routers.cli.get_redis", return_value=mock_redis):
+            result = await cli_list_config(request=request, current_user=mock_user, db=AsyncMock())
+
+        assert result["empty_secret"] == "[SECRET]"
+
+
 class TestEncryptDecryptRoundtrip:
     """Verify encrypt/decrypt are inverses — the foundational guarantee."""
 

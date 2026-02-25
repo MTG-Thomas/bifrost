@@ -5,6 +5,7 @@ Database operations for integration management and mapping.
 Handles CRUD operations for Integration and IntegrationMapping tables.
 """
 
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -12,8 +13,12 @@ from sqlalchemy import and_, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
+from src.core.security import decrypt_secret
+from src.models.enums import ConfigType
 from src.models.orm.config import Config
 from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
+
+logger = logging.getLogger(__name__)
 from src.models.contracts.integrations import (
     IntegrationCreate,
     IntegrationUpdate,
@@ -645,6 +650,13 @@ class IntegrationsRepository(BaseRepository[Integration]):
             else:
                 val = value
 
+            if entry.config_type == ConfigType.SECRET and isinstance(val, str):
+                try:
+                    val = decrypt_secret(val)
+                except Exception:
+                    logger.warning(f"Failed to decrypt config '{entry.key}'")
+                    val = None
+
             if entry.organization_id is None:
                 defaults[entry.key] = val
             else:
@@ -682,9 +694,18 @@ class IntegrationsRepository(BaseRepository[Integration]):
         for entry in config_entries:
             value = entry.value
             if isinstance(value, dict) and "value" in value:
-                config[entry.key] = value["value"]
+                val = value["value"]
             else:
-                config[entry.key] = value
+                val = value
+
+            if entry.config_type == ConfigType.SECRET and isinstance(val, str):
+                try:
+                    val = decrypt_secret(val)
+                except Exception:
+                    logger.warning(f"Failed to decrypt config '{entry.key}'")
+                    val = None
+
+            config[entry.key] = val
 
         return config
 

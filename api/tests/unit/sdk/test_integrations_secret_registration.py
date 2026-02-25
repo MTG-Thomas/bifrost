@@ -105,6 +105,65 @@ class TestIntegrationsGetRegistersSecrets:
             clear_execution_context()
 
     @pytest.mark.asyncio
+    async def test_config_secrets_registered(self):
+        """Config values identified by config_secret_keys should be registered for log masking."""
+        from bifrost.integrations import integrations
+        from bifrost._context import set_execution_context, clear_execution_context
+
+        ctx = self._make_ctx()
+        set_execution_context(ctx)
+        try:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "integration_id": "id", "entity_id": "t", "entity_name": None,
+                "config": {"api_key": "sk-secret-123", "base_url": "https://example.com"},
+                "oauth": None,
+                "config_secret_keys": ["api_key"],
+            }
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            with patch("bifrost.integrations.get_client", return_value=mock_client):
+                result = await integrations.get("TestIntegration")
+
+            assert result is not None
+            secrets = ctx._collect_secret_values()
+            assert "sk-secret-123" in secrets, "Secret config value should be registered"
+            assert "https://example.com" not in secrets, "Non-secret config value should not be registered"
+        finally:
+            clear_execution_context()
+
+    @pytest.mark.asyncio
+    async def test_config_secrets_empty_value_not_registered(self):
+        """Config secret keys with no value should not be registered."""
+        from bifrost.integrations import integrations
+        from bifrost._context import set_execution_context, clear_execution_context
+
+        ctx = self._make_ctx()
+        set_execution_context(ctx)
+        try:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "integration_id": "id", "entity_id": "t", "entity_name": None,
+                "config": {"api_key": None},
+                "oauth": None,
+                "config_secret_keys": ["api_key"],
+            }
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            with patch("bifrost.integrations.get_client", return_value=mock_client):
+                result = await integrations.get("TestIntegration")
+
+            assert result is not None
+            secrets = ctx._collect_secret_values()
+            assert len(secrets) == 0
+        finally:
+            clear_execution_context()
+
+    @pytest.mark.asyncio
     async def test_no_context_does_not_raise(self):
         from bifrost.integrations import integrations
         from bifrost._context import clear_execution_context

@@ -293,15 +293,15 @@ export function ChatMessage({
 				</div>
 
 				{/* Token Usage - shown on hover */}
-				{(message.token_count_input || message.token_count_output) && (
+				{(message.token_count_input != null && message.token_count_input > 0 || message.token_count_output != null && message.token_count_output > 0) && (
 					<div className="mt-2 flex gap-3 text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
-						{message.token_count_input && (
+						{!!message.token_count_input && (
 							<span>In: {message.token_count_input}</span>
 						)}
-						{message.token_count_output && (
+						{!!message.token_count_output && (
 							<span>Out: {message.token_count_output}</span>
 						)}
-						{message.duration_ms && (
+						{!!message.duration_ms && (
 							<span>{message.duration_ms}ms</span>
 						)}
 					</div>

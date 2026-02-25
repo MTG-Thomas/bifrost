@@ -290,11 +290,14 @@ export function useChatStream({
 						? useChatStore.getState().streamingMessageIds[convId]
 						: null;
 
-					// Mark message as no longer streaming in unified model
+					// Mark message as no longer streaming and apply usage metadata
 					if (convId && streamingId) {
 						useChatStore.getState().updateMessage(convId, streamingId, {
 							isStreaming: false,
 							isFinal: true,
+							token_count_input: chunk.token_count_input ?? undefined,
+							token_count_output: chunk.token_count_output ?? undefined,
+							duration_ms: chunk.duration_ms ?? undefined,
 						});
 
 						// Clear streaming ID
@@ -521,6 +524,20 @@ export function useChatStream({
 		}
 
 		webSocketService.sendChatStop(conversationId);
+
+		// Finalize any in-progress streaming message (same as "done" handler)
+		const streamingId =
+			useChatStore.getState().streamingMessageIds[conversationId];
+		if (streamingId) {
+			useChatStore.getState().updateMessage(conversationId, streamingId, {
+				isStreaming: false,
+				isFinal: true,
+			});
+			useChatStore
+				.getState()
+				.setStreamingMessageIdForConversation(conversationId, null);
+		}
+
 		setPendingQuestion(null);
 		resetStream();
 	}, [conversationId, resetStream]);

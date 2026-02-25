@@ -501,7 +501,7 @@ async def cli_list_config(
             config_type = cache_entry.get("type", "string")
 
             if config_type == "secret":
-                config_dict[config_key] = raw_value if raw_value else "[SECRET]"
+                config_dict[config_key] = "[SECRET]"
             elif config_type == "json" and isinstance(raw_value, str):
                 try:
                     config_dict[config_key] = json.loads(raw_value)
@@ -602,12 +602,14 @@ async def sdk_integrations_get(
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
 
+            secret_keys = [s.key for s in integration.config_schema if s.type == "secret"] if integration else []
             response_data: dict[str, Any] = {
                 "integration_id": str(mapping.integration_id),
                 "entity_id": entity_id,
                 "entity_name": mapping.entity_name,
                 "config": config or {},
                 "oauth": None,
+                "config_secret_keys": secret_keys,
             }
 
             # Build OAuth data if provider exists
@@ -632,12 +634,14 @@ async def sdk_integrations_get(
         entity_id = integration.default_entity_id or integration.entity_id
         config = await repo.get_integration_defaults(integration.id)
 
+        secret_keys = [s.key for s in integration.config_schema if s.type == "secret"]
         response_data = {
             "integration_id": str(integration.id),
             "entity_id": entity_id,
             "entity_name": None,  # No mapping = no entity name
             "config": config or {},
             "oauth": None,
+            "config_secret_keys": secret_keys,
         }
 
         # Build OAuth data if provider exists

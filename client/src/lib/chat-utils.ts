@@ -61,9 +61,15 @@ export function mergeMessages(
   // Deep merge tool_calls
   const mergedToolCalls = incoming.tool_calls ?? existing.tool_calls;
 
+  // Filter out undefined values from incoming so they don't overwrite
+  // existing API data (e.g. token_count_input, model, duration_ms)
+  const definedIncoming = Object.fromEntries(
+    Object.entries(incoming).filter(([, v]) => v !== undefined)
+  );
+
   return {
     ...existing,
-    ...incoming,
+    ...definedIncoming,
     content: shouldKeepExistingContent ? existing.content : incoming.content,
     tool_calls: mergedToolCalls,
     // Preserve earliest createdAt

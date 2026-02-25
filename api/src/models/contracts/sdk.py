@@ -169,6 +169,7 @@ class IntegrationData(BaseModel):
     entity_name: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     oauth: OAuthCredentials | None = None
+    config_secret_keys: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

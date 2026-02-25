@@ -281,6 +281,9 @@ async def websocket_connect(
     if user_channel not in allowed_channels:
         allowed_channels.append(user_channel)
 
+    # Track active chat tasks per conversation so they can be cancelled
+    active_chat_tasks: dict[str, asyncio.Task] = {}
+
     try:
         await manager.connect(websocket, allowed_channels)
         logger.info(f"WebSocket connected for user {user.user_id}, channels: {allowed_channels}")
@@ -431,8 +434,13 @@ async def websocket_connect(
                     })
                     continue
 
+                # Cancel any existing task for this conversation
+                existing_task = active_chat_tasks.pop(conversation_id, None)
+                if existing_task and not existing_task.done():
+                    existing_task.cancel()
+
                 # Process chat message in background task
-                asyncio.create_task(
+                task = asyncio.create_task(
                     _process_chat_message(
                         websocket=websocket,
                         user=user,
@@ -441,11 +449,32 @@ async def websocket_connect(
                         local_id=local_id,
                     )
                 )
+                active_chat_tasks[conversation_id] = task
+                task.add_done_callback(
+                    lambda t, cid=conversation_id: active_chat_tasks.pop(cid, None)
+                )
+
+            elif data.get("type") == "chat_stop":
+                conversation_id = data.get("conversation_id")
+                if conversation_id:
+                    task = active_chat_tasks.pop(conversation_id, None)
+                    if task and not task.done():
+                        task.cancel()
 
     except WebSocketDisconnect:
+        # Cancel all active chat tasks for this connection
+        for task in active_chat_tasks.values():
+            if not task.done():
+                task.cancel()
+        active_chat_tasks.clear()
         manager.disconnect(websocket)
         logger.info(f"WebSocket disconnected for user {user.user_id}")
     except Exception as e:
+        # Cancel all active chat tasks for this connection
+        for task in active_chat_tasks.values():
+            if not task.done():
+                task.cancel()
+        active_chat_tasks.clear()
         logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
@@ -589,18 +618,58 @@ async def _process_chat_message(
             # Execute chat
             executor = AgentExecutor(db)
 
-            async for chunk in executor.chat(
-                agent=conversation.agent,
-                conversation=conversation,
-                user_message=message,
-                stream=True,
-                is_platform_admin=user.is_superuser,
-                local_id=local_id,
-            ):
-                # Send chunk to WebSocket with conversation_id for client routing
-                chunk_data = chunk.model_dump(exclude_none=True)
-                chunk_data["conversation_id"] = conversation_id
-                await websocket.send_json(chunk_data)
+            # Track streamed content so we can persist partial responses on cancellation
+            streamed_content = ""
+            assistant_message_id: str | None = None
+
+            try:
+                async for chunk in executor.chat(
+                    agent=conversation.agent,
+                    conversation=conversation,
+                    user_message=message,
+                    stream=True,
+                    is_platform_admin=user.is_superuser,
+                    local_id=local_id,
+                ):
+                    # Track partial content from deltas
+                    if chunk.type == "delta" and chunk.content:
+                        streamed_content += chunk.content
+                    elif chunk.type == "message_start" and chunk.assistant_message_id:
+                        assistant_message_id = chunk.assistant_message_id
+                    elif chunk.type == "assistant_message_end":
+                        # Text segment was saved by executor; reset for next segment
+                        streamed_content = ""
+                        assistant_message_id = None
+
+                    # Send chunk to WebSocket with conversation_id for client routing
+                    chunk_data = chunk.model_dump(exclude_none=True)
+                    chunk_data["conversation_id"] = conversation_id
+                    await websocket.send_json(chunk_data)
+            except asyncio.CancelledError:
+                logger.info(f"Chat processing cancelled for conversation {conversation_id}")
+
+                # Save partial assistant response if we have streamed content
+                # that hasn't been saved yet (no assistant_message_end was received)
+                if streamed_content:
+                    from src.models.enums import MessageRole
+
+                    await executor._save_message(
+                        conversation_id=UUID(conversation_id),
+                        role=MessageRole.ASSISTANT,
+                        content=streamed_content,
+                        message_id=UUID(assistant_message_id) if assistant_message_id else None,
+                    )
+
+                # Commit user message + any partial response
+                await db.commit()
+                try:
+                    await websocket.send_json({
+                        "type": "done",
+                        "conversation_id": conversation_id,
+                    })
+                except Exception:
+                    pass  # WebSocket may already be closed
+                return
 
             # Generate title if this is a new conversation (no title yet)
             if needs_title:

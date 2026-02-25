@@ -108,11 +108,16 @@ class integrations:
             if result is None:
                 return None
             data = IntegrationData.model_validate(result)
+            from ._context import register_secret
             if data.oauth is not None:
-                from ._context import register_secret
                 for secret_field in (data.oauth.access_token, data.oauth.refresh_token, data.oauth.client_secret):
                     if secret_field:
                         register_secret(secret_field)
+            if data.config_secret_keys:
+                for key in data.config_secret_keys:
+                    val = data.config.get(key)
+                    if val:
+                        register_secret(str(val))
             return data
         else:
             logger.warning(f"Integrations API call failed: {response.status_code}")

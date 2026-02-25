@@ -327,6 +327,115 @@ class TestNotifyToolConflicts:
             assert request.description.endswith("...")
 
 
+class TestWorkflowToolIdResolution:
+    """Test that workflow tools with normalized names resolve back to workflows by ID."""
+
+    @pytest.mark.asyncio
+    async def test_workflow_id_map_populated_for_workflow_tools(self, executor, mock_agent):
+        """_get_agent_tools populates _tool_workflow_id_map for workflow tools."""
+        from src.services.tool_registry import ToolDefinition as RegistryToolDefinition
+
+        workflow_id = uuid4()
+        mock_workflow_tool = MagicMock()
+        mock_workflow_tool.id = workflow_id
+        mock_agent.tools = [mock_workflow_tool]
+        mock_agent.system_tools = []
+
+        registry_tool = RegistryToolDefinition(
+            id=workflow_id,
+            name="wf_execute_halopsa_sql",
+            description="Execute HaloPSA SQL query",
+            parameters={"type": "object", "properties": {}},
+            workflow_name="Execute HaloPSA SQL",
+            category="HaloPSA",
+        )
+        executor.tool_registry.get_tool_definitions = AsyncMock(
+            return_value=[registry_tool]
+        )
+
+        with patch.object(executor, "_get_system_tool_definitions", return_value=[]):
+            tools = await executor._get_agent_tools(mock_agent)
+
+        assert "wf_execute_halopsa_sql" in [t.name for t in tools]
+        assert executor._tool_workflow_id_map["wf_execute_halopsa_sql"] == workflow_id
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_uses_id_lookup_for_normalized_names(self, executor):
+        """_execute_tool looks up workflows by ID when name is in _tool_workflow_id_map."""
+        from src.services.llm.base import ToolCallRequest
+
+        workflow_id = uuid4()
+        executor._tool_workflow_id_map["wf_execute_halopsa_sql"] = workflow_id
+
+        # Mock the DB query to return a workflow
+        mock_workflow = MagicMock()
+        mock_workflow.id = workflow_id
+        mock_workflow.name = "Execute HaloPSA SQL"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_workflow
+        executor.session.execute = AsyncMock(return_value=mock_result)
+
+        tool_call = ToolCallRequest(
+            id="call_123",
+            name="wf_execute_halopsa_sql",
+            arguments={"query": "SELECT 1"},
+        )
+
+        with patch("src.services.execution.service.execute_tool", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = MagicMock(
+                execution_id="exec_1",
+                status="completed",
+                result={"data": []},
+            )
+
+            mock_conversation = MagicMock()
+            mock_conversation.user = MagicMock()
+            mock_conversation.user.id = uuid4()
+            mock_conversation.user.name = "Test User"
+
+            mock_agent = MagicMock()
+            mock_agent.organization_id = uuid4()
+
+            result = await executor._execute_tool(
+                tool_call, agent=mock_agent, conversation=mock_conversation
+            )
+
+        # Verify the DB query used Workflow.id, not Workflow.name
+        call_args = executor.session.execute.call_args
+        query = call_args[0][0]
+        # The compiled query should reference the workflow ID, not the normalized name
+        compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
+        assert workflow_id.hex in compiled
+        assert "wf_execute_halopsa_sql" not in compiled
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_falls_back_to_name_lookup(self, executor):
+        """_execute_tool falls back to name-based lookup when tool not in ID map."""
+        from src.services.llm.base import ToolCallRequest
+
+        # Don't populate _tool_workflow_id_map — simulate an unknown tool
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        executor.session.execute = AsyncMock(return_value=mock_result)
+
+        tool_call = ToolCallRequest(
+            id="call_456",
+            name="some_unknown_tool",
+            arguments={},
+        )
+
+        result = await executor._execute_tool(tool_call)
+
+        assert result.error == "Tool 'some_unknown_tool' not found"
+
+        # Verify the DB query used Workflow.name (fallback path)
+        call_args = executor.session.execute.call_args
+        query = call_args[0][0]
+        compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
+        assert "some_unknown_tool" in compiled
+
+
 class TestSerializeForJson:
     """Test the _serialize_for_json helper function."""
 
