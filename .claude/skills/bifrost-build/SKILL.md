@@ -149,16 +149,17 @@ Before writing any app code, understand what you're building visually.
 
 **New app:**
 1. Ask: "What should this app feel like? Any products you'd like it inspired by?"
-2. Explore key screens and interactions with the user
-3. Decide component strategy: pre-included shadcn for standard UI, custom components in `components/` for anything distinctive
-4. If a distinct visual identity is desired, plan `styles.css` — colors, typography, spacing, dark mode
-5. Then start building
+2. If a product is named as inspiration, identify the interactions that *define* that product's experience — the things a user would point to and say "that's what makes it feel like [product]"
+3. Build those defining interactions as custom components in `components/`
+4. Use pre-included shadcn for everything else — forms, dialogs, navigation, data tables
+5. Plan `styles.css` for visual identity — colors, typography, spacing, dark mode
+6. Then start building
 
 **Existing app:**
 1. Read existing `styles.css` and `components/` first
 2. Match established design patterns
 
-**Key principle:** Match the component to the interaction. If a pre-included shadcn component doesn't fit, build a custom one in `components/`. Check llms.txt for what's available before building from scratch.
+**Component strategy:** Pre-included shadcn components are for standard interactions (settings forms, confirmation dialogs, nav tabs, data tables). Custom components are for the interactions that define the app's experience. A project management app needs a custom kanban board, not a `<Table>`. A messaging app needs a custom thread view, not a `<Card>` list. Use shadcn as infrastructure, custom components for the experience.
 
 ### Critical App Rules
 
