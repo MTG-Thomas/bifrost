@@ -1159,9 +1159,7 @@ TOOLS = [
     ("publish_app", "Publish Application", "Publish all draft files to live."),
     ("validate_app", "Validate Application", "Build and validate an app: compiles all files, checks for missing/unused dependencies, unknown components, and bad workflow IDs."),
     ("push_files", "Push Files", "Push multiple files to _repo/ in a single batch. Useful for creating or updating entire apps or workflow sets."),
-    ("get_app_schema", "Get App Schema", "Get documentation about App Builder application structure and code-based files."),
-    ("get_component_docs", "Get Component Docs", "Get detailed UI component documentation (props, variants, examples). Filter by component names or category."),
-    ("get_app_dependencies", "Get App Dependencies", "Get npm dependencies declared for an app."),
+("get_app_dependencies", "Get App Dependencies", "Get npm dependencies declared for an app."),
     ("update_app_dependencies", "Update App Dependencies", "Update npm dependencies for an app. Pass a dict of {package: version}."),
 ]
 
@@ -1178,9 +1176,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "publish_app": publish_app,
         "validate_app": validate_app,
         "push_files": push_files,
-        "get_app_schema": get_app_schema,
-        "get_component_docs": get_component_docs,
-        "get_app_dependencies": get_app_dependencies,
+"get_app_dependencies": get_app_dependencies,
         "update_app_dependencies": update_app_dependencies,
     }
 

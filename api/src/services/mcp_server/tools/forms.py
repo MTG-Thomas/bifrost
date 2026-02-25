@@ -671,8 +671,7 @@ async def update_form(
 # Tool metadata for registration
 TOOLS = [
     ("list_forms", "List Forms", "List all forms with their URLs."),
-    ("get_form_schema", "Get Form Schema", "Get documentation about form structure and field types."),
-    ("create_form", "Create Form", "Create a new form with fields linked to a workflow."),
+("create_form", "Create Form", "Create a new form with fields linked to a workflow."),
     ("get_form", "Get Form", "Get detailed information about a specific form including all fields."),
     ("update_form", "Update Form", "Update an existing form's properties or fields."),
 ]
@@ -684,8 +683,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
 
     tool_funcs = {
         "list_forms": list_forms,
-        "get_form_schema": get_form_schema,
-        "create_form": create_form,
+"create_form": create_form,
         "get_form": get_form,
         "update_form": update_form,
     }

@@ -712,8 +712,7 @@ async def delete_agent(
 
 # Tool metadata for registration
 TOOLS = [
-    ("get_agent_schema", "Get Agent Schema", "Get documentation for AI agent structure, channels, and configuration."),
-    ("list_agents", "List Agents", "List all AI agents accessible to the current user."),
+("list_agents", "List Agents", "List all AI agents accessible to the current user."),
     ("get_agent", "Get Agent", "Get detailed information about a specific agent including assigned tools and delegation targets."),
     ("create_agent", "Create Agent", "Create a new AI agent with system prompt and configuration."),
     ("update_agent", "Update Agent", "Update an existing agent's properties."),
@@ -726,8 +725,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
     from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
 
     tool_funcs = {
-        "get_agent_schema": get_agent_schema,
-        "list_agents": list_agents,
+"list_agents": list_agents,
         "get_agent": get_agent,
         "create_agent": create_agent,
         "update_agent": update_agent,

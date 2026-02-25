@@ -509,8 +509,7 @@ async def delete_table(
 TOOLS = [
     ("list_tables", "List Tables", "List tables in the platform. Platform admin only."),
     ("get_table", "Get Table", "Get table details including schema by ID. Platform admin only."),
-    ("get_table_schema", "Get Table Schema Documentation", "Get documentation about table structure, column types, and scope options."),
-    ("create_table", "Create Table", "Create a new table with specified scope. Requires platform admin for global scope."),
+("create_table", "Create Table", "Create a new table with specified scope. Requires platform admin for global scope."),
     ("update_table", "Update Table", "Update table properties including name, description, scope, and columns."),
     ("delete_table", "Delete Table", "Delete a table and all its documents by ID."),
 ]
@@ -523,8 +522,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
     tool_funcs = {
         "list_tables": list_tables,
         "get_table": get_table,
-        "get_table_schema": get_table_schema,
-        "create_table": create_table,
+"create_table": create_table,
         "update_table": update_table,
         "delete_table": delete_table,
     }

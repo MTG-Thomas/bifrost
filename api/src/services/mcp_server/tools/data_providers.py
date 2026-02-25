@@ -70,22 +70,14 @@ For `@data_provider` decorator documentation and examples, use `get_sdk_schema`.
 
 
 # Tool metadata for registration
-TOOLS = [
-    (
-        "get_data_provider_schema",
-        "Get Data Provider Schema",
-        "Get documentation about data provider structure, decorators, and examples.",
-    ),
-]
+TOOLS: list[tuple[str, str, str]] = []
 
 
 def register_tools(mcp: Any, get_context_fn: Any) -> None:
     """Register all data_providers tools with FastMCP."""
     from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
 
-    tool_funcs = {
-        "get_data_provider_schema": get_data_provider_schema,
-    }
+    tool_funcs: dict[str, Any] = {}
 
-    for tool_id, name, description in TOOLS:  # noqa: B007
+    for tool_id, name, description in TOOLS:
         register_tool_with_context(mcp, tool_funcs[tool_id], tool_id, description, get_context_fn)
