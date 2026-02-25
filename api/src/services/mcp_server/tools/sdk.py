@@ -103,95 +103,88 @@ def _generate_module_docs(module_name: str, cls: type) -> str:
     return "\n".join(lines)
 
 
+def _get_decorator_desc(func: Any) -> str:
+    """Extract first line of description from a decorator's docstring."""
+    if not func.__doc__:
+        return ""
+    return func.__doc__.split("Args:")[0].strip().split("\n")[0]
+
+
 def _generate_decorator_docs() -> str:
     """Generate documentation for SDK decorators from actual source."""
     try:
         from bifrost.decorators import workflow, tool, data_provider
 
-        lines = ["## Decorators", ""]
-
-        # @workflow decorator
+        # Build @workflow params dynamically from signature
         sig = inspect.signature(workflow)
-        params = []
+        param_lines = []
         for name, param in sig.parameters.items():
             if name == "_func":
                 continue
-            param_info = f"    {name}"
+            p = f"    {name}"
             if param.annotation != inspect.Parameter.empty:
-                param_info += f": {_format_annotation(param.annotation)}"
+                p += f": {_format_annotation(param.annotation)}"
             if param.default != inspect.Parameter.empty:
                 default = param.default
                 if default is None:
-                    param_info += " = None"
+                    p += " = None"
                 elif isinstance(default, str):
-                    param_info += f' = "{default}"'
+                    p += f' = "{default}"'
                 else:
-                    param_info += f" = {default}"
-            params.append(param_info)
+                    p += f" = {default}"
+            param_lines.append(f"{p},")
+        workflow_params = "\n".join(param_lines)
 
-        lines.append("### @workflow")
-        lines.append("")
-        if workflow.__doc__:
-            # Get the description before "Args:"
-            doc_parts = workflow.__doc__.split("Args:")
-            if doc_parts:
-                desc = doc_parts[0].strip().split("\n")[0]
-                lines.append(desc)
-                lines.append("")
+        return f"""\
+## Decorators
 
-        lines.append("```python")
-        lines.append("from bifrost import workflow")
-        lines.append("")
-        lines.append("@workflow(")
-        lines.extend([f"{p}," for p in params])
-        lines.append(")")
-        lines.append("async def my_workflow(param1: str, param2: int = 10) -> dict:")
-        lines.append('    """Workflow description."""')
-        lines.append("    return {\"result\": \"success\"}")
-        lines.append("```")
-        lines.append("")
+### @workflow
 
-        # @tool decorator
-        lines.append("### @tool")
-        lines.append("")
-        if tool.__doc__:
-            desc = tool.__doc__.split("\n")[0].strip()
-            lines.append(desc)
-            lines.append("")
-        lines.append("```python")
-        lines.append("from bifrost import tool")
-        lines.append("")
-        lines.append('@tool(description="Search for users")')
-        lines.append("async def search_users(query: str) -> list[dict]:")
-        lines.append('    """Search for users."""')
-        lines.append("    return []")
-        lines.append("```")
-        lines.append("")
+{_get_decorator_desc(workflow)}
 
-        # @data_provider decorator
-        lines.append("### @data_provider")
-        lines.append("")
-        if data_provider.__doc__:
-            desc = data_provider.__doc__.split("\n")[0].strip()
-            lines.append(desc)
-            lines.append("")
-        lines.append("```python")
-        lines.append("from bifrost import data_provider")
-        lines.append("")
-        lines.append("@data_provider(")
-        lines.append('    name="Customer List",')
-        lines.append('    description="Returns customers for dropdown",')
-        lines.append("    cache_ttl_seconds=300,")
-        lines.append(")")
-        lines.append("async def get_customers() -> list[dict]:")
-        lines.append('    """Get customers for dropdown."""')
-        lines.append("    return [")
-        lines.append('        {"label": "Acme Corp", "value": "acme-123"},')
-        lines.append("    ]")
-        lines.append("```")
-        lines.append("")
+```python
+from bifrost import workflow
 
-        return "\n".join(lines)
+@workflow(
+{workflow_params}
+)
+async def my_workflow(param1: str, param2: int = 10) -> dict:
+    \"\"\"Workflow description.\"\"\"
+    return {{"result": "success"}}
+```
+
+### @tool
+
+{_get_decorator_desc(tool)}
+
+```python
+from bifrost import tool
+
+@tool(description="Search for users")
+async def search_users(query: str) -> list[dict]:
+    \"\"\"Search for users.\"\"\"
+    return []
+```
+
+### @data_provider
+
+{_get_decorator_desc(data_provider)}
+
+```python
+from bifrost import data_provider
+
+@data_provider(
+    name="Customer List",
+    description="Returns customers for dropdown",
+    cache_ttl_seconds=300,
+)
+async def get_customers() -> list[dict]:
+    \"\"\"Get customers for dropdown.\"\"\"
+    return [
+        {{"label": "Acme Corp", "value": "acme-123"}},
+    ]
+```
+"""
     except ImportError as e:
         logger.warning(f"Could not import decorators: {e}")
         return ""
