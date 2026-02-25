@@ -352,6 +352,8 @@ from src.models.contracts.github import (
     PushResult,
     RepoStatusResponse,
     ResolveResult,
+    SyncResult,
+    AbortMergeResult,
     DiffResult,
     SyncExecuteRequest,
 )
@@ -769,6 +771,8 @@ __all__ = [
     "PullResult",
     "PushResult",
     "ResolveResult",
+    "SyncResult",
+    "AbortMergeResult",
     "DiffResult",
     "SyncExecuteRequest",
     # CLI Models

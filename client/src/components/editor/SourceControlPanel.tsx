@@ -49,8 +49,8 @@ import {
 	useGitCommits,
 	useFetch,
 	useCommit,
-	usePull,
-	usePush,
+	useSync,
+	useAbortMerge,
 	useDiscard,
 	useWorkingTreeChanges,
 	useResolveConflicts,
@@ -61,8 +61,8 @@ import {
 	type FetchResult,
 	type WorkingTreeStatus,
 	type CommitResult,
-	type PullResult,
-	type PushResult,
+	type SyncResult,
+	type AbortMergeResult,
 	type ResolveResult,
 	type DiffResult,
 	type DiscardResult,
@@ -228,7 +228,7 @@ export function SourceControlPanel() {
 	const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
 	const [conflicts, setConflicts] = useState<MergeConflict[]>([]);
 	const [conflictResolutions, setConflictResolutions] = useState<Record<string, "ours" | "theirs">>({});
-	const [loading, setLoading] = useState<"fetching" | "committing" | "pulling" | "pushing" | "resolving" | "loading_changes" | null>(null);
+	const [loading, setLoading] = useState<"fetching" | "committing" | "syncing" | "resolving" | "loading_changes" | null>(null);
 	const [gitPhase, setGitPhase] = useState<string | null>(null);
 	const [commitsAhead, setCommitsAhead] = useState(0);
 	const [commitsBehind, setCommitsBehind] = useState(0);
@@ -258,8 +258,8 @@ export function SourceControlPanel() {
 	// Operation hooks
 	const fetchOp = useFetch();
 	const commitOp = useCommit();
-	const pullOp = usePull();
-	const pushOp = usePush();
+	const syncOp = useSync();
+	const abortMergeOp = useAbortMerge();
 	const changesOp = useWorkingTreeChanges();
 	const resolveOp = useResolveConflicts();
 	const diffOp = useFileDiff();
@@ -459,21 +459,21 @@ export function SourceControlPanel() {
 		}
 	}, [cleanupOp, commitOp, commitMessage, refreshStatus]);
 
-	const handlePull = useCallback(async () => {
-		setLoading("pulling");
+	const handleSync = useCallback(async () => {
+		setLoading("syncing");
 		setGitPhase(null);
 		try {
-			const result = await runGitOp<PullResult>(
-				() => pullOp.mutateAsync(),
-				"pull",
+			const result = await runGitOp<SyncResult>(
+				() => syncOp.mutateAsync(),
+				"sync",
 				(phase) => setGitPhase(phase),
 			);
 			if (result.success) {
-				toast.success(
-					result.pulled > 0
-						? `Pulled ${result.pulled} entities`
-						: "Already up to date",
-				);
+				const parts = [];
+				if (result.pushed_commits > 0) parts.push(`pushed ${result.pushed_commits} commit(s)`);
+				if (result.entities_imported > 0) parts.push(`imported ${result.entities_imported} entities`);
+				toast.success(parts.length > 0 ? `Sync complete: ${parts.join(", ")}` : "Already up to date");
+				setCommitsAhead(0);
 				setCommitsBehind(0);
 				setConflicts([]);
 				setConflictResolutions({});
@@ -483,42 +483,40 @@ export function SourceControlPanel() {
 				setConflicts(result.conflicts);
 				toast.warning(`${result.conflicts.length} conflict(s) need resolution`);
 			} else {
-				toast.error(result.error || "Pull failed");
+				toast.error(result.error || "Sync failed");
 			}
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
-			toast.error(`Pull failed: ${msg}`);
+			toast.error(`Sync failed: ${msg}`);
 		} finally {
 			setLoading(null);
 			setGitPhase(null);
 		}
-	}, [pullOp, refreshStatus, loadChanges]);
+	}, [syncOp, refreshStatus, loadChanges]);
 
-	const handlePush = useCallback(async () => {
-		setLoading("pushing");
+	const handleAbortMerge = useCallback(async () => {
+		setLoading("resolving");
 		try {
-			const result = await runGitOp<PushResult>(
-				() => pushOp.mutateAsync(),
-				"push",
+			const result = await runGitOp<AbortMergeResult>(
+				() => abortMergeOp.mutateAsync(),
+				"abort_merge",
 			);
 			if (result.success) {
-				toast.success(
-					result.pushed_commits > 0
-						? `Pushed ${result.pushed_commits} commit(s)`
-						: "Nothing to push",
-				);
-				setCommitsAhead(0);
+				toast.success("Merge aborted");
+				setConflicts([]);
+				setConflictResolutions({});
 				refreshStatus();
+				await loadChanges();
 			} else {
-				toast.error(result.error || "Push failed");
+				toast.error(result.error || "Abort merge failed");
 			}
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
-			toast.error(`Push failed: ${msg}`);
+			toast.error(`Abort merge failed: ${msg}`);
 		} finally {
 			setLoading(null);
 		}
-	}, [pushOp, refreshStatus]);
+	}, [abortMergeOp, refreshStatus, loadChanges]);
 
 	const handleResolveConflicts = useCallback(async () => {
 		const unresolvedCount = conflicts.filter((c) => !conflictResolutions[c.path]).length;
@@ -790,6 +788,7 @@ export function SourceControlPanel() {
 						}}
 						onShowDiff={handleShowConflictDiff}
 						onCompleteMerge={handleResolveConflicts}
+						onAbortMerge={handleAbortMerge}
 						allResolved={allConflictsResolved}
 						isResolving={loading === "resolving"}
 					/>
@@ -801,8 +800,7 @@ export function SourceControlPanel() {
 					commitMessage={commitMessage}
 					onCommitMessageChange={setCommitMessage}
 					onCommit={handleCommit}
-					onPull={handlePull}
-					onPush={handlePush}
+					onSync={handleSync}
 					onShowDiff={handleShowDiff}
 					onDiscard={handleDiscard}
 					onDiscardAll={handleDiscardAll}
@@ -841,6 +839,7 @@ function ConflictsSection({
 	onResolveAll,
 	onShowDiff,
 	onCompleteMerge,
+	onAbortMerge,
 	allResolved,
 	isResolving,
 }: {
@@ -850,6 +849,7 @@ function ConflictsSection({
 	onResolveAll: (resolution: "ours" | "theirs") => void;
 	onShowDiff: (conflict: MergeConflict) => void;
 	onCompleteMerge: () => void;
+	onAbortMerge: () => void;
 	allResolved: boolean;
 	isResolving: boolean;
 }) {
@@ -972,6 +972,15 @@ function ConflictsSection({
 								</>
 							)}
 						</Button>
+						<Button
+							size="sm"
+							variant="outline"
+							className="w-full gap-2 mt-1"
+							onClick={onAbortMerge}
+							disabled={isResolving}
+						>
+							Abort Merge
+						</Button>
 					</div>
 				</div>
 			)}
@@ -984,8 +993,7 @@ function ChangesSection({
 	commitMessage,
 	onCommitMessageChange,
 	onCommit,
-	onPull,
-	onPush,
+	onSync,
 	onShowDiff,
 	onDiscard,
 	onDiscardAll,
@@ -1004,14 +1012,13 @@ function ChangesSection({
 	commitMessage: string;
 	onCommitMessageChange: (msg: string) => void;
 	onCommit: () => void;
-	onPull: () => void;
-	onPush: () => void;
+	onSync: () => void;
 	onShowDiff: (file: ChangedFile) => void;
 	onDiscard: (file: ChangedFile) => void;
 	onDiscardAll: () => void;
 	commitsBehind: number;
 	commitsAhead: number;
-	loading: "fetching" | "committing" | "pulling" | "pushing" | "resolving" | "loading_changes" | null;
+	loading: "fetching" | "committing" | "syncing" | "resolving" | "loading_changes" | null;
 	gitPhase?: string | null;
 	disabled: boolean;
 	branch: string;
@@ -1077,7 +1084,7 @@ function ChangesSection({
 						</div>
 					)}
 
-					{/* Action buttons */}
+					{/* Morphing sync button */}
 					<div className="px-4 pb-2 flex-shrink-0 flex flex-col gap-1">
 						{commitsBehind > 0 && (
 							<div className="flex flex-col gap-0.5">
@@ -1085,22 +1092,22 @@ function ChangesSection({
 									size="sm"
 									variant={hasChanges ? "outline" : "default"}
 									className="w-full gap-2 rounded-none"
-									onClick={onPull}
+									onClick={onSync}
 									disabled={disabled}
 								>
-									{loading === "pulling" ? (
+									{loading === "syncing" ? (
 										<>
 											<Loader2 className="h-3.5 w-3.5 animate-spin" />
-											Pulling...
+											Syncing...
 										</>
 									) : (
 										<>
 											<Download className="h-3.5 w-3.5" />
-											Pull ↓{commitsBehind}
+											Pull origin ↓{commitsBehind}
 										</>
 									)}
 								</Button>
-								{loading === "pulling" && gitPhase && (
+								{loading === "syncing" && gitPhase && (
 									<p className="text-xs text-muted-foreground text-center">{gitPhase}</p>
 								)}
 							</div>
@@ -1126,18 +1133,18 @@ function ChangesSection({
 							<Button
 								size="sm"
 								className="w-full gap-2 rounded-none"
-								onClick={onPush}
+								onClick={onSync}
 								disabled={disabled}
 							>
-								{loading === "pushing" ? (
+								{loading === "syncing" ? (
 									<>
 										<Loader2 className="h-3.5 w-3.5 animate-spin" />
-										Pushing...
+										Syncing...
 									</>
 								) : (
 									<>
 										<Upload className="h-3.5 w-3.5" />
-										Push ↑{commitsAhead}
+										Push origin ↑{commitsAhead}
 									</>
 								)}
 							</Button>

@@ -116,6 +116,23 @@ export interface DiffResult {
 	working_content?: string | null;
 }
 
+export interface SyncResult {
+	success: boolean;
+	pull_success: boolean;
+	push_success: boolean;
+	pulled: number;
+	pushed_commits: number;
+	commit_sha?: string | null;
+	conflicts: MergeConflict[];
+	entities_imported: number;
+	error?: string | null;
+}
+
+export interface AbortMergeResult {
+	success: boolean;
+	error?: string | null;
+}
+
 export interface DiscardResult {
 	success: boolean;
 	discarded: string[];
@@ -405,6 +422,40 @@ export function useFileDiff() {
 			if (!response.ok) {
 				const error = await response.json().catch(() => ({}));
 				throw new Error(error.detail || "Failed to queue diff");
+			}
+			return (await response.json()) as GitJobResponse;
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Queue a sync operation (pull + push) - returns job_id for WebSocket tracking
+ */
+export function useSync() {
+	return {
+		mutateAsync: async (): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/sync", { method: "POST" });
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue sync");
+			}
+			return (await response.json()) as GitJobResponse;
+		},
+		isPending: false,
+	};
+}
+
+/**
+ * Queue an abort merge operation - returns job_id for WebSocket tracking
+ */
+export function useAbortMerge() {
+	return {
+		mutateAsync: async (): Promise<GitJobResponse> => {
+			const response = await authFetch("/api/github/abort-merge", { method: "POST" });
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({}));
+				throw new Error(error.detail || "Failed to queue abort merge");
 			}
 			return (await response.json()) as GitJobResponse;
 		},

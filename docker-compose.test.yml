@@ -140,7 +140,6 @@ services:
       BIFROST_ENVIRONMENT: testing
     volumes:
       - ./api/src:/app/src:ro
-      - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
@@ -176,7 +175,7 @@ services:
       BIFROST_ALLOW_REGISTRATION: "true"
     # No ports exposed - all access via Docker network (test-runner connects to api:8000)
     volumes:
-      - ./api/src:/app/src:ro
+      - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
@@ -228,7 +227,7 @@ services:
       # Lower concurrency for E2E queue position testing (10 executions, 3 concurrent = 7 queued)
       BIFROST_MAX_CONCURRENCY: ${BIFROST_MAX_CONCURRENCY:-3}
     volumes:
-      - ./api/src:/app/src:ro
+      - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
@@ -272,7 +271,7 @@ services:
       GITHUB_TEST_PAT: ${GITHUB_TEST_PAT:-}
       GITHUB_TEST_REPO: ${GITHUB_TEST_REPO:-jackmusick/e2e-test-workspace}
     volumes:
-      - ./api/src:/app/src:ro
+      - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
@@ -334,7 +333,7 @@ services:
       # Uses OpenAI text-embedding-3-small for vector embeddings
       EMBEDDINGS_AI_TEST_KEY: ${EMBEDDINGS_AI_TEST_KEY:-}
     volumes:
-      - ./api/src:/app/src:ro
+      - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro

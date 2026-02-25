@@ -352,13 +352,23 @@ class Scheduler:
                 result_type = op_type.replace("git_", "")
 
                 if op_type == "git_fetch":
-                    op_result = await sync_service.desktop_fetch()
-                    await publish_git_op_completed(
-                        job_id, status="success" if op_result.success else "failed",
-                        result_type="fetch",
-                        data=op_result.model_dump() if op_result.success else None,
-                        error=op_result.error,
-                    )
+                    # Fetch does S3 sync down + git fetch + status
+                    fetch_result = await sync_service.desktop_fetch()
+                    if fetch_result.success:
+                        status_result = await sync_service.desktop_status()
+                        await publish_git_op_completed(
+                            job_id, status="success", result_type="fetch",
+                            data={
+                                **fetch_result.model_dump(),
+                                "changed_files": [cf.model_dump() for cf in status_result.changed_files],
+                                "conflicts": [c.model_dump() for c in status_result.conflicts],
+                            },
+                        )
+                    else:
+                        await publish_git_op_completed(
+                            job_id, status="failed", result_type="fetch",
+                            error=fetch_result.error,
+                        )
 
                 elif op_type == "git_status":
                     op_result = await sync_service.desktop_status()
@@ -377,23 +387,23 @@ class Scheduler:
                         error=op_result.error,
                     )
 
-                elif op_type == "git_pull":
-                    op_result = await sync_service.desktop_pull(job_id=job_id)
+                elif op_type == "git_sync":
+                    # Combined pull + push + entity import
+                    op_result = await sync_service.desktop_sync(job_id=job_id)
                     status_str = "success" if op_result.success else ("conflict" if op_result.conflicts else "failed")
                     await publish_git_op_completed(
-                        job_id, status=status_str, result_type="pull",
+                        job_id, status=status_str, result_type="sync",
                         data=op_result.model_dump(),
-                        error=op_result.error,
+                        error=op_result.error if not op_result.success else None,
                     )
 
-                elif op_type == "git_push":
-                    op_result = await sync_service.desktop_push()
-                    await publish_git_op_completed(
-                        job_id, status="success" if op_result.success else "failed",
-                        result_type="push",
-                        data=op_result.model_dump() if op_result.success else None,
-                        error=op_result.error,
-                    )
+                    # Clear repo dirty flag after successful sync
+                    if op_result.success:
+                        from src.core.repo_dirty import clear_repo_dirty
+                        try:
+                            await clear_repo_dirty()
+                        except Exception as e:
+                            logger.warning(f"Failed to clear repo dirty flag: {e}")
 
                 elif op_type == "git_resolve":
                     resolutions = data.get("resolutions", {})
@@ -401,6 +411,15 @@ class Scheduler:
                     await publish_git_op_completed(
                         job_id, status="success" if op_result.success else "failed",
                         result_type="resolve",
+                        data=op_result.model_dump() if op_result.success else None,
+                        error=op_result.error,
+                    )
+
+                elif op_type == "git_abort_merge":
+                    op_result = await sync_service.desktop_abort_merge()
+                    await publish_git_op_completed(
+                        job_id, status="success" if op_result.success else "failed",
+                        result_type="abort_merge",
                         data=op_result.model_dump() if op_result.success else None,
                         error=op_result.error,
                     )
@@ -423,108 +442,6 @@ class Scheduler:
                         data=op_result.model_dump(),
                         error=op_result.error if not op_result.success else None,
                     )
-
-                elif op_type == "git_sync_preview":
-                    # Sync preview: fetch + status in a single S3 round-trip
-                    fetch_result, status_result = await sync_service.desktop_fetch_and_status()
-                    if not fetch_result.success:
-                        await publish_git_op_completed(
-                            job_id, status="failed", result_type="sync_preview",
-                            error=fetch_result.error,
-                        )
-                    else:
-                        # Build to_push from local changed files
-                        to_push = [
-                            {
-                                "action": cf.change_type,
-                                "path": cf.path,
-                                "display_name": cf.display_name,
-                                "entity_type": cf.entity_type,
-                            }
-                            for cf in status_result.changed_files
-                        ]
-
-                        # to_pull: we know how many commits behind but not
-                        # individual files; leave empty (pull happens on execute)
-                        to_pull: list[dict[str, str]] = []
-
-                        is_empty = (
-                            not to_push
-                            and fetch_result.commits_behind == 0
-                        )
-
-                        preview = {
-                            "is_empty": is_empty,
-                            "to_push": to_push,
-                            "to_pull": to_pull,
-                            "conflicts": [],
-                            "preflight": {"valid": True, "issues": []},
-                            "commits_ahead": fetch_result.commits_ahead,
-                            "commits_behind": fetch_result.commits_behind,
-                        }
-
-                        await publish_git_op_completed(
-                            job_id, status="success", result_type="sync_preview",
-                            preview=preview,
-                        )
-
-                elif op_type == "git_sync_execute":
-                    # Full sync: commit + pull + push in a single S3 round-trip
-                    conflict_resolutions = data.get("conflict_resolutions", {})
-
-                    commit_result, pull_result, push_result, resolve_result = (
-                        await sync_service.desktop_sync_execute(
-                            "Sync from Bifrost",
-                            job_id=job_id,
-                            conflict_resolutions=conflict_resolutions or None,
-                        )
-                    )
-
-                    if not pull_result.success:
-                        if resolve_result and not resolve_result.success:
-                            await publish_git_op_completed(
-                                job_id, status="conflict", result_type="sync_execute",
-                                error=resolve_result.error,
-                            )
-                        elif pull_result.conflicts and not resolve_result:
-                            await publish_git_op_completed(
-                                job_id, status="conflict", result_type="sync_execute",
-                                error="Merge conflicts detected",
-                            )
-                        elif resolve_result and resolve_result.success:
-                            # Resolution succeeded, push happened
-                            await publish_git_op_completed(
-                                job_id,
-                                status="success" if push_result.success else "failed",
-                                result_type="sync_execute",
-                                pulled=pull_result.pulled if pull_result.success else 0,
-                                pushed=(commit_result.files_committed if commit_result and commit_result.success else 0),
-                                commit_sha=push_result.commit_sha,
-                                error=push_result.error if not push_result.success else None,
-                            )
-                        else:
-                            await publish_git_op_completed(
-                                job_id, status="failed", result_type="sync_execute",
-                                error=pull_result.error,
-                            )
-                    else:
-                        await publish_git_op_completed(
-                            job_id,
-                            status="success" if push_result.success else "failed",
-                            result_type="sync_execute",
-                            pulled=pull_result.pulled if pull_result.success else 0,
-                            pushed=(commit_result.files_committed if commit_result and commit_result.success else 0),
-                            commit_sha=push_result.commit_sha,
-                            error=push_result.error if not push_result.success else None,
-                        )
-
-                    # Clear repo dirty flag after successful sync
-                    if push_result.success:
-                        from src.core.repo_dirty import clear_repo_dirty
-                        try:
-                            await clear_repo_dirty()
-                        except Exception as e:
-                            logger.warning(f"Failed to clear repo dirty flag: {e}")
 
                 else:
                     await publish_git_op_completed(

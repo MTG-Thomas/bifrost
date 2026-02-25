@@ -1,9 +1,13 @@
 """
 Git Repo Manager — S3-backed persistent git working tree.
 
-Manages the lifecycle of a local git working tree backed by S3 _repo/.
-Uses `aws s3 sync` for efficient incremental transfer of the entire
-directory tree including .git/ objects.
+Manages the lifecycle of a persistent local git working directory backed by
+S3 _repo/. Uses `aws s3 sync` for efficient incremental transfer of the
+entire directory tree including .git/ objects.
+
+The working directory is persistent at PERSISTENT_WORK_DIR and is NOT deleted
+between operations. This allows incremental syncs (only changed files are
+transferred) and preserves the .git/ directory across operations.
 
 Individual file writes (code editor, form/agent CRUD) continue using
 the Python S3 client (RepoStorage/FileIndexService). This manager is
@@ -14,8 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
-import tempfile
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -30,21 +32,37 @@ logger = logging.getLogger(__name__)
 GIT_LOCK_KEY = "bifrost:git-lock"
 GIT_LOCK_TIMEOUT = 300  # 5 minutes
 
+PERSISTENT_WORK_DIR = Path("/tmp/git")
+
 
 class GitRepoManager:
-    """Context manager that syncs _repo/ between S3 and a local temp dir."""
+    """Context manager that syncs _repo/ between S3 and a persistent local working dir."""
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or get_settings()
 
+    @property
+    def work_dir(self) -> Path:
+        """Return the persistent working directory, creating it if needed."""
+        PERSISTENT_WORK_DIR.mkdir(parents=True, exist_ok=True)
+        return PERSISTENT_WORK_DIR
+
+    @property
+    def is_initialized(self) -> bool:
+        """Check if the persistent working directory has a .git/ directory."""
+        return (PERSISTENT_WORK_DIR / ".git").is_dir()
+
     @asynccontextmanager
     async def checkout(self) -> AsyncIterator[Path]:
         """
-        Acquire a deployment-scoped Redis lock, sync _repo/ from S3 to a
-        temp dir, yield it, then sync back and release the lock.
+        Acquire a deployment-scoped Redis lock, sync _repo/ from S3 to the
+        persistent working dir, yield it, then sync back and release the lock.
 
         The lock prevents concurrent git operations from overwriting each
         other's changes in the shared S3 _repo/ prefix.
+
+        The working directory is NOT deleted on exit — it persists for
+        incremental syncs on subsequent operations.
 
         Usage:
             async with repo_manager.checkout() as work_dir:
@@ -53,29 +71,33 @@ class GitRepoManager:
                 ...
             # On exit: changes synced back to S3, lock released
         """
-        tmp_dir = Path(tempfile.mkdtemp(prefix="bifrost-repo-"))
-        try:
-            async with self._acquire_lock():
-                await self.sync_down(tmp_dir)
-                yield tmp_dir
-                await self.sync_up(tmp_dir)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        async with self._acquire_lock():
+            await self.sync_down(self.work_dir)
+            yield self.work_dir
+            await self.sync_up(self.work_dir)
 
     @asynccontextmanager
     async def checkout_readonly(self) -> AsyncIterator[Path]:
         """
         Like checkout() but skips sync_up. For read-only git operations
         (diff, status) that don't modify persistent state.
+
+        The working directory is NOT deleted on exit.
         """
-        tmp_dir = Path(tempfile.mkdtemp(prefix="bifrost-repo-"))
-        try:
-            async with self._acquire_lock():
-                await self.sync_down(tmp_dir)
-                yield tmp_dir
-                # No sync_up — caller promises not to modify persistent state
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        async with self._acquire_lock():
+            await self.sync_down(self.work_dir)
+            yield self.work_dir
+            # No sync_up — caller promises not to modify persistent state
+
+    @asynccontextmanager
+    async def lock(self) -> AsyncIterator[Path]:
+        """
+        Acquire the Redis lock and yield the persistent working dir WITHOUT
+        any S3 sync. For operations that don't need an S3 round-trip (e.g.,
+        local-only git commands on an already-synced working tree).
+        """
+        async with self._acquire_lock():
+            yield self.work_dir
 
     @asynccontextmanager
     async def _acquire_lock(self) -> AsyncIterator[None]:

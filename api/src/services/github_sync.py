@@ -35,6 +35,7 @@ from src.services.github_sync_entity_metadata import extract_entity_metadata
 
 if TYPE_CHECKING:
     from src.models.contracts.github import (
+        AbortMergeResult,
         CommitResult,
         DiscardResult,
         DiffResult,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
         PullResult,
         PushResult,
         ResolveResult,
+        SyncResult,
         WorkingTreeStatus,
     )
     from src.services.sync_ops import SyncOp
@@ -571,6 +573,15 @@ class GitHubSyncService:
                         entity_type=metadata.entity_type,
                     ))
 
+                # Drop the stash — the user will resolve conflicts and sync again,
+                # at which point a fresh manifest is regenerated. Keeping the stash
+                # causes stash-pop conflicts on the next sync.
+                if stashed:
+                    try:
+                        repo.git.stash("drop")
+                    except Exception:
+                        logger.debug("Failed to drop stash after merge conflict")
+
                 return PullResult(
                     success=False,
                     conflicts=conflicts,
@@ -584,15 +595,11 @@ class GitHubSyncService:
                         logger.warning("Failed to pop stash after merge failure")
                 raise
 
-        # Import entities from the clean merged state BEFORE popping stash.
-        await _progress("Importing entities...")
-        async with self.db.begin_nested():
-            pulled = await self._import_all_entities(work_dir)
-            await self._delete_removed_entities(work_dir)
-            await self._update_file_index(work_dir)
-        await self.db.commit()
+        # Entity import is handled by desktop_sync() after push succeeds.
+        # Here we just count the pull as successful and pop stash.
+        pulled = 0  # Will be counted during entity import in desktop_sync
 
-        # Pop stash to restore local changes (after import reads clean state)
+        # Pop stash to restore local changes
         await _progress("Cleaning up...")
         if stashed:
             try:
@@ -689,11 +696,11 @@ class GitHubSyncService:
         )
 
     # -----------------------------------------------------------------
-    # Desktop-style operations: fetch, status, commit, pull, push, resolve, diff
+    # Desktop-style operations: fetch, status, commit, sync, resolve, diff
     # -----------------------------------------------------------------
 
     async def desktop_fetch(self) -> "FetchResult":
-        """Git fetch origin. Compute ahead/behind counts."""
+        """Git fetch origin. S3 sync down → regenerate manifest → git fetch → ahead/behind."""
         from src.models.contracts.github import FetchResult
 
         try:
@@ -706,11 +713,13 @@ class GitHubSyncService:
             return FetchResult(success=False, error=str(e))
 
     async def desktop_status(self) -> "WorkingTreeStatus":
-        """Get working tree status (uncommitted changes)."""
+        """Get working tree status. No lock, no S3. Returns empty if not initialized."""
         from src.models.contracts.github import WorkingTreeStatus
 
         try:
-            async with self.repo_manager.checkout_readonly() as work_dir:
+            if not self.repo_manager.is_initialized:
+                return WorkingTreeStatus()
+            async with self.repo_manager.lock() as work_dir:
                 repo = self._open_or_init(work_dir)
                 await self._regenerate_manifest_to_dir(self.db, work_dir)
                 return self._do_status(work_dir, repo)
@@ -794,119 +803,115 @@ class GitHubSyncService:
 
     async def desktop_commit(self, message: str) -> "CommitResult":
         """
-        Commit working tree changes (local only, no push).
+        Commit working tree changes (local only, no push, no S3 sync).
         Runs preflight, commits if valid.
         """
         from src.models.contracts.github import CommitResult
 
         try:
-            async with self.repo_manager.checkout() as work_dir:
+            async with self.repo_manager.lock() as work_dir:
                 repo = self._open_or_init(work_dir)
                 return await self._do_commit(work_dir, repo, message)
         except Exception as e:
             logger.error(f"Commit failed: {e}", exc_info=True)
             return CommitResult(success=False, error=str(e))
 
-    async def desktop_pull(self, job_id: str | None = None) -> "PullResult":
+    async def desktop_sync(self, job_id: str | None = None) -> "SyncResult":
+        """Combined pull + push. The ONLY place entity import + S3 sync-up happen.
+
+        Lock → git pull (stash, merge, pop) → if conflicts: return early.
+        If clean: git push → S3 sync up → entity import.
+        Returns SyncResult.
         """
-        Pull remote changes. On success, import entities.
-        On conflict, return PullResult with conflicts list.
-        """
-        from src.models.contracts.github import PullResult
+        from src.models.contracts.github import SyncResult
+
+        async def _progress(phase: str) -> None:
+            if job_id:
+                from src.core.pubsub import publish_git_progress
+                await publish_git_progress(job_id, phase)
 
         try:
-            async with self.repo_manager.checkout() as work_dir:
-                repo = self._open_or_init(work_dir)
-                return await self._do_pull(work_dir, repo, job_id)
-        except Exception as e:
-            logger.error(f"Pull failed: {e}", exc_info=True)
-            return PullResult(success=False, error=str(e))
-
-    async def desktop_push(self) -> "PushResult":
-        """Push existing local commits to remote. Does NOT commit first."""
-        from src.models.contracts.github import PushResult
-
-        try:
-            async with self.repo_manager.checkout() as work_dir:
-                repo = self._open_or_init(work_dir)
-                return self._do_push(work_dir, repo)
-        except Exception as e:
-            logger.error(f"Push failed: {e}", exc_info=True)
-            return PushResult(success=False, error=str(e))
-
-    async def desktop_fetch_and_status(self) -> tuple["FetchResult", "WorkingTreeStatus"]:
-        """Fetch + status in a single checkout. Used by sync_preview."""
-        from src.models.contracts.github import FetchResult, WorkingTreeStatus
-
-        try:
-            async with self.repo_manager.checkout() as work_dir:
-                repo = self._open_or_init(work_dir)
-                await self._regenerate_manifest_to_dir(self.db, work_dir)
-                fetch_result = self._do_fetch(work_dir, repo)
-                status_result = self._do_status(work_dir, repo)
-                return fetch_result, status_result
-        except Exception as e:
-            logger.error(f"Fetch+status failed: {e}", exc_info=True)
-            return (
-                FetchResult(success=False, error=str(e)),
-                WorkingTreeStatus(),
-            )
-
-    async def desktop_sync_execute(
-        self,
-        message: str,
-        job_id: str | None = None,
-        conflict_resolutions: dict[str, str] | None = None,
-    ) -> tuple["CommitResult", "PullResult", "PushResult", "ResolveResult | None"]:
-        """Commit + pull + push in a single checkout. Used by sync_execute.
-
-        Returns (commit_result, pull_result, push_result, resolve_result).
-        resolve_result is non-None only if conflicts were auto-resolved.
-        """
-        from src.models.contracts.github import CommitResult, PullResult, PushResult
-
-        try:
-            async with self.repo_manager.checkout() as work_dir:
+            async with self.repo_manager.lock() as work_dir:
                 repo = self._open_or_init(work_dir)
 
-                # Step 1: Commit
-                commit_result = await self._do_commit(work_dir, repo, message)
-
-                # Step 2: Pull
+                # Step 1: Pull (fetch + merge, stash local changes)
                 pull_result = await self._do_pull(work_dir, repo, job_id)
 
                 if not pull_result.success:
-                    if pull_result.conflicts and conflict_resolutions:
-                        # Resolve conflicts inline
-                        resolve_result = self._do_resolve(work_dir, repo, conflict_resolutions)
-                        if not resolve_result.success:
-                            return commit_result, pull_result, PushResult(success=False), resolve_result
-                        # After resolution, import entities
-                        async with self.db.begin_nested():
-                            await self._import_all_entities(work_dir)
-                            await self._delete_removed_entities(work_dir)
-                            await self._update_file_index(work_dir)
-                        await self.db.commit()
-                        await self._sync_app_previews(work_dir)
-                        # Fall through to push
-                    else:
-                        # Unresolved conflicts or other failure
-                        return commit_result, pull_result, PushResult(success=False), None
+                    if pull_result.conflicts:
+                        # Return conflicts to UI — user resolves via desktop_resolve
+                        return SyncResult(
+                            success=False,
+                            pull_success=False,
+                            conflicts=pull_result.conflicts,
+                            error="Merge conflicts detected",
+                        )
+                    return SyncResult(
+                        success=False,
+                        pull_success=False,
+                        error=pull_result.error,
+                    )
 
-                else:
-                    resolve_result = None
-
-                # Step 3: Push
+                # Step 2: Push
+                await _progress("Pushing to remote...")
                 push_result = self._do_push(work_dir, repo)
-                return commit_result, pull_result, push_result, resolve_result if not pull_result.success else None
+
+                if not push_result.success:
+                    return SyncResult(
+                        success=False,
+                        pull_success=True,
+                        push_success=False,
+                        error=push_result.error,
+                    )
+
+                # Step 3: S3 sync up (so other containers see the changes)
+                await _progress("Syncing to storage...")
+                await self.repo_manager.sync_up(work_dir)
+
+                # Step 4: Entity import
+                await _progress("Importing entities...")
+                async with self.db.begin_nested():
+                    entities_imported = await self._import_all_entities(work_dir)
+                    await self._delete_removed_entities(work_dir)
+                    await self._update_file_index(work_dir)
+                await self.db.commit()
+
+                # Step 5: Sync app previews
+                await self._sync_app_previews(work_dir)
+
+                logger.info(
+                    f"Sync complete: pushed={push_result.pushed_commits}, "
+                    f"imported={entities_imported}, sha={push_result.commit_sha}"
+                )
+                return SyncResult(
+                    success=True,
+                    pulled=pull_result.pulled,
+                    pushed_commits=push_result.pushed_commits,
+                    commit_sha=push_result.commit_sha,
+                    entities_imported=entities_imported,
+                )
         except Exception as e:
-            logger.error(f"Sync execute failed: {e}", exc_info=True)
-            return (
-                CommitResult(success=False, error=str(e)),
-                PullResult(success=False, error=str(e)),
-                PushResult(success=False, error=str(e)),
-                None,
-            )
+            logger.error(f"Sync failed: {e}", exc_info=True)
+            return SyncResult(success=False, error=str(e))
+
+    async def desktop_abort_merge(self) -> "AbortMergeResult":
+        """Abort an in-progress merge. Returns to pre-pull state."""
+        from src.models.contracts.github import AbortMergeResult
+
+        try:
+            async with self.repo_manager.lock() as work_dir:
+                repo = self._open_or_init(work_dir)
+
+                merge_head = work_dir / ".git" / "MERGE_HEAD"
+                if not merge_head.exists():
+                    return AbortMergeResult(success=False, error="No merge in progress")
+
+                repo.git.merge("--abort")
+                logger.info("Merge aborted successfully")
+                return AbortMergeResult(success=True)
+        except Exception as e:
+            logger.error(f"Abort merge failed: {e}", exc_info=True)
+            return AbortMergeResult(success=False, error=str(e))
 
     def _do_resolve(self, work_dir: Path, repo: GitRepo, resolutions: dict[str, str]) -> "ResolveResult":
         """Core resolve logic for inline conflict resolution during sync_execute."""
@@ -936,12 +941,13 @@ class GitHubSyncService:
     async def desktop_resolve(self, resolutions: dict[str, str]) -> "ResolveResult":
         """
         Resolve merge conflicts after a failed pull.
-        Applies ours/theirs per file, completes the merge, imports entities.
+        Applies ours/theirs per file, creates a merge commit.
+        NO push, NO S3 sync, NO entity import — those happen when user pushes via sync.
         """
         from src.models.contracts.github import ResolveResult
 
         try:
-            async with self.repo_manager.checkout() as work_dir:
+            async with self.repo_manager.lock() as work_dir:
                 repo = self._open_or_init(work_dir)
 
                 # Check for merge state or unmerged entries (stash pop conflicts)
@@ -960,35 +966,26 @@ class GitHubSyncService:
                         repo.git.checkout("--theirs", cpath)
                     repo.git.add(cpath)
 
-                # Complete the operation
+                # Complete the operation (merge commit is local)
                 if is_merge:
-                    repo.index.commit("Merge with conflict resolution")
+                    # Use git commit (not index.commit) to properly finalize
+                    # the merge — this cleans up MERGE_HEAD, MERGE_MSG, etc.
+                    repo.git.commit("-m", "Merge with conflict resolution")
                 else:
-                    # Stash pop conflict — merge already succeeded, just commit resolved files
                     repo.index.commit("Apply stashed changes with conflict resolution")
 
-                # Import entities atomically with savepoint
-                async with self.db.begin_nested():
-                    pulled = await self._import_all_entities(work_dir)
-                    await self._delete_removed_entities(work_dir)
-                    await self._update_file_index(work_dir)
-                await self.db.commit()
-
-                # Sync app preview files from repo to _apps/{id}/preview/
-                await self._sync_app_previews(work_dir)
-
-                logger.info(f"Resolved conflicts, imported {pulled} entities")
-                return ResolveResult(success=True, pulled=pulled)
+                logger.info("Resolved conflicts, created merge commit (local)")
+                return ResolveResult(success=True)
         except Exception as e:
             logger.error(f"Resolve failed: {e}", exc_info=True)
             return ResolveResult(success=False, error=str(e))
 
     async def desktop_diff(self, path: str) -> "DiffResult":
-        """Get file diff: HEAD content vs working tree content."""
+        """Get file diff: HEAD content vs working tree content. No S3 sync."""
         from src.models.contracts.github import DiffResult
 
         try:
-            async with self.repo_manager.checkout_readonly() as work_dir:
+            async with self.repo_manager.lock() as work_dir:
                 repo = self._open_or_init(work_dir)
 
                 # Get HEAD content
@@ -1015,11 +1012,11 @@ class GitHubSyncService:
             return DiffResult(path=path)
 
     async def desktop_discard(self, paths: list[str]) -> "DiscardResult":
-        """Discard working tree changes for specific files (git checkout -- <path>)."""
+        """Discard working tree changes for specific files. S3 sync up so API sees revert."""
         from src.models.contracts.github import DiscardResult
 
         try:
-            async with self.repo_manager.checkout() as work_dir:
+            async with self.repo_manager.lock() as work_dir:
                 repo = self._open_or_init(work_dir)
                 discarded = []
 
@@ -1040,6 +1037,9 @@ class GitHubSyncService:
                             discarded.append(path)
                     except Exception as e:
                         logger.warning(f"Failed to discard {path}: {e}")
+
+                # S3 sync up so other containers see the reverted files
+                await self.repo_manager.sync_up(work_dir)
 
                 logger.info(f"Discarded {len(discarded)} file(s)")
                 return DiscardResult(success=True, discarded=discarded)

@@ -411,6 +411,29 @@ class ResolveResult(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SyncResult(BaseModel):
+    """Result of a combined sync (pull + push) operation."""
+    success: bool = Field(..., description="Whether sync succeeded")
+    pull_success: bool = Field(default=True, description="Whether pull phase succeeded")
+    push_success: bool = Field(default=True, description="Whether push phase succeeded")
+    pulled: int = Field(default=0, description="Number of entities imported")
+    pushed_commits: int = Field(default=0, description="Number of commits pushed")
+    commit_sha: str | None = Field(default=None, description="Latest commit SHA after sync")
+    conflicts: list[MergeConflict] = Field(default_factory=list, description="Merge conflicts if any")
+    entities_imported: int = Field(default=0, description="Number of entities imported during sync")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AbortMergeResult(BaseModel):
+    """Result of aborting a merge."""
+    success: bool = Field(..., description="Whether abort succeeded")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DiffResult(BaseModel):
     """Result of a file diff operation."""
     path: str = Field(..., description="File path")
