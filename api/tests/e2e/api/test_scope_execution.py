@@ -13,6 +13,7 @@ These tests verify the scope resolution logic for ALL SDK modules:
 
 import logging
 import os
+import uuid
 import pytest
 
 from tests.e2e.conftest import write_and_register, execute_workflow_sync
@@ -31,8 +32,8 @@ EMBEDDINGS_AVAILABLE = bool(os.environ.get("EMBEDDINGS_AI_TEST_KEY"))
 
 @pytest.fixture(scope="module")
 def scope_test_table_name() -> str:
-    """Unique table name for scope tests."""
-    return "e2e_scope_test_table"
+    """Unique table name for scope tests — UUID suffix prevents cross-module pollution."""
+    return f"e2e_scope_test_table_{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="module")
