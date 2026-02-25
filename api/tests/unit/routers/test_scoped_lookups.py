@@ -1114,12 +1114,16 @@ class TestApplicationCrossOrgSlugLookup:
         assert result.slug == "global-app"
         assert result.organization_id is None
 
-    # --- Superuser: can access OTHER org by slug (the bug fix) ---
+    # --- Superuser: cross-org slug lookup uses get_by_slug_global, not cascade ---
 
-    async def test_superuser_accesses_other_org_app_by_slug(
+    async def test_superuser_cascade_does_not_cross_org(
         self, mock_session, org_a_id, org_b_app
     ):
-        """Superuser in org A can access org B's app by slug (cross-org)."""
+        """Superuser in org A cannot access org B's app via cascade get().
+
+        Cross-org access should use get_by_slug_global() instead.
+        Slugs are globally unique so cascade fallback is unnecessary.
+        """
         from src.routers.applications import ApplicationRepository
 
         # Step 1: Org-specific query (org A) returns None
@@ -1130,14 +1134,9 @@ class TestApplicationCrossOrgSlugLookup:
         mock_result_global = MagicMock()
         mock_result_global.scalar_one_or_none.return_value = None
 
-        # Step 3: Cross-org query (no org filter) returns org B's app
-        mock_result_any = MagicMock()
-        mock_result_any.scalar_one_or_none.return_value = org_b_app
-
         mock_session.execute.side_effect = [
             mock_result_org,
             mock_result_global,
-            mock_result_any,
         ]
 
         repo = ApplicationRepository(
@@ -1145,11 +1144,9 @@ class TestApplicationCrossOrgSlugLookup:
         )
         result = await repo.get(slug="org-b-app")
 
-        assert result is not None
-        assert result.slug == "org-b-app"
-        assert result.organization_id == org_b_app.organization_id
-        # 3 queries: org A, global, then cross-org fallback
-        assert mock_session.execute.call_count == 3
+        # Cascade stops at global — no cross-org fallback
+        assert result is None
+        assert mock_session.execute.call_count == 2
 
     # --- get_by_slug_global checks globally (no org filter) ---
 
