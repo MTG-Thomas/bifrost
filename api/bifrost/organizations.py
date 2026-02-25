@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import Organization
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ class organizations:
                 "is_active": is_active,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return Organization.model_validate(data)
 
@@ -83,7 +83,7 @@ class organizations:
         response = await client.get(f"/api/organizations/{org_id}")
         if response.status_code == 404:
             raise ValueError(f"Organization not found: {org_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return Organization.model_validate(data)
 
@@ -108,7 +108,7 @@ class organizations:
         """
         client = get_client()
         response = await client.get("/api/organizations")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return [Organization.model_validate(org) for org in data]
 
@@ -151,7 +151,7 @@ class organizations:
         )
         if response.status_code == 404:
             raise ValueError(f"Organization not found: {org_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return Organization.model_validate(data)
 
@@ -180,5 +180,5 @@ class organizations:
         response = await client.delete(f"/api/organizations/{org_id}")
         if response.status_code == 404:
             raise ValueError(f"Organization not found: {org_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return True

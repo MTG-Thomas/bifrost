@@ -5,6 +5,7 @@ interface FileActivityState {
 	recentPushes: FileActivityEvent[];
 	activeWatchers: FileActivityEvent[];
 	addEvent: (event: FileActivityEvent) => void;
+	setWatchers: (watchers: FileActivityEvent[]) => void;
 }
 
 const MAX_RECENT = 20;
@@ -46,4 +47,5 @@ export const useFileActivityStore = create<FileActivityState>((set) => ({
 
 			return state;
 		}),
+	setWatchers: (watchers) => set({ activeWatchers: watchers }),
 }));

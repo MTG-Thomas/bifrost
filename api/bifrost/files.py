@@ -28,10 +28,18 @@ Usage:
 
 from typing import Literal
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
+from ._context import get_default_scope
 
 Location = Literal["workspace", "temp", "uploads"]
 Mode = Literal["local", "cloud"]
+
+
+def _resolve_scope(scope: str | None) -> str | None:
+    """Resolve effective scope - explicit override or default from context."""
+    if scope is not None:
+        return scope
+    return get_default_scope()
 
 
 class files:
@@ -76,7 +84,7 @@ class files:
             "/api/files/read",
             json={"path": path, "location": location, "mode": mode, "binary": False}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()["content"]
 
     @staticmethod
@@ -109,7 +117,7 @@ class files:
             "/api/files/read",
             json={"path": path, "location": location, "mode": mode, "binary": True}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         import base64
         return base64.b64decode(response.json()["content"])
 
@@ -141,7 +149,7 @@ class files:
             "/api/files/write",
             json={"path": path, "content": content, "location": location, "mode": mode, "binary": False}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
 
     @staticmethod
     async def write_bytes(
@@ -173,7 +181,7 @@ class files:
             "/api/files/write",
             json={"path": path, "content": encoded_content, "location": location, "mode": mode, "binary": True}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
 
     @staticmethod
     async def list(
@@ -206,7 +214,7 @@ class files:
             "/api/files/list",
             json={"directory": directory, "location": location, "mode": mode}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()["files"]
 
     @staticmethod
@@ -236,7 +244,7 @@ class files:
             "/api/files/delete",
             json={"path": path, "location": location, "mode": mode}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
 
     @staticmethod
     async def exists(
@@ -268,5 +276,31 @@ class files:
             "/api/files/exists",
             json={"path": path, "location": location, "mode": mode}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()["exists"]
+
+    @staticmethod
+    async def get_signed_url(
+        path: str,
+        method: Literal["PUT", "GET"] = "PUT",
+        content_type: str = "application/octet-stream",
+    ) -> dict:
+        """
+        Generate a presigned S3 URL for direct file upload or download.
+
+        Args:
+            path: File path (scoped automatically by org)
+            method: "PUT" for upload, "GET" for download
+            content_type: MIME type (only used for PUT)
+
+        Returns:
+            dict with keys: url, path, expires_in
+        """
+        client = get_client()
+        scope = _resolve_scope(None)
+        response = await client.post(
+            "/api/files/signed-url",
+            json={"path": path, "method": method, "content_type": content_type, "scope": scope}
+        )
+        raise_for_status_with_detail(response)
+        return response.json()

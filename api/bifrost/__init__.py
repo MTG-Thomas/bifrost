@@ -79,6 +79,7 @@ Example:
 from .ai import ai
 from .config import config
 from .executions import executions
+from .email import email
 from .files import files
 from .forms import forms
 from .integrations import integrations
@@ -185,6 +186,7 @@ __all__ = [
     # SDK Modules
     'ai',
     'config',
+    'email',
     'executions',
     'files',
     'forms',

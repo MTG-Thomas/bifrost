@@ -60,6 +60,7 @@ from src.routers import (
     usage_reports_router,
     ai_pricing_router,
     email_config_router,
+    email_sdk_router,
     oauth_config_router,
     tools_router,
     mcp_router,
@@ -75,6 +76,7 @@ from src.routers import (
     embed_router,
     form_embed_secrets_router,
     export_import_router,
+    docs_router,
     platform_workers_router,
     platform_queue_router,
     platform_stuck_router,
@@ -472,6 +474,7 @@ def create_app() -> FastAPI:
     app.include_router(usage_reports_router)
     app.include_router(ai_pricing_router)
     app.include_router(email_config_router)
+    app.include_router(email_sdk_router)
     app.include_router(oauth_config_router)
     app.include_router(tools_router)
     app.include_router(mcp_router)
@@ -487,6 +490,7 @@ def create_app() -> FastAPI:
     app.include_router(embed_router)
     app.include_router(form_embed_secrets_router)
     app.include_router(export_import_router)
+    app.include_router(docs_router)
     app.include_router(platform_workers_router)
     app.include_router(platform_queue_router)
     app.include_router(platform_stuck_router)

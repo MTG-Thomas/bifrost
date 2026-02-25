@@ -70,9 +70,10 @@ sed -i.bak "s/BIFROST_SECRET_KEY=.*/BIFROST_SECRET_KEY=$SECRET_KEY/" "$ENV_FILE"
 sed -i.bak "s|BIFROST_WEBAUTHN_RP_ID=.*|BIFROST_WEBAUTHN_RP_ID=$DOMAIN|" "$ENV_FILE"
 sed -i.bak "s|BIFROST_WEBAUTHN_ORIGIN=.*|BIFROST_WEBAUTHN_ORIGIN=$ORIGIN|" "$ENV_FILE"
 
-# Configure public URL for non-localhost domains
+# Configure public URL and S3 proxy for non-localhost domains
 if [ "$DOMAIN" != "localhost" ] && [ "$DOMAIN" != "127.0.0.1" ]; then
     sed -i.bak "s|BIFROST_PUBLIC_URL=.*|BIFROST_PUBLIC_URL=https://${DOMAIN}|" "$ENV_FILE"
+    sed -i.bak "s|# BIFROST_S3_PUBLIC_ENDPOINT_URL=.*|BIFROST_S3_PUBLIC_ENDPOINT_URL=/s3|" "$ENV_FILE"
 fi
 
 # Set environment
@@ -94,6 +95,7 @@ echo "  - BIFROST_WEBAUTHN_ORIGIN=$ORIGIN"
 echo "  - BIFROST_ENVIRONMENT=$ENVIRONMENT"
 if [ "$DOMAIN" != "localhost" ] && [ "$DOMAIN" != "127.0.0.1" ]; then
     echo "  - BIFROST_PUBLIC_URL=https://${DOMAIN}"
+    echo "  - BIFROST_S3_PUBLIC_ENDPOINT_URL=/s3"
 fi
 echo ""
 echo "Next steps:"

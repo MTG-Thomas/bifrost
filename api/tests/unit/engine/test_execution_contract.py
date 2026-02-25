@@ -64,6 +64,29 @@ class TestWorkflowExecutionRequest:
         assert request.form_id == "form-123"
         assert request.workflow_id == "550e8400-e29b-41d4-a716-446655440002"
 
+    def test_sync_field_defaults_none(self):
+        """Test that sync field defaults to None"""
+        request = WorkflowExecutionRequest(
+            workflow_id="550e8400-e29b-41d4-a716-446655440000",
+        )
+        assert request.sync is None
+
+    def test_sync_field_true(self):
+        """Test sync=True for blocking execution"""
+        request = WorkflowExecutionRequest(
+            workflow_id="550e8400-e29b-41d4-a716-446655440000",
+            sync=True,
+        )
+        assert request.sync is True
+
+    def test_sync_field_false(self):
+        """Test sync=False for async execution"""
+        request = WorkflowExecutionRequest(
+            workflow_id="550e8400-e29b-41d4-a716-446655440000",
+            sync=False,
+        )
+        assert request.sync is False
+
 
 class TestWorkflowExecutionResponse:
     """Test WorkflowExecutionResponse validation"""

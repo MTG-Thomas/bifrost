@@ -200,6 +200,11 @@ class Settings(BaseSettings):
         description="S3 region"
     )
 
+    s3_public_endpoint_url: str | None = Field(
+        default=None,
+        description="Public S3 endpoint URL for presigned URLs (falls back to s3_endpoint_url)"
+    )
+
     @computed_field
     @property
     def s3_configured(self) -> bool:

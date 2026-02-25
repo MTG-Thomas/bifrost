@@ -794,6 +794,7 @@ async def execute_workflow(
                 input_data=request.input_data,
                 form_id=request.form_id,
                 transient=request.transient,
+                sync=request.sync or False,
             )
         else:
             # This shouldn't happen due to earlier validation

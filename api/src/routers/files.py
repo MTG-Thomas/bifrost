@@ -116,6 +116,20 @@ class FileExistsResponse(BaseModel):
     exists: bool = Field(..., description="True if file exists")
 
 
+class SignedUrlRequest(BaseModel):
+    """Request to generate a presigned S3 URL."""
+    path: str = Field(..., description="File path (scoped automatically by org)")
+    method: Literal["PUT", "GET"] = Field(default="PUT", description="HTTP method: PUT for upload, GET for download")
+    content_type: str = Field(default="application/octet-stream", description="MIME type (only used for PUT)")
+    scope: str | None = Field(default=None, description="Organization scope (auto-resolved from context if None)")
+
+
+class SignedUrlResponse(BaseModel):
+    """Response with presigned URL."""
+    url: str = Field(..., description="Presigned S3 URL")
+    path: str = Field(..., description="Full S3 path")
+    expires_in: int = Field(default=600, description="URL expiration in seconds")
+
 
 # =============================================================================
 # Basic CRUD Endpoints (SDK-focused)
@@ -249,6 +263,53 @@ async def file_exists(
         )
 
 
+RESERVED_PREFIXES = ("_repo/", "_apps/", "_tmp/")
+
+@router.post("/signed-url", response_model=SignedUrlResponse)
+async def get_signed_url(
+    request: SignedUrlRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> SignedUrlResponse:
+    """Generate a presigned S3 URL for direct file upload or download."""
+    # Validate path - no traversal
+    if ".." in request.path or request.path.startswith("/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid path: must be relative and cannot contain '..'",
+        )
+
+    # Block reserved prefixes
+    for prefix in RESERVED_PREFIXES:
+        if request.path.startswith(prefix):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid path: '{prefix}' is a reserved prefix",
+            )
+
+    # Build scoped S3 path
+    scope = request.scope or "global"
+    s3_path = f"uploads/{scope}/{request.path}"
+
+    file_storage = FileStorageService(db)
+
+    if request.method == "PUT":
+        url = await file_storage.generate_presigned_upload_url(
+            path=s3_path,
+            content_type=request.content_type,
+        )
+    else:
+        url = await file_storage.generate_presigned_download_url(
+            path=s3_path,
+        )
+
+    return SignedUrlResponse(
+        url=url,
+        path=s3_path,
+    )
+
+
 # =============================================================================
 # Batch Push Endpoint (CLI-focused)
 # =============================================================================
@@ -370,7 +431,15 @@ async def push_files(
         for repo_path, content in bifrost_files.items():
             try:
                 content_bytes = content.encode("utf-8")
-                await repo.write(repo_path, content_bytes)
+                # Normalize: strip any prefix before .bifrost/ to prevent
+                # duplicates from clients sending prefixed manifest paths
+                parts = repo_path.replace("\\", "/").split("/")
+                try:
+                    bifrost_idx = parts.index(".bifrost")
+                    canonical_path = "/".join(parts[bifrost_idx:])
+                except ValueError:
+                    canonical_path = repo_path
+                await repo.write(canonical_path, content_bytes)
             except Exception as e:
                 logger.warning(f"Error writing manifest file {repo_path}: {e}")
                 errors.append(f"{repo_path}: {str(e)}")

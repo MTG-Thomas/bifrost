@@ -675,6 +675,11 @@ class TestPull:
         assert wf.name == "Git Sync Test Workflow"
         assert wf.function_name == "git_sync_test_wf"
 
+        # Verify parameters_schema enriched by WorkflowIndexer
+        assert len(wf.parameters_schema) == 1
+        assert wf.parameters_schema[0]["name"] == "message"
+        assert wf.parameters_schema[0]["required"] is True
+
         # Verify file_index populated
         fi_result = await db_session.execute(
             select(FileIndex).where(
@@ -2233,7 +2238,8 @@ class TestSplitManifestFormat:
         )
         wf = wf_result.scalar_one_or_none()
         assert wf is not None
-        assert wf.name == "Legacy Test Workflow"
+        # Name comes from decorator in code (source of truth), not manifest
+        assert wf.name == "Git Sync Test Workflow"
 
     async def test_pull_integration_preserves_config_values(
         self,

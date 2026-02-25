@@ -115,6 +115,7 @@ class FileStorageService:
         force_deactivation: bool = False,
         replacements: dict[str, str] | None = None,
         workflows_to_deactivate: list[str] | None = None,
+        skip_dirty_flag: bool = False,
     ) -> WriteResult:
         """Write file content to storage and update index."""
         return await self._file_ops.write_file(
@@ -124,6 +125,7 @@ class FileStorageService:
             force_deactivation=force_deactivation,
             replacements=replacements,
             workflows_to_deactivate=workflows_to_deactivate,
+            skip_dirty_flag=skip_dirty_flag,
         )
 
     async def delete_file(self, path: str) -> None:
@@ -201,6 +203,17 @@ class FileStorageService:
         return await self._s3_storage.generate_presigned_upload_url(
             path=path,
             content_type=content_type,
+            expires_in=expires_in,
+        )
+
+    async def generate_presigned_download_url(
+        self,
+        path: str,
+        expires_in: int = 600,
+    ) -> str:
+        """Generate a presigned GET URL for direct S3 download."""
+        return await self._s3_storage.generate_presigned_download_url(
+            path=path,
             expires_in=expires_in,
         )
 

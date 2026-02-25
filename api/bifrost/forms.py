@@ -5,7 +5,7 @@ Provides Python API for form operations (read-only).
 All operations go through HTTP API endpoints.
 """
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import FormPublic
 
 
@@ -50,7 +50,7 @@ class forms:
         """
         client = get_client()
         response = await client.get("/api/forms")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return [FormPublic.model_validate(form) for form in data]
 
@@ -94,5 +94,5 @@ class forms:
             raise ValueError(f"Form not found: {form_id}")
         elif response.status_code == 403:
             raise PermissionError(f"Access denied to form: {form_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return FormPublic.model_validate(response.json())

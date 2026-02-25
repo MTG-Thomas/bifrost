@@ -76,6 +76,7 @@ services:
       BIFROST_RABBITMQ_URL: amqp://bifrost:${RABBITMQ_PASSWORD:-bifrost_dev}@rabbitmq:5672/
       BIFROST_S3_SECRET_KEY: ${BIFROST_S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-bifrost123}}
       BIFROST_PUBLIC_URL: ${BIFROST_PUBLIC_URL:-http://localhost:8000}
+      BIFROST_S3_PUBLIC_ENDPOINT_URL: ${BIFROST_S3_PUBLIC_ENDPOINT_URL:-}
       # Debugging (optional - enables debugpy)
       ENABLE_DEBUG: ${ENABLE_DEBUG:-false}
     ports:
@@ -154,3 +155,5 @@ services:
       - ./client/tsconfig.node.json:/app/tsconfig.node.json
       - ./client/tailwind.config.ts:/app/tailwind.config.ts
       - ./client/postcss.config.js:/app/postcss.config.js
+    environment:
+      BIFROST_S3_ENDPOINT_URL: ${BIFROST_S3_ENDPOINT_URL:-http://minio:9000}

@@ -15,13 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
+import { WorkflowSelector } from "@/components/forms/WorkflowSelector";
 import {
 	Dialog,
 	DialogContent,
@@ -66,13 +60,6 @@ export function Email() {
 		staleTime: 5 * 60 * 1000,
 	});
 
-	// Load available workflows
-	const { data: workflows, isLoading: workflowsLoading } = $api.useQuery(
-		"get",
-		"/api/workflows",
-		{},
-	);
-
 	// Mutations
 	const saveMutation = $api.useMutation("post", "/api/admin/email/config");
 	const deleteMutation = $api.useMutation(
@@ -92,8 +79,8 @@ export function Email() {
 	}, [config]);
 
 	// Reset validation when workflow changes
-	const handleWorkflowChange = (workflowId: string) => {
-		setSelectedWorkflowId(workflowId);
+	const handleWorkflowChange = (workflowId: string | undefined) => {
+		setSelectedWorkflowId(workflowId ?? "");
 		setValidationResult(null);
 	};
 
@@ -199,16 +186,13 @@ export function Email() {
 		}
 	};
 
-	if (configLoading || workflowsLoading) {
+	if (configLoading) {
 		return (
 			<div className="flex items-center justify-center py-12">
 				<Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
 			</div>
 		);
 	}
-
-	// All workflows from the API are already active (loaded from file system)
-	const activeWorkflows = workflows || [];
 
 	// Check if we have an unchanged config (already saved, same workflow selected)
 	const isUnchangedConfig =
@@ -274,30 +258,14 @@ export function Email() {
 					<div className="space-y-2">
 						<Label htmlFor="workflow">Email Workflow</Label>
 						<div className="flex gap-2">
-							<Select
-								value={selectedWorkflowId}
-								onValueChange={handleWorkflowChange}
-							>
-								<SelectTrigger id="workflow" className="flex-1">
-									<SelectValue placeholder="Select a workflow" />
-								</SelectTrigger>
-								<SelectContent>
-									{activeWorkflows.length === 0 ? (
-										<SelectItem value="__empty" disabled>
-											No workflows available
-										</SelectItem>
-									) : (
-										activeWorkflows.map((workflow) => (
-											<SelectItem
-												key={workflow.id}
-												value={workflow.id}
-											>
-												{workflow.name}
-											</SelectItem>
-										))
-									)}
-								</SelectContent>
-							</Select>
+							<WorkflowSelector
+								value={selectedWorkflowId || undefined}
+								onChange={handleWorkflowChange}
+								variant="combobox"
+								allowClear={false}
+								placeholder="Select a workflow"
+								className="flex-1"
+							/>
 							<Button
 								variant="secondary"
 								onClick={handleValidate}

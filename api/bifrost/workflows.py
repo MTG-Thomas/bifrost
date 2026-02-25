@@ -5,7 +5,7 @@ Provides Python API for workflow operations (list, get status).
 All operations go through HTTP API endpoints.
 """
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .executions import WorkflowExecution, executions
 from .models import WorkflowMetadata
 
@@ -56,7 +56,7 @@ class workflows:
         """
         client = get_client()
         response = await client.get("/api/workflows")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return [WorkflowMetadata.model_validate(wf) for wf in data]
 

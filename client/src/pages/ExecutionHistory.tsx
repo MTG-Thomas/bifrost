@@ -47,16 +47,9 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
 import { useExecutions, cancelExecution } from "@/hooks/useExecutions";
 import { useExecutionHistory } from "@/hooks/useExecutionStream";
-import { useWorkflows } from "@/hooks/useWorkflows";
+import { WorkflowSelector } from "@/components/forms/WorkflowSelector";
 import { useScopeStore } from "@/stores/scopeStore";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
@@ -143,9 +136,6 @@ export function ExecutionHistory() {
 	const [currentToken, setCurrentToken] = useState<string | undefined>(
 		undefined,
 	);
-
-	// Fetch workflow names for dropdown filter
-	const { data: workflows } = useWorkflows();
 
 	// Fetch organizations for the org name lookup (platform admins only)
 	const { data: organizations } = useOrganizations({
@@ -578,10 +568,10 @@ export function ExecutionHistory() {
 						: "Search by workflow name, user, or execution ID..."}
 					className="flex-1 max-w-2xl"
 				/>
-				<Select
-					value={workflowIdFilter || "__all__"}
-					onValueChange={(value) => {
-						const newFilter = value === "__all__" ? "" : value;
+				<WorkflowSelector
+					value={workflowIdFilter || undefined}
+					onChange={(value) => {
+						const newFilter = value ?? "";
 						setWorkflowIdFilter(newFilter);
 						setSearchParams((prev) => {
 							const next = new URLSearchParams(prev);
@@ -593,19 +583,11 @@ export function ExecutionHistory() {
 							return next;
 						}, { replace: true });
 					}}
-				>
-					<SelectTrigger className="w-48">
-						<SelectValue placeholder="All workflows" />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="__all__">All workflows</SelectItem>
-						{workflows?.map((w) => (
-							<SelectItem key={w.id ?? w.name} value={w.id ?? ""}>
-								{w.name}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+					variant="combobox"
+					allowClear={true}
+					placeholder="All workflows"
+					className="w-48"
+				/>
 				<DateRangePicker
 					dateRange={dateRange}
 					onDateRangeChange={setDateRange}

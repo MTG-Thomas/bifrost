@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import Role
 
 
@@ -57,7 +57,7 @@ class roles:
                 "is_active": True,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return Role.model_validate(response.json())
 
     @staticmethod
@@ -84,7 +84,7 @@ class roles:
         response = await client.get(f"/api/roles/{role_id}")
         if response.status_code == 404:
             raise ValueError(f"Role not found: {role_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return Role.model_validate(response.json())
 
     @staticmethod
@@ -106,7 +106,7 @@ class roles:
         """
         client = get_client()
         response = await client.get("/api/roles")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return [Role.model_validate(role) for role in data]
 
@@ -140,7 +140,7 @@ class roles:
         response = await client.patch(f"/api/roles/{role_id}", json=updates)
         if response.status_code == 404:
             raise ValueError(f"Role not found: {role_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return Role.model_validate(response.json())
 
     @staticmethod
@@ -166,7 +166,7 @@ class roles:
         response = await client.delete(f"/api/roles/{role_id}")
         if response.status_code == 404:
             raise ValueError(f"Role not found: {role_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
 
     @staticmethod
     async def list_users(role_id: str) -> list[str]:
@@ -193,7 +193,7 @@ class roles:
         response = await client.get(f"/api/roles/{role_id}/users")
         if response.status_code == 404:
             raise ValueError(f"Role not found: {role_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return data.get("user_ids", [])
 
@@ -222,7 +222,7 @@ class roles:
         response = await client.get(f"/api/roles/{role_id}/forms")
         if response.status_code == 404:
             raise ValueError(f"Role not found: {role_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return data.get("form_ids", [])
 
@@ -253,7 +253,7 @@ class roles:
         )
         if response.status_code == 404:
             raise ValueError(f"Role not found: {role_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
 
     @staticmethod
     async def assign_forms(role_id: str, form_ids: list[str]) -> None:
@@ -282,4 +282,4 @@ class roles:
         )
         if response.status_code == 404:
             raise ValueError(f"Role not found: {role_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)

@@ -7,7 +7,7 @@ All operations go through HTTP API endpoints.
 
 from typing import Any
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import UserPublic
 
 
@@ -47,7 +47,7 @@ class users:
             params["org_id"] = org_id
 
         response = await client.get("/api/users", params=params)
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         return [UserPublic.model_validate(user) for user in data]
 
@@ -75,7 +75,7 @@ class users:
         response = await client.get(f"/api/users/{user_id}")
         if response.status_code == 404:
             return None
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return UserPublic.model_validate(response.json())
 
     @staticmethod
@@ -125,7 +125,7 @@ class users:
             payload["organization_id"] = org_id
 
         response = await client.post("/api/users", json=payload)
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return UserPublic.model_validate(response.json())
 
     @staticmethod
@@ -155,7 +155,7 @@ class users:
         response = await client.patch(f"/api/users/{user_id}", json=updates)
         if response.status_code == 404:
             raise ValueError(f"User not found: {user_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return UserPublic.model_validate(response.json())
 
     @staticmethod
@@ -184,5 +184,5 @@ class users:
         response = await client.delete(f"/api/users/{user_id}")
         if response.status_code == 404:
             raise ValueError(f"User not found: {user_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return True

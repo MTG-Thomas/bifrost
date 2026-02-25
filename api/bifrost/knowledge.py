@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import KnowledgeDocument, NamespaceInfo
 from ._context import get_default_scope
 
@@ -105,7 +105,7 @@ class knowledge:
                 "scope": effective_scope,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()["id"]
 
     @staticmethod
@@ -150,7 +150,7 @@ class knowledge:
                 "scope": effective_scope,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()["ids"]
 
     @staticmethod
@@ -208,7 +208,7 @@ class knowledge:
                 "fallback": fallback,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return [
             KnowledgeDocument.model_validate(doc)
             for doc in response.json()
@@ -248,7 +248,7 @@ class knowledge:
                 "scope": effective_scope,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()["deleted"]
 
     @staticmethod
@@ -283,7 +283,7 @@ class knowledge:
             f"/api/cli/knowledge/namespace/{namespace}",
             params=params if params else None,
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()["deleted_count"]
 
     @staticmethod
@@ -317,7 +317,7 @@ class knowledge:
             "/api/cli/knowledge/namespaces",
             params=params,
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return [
             NamespaceInfo.model_validate(ns)
             for ns in response.json()
@@ -363,5 +363,5 @@ class knowledge:
         )
         if response.status_code == 404:
             return None
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return KnowledgeDocument.model_validate(response.json())

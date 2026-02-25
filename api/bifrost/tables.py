@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import TableInfo, DocumentData, DocumentList, BatchResult, BatchDeleteResult
 from ._context import get_default_scope
 
@@ -99,7 +99,7 @@ class tables:
                 "app": app,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return TableInfo.model_validate(response.json())
 
     @staticmethod
@@ -137,7 +137,7 @@ class tables:
                 "app": app,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return [TableInfo.model_validate(t) for t in response.json()]
 
     @staticmethod
@@ -165,7 +165,7 @@ class tables:
         response = await client.delete(
             f"/api/tables/{table_id}",
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return True
 
     # =========================================================================
@@ -224,7 +224,7 @@ class tables:
                 "app": app,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return DocumentData.model_validate(response.json())
 
     @staticmethod
@@ -274,7 +274,7 @@ class tables:
                 "app": app,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return DocumentData.model_validate(response.json())
 
     @staticmethod
@@ -316,7 +316,7 @@ class tables:
         )
         if response.status_code == 404:
             return None
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         if data is None:
             return None
@@ -364,7 +364,7 @@ class tables:
         )
         if response.status_code == 404:
             return None
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         result = response.json()
         if result is None:
             return None
@@ -409,7 +409,7 @@ class tables:
         )
         if response.status_code == 404:
             return False
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return True
 
     # =========================================================================
@@ -480,7 +480,7 @@ class tables:
                 "app": app,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         body = response.json()
         return BatchResult(
             documents=[DocumentData.model_validate(d) for d in body["documents"]],
@@ -535,7 +535,7 @@ class tables:
                 "app": app,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         body = response.json()
         return BatchResult(
             documents=[DocumentData.model_validate(d) for d in body["documents"]],
@@ -584,7 +584,7 @@ class tables:
                 "app": app,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         body = response.json()
         return BatchDeleteResult(
             deleted_ids=body["deleted_ids"],
@@ -664,7 +664,7 @@ class tables:
         # Return empty result if table doesn't exist
         if response.status_code == 404:
             return DocumentList(documents=[], total=0, limit=limit, offset=offset)
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return DocumentList.model_validate(response.json())
 
     @staticmethod
@@ -715,5 +715,5 @@ class tables:
         # Return 0 if table doesn't exist
         if response.status_code == 404:
             return 0
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()

@@ -32,9 +32,10 @@ echo "Python: $BIFROST_PYTHON_CMD ($BIFROST_PYTHON_VERSION) | Pip: $BIFROST_PIP_
 Based on the environment state:
 
 1. **All true** -> Setup complete! Inform user they're ready to use `/bifrost:build`
-2. **SDK not installed** -> Go to SDK Installation
-3. **SDK installed but not logged in** -> Go to Login
-4. **Logged in but MCP not configured** -> Go to MCP Configuration
+2. **SDK installed + logged in, MCP not configured** -> SDK-first development is ready! MCP is optional — the CLI (`bifrost api`, `bifrost watch`) handles most operations. MCP is only needed for creating forms/apps/agents and knowledge search. Ask if they want to configure it.
+3. **SDK not installed** -> Go to SDK Installation
+4. **SDK installed but not logged in** -> Go to Login
+5. **Logged in but MCP not configured** -> Go to MCP Configuration (optional)
 
 ## SDK Installation
 
@@ -95,13 +96,19 @@ claude mcp list
 claude mcp remove bifrost 2>/dev/null; claude mcp add --transport http bifrost {url}/mcp
 ```
 
-## Restart Required
+## Restart Required (MCP only)
 
-Tell the user:
+If MCP was configured, tell the user:
 
 > Setup complete! Please restart Claude Code for the MCP server to take effect.
 >
 > After restarting, you can use `/bifrost:build` to create workflows, forms, and apps.
+
+If MCP was skipped (SDK-first only), tell the user:
+
+> Setup complete! You're ready to use `/bifrost:build` for SDK-first development.
+>
+> Use `bifrost watch` to auto-sync file changes and `bifrost api` for platform operations. MCP can be added later if you need `create_form`, `create_app`, or knowledge search.
 
 ## Troubleshooting
 

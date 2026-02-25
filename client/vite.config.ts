@@ -173,6 +173,12 @@ export default defineConfig({
 			interval: 1000,
 		},
 		proxy: {
+			// Proxy S3 presigned URLs through Vite so the browser can reach MinIO
+			"/s3": {
+				target: process.env.BIFROST_S3_ENDPOINT_URL || "http://minio:9000",
+				changeOrigin: true,
+				rewrite: (path) => path.replace(/^\/s3/, ""),
+			},
 			// Use API_URL env var for Docker (api:8000) or default to localhost:8000 for local dev
 			// OAuth discovery endpoints for MCP clients (Claude Desktop)
 			"/.well-known": {

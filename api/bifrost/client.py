@@ -27,6 +27,36 @@ from .credentials import (
 # Global client injection for platform mode
 _injected_client: Optional["BifrostClient"] = None
 
+
+def raise_for_status_with_detail(response: httpx.Response) -> None:
+    """Raise httpx.HTTPStatusError with API error detail included in the message.
+
+    Tries to parse the response JSON for ``message`` or ``error`` fields and
+    appends them to the standard HTTP status text so that 4xx/5xx errors are
+    immediately understandable without inspecting the body separately.
+
+    Falls back to the standard ``response.raise_for_status()`` when the body
+    cannot be parsed or contains no useful detail.
+    """
+    if response.is_success:
+        return
+
+    detail = ""
+    try:
+        body = response.json()
+        detail = body.get("message") or body.get("error") or ""
+    except Exception:
+        pass
+
+    if detail:
+        raise httpx.HTTPStatusError(
+            message=f"{response.status_code} {response.reason_phrase}: {detail}",
+            request=response.request,
+            response=response,
+        )
+
+    response.raise_for_status()
+
 # Thread-local storage for per-thread singleton instances
 # This is needed because thread workers create new event loops via asyncio.run(),
 # and httpx.AsyncClient is bound to the event loop that created it.
@@ -370,7 +400,7 @@ class BifrostClient:
         """Fetch development context synchronously."""
         if self._context is None:
             response = self._sync_http.get("/api/cli/context")
-            response.raise_for_status()
+            raise_for_status_with_detail(response)
             self._context = response.json()
         return self._context or {}
 
@@ -379,7 +409,7 @@ class BifrostClient:
         if self._context is None:
             http = self._get_async_client()
             response = await http.get("/api/cli/context")
-            response.raise_for_status()
+            raise_for_status_with_detail(response)
             self._context = response.json()
         return self._context or {}
 
@@ -403,25 +433,48 @@ class BifrostClient:
         """Get default workflow parameters."""
         return self.context.get("default_parameters", {})
 
+    async def _refresh_and_update(self) -> bool:
+        """Refresh tokens and update this client's auth headers."""
+        if await refresh_tokens():
+            creds = get_credentials()
+            if creds:
+                self._access_token = creds["access_token"]
+                # Force new async client on next request (with new token)
+                self._http = None
+                # Update sync client headers too
+                self._sync_http.headers["Authorization"] = f"Bearer {self._access_token}"
+                return True
+        return False
+
+    async def _request_with_refresh(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Make an HTTP request, refreshing token on 401 and retrying once."""
+        http = self._get_async_client()
+        response = await getattr(http, method)(path, **kwargs)
+        if response.status_code == 401:
+            if await self._refresh_and_update():
+                http = self._get_async_client()
+                response = await getattr(http, method)(path, **kwargs)
+        return response
+
     async def get(self, path: str, **kwargs) -> httpx.Response:
         """Make GET request."""
-        return await self._get_async_client().get(path, **kwargs)
+        return await self._request_with_refresh("get", path, **kwargs)
 
     async def post(self, path: str, **kwargs) -> httpx.Response:
         """Make POST request."""
-        return await self._get_async_client().post(path, **kwargs)
+        return await self._request_with_refresh("post", path, **kwargs)
 
     async def put(self, path: str, **kwargs) -> httpx.Response:
         """Make PUT request."""
-        return await self._get_async_client().put(path, **kwargs)
+        return await self._request_with_refresh("put", path, **kwargs)
 
     async def patch(self, path: str, **kwargs) -> httpx.Response:
         """Make PATCH request."""
-        return await self._get_async_client().patch(path, **kwargs)
+        return await self._request_with_refresh("patch", path, **kwargs)
 
     async def delete(self, path: str, **kwargs) -> httpx.Response:
         """Make DELETE request."""
-        return await self._get_async_client().delete(path, **kwargs)
+        return await self._request_with_refresh("delete", path, **kwargs)
 
     def stream(self, method: str, path: str, **kwargs):
         """

@@ -105,6 +105,7 @@ class WorkflowExecutionRequest(BaseModel):
     input_data: dict[str, Any] = Field(default_factory=dict, description="Workflow input parameters")
     form_id: str | None = Field(default=None, description="Optional form ID that triggered this execution")
     transient: bool = Field(default=False, description="If true, skip database persistence (for code editor debugging)")
+    sync: bool | None = Field(default=None, description="If true, block until execution completes and return result inline. Overrides workflow's execution_mode setting.")
     code: str | None = Field(default=None, description="Optional: Python code to execute as script (base64 encoded). If provided, executes code instead of looking up workflow by ID.")
     script_name: str | None = Field(default=None, description="Optional: Name/identifier for the script (used for logging when code is provided)")
 

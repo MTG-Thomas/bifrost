@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import ConfigData
 from ._context import get_default_scope
 
@@ -126,7 +126,7 @@ class config:
                 "scope": effective_scope,
             }
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
 
     @staticmethod
     async def list(scope: str | None = None) -> ConfigData:
@@ -165,7 +165,7 @@ class config:
             "/api/cli/config/list",
             json={"scope": effective_scope}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return ConfigData.model_validate({"data": response.json()})
 
     @staticmethod
@@ -199,5 +199,5 @@ class config:
             "/api/cli/config/delete",
             json={"key": key, "scope": effective_scope}
         )
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return response.json()

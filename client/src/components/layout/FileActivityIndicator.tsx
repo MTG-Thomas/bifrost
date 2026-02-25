@@ -21,10 +21,8 @@ export function FileActivityIndicator() {
 		return () => clearInterval(timer);
 	}, []);
 
-	// Filter out own activity
-	const otherWatchers = activeWatchers.filter(
-		(w) => w.user_id !== user?.id,
-	);
+	// Show all watchers (including own — confirms your watch session is live)
+	// Filter out own pushes to avoid echo noise
 	const recentOtherPushes = useMemo(
 		() =>
 			recentPushes.filter(
@@ -35,15 +33,15 @@ export function FileActivityIndicator() {
 		[recentPushes, user?.id, now],
 	);
 
-	if (otherWatchers.length === 0 && recentOtherPushes.length === 0)
+	if (activeWatchers.length === 0 && recentOtherPushes.length === 0)
 		return null;
 
-	const hasLiveWatcher = otherWatchers.length > 0;
+	const hasLiveWatcher = activeWatchers.length > 0;
 
 	const label = hasLiveWatcher
-		? otherWatchers.length > 1
-			? `${otherWatchers.length} developers active`
-			: `${otherWatchers[0].user_name} editing ${otherWatchers[0].prefix}`
+		? activeWatchers.length > 1
+			? `${activeWatchers.length} developers active`
+			: `${activeWatchers[0].user_name} editing ${activeWatchers[0].prefix}`
 		: recentOtherPushes.length > 0
 			? `${recentOtherPushes[recentOtherPushes.length - 1].user_name} pushed files`
 			: "";
@@ -66,10 +64,10 @@ export function FileActivityIndicator() {
 				</div>
 			</TooltipTrigger>
 			<TooltipContent side="bottom" className="max-w-64">
-				{otherWatchers.length > 0 && (
+				{activeWatchers.length > 0 && (
 					<div className="space-y-1">
 						<p className="font-medium">Active watchers:</p>
-						{otherWatchers.map((w) => (
+						{activeWatchers.map((w) => (
 							<p key={`${w.user_id}:${w.prefix}`}>
 								{w.user_name} — {w.prefix}
 							</p>

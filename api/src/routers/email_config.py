@@ -8,8 +8,9 @@ Requires platform admin access.
 import logging
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
 
-from src.core.auth import CurrentActiveUser, RequirePlatformAdmin
+from src.core.auth import CurrentActiveUser, CurrentSuperuser, RequirePlatformAdmin
 from src.core.database import DbSession
 from src.models.contracts.email import (
     EmailWorkflowConfigRequest,
@@ -138,3 +139,100 @@ async def validate_email_workflow(
         missing_params=result.missing_params,
         extra_required_params=result.extra_required_params,
     )
+
+
+# SDK-facing router for email operations (uses superuser auth, not admin auth)
+sdk_router = APIRouter(
+    prefix="/api/email",
+    tags=["Email SDK"],
+)
+
+
+class EmailSendRequest(BaseModel):
+    """Request to send an email via SDK."""
+    recipient: str = Field(..., description="Recipient email address")
+    subject: str = Field(..., description="Email subject")
+    body: str = Field(..., description="Plain text body")
+    html_body: str | None = Field(default=None, description="Optional HTML body")
+    scope: str | None = Field(default=None, description="Organization scope for config resolution")
+
+
+class EmailSendResponse(BaseModel):
+    """Response from email send."""
+    success: bool
+    execution_id: str | None = None
+    error: str | None = None
+
+
+@sdk_router.post("/send", response_model=EmailSendResponse)
+async def send_email_sdk(
+    request: EmailSendRequest,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> EmailSendResponse:
+    """
+    Send an email via the configured email workflow.
+
+    Used by SDK's email.send() method. Requires superuser auth (workflow engine token).
+    """
+    from uuid import uuid4
+    from src.config import get_settings
+    from src.sdk.context import ExecutionContext
+    from src.services.execution.service import run_workflow
+
+    # Get email config
+    service = EmailService(db)
+    config = await service.get_config()
+
+    if not config:
+        return EmailSendResponse(
+            success=False,
+            error="Email workflow not configured. Configure in Settings > Email.",
+        )
+
+    try:
+        # Build execution context with caller's scope
+        context = ExecutionContext(
+            user_id="system",
+            email="system@internal.gobifrost.com",
+            name="Bifrost System",
+            scope=request.scope or "GLOBAL",
+            organization=None,
+            is_platform_admin=True,
+            is_function_key=False,
+            execution_id=str(uuid4()),
+            workflow_name="",
+            public_url=get_settings().public_url,
+        )
+
+        result = await run_workflow(
+            context=context,
+            workflow_id=config.workflow_id,
+            input_data={
+                "recipient": request.recipient,
+                "subject": request.subject,
+                "body": request.body,
+                "html_body": request.html_body,
+            },
+            transient=True,
+            sync=True,
+        )
+
+        if result.status == "Success":
+            return EmailSendResponse(
+                success=True,
+                execution_id=result.execution_id,
+            )
+        else:
+            return EmailSendResponse(
+                success=False,
+                execution_id=result.execution_id,
+                error=result.error or f"Email workflow failed with status: {result.status}",
+            )
+
+    except Exception as e:
+        logger.exception(f"Error sending email to {request.recipient}")
+        return EmailSendResponse(
+            success=False,
+            error=str(e),
+        )

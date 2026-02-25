@@ -297,20 +297,12 @@ export function useExecutionHistory(
 				// Subscribe to history updates
 				unsubscribe = webSocketService.onHistoryUpdate(
 					(update: HistoryUpdate) => {
-						console.warn(
-							"[useExecutionHistory] Received history update:",
-							update,
-						);
-
 						// For platform admins with org filter, skip updates from other orgs
 						if (
 							orgFilter &&
 							update.org_id &&
 							update.org_id !== orgFilter
 						) {
-							console.warn(
-								"[useExecutionHistory] Skipping update for different org",
-							);
 							return;
 						}
 
@@ -323,19 +315,9 @@ export function useExecutionHistory(
 							queryKey: ["get", "/api/executions"],
 						});
 
-						console.warn(
-							"[useExecutionHistory] Found caches:",
-							caches.length,
-							caches.map(([key]) => key),
-						);
-
 						caches.forEach(([queryKey, oldData]) => {
 							// Skip if no data or not an executions list response
 							if (!oldData || !oldData.executions) {
-								console.warn(
-									"[useExecutionHistory] Skipping cache - no data or executions",
-									{ oldData },
-								);
 								return;
 							}
 
@@ -355,9 +337,6 @@ export function useExecutionHistory(
 							const hasContinuationToken =
 								params?.params?.query?.continuationToken;
 							if (hasContinuationToken) {
-								console.warn(
-									"[useExecutionHistory] Skipping paginated cache",
-								);
 								return;
 							}
 
@@ -365,15 +344,6 @@ export function useExecutionHistory(
 								(exec) =>
 									exec["execution_id"] ===
 									update["execution_id"],
-							);
-
-							console.warn(
-								"[useExecutionHistory] Processing cache update",
-								{
-									existingIndex,
-									executionId: update.execution_id,
-									executionsCount: oldData.executions.length,
-								},
 							);
 
 							if (existingIndex >= 0) {
@@ -390,16 +360,6 @@ export function useExecutionHistory(
 									duration_ms: update.duration_ms,
 								};
 
-								console.warn(
-									"[useExecutionHistory] Updating existing execution",
-									{
-										executionId: update.execution_id,
-										newStatus: update.status,
-										started_at: update.started_at,
-										duration_ms: update.duration_ms,
-									},
-								);
-
 								queryClient.setQueryData(queryKey, {
 									...oldData,
 									executions: newExecutions,
@@ -413,20 +373,7 @@ export function useExecutionHistory(
 									queryParams.startDate ||
 									queryParams.endDate;
 
-								console.warn(
-									"[useExecutionHistory] New execution",
-									{
-										hasFilters,
-										queryParams,
-										willAdd: !hasFilters,
-									},
-								);
-
 								if (!hasFilters) {
-									console.warn(
-										"[useExecutionHistory] Adding new execution to cache",
-										{ executionId: update.execution_id },
-									);
 									queryClient.setQueryData(queryKey, {
 										...oldData,
 										executions: [

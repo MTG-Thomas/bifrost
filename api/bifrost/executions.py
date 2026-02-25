@@ -5,7 +5,7 @@ Provides Python API for execution history operations (list, get, get_current_log
 All operations go through HTTP API endpoints.
 """
 
-from .client import get_client
+from .client import get_client, raise_for_status_with_detail
 from .models import ExecutionLog, WorkflowExecution
 
 
@@ -84,7 +84,7 @@ class executions:
         params["limit"] = min(limit, 1000)
 
         response = await client.get("/api/executions", params=params)
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         data = response.json()
         # API returns ExecutionsListResponse with executions array
         executions_data = data.get("executions", [])
@@ -121,7 +121,7 @@ class executions:
             raise ValueError(f"Execution not found: {execution_id}")
         elif response.status_code == 403:
             raise PermissionError(f"Access denied to execution: {execution_id}")
-        response.raise_for_status()
+        raise_for_status_with_detail(response)
         return WorkflowExecution.model_validate(response.json())
 
     @staticmethod

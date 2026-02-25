@@ -10,6 +10,7 @@ Handles S3 operations including:
 import hashlib
 import mimetypes
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from src.config import Settings
 
@@ -51,6 +52,21 @@ class S3StorageClient:
             region_name=self.settings.s3_region,
         ) as client:
             yield client
+
+    def _rewrite_presigned_url(self, url: str) -> str:
+        """Rewrite a presigned URL to use the public endpoint if configured.
+
+        When s3_public_endpoint_url is set (e.g. "/s3"), replaces the
+        scheme+host+port of the presigned URL so the browser routes through
+        the Vite proxy instead of hitting the internal Docker endpoint.
+        """
+        public = self.settings.s3_public_endpoint_url
+        if not public:
+            return url
+
+        parsed = urlparse(url)
+        # public is a path prefix like "/s3" — make the URL origin-relative
+        return f"{public}{parsed.path}?{parsed.query}"
 
     @staticmethod
     def compute_hash(content: bytes) -> str:
@@ -109,7 +125,33 @@ class S3StorageClient:
                 },
                 ExpiresIn=expires_in,
             )
-        return url
+        return self._rewrite_presigned_url(url)
+
+    async def generate_presigned_download_url(
+        self,
+        path: str,
+        expires_in: int = 600,
+    ) -> str:
+        """
+        Generate a presigned GET URL for direct S3 download.
+
+        Args:
+            path: Target path in S3
+            expires_in: URL expiration time in seconds (default 10 minutes)
+
+        Returns:
+            Presigned GET URL for direct download
+        """
+        async with self.get_client() as s3:
+            url = await s3.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": self.settings.s3_bucket,
+                    "Key": path,
+                },
+                ExpiresIn=expires_in,
+            )
+        return self._rewrite_presigned_url(url)
 
     async def read_uploaded_file(self, path: str) -> bytes:
         """

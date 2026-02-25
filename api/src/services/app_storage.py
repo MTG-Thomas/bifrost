@@ -371,13 +371,12 @@ class AppStorageService:
         return None
 
     async def set_render_cache(
-        self, app_id: str, mode: AppMode, files: dict[str, str], ttl: int = 300
+        self, app_id: str, mode: AppMode, files: dict[str, str]
     ) -> None:
         """Write render bundle to Redis cache.
 
         Args:
             files: dict of {rel_path: code}
-            ttl: Cache TTL in seconds (default 5 minutes).
         """
         try:
             from src.core.cache import get_shared_redis
@@ -386,7 +385,6 @@ class AppStorageService:
             await r.set(
                 self._render_cache_key(app_id, mode),
                 json.dumps(files),
-                ex=ttl,
             )
         except Exception:
             logger.debug(f"Failed to set render cache for app {app_id} ({mode})")

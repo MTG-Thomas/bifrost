@@ -149,6 +149,9 @@ export function Header({
 				{/* Spacer */}
 				<div className="flex-1" />
 
+				{/* File Activity Indicator (Platform Admin only) */}
+				{isPlatformAdmin && <FileActivityIndicator />}
+
 				{/* Search Button */}
 				<Button
 					variant="ghost"
@@ -198,10 +201,7 @@ export function Header({
 					</Button>
 				)}
 
-				{/* File Activity Indicator (Platform Admin only) */}
-				{isPlatformAdmin && <FileActivityIndicator />}
-
-				{/* Notification Center */}
+					{/* Notification Center */}
 				<div className="mr-2">
 					<NotificationCenter />
 				</div>

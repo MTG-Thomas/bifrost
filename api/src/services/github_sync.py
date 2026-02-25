@@ -1253,6 +1253,16 @@ class GitHubSyncService:
         count += len(manifest.tables)
         count += len(manifest.events)
 
+        # Indexer side-effects: WorkflowIndexer for each workflow
+        # Enriches parameters_schema, description, etc. from AST
+        from src.services.file_storage.indexers.workflow import WorkflowIndexer
+        workflow_indexer = WorkflowIndexer(self.db)
+        for _wf_name, mwf in manifest.workflows.items():
+            wf_path = work_dir / mwf.path
+            if wf_path.exists():
+                content = wf_path.read_bytes()
+                await workflow_indexer.index_python_file(mwf.path, content)
+
         # Indexer side-effects: FormIndexer for each form
         from src.services.file_storage.indexers.form import FormIndexer
         form_indexer = FormIndexer(self.db)
@@ -1393,6 +1403,7 @@ class GitHubSyncService:
 
             # Re-run indexers on all registered workflow files
             await self._reindex_registered_workflows(work_dir)
+            await self.db.commit()
 
             # Sync app preview files
             await self._sync_app_previews(work_dir)
