@@ -1050,18 +1050,6 @@ async def validate_application(
         if not (rel_path.endswith(".tsx") or rel_path.endswith(".ts")):
             continue
 
-        # Check for import statements (forbidden in app builder)
-        for i, line in enumerate(content.split("\n"), 1):
-            stripped = line.strip()
-            # Match import statements but not comments
-            if re.match(r'^import\s+', stripped) and not stripped.startswith("//"):
-                errors.append(AppValidationIssue(
-                    severity="error",
-                    file=rel_path,
-                    message=f"Import statements are not allowed: {stripped[:80]}",
-                    line=i,
-                ))
-
         # Check for forbidden patterns
         forbidden = [
             (r'\brequire\s*\(', "require() is not allowed"),
