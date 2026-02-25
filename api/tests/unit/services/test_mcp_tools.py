@@ -1012,7 +1012,7 @@ class TestToolFiltering:
             "mcp__bifrost__list_workflows",
             "mcp__bifrost__list_integrations",
             "mcp__bifrost__list_forms",
-            "mcp__bifrost__get_form_schema",
+            "mcp__bifrost__get_docs",
             "mcp__bifrost__search_knowledge",
         ]
 
