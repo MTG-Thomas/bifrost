@@ -84,10 +84,29 @@ def _generate_model_tokens() -> dict[str, str]:
         (TableUpdate, "TableUpdate"),
     ], "Table Models")
 
+    from src.services.manifest import (
+        ManifestWorkflow, ManifestForm, ManifestAgent, ManifestApp,
+        ManifestIntegration, ManifestConfig, ManifestTable,
+        ManifestEventSource, ManifestEventSubscription,
+    )
+
+    manifest_docs = models_to_markdown([
+        (ManifestWorkflow, "ManifestWorkflow — .bifrost/workflows.yaml entry"),
+        (ManifestForm, "ManifestForm — .bifrost/forms.yaml entry"),
+        (ManifestAgent, "ManifestAgent — .bifrost/agents.yaml entry"),
+        (ManifestApp, "ManifestApp — .bifrost/apps.yaml entry"),
+        (ManifestTable, "ManifestTable — .bifrost/tables.yaml entry"),
+        (ManifestIntegration, "ManifestIntegration — .bifrost/integrations.yaml entry"),
+        (ManifestConfig, "ManifestConfig — .bifrost/configs.yaml entry"),
+        (ManifestEventSource, "ManifestEventSource — .bifrost/events.yaml entry"),
+        (ManifestEventSubscription, "ManifestEventSubscription — subscription within an event source"),
+    ], "Manifest YAML Models (Configuration as Code)")
+
     return {
         "form_model_docs": form_docs,
         "agent_model_docs": agent_docs,
         "table_model_docs": table_docs,
+        "manifest_docs": manifest_docs,
     }
 
 

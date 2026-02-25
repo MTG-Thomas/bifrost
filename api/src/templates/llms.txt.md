@@ -349,3 +349,44 @@ create_event_subscription(source_id=<id>, workflow_id=<id>,
 ```
 
 Configure the external service to POST to the callback_url.
+
+## Manifest YAML Formats (SDK-First / Git Sync)
+
+The `.bifrost/*.yaml` manifest files declare all platform entities as configuration-as-code. Each entity has a manifest entry (identity, org binding, roles) and optionally an entity file (portable definition).
+
+### Workspace Structure
+
+The workspace root is your git repository root. Only `.bifrost/*.yaml` manifests are required — all other directories are convention, not enforced.
+
+```
+<repo-root>/
+  .bifrost/                   # REQUIRED — manifest files (source of truth)
+    organizations.yaml        # Org definitions
+    roles.yaml                # Role definitions
+    workflows.yaml            # Workflow identity + runtime config
+    forms.yaml                # Form identity + org/role binding
+    agents.yaml               # Agent identity + org/role binding
+    apps.yaml                 # App identity + org/role binding
+    integrations.yaml         # Integration definitions + config schema
+    configs.yaml              # Config values (secrets redacted)
+    tables.yaml               # Table schema declarations
+    events.yaml               # Event sources + subscriptions
+    knowledge.yaml            # Namespace declarations
+  workflows/                  # Convention — workflow Python files
+    onboard_user.py
+  forms/                      # Convention — form definition files
+    {uuid}.form.yaml
+  agents/                     # Convention — agent definition files
+    {uuid}.agent.yaml
+  apps/                       # Convention — app source directories
+    my-dashboard/
+      app.yaml                # App metadata + dependencies
+      _layout.tsx
+      styles.css
+      pages/index.tsx
+      components/
+  modules/                    # Convention — shared Python modules
+    shared/utils.py
+```
+
+{manifest_docs}
