@@ -196,7 +196,7 @@ Desktop.ini
 *~
 
 # ==================== CLAUDE CODE ====================
-.claude/
+.claude/settings.local.json
 .mcp.json
 
 # ==================== OTHERS ====================
