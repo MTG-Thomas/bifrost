@@ -112,6 +112,10 @@ def validate_file_path(path: str) -> None:
     if len(segments) == 1:
         filename = segments[0]
 
+        # Allow styles.css at root
+        if filename == "styles.css":
+            return
+
         # Must have .ts or .tsx extension
         if not re.search(r"\.tsx?$", filename):
             raise HTTPException(
@@ -469,11 +473,17 @@ async def render_app(
     # 1. Try Redis cache first
     cached = await app_storage.get_render_cache(app_id_str, storage_mode)
     if cached:
-        files = [
-            RenderFileResponse(path=p, code=c)
-            for p, c in sorted(cached.items())
-        ]
-        return AppRenderResponse(files=files, total=len(files), dependencies=dependencies)
+        cached_css: dict[str, str] = {}
+        cached_code: list[tuple[str, str]] = []
+        for p, c in sorted(cached.items()):
+            if p.endswith(".css"):
+                cached_css[p] = c
+            else:
+                cached_code.append((p, c))
+        files = [RenderFileResponse(path=p, code=c) for p, c in cached_code]
+        return AppRenderResponse(
+            files=files, total=len(files), dependencies=dependencies, styles=cached_css,
+        )
 
     # 2. Cache miss — read from S3
     rel_paths = await app_storage.list_files(app_id_str, storage_mode)
@@ -484,6 +494,18 @@ async def render_app(
     for rel_path in rel_paths:
         content_bytes = await app_storage.read_file(app_id_str, storage_mode, rel_path)
         file_contents[rel_path] = content_bytes.decode("utf-8", errors="replace")
+
+    # Separate CSS files from compilable code
+    css_files: dict[str, str] = {}
+    code_files: dict[str, str] = {}
+    for rel_path, content in file_contents.items():
+        if rel_path.endswith(".css"):
+            css_files[rel_path] = content
+        else:
+            code_files[rel_path] = content
+
+    # Use code_files for compilation
+    file_contents = code_files
 
     # 3. If any compilable files look uncompiled, batch-compile and write back
     needs_compile = [
@@ -514,8 +536,9 @@ async def render_app(
             f"On-demand compiled {len(needs_compile)} files for app {app_id}"
         )
 
-    # 4. Warm the Redis cache
-    await app_storage.set_render_cache(app_id_str, storage_mode, file_contents)
+    # 4. Warm the Redis cache (include CSS files so cache is complete)
+    all_files_for_cache = {**file_contents, **css_files}
+    await app_storage.set_render_cache(app_id_str, storage_mode, all_files_for_cache)
 
     # 5. Build response
     files = [
@@ -523,7 +546,9 @@ async def render_app(
         for rel_path, code in sorted(file_contents.items())
     ]
 
-    return AppRenderResponse(files=files, total=len(files), dependencies=dependencies)
+    return AppRenderResponse(
+        files=files, total=len(files), dependencies=dependencies, styles=css_files,
+    )
 
 
 # =============================================================================

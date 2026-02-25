@@ -310,6 +310,10 @@ class AppRenderResponse(BaseModel):
         default_factory=dict,
         description="npm dependencies {name: version} for esm.sh loading",
     )
+    styles: dict[str, str] = Field(
+        default_factory=dict,
+        description="CSS files {path: content} for style injection",
+    )
 
 
 # ==================== EMBED SECRET MODELS ====================
