@@ -255,11 +255,9 @@ Use in components: `<div className="paper-bg rounded-lg">`. Tailwind classes and
 
 ### External Dependencies
 
-Declare npm packages in `app.yaml`:
+Declare npm packages in `.bifrost/apps.yaml` under the app's `dependencies` field:
 
 ```yaml
-name: My Dashboard
-description: Analytics dashboard
 dependencies:
   recharts: "2.12"
   dayjs: "1.11"
@@ -267,12 +265,24 @@ dependencies:
 
 Max 20 packages. Loaded at runtime from esm.sh CDN.
 
+**React compatibility warning:** Packages with complex dependency trees (e.g. `framer-motion`, `@tiptap/*`, `react-beautiful-dnd`) may load a duplicate React instance through their transitive dependencies, causing "Cannot read properties of null (reading 'useContext')" errors. This happens because esm.sh doesn't always propagate React version pinning to transitive deps.
+
+**Safe packages** (pure logic, or simple React wrappers): `recharts`, `dayjs`, `date-fns`, `lodash`, `zod`, `uuid`, `clsx`, `react-icons`, `@tanstack/react-table`.
+
+**Before adding a package**, test it by opening the browser console on a running app and running:
+```js
+import("https://esm.sh/PACKAGE@VERSION?deps=react@19.1.0,react-dom@19.1.0").then(m => console.log(Object.keys(m)))
+```
+If it loads and exports look correct, it will likely work. If it errors or the app crashes with a React context error after adding it, the package has a dual-React problem — use Tailwind CSS and custom components instead.
+
+**For animations:** Use Tailwind (`animate-in`, `fade-in`, `transition-all`, `duration-200`) and CSS `@keyframes` in `styles.css` instead of JS animation libraries.
+
 ### Runtime Environment
 
-Apps run inside the Bifrost shell (not in an iframe). Browser globals (`window`, `document`, `fetch`, `ResizeObserver`, `MutationObserver`, etc.) are accessible — use them directly when needed. External npm packages that depend on DOM APIs (rich text editors, drag-and-drop libraries, charting with DOM measurement) work normally.
+Apps run inside the Bifrost shell (not in an iframe). Browser globals (`window`, `document`, `fetch`, `ResizeObserver`, `MutationObserver`, etc.) are accessible — use them directly when needed. External npm packages that depend on DOM APIs work normally as long as they don't hit the React dual-instance issue above.
 
 **Cannot use:**
-- ES dynamic `import()` — all dependencies must be declared in `app.yaml`
+- ES dynamic `import()` — all dependencies must be declared in `.bifrost/apps.yaml`
 - Node.js APIs (`fs`, `path`, `process`, etc.)
 
 Use `useWorkflowQuery`/`useWorkflowMutation` for calling backend workflows. Use `fetch` directly for external HTTP calls that don't need backend logic.
