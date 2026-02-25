@@ -2,7 +2,7 @@
 Unit tests for MCP Tools.
 
 Tests the MCP tools for the Bifrost platform:
-- get_form_schema: Returns form schema documentation
+- get_docs: Returns unified platform documentation
 - list_workflows: Lists registered workflows
 - list_forms: Lists forms with org scoping
 - search_knowledge: Searches the knowledge base
@@ -22,7 +22,7 @@ from uuid import uuid4
 import pytest
 
 from src.services.mcp_server.server import MCPContext
-from src.services.mcp_server.tools.forms import get_form_schema, list_forms
+from src.services.mcp_server.tools.forms import list_forms
 from src.services.mcp_server.tools.integrations import list_integrations
 from src.services.mcp_server.tools.knowledge import search_knowledge
 from src.services.mcp_server.tools.workflow import execute_workflow, list_workflows
@@ -110,47 +110,6 @@ def mock_knowledge_document():
         key="sdk-guide",
         created_at=datetime.now(timezone.utc),
     )
-
-
-# ==================== get_form_schema Tests ====================
-
-
-class TestGetFormSchema:
-    """Tests for the get_form_schema MCP tool."""
-
-    @pytest.mark.asyncio
-    async def test_documentation_content(self, org_user_context):
-        """Should return comprehensive form schema documentation."""
-        result = await get_form_schema(org_user_context)
-        schema = result.structured_content["schema"]
-
-        # Check that documentation contains key sections (generated from Pydantic models)
-        assert "Form Schema Documentation" in schema
-        assert "FormCreate" in schema
-        assert "FormField" in schema
-        assert "| Field |" in schema  # Table format
-
-    @pytest.mark.asyncio
-    async def test_includes_field_definitions(self, org_user_context):
-        """Should include documentation for form fields."""
-        result = await get_form_schema(org_user_context)
-        schema = result.structured_content["schema"]
-
-        # Verify common form fields are documented
-        assert "name" in schema
-        assert "type" in schema
-        assert "label" in schema
-        assert "required" in schema
-
-    @pytest.mark.asyncio
-    async def test_includes_model_tables(self, org_user_context):
-        """Should include model documentation in table format."""
-        result = await get_form_schema(org_user_context)
-        schema = result.structured_content["schema"]
-
-        # Schema is now generated from Pydantic models with markdown tables
-        assert "| Field | Type | Required | Description |" in schema
-        assert "FormSchema" in schema
 
 
 # ==================== list_workflows Tests ====================
@@ -747,7 +706,7 @@ class TestBifrostMCPServer:
         assert "mcp__bifrost__list_workflows" in tool_names
         assert "mcp__bifrost__list_integrations" in tool_names
         assert "mcp__bifrost__list_forms" in tool_names
-        assert "mcp__bifrost__get_form_schema" in tool_names
+        assert "mcp__bifrost__get_docs" in tool_names
         assert "mcp__bifrost__search_knowledge" in tool_names
 
     def test_get_tool_names_respects_enabled_filter(self):
@@ -798,7 +757,7 @@ class TestGetSystemToolIds:
             "list_workflows",
             "list_integrations",
             "list_forms",
-            "get_form_schema",
+            "get_docs",
             "search_knowledge",
         ]
 
@@ -1158,7 +1117,7 @@ class TestMCPContextFiltering:
             "list_workflows",
             "list_integrations",
             "list_forms",
-            "get_form_schema",
+            "get_docs",
             "search_knowledge",
         ]
 

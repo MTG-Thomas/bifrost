@@ -482,7 +482,7 @@ class TestSystemToolMetadata:
             "list_workflows",
             "list_integrations",
             "list_forms",
-            "get_form_schema",
+            "get_docs",
             "search_knowledge",
             # Code editor tools (precision editing)
             "list_content",

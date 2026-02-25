@@ -26,21 +26,26 @@ echo "Source: $BIFROST_HAS_SOURCE | Path: $BIFROST_SOURCE_PATH | URL: $BIFROST_D
 - `.bifrost/*.yaml` manifests (the source of truth)
 - Projects being ported to Bifrost
 
-**Writing & Creating** -> Local files + git + `bifrost sync`
+**Writing & Creating** -> Local files + git + `bifrost watch`
 - Write workflow/form/agent files in the git repo
 - Add entries to `.bifrost/*.yaml` manifests
-- Commit, push, then `bifrost sync` to deploy
+- `bifrost watch` auto-syncs changes to the platform on save
 
 **Testing** -> `bifrost run` for workflows, platform for everything else
 - Workflows: `bifrost run <file> --workflow <name> --params '{...}'`
-- Forms, apps, agents: These require the platform to render/execute — use preview URLs or MCP execution tools after sync
+- Forms, apps, agents: These require the platform to render/execute — use preview URLs or `bifrost api` after sync
 
-**MCP tools are for platform operations only:**
-- Schema docs (`get_app_schema`, `get_table_schema`, `get_sdk_schema`) — platform capability reference not in local files
-- Execution/logs (`execute_workflow`, `get_execution`) — for forms/apps/agents that need the platform runtime
-- Platform state verification (`list_workflows`, etc.) — ONLY when debugging sync divergence
+**Platform operations via `bifrost api`:**
+- Schema docs — download once to `/tmp/bifrost-docs/`, grep locally
+- Execution — `bifrost api POST /api/workflows/{id}/execute '{"workflow_id":"...","input_data":{...},"sync":true}'`
+- Discovery (when debugging sync divergence) — `bifrost api GET /api/workflows`
 
-**Never use MCP for:** discovery (`list_*`), reading code (`list_content`, `search_content`, `read_content_lines`), or creating artifacts when a local workspace exists.
+**MCP tools are for platform-managed creation only:**
+- `create_form`, `create_app`, `create_agent` — complex platform artifacts
+- `create_event_source`, `create_event_subscription` — event management
+- `search_knowledge` — RAG search
+
+**Never use MCP for:** discovery (`list_*`), reading code (`list_content`, `search_content`, `read_content_lines`), schema docs, or executing workflows when a local workspace exists.
 
 ## Development Mode
 
@@ -52,35 +57,71 @@ Best for: developers who want git history, local testing, code review before dep
 
 **Requirements:** Git repository, Bifrost SDK installed, GitHub sync configured in platform.
 
-**Discovery: ALWAYS read local `.bifrost/*.yaml` files first.** These are the source of truth — the platform is synced FROM them. Never call MCP discovery tools when the same data is in local YAML.
+#### Start Watch Mode
 
-| To find... | Read this file | NOT this MCP tool |
+Before any build work, ensure `bifrost watch` is running as a background task:
+
+```bash
+# Check if already running
+pgrep -f 'bifrost watch' > /dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING"
+```
+
+If not running, start it:
+```bash
+bifrost watch  # Run as background Bash task
+```
+
+Watch mode auto-syncs local file changes to the platform. Manifest validation errors print to its output — check if sync seems broken.
+
+#### Download Platform Docs (Once Per Session)
+
+Auto-detect the best method and fetch the unified docs:
+
+```bash
+mkdir -p /tmp/bifrost-docs
+# If MCP is available — use get_docs tool, save result to file
+# If SDK is available:
+bifrost api GET /api/llms.txt > /tmp/bifrost-docs/llms.txt
+# Fallback: ask user for Bifrost URL, then:
+# curl -s $BIFROST_URL/api/llms.txt > /tmp/bifrost-docs/llms.txt
+```
+
+Then use Grep/Read on `/tmp/bifrost-docs/llms.txt` for reference.
+
+#### Discovery: Read Local Files First
+
+**ALWAYS read local `.bifrost/*.yaml` files first.** These are the source of truth — the platform is synced FROM them. Never call MCP discovery tools when the same data is in local YAML.
+
+| To find... | Read this file | NOT this |
 |---|---|---|
-| Registered workflows/tools/data_providers | `.bifrost/workflows.yaml` | ~~list_workflows~~ |
-| Integration config + data provider refs | `.bifrost/integrations.yaml` | ~~list_integrations~~ |
-| Forms and their linked workflows | `.bifrost/forms.yaml` + `forms/*.form.yaml` | ~~list_forms~~ |
-| Agents and their tool assignments | `.bifrost/agents.yaml` + `agents/*.agent.yaml` | ~~list_agents~~ |
-| Organizations | `.bifrost/organizations.yaml` | ~~list_organizations~~ |
-| Tables | `.bifrost/tables.yaml` | ~~list_tables~~ |
-| Event sources and subscriptions | `.bifrost/events.yaml` | ~~list_event_sources~~ |
-| Apps | `.bifrost/apps.yaml` + `apps/*/app.yaml` | ~~list_apps~~ |
+| Registered workflows/tools/data_providers | `.bifrost/workflows.yaml` | ~~`bifrost api GET /api/workflows`~~ |
+| Integration config + data provider refs | `.bifrost/integrations.yaml` | ~~`bifrost api GET /api/integrations`~~ |
+| Forms and their linked workflows | `.bifrost/forms.yaml` + `forms/*.form.yaml` | ~~`bifrost api GET /api/forms`~~ |
+| Agents and their tool assignments | `.bifrost/agents.yaml` + `agents/*.agent.yaml` | ~~`bifrost api GET /api/agents`~~ |
+| Organizations | `.bifrost/organizations.yaml` | ~~`bifrost api GET /api/organizations`~~ |
+| Tables | `.bifrost/tables.yaml` | ~~`bifrost api GET /api/tables`~~ |
+| Event sources and subscriptions | `.bifrost/events.yaml` | ~~`bifrost api GET /api/events`~~ |
+| Apps | `.bifrost/apps.yaml` + `apps/*/app.yaml` | ~~`bifrost api GET /api/applications`~~ |
 
-**When to use MCP tools in SDK-First mode:**
-- `execute_workflow` — to test a workflow on the platform
-- `get_execution` — to check execution logs
-- `get_workflow_schema`, `get_sdk_schema` — to look up SDK docs
-- `list_workflows` etc. — ONLY to verify platform state diverged from local (post-sync debugging)
+#### When to use `bifrost api` in SDK-First mode
 
-**Creation flow:**
-1. Write workflow/form/agent files locally in the git repo
-2. Add entries to `.bifrost/*.yaml` manifest files
-3. Test workflows locally with `bifrost run <file> --workflow <name> --params '{...}'`
-4. Iterate until happy with the result
-5. `git add && git commit && git push` to push to GitHub
-6. `bifrost sync` to sync with the platform (runs preflight, pulls/pushes changes)
-7. If conflicts: show them, help user resolve with `bifrost sync --resolve`
-8. If preflight errors: fix issues (syntax, broken refs) and re-sync
-9. Verify deployment with MCP tools (`execute_workflow`, `get_execution`)
+| Need | Command |
+|------|---------|
+| Platform docs (SDK, forms, apps, agents, tables) | `grep` in `/tmp/bifrost-docs/llms.txt` (downloaded above) |
+| Run a workflow (sync) | `bifrost api POST /api/workflows/{id}/execute '{"workflow_id":"...","input_data":{...},"sync":true}'` |
+| Check execution logs | `bifrost api GET /api/executions/{id}` |
+| List executions | `bifrost api GET /api/executions` |
+| Verify platform state | `bifrost api GET /api/workflows` (only for debugging sync divergence) |
+
+#### Creation flow
+
+1. Start `bifrost watch` (if not already running)
+2. Write workflow/form/agent files locally in the git repo
+3. Add entries to `.bifrost/*.yaml` manifest files
+4. Watch mode auto-syncs files to the platform
+5. Test workflows: `bifrost run <file> --workflow <name> --params '{...}'`
+6. Test on platform: `bifrost api POST /api/workflows/{id}/execute '{"workflow_id":"...","input_data":{...},"sync":true}'`
+7. When happy: `git add && git commit && git push`
 
 ### MCP-Only (Remote Development)
 
@@ -90,7 +131,7 @@ Best for: quick iterations, non-developers, working without a local git repo.
 
 **Flow:**
 1. Understand the goal
-2. Read SDK docs via `get_workflow_schema`, `get_sdk_schema`
+2. Read platform docs via `get_docs` tool (single unified doc covering SDK, forms, agents, apps, tables, events)
 3. Write workflow file via `replace_content`, then `register_workflow` to register it. For forms/apps use `create_form`, `create_app`.
 4. Test via `execute_workflow` or access preview URL
 5. Check logs via `get_execution` if issues
@@ -296,15 +337,18 @@ apps:
 1. Generate UUID(s) for all new entities
 2. Write entity files (workflow `.py`, form `.form.yaml`, agent `.agent.yaml`)
 3. Add entries to `.bifrost/*.yaml` manifest files with the UUIDs
-4. `git add . && git commit -m "Add onboarding workflow and form"`
-5. `git push`
-6. `bifrost sync`
+4. If `bifrost watch` is running, files auto-sync to platform
+5. Otherwise: `git add . && git commit -m "Add onboarding workflow and form" && git push && bifrost sync`
 
 ### What `bifrost sync` Does
 
 1. **Preview** — fetches remote state, computes diff (pull/push), runs preflight
 2. **Preflight validation** — checks syntax, linting, cross-references, manifest validity
 3. **Execute** — if no conflicts, auto-syncs; if conflicts, shows them for resolution
+
+### What `bifrost watch` Does
+
+Watches the local `.bifrost/` workspace for file changes and auto-syncs them to the platform. Runs preflight on each change and prints errors to stdout. Equivalent to running `bifrost sync` automatically on every save.
 
 ### Preflight Checks
 
@@ -343,27 +387,38 @@ Clarify with the user:
 5. **Error handling requirements?**
 6. **If migrating from Rewst:** Use `/rewst-migration` skill for cutover guidance
 
-## MCP Tools Guidance
+## CLI & MCP Tools Guidance
 
-> **SDK-First mode:** Read `.bifrost/*.yaml` files instead of calling discovery tools. Use MCP only for execution, events, and SDK docs.
+> **SDK-First mode:** Read `.bifrost/*.yaml` files for discovery, `bifrost api` for platform operations, MCP only for creation of platform-managed artifacts.
 
-### When to use MCP tools
+### `bifrost api` reference (SDK-First)
+
+| Need | Command |
+|------|---------|
+| List workflows | `bifrost api GET /api/workflows` |
+| Get workflow details | `bifrost api GET /api/workflows/{id}` |
+| Execute workflow (sync) | `bifrost api POST /api/workflows/{id}/execute '{"workflow_id":"...","input_data":{...},"sync":true}'` |
+| List/get executions | `bifrost api GET /api/executions[/{id}]` |
+| List forms | `bifrost api GET /api/forms` |
+| List agents | `bifrost api GET /api/agents` |
+| List apps | `bifrost api GET /api/applications` |
+| List integrations | `bifrost api GET /api/integrations` |
+| List tables | `bifrost api GET /api/tables` |
+
+### MCP tools (SDK-First: creation and events only)
 
 | Need | Tool | Notes |
 |------|------|-------|
-| SDK/decorator docs | `get_workflow_schema`, `get_sdk_schema` | Platform capability reference |
-| Form field types | `get_form_schema` | Field type docs not in local files |
-| App structure docs | `get_app_schema` | App Builder patterns + component list |
-| Agent structure docs | `get_agent_schema` | Agent channels/config docs |
-| Data provider docs | `get_data_provider_schema` | Data provider patterns |
-| Run a workflow | `execute_workflow` | Test on platform after sync |
-| Check execution logs | `get_execution`, `list_executions` | Debug workflow runs |
+| Create a form | `create_form` | Platform-managed artifact |
+| Create an app | `create_app` | Platform-managed artifact |
+| Create an agent | `create_agent` | Platform-managed artifact |
 | Create event triggers | `create_event_source`, `create_event_subscription` | Webhooks and schedules |
 | Manage events | `update_event_source`, `delete_event_source` | Modify triggers |
-| Validate an app | `validate_app` or `bifrost push --validate` | Static analysis: bad components, workflow refs |
-| Push files to platform | `bifrost push <path>` (CLI) | Batch push local files to S3 — use `--clean` to delete remote-only files, `--validate` for apps |
+| RAG search | `search_knowledge` | Knowledge base queries |
+| Validate an app | `validate_app` or `bifrost push --validate` | Static analysis |
+| Push files to platform | `bifrost push <path>` (CLI) | Batch push — use `--clean` to delete remote-only files |
 | Get app dependencies | `get_app_dependencies` | Read npm deps from app.yaml |
-| Update app dependencies | `update_app_dependencies` | Add/remove/update npm deps in app.yaml |
+| Update app dependencies | `update_app_dependencies` | Add/remove/update npm deps |
 
 ### Editing via MCP (MCP-Only mode)
 
@@ -375,13 +430,32 @@ Clarify with the user:
 
 Apps are React-based dashboards/tools built with TSX files. They run in a sandboxed runtime with access to platform components and workflow data.
 
+### App Design Workflow
+
+Before writing any app code, understand what you're building visually.
+
+**New app:**
+1. Ask: "What should this app feel like? Any products you'd like it inspired by?"
+2. Explore key screens and interactions with the user
+3. Decide component strategy: pre-included shadcn for standard UI, custom components in `components/` for anything distinctive
+4. If a distinct visual identity is desired, plan `styles.css` — colors, typography, spacing, dark mode
+5. Then start building
+
+**Existing app:**
+1. Read existing `styles.css` and `components/` first
+2. Match established design patterns
+3. Don't introduce conflicting styles
+
+**Key principle:** Don't default to the simplest component that technically works. A rich text editor is not a `<Textarea>`. An email composer is not an `<Input>`. Build custom components when the UX demands it.
+
 ### App File Structure
 
 ```
 apps/my-app/
   app.yaml              # App metadata (name, description)
   _layout.tsx           # Root layout - MUST use <Outlet />, NOT {children}
-  _providers.tsx         # Optional context providers
+  _providers.tsx        # Optional context providers
+  styles.css            # Custom CSS (dark mode via .dark selector)
   pages/
     index.tsx           # Home page (route: /)
     settings.tsx        # Settings page (route: /settings)
@@ -433,36 +507,15 @@ dependencies:
 
 ### Available from "bifrost"
 
-**Hooks:**
-- `useWorkflowQuery(workflowId, params, options)` — auto-executes on mount, returns `{ data, isLoading, error, refetch }`
-- `useWorkflowMutation(workflowId)` — returns `{ mutate, mutateAsync, isPending, data, error }`
-- `useUser()` — current user info
-- `navigate(path)` — programmatic navigation
+**UI Components:** Standard shadcn/ui components are pre-included (Button, Card, Dialog, Table, etc.). See platform docs (`/tmp/bifrost-docs/llms.txt`) for the full list of components, hooks, utilities, and icons. Need more? Build custom components in `components/` — shadcn components are just TSX files.
 
-**UI Components (shadcn/ui):**
-- Layout: Card (+ Header, Footer, Title, Content, Description, Action)
-- Forms: Button, Input, Label, Textarea, Checkbox, Switch, Select (+sub), RadioGroup, Combobox, MultiCombobox, TagsInput, Slider
-- Display: Badge, Avatar (+sub), Alert (+sub), Skeleton, Progress, Separator
-- Navigation: Tabs (+sub), Pagination (+sub)
-- Feedback: Dialog (+sub), AlertDialog (+sub), Tooltip (+sub), Popover (+sub), Sheet (+sub), HoverCard (+sub)
-- Data: Table (+sub), Accordion (+sub), Collapsible (+sub)
-- Calendar/Date: Calendar, DateRangePicker
-- Menus: DropdownMenu (+sub), ContextMenu (+sub), Command (+sub)
-- Toggle: Toggle, ToggleGroup, ToggleGroupItem
-- Routing: Link, NavLink, Outlet, Navigate
-
-**Utilities:**
-- `cn(...)` — Tailwind class merging (clsx + twMerge)
-- `format(date, pattern)` — date-fns format function (e.g., `format(new Date(), 'yyyy-MM-dd')`)
-- `toast(message)` — Sonner toast notifications
-
-**Icons:** All lucide-react icons available (e.g., `<Settings />`, `<ChevronRight />`, `<Search />`)
+**Custom CSS:** Add a `styles.css` file to your app root for custom styles (CSS variables, dark mode via `.dark` selector, custom classes). See platform docs for examples.
 
 ### App Development Workflow (SDK-First)
 
 1. Write app files locally in `apps/{slug}/`
 2. Add entry to `.bifrost/apps.yaml`
-3. `bifrost push apps/{slug}` to push to platform (or `bifrost sync` if using git workflow)
+3. `bifrost watch` auto-syncs to platform (or `bifrost push apps/{slug}` for manual push)
 4. `bifrost push apps/{slug} --validate` to push and validate in one step
 5. Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`
 
@@ -502,7 +555,7 @@ Three patterns for connecting triggers to workflows:
 
 ### Form
 ```
-1. Sync workflow to platform (bifrost sync or register_workflow)
+1. Sync workflow to platform (bifrost watch or bifrost sync)
 2. create_form(name="New User", workflow_id=<id>, fields=[...])
    -> returns form URL
 ```
@@ -510,19 +563,20 @@ Three patterns for connecting triggers to workflows:
 ## Testing
 
 - **Workflows (local):** `bifrost run <file> --workflow <name> --params '{...}'`
-- **Workflows (remote):** `execute_workflow` with workflow ID, check `get_execution` for logs
-- **Forms:** Access at `$BIFROST_DEV_URL/forms/{form_id}`, submit, check `list_executions`
+- **Workflows (remote):** `bifrost api POST /api/workflows/{id}/execute '{"workflow_id":"...","input_data":{...},"sync":true}'` — blocks until result
+- **Check execution logs:** `bifrost api GET /api/executions/{id}`
+- **Forms:** Access at `$BIFROST_DEV_URL/forms/{form_id}`, submit, check `bifrost api GET /api/executions`
 - **Apps:** Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`, validate with `validate_app`, publish with `publish_app`, then live at `$BIFROST_DEV_URL/apps/{slug}`
-- **Events (schedule):** Wait for next cron tick, check `list_executions` for the subscribed workflow
-- **Events (webhook):** `curl -X POST $BIFROST_DEV_URL/api/hooks/{source_id} -H 'Content-Type: application/json' -d '{...}'`, check `list_executions`
+- **Events (schedule):** Wait for next cron tick, check `bifrost api GET /api/executions` for the subscribed workflow
+- **Events (webhook):** `curl -X POST $BIFROST_DEV_URL/api/hooks/{source_id} -H 'Content-Type: application/json' -d '{...}'`, check `bifrost api GET /api/executions`
 
 ## Debugging
 
-### MCP-First Debugging
-1. Check execution logs via `get_execution`
-2. Verify integrations with `list_integrations`
-3. Test workflows with `execute_workflow`
-4. Inspect workflow metadata with `get_workflow`
+### SDK-First Debugging
+1. Check execution logs via `bifrost api GET /api/executions/{id}`
+2. Verify platform state with `bifrost api GET /api/workflows` (only if local/remote divergence suspected)
+3. Test workflows with `bifrost api POST /api/workflows/{id}/execute '{"workflow_id":"...","input_data":{...},"sync":true}'`
+4. Check `bifrost watch` output for sync errors
 
 ### When Errors Suggest System Bugs
 

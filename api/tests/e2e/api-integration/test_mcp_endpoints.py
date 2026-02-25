@@ -228,7 +228,7 @@ class TestMCPToolsEndpoint:
             "list_workflows",
             "list_integrations",
             "list_forms",
-            "get_form_schema",
+            "get_docs",
             "search_knowledge",
         ]
 
