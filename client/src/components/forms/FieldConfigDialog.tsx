@@ -695,9 +695,9 @@ function FieldConfigDialogContent({
 										<div className="flex items-center space-x-2 pt-1">
 											<Checkbox
 												id="defaultValue"
-												checked={defaultValue as boolean}
+												checked={defaultValue === true}
 												onCheckedChange={(checked) =>
-													setDefaultValue(checked as boolean)
+													setDefaultValue(checked === true)
 												}
 											/>
 											<Label

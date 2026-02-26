@@ -590,28 +590,34 @@ async def delete_form(
             detail="Form not found",
         )
 
-    # Dual-write: remove form YAML from S3 _repo/
-    from src.services.repo_sync_writer import RepoSyncWriter
-    writer = RepoSyncWriter(db)
-    await writer.delete_entity_file(f"forms/{form_id}.form.yaml")
-
     if purge:
+        if form.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot purge an active form. Deactivate it first.",
+            )
         # Unlink executions that reference this form (nullable FK)
         await db.execute(
             update(ExecutionORM)
             .where(ExecutionORM.form_id == form_id)
             .values(form_id=None)
         )
-        # Delete form roles
+        # Delete form roles (no DB-level ondelete, must delete explicitly)
         await db.execute(
             delete(FormRoleORM).where(FormRoleORM.form_id == form_id)
         )
-        # Delete the form (form_fields cascade via ORM relationship)
+        # Delete the form (form_fields and embed_secrets cascade via DB-level ondelete=CASCADE)
         await db.execute(
             delete(FormORM).where(FormORM.id == form_id)
         )
         logger.info(f"Purged form {form_id}")
-    else:
+
+    # Dual-write: remove form YAML from S3 _repo/ (after DB ops succeed)
+    from src.services.repo_sync_writer import RepoSyncWriter
+    writer = RepoSyncWriter(db)
+    await writer.delete_entity_file(f"forms/{form_id}.form.yaml")
+
+    if not purge:
         form.is_active = False
         form.updated_at = datetime.now(timezone.utc)
         await db.flush()
