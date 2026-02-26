@@ -25,10 +25,10 @@ async def test_desktop_commit_regenerates_manifest_before_staging():
     mock_repo.untracked_files = []
     mock_repo.index.commit.return_value = MagicMock(hexsha="abc12345")
 
-    # Set repo_manager before patching (bypass __init__)
+    # desktop_commit uses repo_manager.lock(), not checkout()
     mock_rm = MagicMock()
-    mock_rm.checkout.return_value.__aenter__ = AsyncMock(return_value=mock_work_dir)
-    mock_rm.checkout.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_rm.lock.return_value.__aenter__ = AsyncMock(return_value=mock_work_dir)
+    mock_rm.lock.return_value.__aexit__ = AsyncMock(return_value=False)
     service.repo_manager = mock_rm
 
     with patch.object(service, '_open_or_init', return_value=mock_repo), \

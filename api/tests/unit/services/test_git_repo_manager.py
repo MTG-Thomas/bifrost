@@ -186,10 +186,10 @@ class TestSyncUp:
 
 
 class TestCheckout:
-    """Tests for checkout context manager lifecycle."""
+    """Tests for checkout context manager lifecycle (persistent working dir)."""
 
     @pytest.mark.asyncio
-    async def test_creates_temp_dir_syncs_down_yields_syncs_up_cleans_up(self, manager):
+    async def test_syncs_down_yields_persistent_dir_syncs_up(self, manager):
         call_order = []
 
         async def mock_sync_down(target):
@@ -198,39 +198,44 @@ class TestCheckout:
         async def mock_sync_up(source):
             call_order.append(("sync_up", source))
 
-        with patch.object(manager, "sync_down", side_effect=mock_sync_down):
-            with patch.object(manager, "sync_up", side_effect=mock_sync_up):
-                async with manager.checkout() as work_dir:
-                    assert work_dir.exists()
-                    assert work_dir.is_dir()
-                    call_order.append(("yield", work_dir))
-                    saved_dir = work_dir
+        with patch.object(manager, "sync_down", side_effect=mock_sync_down), \
+             patch.object(manager, "sync_up", side_effect=mock_sync_up), \
+             patch.object(manager, "_acquire_lock") as mock_lock:
+            # Mock the lock as an async context manager that does nothing
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        # Verify call order
+            async with manager.checkout() as work_dir:
+                assert work_dir.exists()
+                assert work_dir.is_dir()
+                call_order.append(("yield", work_dir))
+
+        # Verify call order: sync_down -> yield -> sync_up
         assert len(call_order) == 3
         assert call_order[0][0] == "sync_down"
         assert call_order[1][0] == "yield"
         assert call_order[2][0] == "sync_up"
 
-        # sync_down and sync_up received the same path
+        # All received the same persistent path
         assert call_order[0][1] == call_order[1][1]
         assert call_order[2][1] == call_order[1][1]
 
-        # Temp dir cleaned up
-        assert not saved_dir.exists()
+        # Persistent dir is NOT cleaned up (by design)
+        assert work_dir == manager.work_dir
 
     @pytest.mark.asyncio
-    async def test_cleans_up_on_exception(self, manager):
-        with patch.object(manager, "sync_down", new_callable=AsyncMock):
-            with patch.object(manager, "sync_up", new_callable=AsyncMock):
-                saved_dir = None
-                with pytest.raises(ValueError, match="test error"):
-                    async with manager.checkout() as work_dir:
-                        saved_dir = work_dir
-                        raise ValueError("test error")
-                # Temp dir still cleaned up
-                assert saved_dir is not None
-                assert not saved_dir.exists()
+    async def test_persistent_dir_survives_exception(self, manager):
+        with patch.object(manager, "sync_down", new_callable=AsyncMock), \
+             patch.object(manager, "sync_up", new_callable=AsyncMock), \
+             patch.object(manager, "_acquire_lock") as mock_lock:
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(ValueError, match="test error"):
+                async with manager.checkout() as work_dir:
+                    raise ValueError("test error")
+            # Persistent dir still exists (not deleted on error)
+            assert work_dir == manager.work_dir
 
     @pytest.mark.asyncio
     async def test_sync_up_not_called_on_sync_down_failure(self, manager):
@@ -238,9 +243,13 @@ class TestCheckout:
         with patch.object(
             manager, "sync_down",
             side_effect=RuntimeError("download failed"),
-        ):
-            with patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up:
-                with pytest.raises(RuntimeError, match="download failed"):
-                    async with manager.checkout():
-                        pass  # pragma: no cover
-                mock_up.assert_not_awaited()
+        ), \
+             patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up, \
+             patch.object(manager, "_acquire_lock") as mock_lock:
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(RuntimeError, match="download failed"):
+                async with manager.checkout():
+                    pass  # pragma: no cover
+            mock_up.assert_not_awaited()
