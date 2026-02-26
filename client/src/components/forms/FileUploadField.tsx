@@ -140,7 +140,13 @@ export function FileUploadField({
 				handleUploadStart();
 
 				try {
-					const path = await uploadFile(file);
+					const path = await uploadFile(file, (progress) => {
+					setUploadingFiles((prev) =>
+						prev.map((f) =>
+							f.id === uploadId ? { ...f, progress } : f,
+						),
+					);
+				});
 
 					// Remove from uploading, add to completed
 					setUploadingFiles((prev) =>

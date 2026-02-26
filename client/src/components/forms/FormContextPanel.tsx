@@ -1,9 +1,7 @@
-import { useState } from "react";
 import { VariablesTreeView } from "@/components/ui/variables-tree-view";
 import { useFormContext } from "@/contexts/FormContext";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 interface FormContextPanelProps {
 	className?: string;
@@ -18,8 +16,6 @@ interface FormContextPanelProps {
  */
 export function FormContextPanel({ className }: FormContextPanelProps) {
 	const { context, isLoadingLaunchWorkflow } = useFormContext();
-	const [expanded, setExpanded] = useState(false);
-
 	const hasWorkflow = Object.keys(context.workflow).length > 0;
 	const hasQuery = Object.keys(context.query).length > 0;
 	const hasField = Object.keys(context.field).length > 0;
@@ -34,27 +30,11 @@ export function FormContextPanel({ className }: FormContextPanelProps) {
 						<Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
 					)}
 				</h3>
-				<Button
-					variant="ghost"
-					size="icon"
-					className="h-6 w-6"
-					onClick={() => setExpanded(!expanded)}
-					title={expanded ? "Collapse" : "Expand"}
-				>
-					{expanded ? (
-						<Minimize2 className="h-3.5 w-3.5" />
-					) : (
-						<Maximize2 className="h-3.5 w-3.5" />
-					)}
-				</Button>
 			</div>
 
 			{/* Scrollable content */}
 			<div
-				className={cn(
-					"overflow-y-auto space-y-4 pr-1",
-					expanded ? "max-h-none" : "max-h-[500px]"
-				)}
+				className="overflow-y-auto space-y-4 pr-1"
 			>
 				{/* Workflow Results */}
 				<ContextSection

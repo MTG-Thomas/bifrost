@@ -59,7 +59,7 @@ interface UseFormFileUploadOptions {
 
 interface UseFormFileUploadReturn {
 	/** Upload a single file, returns the path for form submission */
-	uploadFile: (file: File) => Promise<string>;
+	uploadFile: (file: File, onProgress?: (progress: UploadProgress) => void) => Promise<string>;
 	/** Current upload state */
 	uploadState: UploadState;
 	/** Reset state to idle */
@@ -84,7 +84,7 @@ export function useFormFileUpload(
 	}, []);
 
 	const uploadFile = useCallback(
-		async (file: File): Promise<string> => {
+		async (file: File, onProgress?: (progress: UploadProgress) => void): Promise<string> => {
 			// Client-side validation
 			if (maxSizeMb && file.size > maxSizeMb * 1024 * 1024) {
 				const error = `File size exceeds ${maxSizeMb}MB limit`;
@@ -183,14 +183,12 @@ export function useFormFileUpload(
 							const percentage = Math.round(
 								(event.loaded / event.total) * 100,
 							);
+							const progress = { loaded: event.loaded, total: event.total, percentage };
 							setUploadState((prev) => ({
 								...prev,
-								progress: {
-									loaded: event.loaded,
-									total: event.total,
-									percentage,
-								},
+								progress,
 							}));
+							onProgress?.(progress);
 						}
 					});
 

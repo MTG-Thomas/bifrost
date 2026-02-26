@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2 } from "lucide-react";
+import { Loader2, Copy, Check } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
 	Card,
 	CardContent,
@@ -60,9 +61,9 @@ export function ExecutionLogsPanel({
 	maxHeight = "600px",
 	embedded = false,
 }: ExecutionLogsPanelProps) {
-	const logsEndRef = useRef<HTMLDivElement>(null);
 	const logsContainerRef = useRef<HTMLDivElement>(null);
 	const [autoScroll, setAutoScroll] = useState(true);
+	const [copied, setCopied] = useState(false);
 
 	const isRunning =
 		status === "Running" || status === "Pending" || status === "Cancelling";
@@ -76,10 +77,12 @@ export function ExecutionLogsPanel({
 	// Combine API logs with streaming logs for display during execution
 	const displayLogs = isRunning ? [...logs, ...streamingLogs] : logs;
 
-	// Auto-scroll to bottom when new logs arrive
+	// Auto-scroll to bottom when new logs arrive.
+	// Uses scrollTop instead of scrollIntoView to avoid scrolling the outer page.
 	useEffect(() => {
-		if (autoScroll && logsEndRef.current && displayLogs.length > 0) {
-			logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+		const container = logsContainerRef.current;
+		if (autoScroll && container && displayLogs.length > 0) {
+			container.scrollTop = container.scrollHeight;
 		}
 	}, [displayLogs.length, autoScroll]);
 
@@ -96,6 +99,22 @@ export function ExecutionLogsPanel({
 			50;
 		setAutoScroll(isAtBottom);
 	}, []);
+
+	const handleCopyLogs = useCallback(() => {
+		const text = displayLogs
+			.map((log) => {
+				const time = log.timestamp
+					? new Date(log.timestamp).toLocaleTimeString()
+					: "";
+				const level = (log.level || "INFO").toUpperCase();
+				return `${time}  ${level}  ${log.message || ""}`;
+			})
+			.join("\n");
+		navigator.clipboard.writeText(text).then(() => {
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		});
+	}, [displayLogs]);
 
 	const renderLogEntry = (log: LogEntry, index: number) => {
 		const level = log.level?.toLowerCase() || "info";
@@ -159,7 +178,6 @@ export function ExecutionLogsPanel({
 					style={{ maxHeight }}
 				>
 					{displayLogs.map(renderLogEntry)}
-					<div ref={logsEndRef} />
 				</div>
 			);
 
@@ -197,15 +215,22 @@ export function ExecutionLogsPanel({
 		return (
 			<Card className={className}>
 				<CardHeader>
-					<CardTitle className="flex items-center gap-2">
-						Logs
-						{isConnected && (
-							<Badge variant="secondary" className="text-xs">
-								<Loader2 className="mr-1 h-3 w-3 animate-spin" />
-								Live
-							</Badge>
+					<div className="flex items-center justify-between">
+						<CardTitle className="flex items-center gap-2">
+							Logs
+							{isConnected && (
+								<Badge variant="secondary" className="text-xs">
+									<Loader2 className="mr-1 h-3 w-3 animate-spin" />
+									Live
+								</Badge>
+							)}
+						</CardTitle>
+						{displayLogs.length > 0 && (
+							<Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleCopyLogs}>
+								{copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+							</Button>
 						)}
-					</CardTitle>
+					</div>
 					<CardDescription>
 						Python logger output from workflow execution
 						{!isPlatformAdmin && " (INFO, WARNING, ERROR only)"}
@@ -229,8 +254,7 @@ export function ExecutionLogsPanel({
 							style={{ maxHeight }}
 						>
 							{displayLogs.map(renderLogEntry)}
-							<div ref={logsEndRef} />
-						</div>
+								</div>
 					)}
 				</CardContent>
 			</Card>
@@ -242,7 +266,14 @@ export function ExecutionLogsPanel({
 		return (
 			<Card className={className}>
 				<CardHeader>
-					<CardTitle>Logs</CardTitle>
+					<div className="flex items-center justify-between">
+						<CardTitle>Logs</CardTitle>
+						{logs.length > 0 && (
+							<Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleCopyLogs}>
+								{copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+							</Button>
+						)}
+					</div>
 					<CardDescription>
 						Python logger output from workflow execution
 						{!isPlatformAdmin && " (INFO, WARNING, ERROR only)"}
