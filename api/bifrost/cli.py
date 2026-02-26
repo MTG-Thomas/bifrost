@@ -243,7 +243,7 @@ Usage:
   bifrost <command> [options]
 
 Commands:
-  run         Run a workflow file with web-based parameter input
+  run         Run a workflow directly (silent JSON output) or interactively via browser
   sync        Sync with Bifrost platform via GitHub
   push        Push local files to Bifrost platform
   watch       Watch for file changes and auto-push (requires .bifrost/ workspace)
@@ -253,8 +253,10 @@ Commands:
   help        Show this help message
 
 Examples:
-  bifrost run my_workflow.py
-  bifrost run my_workflow.py --workflow greet
+  bifrost run workflow.py -w greet
+  bifrost run workflow.py -w greet -p '{"name": "World"}'
+  bifrost run workflow.py -w greet | jq .
+  bifrost run workflow.py --interactive
   bifrost sync
   bifrost sync --preview
   bifrost sync --resolve workflows/billing.py=keep_remote
@@ -387,17 +389,117 @@ def _extract_workflow_parameters(func: Any) -> list[dict[str, Any]]:
     return params
 
 
+def _run_direct(
+    selected_workflow: str,
+    workflows: dict[str, Any],
+    params: dict[str, Any],
+    verbose: bool = False,
+) -> int:
+    """
+    Run a workflow directly in standalone mode.
+
+    Args:
+        selected_workflow: Name of the workflow to run
+        workflows: Dict of discovered workflow functions
+        params: Parameters to pass to the workflow
+        verbose: Whether to print status messages
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    import uuid
+
+    # Try to authenticate for SDK features (knowledge, ai, etc.)
+    # but don't require it — standalone mode can run without API access
+    try:
+        client = BifrostClient.get_instance(require_auth=True)
+
+        # Set up execution context so context.org_id, context.user_id, etc. work
+        try:
+            from bifrost._context import set_execution_context
+
+            user_info = client.user
+            org_info = client.organization
+
+            class _Org:
+                def __init__(self, id, name):
+                    self.id = id
+                    self.name = name
+
+            class _StandaloneContext:
+                def __init__(self, user_id, email, name, scope, organization, execution_id, workflow_name):
+                    self.user_id = user_id
+                    self.email = email
+                    self.name = name
+                    self.scope = scope
+                    self.organization = organization
+                    self.execution_id = execution_id
+                    self.workflow_name = workflow_name
+                    self.is_platform_admin = False
+                    self.is_function_key = False
+                    self.parameters = {}
+                    self.startup = None
+                    self._dynamic_secrets = set()
+
+                @property
+                def org_id(self):
+                    return self.organization.id if self.organization else None
+
+                @property
+                def org_name(self):
+                    return self.organization.name if self.organization else None
+
+                def _register_dynamic_secret(self, value):
+                    """Register a secret for redaction (standalone mode)."""
+                    if value and len(value) >= 4:
+                        self._dynamic_secrets.add(value)
+
+                def _collect_secret_values(self):
+                    """Return registered secrets (standalone mode)."""
+                    return self._dynamic_secrets
+
+            org = _Org(org_info["id"], org_info.get("name", "")) if org_info else None
+            scope = org_info["id"] if org_info else "GLOBAL"
+
+            ctx = _StandaloneContext(
+                user_id=user_info.get("id", "cli-user"),
+                email=user_info.get("email", ""),
+                name=user_info.get("name", "CLI User"),
+                scope=scope,
+                organization=org,
+                execution_id=f"standalone-{uuid.uuid4()}",
+                workflow_name=selected_workflow,
+            )
+            set_execution_context(ctx)
+        except Exception:
+            pass  # Context setup is best-effort
+
+    except (RuntimeError, Exception):
+        pass  # Standalone mode works without auth
+
+    if verbose:
+        print(f"Running in standalone mode: {selected_workflow}")
+
+    workflow_fn = workflows[selected_workflow]
+
+    try:
+        result = asyncio.run(workflow_fn(**params))
+        if verbose:
+            print(f"Result: {json.dumps(result, indent=2, default=str)}")
+        else:
+            print(json.dumps(result, default=str))
+        return 0
+    except Exception as e:
+        print(f"Error executing workflow: {e}", file=sys.stderr)
+        return 1
+
+
 def handle_run(args: list[str]) -> int:
     """
     Handle 'bifrost run <file>' command.
 
-    Starts a dev session:
-    1. Discovers workflows in the file
-    2. Registers session with API
-    3. Opens browser to DevRun page
-    4. Polls for pending execution
-    5. Executes workflow locally
-    6. Posts results back to API
+    Default behavior: direct execution (silent, pipeable output).
+    Use --interactive for browser-based session.
 
     Args:
         args: Command arguments [file, --workflow, etc.]
@@ -406,6 +508,7 @@ def handle_run(args: list[str]) -> int:
         Exit code (0 for success, 1 for error)
     """
     import importlib.util
+    import logging
 
     if not args or args[0] in ("--help", "-h"):
         print_run_help()
@@ -414,6 +517,8 @@ def handle_run(args: list[str]) -> int:
     workflow_file = args[0]
     selected_workflow: str | None = None
     no_browser = False
+    interactive = False
+    verbose = False
     inline_params: dict[str, Any] | None = None
 
     # Parse arguments
@@ -435,6 +540,12 @@ def handle_run(args: list[str]) -> int:
                 print(f"Error: Invalid JSON for --params: {e}", file=sys.stderr)
                 return 1
             i += 2
+        elif args[i] in ("--interactive", "-i"):
+            interactive = True
+            i += 1
+        elif args[i] in ("--verbose", "-v"):
+            verbose = True
+            i += 1
         elif args[i] in ("--no-browser", "-n"):
             no_browser = True
             i += 1
@@ -458,6 +569,10 @@ def handle_run(args: list[str]) -> int:
     cwd = os.getcwd()
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
+
+    # In non-verbose direct mode, suppress decorator warnings before loading the module
+    if not interactive and not verbose:
+        logging.getLogger("bifrost.decorators").setLevel(logging.ERROR)
 
     # Load the workflow file
     try:
@@ -491,86 +606,20 @@ def handle_run(args: list[str]) -> int:
         )
         return 1
 
-    # If --params is provided with --workflow, run in standalone mode
-    if inline_params is not None:
+    # Direct execution mode (default) — requires --workflow
+    if not interactive:
         if not selected_workflow:
-            # If only one workflow, use it; otherwise require --workflow
-            if len(workflows) == 1:
-                selected_workflow = list(workflows.keys())[0]
-            else:
-                print("Error: --params requires --workflow when multiple workflows exist", file=sys.stderr)
-                return 1
-
-        # Try to authenticate for SDK features (knowledge, ai, etc.)
-        # but don't require it — standalone mode can run without API access
-        try:
-            client = BifrostClient.get_instance(require_auth=True)
-
-            # Set up execution context so context.org_id, context.user_id, etc. work
-            try:
-                from bifrost._context import set_execution_context
-                import uuid
-
-                user_info = client.user
-                org_info = client.organization
-
-                class _Org:
-                    def __init__(self, id, name):
-                        self.id = id
-                        self.name = name
-
-                class _StandaloneContext:
-                    def __init__(self, user_id, email, name, scope, organization, execution_id, workflow_name):
-                        self.user_id = user_id
-                        self.email = email
-                        self.name = name
-                        self.scope = scope
-                        self.organization = organization
-                        self.execution_id = execution_id
-                        self.workflow_name = workflow_name
-                        self.is_platform_admin = False
-                        self.is_function_key = False
-                        self.parameters = {}
-                        self.startup = None
-
-                    @property
-                    def org_id(self):
-                        return self.organization.id if self.organization else None
-
-                    @property
-                    def org_name(self):
-                        return self.organization.name if self.organization else None
-
-                org = _Org(org_info["id"], org_info.get("name", "")) if org_info else None
-                scope = org_info["id"] if org_info else "GLOBAL"
-
-                ctx = _StandaloneContext(
-                    user_id=user_info.get("id", "cli-user"),
-                    email=user_info.get("email", ""),
-                    name=user_info.get("name", "CLI User"),
-                    scope=scope,
-                    organization=org,
-                    execution_id=f"standalone-{uuid.uuid4()}",
-                    workflow_name=selected_workflow,
-                )
-                set_execution_context(ctx)
-            except Exception:
-                pass  # Context setup is best-effort
-
-        except (RuntimeError, Exception):
-            pass  # Standalone mode works without auth
-
-        print(f"Running in standalone mode: {selected_workflow}")
-        workflow_fn = workflows[selected_workflow]
-
-        try:
-            result = asyncio.run(workflow_fn(**inline_params))
-            print(f"Result: {json.dumps(result, indent=2, default=str)}")
-            return 0
-        except Exception as e:
-            print(f"Error executing workflow: {e}", file=sys.stderr)
+            print(
+                f"Error: --workflow is required. Available workflows: {list(workflows.keys())}. "
+                "Use --interactive for browser UI.",
+                file=sys.stderr,
+            )
             return 1
 
+        params = inline_params if inline_params is not None else {}
+        return _run_direct(selected_workflow, workflows, params, verbose=verbose)
+
+    # Interactive mode (--interactive) — browser-based session
     # Ensure user is authenticated (only needed for API-based flow)
     try:
         client = BifrostClient.get_instance(require_auth=True)
@@ -1743,30 +1792,27 @@ async def _api_request(method: str, endpoint: str, body: Any | None, client: "Bi
 def print_run_help() -> None:
     """Print run command help."""
     print("""
-Usage: bifrost run <file> [options]
+Usage: bifrost run <file> -w <workflow> [options]
 
-Run a workflow file with web-based parameter input or standalone execution.
-
-This command:
-1. Discovers @workflow decorated functions in your file
-2. Opens a browser to the DevRun page (or runs standalone with --params)
-3. Waits for you to select a workflow and enter parameters
-4. Executes the workflow locally and shows results
+Run a workflow directly. Output is raw JSON (pipeable). Use --interactive for browser UI.
 
 Arguments:
   file                  Python file containing @workflow decorated functions
 
 Options:
-  --workflow, -w NAME   Pre-select a workflow (required with --params if multiple workflows)
-  --params, -p JSON     Run in standalone mode with JSON parameters (no API required)
-  --no-browser, -n      Don't automatically open browser
+  --workflow, -w NAME   Workflow to run (required in direct mode)
+  --params, -p JSON     JSON parameters to pass to the workflow (default: {})
+  --verbose, -v         Show status messages (e.g., "Running...", "Result:")
+  --interactive, -i     Open browser-based session instead of direct execution
+  --no-browser, -n      Don't auto-open browser (only with --interactive)
   --help, -h            Show this help message
 
 Examples:
-  bifrost run workflow.py                                                  # Interactive mode with browser
-  bifrost run workflow.py --workflow greet                                 # Pre-select workflow
-  bifrost run workflow.py --workflow greet --params '{"name": "World"}'    # Standalone mode
-  bifrost run workflow.py --no-browser                                     # No auto-open browser
+  bifrost run workflow.py -w greet                                         # Direct execution, raw JSON output
+  bifrost run workflow.py -w greet -p '{"name": "World"}'                  # With parameters
+  bifrost run workflow.py -w greet -v                                      # Verbose output
+  bifrost run workflow.py -w greet | jq .                                  # Pipe to jq
+  bifrost run workflow.py --interactive                                    # Browser-based session
 """.strip())
 
 
