@@ -94,6 +94,7 @@ def _form_schema_to_fields(form_schema: dict, form_id: UUID) -> list[FormFieldOR
             max_size_mb=field.max_size_mb,
             content=field.content,
             allow_as_query_param=field.allow_as_query_param,
+            auto_fill=field.auto_fill,
         )
         fields.append(field_orm)
 

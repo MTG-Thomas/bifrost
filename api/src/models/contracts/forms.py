@@ -90,6 +90,11 @@ class FormField(BaseModel):
         default=None, description="Static content for markdown/HTML components")
     allow_as_query_param: bool | None = Field(
         default=None, description="Whether this field's value can be populated from URL query parameters")
+    auto_fill: dict[str, str] | None = Field(
+        default=None,
+        description="Map of sibling field names to metadata paths. When this field's data provider "
+                    "returns results, auto-populate sibling fields from the first result's metadata. "
+                    "Example: {\"employee_count\": \"recommended_employee_count\"}")
 
     @model_validator(mode='after')
     def validate_field_requirements(self):
@@ -125,6 +130,21 @@ class FormSchema(BaseModel):
         if len(names) != len(set(names)):
             raise ValueError("Field names must be unique")
         return v
+
+    @model_validator(mode='after')
+    def validate_auto_fill_targets(self):
+        """Ensure auto_fill target field names reference fields that exist in this form."""
+        field_names = {field.name for field in self.fields}
+        for field in self.fields:
+            if not field.auto_fill:
+                continue
+            invalid = set(field.auto_fill.keys()) - field_names
+            if invalid:
+                raise ValueError(
+                    f"Field '{field.name}' auto_fill references non-existent "
+                    f"target field(s): {', '.join(sorted(invalid))}"
+                )
+        return self
 
 
 class Form(BaseModel):
@@ -275,6 +295,7 @@ class FormPublic(BaseModel):
                     max_size_mb=field.max_size_mb,
                     content=field.content,
                     allow_as_query_param=field.allow_as_query_param,
+                    auto_fill=field.auto_fill,
                 )
                 form_fields.append(form_field)
 
