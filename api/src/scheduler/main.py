@@ -353,7 +353,7 @@ class Scheduler:
 
                 if op_type == "git_fetch":
                     # Fetch does S3 sync down + git fetch + status
-                    fetch_result = await sync_service.desktop_fetch()
+                    fetch_result = await sync_service.desktop_fetch(job_id=job_id)
                     if fetch_result.success:
                         status_result = await sync_service.desktop_status()
                         await publish_git_op_completed(

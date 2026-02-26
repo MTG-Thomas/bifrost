@@ -338,6 +338,7 @@ from src.models.contracts.github import (
     WorkflowReference,
     WorkspaceAnalysisResponse,
     GitJobResponse,
+    GitOpRequest,
     CommitRequest,
     ResolveRequest,
     DiffRequest,
@@ -758,6 +759,7 @@ __all__ = [
     "DeactivateWorkflowResponse",
     # Desktop-style git sync models
     "GitJobResponse",
+    "GitOpRequest",
     "CommitRequest",
     "ResolveRequest",
     "DiffRequest",

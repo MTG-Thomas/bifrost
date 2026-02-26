@@ -91,6 +91,117 @@ def _walk_tree(root: Path) -> dict[str, bytes]:
     return files
 
 
+def _auto_resolve_manifest_conflicts(repo: GitRepo, work_dir: Path, unmerged: dict) -> set[str]:
+    """Auto-resolve .bifrost/*.yaml manifest conflicts via YAML union merge.
+
+    For each conflicted manifest file:
+    1. Parse ours (stage 2) and theirs (stage 3) YAML
+    2. Union merge at top-level dict key level (theirs wins on value conflicts)
+    3. Write merged YAML to working tree and git add
+    4. On failure, accept theirs entirely
+
+    Returns set of paths that were auto-resolved (removed from conflict list).
+    """
+    resolved_paths: set[str] = set()
+
+    for cpath in list(unmerged.keys()):
+        cpath_str = str(cpath)
+        if not (cpath_str.startswith(".bifrost/") and cpath_str.endswith(".yaml")):
+            continue
+
+        try:
+            # Parse both sides
+            ours_yaml = None
+            theirs_yaml = None
+            try:
+                ours_raw = repo.git.show(f":2:{cpath_str}")
+                ours_yaml = yaml.safe_load(ours_raw) or {}
+            except Exception:
+                ours_yaml = {}
+            try:
+                theirs_raw = repo.git.show(f":3:{cpath_str}")
+                theirs_yaml = yaml.safe_load(theirs_raw) or {}
+            except Exception:
+                theirs_yaml = {}
+
+            if not isinstance(ours_yaml, dict) or not isinstance(theirs_yaml, dict):
+                # Not a dict-shaped YAML — fall back to accepting theirs
+                raise ValueError("Non-dict YAML")
+
+            # Union merge: for each top-level key, merge the sub-dicts/lists
+            merged = {}
+            all_keys = set(ours_yaml.keys()) | set(theirs_yaml.keys())
+            for key in all_keys:
+                ours_val = ours_yaml.get(key)
+                theirs_val = theirs_yaml.get(key)
+
+                if key not in ours_yaml:
+                    merged[key] = theirs_val
+                elif key not in theirs_yaml:
+                    merged[key] = ours_val
+                elif isinstance(ours_val, dict) and isinstance(theirs_val, dict):
+                    # Merge dict entries (keyed by sub-key); theirs wins on conflicts
+                    merged_dict = dict(ours_val)
+                    merged_dict.update(theirs_val)
+                    merged[key] = merged_dict
+                elif isinstance(ours_val, list) and isinstance(theirs_val, list):
+                    # For lists, use theirs (lists aren't keyed, can't union safely)
+                    merged[key] = theirs_val
+                else:
+                    # Scalar or mismatched types — theirs wins
+                    merged[key] = theirs_val
+
+            # Write merged YAML
+            merged_yaml = yaml.dump(merged, default_flow_style=False, sort_keys=True, allow_unicode=True)
+            file_path = work_dir / cpath_str
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(merged_yaml)
+            repo.git.add(cpath_str)
+            resolved_paths.add(cpath_str)
+            logger.info(f"Auto-resolved manifest conflict: {cpath_str}")
+
+        except Exception as e:
+            # Fall back to accepting theirs entirely
+            logger.warning(f"Manifest auto-merge failed for {cpath_str}, accepting theirs: {e}")
+            try:
+                theirs_raw = repo.git.show(f":3:{cpath_str}")
+                file_path = work_dir / cpath_str
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(theirs_raw)
+                repo.git.add(cpath_str)
+                resolved_paths.add(cpath_str)
+            except Exception as fallback_err:
+                logger.error(f"Failed to accept theirs for {cpath_str}: {fallback_err}")
+
+    return resolved_paths
+
+
+def _classify_conflict_type(unmerged: dict, cpath: str) -> str:
+    """Classify conflict type from git unmerged blob stages.
+
+    Stage 1 = common ancestor, Stage 2 = ours, Stage 3 = theirs.
+    """
+    # unmerged keys may be PathLike — find matching entry by str comparison
+    entries = None
+    for key, val in unmerged.items():
+        if str(key) == cpath:
+            entries = val
+            break
+    if not entries:
+        return "both_modified"
+    stages = {stage for stage, _blob in entries}
+    if stages >= {1, 2, 3}:
+        return "both_modified"
+    elif stages == {2, 3}:
+        return "both_added"
+    elif stages == {1, 3}:
+        return "deleted_by_us"
+    elif stages == {1, 2}:
+        return "deleted_by_them"
+    else:
+        return "both_modified"
+
+
 # =============================================================================
 # Standalone manifest import (no git, reads from S3)
 # =============================================================================
@@ -383,7 +494,18 @@ class GitHubSyncService:
         conflict_list: list[MergeConflict] = []
         try:
             unmerged = repo.index.unmerged_blobs()
-            for cpath in sorted(unmerged.keys()):
+        except Exception:
+            unmerged = {}
+
+        if unmerged:
+            # Auto-resolve .bifrost/*.yaml manifest conflicts
+            try:
+                _auto_resolve_manifest_conflicts(repo, work_dir, unmerged)
+                unmerged = repo.index.unmerged_blobs()
+            except Exception as e:
+                logger.warning(f"Manifest auto-resolve in status failed: {e}")
+
+            for cpath in sorted(str(k) for k in unmerged.keys()):
                 ours_content = None
                 theirs_content = None
                 try:
@@ -394,16 +516,15 @@ class GitHubSyncService:
                     theirs_content = repo.git.show(f":3:{cpath}")
                 except Exception:
                     pass
-                metadata = extract_entity_metadata(str(cpath))
+                metadata = extract_entity_metadata(cpath)
                 conflict_list.append(MergeConflict(
-                    path=str(cpath),
+                    path=cpath,
                     ours_content=ours_content,
                     theirs_content=theirs_content,
                     display_name=metadata.display_name,
                     entity_type=metadata.entity_type,
+                    conflict_type=_classify_conflict_type(unmerged, cpath),
                 ))
-        except Exception:
-            pass  # No unmerged entries
 
         if conflict_list:
             return WorkingTreeStatus(
@@ -468,10 +589,8 @@ class GitHubSyncService:
         """Core commit logic. Stages, runs preflight, commits."""
         from src.models.contracts.github import CommitResult
 
-        # Regenerate manifest from DB before staging
+        # Regenerate manifest from DB so the commit captures current platform state
         await self._regenerate_manifest_to_dir(self.db, work_dir)
-
-        # Stage everything (now includes fresh manifest)
         repo.git.add(A=True)
 
         # Check if there are changes to commit
@@ -529,28 +648,29 @@ class GitHubSyncService:
         if not remote_exists:
             return PullResult(success=True, pulled=0)
 
-        # Stash local changes before merge (like GitHub Desktop)
-        stashed = False
-        try:
-            result = repo.git.stash("push", "--include-untracked", "-m", "bifrost-pull-stash")
-            stashed = "No local changes" not in result
-        except Exception as e:
-            logger.debug(f"Stash before pull: {e}")
-
-        # Attempt merge
         await _progress("Merging changes...")
         try:
-            repo.git.merge(f"origin/{self.branch}")
-        except Exception:
+            merge_output = repo.git.merge(f"origin/{self.branch}")
+            logger.info(f"Merge succeeded: {merge_output[:200] if merge_output else 'no output'}")
+        except Exception as merge_err:
+            logger.info(f"Merge failed: {merge_err}")
             is_merge_conflict = (work_dir / ".git" / "MERGE_HEAD").exists()
 
             if is_merge_conflict:
                 conflicts: list[MergeConflict] = []
                 try:
                     unmerged = repo.index.unmerged_blobs()
-                    conflicted_files = sorted(unmerged.keys())
                 except Exception:
-                    conflicted_files = []
+                    unmerged = {}
+
+                if unmerged:
+                    try:
+                        _auto_resolve_manifest_conflicts(repo, work_dir, unmerged)
+                        unmerged = repo.index.unmerged_blobs()
+                    except Exception as e:
+                        logger.warning(f"Manifest auto-resolve in pull failed: {e}")
+
+                conflicted_files = sorted(str(k) for k in unmerged.keys())
 
                 for cpath in conflicted_files:
                     ours_content = None
@@ -571,74 +691,20 @@ class GitHubSyncService:
                         theirs_content=theirs_content,
                         display_name=metadata.display_name,
                         entity_type=metadata.entity_type,
+                        conflict_type=_classify_conflict_type(unmerged, cpath),
                     ))
 
-                # Drop the stash — the user will resolve conflicts and sync again,
-                # at which point a fresh manifest is regenerated. Keeping the stash
-                # causes stash-pop conflicts on the next sync.
-                if stashed:
-                    try:
-                        repo.git.stash("drop")
-                    except Exception:
-                        logger.debug("Failed to drop stash after merge conflict")
-
+                logger.info(f"Merge conflict: returning {len(conflicts)} conflicts to UI")
                 return PullResult(
                     success=False,
                     conflicts=conflicts,
                     error="Merge conflicts detected",
                 )
             else:
-                if stashed:
-                    try:
-                        repo.git.stash("pop")
-                    except Exception:
-                        logger.warning("Failed to pop stash after merge failure")
                 raise
 
         # Entity import is handled by desktop_sync() after push succeeds.
-        # Here we just count the pull as successful and pop stash.
         pulled = 0  # Will be counted during entity import in desktop_sync
-
-        # Pop stash to restore local changes
-        await _progress("Cleaning up...")
-        if stashed:
-            try:
-                repo.git.stash("pop")
-            except Exception as e:
-                logger.warning(f"Stash pop had conflicts: {e}")
-
-                stash_conflicts: list[MergeConflict] = []
-                try:
-                    unmerged = repo.index.unmerged_blobs()
-                    conflicted_files = sorted(unmerged.keys())
-                except Exception:
-                    conflicted_files = []
-
-                for cpath in conflicted_files:
-                    ours_content = None
-                    theirs_content = None
-                    try:
-                        ours_content = repo.git.show(f":2:{cpath}")
-                    except Exception:
-                        pass
-                    try:
-                        theirs_content = repo.git.show(f":3:{cpath}")
-                    except Exception:
-                        pass
-                    metadata = extract_entity_metadata(cpath)
-                    stash_conflicts.append(MergeConflict(
-                        path=cpath,
-                        ours_content=ours_content,
-                        theirs_content=theirs_content,
-                        display_name=metadata.display_name,
-                        entity_type=metadata.entity_type,
-                    ))
-
-                return PullResult(
-                    success=False,
-                    conflicts=stash_conflicts,
-                    error="Local changes conflict with pulled changes",
-                )
 
         # Sync app preview files from repo to _apps/{id}/preview/
         await self._sync_app_previews(work_dir)
@@ -699,14 +765,22 @@ class GitHubSyncService:
     # Desktop-style operations: fetch, status, commit, sync, resolve, diff
     # -----------------------------------------------------------------
 
-    async def desktop_fetch(self) -> "FetchResult":
+    async def desktop_fetch(self, job_id: str | None = None) -> "FetchResult":
         """Git fetch origin. S3 sync down → regenerate manifest → git fetch → ahead/behind."""
         from src.models.contracts.github import FetchResult
 
+        async def _progress(phase: str) -> None:
+            if job_id:
+                from src.core.pubsub import publish_git_progress
+                await publish_git_progress(job_id, phase)
+
         try:
+            await _progress("Syncing from storage...")
             async with self.repo_manager.checkout() as work_dir:
                 repo = self._open_or_init(work_dir)
+                await _progress("Generating manifest...")
                 await self._regenerate_manifest_to_dir(self.db, work_dir)
+                await _progress("Fetching remote...")
                 return self._do_fetch(work_dir, repo)
         except Exception as e:
             logger.error(f"Fetch failed: {e}", exc_info=True)
@@ -721,7 +795,6 @@ class GitHubSyncService:
                 return WorkingTreeStatus()
             async with self.repo_manager.lock() as work_dir:
                 repo = self._open_or_init(work_dir)
-                await self._regenerate_manifest_to_dir(self.db, work_dir)
                 return self._do_status(work_dir, repo)
         except Exception as e:
             logger.error(f"Status failed: {e}", exc_info=True)
@@ -925,11 +998,18 @@ class GitHubSyncService:
             return ResolveResult(success=False, error="No conflicts to resolve")
 
         for cpath, resolution in resolutions.items():
-            if resolution == "ours":
-                repo.git.checkout("--ours", cpath)
-            elif resolution == "theirs":
-                repo.git.checkout("--theirs", cpath)
-            repo.git.add(cpath)
+            try:
+                if resolution == "ours":
+                    repo.git.checkout("--ours", cpath)
+                elif resolution == "theirs":
+                    repo.git.checkout("--theirs", cpath)
+                repo.git.add(cpath)
+            except Exception:
+                # DU/UD conflict — one side deleted, checkout fails
+                try:
+                    repo.git.rm(cpath)
+                except Exception:
+                    repo.git.add(cpath)
 
         if is_merge:
             repo.index.commit("Merge with conflict resolution")
@@ -960,11 +1040,18 @@ class GitHubSyncService:
 
                 # Apply resolutions
                 for cpath, resolution in resolutions.items():
-                    if resolution == "ours":
-                        repo.git.checkout("--ours", cpath)
-                    elif resolution == "theirs":
-                        repo.git.checkout("--theirs", cpath)
-                    repo.git.add(cpath)
+                    try:
+                        if resolution == "ours":
+                            repo.git.checkout("--ours", cpath)
+                        elif resolution == "theirs":
+                            repo.git.checkout("--theirs", cpath)
+                        repo.git.add(cpath)
+                    except Exception:
+                        # DU/UD conflict — one side deleted, checkout fails
+                        try:
+                            repo.git.rm(cpath)
+                        except Exception:
+                            repo.git.add(cpath)
 
                 # Complete the operation (merge commit is local)
                 if is_merge:
@@ -974,8 +1061,20 @@ class GitHubSyncService:
                 else:
                     repo.index.commit("Apply stashed changes with conflict resolution")
 
+                # Compute ahead/behind so the UI can update immediately
+                ahead = 0
+                behind = 0
+                try:
+                    ahead = int(repo.git.rev_list("--count", f"origin/{self.branch}..HEAD"))
+                except Exception:
+                    pass
+                try:
+                    behind = int(repo.git.rev_list("--count", f"HEAD..origin/{self.branch}"))
+                except Exception:
+                    pass
+
                 logger.info("Resolved conflicts, created merge commit (local)")
-                return ResolveResult(success=True)
+                return ResolveResult(success=True, commits_ahead=ahead, commits_behind=behind)
         except Exception as e:
             logger.error(f"Resolve failed: {e}", exc_info=True)
             return ResolveResult(success=False, error=str(e))

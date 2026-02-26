@@ -3,7 +3,7 @@
  *
  * Displays local vs remote content using Monaco DiffEditor.
  * For uncommitted changes: "Working Tree" vs "Last Commit"
- * For merge conflicts: "Ours (Platform)" vs "Theirs (Git)"
+ * For merge conflicts: "Ours (Platform)" vs "Theirs (Git)" side-by-side
  */
 
 import { useRef, useCallback } from "react";
@@ -11,7 +11,7 @@ import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { useTheme } from "@/contexts/ThemeContext";
 import type * as Monaco from "monaco-editor";
 import { Button } from "@/components/ui/button";
-import { X, FileText, Bot, AppWindow, Workflow, FileCode, Loader2 } from "lucide-react";
+import { X, FileText, Bot, AppWindow, Workflow, FileCode, Loader2, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEditorStore, type DiffPreviewState } from "@/stores/editorStore";
 
@@ -23,6 +23,32 @@ const ENTITY_ICONS = {
 	workflow: { icon: Workflow, className: "text-blue-500" },
 	app_file: { icon: FileCode, className: "text-gray-500" },
 } as const;
+
+/** Human-readable labels for conflict types */
+function getConflictLabel(conflictType?: string | null): string | null {
+	switch (conflictType) {
+		case "deleted_by_us":
+			return "Deleted locally, modified on remote";
+		case "deleted_by_them":
+			return "Modified locally, deleted on remote";
+		case "both_added":
+			return "Added on both sides with different content";
+		default:
+			return null;
+	}
+}
+
+/** Resolution button labels based on conflict type */
+function getResolutionLabels(conflictType?: string | null): { ours: string; theirs: string } {
+	switch (conflictType) {
+		case "deleted_by_us":
+			return { ours: "Keep Deleted", theirs: "Accept Remote" };
+		case "deleted_by_them":
+			return { ours: "Keep Ours", theirs: "Accept Deletion" };
+		default:
+			return { ours: "Keep Ours", theirs: "Keep Theirs" };
+	}
+}
 
 interface SyncDiffViewProps {
 	preview: DiffPreviewState;
@@ -59,6 +85,10 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 		return "plaintext";
 	};
 
+	const conflictLabel = preview.isConflict ? getConflictLabel(preview.conflictType) : null;
+	const resolutionLabels = getResolutionLabels(preview.conflictType);
+	const isDeleteConflict = preview.conflictType === "deleted_by_us" || preview.conflictType === "deleted_by_them";
+
 	return (
 		<div className="flex flex-col h-full bg-background">
 			{/* Header */}
@@ -81,6 +111,22 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 				</Button>
 			</div>
 
+			{/* Conflict type banner for delete conflicts */}
+			{conflictLabel && (
+				<div className="flex items-center gap-2 px-3 py-2 border-b bg-orange-500/10">
+					<AlertTriangle className="h-3.5 w-3.5 text-orange-500 flex-shrink-0" />
+					<span className="text-xs text-orange-700 dark:text-orange-400">{conflictLabel}</span>
+				</div>
+			)}
+
+			{/* Pane labels for conflicts */}
+			{preview.isConflict && !isDeleteConflict && (
+				<div className="flex border-b text-xs text-muted-foreground bg-muted/20">
+					<div className="flex-1 px-3 py-1 border-r text-center">Ours (Platform)</div>
+					<div className="flex-1 px-3 py-1 text-center">Theirs (Remote)</div>
+				</div>
+			)}
+
 			{/* Diff editor or loading state */}
 			<div className="flex-1 min-h-0">
 				{isLoading ? (
@@ -99,7 +145,7 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 							readOnly: true,
 							minimap: { enabled: false },
 							scrollBeyondLastLine: false,
-							renderSideBySide: false,
+							renderSideBySide: preview.isConflict && !isDeleteConflict,
 						}}
 					/>
 				)}
@@ -111,22 +157,24 @@ export function SyncDiffView({ preview }: SyncDiffViewProps) {
 					<Button
 						variant="outline"
 						size="sm"
-						onClick={() => preview.onResolve?.("ours")}
 						className={cn(
-							preview.resolution === "ours" && "bg-blue-500 text-white"
+							"rounded-none",
+							preview.resolution === "ours" && "bg-blue-500 text-white hover:bg-blue-600 hover:text-white",
 						)}
+						onClick={() => preview.onResolve?.("ours")}
 					>
-						Keep Ours
+						{resolutionLabels.ours}
 					</Button>
 					<Button
 						variant="outline"
 						size="sm"
-						onClick={() => preview.onResolve?.("theirs")}
 						className={cn(
-							preview.resolution === "theirs" && "bg-blue-500 text-white"
+							"rounded-none",
+							preview.resolution === "theirs" && "bg-blue-500 text-white hover:bg-blue-600 hover:text-white",
 						)}
+						onClick={() => preview.onResolve?.("theirs")}
 					>
-						Keep Theirs
+						{resolutionLabels.theirs}
 					</Button>
 				</div>
 			)}

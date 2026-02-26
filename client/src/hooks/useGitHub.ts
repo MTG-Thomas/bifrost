@@ -65,6 +65,7 @@ export interface MergeConflict {
 	theirs_content?: string | null;
 	display_name?: string | null;
 	entity_type?: string | null;
+	conflict_type?: string | null;
 }
 
 export interface FetchResult {
@@ -107,6 +108,8 @@ export interface PushResult {
 export interface ResolveResult {
 	success: boolean;
 	pulled: number;
+	commits_ahead: number;
+	commits_behind: number;
 	error?: string | null;
 }
 
@@ -278,18 +281,32 @@ export function useDisconnectGitHub() {
 // =============================================================================
 
 /**
+ * Helper: POST to a git endpoint with optional job_id and body fields.
+ */
+async function gitPost(
+	url: string,
+	jobId: string,
+	body?: Record<string, unknown>,
+	errorMsg = "Git operation failed",
+): Promise<GitJobResponse> {
+	const response = await authFetch(url, {
+		method: "POST",
+		body: JSON.stringify({ job_id: jobId, ...body }),
+	});
+	if (!response.ok) {
+		const error = await response.json().catch(() => ({}));
+		throw new Error(error.detail || errorMsg);
+	}
+	return (await response.json()) as GitJobResponse;
+}
+
+/**
  * Queue a git fetch operation - returns job_id for WebSocket tracking
  */
 export function useFetch() {
 	return {
-		mutateAsync: async (): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/fetch", { method: "POST" });
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue fetch");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (jobId: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/fetch", jobId, undefined, "Failed to queue fetch"),
 		isPending: false,
 	};
 }
@@ -299,17 +316,8 @@ export function useFetch() {
  */
 export function useCommit() {
 	return {
-		mutateAsync: async (message: string): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/commit", {
-				method: "POST",
-				body: JSON.stringify({ message }),
-			});
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue commit");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (message: string, jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/commit", jobId ?? crypto.randomUUID(), { message }, "Failed to queue commit"),
 		isPending: false,
 	};
 }
@@ -319,14 +327,8 @@ export function useCommit() {
  */
 export function usePull() {
 	return {
-		mutateAsync: async (): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/pull", { method: "POST" });
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue pull");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/pull", jobId ?? crypto.randomUUID(), undefined, "Failed to queue pull"),
 		isPending: false,
 	};
 }
@@ -336,14 +338,8 @@ export function usePull() {
  */
 export function usePush() {
 	return {
-		mutateAsync: async (): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/push", { method: "POST" });
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue push");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/push", jobId ?? crypto.randomUUID(), undefined, "Failed to queue push"),
 		isPending: false,
 	};
 }
@@ -353,16 +349,8 @@ export function usePush() {
  */
 export function useWorkingTreeChanges() {
 	return {
-		mutateAsync: async (): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/changes", {
-				method: "POST",
-			});
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue status check");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/changes", jobId ?? crypto.randomUUID(), undefined, "Failed to queue status check"),
 		isPending: false,
 	};
 }
@@ -374,17 +362,9 @@ export function useResolveConflicts() {
 	return {
 		mutateAsync: async (
 			resolutions: Record<string, "ours" | "theirs">,
-		): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/resolve", {
-				method: "POST",
-				body: JSON.stringify({ resolutions }),
-			});
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue conflict resolution");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+			jobId?: string,
+		): Promise<GitJobResponse> =>
+			gitPost("/api/github/resolve", jobId ?? crypto.randomUUID(), { resolutions }, "Failed to queue conflict resolution"),
 		isPending: false,
 	};
 }
@@ -394,17 +374,8 @@ export function useResolveConflicts() {
  */
 export function useDiscard() {
 	return {
-		mutateAsync: async (paths: string[]): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/discard", {
-				method: "POST",
-				body: JSON.stringify({ paths }),
-			});
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue discard");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (paths: string[], jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/discard", jobId ?? crypto.randomUUID(), { paths }, "Failed to queue discard"),
 		isPending: false,
 	};
 }
@@ -414,17 +385,8 @@ export function useDiscard() {
  */
 export function useFileDiff() {
 	return {
-		mutateAsync: async (path: string): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/diff", {
-				method: "POST",
-				body: JSON.stringify({ path }),
-			});
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue diff");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (path: string, jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/diff", jobId ?? crypto.randomUUID(), { path }, "Failed to queue diff"),
 		isPending: false,
 	};
 }
@@ -434,14 +396,8 @@ export function useFileDiff() {
  */
 export function useSync() {
 	return {
-		mutateAsync: async (): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/sync", { method: "POST" });
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue sync");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/sync", jobId ?? crypto.randomUUID(), undefined, "Failed to queue sync"),
 		isPending: false,
 	};
 }
@@ -451,14 +407,8 @@ export function useSync() {
  */
 export function useAbortMerge() {
 	return {
-		mutateAsync: async (): Promise<GitJobResponse> => {
-			const response = await authFetch("/api/github/abort-merge", { method: "POST" });
-			if (!response.ok) {
-				const error = await response.json().catch(() => ({}));
-				throw new Error(error.detail || "Failed to queue abort merge");
-			}
-			return (await response.json()) as GitJobResponse;
-		},
+		mutateAsync: async (jobId?: string): Promise<GitJobResponse> =>
+			gitPost("/api/github/abort-merge", jobId ?? crypto.randomUUID(), undefined, "Failed to queue abort merge"),
 		isPending: false,
 	};
 }

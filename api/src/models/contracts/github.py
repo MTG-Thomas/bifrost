@@ -304,27 +304,28 @@ class GitJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class CommitRequest(BaseModel):
-    """Request to commit working tree changes."""
-    message: str = Field(..., min_length=1, description="Commit message")
+class GitOpRequest(BaseModel):
+    """Base request for git operations. Accepts optional client-generated job_id."""
+    job_id: str | None = Field(default=None, description="Client-generated job ID (avoids WebSocket race condition)")
 
     model_config = ConfigDict(from_attributes=True)
 
 
-class ResolveRequest(BaseModel):
+class CommitRequest(GitOpRequest):
+    """Request to commit working tree changes."""
+    message: str = Field(..., min_length=1, description="Commit message")
+
+
+class ResolveRequest(GitOpRequest):
     """Request to resolve merge conflicts after a failed pull."""
     resolutions: dict[str, Literal["ours", "theirs"]] = Field(
         ..., description="Map of file path to resolution strategy"
     )
 
-    model_config = ConfigDict(from_attributes=True)
 
-
-class DiffRequest(BaseModel):
+class DiffRequest(GitOpRequest):
     """Request to get a file diff."""
     path: str = Field(..., min_length=1, description="File path to diff")
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class ChangedFile(BaseModel):
@@ -346,6 +347,7 @@ class MergeConflict(BaseModel):
     theirs_content: str | None = Field(default=None, description="Their (git remote) version")
     display_name: str | None = Field(default=None, description="Human-readable entity name")
     entity_type: str | None = Field(default=None, description="Entity type")
+    conflict_type: str | None = Field(default=None, description="both_modified, both_added, deleted_by_us, deleted_by_them")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -406,6 +408,8 @@ class ResolveResult(BaseModel):
     """Result of conflict resolution."""
     success: bool = Field(..., description="Whether resolution succeeded")
     pulled: int = Field(default=0, description="Number of entities imported after resolution")
+    commits_ahead: int = Field(default=0, description="Local commits ahead of remote after resolve")
+    commits_behind: int = Field(default=0, description="Commits behind remote after resolve")
     error: str | None = Field(default=None, description="Error message if failed")
 
     model_config = ConfigDict(from_attributes=True)
@@ -443,11 +447,9 @@ class DiffResult(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DiscardRequest(BaseModel):
+class DiscardRequest(GitOpRequest):
     """Request to discard working tree changes for specific files."""
     paths: list[str] = Field(..., min_length=1, description="File paths to discard changes for")
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class DiscardResult(BaseModel):

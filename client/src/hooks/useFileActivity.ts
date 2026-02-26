@@ -29,6 +29,7 @@ export function useFileActivity() {
 						user_name: w.user_name,
 						prefix: w.prefix,
 						file_count: 0,
+						is_watch: true,
 						timestamp: w.started_at,
 					})),
 				);

@@ -80,6 +80,7 @@ export interface DiffPreviewState {
 	isLoading?: boolean;
 	resolution?: "ours" | "theirs";
 	onResolve?: (resolution: "ours" | "theirs") => void;
+	conflictType?: string | null;
 }
 
 export interface EditorTab {
