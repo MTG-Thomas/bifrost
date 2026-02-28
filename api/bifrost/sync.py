@@ -48,6 +48,31 @@ def format_sync_result(result: dict) -> list[str]:
         summary = ", ".join(parts) if parts else "no changes"
         sha_info = f" (commit {commit_sha[:7]})" if commit_sha else ""
         lines.append(f"Sync complete: {summary}{sha_info}")
+
+        # Display entity-level changes
+        entity_changes = result.get("data", {}).get("entity_changes") or result.get("entity_changes") or []
+        if entity_changes:
+            added = [c for c in entity_changes if c.get("action") == "added"]
+            updated = [c for c in entity_changes if c.get("action") == "updated"]
+            removed = [c for c in entity_changes if c.get("action") == "removed"]
+            count_parts = []
+            if added:
+                count_parts.append(f"{len(added)} added")
+            if updated:
+                count_parts.append(f"{len(updated)} updated")
+            if removed:
+                count_parts.append(f"{len(removed)} removed")
+            lines.append(f"  {len(entity_changes)} entity change(s): {', '.join(count_parts)}")
+            symbols = {"added": "+", "updated": "~", "removed": "-"}
+            for change in entity_changes:
+                action = change.get("action", "")
+                symbol = symbols.get(action, "?")
+                etype = change.get("entity_type", "")
+                name = change.get("name", "")
+                reason = change.get("reason")
+                suffix = f"  ({reason})" if reason else ""
+                lines.append(f"    {symbol} {etype:<14} {name}{suffix}")
+
         return lines
 
     if status == "conflict":

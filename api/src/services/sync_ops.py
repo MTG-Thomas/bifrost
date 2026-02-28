@@ -67,6 +67,7 @@ class Upsert:
     id: UUID
     values: dict[str, Any]
     match_on: str = "id"
+    action_taken: str | None = field(default=None, init=False)
 
     async def execute(self, db: AsyncSession) -> None:
         """Apply the upsert to the database.
@@ -111,12 +112,14 @@ class Upsert:
             insert_values: dict[str, Any] = {"id": self.id, **self.values}
             stmt_insert = insert(self.model).values(**insert_values)
             await db.execute(stmt_insert)
+            self.action_taken = "inserted"
             logger.debug(
                 "Upsert(%s, %s): inserted new row",
                 self.model.__tablename__,  # type: ignore[attr-defined]
                 self.id,
             )
         else:
+            self.action_taken = "updated"
             logger.debug(
                 "Upsert(%s, %s): updated existing row",
                 self.model.__tablename__,  # type: ignore[attr-defined]

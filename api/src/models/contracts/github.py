@@ -368,6 +368,20 @@ class WorkingTreeStatus(BaseModel):
     changed_files: list[ChangedFile] = Field(default_factory=list, description="Changed files")
     total_changes: int = Field(default=0, description="Total number of changes")
     conflicts: list[MergeConflict] = Field(default_factory=list, description="Unresolved merge/stash conflicts")
+    commits_ahead: int = Field(default=0, description="Local commits ahead of remote")
+    commits_behind: int = Field(default=0, description="Commits behind remote")
+    merging: bool = Field(default=False, description="Whether repository is in merge state (MERGE_HEAD exists)")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EntityChange(BaseModel):
+    """A single entity-level change tracked during commit or sync."""
+    action: Literal["added", "updated", "removed"] = Field(..., description="Type of change")
+    entity_type: str = Field(..., description="Entity type: workflow, form, agent, app, integration, config, table, event, organization, role")
+    name: str = Field(..., description="Entity display name")
+    path: str | None = Field(default=None, description="File path (for file-backed entities)")
+    reason: str | None = Field(default=None, description="Reason for removal, e.g. 'file not found: workflows/contacts.py'")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -379,6 +393,7 @@ class CommitResult(BaseModel):
     files_committed: int = Field(default=0, description="Number of files committed")
     error: str | None = Field(default=None, description="Error message if failed")
     preflight: PreflightResult | None = Field(default=None, description="Preflight validation result")
+    entity_changes: list[EntityChange] = Field(default_factory=list, description="Entity-level changes during manifest regeneration")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -426,6 +441,7 @@ class SyncResult(BaseModel):
     conflicts: list[MergeConflict] = Field(default_factory=list, description="Merge conflicts if any")
     entities_imported: int = Field(default=0, description="Number of entities imported during sync")
     error: str | None = Field(default=None, description="Error message if failed")
+    entity_changes: list[EntityChange] = Field(default_factory=list, description="Entity-level changes during sync")
 
     model_config = ConfigDict(from_attributes=True)
 
