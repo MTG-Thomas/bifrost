@@ -38,6 +38,7 @@ async def test_desktop_commit_regenerates_manifest_before_staging():
         # Track call order
         async def regen_side_effect(db, work_dir):
             call_order.append("regenerate_manifest")
+            return []
         mock_regen.side_effect = regen_side_effect
 
         def add_side_effect(*args, **kwargs):

@@ -168,7 +168,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    agent_id: Mapped[UUID | None] = mapped_column(ForeignKey("agents.id", onupdate="CASCADE"), nullable=True)
+    agent_id: Mapped[UUID | None] = mapped_column(ForeignKey("agents.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     channel: Mapped[str] = mapped_column(String(50), default="chat")
     title: Mapped[str | None] = mapped_column(String(500), default=None)

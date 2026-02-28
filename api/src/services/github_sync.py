@@ -560,11 +560,28 @@ class GitHubSyncService:
                     conflict_type=_classify_conflict_type(unmerged, cpath),
                 ))
 
+        # Detect merge state and ahead/behind
+        merging = (work_dir / ".git" / "MERGE_HEAD").exists()
+        ahead = 0
+        behind = 0
+        if repo.head.is_valid():
+            try:
+                ahead = int(repo.git.rev_list("--count", f"origin/{self.branch}..HEAD"))
+            except Exception:
+                pass
+            try:
+                behind = int(repo.git.rev_list("--count", f"HEAD..origin/{self.branch}"))
+            except Exception:
+                pass
+
         if conflict_list:
             return WorkingTreeStatus(
                 changed_files=[],
                 total_changes=0,
                 conflicts=conflict_list,
+                commits_ahead=ahead,
+                commits_behind=behind,
+                merging=merging,
             )
 
         # Stage everything to get accurate diff
@@ -617,6 +634,9 @@ class GitHubSyncService:
         return WorkingTreeStatus(
             changed_files=changed,
             total_changes=len(changed),
+            commits_ahead=ahead,
+            commits_behind=behind,
+            merging=merging,
         )
 
     async def _do_commit(self, work_dir: Path, repo: GitRepo, message: str) -> "CommitResult":
@@ -1996,7 +2016,7 @@ class GitHubSyncService:
         wf_result = await self.db.execute(
             select(Workflow.id).where(
                 Workflow.is_active == True,  # noqa: E712
-                Workflow.path.like("workflows/%"),
+                Workflow.path.isnot(None),
             )
         )
         for row in wf_result.all():
@@ -2049,10 +2069,9 @@ class GitHubSyncService:
                 logger.info(f"Deleting event source {es_id} — removed from repo")
                 ops.append(Delete(model=EventSource, id=UUID(es_id)))
 
-        # Delete forms synced from git that are no longer present
+        # Delete forms not in manifest
         form_result = await self.db.execute(
             select(Form.id).where(
-                Form.created_by == "git-sync",
                 Form.is_active == True,  # noqa: E712
             )
         )
@@ -2062,31 +2081,27 @@ class GitHubSyncService:
                 logger.info(f"Deleting form {form_id} — removed from repo")
                 ops.append(Delete(model=Form, id=UUID(form_id)))
 
-        # Delete agents synced from git that are no longer present
-        agent_result = await self.db.execute(
-            select(Agent.id).where(Agent.created_by == "git-sync")
-        )
+        # Delete agents not in manifest
+        agent_result = await self.db.execute(select(Agent.id))
         for row in agent_result.all():
             agent_id = str(row[0])
             if agent_id not in present_agent_ids:
                 logger.info(f"Deleting agent {agent_id} — removed from repo")
                 ops.append(Delete(model=Agent, id=UUID(agent_id)))
 
-        # Delete apps — check all apps in manifest scope
+        # Delete apps not in manifest
         app_result = await self.db.execute(select(Application.id))
-        all_app_ids = {str(row[0]) for row in app_result.all()}
-        manifest_app_ids = {mapp.id for mapp in manifest.apps.values()}
-        for app_id in all_app_ids:
-            if app_id in manifest_app_ids and app_id not in present_app_ids:
+        for row in app_result.all():
+            app_id = str(row[0])
+            if app_id not in present_app_ids:
                 logger.info(f"Deleting app {app_id} — removed from repo")
                 ops.append(Delete(model=Application, id=UUID(app_id)))
 
-        # Soft-delete organizations not in manifest (only git-sync created ones)
+        # Soft-delete organizations not in manifest
         if present_org_ids:
             org_result = await self.db.execute(
                 select(Organization.id).where(
                     Organization.is_active == True,  # noqa: E712
-                    Organization.created_by == "git-sync",
                 )
             )
             for row in org_result.all():
@@ -2095,12 +2110,11 @@ class GitHubSyncService:
                     logger.info(f"Deactivating organization {org_id} — removed from manifest")
                     ops.append(Deactivate(model=Organization, id=UUID(org_id)))
 
-        # Soft-delete roles not in manifest (only git-sync created ones)
+        # Soft-delete roles not in manifest
         if present_role_ids:
             role_result = await self.db.execute(
                 select(Role.id).where(
                     Role.is_active == True,  # noqa: E712
-                    Role.created_by == "git-sync",
                 )
             )
             for row in role_result.all():

@@ -80,6 +80,17 @@ export interface WorkingTreeStatus {
 	changed_files: ChangedFile[];
 	total_changes: number;
 	conflicts?: MergeConflict[];
+	commits_ahead: number;
+	commits_behind: number;
+	merging: boolean;
+}
+
+export interface EntityChange {
+	action: "added" | "updated" | "removed";
+	entity_type: string;
+	name: string;
+	path?: string | null;
+	reason?: string | null;
 }
 
 export interface CommitResult {
@@ -88,6 +99,7 @@ export interface CommitResult {
 	files_committed: number;
 	error?: string | null;
 	preflight?: PreflightResult | null;
+	entity_changes?: EntityChange[];
 }
 
 export interface PullResult {
@@ -129,6 +141,7 @@ export interface SyncResult {
 	conflicts: MergeConflict[];
 	entities_imported: number;
 	error?: string | null;
+	entity_changes?: EntityChange[];
 }
 
 export interface AbortMergeResult {

@@ -55,6 +55,7 @@ import {
 	useCleanupOrphaned,
 	type ChangedFile,
 	type MergeConflict,
+	type EntityChange,
 	type FetchResult,
 	type WorkingTreeStatus,
 	type CommitResult,
@@ -147,6 +148,49 @@ function logPreflightToTerminal(preflight: PreflightResult, commitSucceeded: boo
 		status: commitSucceeded ? "Success" : "Failed",
 		executionId: `preflight-${Date.now()}`,
 		error: commitSucceeded ? undefined : "Preflight validation failed",
+	});
+}
+
+/** Log entity changes to the editor terminal */
+function logEntityChangesToTerminal(changes: EntityChange[], context: "commit" | "sync") {
+	if (!changes.length) return;
+
+	const added = changes.filter((c) => c.action === "added");
+	const updated = changes.filter((c) => c.action === "updated");
+	const removed = changes.filter((c) => c.action === "removed");
+
+	const countParts: string[] = [];
+	if (added.length) countParts.push(`${added.length} added`);
+	if (updated.length) countParts.push(`${updated.length} updated`);
+	if (removed.length) countParts.push(`${removed.length} removed`);
+
+	const label = context === "commit" ? "Commit" : "Sync";
+	const header = `${label} — ${changes.length} entity change(s): ${countParts.join(", ")}`;
+
+	const symbols = { added: "+", updated: "~", removed: "-" } as const;
+	const levels = { added: "INFO", updated: "INFO", removed: "WARNING" } as const;
+	const timestamp = new Date().toISOString();
+
+	const logs: Array<{ level: string; message: string; source: string; timestamp: string }> = [
+		{ level: "INFO", message: `[Entity Changes] ${header}`, source: "entity-changes", timestamp },
+	];
+
+	for (const change of changes) {
+		const sym = symbols[change.action];
+		const suffix = change.reason ? `  (${change.reason})` : "";
+		logs.push({
+			level: levels[change.action],
+			message: `  ${sym} ${change.entity_type.padEnd(14)} ${change.name}${suffix}`,
+			source: "entity-changes",
+			timestamp,
+		});
+	}
+
+	useEditorStore.getState().appendTerminalOutput({
+		loggerOutput: logs,
+		variables: {},
+		status: "Success",
+		executionId: `entity-changes-${Date.now()}`,
 	});
 }
 
@@ -255,6 +299,7 @@ export function SourceControlPanel() {
 	const [gitPhase, setGitPhase] = useState<string | null>(null);
 	const [commitsAhead, setCommitsAhead] = useState(0);
 	const [commitsBehind, setCommitsBehind] = useState(0);
+	const [needsSync, setNeedsSync] = useState(false);
 	const [commits, setCommits] = useState<
 		Array<{
 			sha: string;
@@ -298,14 +343,6 @@ export function SourceControlPanel() {
 		}
 	}, [commitsData]);
 
-	// Sync ahead/behind from status on first load
-	useEffect(() => {
-		if (status) {
-			setCommitsAhead(status.commits_ahead);
-			setCommitsBehind(status.commits_behind);
-		}
-	}, [status]);
-
 	// Refresh helpers
 	const refreshStatus = useCallback(() => {
 		queryClient.invalidateQueries({ queryKey: ["get", "/api/github/status"] });
@@ -320,16 +357,27 @@ export function SourceControlPanel() {
 				"status",
 			);
 			setChangedFiles(result.changed_files || []);
-			// Surface any pre-existing conflicts (e.g. from a previous stash pop)
-			if (result.conflicts && result.conflicts.length > 0) {
-				setConflicts(result.conflicts);
-			}
+			// Surface conflicts from real git state (or clear if resolved)
+			setConflicts(result.conflicts ?? []);
+			// Update ahead/behind from real git status
+			setCommitsAhead(result.commits_ahead);
+			setCommitsBehind(result.commits_behind);
 		} catch (error) {
 			console.error("Failed to load changes:", error);
 		} finally {
 			setLoading(null);
 		}
 	}, [changesOp]);
+
+	// Load real git status (ahead/behind/conflicts) when panel mounts
+	// The lightweight /status endpoint only provides initialized/configured/branch — not real git state
+	const hasLoadedRef = useRef(false);
+	useEffect(() => {
+		if (status?.initialized && !hasLoadedRef.current) {
+			hasLoadedRef.current = true;
+			loadChanges();
+		}
+	}, [status?.initialized, loadChanges]);
 
 	// Clear diff cache when changed files list changes (after fetch, commit, pull, discard)
 	useEffect(() => {
@@ -347,13 +395,12 @@ export function SourceControlPanel() {
 				"fetch",
 				(phase) => setGitPhase(phase),
 			);
-			setCommitsAhead(result.commits_ahead);
-			setCommitsBehind(result.commits_behind);
 			toast.success(
 				result.commits_behind > 0 || result.commits_ahead > 0
 					? `${result.commits_behind} behind, ${result.commits_ahead} ahead`
 					: "Already up to date",
 			);
+			if (result.commits_behind > 0) setNeedsSync(true);
 			// Auto-load changes after fetch
 			await loadChanges();
 		} catch (error) {
@@ -380,11 +427,14 @@ export function SourceControlPanel() {
 			if (result.success) {
 				toast.success(`Committed ${result.files_committed} file(s)`);
 				setCommitMessage("");
-				setCommitsAhead((prev) => prev + 1);
 				setChangedFiles([]);
+				await loadChanges();
 				refreshStatus();
 				if (result.preflight?.issues?.length) {
 					logPreflightToTerminal(result.preflight, true);
+				}
+				if (result.entity_changes?.length) {
+					logEntityChangesToTerminal(result.entity_changes, "commit");
 				}
 			} else {
 				toast.error(result.error || "Commit failed");
@@ -409,7 +459,7 @@ export function SourceControlPanel() {
 		} finally {
 			setLoading(null);
 		}
-	}, [commitMessage, commitOp, refreshStatus]);
+	}, [commitMessage, commitOp, loadChanges, refreshStatus]);
 
 	const handleCleanupAndRetry = useCallback(async () => {
 		setLoading("committing");
@@ -462,8 +512,8 @@ export function SourceControlPanel() {
 			if (result.success) {
 				toast.success(`Committed ${result.files_committed} file(s)`);
 				setCommitMessage("");
-				setCommitsAhead((prev) => prev + 1);
 				setChangedFiles([]);
+				await loadChanges();
 				refreshStatus();
 				if (result.preflight?.issues?.length) {
 					logPreflightToTerminal(result.preflight, true);
@@ -483,7 +533,7 @@ export function SourceControlPanel() {
 		} finally {
 			setLoading(null);
 		}
-	}, [cleanupOp, commitOp, commitMessage, refreshStatus]);
+	}, [cleanupOp, commitOp, commitMessage, loadChanges, refreshStatus]);
 
 	const handleSync = useCallback(async () => {
 		setLoading("syncing");
@@ -499,12 +549,14 @@ export function SourceControlPanel() {
 				if (result.pushed_commits > 0) parts.push(`pushed ${result.pushed_commits} commit(s)`);
 				if (result.entities_imported > 0) parts.push(`imported ${result.entities_imported} entities`);
 				toast.success(parts.length > 0 ? `Sync complete: ${parts.join(", ")}` : "Already up to date");
-				setCommitsAhead(0);
-				setCommitsBehind(0);
+				setNeedsSync(false);
 				setConflicts([]);
 				setConflictResolutions({});
 				refreshStatus();
 				await loadChanges();
+				if (result.entity_changes?.length) {
+					logEntityChangesToTerminal(result.entity_changes, "sync");
+				}
 			} else if (result.conflicts && result.conflicts.length > 0) {
 				setConflicts(result.conflicts);
 				toast.warning(`${result.conflicts.length} conflict(s) need resolution`);
@@ -664,6 +716,8 @@ export function SourceControlPanel() {
 			if (result.success) {
 				toast.success(`Discarded changes to ${file.display_name || file.path}`);
 				setChangedFiles((prev) => prev.filter((f) => f.path !== file.path));
+				setNeedsSync(true);
+				await loadChanges();
 				refreshStatus();
 			} else {
 				toast.error(result.error || "Discard failed");
@@ -672,7 +726,7 @@ export function SourceControlPanel() {
 			const msg = error instanceof Error ? error.message : String(error);
 			toast.error(`Discard failed: ${msg}`);
 		}
-	}, [discardOp, refreshStatus]);
+	}, [discardOp, loadChanges, refreshStatus]);
 
 	const handleDiscardAll = useCallback(async () => {
 		if (changedFiles.length === 0) return;
@@ -684,6 +738,8 @@ export function SourceControlPanel() {
 			if (result.success) {
 				toast.success(`Discarded all ${changedFiles.length} changes`);
 				setChangedFiles([]);
+				setNeedsSync(true);
+				await loadChanges();
 				refreshStatus();
 			} else {
 				toast.error(result.error || "Discard all failed");
@@ -693,18 +749,21 @@ export function SourceControlPanel() {
 				toast.error(error.message);
 			}
 		}
-	}, [changedFiles, discardOp, refreshStatus]);
+	}, [changedFiles, discardOp, loadChanges, refreshStatus]);
 
 	// Auto-refresh on visibility change
 	useEffect(() => {
 		if (sidebarPanel !== "sourceControl") return;
 
 		const handleVisibility = () => {
-			if (!document.hidden) refreshStatus();
+			if (!document.hidden) {
+				refreshStatus();
+				loadChanges();
+			}
 		};
 		document.addEventListener("visibilitychange", handleVisibility);
 		return () => document.removeEventListener("visibilitychange", handleVisibility);
-	}, [sidebarPanel, refreshStatus]);
+	}, [sidebarPanel, refreshStatus, loadChanges]);
 
 	// --- Render ---
 
@@ -847,6 +906,7 @@ export function SourceControlPanel() {
 					onDiscardAll={handleDiscardAll}
 					commitsBehind={commitsBehind}
 					commitsAhead={commitsAhead}
+					needsSync={needsSync}
 					loading={loading}
 					gitPhase={gitPhase}
 					disabled={!!loading}
@@ -924,6 +984,7 @@ function ChangesSection({
 	onDiscardAll,
 	commitsBehind,
 	commitsAhead,
+	needsSync,
 	loading,
 	gitPhase,
 	disabled,
@@ -949,6 +1010,7 @@ function ChangesSection({
 	onDiscardAll: () => void;
 	commitsBehind: number;
 	commitsAhead: number;
+	needsSync: boolean;
 	loading: "fetching" | "committing" | "syncing" | "resolving" | "loading_changes" | null;
 	gitPhase?: string | null;
 	disabled: boolean;
@@ -1058,15 +1120,15 @@ function ChangesSection({
 										)}
 									</Button>
 								)}
-								{(commitsBehind > 0 || commitsAhead > 0) && (
+								{(commitsBehind > 0 || commitsAhead > 0 || needsSync) && (
 									<div className="flex flex-col gap-0.5">
 										<Button
 											size="sm"
 											variant={hasChanges ? "outline" : "default"}
 											className="w-full gap-2 rounded-none"
 											onClick={onSync}
-											disabled={disabled || hasChanges}
-											title={hasChanges ? "Commit your changes before syncing" : undefined}
+											disabled={disabled || (hasChanges && (commitsAhead > 0 || commitsBehind > 0))}
+											title={hasChanges && (commitsAhead > 0 || commitsBehind > 0) ? "Commit your changes before syncing" : undefined}
 										>
 											{loading === "syncing" ? (
 												<>
@@ -1082,7 +1144,7 @@ function ChangesSection({
 												</>
 											)}
 										</Button>
-										{hasChanges && (
+										{hasChanges && (commitsAhead > 0 || commitsBehind > 0) && (
 											<p className="text-[10px] text-muted-foreground text-center">Commit changes before syncing</p>
 										)}
 										{(loading === "syncing" || loading === "fetching") && gitPhase && (
