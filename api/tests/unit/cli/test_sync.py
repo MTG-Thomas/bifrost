@@ -1,5 +1,5 @@
-"""Tests for bifrost sync command."""
-from bifrost.sync import format_sync_result, RESOLUTION_MAP
+"""Tests for bifrost git commands (formerly sync)."""
+from bifrost.git_commands import _format_sync_result, RESOLUTION_MAP
 
 
 class TestFormatSyncResult:
@@ -8,7 +8,7 @@ class TestFormatSyncResult:
     def test_success_no_changes(self):
         """Should report no changes on success with zero counts."""
         result = {"status": "success", "pulled": 0, "pushed": 0, "commit_sha": None}
-        lines = format_sync_result(result)
+        lines = _format_sync_result(result)
         text = "\n".join(lines)
         assert "no changes" in text.lower()
 
@@ -20,7 +20,7 @@ class TestFormatSyncResult:
             "pushed": 1,
             "commit_sha": "abc1234def5678",
         }
-        lines = format_sync_result(result)
+        lines = _format_sync_result(result)
         text = "\n".join(lines)
         assert "pulled 3" in text
         assert "pushed 1" in text
@@ -29,9 +29,9 @@ class TestFormatSyncResult:
     def test_success_completed_status(self):
         """Should also accept 'completed' as a success status."""
         result = {"status": "completed", "pulled": 1, "pushed": 0, "commit_sha": None}
-        lines = format_sync_result(result)
+        lines = _format_sync_result(result)
         text = "\n".join(lines)
-        assert "Sync complete" in text
+        assert "Push complete" in text
 
     def test_conflicts_shown(self):
         """Should list each conflict with path and resolve command."""
@@ -45,10 +45,10 @@ class TestFormatSyncResult:
                 },
             ],
         }
-        lines = format_sync_result(result)
+        lines = _format_sync_result(result)
         text = "\n".join(lines)
         assert "workflows/billing.py" in text
-        assert "--resolve" in text
+        assert "bifrost git resolve" in text
         assert "keep_remote" in text
         assert "keep_local" in text
 
@@ -61,7 +61,7 @@ class TestFormatSyncResult:
                 {"path": "workflows/b.py", "display_name": "b", "entity_type": "workflow"},
             ],
         }
-        lines = format_sync_result(result)
+        lines = _format_sync_result(result)
         text = "\n".join(lines)
         assert "2 conflicts" in text
         assert "workflows/a.py" in text
@@ -70,7 +70,7 @@ class TestFormatSyncResult:
     def test_failed_with_error(self):
         """Should show error message on failure."""
         result = {"status": "failed", "error": "Authentication failed"}
-        lines = format_sync_result(result)
+        lines = _format_sync_result(result)
         text = "\n".join(lines)
         assert "Authentication failed" in text
         assert "failed" in text.lower()
@@ -78,7 +78,7 @@ class TestFormatSyncResult:
     def test_failed_unknown_error(self):
         """Should show fallback message when no error provided."""
         result = {"status": "failed"}
-        lines = format_sync_result(result)
+        lines = _format_sync_result(result)
         text = "\n".join(lines)
         assert "Unknown error" in text
 

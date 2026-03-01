@@ -29,6 +29,8 @@ class JobStatusResponse(BaseModel):
     pushed: int = Field(default=0, description="Number of files pushed (git sync)")
     commit_sha: str | None = Field(default=None, description="Commit SHA if created")
     error: str | None = Field(default=None, description="Error message if failed")
+    # Result data from the completed operation
+    data: dict[str, Any] | None = Field(default=None, description="Operation result data")
     # Preview data for sync preview jobs
     preview: dict[str, Any] | None = Field(default=None, description="Sync preview data")
     # Conflict data for sync operations
@@ -72,6 +74,7 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
                     pushed=result.get("pushed", 0),
                     commit_sha=result.get("commit_sha"),
                     error=result.get("error"),
+                    data=result.get("data"),
                     preview=result.get("preview"),
                     conflicts=result.get("conflicts"),
                 )
