@@ -939,6 +939,22 @@ Examples:
 """.strip())
 
 
+def _warn_if_git_workspace(target_path: str) -> None:
+    """Print a warning if the target path is inside a git repository."""
+    p = pathlib.Path(target_path).resolve()
+    # Walk up to find .git/
+    for parent in [p, *p.parents]:
+        if (parent / ".git").exists():
+            print(
+                "Warning: This workspace is git-enabled (.git/ detected).\n"
+                "  Direct push/watch bypasses git history — platform and local git may diverge.\n"
+                "  When done, discard local changes and run:\n"
+                "    bifrost git fetch → bifrost git commit -m \"msg\" → bifrost git push → git pull\n",
+                file=sys.stderr,
+            )
+            return
+
+
 def handle_push(args: list[str]) -> int:
     """
     Handle 'bifrost push' command.
@@ -1019,6 +1035,8 @@ Examples:
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+    _warn_if_git_workspace(local_path)
 
     try:
         return asyncio.run(_push_with_precheck(
@@ -1108,6 +1126,8 @@ Examples:
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+    _warn_if_git_workspace(local_path)
 
     repo_prefix = _detect_repo_prefix(resolved)
     try:
