@@ -216,8 +216,8 @@ def main(args: list[str] | None = None) -> int:
     if command == "run":
         return handle_run(args[1:])
 
-    if command == "sync":
-        return handle_sync(args[1:])
+    if command == "git":
+        return handle_git(args[1:])
 
     if command == "push":
         return handle_push(args[1:])
@@ -244,7 +244,7 @@ Usage:
 
 Commands:
   run         Run a workflow directly (silent JSON output) or interactively via browser
-  sync        Sync with Bifrost platform via GitHub
+  git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform
   watch       Watch for file changes and auto-push (requires .bifrost/ workspace)
   api         Generic authenticated API request
@@ -257,8 +257,11 @@ Examples:
   bifrost run workflow.py -w greet -p '{"name": "World"}'
   bifrost run workflow.py -w greet | jq .
   bifrost run workflow.py --interactive
-  bifrost sync
-  bifrost sync --resolve workflows/billing.py=keep_remote
+  bifrost git fetch
+  bifrost git status
+  bifrost git commit -m "sync clients"
+  bifrost git push
+  bifrost git resolve workflows/billing.py=keep_remote
   bifrost push apps/my-app
   bifrost push apps/my-app --clean
   bifrost watch
@@ -803,18 +806,137 @@ async def _post_result(
         print(f"\nWarning: Failed to post result: {e}", file=sys.stderr)
 
 
-def handle_sync(args: list[str]) -> int:
+def handle_git(args: list[str]) -> int:
     """
-    Handle 'bifrost sync' command.
+    Handle 'bifrost git <subcommand>' command.
+
+    Dispatches to git subcommands: fetch, status, commit, push, resolve, diff, discard.
 
     Args:
-        args: Additional arguments
+        args: Subcommand and its arguments
 
     Returns:
         Exit code
     """
-    from .sync import run_sync
-    return run_sync(args)
+    from .git_commands import (
+        EXIT_CLEAN,
+        EXIT_ERROR,
+        RESOLUTION_MAP,
+        run_git_commit,
+        run_git_diff,
+        run_git_discard,
+        run_git_fetch,
+        run_git_push,
+        run_git_resolve,
+        run_git_status,
+    )
+
+    if not args or args[0] in ("--help", "-h"):
+        _print_git_help()
+        return EXIT_CLEAN
+
+    subcmd = args[0].lower()
+    sub_args = args[1:]
+
+    try:
+        client = BifrostClient.get_instance(require_auth=True)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if subcmd == "fetch":
+        return run_git_fetch(client)
+
+    if subcmd == "status":
+        return run_git_status(client)
+
+    if subcmd == "commit":
+        # Parse -m "message"
+        message = None
+        i = 0
+        while i < len(sub_args):
+            if sub_args[i] in ("-m", "--message"):
+                if i + 1 >= len(sub_args):
+                    print("Error: -m requires a commit message", file=sys.stderr)
+                    return EXIT_ERROR
+                message = sub_args[i + 1]
+                i += 2
+            else:
+                print(f"Unknown option: {sub_args[i]}", file=sys.stderr)
+                return EXIT_ERROR
+        if not message:
+            print("Error: commit requires -m <message>", file=sys.stderr)
+            return EXIT_ERROR
+        return run_git_commit(client, message)
+
+    if subcmd == "push":
+        return run_git_push(client)
+
+    if subcmd == "resolve":
+        # Parse path=strategy pairs
+        resolutions: dict[str, str] = {}
+        for arg in sub_args:
+            parts = arg.split("=", 1)
+            if len(parts) != 2 or parts[1] not in RESOLUTION_MAP:
+                print(
+                    f"Error: invalid resolution '{arg}'. "
+                    "Use path=keep_local or path=keep_remote",
+                    file=sys.stderr,
+                )
+                return EXIT_ERROR
+            resolutions[parts[0]] = parts[1]
+        if not resolutions:
+            print("Error: resolve requires at least one path=strategy argument", file=sys.stderr)
+            return EXIT_ERROR
+        return run_git_resolve(client, resolutions)
+
+    if subcmd == "diff":
+        if not sub_args:
+            print("Error: diff requires a file path", file=sys.stderr)
+            return EXIT_ERROR
+        return run_git_diff(client, sub_args[0])
+
+    if subcmd == "discard":
+        if not sub_args:
+            print("Error: discard requires at least one file path", file=sys.stderr)
+            return EXIT_ERROR
+        return run_git_discard(client, sub_args)
+
+    print(f"Unknown git subcommand: {subcmd}", file=sys.stderr)
+    _print_git_help()
+    return EXIT_ERROR
+
+
+def _print_git_help() -> None:
+    """Print git subcommand help."""
+    print("""
+Usage: bifrost git <subcommand> [options]
+
+Git source control operations for Bifrost platform.
+
+Subcommands:
+  fetch                          Regenerate manifest from DB, fetch remote, show status
+  status                         Show changed files and commits ahead/behind
+  commit -m "message"            Regenerate manifest, stage, preflight, commit
+  push                           Pull remote + push local + import entities (deploy)
+  resolve path=strategy [...]    Resolve merge conflicts (keep_local or keep_remote)
+  diff <path>                    Show file diff
+  discard <path> [...]           Discard working tree changes
+
+Typical workflow:
+  bifrost git fetch                     # regenerate manifest, see what's changed
+  bifrost git commit -m "sync clients"  # commit DB changes to manifest
+  bifrost git push                      # pull + push + import to deploy
+
+Examples:
+  bifrost git fetch
+  bifrost git status
+  bifrost git commit -m "add onboarding workflow"
+  bifrost git push
+  bifrost git resolve workflows/billing.py=keep_remote
+  bifrost git diff .bifrost/workflows.yaml
+  bifrost git discard workflows/old.py
+""".strip())
 
 
 def handle_push(args: list[str]) -> int:
@@ -840,7 +962,7 @@ Push local files to Bifrost platform.
 
 Before pushing, checks that:
   1. Git integration is configured
-  2. No uncommitted platform changes exist (run 'bifrost sync' first)
+  2. No uncommitted platform changes exist (run 'bifrost git commit' and 'bifrost git push' first)
 
 Arguments:
   path                  Local directory to push (default: current directory)
@@ -977,7 +1099,7 @@ Examples:
     if not bifrost_dir.exists() or not bifrost_dir.is_dir():
         print("Error: not a Bifrost workspace (no .bifrost/ directory found)", file=sys.stderr)
         print("  Run 'bifrost watch' from a directory that contains .bifrost/,", file=sys.stderr)
-        print("  or run 'bifrost sync' to initialize your workspace first.", file=sys.stderr)
+        print("  or run 'bifrost git commit' and 'bifrost git push' to initialize your workspace first.", file=sys.stderr)
         return 1
 
     # Authenticate

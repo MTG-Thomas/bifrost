@@ -120,12 +120,29 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 
 ### Syncing
 
-**`bifrost watch` handles all syncing.** Do NOT run `bifrost push` or `bifrost sync` while watch is running — watch already pushes every file change automatically.
+**`bifrost watch` handles all syncing.** Do NOT run `bifrost push` or `bifrost git push` while watch is running — watch already pushes every file change automatically.
 
-- `bifrost sync` is for git-integrated deployments (bi-directional GitHub sync with conflict resolution). Only use when the user explicitly requests it.
+- `bifrost git push` is for git-integrated deployments (pull + push + entity import). Only use when the user explicitly requests it.
 - `bifrost push` is a one-off direct upload. Only use when the user explicitly requests it or watch is not running.
 
 Preflight (runs automatically in watch): manifest YAML, file existence, Python syntax, ruff linting, UUID cross-references, orphan detection.
+
+### Git Source Control
+
+When the user needs to deploy via git (not watch mode), use the `bifrost git` subcommands:
+
+```bash
+bifrost git fetch                     # regenerate manifest from DB, fetch remote
+bifrost git status                    # show changed files, ahead/behind
+bifrost git commit -m "description"   # regenerate manifest, stage, preflight, commit
+bifrost git push                      # pull + push + import entities (deploy)
+git pull                              # pull platform commits into local repo
+bifrost git resolve path=keep_remote  # resolve merge conflicts
+bifrost git diff <path>               # show file diff
+bifrost git discard <path>            # discard working tree changes
+```
+
+Typical workflow: `bifrost git fetch` → `bifrost git commit -m "msg"` → `bifrost git push` → `git pull` (to get the platform's commits locally).
 
 ## MCP-Only Mode
 
