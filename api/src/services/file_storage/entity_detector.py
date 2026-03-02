@@ -27,7 +27,11 @@ class PythonEntityDetectionResult:
     syntax_error: str | None = None  # Syntax error message if parse failed
 
 
-def detect_platform_entity_type(path: str, content: bytes) -> str | None:
+def detect_platform_entity_type(
+    path: str,
+    content: bytes,
+    app_prefixes: set[str] | None = None,
+) -> str | None:
     """
     Detect if a file is a platform entity that should be stored in the database.
 
@@ -42,13 +46,18 @@ def detect_platform_entity_type(path: str, content: bytes) -> str | None:
     Args:
         path: File path
         content: File content
+        app_prefixes: Optional set of known app repo_path prefixes (e.g. {"apps/my-app", "custom/app"}).
+            If provided, paths under these prefixes are detected as "app_file".
 
     Returns:
-        Entity type ("workflow", "form", "agent") or None for regular files
+        Entity type ("workflow", "form", "agent", "app_file") or None for regular files
     """
-    # App files: apps/{slug}/...
-    if path.startswith("apps/"):
-        return "app_file"
+    # App files: check against known app repo_path prefixes from DB
+    if app_prefixes:
+        for prefix in app_prefixes:
+            normalized = prefix.rstrip("/") + "/"
+            if path.startswith(normalized):
+                return "app_file"
 
     # YAML platform entities - always go to DB
     if path.endswith(".form.yaml"):

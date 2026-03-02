@@ -94,8 +94,8 @@ class FileOperationsService:
         Read file content.
 
         Routes reads by path convention:
-        - forms/{uuid}.form.yaml -> serialize from forms table
-        - agents/{uuid}.agent.yaml -> serialize from agents table
+        - {uuid}.form.yaml -> serialize from forms table
+        - {uuid}.agent.yaml -> serialize from agents table
         - Everything else -> fetch from file_index, fallback to S3
 
         Args:
@@ -110,8 +110,8 @@ class FileOperationsService:
         import re
         from uuid import UUID
 
-        # Forms: forms/{uuid}.form.yaml
-        form_match = re.match(r"forms/([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
+        # Forms: {uuid}.form.yaml (any directory)
+        form_match = re.search(r"([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
         if form_match:
             try:
                 form_id = UUID(form_match.group(1))
@@ -128,8 +128,8 @@ class FileOperationsService:
                 return _serialize_form_to_yaml(form), None
             raise FileNotFoundError(f"Form not found: {form_id}")
 
-        # Agents: agents/{uuid}.agent.yaml
-        agent_match = re.match(r"agents/([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
+        # Agents: {uuid}.agent.yaml (any directory)
+        agent_match = re.search(r"([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
         if agent_match:
             try:
                 agent_id = UUID(agent_match.group(1))

@@ -738,7 +738,7 @@ async def delete_agent(
     # Dual-write: remove agent YAML from S3 _repo/
     from src.services.repo_sync_writer import RepoSyncWriter
     writer = RepoSyncWriter(db)
-    await writer.delete_entity_file(f"agents/{agent_id}.agent.yaml")
+    await writer.delete_entity_file_by_suffix(f"{agent_id}.agent.yaml")
 
 
 @router.post("/{agent_id}/promote")

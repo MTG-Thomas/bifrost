@@ -228,34 +228,34 @@ async def cleanup_orphaned(
                     path=wf.path,
                 ))
 
-        # 2. Forms — manifest generates path as forms/{id}.form.yaml
+        # 2. Forms — file may be at any path ending in {id}.form.yaml
         form_result = await db.execute(
             select(Form).where(Form.is_active.is_(True))
         )
         for form in form_result.scalars().all():
-            expected_path = f"forms/{form.id}.form.yaml"
-            if expected_path not in existing_paths:
+            suffix = f"{form.id}.form.yaml"
+            if not any(p.endswith(suffix) for p in existing_paths):
                 form.is_active = False
                 cleaned.append(OrphanedEntity(
                     entity_type="form",
                     entity_id=str(form.id),
                     entity_name=form.name,
-                    path=expected_path,
+                    path=suffix,
                 ))
 
-        # 3. Agents — manifest generates path as agents/{id}.agent.yaml
+        # 3. Agents — file may be at any path ending in {id}.agent.yaml
         agent_result = await db.execute(
             select(Agent).where(Agent.is_active.is_(True))
         )
         for agent in agent_result.scalars().all():
-            expected_path = f"agents/{agent.id}.agent.yaml"
-            if expected_path not in existing_paths:
+            suffix = f"{agent.id}.agent.yaml"
+            if not any(p.endswith(suffix) for p in existing_paths):
                 agent.is_active = False
                 cleaned.append(OrphanedEntity(
                     entity_type="agent",
                     entity_id=str(agent.id),
                     entity_name=agent.name,
-                    path=expected_path,
+                    path=suffix,
                 ))
 
         await db.commit()

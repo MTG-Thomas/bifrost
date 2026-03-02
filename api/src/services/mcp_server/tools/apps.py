@@ -802,30 +802,39 @@ async def push_files(
 
             # Compile app files that were pushed
             compile_warnings = []
-            app_file_groups = {}  # group by app slug
+            app_file_groups: dict[str, list[dict[str, str]]] = {}  # app_id -> files
+
+            # Load all apps to match pushed files against their repo_path
+            from src.models.orm.applications import Application
+            all_apps_result = await db.execute(select(Application))
+            all_apps = all_apps_result.scalars().all()
+
+            # Build prefix -> app mapping
+            app_by_prefix: dict[str, Application] = {}
+            for app_obj in all_apps:
+                prefix = (app_obj.repo_path or f"apps/{app_obj.slug}").rstrip("/") + "/"
+                app_by_prefix[prefix] = app_obj
+
             for repo_path, content in files.items():
-                if repo_path.startswith("apps/") and repo_path.endswith((".tsx", ".ts")):
-                    parts = repo_path.split("/")
-                    if len(parts) >= 3:
-                        slug = parts[1]
-                        rel_path = "/".join(parts[2:])
-                        app_file_groups.setdefault(slug, []).append({
+                if not repo_path.endswith((".tsx", ".ts")):
+                    continue
+                for prefix, app_obj in app_by_prefix.items():
+                    if repo_path.startswith(prefix):
+                        rel_path = repo_path[len(prefix):]
+                        app_file_groups.setdefault(str(app_obj.id), []).append({
                             "path": rel_path, "source": content
                         })
+                        break
 
             if app_file_groups:
                 from src.services.app_compiler import AppCompilerService
-                from src.models.orm.applications import Application
                 from src.routers.applications import KNOWN_APP_COMPONENTS
                 import re
 
                 compiler = AppCompilerService()
-                for slug, app_files in app_file_groups.items():
-                    # Get app ID
-                    app_result = await db.execute(
-                        select(Application).where(Application.slug == slug)
-                    )
-                    app = app_result.scalar_one_or_none()
+                app_lookup = {str(a.id): a for a in all_apps}
+                for app_id_str, app_files in app_file_groups.items():
+                    app = app_lookup.get(app_id_str)
                     if not app:
                         continue
 
