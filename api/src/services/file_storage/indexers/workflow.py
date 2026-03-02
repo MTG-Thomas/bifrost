@@ -34,6 +34,11 @@ class WorkflowIndexer:
             db: Database session for querying and updating workflow records
         """
         self.db = db
+        self._prefetch_cache: dict[tuple[str, str], Workflow] | None = None
+
+    def set_prefetch_cache(self, cache: dict[tuple[str, str], Workflow]) -> None:
+        """Set a prefetch cache of {(path, function_name): Workflow} to avoid per-function DB lookups."""
+        self._prefetch_cache = cache
 
     async def extract_metadata(
         self,
@@ -135,13 +140,17 @@ class WorkflowIndexer:
                     function_name = node.name
 
                     # Look up existing workflow by path + function_name
-                    # Include inactive rows so we can reactivate them
-                    stmt = select(Workflow).where(
-                        Workflow.path == path,
-                        Workflow.function_name == function_name,
-                    )
-                    result = await self.db.execute(stmt)
-                    existing_workflow = result.scalar_one_or_none()
+                    # Use prefetch cache if available, otherwise query DB
+                    if self._prefetch_cache is not None:
+                        existing_workflow = self._prefetch_cache.get((path, function_name))
+                    else:
+                        # Include inactive rows so we can reactivate them
+                        stmt = select(Workflow).where(
+                            Workflow.path == path,
+                            Workflow.function_name == function_name,
+                        )
+                        result = await self.db.execute(stmt)
+                        existing_workflow = result.scalar_one_or_none()
 
                     if not existing_workflow:
                         # Not registered — skip. Use register_workflow() to register.
@@ -228,13 +237,17 @@ class WorkflowIndexer:
                     provider_name = kwargs.get("name") or node.name
                     function_name = node.name
 
-                    # Look up existing data_provider (include inactive for reactivation)
-                    stmt = select(Workflow).where(
-                        Workflow.path == path,
-                        Workflow.function_name == function_name,
-                    )
-                    result = await self.db.execute(stmt)
-                    existing_dp = result.scalar_one_or_none()
+                    # Look up existing data_provider — use prefetch cache if available
+                    if self._prefetch_cache is not None:
+                        existing_dp = self._prefetch_cache.get((path, function_name))
+                    else:
+                        # Include inactive for reactivation
+                        stmt = select(Workflow).where(
+                            Workflow.path == path,
+                            Workflow.function_name == function_name,
+                        )
+                        result = await self.db.execute(stmt)
+                        existing_dp = result.scalar_one_or_none()
 
                     if not existing_dp:
                         logger.debug(

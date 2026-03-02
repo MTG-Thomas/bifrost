@@ -1010,15 +1010,22 @@ class GitHubSyncService:
                 await _progress("Syncing to storage...")
                 await self.repo_manager.sync_up(work_dir)
 
+                # Refresh Redis module cache so editor + workers see new .py content
+                from src.core.module_cache import refresh_modules_from_directory
+                await refresh_modules_from_directory(work_dir)
+
                 # Step 4: Entity import
                 await _progress("Importing entities...")
                 async with self.db.begin_nested():
-                    entities_imported = await self._import_all_entities(work_dir)
+                    entities_imported = await self._import_all_entities(work_dir, progress_fn=_progress)
+                    await _progress("Cleaning up removed entities...")
                     await self._delete_removed_entities(work_dir)
+                    await _progress("Updating file index...")
                     await self._update_file_index(work_dir)
                 await self.db.commit()
 
                 # Step 5: Sync app previews
+                await _progress("Syncing app previews...")
                 await self._sync_app_previews(work_dir)
 
                 logger.info(
@@ -1209,6 +1216,10 @@ class GitHubSyncService:
                 # S3 sync up so other containers see the reverted files
                 await self.repo_manager.sync_up(work_dir)
 
+                # Refresh Redis module cache so editor + workers see reverted .py content
+                from src.core.module_cache import refresh_modules_from_directory
+                await refresh_modules_from_directory(work_dir)
+
                 logger.info(f"Discarded {len(discarded)} file(s)")
                 return DiscardResult(success=True, discarded=discarded)
         except Exception as e:
@@ -1263,10 +1274,105 @@ class GitHubSyncService:
         """
         return []
 
+    async def _prefetch_existing_entities(self) -> dict:
+        """Prefetch all existing entity IDs/natural-keys in bulk queries.
+
+        Returns a cache dict that _resolve_* methods use for O(1) lookups
+        instead of per-entity SELECT queries.
+        """
+        from src.models.orm.applications import Application
+        from src.models.orm.config import Config
+        from src.models.orm.integrations import (
+            Integration,
+            IntegrationConfigSchema,
+            IntegrationMapping,
+        )
+        from src.models.orm.organizations import Organization
+        from src.models.orm.tables import Table
+        from src.models.orm.users import Role
+        from src.models.orm.workflows import Workflow
+
+        cache: dict = {}
+
+        # Organizations: {id} set + {name: id} dict
+        org_result = await self.db.execute(select(Organization.id, Organization.name))
+        cache["org_ids"] = set()
+        cache["org_by_name"] = {}
+        for row in org_result.all():
+            cache["org_ids"].add(row[0])
+            cache["org_by_name"][row[1]] = row[0]
+
+        # Roles: {id} set + {name: id} dict
+        role_result = await self.db.execute(select(Role.id, Role.name))
+        cache["role_ids"] = set()
+        cache["role_by_name"] = {}
+        for row in role_result.all():
+            cache["role_ids"].add(row[0])
+            cache["role_by_name"][row[1]] = row[0]
+
+        # Workflows: {(path, function_name): id} + {id} set
+        wf_result = await self.db.execute(
+            select(Workflow.id, Workflow.path, Workflow.function_name)
+        )
+        cache["wf_ids"] = set()
+        cache["wf_by_natural"] = {}
+        for row in wf_result.all():
+            cache["wf_ids"].add(row[0])
+            if row[1] and row[2]:
+                cache["wf_by_natural"][(row[1], row[2])] = row[0]
+
+        # Integrations: {name: id} + {id} set
+        integ_result = await self.db.execute(select(Integration.id, Integration.name))
+        cache["integ_ids"] = set()
+        cache["integ_by_name"] = {}
+        for row in integ_result.all():
+            cache["integ_ids"].add(row[0])
+            cache["integ_by_name"][row[1]] = row[0]
+
+        # IntegrationConfigSchema: {integ_id: {key: schema_obj}}
+        cs_result = await self.db.execute(select(IntegrationConfigSchema))
+        cache["integ_cs"] = {}
+        for cs in cs_result.scalars().all():
+            cache["integ_cs"].setdefault(cs.integration_id, {})[cs.key] = cs
+
+        # IntegrationMapping: {integ_id: {org_id_str: mapping_obj}}
+        im_result = await self.db.execute(select(IntegrationMapping))
+        cache["integ_mappings"] = {}
+        for m in im_result.scalars().all():
+            org_key = str(m.organization_id) if m.organization_id else None
+            cache["integ_mappings"].setdefault(m.integration_id, {})[org_key] = m
+
+        # Apps: {slug: id}
+        app_result = await self.db.execute(select(Application.id, Application.slug))
+        cache["app_by_slug"] = {}
+        for row in app_result.all():
+            cache["app_by_slug"][row[1]] = row[0]
+
+        # Tables: {(name, org_id): id} + {id} set
+        table_result = await self.db.execute(
+            select(Table.id, Table.name, Table.organization_id)
+        )
+        cache["table_ids"] = set()
+        cache["table_by_natural"] = {}
+        for row in table_result.all():
+            cache["table_ids"].add(row[0])
+            cache["table_by_natural"][(row[1], row[2])] = row[0]
+
+        # Configs: {(key, integ_id, org_id): (id, value, config_schema_id)}
+        cfg_result = await self.db.execute(
+            select(Config.id, Config.key, Config.integration_id, Config.organization_id, Config.value, Config.config_schema_id)
+        )
+        cache["config_by_natural"] = {}
+        for row in cfg_result.all():
+            cache["config_by_natural"][(row[1], row[2], row[3])] = (row[0], row[4], row[5])
+
+        return cache
+
     async def plan_import(self, manifest: "Manifest", work_dir: Path) -> "list[SyncOp]":
         """Build and execute SyncOps for importing a manifest (entities only).
 
         Resolves and immediately executes ops in dependency order.
+        Uses prefetch cache to minimize per-entity DB lookups.
         Deletions are handled separately by _delete_removed_entities / _resolve_deletions.
         Indexer side-effects (WorkflowIndexer, FormIndexer, AgentIndexer) remain
         in _import_all_entities.
@@ -1290,10 +1396,13 @@ class GitHubSyncService:
 
         all_ops: list[SyncOp] = []
 
+        # Prefetch all existing entities for O(1) lookups
+        cache = await self._prefetch_existing_entities()
+
         # 0a. Resolve organizations (no deps) — execute immediately
         org_ops: list[SyncOp] = []
         for morg in manifest.organizations:
-            org_ops.extend(await self._resolve_organization(morg))
+            org_ops.extend(self._resolve_organization(morg, cache))
         for op in org_ops:
             await op.execute(self.db)
         all_ops.extend(org_ops)
@@ -1301,7 +1410,7 @@ class GitHubSyncService:
         # 0b. Resolve roles (no deps) — execute immediately
         role_ops: list[SyncOp] = []
         for mrole in manifest.roles:
-            role_ops.extend(await self._resolve_role(mrole))
+            role_ops.extend(self._resolve_role(mrole, cache))
         for op in role_ops:
             await op.execute(self.db)
         all_ops.extend(role_ops)
@@ -1310,35 +1419,35 @@ class GitHubSyncService:
         for key, mwf in manifest.workflows.items():
             wf_path = work_dir / mwf.path
             if wf_path.exists():
-                wf_ops = await self._resolve_workflow(mwf.name or key, mwf)
+                wf_ops = self._resolve_workflow(mwf.name or key, mwf, cache)
                 for op in wf_ops:
                     await op.execute(self.db)
                 all_ops.extend(wf_ops)
 
         # 2. Resolve integrations (with config_schema, oauth_provider, mappings)
         for key, minteg in manifest.integrations.items():
-            integ_ops = await self._resolve_integration(minteg.name or key, minteg)
+            integ_ops = await self._resolve_integration(minteg.name or key, minteg, cache)
             for op in integ_ops:
                 await op.execute(self.db)
             all_ops.extend(integ_ops)
 
         # 3. Resolve configs
         for _config_key, mcfg in manifest.configs.items():
-            cfg_ops = await self._resolve_config(mcfg)
+            cfg_ops = self._resolve_config(mcfg, cache)
             for op in cfg_ops:
                 await op.execute(self.db)
             all_ops.extend(cfg_ops)
 
         # 4. Resolve apps (before tables — tables ref application_id)
         for _app_name, mapp in manifest.apps.items():
-            app_ops = await self._resolve_app(mapp)
+            app_ops = self._resolve_app(mapp, cache)
             for op in app_ops:
                 await op.execute(self.db)
             all_ops.extend(app_ops)
 
         # 5. Resolve tables (refs org + app UUIDs)
         for key, mtable in manifest.tables.items():
-            table_ops = await self._resolve_table(mtable.name or key, mtable)
+            table_ops = await self._resolve_table(mtable.name or key, mtable, cache)
             for op in table_ops:
                 await op.execute(self.db)
             all_ops.extend(table_ops)
@@ -1355,7 +1464,7 @@ class GitHubSyncService:
             form_path = work_dir / mform.path
             if form_path.exists():
                 content = form_path.read_bytes()
-                form_ops = await self._resolve_form(mform, content)
+                form_ops = self._resolve_form(mform, content)
                 for op in form_ops:
                     await op.execute(self.db)
                 all_ops.extend(form_ops)
@@ -1365,14 +1474,14 @@ class GitHubSyncService:
             agent_path = work_dir / magent.path
             if agent_path.exists():
                 content = agent_path.read_bytes()
-                agent_ops = await self._resolve_agent(magent, content)
+                agent_ops = self._resolve_agent(magent, content)
                 for op in agent_ops:
                     await op.execute(self.db)
                 all_ops.extend(agent_ops)
 
         return all_ops
 
-    async def _import_all_entities(self, work_dir: Path) -> int:
+    async def _import_all_entities(self, work_dir: Path, progress_fn=None, force_full: bool = False) -> int:
         """Import all entities from the working tree into the DB.
 
         Delegates to plan_import which resolves and immediately executes ops,
@@ -1408,8 +1517,48 @@ class GitHubSyncService:
 
         count = 0
 
+        async def _prog(msg: str) -> None:
+            if progress_fn:
+                await progress_fn(msg)
+
+        # --- Manifest file-level hashing: skip unchanged entity types ---
+        # Hash each .bifrost/*.yaml file and compare with stored hashes.
+        # If a file hasn't changed, zero out the corresponding manifest section.
+        changed_sections = await self._check_manifest_hashes(bifrost_dir, force_full=force_full)
+
+        # Zero out unchanged sections to skip them in plan_import
+        section_map = {
+            "organizations": "organizations",
+            "roles": "roles",
+            "workflows": "workflows",
+            "integrations": "integrations",
+            "configs": "configs",
+            "tables": "tables",
+            "events": "events",
+            "forms": "forms",
+            "agents": "agents",
+            "apps": "apps",
+        }
+        skipped = []
+        for section_key in section_map:
+            if section_key not in changed_sections:
+                attr = section_map[section_key]
+                current = getattr(manifest, attr, None)
+                if current:
+                    skipped.append(section_key)
+                    if isinstance(current, list):
+                        setattr(manifest, attr, [])
+                    else:
+                        setattr(manifest, attr, {})
+        if skipped:
+            logger.info(f"Manifest hashing: skipping unchanged sections: {', '.join(skipped)}")
+
         # Run all resolve ops (including immediate execution inside plan_import)
+        await _prog("Resolving entities from manifest...")
         await self.plan_import(manifest, work_dir)
+
+        # Store manifest hashes after successful import
+        await self._store_manifest_hashes(bifrost_dir)
 
         # Count imported entities
         count += len(manifest.organizations)
@@ -1423,14 +1572,32 @@ class GitHubSyncService:
 
         # Indexer side-effects: WorkflowIndexer for each workflow
         # Enriches parameters_schema, description, etc. from AST
+        await _prog("Indexing workflows...")
+        from src.models.orm.workflows import Workflow as WfORM
         from src.services.file_storage.indexers.workflow import WorkflowIndexer
+
+        # Prefetch all workflows by path for the indexer (1 query instead of N)
+        wf_paths = {mwf.path for mwf in manifest.workflows.values() if (work_dir / mwf.path).exists()}
+        if wf_paths:
+            wf_result = await self.db.execute(
+                select(WfORM).where(WfORM.path.in_(wf_paths))
+            )
+            wf_cache: dict[tuple[str, str], WfORM] = {}
+            for wf in wf_result.scalars().all():
+                if wf.path and wf.function_name:
+                    wf_cache[(wf.path, wf.function_name)] = wf
+        else:
+            wf_cache = {}
+
         workflow_indexer = WorkflowIndexer(self.db)
+        workflow_indexer.set_prefetch_cache(wf_cache)
         for _wf_name, mwf in manifest.workflows.items():
             wf_path = work_dir / mwf.path
             if wf_path.exists():
                 content = wf_path.read_bytes()
                 await workflow_indexer.index_python_file(mwf.path, content)
 
+        await _prog("Indexing forms...")
         # Indexer side-effects: FormIndexer for each form
         from src.services.file_storage.indexers.form import FormIndexer
         form_indexer = FormIndexer(self.db)
@@ -1464,6 +1631,7 @@ class GitHubSyncService:
                         )
                 count += 1
 
+        await _prog("Indexing agents...")
         # Indexer side-effects: AgentIndexer for each agent
         from src.services.file_storage.indexers.agent import AgentIndexer
         agent_indexer = AgentIndexer(self.db)
@@ -1503,12 +1671,9 @@ class GitHubSyncService:
     async def _delete_removed_entities(self, work_dir: Path) -> None:
         """Delete entities that disappeared from the manifest after a pull.
 
-        Delegates to _resolve_deletions which returns ops, then executes them.
-        Kept as a separate method for backward compatibility with callers.
+        Delegates to _resolve_deletions which executes bulk deletes inline.
         """
-        deletion_ops = await self._resolve_deletions(work_dir)
-        for op in deletion_ops:
-            await op.execute(self.db)
+        await self._resolve_deletions(work_dir)
 
     # -----------------------------------------------------------------
     # App preview sync
@@ -1528,23 +1693,28 @@ class GitHubSyncService:
         if not manifest.apps:
             return
 
+        import asyncio
+
         app_storage = AppStorageService(self.repo_manager._settings)
 
-        for _app_name, mapp in manifest.apps.items():
-            # mapp.path is already the source directory (e.g. "apps/tickbox-grc")
-            app_source_dir = mapp.path
-
+        async def _sync_one_app(mapp_id: str, source_dir: str) -> None:
             try:
                 synced, compile_errors = await app_storage.sync_preview_compiled(
-                    mapp.id, app_source_dir
+                    mapp_id, source_dir
                 )
-                logger.info(f"Synced {synced} compiled preview files for app {mapp.id}")
+                logger.info(f"Synced {synced} compiled preview files for app {mapp_id}")
                 if compile_errors:
                     logger.warning(
-                        f"Compile errors for app {mapp.id}: {compile_errors}"
+                        f"Compile errors for app {mapp_id}: {compile_errors}"
                     )
             except Exception as e:
-                logger.warning(f"Failed to sync preview for app {mapp.id}: {e}")
+                logger.warning(f"Failed to sync preview for app {mapp_id}: {e}")
+
+        # Process all apps concurrently
+        await asyncio.gather(*(
+            _sync_one_app(mapp.id, mapp.path)
+            for mapp in manifest.apps.values()
+        ))
 
     # -----------------------------------------------------------------
     # Reimport from repo (no git operations)
@@ -1633,11 +1803,11 @@ class GitHubSyncService:
     # Internal: import entities from repo
     # -----------------------------------------------------------------
 
-    async def _resolve_organization(self, morg) -> "list[SyncOp]":
+    def _resolve_organization(self, morg, cache: dict) -> "list[SyncOp]":
         """Resolve an organization from manifest into SyncOps.
 
-        ID-first, name-fallback upsert strategy. Returns ops list without
-        executing — caller is responsible for execution order.
+        ID-first, name-fallback upsert strategy using prefetch cache.
+        Returns ops list without executing.
         """
         from uuid import UUID
 
@@ -1647,12 +1817,7 @@ class GitHubSyncService:
         org_id = UUID(morg.id)
 
         # 1. Try by ID first (handles renames)
-        by_id = await self.db.execute(
-            select(Organization.id).where(Organization.id == org_id)
-        )
-        existing_by_id = by_id.scalar_one_or_none()
-
-        if existing_by_id is not None:
+        if org_id in cache["org_ids"]:
             return [Upsert(
                 model=Organization,
                 id=org_id,
@@ -1661,11 +1826,7 @@ class GitHubSyncService:
             )]
 
         # 2. Try by name (cross-env ID sync)
-        by_name = await self.db.execute(
-            select(Organization.id).where(Organization.name == morg.name)
-        )
-        existing_by_name = by_name.scalar_one_or_none()
-
+        existing_by_name = cache["org_by_name"].get(morg.name)
         if existing_by_name is not None:
             return [Upsert(
                 model=Organization,
@@ -1682,11 +1843,11 @@ class GitHubSyncService:
             match_on="id",
         )]
 
-    async def _resolve_role(self, mrole) -> "list[SyncOp]":
+    def _resolve_role(self, mrole, cache: dict) -> "list[SyncOp]":
         """Resolve a role from manifest into SyncOps.
 
-        ID-first, name-fallback upsert strategy. Returns ops list without
-        executing — caller is responsible for execution order.
+        ID-first, name-fallback upsert strategy using prefetch cache.
+        Returns ops list without executing.
         """
         from uuid import UUID
 
@@ -1696,12 +1857,7 @@ class GitHubSyncService:
         role_id = UUID(mrole.id)
 
         # 1. Try by ID first (handles renames)
-        by_id = await self.db.execute(
-            select(Role.id).where(Role.id == role_id)
-        )
-        existing_by_id = by_id.scalar_one_or_none()
-
-        if existing_by_id is not None:
+        if role_id in cache["role_ids"]:
             return [Upsert(
                 model=Role,
                 id=role_id,
@@ -1710,11 +1866,7 @@ class GitHubSyncService:
             )]
 
         # 2. Try by name (cross-env ID sync)
-        by_name = await self.db.execute(
-            select(Role.id).where(Role.name == mrole.name)
-        )
-        existing_by_name = by_name.scalar_one_or_none()
-
+        existing_by_name = cache["role_by_name"].get(mrole.name)
         if existing_by_name is not None:
             return [Upsert(
                 model=Role,
@@ -1773,11 +1925,11 @@ class GitHubSyncService:
                 )
             )
 
-    async def _resolve_workflow(self, manifest_name: str, mwf) -> "list[SyncOp]":
+    def _resolve_workflow(self, manifest_name: str, mwf, cache: dict) -> "list[SyncOp]":
         """Resolve a workflow from manifest into SyncOps.
 
-        Uses natural-key (path+function_name) or ID lookup to determine the
-        correct upsert strategy. Returns ops list without executing.
+        Uses prefetch cache for natural-key (path+function_name) or ID lookup.
+        Returns ops list without executing.
         """
         from uuid import UUID
 
@@ -1788,19 +1940,9 @@ class GitHubSyncService:
         wf_id = UUID(mwf.id)
         org_id = UUID(mwf.organization_id) if mwf.organization_id else None
 
-        # Check for existing workflow by natural key (path, function_name) OR by ID
-        by_natural = await self.db.execute(
-            select(Workflow.id).where(
-                Workflow.path == mwf.path,
-                Workflow.function_name == mwf.function_name,
-            )
-        )
-        existing_by_natural = by_natural.scalar_one_or_none()
-
-        by_id = await self.db.execute(
-            select(Workflow.id).where(Workflow.id == wf_id)
-        )
-        existing_by_id = by_id.scalar_one_or_none()
+        # Check prefetch cache for existing workflow
+        existing_by_natural = cache["wf_by_natural"].get((mwf.path, mwf.function_name))
+        existing_by_id = wf_id if wf_id in cache["wf_ids"] else None
 
         wf_values = {
             "name": manifest_name,
@@ -1951,8 +2093,9 @@ class GitHubSyncService:
     async def _resolve_deletions(self, work_dir: Path) -> "list[SyncOp]":
         """Compute delete/deactivate ops for entities removed from the manifest.
 
-        Git history provides the undo mechanism — no need for a DB recycle bin.
-        Compares manifest entity IDs against active DB entities to find deletions.
+        Optimized: pushes filtering to SQL with NOT IN clauses, returning only
+        stale entity IDs. Executes bulk deletes inline instead of generating
+        individual Delete/Deactivate ops.
 
         Deletion strategy per entity type:
         - Workflows, Forms, Agents, Apps: hard-delete (existing behavior)
@@ -1962,6 +2105,9 @@ class GitHubSyncService:
         - Organizations, Roles: soft-delete (only git-sync created ones)
         """
         from uuid import UUID
+
+        from sqlalchemy import delete as sa_delete
+        from sqlalchemy import update as sa_update
 
         from src.models.orm.agents import Agent
         from src.models.orm.applications import Application
@@ -1973,165 +2119,157 @@ class GitHubSyncService:
         from src.models.orm.tables import Table
         from src.models.orm.users import Role
         from src.models.orm.workflows import Workflow
-        from src.services.sync_ops import Deactivate, Delete, SyncOp  # noqa: F401
+        from src.services.sync_ops import SyncOp  # noqa: F401
 
         manifest = read_manifest_from_dir(work_dir / ".bifrost")
 
-        # Collect IDs of entities present in the manifest AND whose files exist
-        present_wf_ids: set[str] = set()
-        for mwf in manifest.workflows.values():
-            if (work_dir / mwf.path).exists():
-                present_wf_ids.add(mwf.id)
+        # Collect UUIDs of entities present in the manifest AND whose files exist
+        present_wf_uuids = [
+            UUID(mwf.id) for mwf in manifest.workflows.values()
+            if (work_dir / mwf.path).exists()
+        ]
+        present_form_uuids = [
+            UUID(mform.id) for mform in manifest.forms.values()
+            if (work_dir / mform.path).exists()
+        ]
+        present_agent_uuids = [
+            UUID(magent.id) for magent in manifest.agents.values()
+            if (work_dir / magent.path).exists()
+        ]
+        present_app_uuids = [
+            UUID(mapp.id) for mapp in manifest.apps.values()
+            if (work_dir / mapp.path).is_dir()
+        ]
 
-        present_form_ids: set[str] = set()
-        for mform in manifest.forms.values():
-            if (work_dir / mform.path).exists():
-                present_form_ids.add(mform.id)
-
-        present_agent_ids: set[str] = set()
-        for magent in manifest.agents.values():
-            if (work_dir / magent.path).exists():
-                present_agent_ids.add(magent.id)
-
-        present_app_ids: set[str] = set()
-        for mapp in manifest.apps.values():
-            if (work_dir / mapp.path).is_dir():
-                present_app_ids.add(mapp.id)
-
-        # IDs present in manifest (no file check needed for non-file entities)
-        present_integ_ids = {minteg.id for minteg in manifest.integrations.values()}
-        present_config_ids = {mcfg.id for mcfg in manifest.configs.values()}
-        present_table_ids = {mtable.id for mtable in manifest.tables.values()}
-        present_event_ids = {mes.id for mes in manifest.events.values()}
-        present_sub_ids: set[str] = set()
+        present_integ_uuids = [UUID(m.id) for m in manifest.integrations.values()]
+        present_config_uuids = [UUID(m.id) for m in manifest.configs.values()]
+        present_table_uuids = [UUID(m.id) for m in manifest.tables.values()]
+        present_event_uuids = [UUID(m.id) for m in manifest.events.values()]
+        present_sub_uuids: list[UUID] = []
         for mes in manifest.events.values():
             for msub in mes.subscriptions:
-                present_sub_ids.add(msub.id)
-        present_org_ids = {morg.id for morg in manifest.organizations}
-        present_role_ids = {mrole.id for mrole in manifest.roles}
+                present_sub_uuids.append(UUID(msub.id))
+        present_org_uuids = [UUID(m.id) for m in manifest.organizations]
+        present_role_uuids = [UUID(m.id) for m in manifest.roles]
 
         ops: list[SyncOp] = []
+        now = datetime.now(timezone.utc)
+
+        # Helper: query stale IDs and bulk-delete in one shot
+        async def _bulk_delete(model: type, base_filter: list, present: list[UUID]) -> int:
+            """Find IDs not in present list and delete them. Returns count."""
+            q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            if present:
+                q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
+            result = await self.db.execute(q)
+            stale_ids = [row[0] for row in result.all()]
+            if not stale_ids:
+                return 0
+            for sid in stale_ids:
+                logger.info(f"Deleting {model.__tablename__} {sid} — removed from repo")  # type: ignore[attr-defined]
+            await self.db.execute(
+                sa_delete(model).where(model.id.in_(stale_ids))  # type: ignore[attr-defined]
+            )
+            return len(stale_ids)
+
+        # Helper: query stale IDs and soft-delete (deactivate)
+        async def _bulk_deactivate(model: type, base_filter: list, present: list[UUID]) -> int:
+            q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            if present:
+                q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
+            result = await self.db.execute(q)
+            stale_ids = [row[0] for row in result.all()]
+            if not stale_ids:
+                return 0
+            for sid in stale_ids:
+                logger.info(f"Deactivating {model.__tablename__} {sid} — removed from manifest")  # type: ignore[attr-defined]
+            await self.db.execute(
+                sa_update(model)
+                .where(model.id.in_(stale_ids))  # type: ignore[attr-defined]
+                .values(is_active=False, updated_at=now)
+            )
+            return len(stale_ids)
 
         # Delete workflows synced from git that are no longer present
-        wf_result = await self.db.execute(
-            select(Workflow.id).where(
-                Workflow.is_active == True,  # noqa: E712
-                Workflow.path.isnot(None),
-            )
+        await _bulk_delete(
+            Workflow,
+            [Workflow.is_active == True, Workflow.path.isnot(None)],  # noqa: E712
+            present_wf_uuids,
         )
-        for row in wf_result.all():
-            wf_id = str(row[0])
-            if wf_id not in present_wf_ids:
-                logger.info(f"Deleting workflow {wf_id} — removed from repo")
-                ops.append(Delete(model=Workflow, id=UUID(wf_id)))
 
         # Delete integrations not in manifest
-        integ_result = await self.db.execute(
-            select(Integration.id).where(Integration.is_deleted == False)  # noqa: E712
+        await _bulk_delete(
+            Integration,
+            [Integration.is_deleted == False],  # noqa: E712
+            present_integ_uuids,
         )
-        for row in integ_result.all():
-            integ_id = str(row[0])
-            if integ_id not in present_integ_ids:
-                logger.info(f"Deleting integration {integ_id} — removed from repo")
-                ops.append(Delete(model=Integration, id=UUID(integ_id)))
 
         # Delete configs not in manifest (skip integration-schema-linked configs —
         # those are user-set values managed by IntegrationConfigSchema cascade)
-        config_result = await self.db.execute(
-            select(Config.id, Config.config_schema_id)
-        )
-        for row in config_result.all():
-            config_id = str(row[0])
-            if config_id not in present_config_ids and row[1] is None:
-                logger.info(f"Deleting config {config_id} — removed from repo")
-                ops.append(Delete(model=Config, id=UUID(config_id)))
+        cfg_q = select(Config.id).where(Config.config_schema_id.is_(None))
+        if present_config_uuids:
+            cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
+        cfg_result = await self.db.execute(cfg_q)
+        stale_cfg_ids = [row[0] for row in cfg_result.all()]
+        if stale_cfg_ids:
+            for sid in stale_cfg_ids:
+                logger.info(f"Deleting config {sid} — removed from repo")
+            await self.db.execute(
+                sa_delete(Config).where(Config.id.in_(stale_cfg_ids))
+            )
 
-        # Soft-delete tables not in manifest (keep data)
-        table_result = await self.db.execute(select(Table.id))
+        # Soft-delete tables not in manifest (log only — data preserved)
+        table_q = select(Table.id)
+        if present_table_uuids:
+            table_q = table_q.where(Table.id.notin_(present_table_uuids))
+        table_result = await self.db.execute(table_q)
         for row in table_result.all():
-            table_id = str(row[0])
-            if table_id not in present_table_ids:
-                logger.info(f"Table {table_id} not in manifest (data preserved)")
+            logger.info(f"Table {row[0]} not in manifest (data preserved)")
 
         # Delete event subscriptions not in manifest
-        sub_result = await self.db.execute(select(EventSubscription.id))
-        for row in sub_result.all():
-            sub_id = str(row[0])
-            if sub_id not in present_sub_ids:
-                logger.info(f"Deleting event subscription {sub_id} — removed from repo")
-                ops.append(Delete(model=EventSubscription, id=UUID(sub_id)))
+        await _bulk_delete(EventSubscription, [], present_sub_uuids)
 
         # Delete event sources not in manifest
-        es_result = await self.db.execute(select(EventSource.id))
-        for row in es_result.all():
-            es_id = str(row[0])
-            if es_id not in present_event_ids:
-                logger.info(f"Deleting event source {es_id} — removed from repo")
-                ops.append(Delete(model=EventSource, id=UUID(es_id)))
+        await _bulk_delete(EventSource, [], present_event_uuids)
 
         # Delete forms not in manifest
-        form_result = await self.db.execute(
-            select(Form.id).where(
-                Form.is_active == True,  # noqa: E712
-            )
+        await _bulk_delete(
+            Form,
+            [Form.is_active == True],  # noqa: E712
+            present_form_uuids,
         )
-        for row in form_result.all():
-            form_id = str(row[0])
-            if form_id not in present_form_ids:
-                logger.info(f"Deleting form {form_id} — removed from repo")
-                ops.append(Delete(model=Form, id=UUID(form_id)))
 
         # Delete agents not in manifest
-        agent_result = await self.db.execute(select(Agent.id))
-        for row in agent_result.all():
-            agent_id = str(row[0])
-            if agent_id not in present_agent_ids:
-                logger.info(f"Deleting agent {agent_id} — removed from repo")
-                ops.append(Delete(model=Agent, id=UUID(agent_id)))
+        await _bulk_delete(Agent, [], present_agent_uuids)
 
         # Delete apps not in manifest
-        app_result = await self.db.execute(select(Application.id))
-        for row in app_result.all():
-            app_id = str(row[0])
-            if app_id not in present_app_ids:
-                logger.info(f"Deleting app {app_id} — removed from repo")
-                ops.append(Delete(model=Application, id=UUID(app_id)))
+        await _bulk_delete(Application, [], present_app_uuids)
 
-        # Soft-delete organizations not in manifest
-        if present_org_ids:
-            org_result = await self.db.execute(
-                select(Organization.id).where(
-                    Organization.is_active == True,  # noqa: E712
-                )
+        # Soft-delete organizations not in manifest (only when manifest has orgs)
+        if present_org_uuids:
+            await _bulk_deactivate(
+                Organization,
+                [Organization.is_active == True],  # noqa: E712
+                present_org_uuids,
             )
-            for row in org_result.all():
-                org_id = str(row[0])
-                if org_id not in present_org_ids:
-                    logger.info(f"Deactivating organization {org_id} — removed from manifest")
-                    ops.append(Deactivate(model=Organization, id=UUID(org_id)))
 
-        # Soft-delete roles not in manifest
-        if present_role_ids:
-            role_result = await self.db.execute(
-                select(Role.id).where(
-                    Role.is_active == True,  # noqa: E712
-                )
+        # Soft-delete roles not in manifest (only when manifest has roles)
+        if present_role_uuids:
+            await _bulk_deactivate(
+                Role,
+                [Role.is_active == True],  # noqa: E712
+                present_role_uuids,
             )
-            for row in role_result.all():
-                role_id = str(row[0])
-                if role_id not in present_role_ids:
-                    logger.info(f"Deactivating role {role_id} — removed from manifest")
-                    ops.append(Deactivate(model=Role, id=UUID(role_id)))
-
 
         return ops
 
-    async def _resolve_integration(self, integ_name: str, minteg) -> "list[SyncOp]":
+    async def _resolve_integration(self, integ_name: str, minteg, cache: dict | None = None) -> "list[SyncOp]":
         """Resolve an integration from manifest into SyncOps.
 
         Upserts the integration and directly executes config schema, oauth
         provider, and mapping sub-operations (these are complex sub-object
         syncs without their own resolution pattern).
+        Uses prefetch cache for lookups when available.
         """
         from uuid import UUID
 
@@ -2143,11 +2281,14 @@ class GitHubSyncService:
 
         integ_id = UUID(minteg.id)
 
-        # Two-step upsert: check by natural key (name) or by ID
-        by_name = await self.db.execute(
-            select(Integration.id).where(Integration.name == integ_name)
-        )
-        existing_by_name = by_name.scalar_one_or_none()
+        # Check by natural key (name) — use cache if available
+        if cache is not None:
+            existing_by_name = cache["integ_by_name"].get(integ_name)
+        else:
+            by_name = await self.db.execute(
+                select(Integration.id).where(Integration.name == integ_name)
+            )
+            existing_by_name = by_name.scalar_one_or_none()
 
         integ_values: dict = {
             "name": integ_name,
@@ -2181,12 +2322,15 @@ class GitHubSyncService:
         # Sync config schema items: upsert by (integration_id, key) to preserve IDs
         # (Config rows reference schema IDs via FK — deleting schema cascades to configs)
         from sqlalchemy import delete as sa_delete
-        existing_cs_result = await self.db.execute(
-            select(IntegrationConfigSchema).where(
-                IntegrationConfigSchema.integration_id == integ_id
+        if cache is not None:
+            existing_cs_by_key = dict(cache["integ_cs"].get(integ_id, {}))
+        else:
+            existing_cs_result = await self.db.execute(
+                select(IntegrationConfigSchema).where(
+                    IntegrationConfigSchema.integration_id == integ_id
+                )
             )
-        )
-        existing_cs_by_key = {cs.key: cs for cs in existing_cs_result.scalars().all()}
+            existing_cs_by_key = {cs.key: cs for cs in existing_cs_result.scalars().all()}
         manifest_cs_keys = {cs.key for cs in minteg.config_schema}
 
         for cs in minteg.config_schema:
@@ -2254,15 +2398,18 @@ class GitHubSyncService:
             await self.db.execute(op_stmt)
 
         # Sync mappings: upsert by (integration_id, organization_id) to preserve oauth_token_id
-        existing_m_result = await self.db.execute(
-            select(IntegrationMapping).where(
-                IntegrationMapping.integration_id == integ_id
+        if cache is not None:
+            existing_m_by_org: dict[str | None, IntegrationMapping] = dict(cache["integ_mappings"].get(integ_id, {}))
+        else:
+            existing_m_result = await self.db.execute(
+                select(IntegrationMapping).where(
+                    IntegrationMapping.integration_id == integ_id
+                )
             )
-        )
-        existing_m_by_org: dict[str | None, IntegrationMapping] = {
-            str(m.organization_id) if m.organization_id else None: m
-            for m in existing_m_result.scalars().all()
-        }
+            existing_m_by_org = {
+                str(m.organization_id) if m.organization_id else None: m
+                for m in existing_m_result.scalars().all()
+            }
         manifest_org_ids = {mapping.organization_id for mapping in minteg.mappings}
 
         for mapping in minteg.mappings:
@@ -2294,15 +2441,13 @@ class GitHubSyncService:
         # Return empty list — all operations executed directly above
         return []
 
-    async def _resolve_config(self, mcfg) -> "list[SyncOp]":
+    def _resolve_config(self, mcfg, cache: dict) -> "list[SyncOp]":
         """Resolve a config entry from manifest into SyncOps.
 
-        Skips writing value if type=SECRET and existing value is non-null
-        (don't overwrite manually-entered secrets). Returns ops list.
+        Uses prefetch cache for lookup. Skips writing value if type=SECRET
+        and existing value is non-null. Returns ops list.
         """
         from uuid import UUID
-
-        from sqlalchemy.dialects.postgresql import insert
 
         from src.models.orm.config import Config
         from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
@@ -2311,22 +2456,11 @@ class GitHubSyncService:
         integ_id = UUID(mcfg.integration_id) if mcfg.integration_id else None
         org_id = UUID(mcfg.organization_id) if mcfg.organization_id else None
 
-        # Check for existing config by natural key (integration_id, org_id, key)
-        existing_query = select(Config.id, Config.value).where(Config.key == mcfg.key)
-        if integ_id:
-            existing_query = existing_query.where(Config.integration_id == integ_id)
-        else:
-            existing_query = existing_query.where(Config.integration_id.is_(None))
-        if org_id:
-            existing_query = existing_query.where(Config.organization_id == org_id)
-        else:
-            existing_query = existing_query.where(Config.organization_id.is_(None))
+        # Check prefetch cache for existing config by natural key
+        cache_hit = cache["config_by_natural"].get((mcfg.key, integ_id, org_id))
 
-        result = await self.db.execute(existing_query)
-        existing = result.first()
-
-        if existing is not None:
-            existing_id, existing_value = existing
+        if cache_hit is not None:
+            existing_id, existing_value, _config_schema_id = cache_hit
 
             # Secret with existing value — don't overwrite
             if mcfg.config_type == "secret" and existing_value is not None:
@@ -2352,34 +2486,27 @@ class GitHubSyncService:
                 match_on="id",
             )]
         else:
-            # Insert new row — use direct insert (Config has complex natural key)
-            stmt = insert(Config).values(
+            # New config — return Upsert op (uses ON CONFLICT)
+            insert_values: dict = {
+                "key": mcfg.key,
+                "config_type": mcfg.config_type,
+                "description": mcfg.description,
+                "integration_id": integ_id,
+                "organization_id": org_id,
+                "value": mcfg.value if mcfg.value is not None else {},
+                "updated_by": "git-sync",
+            }
+            return [Upsert(
+                model=Config,
                 id=cfg_id,
-                key=mcfg.key,
-                config_type=mcfg.config_type,
-                description=mcfg.description,
-                integration_id=integ_id,
-                organization_id=org_id,
-                value=mcfg.value if mcfg.value is not None else {},
-                updated_by="git-sync",
-            ).on_conflict_do_update(
-                index_elements=["id"],
-                set_={
-                    "key": mcfg.key,
-                    "config_type": mcfg.config_type,
-                    "description": mcfg.description,
-                    "integration_id": integ_id,
-                    "organization_id": org_id,
-                    "updated_by": "git-sync",
-                    "updated_at": datetime.now(timezone.utc),
-                    **({"value": mcfg.value if mcfg.value is not None else {}} if mcfg.config_type != "secret" else {}),
-                },
-            )
-            await self.db.execute(stmt)
-            return []
+                values=insert_values,
+                match_on="id",
+            )]
 
-    async def _resolve_app(self, mapp) -> "list[SyncOp]":
-        """Resolve an app from manifest into SyncOps (metadata only)."""
+    def _resolve_app(self, mapp, cache: dict) -> "list[SyncOp]":
+        """Resolve an app from manifest into SyncOps (metadata only).
+        Uses prefetch cache for slug lookup.
+        """
         from pathlib import PurePosixPath
         from uuid import UUID
 
@@ -2403,10 +2530,8 @@ class GitHubSyncService:
         org_id = UUID(mapp.organization_id) if mapp.organization_id else None
         access_level = getattr(mapp, "access_level", "role_based")
 
-        # Check for existing app by slug (globally unique)
-        existing_query = select(Application.id).where(Application.slug == slug)
-        existing = await self.db.execute(existing_query)
-        existing_id = existing.scalar_one_or_none()
+        # Check prefetch cache for existing app by slug
+        existing_id = cache["app_by_slug"].get(slug)
 
         app_values = {
             "name": mapp.name or "",
@@ -2447,9 +2572,10 @@ class GitHubSyncService:
 
         return ops
 
-    async def _resolve_table(self, table_name: str, mtable) -> "list[SyncOp]":
+    async def _resolve_table(self, table_name: str, mtable, cache: dict | None = None) -> "list[SyncOp]":
         """Resolve a table definition from manifest into SyncOps (schema only, no data).
 
+        Uses prefetch cache for lookups when available.
         Two-pass natural-key lookup (mirrors _resolve_workflow):
         1. Match by (name, organization_id) — if found, update including ID realignment
         2. Match by ID — if found, update name/schema
@@ -2473,12 +2599,15 @@ class GitHubSyncService:
         app_id = UUID(mtable.application_id) if mtable.application_id else None
         now = datetime.now(timezone.utc)
 
-        # 1. Look up by natural key (name + org)
-        natural_q = select(Table.id).where(
-            Table.name == table_name,
-            Table.organization_id == org_id,
-        )
-        existing_by_natural = (await self.db.execute(natural_q)).scalar_one_or_none()
+        # 1. Look up by natural key (name + org) — use cache if available
+        if cache is not None:
+            existing_by_natural = cache["table_by_natural"].get((table_name, org_id))
+        else:
+            natural_q = select(Table.id).where(
+                Table.name == table_name,
+                Table.organization_id == org_id,
+            )
+            existing_by_natural = (await self.db.execute(natural_q)).scalar_one_or_none()
 
         if existing_by_natural is not None:
             if existing_by_natural != table_id:
@@ -2500,10 +2629,13 @@ class GitHubSyncService:
             )
             return []
 
-        # 2. Look up by ID (name changed, same ID)
-        existing_by_id = (
-            await self.db.execute(select(Table.id).where(Table.id == table_id))
-        ).scalar_one_or_none()
+        # 2. Look up by ID (name changed, same ID) — use cache if available
+        if cache is not None:
+            existing_by_id = table_id if table_id in cache["table_ids"] else None
+        else:
+            existing_by_id = (
+                await self.db.execute(select(Table.id).where(Table.id == table_id))
+            ).scalar_one_or_none()
 
         if existing_by_id is not None:
             await self.db.execute(
@@ -2648,7 +2780,7 @@ class GitHubSyncService:
 
         return []
 
-    async def _resolve_form(self, mform, content: bytes) -> "list[SyncOp]":
+    def _resolve_form(self, mform, content: bytes) -> "list[SyncOp]":
         """Resolve form metadata from manifest into SyncOps.
 
         The FormIndexer call (content parsing) is a side-effect performed in
@@ -2696,7 +2828,7 @@ class GitHubSyncService:
 
         return ops
 
-    async def _resolve_agent(self, magent, content: bytes) -> "list[SyncOp]":
+    def _resolve_agent(self, magent, content: bytes) -> "list[SyncOp]":
         """Resolve agent metadata from manifest into SyncOps.
 
         The AgentIndexer call (content parsing) is a side-effect performed in
@@ -2745,8 +2877,96 @@ class GitHubSyncService:
 
         return ops
 
+    # -----------------------------------------------------------------
+    # Manifest hashing for incremental import
+    # -----------------------------------------------------------------
+
+    _MANIFEST_HASH_KEY = "bifrost:manifest_hashes"
+
+    async def _check_manifest_hashes(self, bifrost_dir: Path, force_full: bool = False) -> set[str]:
+        """Compare current manifest file hashes with stored ones.
+
+        Returns a set of section keys whose manifest files have changed
+        (or all sections if force_full=True or no stored hashes exist).
+        """
+        from src.services.manifest import MANIFEST_FILES
+
+        all_sections = set(MANIFEST_FILES.keys())
+
+        if force_full:
+            return all_sections
+
+        # Compute current hashes
+        current_hashes: dict[str, str] = {}
+        for section_key, filename in MANIFEST_FILES.items():
+            filepath = bifrost_dir / filename
+            if filepath.exists():
+                content = filepath.read_bytes()
+                current_hashes[section_key] = hashlib.sha256(content).hexdigest()
+
+        if not current_hashes:
+            return all_sections
+
+        # Load stored hashes from Redis
+        try:
+            from src.core.redis_client import get_redis_client
+            redis_client = get_redis_client()
+            if redis_client:
+                import json
+                stored = await redis_client.get(self._MANIFEST_HASH_KEY)
+                if stored:
+                    stored_hashes = json.loads(stored)
+                    changed = set()
+                    for section_key, current_hash in current_hashes.items():
+                        if stored_hashes.get(section_key) != current_hash:
+                            changed.add(section_key)
+                    # Also mark any sections that were in stored but not in current (removed)
+                    for section_key in stored_hashes:
+                        if section_key not in current_hashes:
+                            changed.add(section_key)
+                    if not changed:
+                        logger.info("All manifest files unchanged — skipping entity import")
+                    return changed if changed else set()
+        except Exception as e:
+            logger.warning(f"Could not check manifest hashes from Redis: {e}")
+
+        # No stored hashes or Redis error — process everything
+        return all_sections
+
+    async def _store_manifest_hashes(self, bifrost_dir: Path) -> None:
+        """Store current manifest file hashes in Redis after successful import."""
+        from src.services.manifest import MANIFEST_FILES
+
+        current_hashes: dict[str, str] = {}
+        for section_key, filename in MANIFEST_FILES.items():
+            filepath = bifrost_dir / filename
+            if filepath.exists():
+                content = filepath.read_bytes()
+                current_hashes[section_key] = hashlib.sha256(content).hexdigest()
+
+        if not current_hashes:
+            return
+
+        try:
+            from src.core.redis_client import get_redis_client
+            redis_client = get_redis_client()
+            if redis_client:
+                import json
+                await redis_client.setex(
+                    self._MANIFEST_HASH_KEY,
+                    86400 * 7,  # 7-day TTL
+                    json.dumps(current_hashes),
+                )
+        except Exception as e:
+            logger.warning(f"Could not store manifest hashes to Redis: {e}")
+
     async def _update_file_index(self, work_dir: Path) -> None:
-        """Update file_index from all files in the working tree, remove stale entries."""
+        """Update file_index from all files in the working tree, remove stale entries.
+
+        Optimized: prefetches existing (path, content_hash) pairs in one query,
+        skips files whose hash hasn't changed, and batch-upserts the rest in
+        chunks of 100.
+        """
         from sqlalchemy import delete, text
         from sqlalchemy.dialects.postgresql import insert
 
@@ -2754,33 +2974,54 @@ class GitHubSyncService:
         from src.services.file_index_service import _is_text_file
 
         files = _walk_tree(work_dir)
-        repo_paths = set()
+        repo_paths = set(files.keys())
+
+        # Prefetch all existing (path, content_hash) in one query
+        existing_result = await self.db.execute(
+            select(FileIndex.path, FileIndex.content_hash)
+        )
+        existing_hashes = {row[0]: row[1] for row in existing_result.all()}
+
+        # Build list of rows that need upserting (changed or new)
+        pending_upserts: list[dict] = []
         for rel_path, content in files.items():
-            repo_paths.add(rel_path)
-            if _is_text_file(rel_path):
-                try:
-                    content_str = content.decode("utf-8")
-                except UnicodeDecodeError:
-                    continue
-                content_hash = _content_hash(content)
-                stmt = insert(FileIndex).values(
-                    path=rel_path,
-                    content=content_str,
-                    content_hash=content_hash,
-                ).on_conflict_do_update(
-                    index_elements=[FileIndex.path],
-                    set_={
-                        "content": content_str,
-                        "content_hash": content_hash,
-                        "updated_at": text("NOW()"),
-                    },
-                )
-                await self.db.execute(stmt)
+            if not _is_text_file(rel_path):
+                continue
+            try:
+                content_str = content.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            content_hash = _content_hash(content)
+
+            # Skip if hash hasn't changed
+            if existing_hashes.get(rel_path) == content_hash:
+                continue
+
+            pending_upserts.append({
+                "path": rel_path,
+                "content": content_str,
+                "content_hash": content_hash,
+            })
+
+        # Batch upsert in chunks of 100
+        CHUNK_SIZE = 100
+        for i in range(0, len(pending_upserts), CHUNK_SIZE):
+            chunk = pending_upserts[i : i + CHUNK_SIZE]
+            stmt = insert(FileIndex).values(chunk).on_conflict_do_update(
+                index_elements=[FileIndex.path],
+                set_={
+                    "content": insert(FileIndex).excluded.content,
+                    "content_hash": insert(FileIndex).excluded.content_hash,
+                    "updated_at": text("NOW()"),
+                },
+            )
+            await self.db.execute(stmt)
+
+        if pending_upserts:
+            logger.info(f"File index: upserted {len(pending_upserts)} changed files, skipped {len(files) - len(pending_upserts)} unchanged")
 
         # Remove file_index entries that no longer exist in the repo
-        existing_result = await self.db.execute(select(FileIndex.path))
-        existing_paths = {row[0] for row in existing_result.all()}
-        stale_paths = existing_paths - repo_paths
+        stale_paths = set(existing_hashes.keys()) - repo_paths
         if stale_paths:
             await self.db.execute(
                 delete(FileIndex).where(FileIndex.path.in_(stale_paths))
