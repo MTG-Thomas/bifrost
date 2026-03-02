@@ -250,6 +250,17 @@ async def sync_service(db_session: AsyncSession, bare_repo, tmp_path):
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_test_data(db_session: AsyncSession):
     """Clean up test data between tests."""
+    # Reset Redis singletons so they reconnect on the current event loop.
+    # Without this, connections created on a previous test's (now-closed) loop
+    # cause "Event loop is closed" errors.
+    import src.core.redis_client as redis_module
+
+    redis_module._redis_client = None
+
+    import src.core.cache.redis_client as cache_redis_module
+
+    cache_redis_module._shared_client = None
+
     yield
 
     await db_session.execute(

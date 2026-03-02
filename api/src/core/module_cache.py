@@ -12,6 +12,7 @@ Key patterns:
 import hashlib
 import json
 import logging
+from pathlib import Path
 from typing import Awaitable, TypedDict, cast
 
 from src.core.redis_client import get_redis_client
@@ -142,6 +143,33 @@ async def get_all_module_paths() -> set[str]:
     redis_conn = await redis._get_redis()
     paths = await cast(Awaitable[set[str]], redis_conn.smembers(MODULE_INDEX_KEY))
     return {p if isinstance(p, str) else p.decode() for p in paths}
+
+
+async def refresh_modules_from_directory(work_dir: Path) -> int:
+    """Re-populate Redis module cache from local .py files after sync.
+
+    Called after S3 sync to ensure Redis cache matches the just-synced
+    content, preventing stale reads by the editor and workflow engine.
+
+    Args:
+        work_dir: Local directory containing the synced files.
+
+    Returns:
+        Number of modules refreshed.
+    """
+    count = 0
+    for py_file in work_dir.rglob("*.py"):
+        rel_path = str(py_file.relative_to(work_dir))
+        content_bytes = py_file.read_bytes()
+        try:
+            content_str = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+        await set_module(rel_path, content_str, content_hash)
+        count += 1
+    logger.info(f"Refreshed {count} module(s) in Redis cache from {work_dir}")
+    return count
 
 
 async def clear_module_cache() -> int:
