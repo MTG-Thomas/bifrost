@@ -6,19 +6,12 @@ to provide human-readable labels in the sync preview UI.
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 logger = logging.getLogger(__name__)
-
-# Path patterns for entity detection
-FORM_PATTERN = re.compile(r"^forms/.*\.form\.yaml$")
-AGENT_PATTERN = re.compile(r"^agents/.*\.agent\.yaml$")
-APP_FILE_PATTERN = re.compile(r"^apps/([^/]+)/(.+)$")
-WORKFLOW_PATTERN = re.compile(r"^(workflows|data_providers)/.*\.py$")
 
 
 @dataclass
@@ -29,42 +22,55 @@ class EntityMetadata:
     parent_slug: str | None = None
 
 
-def extract_entity_metadata(path: str, content: bytes | None = None) -> EntityMetadata:
+def extract_entity_metadata(
+    path: str,
+    content: bytes | None = None,
+    app_prefixes: set[str] | None = None,
+) -> EntityMetadata:
     """
     Extract entity metadata from a file path and optional content.
+
+    Uses extension-based detection (not directory-based):
+    - Form: *.form.yaml
+    - Agent: *.agent.yaml
+    - App file: path starts with a known app repo_path prefix
+    - Workflow: *.py (display-only metadata)
 
     Args:
         path: File path relative to workspace root
         content: Optional file content for YAML/JSON parsing
+        app_prefixes: Optional set of known app repo_path prefixes from DB
 
     Returns:
         EntityMetadata with type, display name, and parent slug
     """
     filename = Path(path).name
 
-    # Form: forms/*.form.yaml
-    if FORM_PATTERN.match(path):
+    # Form: *.form.yaml (any directory)
+    if path.endswith(".form.yaml"):
         display_name = _extract_yaml_name(content, filename)
         return EntityMetadata(entity_type="form", display_name=display_name)
 
-    # Agent: agents/*.agent.yaml
-    if AGENT_PATTERN.match(path):
+    # Agent: *.agent.yaml (any directory)
+    if path.endswith(".agent.yaml"):
         display_name = _extract_yaml_name(content, filename)
         return EntityMetadata(entity_type="agent", display_name=display_name)
 
-    # App file: apps/{slug}/**/*
-    match = APP_FILE_PATTERN.match(path)
-    if match:
-        slug = match.group(1)
-        relative_path = match.group(2)
-        return EntityMetadata(
-            entity_type="app_file",
-            display_name=relative_path,
-            parent_slug=slug
-        )
+    # App file: path starts with a known app repo_path prefix
+    if app_prefixes:
+        for prefix in app_prefixes:
+            normalized = prefix.rstrip("/") + "/"
+            if path.startswith(normalized):
+                slug = Path(prefix).name
+                relative_path = path[len(normalized):]
+                return EntityMetadata(
+                    entity_type="app_file",
+                    display_name=relative_path,
+                    parent_slug=slug,
+                )
 
-    # Workflow: workflows/*.py or data_providers/*.py
-    if WORKFLOW_PATTERN.match(path):
+    # Workflow: *.py (display-only metadata)
+    if path.endswith(".py"):
         return EntityMetadata(entity_type="workflow", display_name=filename)
 
     # Unknown file type

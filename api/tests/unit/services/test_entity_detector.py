@@ -97,42 +97,69 @@ class TestDetectPlatformEntityType:
 
 
 class TestDetectAppEntityType:
-    """Tests for app file path detection."""
+    """Tests for app file path detection with app_prefixes."""
 
     def test_detect_app_tsx_file(self):
-        """TSX files under apps/ should be detected as 'app_file' entity type."""
+        """TSX files under a known app prefix should be detected as 'app_file'."""
         content = b'export default function Page() { return <div>Hello</div>; }'
-        result = detect_platform_entity_type("apps/my-app/pages/index.tsx", content)
+        result = detect_platform_entity_type(
+            "apps/my-app/pages/index.tsx", content, app_prefixes={"apps/my-app"}
+        )
         assert result == "app_file"
 
     def test_detect_app_ts_file(self):
-        """TS files under apps/ should be detected as 'app_file' entity type."""
+        """TS files under a known app prefix should be detected as 'app_file'."""
         content = b'export function helper() { return 42; }'
-        result = detect_platform_entity_type("apps/my-app/modules/utils.ts", content)
+        result = detect_platform_entity_type(
+            "apps/my-app/modules/utils.ts", content, app_prefixes={"apps/my-app"}
+        )
         assert result == "app_file"
 
     def test_detect_app_css_file(self):
-        """CSS files under apps/ should be detected as 'app_file'."""
+        """CSS files under a known app prefix should be detected as 'app_file'."""
         content = b'body { color: red; }'
-        result = detect_platform_entity_type("apps/my-app/styles/main.css", content)
+        result = detect_platform_entity_type(
+            "apps/my-app/styles/main.css", content, app_prefixes={"apps/my-app"}
+        )
         assert result == "app_file"
 
     def test_detect_non_app_tsx(self):
-        """TSX files NOT under apps/ should not be detected as app_file."""
+        """TSX files not under any known app prefix should not be detected as app_file."""
         content = b'export default function Page() { return <div>Hello</div>; }'
-        result = detect_platform_entity_type("components/Page.tsx", content)
+        result = detect_platform_entity_type(
+            "components/Page.tsx", content, app_prefixes={"apps/my-app"}
+        )
         assert result != "app_file"
 
     def test_detect_app_root_file(self):
-        """Files directly under apps/{slug}/ should be app_file."""
+        """Files directly under a known app prefix should be app_file."""
         content = b'export default {}'
-        result = detect_platform_entity_type("apps/my-app/_layout.tsx", content)
+        result = detect_platform_entity_type(
+            "apps/my-app/_layout.tsx", content, app_prefixes={"apps/my-app"}
+        )
         assert result == "app_file"
 
     def test_detect_app_nested_file(self):
-        """Deeply nested files under apps/ should be app_file."""
+        """Deeply nested files under a known app prefix should be app_file."""
         content = b'// component'
-        result = detect_platform_entity_type("apps/my-app/pages/clients/[id].tsx", content)
+        result = detect_platform_entity_type(
+            "apps/my-app/pages/clients/[id].tsx", content, app_prefixes={"apps/my-app"}
+        )
+        assert result == "app_file"
+
+    def test_no_app_prefixes_skips_detection(self):
+        """Without app_prefixes, apps/ path is not detected as app_file."""
+        content = b'export default function Page() { return <div>Hello</div>; }'
+        result = detect_platform_entity_type("apps/my-app/pages/index.tsx", content)
+        assert result is None  # Falls through to unknown extension
+
+    def test_custom_app_prefix(self):
+        """Custom non-apps/ prefix should be detected as app_file."""
+        content = b'export default function Page() { return <div>Hello</div>; }'
+        result = detect_platform_entity_type(
+            "custom/deep/app/pages/index.tsx", content,
+            app_prefixes={"custom/deep/app"},
+        )
         assert result == "app_file"
 
 

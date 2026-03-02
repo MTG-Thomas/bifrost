@@ -249,9 +249,9 @@ class AgentIndexer:
         Returns:
             Number of agents deleted
         """
-        # Extract agent ID from path: agents/{uuid}.agent.yaml -> uuid
+        # Extract agent ID from path: {uuid}.agent.yaml -> uuid (any directory)
         import re
-        match = re.match(r"agents/([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
+        match = re.search(r"([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
         if not match:
             logger.warning(f"Cannot extract agent ID from path: {path}")
             return 0

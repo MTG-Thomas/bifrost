@@ -39,7 +39,6 @@ BINARY_EXTENSIONS = frozenset({
     ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
 })
 
-KNOWN_ROOTS = frozenset({"apps", "workflows", "modules", "agents", "forms", ".bifrost"})
 
 # Watch session heartbeat must be < Redis TTL (WATCH_SESSION_TTL_SECONDS in files.py)
 WATCH_HEARTBEAT_SECONDS = 60
@@ -1166,16 +1165,26 @@ async def _check_repo_status(client: BifrostClient) -> bool:
 
 
 def _detect_repo_prefix(path: pathlib.Path) -> str:
-    """Detect the repo prefix from a local path by finding the first known root directory.
+    """Detect the repo prefix from a local path by finding the .bifrost/ directory.
+
+    Anchors on the .bifrost/ directory — its parent is the workspace root.
+    Everything relative to that root is the repo prefix.
 
     Examples:
         /home/user/workspace/apps/my-app -> "apps/my-app"
         /home/user/workspace/.bifrost     -> ".bifrost"
         /home/user/workspace/             -> "" (workspace root, no prefix needed)
     """
-    for i, part in enumerate(path.parts):
-        if part in KNOWN_ROOTS:
-            return "/".join(path.parts[i:])
+    # Find .bifrost/ directory — its parent is the workspace root
+    bifrost_dir = _find_bifrost_dir(path)
+    if bifrost_dir.exists():
+        workspace_root = bifrost_dir.parent
+        try:
+            relative = path.relative_to(workspace_root)
+            prefix = str(relative)
+            return "" if prefix == "." else prefix
+        except ValueError:
+            pass
 
     # Workspace root — files already have correct relative paths
     return ""

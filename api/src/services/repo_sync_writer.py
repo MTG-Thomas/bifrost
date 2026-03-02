@@ -66,6 +66,29 @@ class RepoSyncWriter:
         await self._file_index.delete(path)
         logger.debug(f"Deleted _repo/{path}")
 
+    async def delete_entity_file_by_suffix(self, suffix: str) -> None:
+        """Find and delete an entity file by suffix (e.g. '{id}.form.yaml').
+
+        Searches file_index for a path ending with the given suffix.
+        Falls back to deleting the suffix as a bare path if no match found.
+        """
+        if not self._s3_available:
+            return
+        from sqlalchemy import select
+        from src.models.orm.file_index import FileIndex
+
+        result = await self.db.execute(
+            select(FileIndex.path).where(FileIndex.path.endswith(suffix)).limit(1)
+        )
+        path = result.scalar_one_or_none()
+        if path:
+            await self._file_index.delete(path)
+            logger.debug(f"Deleted _repo/{path} (matched suffix {suffix})")
+        else:
+            # Fallback: try with the default convention path
+            await self._file_index.delete(suffix)
+            logger.debug(f"Deleted _repo/{suffix} (no suffix match, used as-is)")
+
     async def regenerate_manifest(self) -> None:
         """Generate manifest from DB and write split files to _repo/.bifrost/."""
         if not self._s3_available:

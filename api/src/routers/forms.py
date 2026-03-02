@@ -617,7 +617,7 @@ async def delete_form(
     # Dual-write: remove form YAML from S3 _repo/ (after DB ops succeed)
     from src.services.repo_sync_writer import RepoSyncWriter
     writer = RepoSyncWriter(db)
-    await writer.delete_entity_file(f"forms/{form_id}.form.yaml")
+    await writer.delete_entity_file_by_suffix(f"{form_id}.form.yaml")
 
     if not purge:
         form.is_active = False

@@ -278,9 +278,9 @@ class FormIndexer:
         Returns:
             Number of forms deleted
         """
-        # Extract form ID from path: forms/{uuid}.form.yaml -> uuid
+        # Extract form ID from path: {uuid}.form.yaml -> uuid (any directory)
         import re
-        match = re.match(r"forms/([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
+        match = re.search(r"([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
         if not match:
             logger.warning(f"Cannot extract form ID from path: {path}")
             return 0

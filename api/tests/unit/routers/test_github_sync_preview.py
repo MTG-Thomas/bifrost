@@ -24,7 +24,10 @@ def test_extract_entity_metadata_for_agent():
 
 def test_extract_entity_metadata_for_app_file():
     """App files should have parent_slug and relative path as display_name."""
-    metadata = extract_entity_metadata("apps/dashboard/src/index.tsx", None)
+    metadata = extract_entity_metadata(
+        "apps/dashboard/src/index.tsx", None,
+        app_prefixes={"apps/dashboard"},
+    )
 
     assert metadata.entity_type == "app_file"
     assert metadata.display_name == "src/index.tsx"
