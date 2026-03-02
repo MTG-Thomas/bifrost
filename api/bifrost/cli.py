@@ -20,6 +20,7 @@ import pathlib
 import sys
 import time
 import webbrowser
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -955,6 +956,39 @@ def _warn_if_git_workspace(target_path: str) -> None:
             return
 
 
+@dataclass
+class _PushWatchArgs:
+    """Parsed arguments for push/watch commands."""
+    local_path: str = "."
+    clean: bool = False
+    validate: bool = False
+    force: bool = False
+
+
+def _parse_push_watch_args(args: list[str]) -> _PushWatchArgs | None:
+    """Parse shared arguments for push/watch commands. Returns None on error."""
+    result = _PushWatchArgs()
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--clean":
+            result.clean = True
+        elif arg == "--validate":
+            result.validate = True
+        elif arg == "--force":
+            result.force = True
+        elif arg.startswith("--"):
+            print(f"Unknown option: {arg}", file=sys.stderr)
+            return None
+        elif result.local_path == ".":
+            result.local_path = arg
+        else:
+            print(f"Unexpected argument: {arg}", file=sys.stderr)
+            return None
+        i += 1
+    return result
+
+
 def handle_push(args: list[str]) -> int:
     """
     Handle 'bifrost push' command.
@@ -998,35 +1032,14 @@ Examples:
 """.strip())
         return 0
 
-    local_path = None
-    clean = False
-    validate = False
-    force = False
+    # --watch migration guard before shared parsing
+    if args and args[0] == "--watch":
+        print("--watch has moved to its own command: bifrost watch", file=sys.stderr)
+        return 1
 
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg == "--clean":
-            clean = True
-        elif arg == "--validate":
-            validate = True
-        elif arg == "--watch":
-            print("--watch has moved to its own command: bifrost watch", file=sys.stderr)
-            return 1
-        elif arg == "--force":
-            force = True
-        elif arg.startswith("--"):
-            print(f"Unknown option: {arg}", file=sys.stderr)
-            return 1
-        elif local_path is None:
-            local_path = arg
-        else:
-            print(f"Unexpected argument: {arg}", file=sys.stderr)
-            return 1
-        i += 1
-
-    if not local_path:
-        local_path = "."
+    parsed = _parse_push_watch_args(args)
+    if parsed is None:
+        return 1
 
     # Authenticate BEFORE entering asyncio.run() so token refresh works
     # (refresh_tokens() uses asyncio.run() internally, which fails inside a running loop)
@@ -1036,11 +1049,11 @@ Examples:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    _warn_if_git_workspace(local_path)
+    _warn_if_git_workspace(parsed.local_path)
 
     try:
         return asyncio.run(_push_with_precheck(
-            local_path, clean=clean, validate=validate, watch=False, force=force,
+            parsed.local_path, clean=parsed.clean, validate=parsed.validate, watch=False, force=parsed.force,
             client=client,
         ))
     except KeyboardInterrupt:
@@ -1080,37 +1093,14 @@ Examples:
 """.strip())
         return 0
 
-    local_path = None
-    clean = False
-    validate = False
-    force = False
-
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg == "--clean":
-            clean = True
-        elif arg == "--validate":
-            validate = True
-        elif arg == "--force":
-            force = True
-        elif arg.startswith("--"):
-            print(f"Unknown option: {arg}", file=sys.stderr)
-            return 1
-        elif local_path is None:
-            local_path = arg
-        else:
-            print(f"Unexpected argument: {arg}", file=sys.stderr)
-            return 1
-        i += 1
-
-    if not local_path:
-        local_path = "."
+    parsed = _parse_push_watch_args(args)
+    if parsed is None:
+        return 1
 
     # Resolve path and verify .bifrost/ exists
-    resolved = pathlib.Path(local_path).resolve()
+    resolved = pathlib.Path(parsed.local_path).resolve()
     if not resolved.exists() or not resolved.is_dir():
-        print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
+        print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
         return 1
 
     bifrost_dir = _find_bifrost_dir(resolved)
@@ -1127,12 +1117,12 @@ Examples:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    _warn_if_git_workspace(local_path)
+    _warn_if_git_workspace(parsed.local_path)
 
     repo_prefix = _detect_repo_prefix(resolved)
     try:
         return asyncio.run(_push_with_precheck(
-            local_path, clean=clean, validate=validate, watch=True, force=force,
+            parsed.local_path, clean=parsed.clean, validate=parsed.validate, watch=True, force=parsed.force,
             client=client,
         ))
     except KeyboardInterrupt:
@@ -1164,7 +1154,7 @@ async def _check_repo_status(client: BifrostClient) -> bool:
         if data.get("dirty"):
             since = data.get("dirty_since", "unknown")
             print(f"Platform has uncommitted changes (since {since}).", file=sys.stderr)
-            print("  Run 'bifrost sync' to commit platform changes first,", file=sys.stderr)
+            print("  Run 'bifrost git commit' to commit platform changes first,", file=sys.stderr)
             print("  then 'git pull' locally to get them.", file=sys.stderr)
             print("  Or use --force to push anyway (platform changes will be overwritten).", file=sys.stderr)
             return False

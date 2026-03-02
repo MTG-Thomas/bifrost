@@ -226,7 +226,7 @@ class DependencyGraphService:
         """Check if an application uses a specific workflow by scanning file_index."""
         from src.services.app_dependencies import parse_dependencies
 
-        prefix = f"apps/{app.slug}/"
+        prefix = app.repo_prefix
         result = await self.db.execute(
             select(FileIndex.content).where(
                 FileIndex.path.startswith(prefix),
@@ -390,7 +390,7 @@ class DependencyGraphService:
             )
             app = app_result.scalar_one_or_none()
             if app:
-                prefix = f"apps/{app.slug}/"
+                prefix = app.repo_prefix
                 fi_result = await self.db.execute(
                     select(FileIndex.content).where(
                         FileIndex.path.startswith(prefix),

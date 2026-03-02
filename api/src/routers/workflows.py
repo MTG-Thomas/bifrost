@@ -212,16 +212,16 @@ async def _get_app_workflow_ids(db: DbSession, app_id: UUID) -> set[UUID]:
     from src.models.orm.workflows import Workflow as WfORM
     from src.services.app_dependencies import parse_dependencies
 
-    # Get app slug
+    # Get app
     app_result = await db.execute(
-        select(Application.slug).where(Application.id == app_id)
+        select(Application).where(Application.id == app_id)
     )
-    slug = app_result.scalar_one_or_none()
-    if not slug:
+    app = app_result.scalar_one_or_none()
+    if not app:
         return set()
 
     # Scan file_index for source code
-    prefix = f"apps/{slug}/"
+    prefix = app.repo_prefix
     fi_result = await db.execute(
         select(FileIndex.content).where(
             FileIndex.path.startswith(prefix),
@@ -592,7 +592,7 @@ async def get_workflow_usage_stats(
         from src.services.app_dependencies import parse_dependencies
 
         apps_base_query = (
-            select(Application.id, Application.name, Application.slug)
+            select(Application.id, Application.name, Application.slug, Application.repo_path)
             .order_by(Application.name)
         )
         if org_filter:
@@ -603,7 +603,7 @@ async def get_workflow_usage_stats(
 
         apps: list[EntityUsage] = []
         for app_row in all_apps:
-            prefix = f"apps/{app_row.slug}/"
+            prefix = (app_row.repo_path or f"apps/{app_row.slug}").rstrip("/") + "/"
             fi_result = await db.execute(
                 select(FileIndex.content).where(
                     FileIndex.path.startswith(prefix),
