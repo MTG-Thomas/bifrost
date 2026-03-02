@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import { useCreateSubscription } from "@/services/events";
 import { useWorkflows } from "@/hooks/useWorkflows";
 import { WorkflowSelectorDialog } from "@/components/workflows/WorkflowSelectorDialog";
-import { WorkflowParametersForm } from "@/components/workflows/WorkflowParametersForm";
+import { InputMappingForm } from "@/components/events/InputMappingForm";
 import type { components } from "@/lib/v1";
 
 type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
@@ -190,21 +190,16 @@ function CreateSubscriptionDialogContent({
 									Input Mapping (Optional)
 								</Label>
 								<p className="text-xs text-muted-foreground mt-1">
-									Pre-fill workflow parameters with static
-									values or template expressions. Use{" "}
+									Map event data to workflow parameters
+									using static values or{" "}
 									<code className="bg-muted px-1 py-0.5 rounded text-xs">
-										{"{{ scheduled_time }}"}
+										{"{{ template }}"}
 									</code>{" "}
-									for the schedule trigger time.
+									expressions.
 								</p>
 							</div>
-							<WorkflowParametersForm
-								key={workflowId}
+							<InputMappingForm
 								parameters={selectedWorkflow.parameters}
-								onExecute={() => {}}
-								showExecuteButton={false}
-								renderAsDiv
-								disableRequired
 								values={inputMapping}
 								onChange={setInputMapping}
 							/>
