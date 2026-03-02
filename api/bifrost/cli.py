@@ -1239,9 +1239,9 @@ async def _push_with_precheck(
             return 1
 
     if watch:
-        return await _watch_and_push(local_path, clean=clean, validate=validate, client=client)
+        return await _watch_and_push(local_path, repo_prefix=repo_prefix, clean=clean, validate=validate, client=client)
     else:
-        return await _push_files(local_path, clean=clean, validate=validate, client=client)
+        return await _push_files(local_path, repo_prefix=repo_prefix, clean=clean, validate=validate, client=client)
 
 
 async def _do_push(
@@ -1277,12 +1277,12 @@ async def _do_push(
 
 async def _watch_and_push(
     local_path: str,
+    repo_prefix: str,
     clean: bool,
     validate: bool,
     client: "BifrostClient",
 ) -> int:
     """Watch directory for changes and auto-push."""
-    import pathlib
     import threading
 
     from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -1292,8 +1292,6 @@ async def _watch_and_push(
     if not path.exists() or not path.is_dir():
         print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
         return 1
-
-    repo_prefix = _detect_repo_prefix(path)
 
     # Notify server: watch started
     try:
@@ -1305,7 +1303,7 @@ async def _watch_and_push(
 
     # Initial full push (reuses existing _push_files)
     print(f"Initial push of {path}...", flush=True)
-    await _push_files(str(path), clean=clean, validate=validate, client=client)
+    await _push_files(str(path), repo_prefix=repo_prefix, clean=clean, validate=validate, client=client)
 
     # File change tracking
     pending_changes: set[str] = set()
@@ -1316,14 +1314,9 @@ async def _watch_and_push(
     class ChangeHandler(FileSystemEventHandler):
         def _should_skip(self, file_path: str) -> bool:
             """Check if a path should be ignored by the watcher."""
-            rel_parts = pathlib.Path(file_path).relative_to(path).parts
-            if any(p.startswith(".") and p != ".bifrost" for p in rel_parts):
-                return True
-            if any(p in ("__pycache__", "node_modules") for p in rel_parts):
-                return True
-            if pathlib.Path(file_path).suffix.lower() in BINARY_EXTENSIONS:
-                return True
-            return False
+            p = pathlib.Path(file_path)
+            rel_parts = p.relative_to(path).parts
+            return _should_skip_path(rel_parts, p.suffix)
 
         def on_any_event(self, event: FileSystemEvent) -> None:
             if writeback_paused:
@@ -1676,6 +1669,17 @@ async def _pull_from_server(
     return True
 
 
+def _should_skip_path(rel_parts: tuple[str, ...], suffix: str) -> bool:
+    """Check if a relative path should be skipped during push/watch."""
+    if any(p.startswith(".") and p != ".bifrost" for p in rel_parts):
+        return True
+    if any(p in ("__pycache__", "node_modules") for p in rel_parts):
+        return True
+    if suffix.lower() in BINARY_EXTENSIONS:
+        return True
+    return False
+
+
 def _collect_push_files(
     path: pathlib.Path,
     repo_prefix: str,
@@ -1736,10 +1740,8 @@ def _print_push_summary(result: dict[str, Any]) -> None:
             print(f"    - {warning}")
 
 
-async def _push_files(local_path: str, clean: bool = False, validate: bool = False, client: "BifrostClient | None" = None) -> int:
+async def _push_files(local_path: str, repo_prefix: str = "", clean: bool = False, validate: bool = False, client: "BifrostClient | None" = None) -> int:
     """Push local directory to Bifrost _repo/."""
-    import pathlib
-
     path = pathlib.Path(local_path).resolve()
 
     if not path.exists():
@@ -1749,8 +1751,6 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
     if not path.is_dir():
         print(f"Error: path is not a directory: {local_path}", file=sys.stderr)
         return 1
-
-    repo_prefix = _detect_repo_prefix(path)
 
     # Walk the directory and collect files
     files, skipped = _collect_push_files(path, repo_prefix)
@@ -1794,8 +1794,9 @@ async def _push_files(local_path: str, clean: bool = False, validate: bool = Fal
         print("  Manifest applied to platform.")
 
     # Validate if requested
-    if validate and repo_prefix.startswith("apps/"):
-        slug = repo_prefix.split("/")[1] if "/" in repo_prefix else repo_prefix
+    if validate and repo_prefix:
+        # Extract slug (last path component) — server 404s gracefully if not an app
+        slug = repo_prefix.rstrip("/").rsplit("/", 1)[-1]
         print(f"\nValidating app '{slug}'...")
 
         try:
