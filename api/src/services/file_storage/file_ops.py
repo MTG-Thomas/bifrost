@@ -319,7 +319,7 @@ class FileOperationsService:
             try:
                 from src.core.pubsub import publish_app_code_file_update
                 # Derive relative path by stripping the app's repo_path prefix
-                app_prefix = (app.repo_path or f"apps/{app.slug}").rstrip("/") + "/"
+                app_prefix = app.repo_prefix
                 relative_path = path[len(app_prefix):] if path.startswith(app_prefix) else path
 
                 # Compile TSX/TS files server-side
@@ -444,7 +444,7 @@ class FileOperationsService:
         if not app:
             return
 
-        app_prefix = (app.repo_path or f"apps/{app.slug}").rstrip("/") + "/"
+        app_prefix = app.repo_prefix
         relative_path = path[len(app_prefix):] if path.startswith(app_prefix) else path
 
         from src.core.pubsub import publish_app_code_file_update

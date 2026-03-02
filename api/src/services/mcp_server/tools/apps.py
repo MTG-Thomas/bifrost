@@ -609,7 +609,7 @@ async def validate_app(context: Any, app_id: str) -> ToolResult:
             if not app:
                 return error_result(f"Application not found: {app_id}")
 
-            prefix = f"apps/{app.slug}/"
+            prefix = app.repo_prefix
 
             # Get all app files
             fi_result = await db.execute(

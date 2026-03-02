@@ -386,7 +386,7 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         from src.services.app_storage import AppStorageService
         app_storage = AppStorageService()
         synced, compile_errors = await app_storage.sync_preview_compiled(
-            str(app_id), f"apps/{application.slug}/"
+            str(app_id), application.repo_prefix
         )
         if compile_errors:
             logger.warning(f"Compile warnings during publish: {compile_errors}")
@@ -471,7 +471,7 @@ export default function RootLayout() {
         """
         from src.models.orm.file_index import FileIndex
 
-        prefix = f"apps/{application.slug}/"
+        prefix = application.repo_prefix
         fi_result = await self.session.execute(
             select(FileIndex.path, FileIndex.content).where(
                 FileIndex.path.startswith(prefix),
@@ -518,7 +518,7 @@ export default function RootLayout() {
         from src.services.file_storage import FileStorageService
 
         file_storage = FileStorageService(self.session)
-        prefix = f"apps/{application.slug}/"
+        prefix = application.repo_prefix
 
         # Delete existing files
         from src.models.orm.file_index import FileIndex
@@ -989,7 +989,7 @@ async def validate_application(
     from src.models.orm.workflows import Workflow
 
     app = await get_application_by_id_or_404(ctx, app_id)
-    prefix = f"apps/{app.slug}/"
+    prefix = app.repo_prefix
 
     # Get all app files
     result = await ctx.db.execute(

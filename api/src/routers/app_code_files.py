@@ -237,12 +237,6 @@ class FileMode(str, Enum):
     live = "live"
 
 
-def _repo_prefix(app) -> str:
-    """Return the _repo/ path prefix for an app."""
-    base = app.repo_path or f"apps/{app.slug}"
-    return f"{base.rstrip('/')}/"
-
-
 # =============================================================================
 # S3-backed App File Endpoints
 # =============================================================================
@@ -270,7 +264,7 @@ async def list_app_files(
     repo = RepoStorage()
 
     # List source files from S3 (source of truth)
-    repo_prefix = _repo_prefix(app)
+    repo_prefix = app.repo_prefix
     source_paths = await repo.list(repo_prefix)
 
     if not source_paths:
@@ -332,7 +326,7 @@ async def read_app_file(
     app_storage = AppStorageService()
 
     # Source from S3 (_repo/)
-    repo_path = f"{_repo_prefix(app)}{file_path}"
+    repo_path = f"{app.repo_prefix}{file_path}"
     repo = RepoStorage()
     try:
         source = (await repo.read(repo_path)).decode("utf-8", errors="replace")
@@ -381,7 +375,7 @@ async def write_app_file(
     # Validate path conventions
     validate_file_path(file_path)
 
-    prefix = _repo_prefix(app)
+    prefix = app.repo_prefix
     full_path = f"{prefix}{file_path}"
     source = data.source or ""
 
@@ -422,7 +416,7 @@ async def delete_app_file(
     file_index cleanup, pubsub, and preview sync).
     """
     app = await get_application_or_404(ctx, app_id)
-    prefix = _repo_prefix(app)
+    prefix = app.repo_prefix
     full_path = f"{prefix}{file_path}"
 
     storage = get_file_storage_service(ctx.db)

@@ -345,7 +345,7 @@ async def scan_app_dependencies(
         apps_seen: set[str] = set()
 
         for app in apps:
-            prefix = f"apps/{app.slug}/"
+            prefix = app.repo_prefix
             fi_result = await db.execute(
                 select(FileIndex.path, FileIndex.content).where(
                     FileIndex.path.startswith(prefix),
