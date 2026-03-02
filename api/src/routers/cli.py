@@ -466,8 +466,9 @@ async def cli_set_config(
     await db.commit()
 
     try:
-        from src.core.cache import invalidate_config
-        await invalidate_config(org_id, request.key)
+        from src.core.cache import upsert_config
+        config_type_str = config_type.value
+        await upsert_config(org_id, request.key, stored_value, config_type_str)
     except ImportError:
         pass
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .keys import (
     TTL_CONFIG,
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 async def upsert_config(
     org_id: str | None,
     key: str,
-    value: str,
+    value: Any,
     config_type: str,
 ) -> None:
     """
