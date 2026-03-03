@@ -70,7 +70,7 @@ class ExecutionRepository:
         offset: int = 0,
     ) -> tuple[list[WorkflowExecution], str | None]:
         """List executions with filtering."""
-        query = select(ExecutionModel).options(selectinload(ExecutionModel.organization))
+        query = select(ExecutionModel).options(selectinload(ExecutionModel.organization), selectinload(ExecutionModel.executed_by_user))
 
         # Organization scoping
         if org_id:
@@ -151,7 +151,7 @@ class ExecutionRepository:
         # 1. Fetch base execution with organization for effective scope display
         result = await self.db.execute(
             select(ExecutionModel)
-            .options(selectinload(ExecutionModel.organization))
+            .options(selectinload(ExecutionModel.organization), selectinload(ExecutionModel.executed_by_user))
             .where(ExecutionModel.id == execution_id)
         )
         execution = result.scalar_one_or_none()
@@ -249,6 +249,7 @@ class ExecutionRepository:
             form_id=str(execution.form_id) if execution.form_id else None,
             executed_by=str(execution.executed_by),
             executed_by_name=execution.executed_by_name or str(execution.executed_by),
+            executed_by_email=execution.executed_by_user.email if execution.executed_by_user else None,
             status=ExecutionStatus(execution.status),
             input_data=execution.parameters or {},
             result=execution.result,
@@ -367,7 +368,7 @@ class ExecutionRepository:
         """Cancel a pending or running execution."""
         result = await self.db.execute(
             select(ExecutionModel)
-            .options(selectinload(ExecutionModel.organization))
+            .options(selectinload(ExecutionModel.organization), selectinload(ExecutionModel.executed_by_user))
             .where(ExecutionModel.id == execution_id)
         )
         execution = result.scalar_one_or_none()
@@ -449,6 +450,7 @@ class ExecutionRepository:
             form_id=str(execution.form_id) if execution.form_id else None,
             executed_by=str(execution.executed_by),
             executed_by_name=execution.executed_by_name or str(execution.executed_by),
+            executed_by_email=execution.executed_by_user.email if hasattr(execution, 'executed_by_user') and execution.executed_by_user else None,
             status=ExecutionStatus(execution.status),
             input_data=execution.parameters or {},
             result=execution.result,
@@ -821,7 +823,10 @@ async def get_stuck_executions(
     # Find executions that have been pending/running/cancelling for too long
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    query = select(ExecutionModel).where(
+    query = select(ExecutionModel).options(
+        selectinload(ExecutionModel.organization),
+        selectinload(ExecutionModel.executed_by_user),
+    ).where(
         and_(
             ExecutionModel.status.in_([
                 ExecutionStatus.PENDING.value,

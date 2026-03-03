@@ -229,6 +229,7 @@ async def upsert_org(
     name: str,
     domain: str | None,
     is_active: bool,
+    is_provider: bool = False,
 ) -> None:
     """
     Upsert an organization to Redis cache after a DB write.
@@ -238,6 +239,7 @@ async def upsert_org(
         name: Organization name
         domain: Organization domain (optional)
         is_active: Whether the organization is active
+        is_provider: Whether the organization is the provider org
     """
     try:
         r = await get_shared_redis()
@@ -248,6 +250,7 @@ async def upsert_org(
             "name": name,
             "domain": domain,
             "is_active": is_active,
+            "is_provider": is_provider,
         })
 
         await r.set(redis_key, cache_value, ex=TTL_ORGS)

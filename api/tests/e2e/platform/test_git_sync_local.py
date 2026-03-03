@@ -452,7 +452,7 @@ class TestPushToEmptyRepo:
         assert commit_result.success is True
         assert commit_result.files_committed > 0
 
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success is True
         assert sync_result.pushed_commits > 0
 
@@ -499,7 +499,7 @@ class TestPushToEmptyRepo:
 
         # Commit + push
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Clone and verify manifest
         verify_path = tmp_path / "verify"
@@ -557,7 +557,7 @@ class TestIncrementalPush:
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         result1 = await sync_service.desktop_commit("initial commit")
         assert result1.success is True
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Modify the workflow name in DB and update file in persistent dir
         wf.name = "Git Sync Test Workflow Updated"
@@ -573,7 +573,7 @@ class TestIncrementalPush:
         # Second commit+push
         result2 = await sync_service.desktop_commit("update workflow")
         assert result2.success is True
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Verify updated content
         verify_path = tmp_path / "verify"
@@ -614,7 +614,7 @@ class TestIncrementalPush:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Deactivate the workflow and remove file from persistent dir
         wf.is_active = False
@@ -627,7 +627,7 @@ class TestIncrementalPush:
 
         # Second commit+push
         await sync_service.desktop_commit("delete workflow")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Verify file is gone
         verify_path = tmp_path / "verify"
@@ -686,7 +686,7 @@ class TestPull:
         working_clone.remotes.origin.push()
 
         # Pull into platform
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
 
         assert result.success is True
         assert result.entities_imported > 0
@@ -754,7 +754,7 @@ class TestPull:
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify form in DB
@@ -828,7 +828,7 @@ roles: []
         working_clone.remotes.origin.push()
 
         # Pull into platform
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify form was created
@@ -915,7 +915,7 @@ roles: []
         working_clone.remotes.origin.push()
 
         # Pull into platform
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify agent was created with tool association
@@ -962,7 +962,7 @@ roles: []
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Modify in repo via working clone
         work_dir = Path(working_clone.working_dir)
@@ -974,7 +974,7 @@ roles: []
         working_clone.remotes.origin.push()
 
         # Pull into platform
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify file_index has updated content
@@ -1014,7 +1014,7 @@ roles: []
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Delete in repo via working clone
         work_dir = Path(working_clone.working_dir)
@@ -1027,7 +1027,7 @@ roles: []
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Workflow should be hard-deleted (git history is the undo mechanism)
@@ -1081,7 +1081,7 @@ class TestRenames:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Rename in repo via working clone
         work_dir = Path(working_clone.working_dir)
@@ -1112,7 +1112,7 @@ class TestRenames:
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Workflow path should be updated
@@ -1147,7 +1147,7 @@ class TestRenames:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Rename in platform: remove old file, write new file, update DB path
         remove_entity_from_repo(
@@ -1165,7 +1165,7 @@ class TestRenames:
 
         # Commit+push again
         await sync_service.desktop_commit("rename workflow")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Verify new path in repo
         verify_path = tmp_path / "verify"
@@ -1212,7 +1212,7 @@ class TestConflicts:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Modify in repo via working clone
         work_dir = Path(working_clone.working_dir)
@@ -1237,7 +1237,7 @@ class TestConflicts:
         await sync_service.desktop_commit("modify workflow in platform")
 
         # Pull should detect conflict since both sides diverged
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success is False
         assert len(sync_result.conflicts) > 0
 
@@ -1274,7 +1274,7 @@ class TestConflicts:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Delete in repo via working clone
         work_dir = Path(working_clone.working_dir)
@@ -1299,7 +1299,7 @@ class TestConflicts:
         await sync_service.desktop_commit("modify workflow in platform")
 
         # Pull should detect conflict (delete vs modify)
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         # Either an explicit conflict or a failed merge
         has_conflict = len(sync_result.conflicts) > 0
         has_error = sync_result.success is False
@@ -1345,7 +1345,7 @@ class TestRoundTrip:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Modify in repo via working clone
         work_dir = Path(working_clone.working_dir)
@@ -1357,7 +1357,7 @@ class TestRoundTrip:
         working_clone.remotes.origin.push()
 
         # Pull
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # ID should be preserved
@@ -1420,7 +1420,7 @@ class TestRoundTrip:
 
         # Commit + push
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Verify form yaml in repo contains UUID reference
         verify_path = tmp_path / "verify"
@@ -1434,7 +1434,7 @@ class TestRoundTrip:
         assert str(wf_id) in form_yaml, "Form yaml should contain workflow UUID reference"
 
         # Pull back
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # UUID should be preserved
@@ -1503,7 +1503,7 @@ tool_ids:
         # Commit + push
         commit_result = await sync_service.desktop_commit("initial commit with agent")
         assert commit_result.success is True
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Verify agent YAML exists in repo with tool_ids
         verify_path = tmp_path / "verify"
@@ -1514,7 +1514,7 @@ tool_ids:
         assert str(wf_id) in agent_content, "Agent YAML should contain tool UUID"
 
         # Pull back
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify agent still exists with tools
@@ -1614,7 +1614,7 @@ form_schema:
         # Commit + push
         commit_result = await sync_service.desktop_commit("initial commit with form")
         assert commit_result.success is True
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Verify form YAML exists in repo
         verify_path = tmp_path / "verify"
@@ -1623,7 +1623,7 @@ form_schema:
         assert form_file.exists(), "Form YAML should be in repo"
 
         # Pull back
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify form still exists with fields
@@ -1692,7 +1692,7 @@ class TestOrphanDetection:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Delete workflow from repo via working clone (keep form)
         work_dir = Path(working_clone.working_dir)
@@ -1709,7 +1709,7 @@ class TestOrphanDetection:
         working_clone.remotes.origin.push()
 
         # Pull the changes from repo
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Now run preflight — orphan detection happens here
         # The form still references a workflow UUID that is no longer in the manifest
@@ -1931,7 +1931,7 @@ class TestSplitManifestFormat:
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
 
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Clone and verify split files
         verify_path = tmp_path / "verify"
@@ -1984,7 +1984,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("add integration")
         working_clone.remotes.origin.push()
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify integration in DB
@@ -2037,7 +2037,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("add config")
         working_clone.remotes.origin.push()
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify config in DB
@@ -2081,7 +2081,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("add table")
         working_clone.remotes.origin.push()
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify table in DB
@@ -2148,7 +2148,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("add event source")
         working_clone.remotes.origin.push()
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Verify event source in DB
@@ -2176,6 +2176,77 @@ class TestSplitManifestFormat:
         assert sub is not None
         assert str(sub.workflow_id) == wf_id
         assert sub.event_type == "scheduled"
+
+    async def test_pull_event_source_updates_organization_id(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull event source without org, then update manifest to add org → verify org_id set."""
+        from src.models.orm.events import EventSource
+        from src.models.orm.organizations import Organization
+
+        work_dir = Path(working_clone.working_dir)
+        es_id = str(uuid4())
+        org_id = str(uuid4())
+
+        # Create org in DB (needed for FK)
+        from uuid import UUID as UUIDType
+        org = Organization(id=UUIDType(org_id), name="EventSourceOrgTest", created_by="test")
+        db_session.add(org)
+        await db_session.commit()
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+
+        # First pull: event source without organization_id
+        (bifrost_dir / "events.yaml").write_text(yaml.dump({
+            "events": {
+                "Global Source": {
+                    "id": es_id,
+                    "source_type": "webhook",
+                    "adapter_name": "generic",
+                    "subscriptions": [],
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([".bifrost/events.yaml"])
+        working_clone.index.commit("add global event source")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+
+        # Verify no org_id
+        es = await db_session.get(EventSource, UUIDType(es_id))
+        assert es is not None
+        assert es.organization_id is None
+
+        # Second pull: add organization_id to the event source
+        (bifrost_dir / "events.yaml").write_text(yaml.dump({
+            "events": {
+                "Global Source": {
+                    "id": es_id,
+                    "source_type": "webhook",
+                    "adapter_name": "generic",
+                    "organization_id": org_id,
+                    "subscriptions": [],
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([".bifrost/events.yaml"])
+        working_clone.index.commit("assign org to event source")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+
+        # Refresh and verify org_id is set
+        await db_session.refresh(es)
+        assert str(es.organization_id) == org_id
 
     async def test_pull_idempotent(
         self,
@@ -2205,9 +2276,9 @@ class TestSplitManifestFormat:
         working_clone.remotes.origin.push()
 
         # Pull twice
-        result1 = await sync_service.desktop_sync()
+        result1 = await sync_service.desktop_sync(confirm_deletes=True)
         assert result1.success is True
-        result2 = await sync_service.desktop_sync()
+        result2 = await sync_service.desktop_sync(confirm_deletes=True)
         assert result2.success is True
 
         # Should still be exactly one integration with that ID
@@ -2253,7 +2324,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("add legacy format workflow")
         working_clone.remotes.origin.push()
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
         assert result.entities_imported > 0
 
@@ -2301,7 +2372,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("add integration")
         working_clone.remotes.origin.push()
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Manually create Config values (simulating user setting values in UI)
@@ -2339,7 +2410,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("trigger re-sync")
         working_clone.remotes.origin.push()
 
-        result2 = await sync_service.desktop_sync()
+        result2 = await sync_service.desktop_sync(confirm_deletes=True)
         assert result2.success is True
 
         # Verify Config values still exist
@@ -2392,7 +2463,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("add integration")
         working_clone.remotes.origin.push()
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Get original mapping row ID
@@ -2410,7 +2481,7 @@ class TestSplitManifestFormat:
         working_clone.index.commit("trigger re-sync")
         working_clone.remotes.origin.push()
 
-        result2 = await sync_service.desktop_sync()
+        result2 = await sync_service.desktop_sync(confirm_deletes=True)
         assert result2.success is True
 
         # Verify mapping was preserved (not deleted + re-created)
@@ -2456,7 +2527,7 @@ class TestSplitManifestFormat:
         working_clone.index.add([".bifrost/integrations.yaml"])
         working_clone.index.commit("initial schema")
         working_clone.remotes.origin.push()
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
 
         # Add a Config value for "keep_me"
@@ -2494,7 +2565,7 @@ class TestSplitManifestFormat:
         working_clone.index.add([".bifrost/integrations.yaml"])
         working_clone.index.commit("update schema")
         working_clone.remotes.origin.push()
-        result2 = await sync_service.desktop_sync()
+        result2 = await sync_service.desktop_sync(confirm_deletes=True)
         assert result2.success is True
 
         # Verify: keep_me config value survived, remove_me schema gone, new_key added
@@ -2587,7 +2658,7 @@ class TestCrossInstanceManifestReconciliation:
         # Commit + push initial state
         commit_result = await sync_service.desktop_commit("initial with configs")
         assert commit_result.success
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success
 
         # --- Instance A (working_clone): Pull, add config-3, push ---
@@ -2621,7 +2692,7 @@ class TestCrossInstanceManifestReconciliation:
         commit_result = await sync_service.desktop_commit("Prod: delete config-2")
         assert commit_result.success
 
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # --- Verify: manifest should have config-1 and new_from_dev, NOT config-2 ---
@@ -2683,7 +2754,7 @@ class TestCrossInstanceManifestReconciliation:
         # --- Instance B: Pull from empty _repo ---
         # The sync_service starts with an empty persistent dir (no .bifrost/ files).
         # desktop_sync should regenerate (producing empty manifest), then merge remote.
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # Verify the remote entities were imported into DB
@@ -2770,7 +2841,7 @@ class TestPullUpsertNaturalKeys:
         working_clone.remotes.origin.push("main")
 
         # Pull — this should NOT raise IntegrityError
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # Verify: only one workflow row exists with the manifest's ID (id_b)
@@ -2822,7 +2893,7 @@ class TestPullUpsertNaturalKeys:
         working_clone.remotes.origin.push("main")
 
         # Pull — should NOT raise IntegrityError
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # Verify: one integration with manifest ID
@@ -2885,7 +2956,7 @@ class TestPullUpsertNaturalKeys:
         working_clone.remotes.origin.push("main")
 
         # Pull — should NOT raise IntegrityError
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # Verify: one app with manifest ID
@@ -2953,7 +3024,7 @@ class TestPullUpsertNaturalKeys:
         working_clone.remotes.origin.push("main")
 
         # Pull — should NOT raise IntegrityError
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # Verify: one config row with manifest ID
@@ -3057,7 +3128,7 @@ class TestPullUpsertNaturalKeys:
         working_clone.remotes.origin.push("main")
 
         # Pull — should NOT raise IntegrityError
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # Verify: one subscription with manifest ID
@@ -3110,7 +3181,7 @@ class TestPullUpsertNaturalKeys:
         working_clone.index.commit("Add app at custom path")
         working_clone.remotes.origin.push("main")
 
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         # Verify: repo_path is the custom path, not apps/{slug}
@@ -3162,7 +3233,7 @@ class TestPullUpsertNaturalKeys:
         working_clone.index.commit("Add app with underscore slug")
         working_clone.remotes.origin.push("main")
 
-        sync_result = await sync_service.desktop_sync()
+        sync_result = await sync_service.desktop_sync(confirm_deletes=True)
         assert sync_result.success, f"Sync failed: {sync_result.error}"
 
         from src.models.orm.applications import Application
@@ -3201,7 +3272,7 @@ class TestOrgImport:
         working_clone.index.commit("Add org")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         org = await db_session.get(Organization, org_id)
@@ -3229,7 +3300,7 @@ class TestOrgImport:
         working_clone.index.commit("Rename org")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3258,7 +3329,7 @@ class TestOrgImport:
         working_clone.index.commit("Cross-env org")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3291,7 +3362,7 @@ class TestOrgImport:
         working_clone.index.commit("Preserve domain")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3316,9 +3387,9 @@ class TestOrgImport:
         working_clone.index.commit("Idempotent org")
         working_clone.remotes.origin.push("main")
 
-        r1 = await sync_service.desktop_sync()
+        r1 = await sync_service.desktop_sync(confirm_deletes=True)
         assert r1.success
-        r2 = await sync_service.desktop_sync()
+        r2 = await sync_service.desktop_sync(confirm_deletes=True)
         assert r2.success
 
     async def test_deactivate_removed_org(
@@ -3344,7 +3415,7 @@ class TestOrgImport:
         working_clone.index.commit("Remove org")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         deactivated = (await db_session.execute(
@@ -3377,7 +3448,7 @@ class TestOrgImport:
         working_clone.index.commit("Reactivate org")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3408,7 +3479,7 @@ class TestRoleImport:
         working_clone.index.commit("Add role")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3438,7 +3509,7 @@ class TestRoleImport:
         working_clone.index.commit("Rename role")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3467,7 +3538,7 @@ class TestRoleImport:
         working_clone.index.commit("Cross-env role")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3499,7 +3570,7 @@ class TestRoleImport:
         working_clone.index.commit("Preserve perms")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -3530,7 +3601,7 @@ class TestRoleImport:
         working_clone.index.commit("Remove role")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         deactivated = (await db_session.execute(
@@ -3594,7 +3665,7 @@ class TestRoleAssignmentSync:
         working_clone.index.commit("Add workflow with roles")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         # Check junction table
@@ -3663,7 +3734,7 @@ class TestRoleAssignmentSync:
         working_clone.index.commit("Remove role B from workflow")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         rows = (await db_session.execute(
@@ -3753,7 +3824,7 @@ class TestRoleAssignmentSync:
         working_clone.index.commit("Add form with role")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         rows = (await db_session.execute(
@@ -3823,7 +3894,7 @@ class TestImportOrder:
         working_clone.index.commit("Table with app ref")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         row = (await db_session.execute(
@@ -3885,7 +3956,7 @@ class TestImportOrder:
         working_clone.index.commit("Event sub with path ref")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         sub = (await db_session.execute(
@@ -3947,7 +4018,7 @@ class TestImportOrder:
         working_clone.index.commit("Event sub with name ref")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         sub = (await db_session.execute(
@@ -3989,7 +4060,7 @@ class TestImportOrder:
         working_clone.index.commit("Event sub with missing wf")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, "Pull should succeed even with missing workflow ref"
 
         sub = (await db_session.execute(
@@ -4163,7 +4234,7 @@ class TestImportOrder:
         working_clone.index.commit("Full manifest")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         # Verify key entities exist
@@ -4215,7 +4286,7 @@ class TestEventSourceNameFix:
         working_clone.index.commit("Event source name test")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         row = (await db_session.execute(
@@ -4262,7 +4333,7 @@ class TestAccessLevelSync:
         working_clone.index.commit("Workflow access level")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         wf = (await db_session.execute(
@@ -4304,7 +4375,7 @@ class TestAccessLevelSync:
         working_clone.index.commit("App access level")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         app = (await db_session.execute(
@@ -4356,7 +4427,7 @@ class TestOrgScopedEntities:
         working_clone.index.commit("Workflow with org")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success, f"Sync failed: {result.error}"
 
         wf = (await db_session.execute(
@@ -4411,7 +4482,7 @@ class TestOrgScopedEntities:
         working_clone.index.commit("Add org to workflow")
         working_clone.remotes.origin.push("main")
 
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
         wf = (await db_session.execute(
@@ -4458,7 +4529,7 @@ class TestDesktopSync:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Make a change in the remote repo via working_clone
         work_dir = Path(working_clone.working_dir)
@@ -4482,7 +4553,7 @@ class TestDesktopSync:
         await sync_service.desktop_commit("local: update workflow")
 
         # Sync should pull remote changes and push local changes
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is True
         assert result.entities_imported > 0, "Should have pulled remote changes"
         assert result.pushed_commits > 0, "Should have pushed local changes"
@@ -4522,7 +4593,7 @@ class TestDesktopSync:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Modify in repo via working clone
         work_dir = Path(working_clone.working_dir)
@@ -4543,7 +4614,7 @@ class TestDesktopSync:
         await sync_service.desktop_commit("local: different modification")
 
         # Sync should detect conflict
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is False
         assert result.pull_success is False
         assert len(result.conflicts) > 0
@@ -4575,7 +4646,7 @@ class TestDesktopSync:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Create conflict: modify both sides
         work_dir = Path(working_clone.working_dir)
@@ -4595,7 +4666,7 @@ class TestDesktopSync:
         await sync_service.desktop_commit("local: different change")
 
         # First sync: should fail with conflicts
-        result1 = await sync_service.desktop_sync()
+        result1 = await sync_service.desktop_sync(confirm_deletes=True)
         assert result1.success is False
         assert len(result1.conflicts) > 0
 
@@ -4605,7 +4676,7 @@ class TestDesktopSync:
         assert resolve_result.success is True
 
         # Second sync: should succeed and push the merge commit
-        result2 = await sync_service.desktop_sync()
+        result2 = await sync_service.desktop_sync(confirm_deletes=True)
         assert result2.success is True
         assert result2.pushed_commits > 0
 
@@ -4645,7 +4716,7 @@ class TestAbortMerge:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Create conflict
         work_dir = Path(working_clone.working_dir)
@@ -4665,7 +4736,7 @@ class TestAbortMerge:
         await sync_service.desktop_commit("local: different change")
 
         # Sync should fail with conflicts
-        result = await sync_service.desktop_sync()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success is False
         assert len(result.conflicts) > 0
 
@@ -4703,9 +4774,120 @@ class TestAbortMerge:
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
-        await sync_service.desktop_sync()
+        await sync_service.desktop_sync(confirm_deletes=True)
 
         # Try to abort when there's no merge
         abort_result = await sync_service.desktop_abort_merge()
         assert abort_result.success is False
         assert abort_result.error is not None
+
+
+# =============================================================================
+# Delete Confirmation Gate
+# =============================================================================
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+class TestDeleteConfirmation:
+    """Verify confirm_deletes gate blocks or allows entity deletion."""
+
+    async def test_sync_blocks_when_stale_entities_detected(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+    ):
+        """
+        When DB has entities not in the manifest and confirm_deletes is False,
+        sync returns success=True with needs_delete_confirmation=True.
+        """
+        # Create a workflow in DB
+        wf_id = uuid4()
+        wf = Workflow(
+            id=wf_id,
+            name="Stale Entity Test",
+            function_name="stale_entity_wf",
+            path="workflows/stale_entity_wf.py",
+            is_active=True,
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        # Write the file and manifest (includes this workflow)
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/stale_entity_wf.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await write_manifest_to_repo(db_session, sync_service._persistent_dir)
+        await sync_service.desktop_commit("add stale entity test wf")
+        await sync_service.desktop_sync(confirm_deletes=True)
+
+        # Now remove the file from repo but keep it in DB → makes it "stale"
+        remove_entity_from_repo(sync_service._persistent_dir, "workflows/stale_entity_wf.py")
+        await write_manifest_to_repo(db_session, sync_service._persistent_dir)
+        await sync_service.desktop_commit("remove stale wf from manifest")
+
+        # Sync WITHOUT confirm_deletes → should be blocked
+        result = await sync_service.desktop_sync()
+        assert result.success is True
+        assert result.needs_delete_confirmation is True
+        assert len(result.pending_deletes) > 0
+
+        # The workflow should still exist in DB (not deleted)
+        row = await db_session.execute(
+            select(Workflow).where(Workflow.id == wf_id)
+        )
+        assert row.scalar_one_or_none() is not None
+
+    async def test_sync_deletes_when_confirmed(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        bare_repo,
+    ):
+        """
+        When confirm_deletes=True, stale entities are deleted and
+        needs_delete_confirmation is False.
+        """
+        # Create a workflow in DB
+        wf_id = uuid4()
+        wf = Workflow(
+            id=wf_id,
+            name="Confirm Delete Test",
+            function_name="confirm_delete_wf",
+            path="workflows/confirm_delete_wf.py",
+            is_active=True,
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        # Write file and manifest
+        write_entity_to_repo(
+            sync_service._persistent_dir,
+            "workflows/confirm_delete_wf.py",
+            SAMPLE_WORKFLOW_PY,
+        )
+        await write_manifest_to_repo(db_session, sync_service._persistent_dir)
+        await sync_service.desktop_commit("add confirm delete test wf")
+        await sync_service.desktop_sync(confirm_deletes=True)
+
+        # Remove file → stale
+        remove_entity_from_repo(sync_service._persistent_dir, "workflows/confirm_delete_wf.py")
+        await write_manifest_to_repo(db_session, sync_service._persistent_dir)
+        await sync_service.desktop_commit("remove confirm delete wf")
+
+        # Sync WITH confirm_deletes → should proceed and delete
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+        assert result.needs_delete_confirmation is False
+
+        # The workflow should be deactivated
+        db_session.expire_all()
+        row = await db_session.execute(
+            select(Workflow).where(Workflow.id == wf_id)
+        )
+        deleted_wf = row.scalar_one_or_none()
+        # Either deleted or deactivated
+        assert deleted_wf is None or deleted_wf.is_active is False

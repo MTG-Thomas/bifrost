@@ -153,10 +153,13 @@ export function Events() {
 		}
 	};
 
-	// Pass filterOrgId to backend for filtering (undefined = all, null = global only)
+	// filterOrgId: undefined = all, null = global only, string = org UUID
 	const { data, isLoading, refetch } = useEventSources(
 		isPlatformAdmin
-			? { organizationId: filterOrgId ?? undefined }
+			? {
+					scope: filterOrgId === null ? "global" : undefined,
+					organizationId: typeof filterOrgId === "string" ? filterOrgId : undefined,
+				}
 			: undefined,
 	);
 	const sources = useMemo(() => data?.items || [], [data?.items]);

@@ -93,6 +93,7 @@ async def create_organization(
             name=org.name,
             domain=org.domain,
             is_active=org.is_active,
+            is_provider=org.is_provider,
         )
 
     logger.info(f"Created organization {org.id}: {org.name}")
@@ -170,6 +171,7 @@ async def update_organization(
             name=org.name,
             domain=org.domain,
             is_active=org.is_active,
+            is_provider=org.is_provider,
         )
 
     logger.info(f"Updated organization {org_id}")

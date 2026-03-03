@@ -893,16 +893,105 @@ class TestExplicitScopeOverride:
     """
     Test that explicit scope parameter overrides execution context.
 
-    Even when running in org1's context, passing scope="org2" or scope="global"
-    should access that scope's data.
+    Workflow runs in the provider org (is_provider=True, seeded by migration),
+    which allows cross-org scope overrides. Default scope sees provider org data,
+    explicit scope="org2" sees org2's data.
     """
+
+    PROVIDER_ORG_ID = "00000000-0000-0000-0000-000000000002"
+
+    @pytest.fixture(scope="class")
+    def provider_table_data(
+        self,
+        e2e_client,
+        platform_admin,
+        scope_test_table_name,
+    ):
+        """Create test data in the provider org's table."""
+        table_resp = e2e_client.post(
+            "/api/tables",
+            headers=platform_admin.headers,
+            params={"scope": self.PROVIDER_ORG_ID},
+            json={"name": scope_test_table_name},
+        )
+        assert table_resp.status_code in (201, 409), (
+            f"Failed to create provider table: {table_resp.text}"
+        )
+        if table_resp.status_code == 201:
+            table_id = table_resp.json()["id"]
+        else:
+            list_resp = e2e_client.get(
+                "/api/tables",
+                headers=platform_admin.headers,
+                params={"scope": self.PROVIDER_ORG_ID},
+            )
+            table_id = next(
+                t["id"] for t in list_resp.json()["tables"]
+                if t["name"] == scope_test_table_name
+            )
+
+        insert_resp = e2e_client.post(
+            f"/api/tables/{table_id}/documents",
+            headers=platform_admin.headers,
+            json={"data": {"scope_marker": "provider"}},
+        )
+        assert insert_resp.status_code == 201, (
+            f"Failed to insert provider table data: {insert_resp.text}"
+        )
+        return insert_resp.json()
+
+    @pytest.fixture(scope="class")
+    def provider_config_data(
+        self,
+        e2e_client,
+        platform_admin,
+        scope_test_config_key,
+    ):
+        """Create test config in the provider org's scope."""
+        response = e2e_client.post(
+            "/api/cli/config/set",
+            headers=platform_admin.headers,
+            json={
+                "key": scope_test_config_key,
+                "value": {"scope_marker": "provider"},
+                "scope": self.PROVIDER_ORG_ID,
+            },
+        )
+        assert response.status_code == 204, (
+            f"Failed to set provider config: {response.text}"
+        )
+        return {"scope_marker": "provider"}
+
+    @pytest.fixture(scope="class")
+    def provider_knowledge_data(
+        self,
+        e2e_client,
+        platform_admin,
+        scope_test_knowledge_namespace,
+        embedding_config_for_scope_tests,  # noqa: ARG002 - used for side effect
+    ):
+        """Create test knowledge in the provider org's scope."""
+        response = e2e_client.post(
+            "/api/cli/knowledge/store",
+            headers=platform_admin.headers,
+            json={
+                "content": "Provider org test knowledge document with scope marker provider",
+                "namespace": scope_test_knowledge_namespace,
+                "key": "provider-doc",
+                "metadata": {"scope_marker": "provider"},
+                "scope": self.PROVIDER_ORG_ID,
+            },
+        )
+        assert response.status_code == 200, (
+            f"Failed to store provider knowledge: {response.text}"
+        )
+        return {"scope_marker": "provider"}
 
     @pytest.fixture(scope="class")
     def scope_override_workflow(
         self,
         e2e_client,
         platform_admin,
-        org1,
         org2,
         scope_test_table_name,
         scope_test_config_key,
@@ -911,8 +1000,8 @@ class TestExplicitScopeOverride:
         """
         Create a workflow that explicitly overrides scope for each operation.
 
-        This workflow is org-scoped (org1), but explicitly passes org2's scope
-        to SDK operations. Should see org2's data despite running in org1 context.
+        This workflow is scoped to the provider org, but explicitly passes org2's
+        scope to SDK operations. Should see org2's data in the overridden calls.
         """
         workflow_name = "e2e_scope_override_test"
         workflow_path = f"{workflow_name}.py"
@@ -929,7 +1018,7 @@ from bifrost import workflow, tables, config, knowledge, context
 async def {workflow_name}():
     """
     Override scope in each SDK operation to access org2's data,
-    even though this workflow belongs to org1.
+    even though this workflow belongs to the provider org.
     """
     results = {{
         "context": {{
@@ -940,7 +1029,7 @@ async def {workflow_name}():
         "overridden_scope": {{}},
     }}
 
-    # First, query with default scope (should see org1)
+    # First, query with default scope (should see provider org)
     try:
         default_result = await tables.query("{scope_test_table_name}", limit=10)
         results["default_scope"]["tables"] = [
@@ -1030,18 +1119,18 @@ async def {workflow_name}():
         )
         workflow_id = result["id"]
 
-        # Set organization_id to org1
+        # Set organization_id to the provider org
         response = e2e_client.patch(
             f"/api/workflows/{workflow_id}",
             headers=platform_admin.headers,
-            json={"organization_id": org1["id"]},
+            json={"organization_id": self.PROVIDER_ORG_ID},
         )
         assert response.status_code == 200, f"Set workflow org failed: {response.text}"
 
         yield {
             "id": workflow_id,
             "name": workflow_name,
-            "org_id": org1["id"],
+            "org_id": self.PROVIDER_ORG_ID,
             "path": workflow_path,
         }
 
@@ -1056,23 +1145,22 @@ async def {workflow_name}():
         e2e_client,
         platform_admin,
         scope_override_workflow,
-        org1_table_data,
+        provider_table_data,
         org2_table_data,
-        org1_config_data,
+        provider_config_data,
         org2_config_data,
-        org1_knowledge_data,
+        provider_knowledge_data,
         org2_knowledge_data,
     ):
         """
         SDK operations with explicit scope should access that scope's data,
         regardless of the workflow's organization.
         """
-        # Ensure fixtures are loaded
-        assert org1_table_data is not None
+        assert provider_table_data is not None
         assert org2_table_data is not None
-        assert org1_config_data is not None
+        assert provider_config_data is not None
         assert org2_config_data is not None
-        assert org1_knowledge_data is not None
+        assert provider_knowledge_data is not None
         assert org2_knowledge_data is not None
 
         data = execute_workflow_sync(
@@ -1084,16 +1172,16 @@ async def {workflow_name}():
 
         result = data.get("result", {})
 
-        # Verify default scope (should be org1)
+        # Verify default scope (should be provider org)
         default = result.get("default_scope", {})
-        assert "org1" in default.get("tables", []), (
-            f"Default tables should see org1. Got: {default.get('tables')}"
+        assert "provider" in default.get("tables", []), (
+            f"Default tables should see provider. Got: {default.get('tables')}"
         )
-        assert default.get("config") == "org1", (
-            f"Default config should be org1. Got: {default.get('config')}"
+        assert default.get("config") == "provider", (
+            f"Default config should be provider. Got: {default.get('config')}"
         )
-        assert "org1" in default.get("knowledge", []), (
-            f"Default knowledge should see org1. Got: {default.get('knowledge')}"
+        assert "provider" in default.get("knowledge", []), (
+            f"Default knowledge should see provider. Got: {default.get('knowledge')}"
         )
 
         # Verify overridden scope (should be org2)

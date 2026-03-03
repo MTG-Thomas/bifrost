@@ -17,9 +17,6 @@ from pathlib import Path
 # Each service gets its own directory. These are created on-demand by the
 # services that use them, not pre-created.
 
-# Git operations (clone, commit, push) - persistent across operations
-GIT_WORKSPACE_PATH = Path("/tmp/bifrost/git")
-
 # Coding agent scratch space - for Claude SDK's bash/file tools
 CODING_AGENT_PATH = Path("/tmp/bifrost/coding-agent")
 

@@ -5,7 +5,8 @@ import { lazy, ComponentType } from "react";
  * After a deploy, old chunk hashes no longer exist. A reload fetches the new index.html
  * with correct chunk references.
  */
-export function lazyWithReload<T extends ComponentType<unknown>>(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function lazyWithReload<T extends ComponentType<any>>(
 	importFn: () => Promise<{ default: T }>,
 ) {
 	return lazy(() =>

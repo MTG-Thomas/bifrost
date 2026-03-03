@@ -432,6 +432,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             variables=execution.variables if user.is_superuser else None,
             peak_memory_bytes=execution.peak_memory_bytes if user.is_superuser else None,
             cpu_total_seconds=execution.cpu_total_seconds if user.is_superuser else None,
+            # ROI economics
+            time_saved=execution.time_saved or 0,
+            value=float(execution.value or 0),
             # AI usage tracking
             ai_usage=ai_usage_list if ai_usage_list else None,
             ai_totals=ai_totals,
@@ -603,6 +606,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             logs=None,  # Fetched separately via /logs endpoint
             variables=execution.variables if is_admin else None,
             session_id=str(execution.session_id) if execution.session_id else None,
+            # ROI economics
+            time_saved=execution.time_saved or 0,
+            value=float(execution.value or 0),
         )
 
 

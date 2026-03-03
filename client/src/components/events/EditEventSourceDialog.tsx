@@ -21,6 +21,8 @@ import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
+import { useAuth } from "@/contexts/AuthContext";
 import { useUpdateEventSource, type EventSource } from "@/services/events";
 import { authFetch } from "@/lib/api-client";
 
@@ -62,10 +64,14 @@ function EditEventSourceDialogContent({
 	source: EventSource;
 	onOpenChange: (open: boolean) => void;
 }) {
+	const { isPlatformAdmin } = useAuth();
 	const updateMutation = useUpdateEventSource();
 
 	// Form state - initialized from props, component remounts when dialog opens
 	const [name, setName] = useState(source.name);
+	const [organizationId, setOrganizationId] = useState<string | null>(
+		source.organization_id ?? null,
+	);
 
 	// Webhook config fields (for generic adapter)
 	const [eventTypeHeader, setEventTypeHeader] = useState<string>(
@@ -182,21 +188,27 @@ function EditEventSourceDialogContent({
 				webhookConfig.secret = secret.trim();
 			}
 
+			// Build body - include organization_id if admin changed it
+			const body: Record<string, unknown> = {
+				name: name.trim(),
+				webhook: isWebhook ? { config: webhookConfig } : undefined,
+				schedule: isSchedule
+					? {
+							cron_expression: cronExpression.trim(),
+							timezone,
+							enabled: scheduleEnabled,
+						}
+					: undefined,
+			};
+			if (isPlatformAdmin) {
+				body.organization_id = organizationId ?? null;
+			}
+
 			await updateMutation.mutateAsync({
 				params: {
 					path: { source_id: source.id },
 				},
-				body: {
-					name: name.trim(),
-					webhook: isWebhook ? { config: webhookConfig } : undefined,
-					schedule: isSchedule
-						? {
-								cron_expression: cronExpression.trim(),
-								timezone,
-								enabled: scheduleEnabled,
-							}
-						: undefined,
-				},
+				body: body as typeof updateMutation.variables.body,
 			});
 
 			toast.success("Event source updated");
@@ -228,6 +240,24 @@ function EditEventSourceDialogContent({
 							</ul>
 						</AlertDescription>
 					</Alert>
+				)}
+
+				{/* Organization (Platform Admin Only) */}
+				{isPlatformAdmin && (
+					<div className="space-y-2">
+						<Label htmlFor="organization">Organization</Label>
+						<OrganizationSelect
+							value={organizationId}
+							onChange={(value) =>
+								setOrganizationId(value ?? null)
+							}
+							showGlobal
+						/>
+						<p className="text-xs text-muted-foreground">
+							Leave as Global to make this source available to all
+							organizations.
+						</p>
+					</div>
 				)}
 
 				{/* Name */}

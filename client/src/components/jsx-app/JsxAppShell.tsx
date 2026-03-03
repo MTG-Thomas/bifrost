@@ -194,7 +194,7 @@ function LayoutWrapper({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, userComponentNames, allFiles, externalDeps, file.path, file.source]);
+	}, [appId, userComponentNames, allFiles, externalDeps, file.path, file.source, file.compiled]);
 
 	if (isLoading) {
 		return <PageLoader message="Loading layout..." />;
@@ -310,7 +310,7 @@ function ProvidersWrapper({
 		return () => {
 			cancelled = true;
 		};
-	}, [appId, userComponentNames, allFiles, externalDeps, file.path, file.source]);
+	}, [appId, userComponentNames, allFiles, externalDeps, file.path, file.source, file.compiled]);
 
 	if (isLoading) {
 		return <PageLoader message="Loading app..." />;

@@ -1051,7 +1051,7 @@ class GitHubSyncService:
                         f"Sync blocked: {len(pending_deletes)} entity deletion(s) require confirmation"
                     )
                     return SyncResult(
-                        success=False,
+                        success=True,
                         needs_delete_confirmation=True,
                         pending_deletes=pending_deletes,
                         pulled=pull_result.pulled,
@@ -2892,6 +2892,7 @@ class GitHubSyncService:
             set_={
                 "name": es_name,
                 "source_type": mes.source_type,
+                "organization_id": UUID(mes.organization_id) if mes.organization_id else None,
                 "is_active": mes.is_active,
                 "updated_at": datetime.now(timezone.utc),
             },
