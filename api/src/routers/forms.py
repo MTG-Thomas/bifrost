@@ -28,6 +28,7 @@ from src.models import Execution as ExecutionORM
 from src.models import Form as FormORM, FormField as FormFieldORM, FormRole as FormRoleORM, UserRole as UserRoleORM
 from src.models import Workflow as WorkflowORM
 from src.models import FormCreate, FormUpdate, FormPublic
+from src.models.contracts.forms import FormField, FormSchema
 from src.models import WorkflowExecutionResponse
 from src.models import FileUploadRequest, FileUploadResponse, UploadedFileMetadata
 from src.models import FormExecuteRequest, FormStartupResponse
@@ -253,12 +254,30 @@ async def list_forms(
         # Use list_all_in_scope which skips role checks (appropriate for superusers)
         # Pass filter_type to control org scoping behavior
         forms = await repo.list_all_in_scope(filter_type=filter_type, active_only=False)
-        return [FormPublic.model_validate(f) for f in forms]
+        result = [FormPublic.model_validate(f) for f in forms]
+    else:
+        # For org users: repository handles cascade scoping + role-based access
+        # list_forms() applies both cascade scope and role checks automatically
+        forms = await repo.list_forms(active_only=True)
+        result = [FormPublic.model_validate(f) for f in forms]
 
-    # For org users: repository handles cascade scoping + role-based access
-    # list_forms() applies both cascade scope and role checks automatically
-    forms = await repo.list_forms(active_only=True)
-    return [FormPublic.model_validate(f) for f in forms]
+    # Compute dependency counts for each form
+    for form_public in result:
+        count = 0
+        if form_public.workflow_id and len(form_public.workflow_id) == 36:
+            count += 1
+        if form_public.launch_workflow_id and len(form_public.launch_workflow_id) == 36:
+            count += 1
+        if form_public.form_schema:
+            schema = form_public.form_schema
+            fields = schema.fields if isinstance(schema, FormSchema) else (schema or {}).get("fields", [])
+            for field in fields:
+                dp_id = field.data_provider_id if isinstance(field, FormField) else (field or {}).get("data_provider_id")
+                if dp_id:
+                    count += 1
+        form_public.dependency_count = count
+
+    return result
 
 
 @router.post(

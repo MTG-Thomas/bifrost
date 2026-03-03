@@ -81,7 +81,7 @@ async def test_reimport_regenerates_manifest_and_reindexes_workflows():
 
     with patch.object(service, '_regenerate_manifest_to_dir') as mock_regen, \
          patch.object(service, '_reindex_registered_workflows') as mock_reindex, \
-         patch.object(service, '_import_all_entities', return_value=5), \
+         patch.object(service, '_import_all_entities', return_value=(5, [])), \
          patch.object(service, '_delete_removed_entities'), \
          patch.object(service, '_update_file_index'), \
          patch.object(service, '_sync_app_previews'):

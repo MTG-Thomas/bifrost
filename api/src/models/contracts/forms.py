@@ -263,6 +263,7 @@ class FormPublic(BaseModel):
     is_active: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    dependency_count: int = Field(default=0, description="Number of workflow dependencies this form uses")
 
     @model_validator(mode="before")
     @classmethod

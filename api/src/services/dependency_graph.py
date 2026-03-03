@@ -155,6 +155,23 @@ class DependencyGraphService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _build_workflow_lookup(self) -> dict[str, UUID]:
+        """Build lookup mapping any ref format -> workflow UUID.
+
+        Handles: UUID string, workflow name, path::function_name portable ref
+        """
+        result = await self.db.execute(
+            select(Workflow.id, Workflow.name, Workflow.path, Workflow.function_name)
+            .where(Workflow.is_active.is_(True))
+        )
+        lookup: dict[str, UUID] = {}
+        for wf_id, wf_name, wf_path, wf_fn_name in result.all():
+            lookup[str(wf_id)] = wf_id
+            lookup[wf_name] = wf_id
+            if wf_path and wf_fn_name:
+                lookup[f"{wf_path}::{wf_fn_name}"] = wf_id
+        return lookup
+
     async def build_graph(
         self,
         entity_type: EntityType,
@@ -233,10 +250,18 @@ class DependencyGraphService:
             )
         )
         wf_id_str = str(workflow_id)
+
+        # Build portable ref for the target workflow
+        wf_meta = await self.db.execute(
+            select(Workflow.path, Workflow.function_name).where(Workflow.id == workflow_id)
+        )
+        row = wf_meta.one_or_none()
+        portable_ref = f"{row[0]}::{row[1]}" if row and row[0] and row[1] else None
+
         for (content,) in result.all():
             if content:
                 refs = parse_dependencies(content)
-                if wf_id_str in refs:
+                if wf_id_str in refs or (portable_ref and portable_ref in refs):
                     return True
         return False
 
@@ -383,7 +408,6 @@ class DependencyGraphService:
             # Apps USE workflows via hook calls in source code
             # Scan file_index for apps/{slug}/* files and parse for workflow refs
             from src.services.app_dependencies import parse_dependencies
-            from src.models.orm.workflows import Workflow as WfORM
 
             app_result = await self.db.execute(
                 select(Application).where(Application.id == entity_id)
@@ -403,13 +427,10 @@ class DependencyGraphService:
                         all_refs.update(parse_dependencies(content))
 
                 if all_refs:
-                    # Resolve refs to workflow UUIDs
-                    wf_result = await self.db.execute(
-                        select(WfORM.id, WfORM.name).where(WfORM.is_active.is_(True))
-                    )
-                    for wf_id, wf_name in wf_result.all():
-                        if str(wf_id) in all_refs or wf_name in all_refs:
-                            dependencies.append(("workflow", wf_id, "uses"))
+                    lookup = await self._build_workflow_lookup()
+                    for ref in all_refs:
+                        if ref in lookup:
+                            dependencies.append(("workflow", lookup[ref], "uses"))
 
         elif entity_type == "agent":
             # Agents USE workflows (via agent_tools)

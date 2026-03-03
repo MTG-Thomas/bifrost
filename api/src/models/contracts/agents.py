@@ -154,6 +154,7 @@ class AgentSummary(BaseModel):
     owner_user_id: UUID | None = None
     created_at: datetime
     llm_model: str | None = None
+    dependency_count: int = Field(default=0, description="Number of tool dependencies this agent uses")
 
     @field_serializer("id", "organization_id", "owner_user_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:
