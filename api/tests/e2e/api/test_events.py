@@ -291,6 +291,54 @@ class TestEventSourceCRUD:
         assert response.status_code == 200
         assert response.json()["is_active"] is False
 
+    def test_update_event_source_organization_id(self, e2e_client, platform_admin, org_event_source, org1):
+        """Update org-scoped source: clear org (set to null), then set it back."""
+        source_id = org_event_source["id"]
+
+        # Verify it starts with an org
+        assert org_event_source["organization_id"] == org1["id"]
+
+        # Clear org → global
+        response = e2e_client.patch(
+            f"/api/events/sources/{source_id}",
+            headers=platform_admin.headers,
+            json={"organization_id": None},
+        )
+        assert response.status_code == 200, f"Clear org failed: {response.text}"
+        assert response.json()["organization_id"] is None
+
+        # Set org back
+        response = e2e_client.patch(
+            f"/api/events/sources/{source_id}",
+            headers=platform_admin.headers,
+            json={"organization_id": org1["id"]},
+        )
+        assert response.status_code == 200, f"Set org failed: {response.text}"
+        assert response.json()["organization_id"] == org1["id"]
+
+    def test_update_event_source_set_organization_id(self, e2e_client, platform_admin, event_source, org1):
+        """Assign org to a global event source."""
+        source_id = event_source["id"]
+
+        # Starts as global (no org)
+        assert event_source["organization_id"] is None
+
+        # Assign org
+        response = e2e_client.patch(
+            f"/api/events/sources/{source_id}",
+            headers=platform_admin.headers,
+            json={"organization_id": org1["id"]},
+        )
+        assert response.status_code == 200, f"Set org failed: {response.text}"
+        assert response.json()["organization_id"] == org1["id"]
+
+        # Clean up: reset to global so fixture cleanup works
+        e2e_client.patch(
+            f"/api/events/sources/{source_id}",
+            headers=platform_admin.headers,
+            json={"organization_id": None},
+        )
+
     def test_org_user_cannot_create_source(self, e2e_client, org1_user):
         """Only platform admin can create sources."""
         response = e2e_client.post(

@@ -3415,22 +3415,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -10710,6 +10710,11 @@ export interface components {
              * @description Whether the source is active
              */
             is_active?: boolean | null;
+            /**
+             * Organization Id
+             * @description Organization ID (null for global sources)
+             */
+            organization_id?: string | null;
             /** @description Webhook configuration updates */
             webhook?: components["schemas"]["WebhookSourceConfig"] | null;
             /** @description Schedule configuration updates */
@@ -18042,6 +18047,8 @@ export interface components {
             executed_by: string;
             /** Executed By Name */
             executed_by_name: string;
+            /** Executed By Email */
+            executed_by_email?: string | null;
             status: components["schemas"]["ExecutionStatus"];
             /** Input Data */
             input_data: {
@@ -18077,6 +18084,16 @@ export interface components {
             cpu_total_seconds?: number | null;
             /** Execution Model */
             execution_model?: string | null;
+            /**
+             * Time Saved
+             * @default 0
+             */
+            time_saved: number;
+            /**
+             * Value
+             * @default 0
+             */
+            value: number;
             /** Ai Usage */
             ai_usage?: components["schemas"]["AIUsagePublicSimple"][] | null;
             ai_totals?: components["schemas"]["AIUsageTotalsSimple"] | null;
@@ -24216,7 +24233,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24249,7 +24266,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24282,7 +24299,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24315,7 +24332,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -28691,6 +28708,8 @@ export interface operations {
                 source_type?: components["schemas"]["EventSourceType"] | null;
                 /** @description Filter by organization */
                 organization_id?: string | null;
+                /** @description Filter scope: 'global' for global-only, omit for all */
+                scope?: string | null;
                 /** @description Max results */
                 limit?: number;
                 /** @description Skip results */

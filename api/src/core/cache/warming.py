@@ -301,6 +301,7 @@ async def _prewarm_organization(
         "name": org.name,
         "domain": org.domain,
         "is_active": org.is_active,
+        "is_provider": org.is_provider,
     }
 
     redis_key = org_key(str(org_uuid))

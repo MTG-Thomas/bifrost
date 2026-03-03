@@ -77,6 +77,7 @@ class WorkflowExecution(BaseModel):
     form_id: str | None = None
     executed_by: str
     executed_by_name: str  # Display name of user who executed
+    executed_by_email: str | None = None  # Email of user who executed
     status: ExecutionStatus
     input_data: dict[str, Any]
     result: dict[str, Any] | list[Any] | str | None = Field(default=None)  # Can be dict/list (JSON) or str (HTML/text)
@@ -94,6 +95,9 @@ class WorkflowExecution(BaseModel):
     cpu_total_seconds: float | None = None
     # Execution model tracking
     execution_model: str | None = None  # 'process' or 'thread' - which worker model ran this
+    # ROI economics (admin only)
+    time_saved: int = 0  # Minutes saved
+    value: float = 0  # Value generated
     # AI usage tracking
     ai_usage: list[AIUsagePublicSimple] | None = None
     ai_totals: AIUsageTotalsSimple | None = None

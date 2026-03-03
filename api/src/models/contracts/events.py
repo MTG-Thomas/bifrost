@@ -129,6 +129,10 @@ class EventSourceUpdate(BaseModel):
         default=None,
         description="Whether the source is active",
     )
+    organization_id: UUID | None = Field(
+        default=None,
+        description="Organization ID (null for global sources)",
+    )
 
     # Webhook-specific updates
     webhook: WebhookSourceConfig | None = Field(

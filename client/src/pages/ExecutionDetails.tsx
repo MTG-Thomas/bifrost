@@ -96,7 +96,7 @@ function mergeLogsWithDedup(
 export function ExecutionDetails({
 	executionId: propExecutionId,
 	embedded = false,
-}: ExecutionDetailsProps = {}) {
+}: ExecutionDetailsProps) {
 	const { executionId: urlExecutionId } = useParams();
 	const executionId = propExecutionId || urlExecutionId;
 	const navigate = useNavigate();
@@ -607,6 +607,7 @@ export function ExecutionDetails({
 						status={execution.status as ExecutionStatus}
 						workflowName={execution.workflow_name}
 						executedByName={execution.executed_by_name}
+						executedByEmail={execution.executed_by_email}
 						orgName={execution.org_name}
 						startedAt={execution.started_at}
 						completedAt={execution.completed_at}
@@ -627,6 +628,10 @@ export function ExecutionDetails({
 							requiredMemoryMb: streamState.requiredMemoryMb,
 						} : undefined}
 						errorMessage={execution.error_message}
+						executedBy={execution.executed_by}
+						orgId={execution.org_id}
+						timeSaved={execution.time_saved}
+						value={execution.value}
 					/>
 				</div>
 			</div>

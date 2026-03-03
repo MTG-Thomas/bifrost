@@ -277,31 +277,58 @@ async def list_sources(
         None, description="Filter by source type"
     ),
     organization_id: UUID | None = Query(None, description="Filter by organization"),
+    scope: str | None = Query(None, description="Filter scope: 'global' for global-only, omit for all"),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Skip results"),
 ) -> EventSourceListResponse:
     """
     List event sources (Platform admin only).
+
+    Filtering:
+    - No scope/organization_id: show ALL sources
+    - scope=global: show only global (no org) sources
+    - organization_id=<uuid>: show that org's sources + global
     """
     repo = EventSourceRepository(db)
 
-    # Determine org filter (admins can filter by org or see all)
-    org_filter = organization_id
-    include_global = organization_id is None
-
-    sources = await repo.get_by_organization(
-        organization_id=org_filter,
-        source_type=source_type,
-        include_global=include_global,
-        limit=limit,
-        offset=offset,
-    )
-
-    total = await repo.count_by_organization(
-        organization_id=org_filter,
-        source_type=source_type,
-        include_global=include_global,
-    )
+    if scope == "global":
+        # Global-only: filter to org_id IS NULL
+        sources = await repo.get_by_organization(
+            organization_id=None,
+            source_type=source_type,
+            include_global=True,
+            limit=limit,
+            offset=offset,
+        )
+        total = await repo.count_by_organization(
+            organization_id=None,
+            source_type=source_type,
+            include_global=True,
+        )
+    elif organization_id:
+        # Specific org + global
+        sources = await repo.get_by_organization(
+            organization_id=organization_id,
+            source_type=source_type,
+            include_global=True,
+            limit=limit,
+            offset=offset,
+        )
+        total = await repo.count_by_organization(
+            organization_id=organization_id,
+            source_type=source_type,
+            include_global=True,
+        )
+    else:
+        # No filter: show everything
+        sources = await repo.get_all_sources(
+            source_type=source_type,
+            limit=limit,
+            offset=offset,
+        )
+        total = await repo.count_all_sources(
+            source_type=source_type,
+        )
 
     items = [await _build_event_source_response(s, db) for s in sources]
 
@@ -498,6 +525,9 @@ async def update_source(
         # Clear error message when reactivating
         if request.is_active:
             source.error_message = None
+
+    if "organization_id" in request.model_fields_set:
+        source.organization_id = request.organization_id
 
     source.updated_at = datetime.now(timezone.utc)
 

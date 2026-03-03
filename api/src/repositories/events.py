@@ -21,7 +21,6 @@ from src.models.orm.events import (
     EventDelivery,
     EventSource,
     EventSubscription,
-    ScheduleSource,
     WebhookSource,
 )
 from src.repositories.base import BaseRepository
@@ -47,6 +46,49 @@ class EventSourceRepository(BaseRepository[EventSource]):
             .where(EventSource.id == source_id)
         )
         return result.unique().scalar_one_or_none()
+
+    async def get_all_sources(
+        self,
+        source_type: EventSourceType | None = None,
+        active_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[EventSource]:
+        """Get all event sources (no org filter)."""
+        stmt = (
+            select(EventSource)
+            .options(
+                joinedload(EventSource.webhook_source),
+                joinedload(EventSource.schedule_source),
+                joinedload(EventSource.organization),
+            )
+        )
+
+        if active_only:
+            stmt = stmt.where(EventSource.is_active.is_(True))
+        if source_type:
+            stmt = stmt.where(EventSource.source_type == source_type)
+
+        stmt = stmt.order_by(EventSource.name).limit(limit).offset(offset)
+
+        result = await self.session.execute(stmt)
+        return result.unique().scalars().all()
+
+    async def count_all_sources(
+        self,
+        source_type: EventSourceType | None = None,
+        active_only: bool = False,
+    ) -> int:
+        """Count all event sources (no org filter)."""
+        stmt = select(func.count(EventSource.id))
+
+        if active_only:
+            stmt = stmt.where(EventSource.is_active.is_(True))
+        if source_type:
+            stmt = stmt.where(EventSource.source_type == source_type)
+
+        result = await self.session.execute(stmt)
+        return result.scalar() or 0
 
     async def get_by_organization(
         self,

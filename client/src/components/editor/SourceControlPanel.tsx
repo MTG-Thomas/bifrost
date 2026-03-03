@@ -190,6 +190,7 @@ function logEntityChangesToTerminal(changes: EntityChange[], context: "commit" |
 		loggerOutput: logs,
 		variables: {},
 		status: "Success",
+		error: undefined,
 		executionId: `entity-changes-${Date.now()}`,
 	});
 }
@@ -1178,7 +1179,7 @@ function ChangesSection({
 											size="sm"
 											variant={hasChanges ? "outline" : "default"}
 											className="w-full gap-2 rounded-none"
-											onClick={onSync}
+											onClick={() => onSync()}
 											disabled={disabled || (hasChanges && (commitsAhead > 0 || commitsBehind > 0))}
 											title={hasChanges && (commitsAhead > 0 || commitsBehind > 0) ? "Commit your changes before syncing" : undefined}
 										>

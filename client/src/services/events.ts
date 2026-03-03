@@ -95,6 +95,7 @@ export function useDynamicValues(
 export function useEventSources(params?: {
 	sourceType?: EventSourceType;
 	organizationId?: string;
+	scope?: string;
 	limit?: number;
 	offset?: number;
 }) {
@@ -103,6 +104,7 @@ export function useEventSources(params?: {
 			query: {
 				source_type: params?.sourceType,
 				organization_id: params?.organizationId,
+				scope: params?.scope,
 				limit: params?.limit ?? 100,
 				offset: params?.offset ?? 0,
 			},

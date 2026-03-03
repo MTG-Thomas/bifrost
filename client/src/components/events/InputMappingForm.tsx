@@ -110,6 +110,22 @@ export function InputMappingForm({
 						— cron expression
 					</li>
 				</ul>
+				<p className="font-medium mt-2">
+					Auto-injected context:
+				</p>
+				<p>
+					Your workflow also receives{" "}
+					<code className="bg-muted px-1 rounded">
+						{"context.parameters[\"_event\"]"}
+					</code>{" "}
+					automatically with event metadata:{" "}
+					<code className="bg-muted px-1 rounded">id</code>,{" "}
+					<code className="bg-muted px-1 rounded">type</code>,{" "}
+					<code className="bg-muted px-1 rounded">body</code>,{" "}
+					<code className="bg-muted px-1 rounded">headers</code>,{" "}
+					<code className="bg-muted px-1 rounded">received_at</code>,{" "}
+					<code className="bg-muted px-1 rounded">source_ip</code>
+				</p>
 			</div>
 		</div>
 	);

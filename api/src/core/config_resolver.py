@@ -194,6 +194,7 @@ class ConfigResolver:
                 id=cached["id"],
                 name=cached["name"],
                 is_active=cached["is_active"],
+                is_provider=cached.get("is_provider", False),
             )
 
         # Cache miss - load from PostgreSQL
@@ -221,12 +222,14 @@ class ConfigResolver:
                 name=org_entity.name,
                 domain=org_entity.domain,
                 is_active=org_entity.is_active,
+                is_provider=org_entity.is_provider,
             )
 
             return Organization(
                 id=str(org_entity.id),
                 name=org_entity.name,
                 is_active=org_entity.is_active,
+                is_provider=org_entity.is_provider,
             )
 
         if db is not None:
@@ -266,6 +269,7 @@ class ConfigResolver:
         name: str,
         domain: str | None,
         is_active: bool,
+        is_provider: bool = False,
     ) -> None:
         """
         Populate Redis cache with org data.
@@ -281,6 +285,7 @@ class ConfigResolver:
                 "name": name,
                 "domain": domain,
                 "is_active": is_active,
+                "is_provider": is_provider,
             })
 
             await r.set(redis_key, cache_value, ex=TTL_ORGS)

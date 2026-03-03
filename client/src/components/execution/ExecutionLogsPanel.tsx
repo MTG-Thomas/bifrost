@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Loader2, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -75,7 +75,10 @@ export function ExecutionLogsPanel({
 		status === "Cancelled";
 
 	// Combine API logs with streaming logs for display during execution
-	const displayLogs = isRunning ? [...logs, ...streamingLogs] : logs;
+	const displayLogs = useMemo(
+		() => (isRunning ? [...logs, ...streamingLogs] : logs),
+		[isRunning, logs, streamingLogs],
+	);
 
 	// Auto-scroll to bottom when new logs arrive.
 	// Uses scrollTop instead of scrollIntoView to avoid scrolling the outer page.

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, Sparkles, XCircle } from "lucide-react";
+import { ChevronDown, Info, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -14,6 +14,13 @@ import {
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PrettyInputDisplay } from "./PrettyInputDisplay";
@@ -41,6 +48,8 @@ interface ExecutionSidebarProps {
 	workflowName: string;
 	/** Who executed the workflow */
 	executedByName?: string | null;
+	/** Email of who executed the workflow */
+	executedByEmail?: string | null;
 	/** Organization name (effective scope) */
 	orgName?: string | null;
 	/** Start timestamp */
@@ -82,12 +91,21 @@ interface ExecutionSidebarProps {
 	};
 	/** Error message from the execution */
 	errorMessage?: string | null;
+	/** Caller user ID */
+	executedBy?: string | null;
+	/** Organization ID */
+	orgId?: string | null;
+	/** ROI: time saved in minutes */
+	timeSaved?: number;
+	/** ROI: value generated */
+	value?: number;
 }
 
 export function ExecutionSidebar({
 	status,
 	workflowName,
 	executedByName,
+	executedByEmail,
 	orgName,
 	startedAt,
 	completedAt,
@@ -103,6 +121,10 @@ export function ExecutionSidebar({
 	aiTotals,
 	streamState,
 	errorMessage,
+	executedBy,
+	orgId,
+	timeSaved,
+	value,
 }: ExecutionSidebarProps) {
 	const [isAiUsageOpen, setIsAiUsageOpen] = useState(true);
 
@@ -226,6 +248,70 @@ export function ExecutionSidebar({
 					/>
 				</CardContent>
 			</Card>
+
+			{/* Execution Context - Platform admins only */}
+			{isPlatformAdmin && isComplete && (
+				<motion.div
+					initial={{ opacity: 0, y: 20 }}
+					animate={{ opacity: 1, y: 0 }}
+					transition={{ duration: 0.3, delay: 0.1 }}
+				>
+					<Card>
+						<CardHeader>
+							<div className="flex items-center justify-between">
+								<div>
+									<CardTitle>Execution Context</CardTitle>
+									<CardDescription>
+										The context object available to this workflow (admin only)
+									</CardDescription>
+								</div>
+								<Popover>
+									<PopoverTrigger asChild>
+										<Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground">
+											<Info className="h-4 w-4" />
+										</Button>
+									</PopoverTrigger>
+									<PopoverContent side="left" align="start" className="w-auto max-w-sm p-0 border-none">
+										<SyntaxHighlighter
+											language="python"
+											style={oneDark}
+											customStyle={{ margin: 0, borderRadius: "0.375rem", fontSize: "0.75rem" }}
+										>
+{`from bifrost import context
+
+context.parameters       # input params + _event
+context.parameters["_event"]  # webhook metadata
+context.org_id           # organization scope
+context.email            # caller email
+context.roi.time_saved   # ROI tracking`}
+										</SyntaxHighlighter>
+									</PopoverContent>
+								</Popover>
+							</div>
+						</CardHeader>
+						<CardContent>
+							<VariablesTreeView
+								data={{
+									caller: {
+										name: executedByName ?? "Unknown",
+										email: executedByEmail ?? null,
+										user_id: executedBy ?? "Unknown",
+									},
+									scope: {
+										org_id: orgId ?? null,
+										org_name: orgName ?? null,
+									},
+									roi: {
+										time_saved: timeSaved ?? 0,
+										value: value ?? 0,
+									},
+									parameters: (inputData as Record<string, unknown>) ?? {},
+								}}
+							/>
+						</CardContent>
+					</Card>
+				</motion.div>
+			)}
 
 			{/* Runtime Variables - Platform admins only */}
 			{isPlatformAdmin && isComplete && (
