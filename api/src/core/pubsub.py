@@ -518,6 +518,8 @@ async def publish_git_operation(
 async def publish_git_progress(
     job_id: str,
     phase: str,
+    current: int = 0,
+    total: int = 0,
 ) -> None:
     """
     Publish a git operation progress update to the frontend.
@@ -525,13 +527,15 @@ async def publish_git_progress(
     Args:
         job_id: Unique job ID (matches the job that triggered the operation)
         phase: Human-readable phase string (e.g. "Fetching remote...")
+        current: Current entity index (1-based) for progress percentage
+        total: Total entities to import
     """
     message: dict[str, Any] = {
         "type": "git_progress",
         "jobId": job_id,
         "phase": phase,
-        "current": 0,
-        "total": 0,
+        "current": current,
+        "total": total,
     }
     await manager.broadcast(f"git:{job_id}", message)
 

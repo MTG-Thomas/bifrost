@@ -102,9 +102,23 @@ def _three_way_merge_dicts(
     - When both sides modify the same key, theirs wins.
     """
     merged = {}
-    all_keys = set(base.keys()) | set(ours.keys()) | set(theirs.keys())
+    # Preserve key ordering: ours first, then theirs additions, then base-only
+    seen: set = set()
+    ordered_keys: list = []
+    for key in ours:
+        if key not in seen:
+            ordered_keys.append(key)
+            seen.add(key)
+    for key in theirs:
+        if key not in seen:
+            ordered_keys.append(key)
+            seen.add(key)
+    for key in base:
+        if key not in seen:
+            ordered_keys.append(key)
+            seen.add(key)
 
-    for key in all_keys:
+    for key in ordered_keys:
         in_base = key in base
         in_ours = key in ours
         in_theirs = key in theirs
@@ -360,7 +374,7 @@ async def import_manifest_from_repo(db: AsyncSession) -> ManifestImportResult:
                             data["id"] = mform.id
                             await service._resolve_ref_field(data, "workflow_id")
                             await service._resolve_ref_field(data, "launch_workflow_id")
-                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
+                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
                             await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
 
                             # Only mark as modified if data actually changed (not just formatting)
@@ -396,7 +410,7 @@ async def import_manifest_from_repo(db: AsyncSession) -> ManifestImportResult:
                             await service._resolve_ref_field(data, "tool_ids")
                             if "tools" in data and "tool_ids" not in data:
                                 await service._resolve_ref_field(data, "tools")
-                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
+                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
                             await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
 
                             # Only mark as modified if data actually changed (not just formatting)
@@ -677,10 +691,10 @@ class GitHubSyncService:
         """Core pull logic. Fetches, merges, imports entities."""
         from src.models.contracts.github import MergeConflict, PullResult
 
-        async def _progress(phase: str) -> None:
+        async def _progress(phase: str, current: int = 0, total: int = 0) -> None:
             if job_id:
                 from src.core.pubsub import publish_git_progress
-                await publish_git_progress(job_id, phase)
+                await publish_git_progress(job_id, phase, current, total)
 
         # NOTE: We intentionally do NOT regenerate the manifest here.
         # The sync_execute flow commits first (which regenerates the manifest),
@@ -805,7 +819,7 @@ class GitHubSyncService:
             return PushResult(success=True, pushed_commits=0)
 
         # Push
-        push_infos = repo.remotes.origin.push(refspec=f"HEAD:refs/heads/{self.branch}")
+        push_infos = repo.remotes.origin.push(refspec=f"HEAD:{self.branch}")
 
         from git.remote import PushInfo
         for pi in push_infos:
@@ -838,10 +852,10 @@ class GitHubSyncService:
         """Git fetch origin. S3 sync down → regenerate manifest → git fetch → ahead/behind."""
         from src.models.contracts.github import FetchResult
 
-        async def _progress(phase: str) -> None:
+        async def _progress(phase: str, current: int = 0, total: int = 0) -> None:
             if job_id:
                 from src.core.pubsub import publish_git_progress
-                await publish_git_progress(job_id, phase)
+                await publish_git_progress(job_id, phase, current, total)
 
         try:
             await _progress("Syncing from storage...")
@@ -958,19 +972,21 @@ class GitHubSyncService:
             logger.error(f"Commit failed: {e}", exc_info=True)
             return CommitResult(success=False, error=str(e))
 
-    async def desktop_sync(self, job_id: str | None = None) -> "SyncResult":
+    async def desktop_sync(self, job_id: str | None = None, confirm_deletes: bool = False) -> "SyncResult":
         """Combined pull + push. The ONLY place entity import + S3 sync-up happen.
 
         Lock → git pull (stash, merge, pop) → if conflicts: return early.
         If clean: git push → S3 sync up → entity import.
+        If stale entities detected and confirm_deletes=False, returns early
+        with needs_delete_confirmation=True and the list of pending deletes.
         Returns SyncResult.
         """
         from src.models.contracts.github import SyncResult
 
-        async def _progress(phase: str) -> None:
+        async def _progress(phase: str, current: int = 0, total: int = 0) -> None:
             if job_id:
                 from src.core.pubsub import publish_git_progress
-                await publish_git_progress(job_id, phase)
+                await publish_git_progress(job_id, phase, current, total)
 
         try:
             async with self.repo_manager.lock() as work_dir:
@@ -1014,17 +1030,45 @@ class GitHubSyncService:
                 from src.core.module_cache import refresh_modules_from_directory
                 await refresh_modules_from_directory(work_dir)
 
-                # Step 4: Entity import
+                # Step 4: Entity import — always full import (safe, idempotent upserts)
                 await _progress("Importing entities...")
+                all_entity_changes: list = []
                 async with self.db.begin_nested():
-                    entities_imported = await self._import_all_entities(work_dir, progress_fn=_progress)
-                    await _progress("Cleaning up removed entities...")
-                    await self._delete_removed_entities(work_dir)
+                    entities_imported, entity_changes = await self._import_all_entities(
+                        work_dir, progress_fn=_progress,
+                    )
+                    all_entity_changes.extend(entity_changes)
                     await _progress("Updating file index...")
                     await self._update_file_index(work_dir)
                 await self.db.commit()
 
-                # Step 5: Sync app previews
+                # Step 5: Clean up removed entities (gated on confirmation)
+                await _progress("Checking for removed entities...")
+                pending_deletes = await self._detect_stale_entities(work_dir)
+                if pending_deletes and not confirm_deletes:
+                    # Block sync — user must confirm deletions first
+                    logger.info(
+                        f"Sync blocked: {len(pending_deletes)} entity deletion(s) require confirmation"
+                    )
+                    return SyncResult(
+                        success=False,
+                        needs_delete_confirmation=True,
+                        pending_deletes=pending_deletes,
+                        pulled=pull_result.pulled,
+                        pushed_commits=push_result.pushed_commits,
+                        commit_sha=push_result.commit_sha,
+                        entities_imported=entities_imported,
+                        entity_changes=all_entity_changes,
+                    )
+
+                if pending_deletes:
+                    await _progress("Deleting removed entities...")
+                    async with self.db.begin_nested():
+                        deletion_changes = await self._delete_removed_entities(work_dir)
+                        all_entity_changes.extend(deletion_changes)
+                    await self.db.commit()
+
+                # Step 6: Sync app previews
                 await _progress("Syncing app previews...")
                 await self._sync_app_previews(work_dir)
 
@@ -1038,6 +1082,7 @@ class GitHubSyncService:
                     pushed_commits=push_result.pushed_commits,
                     commit_sha=push_result.commit_sha,
                     entities_imported=entities_imported,
+                    entity_changes=all_entity_changes,
                 )
         except Exception as e:
             logger.error(f"Sync failed: {e}", exc_info=True)
@@ -1368,7 +1413,7 @@ class GitHubSyncService:
 
         return cache
 
-    async def plan_import(self, manifest: "Manifest", work_dir: Path) -> "list[SyncOp]":
+    async def plan_import(self, manifest: "Manifest", work_dir: Path, progress_fn=None) -> "list[SyncOp]":
         """Build and execute SyncOps for importing a manifest (entities only).
 
         Resolves and immediately executes ops in dependency order.
@@ -1389,12 +1434,26 @@ class GitHubSyncService:
         7.  Forms (refs workflow + org UUIDs) — metadata only
         8.  Agents (refs workflow + org UUIDs) — metadata only
 
-        Returns the collected workflow + form + agent ops for callers that want
-        to inspect them (e.g. for logging or dry-run analysis).
+        Returns the collected ops for callers that want to inspect them
+        (e.g. for entity change tracking or dry-run analysis).
         """
         from src.services.sync_ops import SyncOp  # noqa: F401
 
         all_ops: list[SyncOp] = []
+
+        # Count total entities for progress tracking
+        total = (len(manifest.organizations) + len(manifest.roles)
+                 + len(manifest.workflows) + len(manifest.integrations)
+                 + len(manifest.configs) + len(manifest.apps)
+                 + len(manifest.tables) + len(manifest.events)
+                 + len(manifest.forms) + len(manifest.agents))
+        current = 0
+
+        async def _prog(msg: str) -> None:
+            nonlocal current
+            current += 1
+            if progress_fn:
+                await progress_fn(msg, current, total)
 
         # Prefetch all existing entities for O(1) lookups
         cache = await self._prefetch_existing_entities()
@@ -1402,6 +1461,7 @@ class GitHubSyncService:
         # 0a. Resolve organizations (no deps) — execute immediately
         org_ops: list[SyncOp] = []
         for morg in manifest.organizations:
+            await _prog(f"Importing organization: {morg.name}")
             org_ops.extend(self._resolve_organization(morg, cache))
         for op in org_ops:
             await op.execute(self.db)
@@ -1410,22 +1470,28 @@ class GitHubSyncService:
         # 0b. Resolve roles (no deps) — execute immediately
         role_ops: list[SyncOp] = []
         for mrole in manifest.roles:
+            await _prog(f"Importing role: {mrole.name}")
             role_ops.extend(self._resolve_role(mrole, cache))
         for op in role_ops:
             await op.execute(self.db)
         all_ops.extend(role_ops)
 
         # 1. Resolve workflows — execute immediately
+        # Track which workflow IDs were actually imported (file exists on disk)
+        imported_wf_ids: set[str] = set()
         for key, mwf in manifest.workflows.items():
             wf_path = work_dir / mwf.path
             if wf_path.exists():
+                await _prog(f"Importing workflow: {mwf.name or key}")
                 wf_ops = self._resolve_workflow(mwf.name or key, mwf, cache)
                 for op in wf_ops:
                     await op.execute(self.db)
                 all_ops.extend(wf_ops)
+                imported_wf_ids.add(mwf.id)
 
         # 2. Resolve integrations (with config_schema, oauth_provider, mappings)
         for key, minteg in manifest.integrations.items():
+            await _prog(f"Importing integration: {minteg.name or key}")
             integ_ops = await self._resolve_integration(minteg.name or key, minteg, cache)
             for op in integ_ops:
                 await op.execute(self.db)
@@ -1440,6 +1506,7 @@ class GitHubSyncService:
 
         # 4. Resolve apps (before tables — tables ref application_id)
         for _app_name, mapp in manifest.apps.items():
+            await _prog(f"Importing app: {mapp.name}")
             app_ops = self._resolve_app(mapp, cache)
             for op in app_ops:
                 await op.execute(self.db)
@@ -1447,6 +1514,7 @@ class GitHubSyncService:
 
         # 5. Resolve tables (refs org + app UUIDs)
         for key, mtable in manifest.tables.items():
+            await _prog(f"Importing table: {mtable.name or key}")
             table_ops = await self._resolve_table(mtable.name or key, mtable, cache)
             for op in table_ops:
                 await op.execute(self.db)
@@ -1454,7 +1522,8 @@ class GitHubSyncService:
 
         # 6. Resolve event sources + subscriptions
         for key, mes in manifest.events.items():
-            es_ops = await self._resolve_event_source(mes.name or key, mes)
+            await _prog(f"Importing event source: {mes.name or key}")
+            es_ops = await self._resolve_event_source(mes.name or key, mes, imported_wf_ids)
             for op in es_ops:
                 await op.execute(self.db)
             all_ops.extend(es_ops)
@@ -1463,6 +1532,7 @@ class GitHubSyncService:
         for _form_name, mform in manifest.forms.items():
             form_path = work_dir / mform.path
             if form_path.exists():
+                await _prog(f"Importing form: {mform.name}")
                 content = form_path.read_bytes()
                 form_ops = self._resolve_form(mform, content)
                 for op in form_ops:
@@ -1473,6 +1543,7 @@ class GitHubSyncService:
         for _agent_name, magent in manifest.agents.items():
             agent_path = work_dir / magent.path
             if agent_path.exists():
+                await _prog(f"Importing agent: {magent.name}")
                 content = agent_path.read_bytes()
                 agent_ops = self._resolve_agent(magent, content)
                 for op in agent_ops:
@@ -1481,27 +1552,20 @@ class GitHubSyncService:
 
         return all_ops
 
-    async def _import_all_entities(self, work_dir: Path, progress_fn=None, force_full: bool = False) -> int:
+    async def _import_all_entities(
+        self,
+        work_dir: Path,
+        progress_fn=None,
+    ) -> "tuple[int, list]":
         """Import all entities from the working tree into the DB.
 
         Delegates to plan_import which resolves and immediately executes ops,
         then runs indexer side-effects for workflows, forms, and agents.
 
-        Import order follows dependency chain:
-        0a. Organizations (no deps)
-        0b. Roles (no deps)
-        1.  Workflows (refs org_id)
-        2.  Integrations (refs workflow UUIDs for data_provider)
-        3.  Configs (refs integration + org UUIDs)
-        4.  Apps (refs org UUIDs)
-        5.  Tables (refs org + app UUIDs)
-        6.  Event Sources + Subscriptions (refs integration + workflow UUIDs)
-        7.  Forms (refs workflow + org UUIDs)
-        8.  Agents (refs workflow + org UUIDs)
-
-        Returns count of entities imported.
+        Returns tuple of (count of entities imported, list of entity changes).
         """
         from uuid import UUID
+        from src.models.contracts.github import EntityChange
 
         bifrost_dir = work_dir / ".bifrost"
         manifest = read_manifest_from_dir(bifrost_dir)
@@ -1513,52 +1577,31 @@ class GitHubSyncService:
             or manifest.events
         )
         if not has_entities:
-            return 0
+            return 0, []
 
         count = 0
 
         async def _prog(msg: str) -> None:
             if progress_fn:
-                await progress_fn(msg)
-
-        # --- Manifest file-level hashing: skip unchanged entity types ---
-        # Hash each .bifrost/*.yaml file and compare with stored hashes.
-        # If a file hasn't changed, zero out the corresponding manifest section.
-        changed_sections = await self._check_manifest_hashes(bifrost_dir, force_full=force_full)
-
-        # Zero out unchanged sections to skip them in plan_import
-        section_map = {
-            "organizations": "organizations",
-            "roles": "roles",
-            "workflows": "workflows",
-            "integrations": "integrations",
-            "configs": "configs",
-            "tables": "tables",
-            "events": "events",
-            "forms": "forms",
-            "agents": "agents",
-            "apps": "apps",
-        }
-        skipped = []
-        for section_key in section_map:
-            if section_key not in changed_sections:
-                attr = section_map[section_key]
-                current = getattr(manifest, attr, None)
-                if current:
-                    skipped.append(section_key)
-                    if isinstance(current, list):
-                        setattr(manifest, attr, [])
-                    else:
-                        setattr(manifest, attr, {})
-        if skipped:
-            logger.info(f"Manifest hashing: skipping unchanged sections: {', '.join(skipped)}")
+                await progress_fn(msg, 0, 0)
 
         # Run all resolve ops (including immediate execution inside plan_import)
         await _prog("Resolving entities from manifest...")
-        await self.plan_import(manifest, work_dir)
+        all_ops = await self.plan_import(manifest, work_dir, progress_fn=progress_fn)
 
-        # Store manifest hashes after successful import
-        await self._store_manifest_hashes(bifrost_dir)
+        # Collect entity changes from upsert ops
+        from src.services.sync_ops import Upsert
+        entity_changes: list[EntityChange] = []
+        for op in all_ops:
+            if isinstance(op, Upsert) and op.action_taken:
+                action = "added" if op.action_taken == "inserted" else "updated"
+                entity_name = op.values.get("name") or op.values.get("function_name") or str(op.id)
+                entity_type = getattr(op.model, "__tablename__", "unknown")
+                entity_changes.append(EntityChange(
+                    action=action,
+                    entity_type=entity_type,
+                    name=entity_name,
+                ))
 
         # Count imported entities
         count += len(manifest.organizations)
@@ -1611,7 +1654,7 @@ class GitHubSyncService:
                     # Resolve portable refs (path::function_name) to UUIDs
                     await self._resolve_ref_field(data, "workflow_id")
                     await self._resolve_ref_field(data, "launch_workflow_id")
-                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
+                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
                     await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
 
                     # Post-indexer: update org_id and access_level (indexer skips these)
@@ -1646,7 +1689,7 @@ class GitHubSyncService:
                     await self._resolve_ref_field(data, "tool_ids")
                     if "tools" in data and "tool_ids" not in data:
                         await self._resolve_ref_field(data, "tools")
-                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip() + "\n").encode("utf-8")
+                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
                     await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
 
                     # Post-indexer: update org_id and access_level (indexer skips these)
@@ -1666,14 +1709,15 @@ class GitHubSyncService:
                         )
                 count += 1
 
-        return count
+        return count, entity_changes
 
-    async def _delete_removed_entities(self, work_dir: Path) -> None:
+    async def _delete_removed_entities(self, work_dir: Path) -> list:
         """Delete entities that disappeared from the manifest after a pull.
 
         Delegates to _resolve_deletions which executes bulk deletes inline.
+        Returns list of EntityChange entries for removed entities.
         """
-        await self._resolve_deletions(work_dir)
+        return await self._resolve_deletions(work_dir)
 
     # -----------------------------------------------------------------
     # App preview sync
@@ -1734,7 +1778,7 @@ class GitHubSyncService:
 
             # Import entities atomically with savepoint
             async with self.db.begin_nested():
-                count = await self._import_all_entities(work_dir)
+                count, _changes = await self._import_all_entities(work_dir)
                 await self._delete_removed_entities(work_dir)
                 await self._update_file_index(work_dir)
             await self.db.commit()
@@ -2090,7 +2134,7 @@ class GitHubSyncService:
                     resolved_list.append(item)
             data[field_name] = resolved_list
 
-    async def _resolve_deletions(self, work_dir: Path) -> "list[SyncOp]":
+    async def _resolve_deletions(self, work_dir: Path) -> list:
         """Compute delete/deactivate ops for entities removed from the manifest.
 
         Optimized: pushes filtering to SQL with NOT IN clauses, returning only
@@ -2103,12 +2147,15 @@ class GitHubSyncService:
         - Tables: soft-delete (keep data, set inactive — never created here currently)
         - Knowledge: not managed by git-sync (ephemeral, derived from documents)
         - Organizations, Roles: soft-delete (only git-sync created ones)
+
+        Returns list of EntityChange entries for removed entities.
         """
         from uuid import UUID
 
         from sqlalchemy import delete as sa_delete
         from sqlalchemy import update as sa_update
 
+        from src.models.contracts.github import EntityChange
         from src.models.orm.agents import Agent
         from src.models.orm.applications import Application
         from src.models.orm.config import Config
@@ -2119,7 +2166,6 @@ class GitHubSyncService:
         from src.models.orm.tables import Table
         from src.models.orm.users import Role
         from src.models.orm.workflows import Workflow
-        from src.services.sync_ops import SyncOp  # noqa: F401
 
         manifest = read_manifest_from_dir(work_dir / ".bifrost")
 
@@ -2152,37 +2198,63 @@ class GitHubSyncService:
         present_org_uuids = [UUID(m.id) for m in manifest.organizations]
         present_role_uuids = [UUID(m.id) for m in manifest.roles]
 
-        ops: list[SyncOp] = []
+        entity_changes: list[EntityChange] = []
         now = datetime.now(timezone.utc)
 
-        # Helper: query stale IDs and bulk-delete in one shot
-        async def _bulk_delete(model: type, base_filter: list, present: list[UUID]) -> int:
+        # Helper: query stale IDs (+ names when available) and bulk-delete
+        async def _bulk_delete(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
             """Find IDs not in present list and delete them. Returns count."""
-            q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
+            if has_name:
+                q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
+            else:
+                q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
             if present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
-            stale_ids = [row[0] for row in result.all()]
-            if not stale_ids:
+            rows = result.all()
+            if not rows:
                 return 0
-            for sid in stale_ids:
-                logger.info(f"Deleting {model.__tablename__} {sid} — removed from repo")  # type: ignore[attr-defined]
+            stale_ids = []
+            for row in rows:
+                sid = row[0]
+                name = row[1] if has_name else str(sid)
+                stale_ids.append(sid)
+                logger.info(f"Deleting {model.__tablename__} {sid} ({name}) — removed from repo")  # type: ignore[attr-defined]
+                entity_changes.append(EntityChange(
+                    action="removed",
+                    entity_type=entity_type,
+                    name=name,
+                ))
             await self.db.execute(
                 sa_delete(model).where(model.id.in_(stale_ids))  # type: ignore[attr-defined]
             )
             return len(stale_ids)
 
         # Helper: query stale IDs and soft-delete (deactivate)
-        async def _bulk_deactivate(model: type, base_filter: list, present: list[UUID]) -> int:
-            q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+        async def _bulk_deactivate(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
+            has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
+            if has_name:
+                q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
+            else:
+                q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
             if present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
-            stale_ids = [row[0] for row in result.all()]
-            if not stale_ids:
+            rows = result.all()
+            if not rows:
                 return 0
-            for sid in stale_ids:
-                logger.info(f"Deactivating {model.__tablename__} {sid} — removed from manifest")  # type: ignore[attr-defined]
+            stale_ids = []
+            for row in rows:
+                sid = row[0]
+                name = row[1] if has_name else str(sid)
+                stale_ids.append(sid)
+                logger.info(f"Deactivating {model.__tablename__} {sid} ({name}) — removed from manifest")  # type: ignore[attr-defined]
+                entity_changes.append(EntityChange(
+                    action="removed",
+                    entity_type=entity_type,
+                    name=name,
+                ))
             await self.db.execute(
                 sa_update(model)
                 .where(model.id.in_(stale_ids))  # type: ignore[attr-defined]
@@ -2195,6 +2267,7 @@ class GitHubSyncService:
             Workflow,
             [Workflow.is_active == True, Workflow.path.isnot(None)],  # noqa: E712
             present_wf_uuids,
+            "workflow",
         )
 
         # Delete integrations not in manifest
@@ -2202,6 +2275,7 @@ class GitHubSyncService:
             Integration,
             [Integration.is_deleted == False],  # noqa: E712
             present_integ_uuids,
+            "integration",
         )
 
         # Delete configs not in manifest (skip integration-schema-linked configs —
@@ -2214,6 +2288,11 @@ class GitHubSyncService:
         if stale_cfg_ids:
             for sid in stale_cfg_ids:
                 logger.info(f"Deleting config {sid} — removed from repo")
+                entity_changes.append(EntityChange(
+                    action="removed",
+                    entity_type="config",
+                    name=str(sid),
+                ))
             await self.db.execute(
                 sa_delete(Config).where(Config.id.in_(stale_cfg_ids))
             )
@@ -2227,23 +2306,24 @@ class GitHubSyncService:
             logger.info(f"Table {row[0]} not in manifest (data preserved)")
 
         # Delete event subscriptions not in manifest
-        await _bulk_delete(EventSubscription, [], present_sub_uuids)
+        await _bulk_delete(EventSubscription, [], present_sub_uuids, "event_subscription")
 
         # Delete event sources not in manifest
-        await _bulk_delete(EventSource, [], present_event_uuids)
+        await _bulk_delete(EventSource, [], present_event_uuids, "event_source")
 
         # Delete forms not in manifest
         await _bulk_delete(
             Form,
             [Form.is_active == True],  # noqa: E712
             present_form_uuids,
+            "form",
         )
 
         # Delete agents not in manifest
-        await _bulk_delete(Agent, [], present_agent_uuids)
+        await _bulk_delete(Agent, [], present_agent_uuids, "agent")
 
         # Delete apps not in manifest
-        await _bulk_delete(Application, [], present_app_uuids)
+        await _bulk_delete(Application, [], present_app_uuids, "app")
 
         # Soft-delete organizations not in manifest (only when manifest has orgs)
         if present_org_uuids:
@@ -2251,6 +2331,7 @@ class GitHubSyncService:
                 Organization,
                 [Organization.is_active == True],  # noqa: E712
                 present_org_uuids,
+                "organization",
             )
 
         # Soft-delete roles not in manifest (only when manifest has roles)
@@ -2259,9 +2340,123 @@ class GitHubSyncService:
                 Role,
                 [Role.is_active == True],  # noqa: E712
                 present_role_uuids,
+                "role",
             )
 
-        return ops
+        return entity_changes
+
+    async def _detect_stale_entities(self, work_dir: Path) -> list:
+        """Read-only detection of entities that would be deleted during sync.
+
+        Same logic as _resolve_deletions but only queries — no deletes or updates.
+        Returns list of EntityChange entries for entities that are stale.
+        """
+        from uuid import UUID
+
+        from src.models.contracts.github import EntityChange
+        from src.models.orm.agents import Agent
+        from src.models.orm.applications import Application
+        from src.models.orm.config import Config
+        from src.models.orm.events import EventSource, EventSubscription
+        from src.models.orm.forms import Form
+        from src.models.orm.integrations import Integration
+        from src.models.orm.organizations import Organization
+        from src.models.orm.users import Role
+        from src.models.orm.workflows import Workflow
+
+        manifest = read_manifest_from_dir(work_dir / ".bifrost")
+
+        present_wf_uuids = [
+            UUID(mwf.id) for mwf in manifest.workflows.values()
+            if (work_dir / mwf.path).exists()
+        ]
+        present_form_uuids = [
+            UUID(mform.id) for mform in manifest.forms.values()
+            if (work_dir / mform.path).exists()
+        ]
+        present_agent_uuids = [
+            UUID(magent.id) for magent in manifest.agents.values()
+            if (work_dir / magent.path).exists()
+        ]
+        present_app_uuids = [
+            UUID(mapp.id) for mapp in manifest.apps.values()
+            if (work_dir / mapp.path).is_dir()
+        ]
+        present_integ_uuids = [UUID(m.id) for m in manifest.integrations.values()]
+        present_config_uuids = [UUID(m.id) for m in manifest.configs.values()]
+        present_event_uuids = [UUID(m.id) for m in manifest.events.values()]
+        present_sub_uuids: list[UUID] = []
+        for mes in manifest.events.values():
+            for msub in mes.subscriptions:
+                present_sub_uuids.append(UUID(msub.id))
+        present_org_uuids = [UUID(m.id) for m in manifest.organizations]
+        present_role_uuids = [UUID(m.id) for m in manifest.roles]
+
+        entity_changes: list[EntityChange] = []
+
+        async def _detect_stale(model: type, base_filter: list, present: list[UUID], entity_type: str) -> None:
+            """Query stale IDs without deleting."""
+            has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
+            if has_name:
+                q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
+            else:
+                q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            if present:
+                q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
+            result = await self.db.execute(q)
+            for row in result.all():
+                name = row[1] if has_name else str(row[0])
+                entity_changes.append(EntityChange(
+                    action="removed",
+                    entity_type=entity_type,
+                    name=name,
+                ))
+
+        await _detect_stale(
+            Workflow,
+            [Workflow.is_active == True, Workflow.path.isnot(None)],  # noqa: E712
+            present_wf_uuids, "workflow",
+        )
+        await _detect_stale(
+            Integration,
+            [Integration.is_deleted == False],  # noqa: E712
+            present_integ_uuids, "integration",
+        )
+
+        # Configs (skip integration-schema-linked configs)
+        cfg_q = select(Config.id).where(Config.config_schema_id.is_(None))
+        if present_config_uuids:
+            cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
+        cfg_result = await self.db.execute(cfg_q)
+        for row in cfg_result.all():
+            entity_changes.append(EntityChange(
+                action="removed", entity_type="config", name=str(row[0]),
+            ))
+
+        await _detect_stale(EventSubscription, [], present_sub_uuids, "event_subscription")
+        await _detect_stale(EventSource, [], present_event_uuids, "event_source")
+        await _detect_stale(
+            Form,
+            [Form.is_active == True],  # noqa: E712
+            present_form_uuids, "form",
+        )
+        await _detect_stale(Agent, [], present_agent_uuids, "agent")
+        await _detect_stale(Application, [], present_app_uuids, "app")
+
+        if present_org_uuids:
+            await _detect_stale(
+                Organization,
+                [Organization.is_active == True],  # noqa: E712
+                present_org_uuids, "organization",
+            )
+        if present_role_uuids:
+            await _detect_stale(
+                Role,
+                [Role.is_active == True],  # noqa: E712
+                present_role_uuids, "role",
+            )
+
+        return entity_changes
 
     async def _resolve_integration(self, integ_name: str, minteg, cache: dict | None = None) -> "list[SyncOp]":
         """Resolve an integration from manifest into SyncOps.
@@ -2665,11 +2860,15 @@ class GitHubSyncService:
 
         return []
 
-    async def _resolve_event_source(self, es_name: str, mes) -> "list[SyncOp]":
+    async def _resolve_event_source(self, es_name: str, mes, imported_wf_ids: set[str] | None = None) -> "list[SyncOp]":
         """Resolve an event source + subscriptions from manifest into SyncOps.
 
         Event sources use PostgreSQL ON CONFLICT upserts (PostgreSQL-specific
         constructs); executed directly here, returning empty ops list.
+
+        imported_wf_ids: set of workflow UUIDs (as strings) that were actually
+        imported (file existed on disk). Subscriptions referencing workflows
+        not in this set are skipped to avoid FK violations.
         """
         from uuid import UUID
 
@@ -2743,6 +2942,15 @@ class GitHubSyncService:
                 wf_id = UUID(msub.workflow_id)
             except (ValueError, AttributeError):
                 pass
+
+            # For UUID workflow refs: skip if that workflow wasn't imported
+            # (its file is missing from disk, so plan_import skipped it)
+            if wf_id is not None and imported_wf_ids is not None and msub.workflow_id not in imported_wf_ids:
+                logger.warning(
+                    f"Event subscription {msub.id}: workflow {msub.workflow_id} "
+                    f"not imported (file missing?), skipping"
+                )
+                continue
 
             if wf_id is None:
                 # Try path::function_name or name resolution
@@ -2876,89 +3084,6 @@ class GitHubSyncService:
             ))
 
         return ops
-
-    # -----------------------------------------------------------------
-    # Manifest hashing for incremental import
-    # -----------------------------------------------------------------
-
-    _MANIFEST_HASH_KEY = "bifrost:manifest_hashes"
-
-    async def _check_manifest_hashes(self, bifrost_dir: Path, force_full: bool = False) -> set[str]:
-        """Compare current manifest file hashes with stored ones.
-
-        Returns a set of section keys whose manifest files have changed
-        (or all sections if force_full=True or no stored hashes exist).
-        """
-        from src.services.manifest import MANIFEST_FILES
-
-        all_sections = set(MANIFEST_FILES.keys())
-
-        if force_full:
-            return all_sections
-
-        # Compute current hashes
-        current_hashes: dict[str, str] = {}
-        for section_key, filename in MANIFEST_FILES.items():
-            filepath = bifrost_dir / filename
-            if filepath.exists():
-                content = filepath.read_bytes()
-                current_hashes[section_key] = hashlib.sha256(content).hexdigest()
-
-        if not current_hashes:
-            return all_sections
-
-        # Load stored hashes from Redis
-        try:
-            from src.core.redis_client import get_redis_client
-            redis_client = get_redis_client()
-            if redis_client:
-                import json
-                stored = await redis_client.get(self._MANIFEST_HASH_KEY)
-                if stored:
-                    stored_hashes = json.loads(stored)
-                    changed = set()
-                    for section_key, current_hash in current_hashes.items():
-                        if stored_hashes.get(section_key) != current_hash:
-                            changed.add(section_key)
-                    # Also mark any sections that were in stored but not in current (removed)
-                    for section_key in stored_hashes:
-                        if section_key not in current_hashes:
-                            changed.add(section_key)
-                    if not changed:
-                        logger.info("All manifest files unchanged — skipping entity import")
-                    return changed if changed else set()
-        except Exception as e:
-            logger.warning(f"Could not check manifest hashes from Redis: {e}")
-
-        # No stored hashes or Redis error — process everything
-        return all_sections
-
-    async def _store_manifest_hashes(self, bifrost_dir: Path) -> None:
-        """Store current manifest file hashes in Redis after successful import."""
-        from src.services.manifest import MANIFEST_FILES
-
-        current_hashes: dict[str, str] = {}
-        for section_key, filename in MANIFEST_FILES.items():
-            filepath = bifrost_dir / filename
-            if filepath.exists():
-                content = filepath.read_bytes()
-                current_hashes[section_key] = hashlib.sha256(content).hexdigest()
-
-        if not current_hashes:
-            return
-
-        try:
-            from src.core.redis_client import get_redis_client
-            redis_client = get_redis_client()
-            if redis_client:
-                import json
-                await redis_client.setex(
-                    self._MANIFEST_HASH_KEY,
-                    86400 * 7,  # 7-day TTL
-                    json.dumps(current_hashes),
-                )
-        except Exception as e:
-            logger.warning(f"Could not store manifest hashes to Redis: {e}")
 
     async def _update_file_index(self, work_dir: Path) -> None:
         """Update file_index from all files in the working tree, remove stale entries.
