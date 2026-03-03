@@ -329,15 +329,17 @@ async def scan_app_dependencies(
         apps_result = await db.execute(select(Application))
         apps = apps_result.scalars().all()
 
-        # Build workflow lookup (all active workflows)
+        # Build workflow lookup (all active workflows, all ref formats)
         wf_result = await db.execute(
-            select(Workflow.id, Workflow.name).where(Workflow.is_active.is_(True))
+            select(Workflow.id, Workflow.name, Workflow.path, Workflow.function_name)
+            .where(Workflow.is_active.is_(True))
         )
-        wf_by_name: dict[str, str] = {}  # name -> str(id)
-        wf_ids: set[str] = set()
-        for wf_id, wf_name in wf_result.all():
-            wf_by_name[wf_name] = str(wf_id)
-            wf_ids.add(str(wf_id))
+        wf_lookup: set[str] = set()  # all valid ref formats
+        for wf_id, wf_name, wf_path, wf_fn_name in wf_result.all():
+            wf_lookup.add(str(wf_id))
+            wf_lookup.add(wf_name)
+            if wf_path and wf_fn_name:
+                wf_lookup.add(f"{wf_path}::{wf_fn_name}")
 
         all_issues: list[AppDependencyIssue] = []
         total_deps_found = 0
@@ -372,7 +374,7 @@ async def scan_app_dependencies(
                 for ref in refs:
                     total_deps_found += 1
                     # Check if ref resolves to an active workflow
-                    resolved = ref in wf_ids or ref in wf_by_name
+                    resolved = ref in wf_lookup
                     if not resolved:
                         all_issues.append(
                             AppDependencyIssue(

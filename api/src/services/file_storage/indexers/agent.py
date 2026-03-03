@@ -53,7 +53,7 @@ def _serialize_agent_to_yaml(agent: Agent) -> bytes:
         if key in agent_data and isinstance(agent_data[key], list):
             agent_data[key] = sorted(agent_data[key])
 
-    content = yaml.dump(agent_data, default_flow_style=False, sort_keys=False)
+    content = yaml.dump(agent_data, default_flow_style=False, sort_keys=True)
     return (content.rstrip() + "\n").encode("utf-8")
 
 

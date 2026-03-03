@@ -269,7 +269,25 @@ async def list_agents(
         # Regular users use list_agents with built-in cascade + role-based access
         agents = await repo.list_agents(active_only=active_only)
 
-    return [AgentSummary.model_validate(a) for a in agents]
+    # Batch-compute dependency counts (tool count per agent)
+    agent_ids = [a.id for a in agents]
+    dep_counts: dict[UUID, int] = {}
+    if agent_ids:
+        from sqlalchemy import func
+        count_result = await db.execute(
+            select(AgentTool.agent_id, func.count())
+            .where(AgentTool.agent_id.in_(agent_ids))
+            .group_by(AgentTool.agent_id)
+        )
+        dep_counts = {row[0]: row[1] for row in count_result.all()}
+
+    result = []
+    for a in agents:
+        summary = AgentSummary.model_validate(a)
+        summary.dependency_count = dep_counts.get(a.id, 0)
+        result.append(summary)
+
+    return result
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

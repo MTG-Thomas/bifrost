@@ -255,7 +255,7 @@ def serialize_manifest(manifest: Manifest) -> str:
     produces the same bytes, avoiding false conflicts during sync.
     """
     data = manifest.model_dump(mode="json", exclude_defaults=True, by_alias=True)
-    return yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    return yaml.dump(data, default_flow_style=False, sort_keys=True, allow_unicode=True)
 
 
 # =============================================================================
@@ -281,7 +281,7 @@ def serialize_manifest_dir(manifest: Manifest) -> dict[str, str]:
         files[filename] = yaml.dump(
             {key: section},
             default_flow_style=False,
-            sort_keys=False,
+            sort_keys=True,
             allow_unicode=True,
         ).rstrip("\n") + "\n"
     return files

@@ -44,7 +44,7 @@ def _serialize_form_to_yaml(form: Form) -> bytes:
         exclude={"organization_id", "access_level", "created_at", "updated_at"},
     )
 
-    content = yaml.dump(form_data, default_flow_style=False, sort_keys=False)
+    content = yaml.dump(form_data, default_flow_style=False, sort_keys=True)
     return (content.rstrip() + "\n").encode("utf-8")
 
 
