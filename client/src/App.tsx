@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "@/components/layout/Layout";
 import { ContentLayout } from "@/components/layout/ContentLayout";
@@ -17,142 +17,145 @@ import {
 	KeyboardProvider,
 	useCmdCtrlShortcut,
 } from "@/contexts/KeyboardContext";
+import { lazyWithReload } from "@/lib/lazy-with-reload";
 
 // Lazy load all page components for code splitting
-const Dashboard = lazy(() =>
+const Dashboard = lazyWithReload(() =>
 	import("@/pages/Dashboard").then((m) => ({ default: m.Dashboard })),
 );
-const Config = lazy(() =>
+const Config = lazyWithReload(() =>
 	import("@/pages/Config").then((m) => ({ default: m.Config })),
 );
-const Roles = lazy(() =>
+const Roles = lazyWithReload(() =>
 	import("@/pages/Roles").then((m) => ({ default: m.Roles })),
 );
-const Users = lazy(() =>
+const Users = lazyWithReload(() =>
 	import("@/pages/Users").then((m) => ({ default: m.Users })),
 );
-const Organizations = lazy(() =>
+const Organizations = lazyWithReload(() =>
 	import("@/pages/Organizations").then((m) => ({ default: m.Organizations })),
 );
-const Forms = lazy(() =>
+const Forms = lazyWithReload(() =>
 	import("@/pages/Forms").then((m) => ({ default: m.Forms })),
 );
-const Agents = lazy(() =>
+const Agents = lazyWithReload(() =>
 	import("@/pages/Agents").then((m) => ({ default: m.Agents })),
 );
-const FormBuilder = lazy(() =>
+const FormBuilder = lazyWithReload(() =>
 	import("@/pages/FormBuilder").then((m) => ({ default: m.FormBuilder })),
 );
-const RunForm = lazy(() =>
+const RunForm = lazyWithReload(() =>
 	import("@/pages/RunForm").then((m) => ({ default: m.RunForm })),
 );
-const Workflows = lazy(() =>
+const Workflows = lazyWithReload(() =>
 	import("@/pages/Workflows").then((m) => ({ default: m.Workflows })),
 );
-const ExecuteWorkflow = lazy(() =>
+const ExecuteWorkflow = lazyWithReload(() =>
 	import("@/pages/ExecuteWorkflow").then((m) => ({
 		default: m.ExecuteWorkflow,
 	})),
 );
-const ExecutionHistory = lazy(() =>
+const ExecutionHistory = lazyWithReload(() =>
 	import("@/pages/ExecutionHistory").then((m) => ({
 		default: m.ExecutionHistory,
 	})),
 );
-const ExecutionDetails = lazy(() =>
+const ExecutionDetails = lazyWithReload(() =>
 	import("@/pages/ExecutionDetails").then((m) => ({
 		default: m.ExecutionDetails,
 	})),
 );
-const OAuthCallback = lazy(() =>
+const OAuthCallback = lazyWithReload(() =>
 	import("@/pages/OAuthCallback").then((m) => ({ default: m.OAuthCallback })),
 );
-const Integrations = lazy(() =>
+const Integrations = lazyWithReload(() =>
 	import("@/pages/Integrations").then((m) => ({ default: m.Integrations })),
 );
-const IntegrationDetail = lazy(() =>
+const IntegrationDetail = lazyWithReload(() =>
 	import("@/pages/IntegrationDetail").then((m) => ({
 		default: m.IntegrationDetail,
 	})),
 );
-const Events = lazy(() =>
+const Events = lazyWithReload(() =>
 	import("@/pages/Events").then((m) => ({ default: m.Events })),
 );
-const Settings = lazy(() =>
+const Settings = lazyWithReload(() =>
 	import("@/pages/Settings").then((m) => ({ default: m.Settings })),
 );
-const UserSettings = lazy(() =>
+const UserSettings = lazyWithReload(() =>
 	import("@/pages/UserSettings").then((m) => ({ default: m.UserSettings })),
 );
-const SystemLogs = lazy(() => import("@/pages/SystemLogs"));
-const DiagnosticsPage = lazy(() =>
+const SystemLogs = lazyWithReload(() => import("@/pages/SystemLogs"));
+const DiagnosticsPage = lazyWithReload(() =>
 	import("@/pages/diagnostics/DiagnosticsPage").then((m) => ({
 		default: m.DiagnosticsPage,
 	})),
 );
-const Login = lazy(() =>
+const Login = lazyWithReload(() =>
 	import("@/pages/Login").then((m) => ({ default: m.Login })),
 );
-const Setup = lazy(() =>
+const Setup = lazyWithReload(() =>
 	import("@/pages/Setup").then((m) => ({ default: m.Setup })),
 );
-const MFASetup = lazy(() =>
+const MFASetup = lazyWithReload(() =>
 	import("@/pages/MFASetup").then((m) => ({ default: m.MFASetup })),
 );
-const AuthCallback = lazy(() =>
+const AuthCallback = lazyWithReload(() =>
 	import("@/pages/AuthCallback").then((m) => ({ default: m.AuthCallback })),
 );
-const MCPCallback = lazy(() =>
+const MCPCallback = lazyWithReload(() =>
 	import("@/pages/MCPCallback").then((m) => ({ default: m.MCPCallback })),
 );
-const CLI = lazy(() => import("@/pages/CLI").then((m) => ({ default: m.CLI })));
-const Workbench = lazy(() =>
+const CLI = lazyWithReload(() =>
+	import("@/pages/CLI").then((m) => ({ default: m.CLI })),
+);
+const Workbench = lazyWithReload(() =>
 	import("@/pages/Workbench").then((m) => ({ default: m.Workbench })),
 );
-const Chat = lazy(() =>
+const Chat = lazyWithReload(() =>
 	import("@/pages/Chat").then((m) => ({ default: m.Chat })),
 );
-const ROIReports = lazy(() =>
+const ROIReports = lazyWithReload(() =>
 	import("@/pages/ROIReports").then((m) => ({
 		default: m.ROIReports,
 	})),
 );
-const UsageReports = lazy(() =>
+const UsageReports = lazyWithReload(() =>
 	import("@/pages/UsageReports").then((m) => ({
 		default: m.UsageReports,
 	})),
 );
-const DevicePage = lazy(() =>
+const DevicePage = lazyWithReload(() =>
 	import("@/pages/DevicePage").then((m) => ({ default: m.DevicePage })),
 );
-const Tables = lazy(() =>
+const Tables = lazyWithReload(() =>
 	import("@/pages/Tables").then((m) => ({ default: m.Tables })),
 );
-const Knowledge = lazy(() =>
+const Knowledge = lazyWithReload(() =>
 	import("@/pages/Knowledge").then((m) => ({ default: m.Knowledge })),
 );
-const TableDetail = lazy(() =>
+const TableDetail = lazyWithReload(() =>
 	import("@/pages/TableDetail").then((m) => ({ default: m.TableDetail })),
 );
-const Applications = lazy(() =>
+const Applications = lazyWithReload(() =>
 	import("@/pages/Applications").then((m) => ({ default: m.Applications })),
 );
-const AppCodeEditorPage = lazy(() =>
+const AppCodeEditorPage = lazyWithReload(() =>
 	import("@/pages/AppCodeEditorPage").then((m) => ({
 		default: m.AppCodeEditorPage,
 	})),
 );
-const ApplicationRunner = lazy(() =>
+const ApplicationRunner = lazyWithReload(() =>
 	import("@/pages/AppRouter").then((m) => ({
 		default: m.AppPublished,
 	})),
 );
-const ApplicationPreview = lazy(() =>
+const ApplicationPreview = lazyWithReload(() =>
 	import("@/pages/AppRouter").then((m) => ({
 		default: m.AppPreview,
 	})),
 );
-const EntityManagement = lazy(() =>
+const EntityManagement = lazyWithReload(() =>
 	import("@/pages/EntityManagement").then((m) => ({
 		default: m.EntityManagement,
 	})),
