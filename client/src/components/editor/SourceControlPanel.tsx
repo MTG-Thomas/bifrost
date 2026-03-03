@@ -252,11 +252,12 @@ async function runGitOp<T>(
 
 	await webSocketService.connectToGitSync(job_id);
 
-	// Accumulate git log messages for the terminal
-	const logs: Array<{ level: string; message: string; source: string; timestamp: string }> = [];
+	// Stream progress messages immediately; accumulate sync log summaries for final flush
+	const syncLogs: Array<{ level: string; message: string; source: string; timestamp: string }> = [];
+	const executionId = `git-${resultType}-${job_id.slice(0, 8)}`;
 
 	const unsubLog = webSocketService.onGitSyncLog(job_id, (log) => {
-		logs.push({
+		syncLogs.push({
 			level: log.level,
 			message: log.message,
 			source: "git",
@@ -265,12 +266,20 @@ async function runGitOp<T>(
 	});
 
 	const unsubProgress = webSocketService.onGitProgress(job_id, (progress) => {
-		logs.push({
-			level: "INFO",
-			message: progress.phase,
-			source: "git",
-			timestamp: new Date().toISOString(),
-		});
+		// Stream each progress message immediately to the terminal
+		const pct = progress.total > 0
+			? `[${Math.round((progress.current / progress.total) * 100)}%] `
+			: "";
+		useEditorStore.getState().streamTerminalLog(
+			executionId,
+			{
+				level: "INFO",
+				message: `${pct}${progress.phase}`,
+				source: "git",
+				timestamp: new Date().toISOString(),
+			},
+			"Running",
+		);
 	});
 
 	const resultPromise = new Promise<T>((resolve, reject) => {
@@ -281,15 +290,23 @@ async function runGitOp<T>(
 				unsubLog();
 				unsubProgress();
 
-				// Flush accumulated logs to terminal
-				if (logs.length > 0) {
-					useEditorStore.getState().appendTerminalOutput({
-						loggerOutput: logs,
-						variables: {},
-						status: complete.status === "success" ? "Success" : "Failed",
-						executionId: `git-${resultType}-${job_id.slice(0, 8)}`,
-						error: complete.status !== "success" ? complete.error : undefined,
-					});
+				// Flush accumulated sync log summaries to the same terminal execution
+				const finalStatus = complete.status === "success" ? "Success" : "Failed";
+				for (const log of syncLogs) {
+					useEditorStore.getState().streamTerminalLog(executionId, log, finalStatus);
+				}
+				// If no logs were streamed at all, create the execution with final status
+				if (syncLogs.length === 0) {
+					useEditorStore.getState().streamTerminalLog(
+						executionId,
+						{
+							level: complete.status === "success" ? "INFO" : "ERROR",
+							message: complete.status === "success" ? "Done" : (complete.error || "Failed"),
+							source: "git",
+							timestamp: new Date().toISOString(),
+						},
+						finalStatus,
+					);
 				}
 
 				if (complete.status === "success" || complete.resultType === resultType) {
@@ -339,6 +356,7 @@ export function SourceControlPanel() {
 	const [hasMoreCommits, setHasMoreCommits] = useState(false);
 	const [showCleanupPrompt, setShowCleanupPrompt] = useState(false);
 	const [orphanedCount, setOrphanedCount] = useState(0);
+	const [pendingDeletes, setPendingDeletes] = useState<EntityChange[]>([]);
 
 	const sidebarPanel = useEditorStore((state) => state.sidebarPanel);
 	const setDiffPreview = useEditorStore((state) => state.setDiffPreview);
@@ -558,11 +576,11 @@ export function SourceControlPanel() {
 		}
 	}, [cleanupOp, commitOp, commitMessage, loadChanges, refreshStatus]);
 
-	const handleSync = useCallback(async () => {
+	const handleSync = useCallback(async (confirmDeletes = false) => {
 		setLoading("syncing");
 		try {
 			const result = await runGitOp<SyncResult>(
-				(jobId) => syncOp.mutateAsync(jobId),
+				(jobId) => syncOp.mutateAsync(jobId, confirmDeletes ? { confirm_deletes: true } : undefined),
 				"sync",
 			);
 			if (result.success) {
@@ -573,11 +591,15 @@ export function SourceControlPanel() {
 				setNeedsSync(false);
 				setConflicts([]);
 				setConflictResolutions({});
+				setPendingDeletes([]);
 				refreshStatus();
 				await loadChanges();
 				if (result.entity_changes?.length) {
 					logEntityChangesToTerminal(result.entity_changes, "sync");
 				}
+			} else if (result.needs_delete_confirmation && result.pending_deletes?.length) {
+				setPendingDeletes(result.pending_deletes);
+				toast.warning(`${result.pending_deletes.length} entity deletion(s) require confirmation`);
 			} else if (result.conflicts && result.conflicts.length > 0) {
 				setConflicts(result.conflicts);
 				toast.warning(`${result.conflicts.length} conflict(s) need resolution`);
@@ -585,9 +607,14 @@ export function SourceControlPanel() {
 				toast.error(result.error || "Sync failed");
 			}
 		} catch (error) {
-			// Check if this is a conflict result (runGitOp rejects on non-success status)
+			// Check if this is a conflict or delete-confirmation result
 			if (error instanceof GitOpError && error.data) {
 				const syncData = error.data as unknown as SyncResult;
+				if (syncData.needs_delete_confirmation && syncData.pending_deletes?.length) {
+					setPendingDeletes(syncData.pending_deletes);
+					toast.warning(`${syncData.pending_deletes.length} entity deletion(s) require confirmation`);
+					return;
+				}
 				if (syncData.conflicts && syncData.conflicts.length > 0) {
 					setConflicts(syncData.conflicts);
 					toast.warning(`${syncData.conflicts.length} conflict(s) need resolution`);
@@ -932,6 +959,9 @@ export function SourceControlPanel() {
 					orphanedCount={orphanedCount}
 					onCleanupAndRetry={handleCleanupAndRetry}
 					onDismissCleanup={() => setShowCleanupPrompt(false)}
+					pendingDeletes={pendingDeletes}
+					onConfirmDeletes={() => handleSync(true)}
+					onDismissDeletes={() => setPendingDeletes([])}
 				/>
 
 				{/* Commits */}
@@ -942,6 +972,7 @@ export function SourceControlPanel() {
 					isLoading={isLoadingCommits}
 				/>
 			</div>
+
 		</div>
 	);
 }
@@ -1009,6 +1040,9 @@ function ChangesSection({
 	orphanedCount,
 	onCleanupAndRetry,
 	onDismissCleanup,
+	pendingDeletes,
+	onConfirmDeletes,
+	onDismissDeletes,
 }: {
 	changedFiles: ChangedFile[];
 	conflicts: MergeConflict[];
@@ -1020,7 +1054,7 @@ function ChangesSection({
 	onCommit: () => void;
 	onCompleteMerge: () => void;
 	allConflictsResolved: boolean;
-	onSync: () => void;
+	onSync: (confirmDeletes?: boolean) => void;
 	onShowDiff: (file: ChangedFile) => void;
 	onDiscard: (file: ChangedFile) => void;
 	onDiscardAll: () => void;
@@ -1034,6 +1068,9 @@ function ChangesSection({
 	orphanedCount?: number;
 	onCleanupAndRetry?: () => void;
 	onDismissCleanup?: () => void;
+	pendingDeletes?: EntityChange[];
+	onConfirmDeletes?: () => void;
+	onDismissDeletes?: () => void;
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [showDiscardAllConfirm, setShowDiscardAllConfirm] = useState(false);
@@ -1202,6 +1239,63 @@ function ChangesSection({
 											variant="ghost"
 											className="h-6 text-xs px-2 rounded-none"
 											onClick={onDismissCleanup}
+											disabled={disabled}
+										>
+											Dismiss
+										</Button>
+									</div>
+								</div>
+							</div>
+						</div>
+					)}
+
+					{/* Pending deletes confirmation banner */}
+					{pendingDeletes && pendingDeletes.length > 0 && (
+						<div className="mx-4 mb-2 p-2.5 rounded border border-red-500/30 bg-red-500/10 flex-shrink-0">
+							<div className="flex items-start gap-2">
+								<AlertTriangle className="h-4 w-4 text-red-600 mt-0.5 flex-shrink-0" />
+								<div className="flex-1 min-w-0">
+									<p className="text-xs font-medium text-red-700">
+										{pendingDeletes.length} entity deletion(s) pending
+									</p>
+									<p className="text-xs text-muted-foreground mt-0.5">
+										Sync requires deleting entities removed from the repo.
+									</p>
+									<ul className="text-xs text-muted-foreground mt-1 space-y-0.5">
+										{pendingDeletes.slice(0, 5).map((d, i) => (
+											<li key={i} className="flex items-center gap-1">
+												<Minus className="h-3 w-3 text-red-500 flex-shrink-0" />
+												<span className="truncate">{d.entity_type}: {d.name}</span>
+											</li>
+										))}
+										{pendingDeletes.length > 5 && (
+											<li className="text-muted-foreground/70">
+												...and {pendingDeletes.length - 5} more
+											</li>
+										)}
+									</ul>
+									<div className="flex gap-2 mt-2">
+										<Button
+											size="sm"
+											variant="destructive"
+											className="h-6 text-xs px-2 rounded-none"
+											onClick={onConfirmDeletes}
+											disabled={disabled}
+										>
+											{loading === "syncing" ? (
+												<>
+													<Loader2 className="h-3 w-3 animate-spin mr-1" />
+													Deleting...
+												</>
+											) : (
+												"Confirm & Sync"
+											)}
+										</Button>
+										<Button
+											size="sm"
+											variant="ghost"
+											className="h-6 text-xs px-2 rounded-none"
+											onClick={onDismissDeletes}
 											disabled={disabled}
 										>
 											Dismiss

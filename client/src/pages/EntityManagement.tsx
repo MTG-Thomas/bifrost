@@ -150,32 +150,34 @@ export function EntityManagement() {
 		let result = allEntities;
 
 		if (relationshipFilter && relatedEntityIds) {
+			// Relationship mode: only filter by related IDs + search
 			result = result.filter((e) => relatedEntityIds.has(e.id));
-		}
-
-		if (typeFilter !== "all") {
-			result = result.filter((e) => e.entityType === typeFilter);
-		}
-
-		if (orgFilter !== "all") {
-			if (orgFilter === "global") {
-				result = result.filter((e) => !e.organizationId);
-			} else {
-				result = result.filter((e) => e.organizationId === orgFilter);
+		} else {
+			// Normal mode: apply all standard filters
+			if (typeFilter !== "all") {
+				result = result.filter((e) => e.entityType === typeFilter);
 			}
-		}
 
-		if (accessFilter !== "all") {
-			result = result.filter((e) => e.accessLevel === accessFilter);
-		}
+			if (orgFilter !== "all") {
+				if (orgFilter === "global") {
+					result = result.filter((e) => !e.organizationId);
+				} else {
+					result = result.filter((e) => e.organizationId === orgFilter);
+				}
+			}
 
-		if (usageFilter !== "all") {
-			if (usageFilter === "unused") {
-				result = result.filter((e) => e.usedByCount === 0);
-			} else if (usageFilter === "in_use") {
-				result = result.filter(
-					(e) => e.usedByCount !== null && e.usedByCount > 0,
-				);
+			if (accessFilter !== "all") {
+				result = result.filter((e) => e.accessLevel === accessFilter);
+			}
+
+			if (usageFilter !== "all") {
+				if (usageFilter === "unused") {
+					result = result.filter((e) => e.usedByCount === 0);
+				} else if (usageFilter === "in_use") {
+					result = result.filter(
+						(e) => e.usedByCount !== null && e.usedByCount > 0,
+					);
+				}
 			}
 		}
 
@@ -587,9 +589,9 @@ export function EntityManagement() {
 								organization_id: orgId,
 							});
 						} else if (entity.entityType === "form") {
-							toast.error("Cannot change form organization", {
-								description:
-									"Form organization can only be set at creation time",
+							await updateForm.mutateAsync({
+								params: { path: { form_id: entityId } },
+								body: { organization_id: orgId, clear_roles: false },
 							});
 						} else if (entity.entityType === "agent") {
 							await updateAgent.mutateAsync({
@@ -614,7 +616,7 @@ export function EntityManagement() {
 				setIsUpdating(false);
 			}
 		},
-		[allEntities, updateWorkflow, updateAgent, updateApplication],
+		[allEntities, updateWorkflow, updateForm, updateAgent, updateApplication],
 	);
 
 	const handleRoleDrop = useCallback(
@@ -811,50 +813,54 @@ export function EntityManagement() {
 								</Button>
 							)}
 						</div>
-						<FilterPopover
-							typeFilter={typeFilter}
-							setTypeFilter={setTypeFilter}
-							orgFilter={orgFilter}
-							setOrgFilter={setOrgFilter}
-							accessFilter={accessFilter}
-							setAccessFilter={setAccessFilter}
-							usageFilter={usageFilter}
-							setUsageFilter={setUsageFilter}
-							organizations={organizations ?? []}
-							activeFilterCount={activeFilterCount}
-							onClearFilters={handleClearFilters}
-						/>
-						<Button
-							variant="outline"
-							size="sm"
-							className="h-9"
-							onClick={cycleSortBy}
-							title={`Sort by: ${sortBy}`}
-						>
-							{sortAsc ? (
-								<ArrowUp className="h-4 w-4 mr-2" />
-							) : (
-								<ArrowDown className="h-4 w-4 mr-2" />
-							)}
-							{sortBy === "name"
-								? "Name"
-								: sortBy === "date"
-									? "Date"
-									: "Type"}
-						</Button>
-						<Button
-							variant="ghost"
-							size="icon"
-							className="h-9 w-9"
-							onClick={() => setSortAsc((prev) => !prev)}
-							title={sortAsc ? "Ascending" : "Descending"}
-						>
-							{sortAsc ? (
-								<ArrowUp className="h-4 w-4" />
-							) : (
-								<ArrowDown className="h-4 w-4" />
-							)}
-						</Button>
+						{!relationshipFilter && (
+							<>
+								<FilterPopover
+									typeFilter={typeFilter}
+									setTypeFilter={setTypeFilter}
+									orgFilter={orgFilter}
+									setOrgFilter={setOrgFilter}
+									accessFilter={accessFilter}
+									setAccessFilter={setAccessFilter}
+									usageFilter={usageFilter}
+									setUsageFilter={setUsageFilter}
+									organizations={organizations ?? []}
+									activeFilterCount={activeFilterCount}
+									onClearFilters={handleClearFilters}
+								/>
+								<Button
+									variant="outline"
+									size="sm"
+									className="h-9"
+									onClick={cycleSortBy}
+									title={`Sort by: ${sortBy}`}
+								>
+									{sortAsc ? (
+										<ArrowUp className="h-4 w-4 mr-2" />
+									) : (
+										<ArrowDown className="h-4 w-4 mr-2" />
+									)}
+									{sortBy === "name"
+										? "Name"
+										: sortBy === "date"
+											? "Date"
+											: "Type"}
+								</Button>
+								<Button
+									variant="ghost"
+									size="icon"
+									className="h-9 w-9"
+									onClick={() => setSortAsc((prev) => !prev)}
+									title={sortAsc ? "Ascending" : "Descending"}
+								>
+									{sortAsc ? (
+										<ArrowUp className="h-4 w-4" />
+									) : (
+										<ArrowDown className="h-4 w-4" />
+									)}
+								</Button>
+							</>
+						)}
 					</div>
 
 					{/* Selection info */}

@@ -205,6 +205,11 @@ interface EditorState {
 	setSidebarPanel: (panel: SidebarPanel) => void;
 	setTerminalHeight: (height: number) => void;
 	appendTerminalOutput: (result: Omit<ExecutionResult, "timestamp">) => void;
+	streamTerminalLog: (
+		executionId: string,
+		log: { level: string; message: string; source: string; timestamp: string },
+		status?: string,
+	) => void;
 	clearTerminalOutput: () => void;
 	setCurrentStreamingExecutionId: (executionId: string | null) => void;
 
@@ -698,6 +703,39 @@ export const useEditorStore = create<EditorState>()(
 						executions: [...currentOutput.executions, newExecution],
 					},
 				});
+			},
+
+			streamTerminalLog: (executionId, log, status = "Running") => {
+				const state = get();
+				const currentOutput = state.terminalOutput || { executions: [] };
+				const existing = currentOutput.executions.find(
+					(e) => e.executionId === executionId,
+				);
+				if (existing) {
+					existing.loggerOutput.push(log);
+					existing.status = status;
+					set({
+						terminalOutput: {
+							executions: [...currentOutput.executions],
+						},
+					});
+				} else {
+					set({
+						terminalOutput: {
+							executions: [
+								...currentOutput.executions,
+								{
+									executionId,
+									loggerOutput: [log],
+									variables: {},
+									status,
+									error: undefined,
+									timestamp: new Date().toISOString(),
+								},
+							],
+						},
+					});
+				}
 			},
 
 			clearTerminalOutput: () => set({ terminalOutput: null }),

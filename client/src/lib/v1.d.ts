@@ -3415,22 +3415,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3640,6 +3640,32 @@ export interface paths {
          * @description Delete an integration mapping for an organization via SDK.
          */
         post: operations["sdk_integrations_delete_mapping_api_cli_integrations_delete_mapping_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cli/integrations/refresh_token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh OAuth token for an integration
+         * @description Programmatically refresh an OAuth token for an integration.
+         *
+         *     For client_credentials flows: fetches a fresh token from the provider.
+         *     For authorization_code flows: uses the stored refresh_token to get a new access token.
+         *
+         *     The new token is persisted to the database so subsequent integrations.get() calls
+         *     also benefit from the refreshed token.
+         */
+        post: operations["sdk_integrations_refresh_token_api_cli_integrations_refresh_token_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7725,6 +7751,12 @@ export interface components {
             created_at: string;
             /** Llm Model */
             llm_model?: string | null;
+            /**
+             * Dependency Count
+             * @description Number of tool dependencies this agent uses
+             * @default 0
+             */
+            dependency_count: number;
         };
         /**
          * AgentUpdate
@@ -11785,6 +11817,12 @@ export interface components {
             created_at?: string | null;
             /** Updated At */
             updated_at?: string | null;
+            /**
+             * Dependency Count
+             * @description Number of workflow dependencies this form uses
+             * @default 0
+             */
+            dependency_count: number;
         };
         /**
          * FormSchema
@@ -12930,6 +12968,13 @@ export interface components {
              * @description Error message if failed
              */
             error?: string | null;
+            /**
+             * Data
+             * @description Operation result data
+             */
+            data?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Preview
              * @description Sync preview data
@@ -16544,6 +16589,38 @@ export interface components {
             expires_at?: string | null;
         };
         /**
+         * SDKIntegrationsRefreshTokenRequest
+         * @description Request to refresh an OAuth token for an integration.
+         */
+        SDKIntegrationsRefreshTokenRequest: {
+            /**
+             * Connection Name
+             * @description OAuth connection/provider name
+             */
+            connection_name: string;
+            /**
+             * Scope
+             * @description Organization scope: None=context default, UUID=specific org, 'global'=global scope
+             */
+            scope?: string | null;
+        };
+        /**
+         * SDKIntegrationsRefreshTokenResponse
+         * @description Response from refreshing an OAuth token.
+         */
+        SDKIntegrationsRefreshTokenResponse: {
+            /**
+             * Access Token
+             * @description New access token (decrypted)
+             */
+            access_token: string;
+            /**
+             * Expires At
+             * @description Token expiration (ISO format)
+             */
+            expires_at?: string | null;
+        };
+        /**
          * SDKIntegrationsUpsertMappingRequest
          * @description Request to create or update a mapping via SDK.
          */
@@ -17066,6 +17143,23 @@ export interface components {
              * Format: date-time
              */
             last_stuck_at: string;
+        };
+        /**
+         * SyncRequest
+         * @description Request to sync (pull + push + entity import).
+         */
+        SyncRequest: {
+            /**
+             * Job Id
+             * @description Client-generated job ID (avoids WebSocket race condition)
+             */
+            job_id?: string | null;
+            /**
+             * Confirm Deletes
+             * @description Confirm pending entity deletions and proceed with sync
+             * @default false
+             */
+            confirm_deletes: boolean;
         };
         /**
          * SystemLog
@@ -23550,7 +23644,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": components["schemas"]["GitOpRequest"] | null;
+                "application/json": components["schemas"]["SyncRequest"] | null;
             };
         };
         responses: {
@@ -24122,7 +24216,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24155,7 +24249,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24188,7 +24282,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24221,7 +24315,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24593,6 +24687,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_integrations_refresh_token_api_cli_integrations_refresh_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKIntegrationsRefreshTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKIntegrationsRefreshTokenResponse"];
                 };
             };
             /** @description Validation Error */

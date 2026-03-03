@@ -68,7 +68,7 @@ export function normalizeEntities(
 			organizationId: null,
 			accessLevel: "role_based",
 			createdAt: new Date().toISOString(),
-			usedByCount: null,
+			usedByCount: f.dependency_count ?? null,
 			original: f,
 		});
 	}
@@ -82,7 +82,7 @@ export function normalizeEntities(
 			organizationId: (a as { organization_id?: string | null }).organization_id ?? null,
 			accessLevel: (a as { access_level?: string | null }).access_level ?? null,
 			createdAt: a.created_at,
-			usedByCount: null,
+			usedByCount: a.dependency_count ?? null,
 			original: a,
 		});
 	}

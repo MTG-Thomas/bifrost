@@ -209,9 +209,13 @@ export function EntityCard({
 								)}
 							>
 								<Link className="h-3 w-3 shrink-0" />
-								{entity.usedByCount === 0
-									? "No refs"
-									: `${entity.usedByCount} ref${entity.usedByCount === 1 ? "" : "s"}`}
+								{entity.entityType === "workflow"
+									? entity.usedByCount === 0
+										? "No refs"
+										: `${entity.usedByCount} ref${entity.usedByCount === 1 ? "" : "s"}`
+									: entity.usedByCount === 0
+										? "No deps"
+										: `Uses ${entity.usedByCount}`}
 							</span>
 						)}
 					</div>
