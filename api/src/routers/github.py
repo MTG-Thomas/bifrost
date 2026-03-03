@@ -30,6 +30,7 @@ from src.models import (
     GitHubSetupResponse,
     GitJobResponse,
     GitOpRequest,
+    SyncRequest,
     GitRefreshStatusResponse,
     RepoStatusResponse,
     ResolveRequest,
@@ -694,7 +695,7 @@ async def git_sync(
     ctx: Context,
     user: CurrentSuperuser,
     db: DbSession,
-    request: GitOpRequest | None = None,
+    request: SyncRequest | None = None,
 ) -> GitJobResponse:
     """Queue a sync (pull + push + entity import)."""
     config = await get_github_config(db, ctx.org_id)
@@ -702,12 +703,14 @@ async def git_sync(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GitHub not configured")
 
     job_id = (request.job_id if request and request.job_id else None) or str(uuid.uuid4())
+    confirm_deletes = request.confirm_deletes if request else False
     await publish_git_operation(
         job_id=job_id,
         org_id=str(ctx.org_id) if ctx.org_id else "",
         user_id=str(user.user_id),
         user_email=user.email,
         op_type="git_sync",
+        confirm_deletes=confirm_deletes,
     )
     return GitJobResponse(job_id=job_id)
 
@@ -853,5 +856,6 @@ async def git_discard(
         paths=request.paths,
     )
     return GitJobResponse(job_id=job_id)
+
 
 

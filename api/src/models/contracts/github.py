@@ -311,6 +311,11 @@ class GitOpRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SyncRequest(GitOpRequest):
+    """Request to sync (pull + push + entity import)."""
+    confirm_deletes: bool = Field(default=False, description="Confirm pending entity deletions and proceed with sync")
+
+
 class CommitRequest(GitOpRequest):
     """Request to commit working tree changes."""
     message: str = Field(..., min_length=1, description="Commit message")
@@ -442,6 +447,8 @@ class SyncResult(BaseModel):
     entities_imported: int = Field(default=0, description="Number of entities imported during sync")
     error: str | None = Field(default=None, description="Error message if failed")
     entity_changes: list[EntityChange] = Field(default_factory=list, description="Entity-level changes during sync")
+    needs_delete_confirmation: bool = Field(default=False, description="Whether sync is blocked pending delete confirmation")
+    pending_deletes: list[EntityChange] = Field(default_factory=list, description="Entities that will be deleted if confirmed")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -472,6 +479,24 @@ class DiscardResult(BaseModel):
     """Result of discarding working tree changes."""
     success: bool = Field(..., description="Whether discard succeeded")
     discarded: list[str] = Field(default_factory=list, description="Paths that were discarded")
+    entity_changes: list[EntityChange] = Field(default_factory=list, description="Entity-level changes during re-import")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ConfirmDeletionsRequest(BaseModel):
+    """Request to confirm or skip pending entity deletions after sync."""
+    token: str = Field(..., description="Deletion token from SyncResult")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ConfirmDeletionsResult(BaseModel):
+    """Result of confirming or skipping pending deletions."""
+    success: bool = Field(..., description="Whether operation succeeded")
+    deleted_count: int = Field(default=0, description="Number of entities deleted")
+    entity_changes: list[EntityChange] = Field(default_factory=list, description="Entities that were deleted")
     error: str | None = Field(default=None, description="Error message if failed")
 
     model_config = ConfigDict(from_attributes=True)

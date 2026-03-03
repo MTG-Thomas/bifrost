@@ -389,8 +389,12 @@ class Scheduler:
 
                 elif op_type == "git_sync":
                     # Combined pull + push + entity import
-                    op_result = await sync_service.desktop_sync(job_id=job_id)
-                    status_str = "success" if op_result.success else ("conflict" if op_result.conflicts else "failed")
+                    confirm_deletes = data.get("confirm_deletes", False)
+                    op_result = await sync_service.desktop_sync(job_id=job_id, confirm_deletes=confirm_deletes)
+                    if op_result.needs_delete_confirmation:
+                        status_str = "needs_confirmation"
+                    else:
+                        status_str = "success" if op_result.success else ("conflict" if op_result.conflicts else "failed")
                     await publish_git_op_completed(
                         job_id, status=status_str, result_type="sync",
                         data=op_result.model_dump(),
