@@ -433,13 +433,10 @@ export function FormInfoDialog({
 												value={field.value}
 												onChange={field.onChange}
 												showGlobal={true}
-												disabled={isEditing}
 											/>
 										</FormControl>
 										<FormDescription>
-											{isEditing
-												? "Organization cannot be changed after form creation"
-												: "Global forms are available to all organizations"}
+											Global forms are available to all organizations
 										</FormDescription>
 										<FormMessage />
 									</FormItem>

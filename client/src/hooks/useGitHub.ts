@@ -142,6 +142,8 @@ export interface SyncResult {
 	entities_imported: number;
 	error?: string | null;
 	entity_changes?: EntityChange[];
+	needs_delete_confirmation?: boolean;
+	pending_deletes?: EntityChange[];
 }
 
 export interface AbortMergeResult {
@@ -152,6 +154,7 @@ export interface AbortMergeResult {
 export interface DiscardResult {
 	success: boolean;
 	discarded: string[];
+	entity_changes?: EntityChange[];
 	error?: string | null;
 }
 
@@ -409,8 +412,8 @@ export function useFileDiff() {
  */
 export function useSync() {
 	return {
-		mutateAsync: async (jobId?: string): Promise<GitJobResponse> =>
-			gitPost("/api/github/sync", jobId ?? crypto.randomUUID(), undefined, "Failed to queue sync"),
+		mutateAsync: async (jobId?: string, opts?: { confirm_deletes?: boolean }): Promise<GitJobResponse> =>
+			gitPost("/api/github/sync", jobId ?? crypto.randomUUID(), opts ? { confirm_deletes: opts.confirm_deletes } : undefined, "Failed to queue sync"),
 		isPending: false,
 	};
 }
