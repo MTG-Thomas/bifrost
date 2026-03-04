@@ -66,6 +66,7 @@ MAX_TOOL_ITERATIONS = 10
 CONTEXT_MAX_TOKENS = 120_000  # Prune when exceeding this
 CONTEXT_WARNING_TOKENS = 100_000  # Warn when approaching this
 CONTEXT_KEEP_RECENT = 20  # Keep this many recent messages when pruning
+TOOL_OUTPUT_PROTECT_TOKENS = 10_000  # Protect this many tokens of recent tool outputs
 
 # Fallback system prompt (used if no config set)
 FALLBACK_SYSTEM_PROMPT = """You are a helpful AI assistant. You can help users with a variety of tasks including answering questions, providing information, and having general conversations.
@@ -729,6 +730,103 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 total += len(tool_json) // 4
         return total
 
+    def _find_turn_boundaries(self, messages: list[LLMMessage]) -> list[int]:
+        """Find indices where new conversation turns start.
+
+        A turn is either a single message, or an assistant message with tool_calls
+        grouped together with the following tool result messages.
+        """
+        boundaries = []
+        i = 0
+        while i < len(messages):
+            boundaries.append(i)
+            if messages[i].role == "assistant" and messages[i].tool_calls:
+                i += 1
+                while i < len(messages) and messages[i].role == "tool":
+                    i += 1
+            else:
+                i += 1
+        return boundaries
+
+    def _compact_tool_outputs(self, messages: list[LLMMessage]) -> list[LLMMessage]:
+        """Replace old tool result content with placeholder, keeping recent ones.
+
+        Walks backward through messages, protecting the most recent tool outputs
+        up to TOOL_OUTPUT_PROTECT_TOKENS. Older large tool outputs get replaced
+        with a short placeholder. This preserves all message structure (tool_use/
+        tool_result pairs stay intact) while reducing token count.
+        """
+        protected_tokens = 0
+        protect_indices: set[int] = set()
+
+        for i in range(len(messages) - 1, -1, -1):
+            content = messages[i].content
+            if messages[i].role == "tool" and content:
+                tokens = len(content) // 4
+                if protected_tokens + tokens <= TOOL_OUTPUT_PROTECT_TOKENS:
+                    protected_tokens += tokens
+                    protect_indices.add(i)
+
+        result = []
+        for i, msg in enumerate(messages):
+            if (
+                msg.role == "tool"
+                and i not in protect_indices
+                and msg.content
+                and len(msg.content) > 200
+            ):
+                result.append(
+                    LLMMessage(
+                        role=msg.role,
+                        content="[Tool output cleared for context management]",
+                        tool_call_id=msg.tool_call_id,
+                        tool_name=msg.tool_name,
+                    )
+                )
+            else:
+                result.append(msg)
+        return result
+
+    def _fix_dangling_tool_calls(
+        self, messages: list[LLMMessage]
+    ) -> list[LLMMessage]:
+        """Ensure every tool_use has a corresponding tool_result.
+
+        If an assistant message has tool_calls but there are no (or incomplete)
+        tool result messages following it, inject placeholder results so the
+        API doesn't reject the request.
+        """
+        result = list(messages)
+        i = 0
+        while i < len(result):
+            msg = result[i]
+            if msg.role == "assistant" and msg.tool_calls:
+                expected_ids = {tc.id for tc in msg.tool_calls}
+                j = i + 1
+                found_ids: set[str] = set()
+                while j < len(result) and result[j].role == "tool":
+                    tool_call_id_val = result[j].tool_call_id
+                    if tool_call_id_val:
+                        found_ids.add(tool_call_id_val)
+                    j += 1
+                missing = expected_ids - found_ids
+                for tool_call_id in missing:
+                    tc = next(
+                        tc for tc in msg.tool_calls if tc.id == tool_call_id
+                    )
+                    result.insert(
+                        j,
+                        LLMMessage(
+                            role="tool",
+                            content="[Tool execution was interrupted]",
+                            tool_call_id=tool_call_id,
+                            tool_name=tc.name,
+                        ),
+                    )
+                    j += 1
+            i += 1
+        return result
+
     async def _summarize_messages(
         self,
         messages: list[LLMMessage],
@@ -780,13 +878,17 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         keep_recent: int = CONTEXT_KEEP_RECENT,
     ) -> tuple[list[LLMMessage], int]:
         """
-        Prune messages if context is too large using smart summarization.
+        Prune messages if context is too large, preserving tool_use/tool_result pairs.
 
-        Strategy:
-        1. Always keep the system prompt (first message)
-        2. Keep the first user message (original intent/context)
-        3. Keep the last N messages (recent context)
-        4. Summarize everything in between
+        Two-phase strategy:
+        1. **Tool output compaction**: Replace old, large tool outputs with short
+           placeholders while keeping message structure intact (pairs stay paired).
+        2. **Turn-boundary summarization**: If still over limit, summarize older
+           messages but only cut at turn boundaries so tool_use+tool_result groups
+           are never split.
+
+        Also fixes dangling tool_calls (tool_use without matching tool_result)
+        before returning.
 
         Args:
             messages: Full message history
@@ -806,6 +908,20 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             f"{CONTEXT_MAX_TOKENS:,} limit"
         )
 
+        # Phase 1: Compact old tool outputs (preserves all message structure)
+        messages = self._compact_tool_outputs(messages)
+        compacted_tokens = self._estimate_tokens(messages)
+        if compacted_tokens <= CONTEXT_MAX_TOKENS:
+            logger.info(
+                f"Tool output compaction sufficient: {original_tokens:,} -> "
+                f"{compacted_tokens:,} tokens"
+            )
+            messages = self._fix_dangling_tool_calls(messages)
+            return messages, original_tokens
+
+        # Phase 2: Summarize middle messages at turn boundaries
+        boundaries = self._find_turn_boundaries(messages)
+
         # Keep system prompt (always first)
         system_msg = messages[0]
 
@@ -816,24 +932,38 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         )
         first_user_msg = messages[first_user_idx] if first_user_idx else None
 
-        # Messages to keep at the end (recent context)
-        recent_messages = messages[-keep_recent:] if len(messages) > keep_recent else []
-
-        # Determine what to summarize (middle section)
+        # Determine where to start summarizing
         if first_user_idx is not None:
             middle_start = first_user_idx + 1
         else:
             middle_start = 1  # After system message
 
-        middle_end = len(messages) - keep_recent
+        # Snap the cut point to the nearest turn boundary
+        target_cut = len(messages) - keep_recent
+        cut_idx = boundaries[0]
+        for b in boundaries:
+            if b <= target_cut:
+                cut_idx = b
+            else:
+                break
+
+        # Ensure cut_idx is at least past middle_start
+        if cut_idx < middle_start:
+            cut_idx = middle_start
+
+        middle_end = cut_idx
 
         if middle_end <= middle_start:
-            # Not enough messages to summarize, return as-is
             logger.info("Not enough middle messages to summarize, keeping original")
+            messages = self._fix_dangling_tool_calls(messages)
             return messages, original_tokens
 
         to_summarize = messages[middle_start:middle_end]
-        logger.info(f"Summarizing {len(to_summarize)} messages from the middle of conversation")
+        recent_messages = messages[cut_idx:]
+        logger.info(
+            f"Summarizing {len(to_summarize)} messages from the middle of "
+            f"conversation (turn-boundary cut at index {cut_idx})"
+        )
 
         # Generate summary
         summary = await self._summarize_messages(to_summarize, llm_client)
@@ -844,7 +974,7 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         if first_user_msg:
             pruned.append(first_user_msg)
 
-        # Add summary as a system context message
+        # Add summary as a user context message
         pruned.append(
             LLMMessage(
                 role="user",
@@ -852,8 +982,11 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             )
         )
 
-        # Add recent messages
+        # Add recent messages (guaranteed to start at a turn boundary)
         pruned.extend(recent_messages)
+
+        # Fix any dangling tool calls in the final result
+        pruned = self._fix_dangling_tool_calls(pruned)
 
         new_tokens = self._estimate_tokens(pruned)
         logger.info(

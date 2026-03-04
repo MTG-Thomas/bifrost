@@ -153,7 +153,7 @@ services:
       - ./client/tsconfig.json:/app/tsconfig.json
       - ./client/tsconfig.app.json:/app/tsconfig.app.json
       - ./client/tsconfig.node.json:/app/tsconfig.node.json
-      - ./client/tailwind.config.ts:/app/tailwind.config.ts
+      - ./client/tailwind.config.js:/app/tailwind.config.js
       - ./client/postcss.config.js:/app/postcss.config.js
     environment:
       BIFROST_S3_ENDPOINT_URL: ${BIFROST_S3_ENDPOINT_URL:-http://minio:9000}

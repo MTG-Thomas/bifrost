@@ -1,22 +1,23 @@
 """
-Server-side TSX/JSX compiler for Bifrost app files.
+Server-side TSX/JSX compiler and Tailwind CSS generator for Bifrost app files.
 
-Uses a Node.js subprocess running @babel/standalone to compile
-app source files. This is the same Babel pipeline used by the
-client (client/src/lib/app-code-compiler.ts), ported to run
-server-side so _apps/ always contains compiled JS.
+Uses Node.js subprocesses:
+- @babel/standalone to compile app source files (same pipeline as client)
+- @tailwindcss/node to generate per-app Tailwind CSS from class candidates
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 COMPILE_SCRIPT = Path(__file__).parent / "compile.js"
+TAILWIND_SCRIPT = Path(__file__).parent / "tailwind.js"
 
 
 @dataclass
@@ -100,3 +101,78 @@ class AppCompilerService:
                 CompileResult(path=f["path"], success=False, error=str(e))
                 for f in files
             ]
+
+
+# Extract all string literals from compiled JS output, then split into tokens.
+# Over-extraction is fine — Tailwind silently ignores unknown candidates.
+# This is intentionally broad to handle both JSX (className="...") and compiled
+# output (className: "...") without fragile pattern matching.
+_STRING_LITERAL = re.compile(r'"([^"]{1,500})"')
+_TOKEN_SPLIT = re.compile(r"[\s,]+")
+# Tailwind classes contain hyphens, brackets, colons, or slashes.
+# Single-word utilities (flex, grid, hidden, etc.) also need to pass through.
+_LOOKS_LIKE_CLASS = re.compile(
+    r"^!?-?[a-z][a-z0-9]*(?:[:\-/\[.=][a-z0-9/.\[\]#%_\-=*>~&+]*)*\]?$",
+    re.IGNORECASE,
+)
+
+
+class AppTailwindService:
+    """Generate Tailwind CSS for app source files via @tailwindcss/node."""
+
+    @staticmethod
+    def extract_candidates(sources: list[str]) -> list[str]:
+        """Extract Tailwind class candidates from source strings.
+
+        Scans all string literals and splits into whitespace-separated tokens.
+        Over-extraction is harmless — Tailwind ignores unknown candidates.
+        """
+        candidates: set[str] = set()
+        for source in sources:
+            for match in _STRING_LITERAL.finditer(source):
+                for token in _TOKEN_SPLIT.split(match.group(1)):
+                    token = token.strip()
+                    if token and _LOOKS_LIKE_CLASS.match(token):
+                        candidates.add(token)
+        return sorted(candidates)
+
+    @staticmethod
+    async def generate_css(sources: list[str]) -> str | None:
+        """Extract candidates from sources and generate Tailwind CSS.
+
+        Returns the generated CSS string, or None on failure.
+        """
+        candidates = AppTailwindService.extract_candidates(sources)
+        if not candidates:
+            return None
+
+        input_data = json.dumps({"candidates": candidates})
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "node", str(TAILWIND_SCRIPT),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate(input=input_data.encode())
+
+            if proc.returncode != 0:
+                error_msg = stderr.decode().strip() or "tailwind.js exited with error"
+                logger.error(f"Tailwind CSS generation failed: {error_msg}")
+                return None
+
+            output = json.loads(stdout.decode())
+            if output.get("error"):
+                logger.error(f"Tailwind CSS generation error: {output['error']}")
+                return None
+
+            css = output.get("css", "")
+            return css if css else None
+
+        except FileNotFoundError:
+            logger.error("Node.js not found — cannot generate Tailwind CSS")
+            return None
+        except Exception as e:
+            logger.exception(f"Tailwind CSS generation failed: {e}")
+            return None

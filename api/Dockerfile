@@ -53,6 +53,7 @@ COPY api/scripts/ /app/scripts/
 # Install app compiler Node.js dependencies
 COPY api/src/services/app_compiler/package.json api/src/services/app_compiler/package-lock.json* /app/src/services/app_compiler/
 COPY api/src/services/app_compiler/compile.js /app/src/services/app_compiler/
+COPY api/src/services/app_compiler/tailwind.js /app/src/services/app_compiler/
 RUN cd /app/src/services/app_compiler && npm install --production
 
 # Create non-root user

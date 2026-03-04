@@ -765,31 +765,11 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "content_hash": content_hash,  # Pinned hash at dispatch time
             }
 
-            # Pre-warm SDK cache BEFORE dispatching to worker process
-            # This runs in the consumer's stable main event loop, avoiding
-            # event loop issues with shared async resources (DB, Redis)
-            try:
-                from src.core.cache import prewarm_sdk_cache
-                await prewarm_sdk_cache(
-                    execution_id=execution_id,
-                    org_id=org_id,
-                    user_id=user_id,
-                    is_admin=False,  # Workflows run without admin privileges
-                )
-                logger.debug(f"Pre-warmed SDK cache for execution {execution_id[:8]}...")
-            except Exception as e:
-                # Log but don't fail - SDK will fall back gracefully
-                logger.warning(f"Failed to pre-warm SDK cache: {e}")
-
             # Route to process pool
             # Results are handled asynchronously via _handle_result callback
             await self._pool.route_execution(
                 execution_id=execution_id,
                 context=context_data,
-            )
-            logger.debug(
-                f"Execution routed to process pool: {execution_id[:8]}...",
-                extra={"execution_model": "process"},
             )
             # Don't wait for result - pool will call back
 

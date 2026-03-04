@@ -530,11 +530,18 @@ async def render_app(
             f"On-demand compiled {len(needs_compile)} files for app {app_id}"
         )
 
-    # 4. Warm the Redis cache (include CSS files so cache is complete)
+    # 4. Generate Tailwind CSS from class candidates in compiled code
+    from src.services.app_compiler import AppTailwindService
+
+    tailwind_css = await AppTailwindService.generate_css(list(file_contents.values()))
+    if tailwind_css:
+        css_files["_tailwind.css"] = tailwind_css
+
+    # 5. Warm the Redis cache (include CSS files so cache is complete)
     all_files_for_cache = {**file_contents, **css_files}
     await app_storage.set_render_cache(app_id_str, storage_mode, all_files_for_cache)
 
-    # 5. Build response
+    # 6. Build response
     files = [
         RenderFileResponse(path=rel_path, code=code)
         for rel_path, code in sorted(file_contents.items())
