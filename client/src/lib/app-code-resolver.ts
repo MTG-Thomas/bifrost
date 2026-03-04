@@ -183,6 +183,61 @@ export function getUserComponentNames(files: AppCodeFile[]): Set<string> {
 }
 
 /**
+ * Topological sort of components by their sibling dependencies.
+ *
+ * Leaf components (no sibling refs) come first so they're created before
+ * components that depend on them. Handles cycles gracefully by appending
+ * remaining components at the end.
+ */
+function topoSortComponents(
+	sources: Map<string, { source: string; isPreCompiled: boolean }>,
+): string[] {
+	// Build adjacency: name -> set of sibling names it references
+	const deps = new Map<string, Set<string>>();
+	for (const [name, { source }] of sources) {
+		const refs = new Set<string>();
+		for (const ref of extractComponentNames(source)) {
+			if (ref !== name && sources.has(ref)) {
+				refs.add(ref);
+			}
+		}
+		deps.set(name, refs);
+	}
+
+	const order: string[] = [];
+	const placed = new Set<string>();
+
+	// Kahn's algorithm
+	const queue: string[] = [];
+	for (const [name, d] of deps) {
+		if (d.size === 0) queue.push(name);
+	}
+
+	while (queue.length > 0) {
+		const name = queue.shift()!;
+		if (placed.has(name)) continue;
+		order.push(name);
+		placed.add(name);
+
+		for (const [other, d] of deps) {
+			if (!placed.has(other)) {
+				d.delete(name);
+				if (d.size === 0) queue.push(other);
+			}
+		}
+	}
+
+	// Append any remaining (cycles) — they'll get whatever siblings are available
+	for (const name of sources.keys()) {
+		if (!placed.has(name)) {
+			order.push(name);
+		}
+	}
+
+	return order;
+}
+
+/**
  * Resolve components using known user files.
  *
  * This is the preferred method when you already have the app's file list.
@@ -209,10 +264,22 @@ export async function resolveAppComponentsFromFiles(
 		userComponentNames.has(name),
 	);
 
-	for (const name of existingCustomNames) {
-		const cacheKey = buildCacheKey(appId, `components/${name}`);
+	// --- Pass 1: Collect sources, transitively expanding dependencies ---
+	// A page may use <TicketSlideout /> which internally uses <DetailsTab />.
+	// We must resolve DetailsTab too, even though it wasn't in the page source.
+	const sources = new Map<
+		string,
+		{ source: string; isPreCompiled: boolean }
+	>();
+	const resolveQueue = [...existingCustomNames];
+	const visited = new Set<string>();
 
-		// Check cache first
+	while (resolveQueue.length > 0) {
+		const name = resolveQueue.pop()!;
+		if (visited.has(name)) continue;
+		visited.add(name);
+
+		const cacheKey = buildCacheKey(appId, `components/${name}`);
 		const cached = componentCache.get(cacheKey);
 		if (cached) {
 			components[name] = cached.component;
@@ -223,7 +290,6 @@ export async function resolveAppComponentsFromFiles(
 		let isPreCompiled = false;
 
 		if (allFiles) {
-			// Resolve from in-memory file list (no API call)
 			const match = allFiles.find(
 				(f) =>
 					f.path === `components/${name}.tsx` ||
@@ -235,7 +301,6 @@ export async function resolveAppComponentsFromFiles(
 				isPreCompiled = !!match.compiled;
 			}
 		} else {
-			// Fallback: fetch from API individually
 			let file = await resolveFile(appId, `components/${name}.tsx`);
 			if (!file) {
 				file = await resolveFile(appId, `components/${name}`);
@@ -251,15 +316,44 @@ export async function resolveAppComponentsFromFiles(
 			continue;
 		}
 
-		const component = createComponent(source, {}, isPreCompiled, externalDeps);
+		sources.set(name, { source, isPreCompiled });
 
-		// Cache the compiled component
-		componentCache.set(cacheKey, {
-			component,
-			compiledAt: Date.now(),
-		});
+		// Enqueue transitive dependencies (e.g. TicketSlideout -> DetailsTab)
+		for (const ref of extractComponentNames(source)) {
+			if (userComponentNames.has(ref) && !visited.has(ref)) {
+				resolveQueue.push(ref);
+			}
+		}
+	}
 
+	// --- Pass 2: Create components in dependency order ---
+	// Topological sort so leaf components (no sibling deps) are created first.
+	// When we create A, its dependency B already exists with B's own deps baked in.
+	const order = topoSortComponents(sources);
+
+	for (const name of order) {
+		const entry = sources.get(name);
+		if (!entry) continue;
+		const { source, isPreCompiled } = entry;
+
+		// Build siblings from all already-created components
+		const siblings: Record<string, React.ComponentType> = {};
+		for (const [sibName, sibComponent] of Object.entries(components)) {
+			if (sibName !== name) {
+				siblings[sibName] = sibComponent;
+			}
+		}
+
+		const component = createComponent(
+			source,
+			Object.keys(siblings).length > 0 ? siblings : {},
+			isPreCompiled,
+			externalDeps,
+		);
 		components[name] = component;
+
+		const cacheKey = buildCacheKey(appId, `components/${name}`);
+		componentCache.set(cacheKey, { component, compiledAt: Date.now() });
 	}
 
 	return components;

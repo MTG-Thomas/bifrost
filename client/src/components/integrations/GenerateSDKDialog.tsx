@@ -124,13 +124,7 @@ export function GenerateSDKDialog({
 		}
 
 		try {
-			// Always save config - at minimum base_url is needed for SDK
-			await updateConfigMutation.mutateAsync({
-				params: { path: { integration_id: integrationId } },
-				body: { config: buildConfigPayload() },
-			});
-
-			// Then generate the SDK
+			// Generate SDK first - this creates the config schema (secret types, etc.)
 			const sdkResult = await generateSDKMutation.mutateAsync({
 				params: { path: { integration_id: integrationId } },
 				body: {
@@ -138,6 +132,12 @@ export function GenerateSDKDialog({
 					auth_type: authType,
 					module_name: moduleName.trim() || undefined,
 				},
+			});
+
+			// Save config AFTER schema exists so _save_config correctly encrypts secrets
+			await updateConfigMutation.mutateAsync({
+				params: { path: { integration_id: integrationId } },
+				body: { config: buildConfigPayload() },
 			});
 
 			setResult(sdkResult);
