@@ -435,7 +435,6 @@ def documented_workflow(message: str, count: int = 5):
             function_name="documented_workflow",
             path="documented_workflow.py",
             is_active=True,
-            category=None,
         )
         db_session.add(pre_wf)
         await db_session.commit()
