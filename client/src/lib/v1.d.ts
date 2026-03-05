@@ -3415,22 +3415,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4941,6 +4941,7 @@ export interface paths {
          * @description Test embedding connection with provided credentials.
          *
          *     Tests the connection without saving the configuration.
+         *     If no API key is provided, uses the saved embedding key.
          *     Requires platform admin access.
          */
         post: operations["test_embedding_connection_api_admin_llm_embedding_test_post"];
@@ -10289,9 +10290,9 @@ export interface components {
         EmbeddingConfigRequest: {
             /**
              * Api Key
-             * @description OpenAI API key for embeddings
+             * @description OpenAI API key for embeddings. Omit to preserve existing key.
              */
-            api_key: string;
+            api_key?: string | null;
             /**
              * Model
              * @description Embedding model (text-embedding-3-small or text-embedding-3-large)
@@ -13218,9 +13219,9 @@ export interface components {
             model: string;
             /**
              * Api Key
-             * @description API key for the provider
+             * @description API key for the provider. Omit to preserve existing key.
              */
-            api_key: string;
+            api_key?: string | null;
             /**
              * Endpoint
              * @description Custom API endpoint URL (e.g., for Azure OpenAI, Ollama, or other compatible providers)
@@ -13229,7 +13230,7 @@ export interface components {
             /**
              * Max Tokens
              * @description Maximum tokens for completion
-             * @default 4096
+             * @default 16384
              */
             max_tokens: number;
             /**
@@ -13260,7 +13261,7 @@ export interface components {
             endpoint?: string | null;
             /**
              * Max Tokens
-             * @default 4096
+             * @default 16384
              */
             max_tokens: number;
             /**
@@ -18629,6 +18630,16 @@ export interface components {
              * @description User-facing display name (defaults to code name if not set)
              */
             display_name?: string | null;
+            /**
+             * Description
+             * @description Workflow description (initially set from code, editable in UI or manifest YAML)
+             */
+            description?: string | null;
+            /**
+             * Category
+             * @description Category for organization (initially set from code, editable in UI or manifest YAML)
+             */
+            category?: string | null;
             /**
              * Timeout Seconds
              * @description Max execution time in seconds (1-7200, default 1800)
@@ -24233,7 +24244,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24266,7 +24277,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24299,7 +24310,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24332,7 +24343,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {

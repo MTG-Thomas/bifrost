@@ -223,6 +223,7 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
                 path=wf.path,
                 function_name=wf.function_name,
                 type=wf.type or "workflow",
+                description=wf.description,
                 organization_id=str(wf.organization_id) if wf.organization_id else None,
                 roles=wf_roles_by_wf.get(str(wf.id), []),
                 access_level=wf.access_level or "role_based",

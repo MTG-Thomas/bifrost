@@ -50,7 +50,7 @@ export function TiptapEditor({
 		},
 		editorProps: {
 			attributes: {
-				class: "tiptap-editor min-h-[200px] max-h-[500px] overflow-y-auto p-3 focus:outline-none prose prose-sm dark:prose-invert max-w-none",
+				class: "tiptap-editor min-h-[200px] h-full overflow-y-auto p-3 focus:outline-none prose prose-sm dark:prose-invert max-w-none",
 			},
 		},
 	});
@@ -76,9 +76,11 @@ export function TiptapEditor({
 	}
 
 	return (
-		<div className={cn("border rounded-md overflow-hidden", className)}>
-			{!readOnly && <TiptapToolbar editor={editor} />}
-			<EditorContent editor={editor} />
+		<div className={cn("border rounded-md overflow-hidden flex flex-col", className)}>
+			{!readOnly && <div className="shrink-0"><TiptapToolbar editor={editor} /></div>}
+			<div className="flex-1 min-h-0">
+				<EditorContent editor={editor} className="h-full [&_.tiptap]:h-full" />
+			</div>
 		</div>
 	);
 }
