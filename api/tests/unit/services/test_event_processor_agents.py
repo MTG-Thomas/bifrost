@@ -167,7 +167,7 @@ async def test_queue_agent_run_calls_enqueue():
     event = _make_event(data={"ticket_id": "456", "priority": "high"})
 
     with patch(
-        "src.services.events.processor.enqueue_agent_run",
+        "src.services.execution.agent_run_service.enqueue_agent_run",
         new_callable=AsyncMock,
         return_value="run-abc-123",
     ) as mock_enqueue:

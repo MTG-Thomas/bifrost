@@ -1,6 +1,5 @@
 """Tests for events router agent subscription validation."""
 
-import pytest
 from uuid import uuid4
 
 from src.models.contracts.events import EventSubscriptionCreate
