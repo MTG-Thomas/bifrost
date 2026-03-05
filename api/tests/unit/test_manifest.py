@@ -1339,3 +1339,100 @@ class TestManifestSchemaCoverage:
             f"New IntegrationMapping DB columns not tracked in manifest or ignored: {untracked}. "
             "Add them to ManifestIntegrationMapping or to MAPPING_IGNORED in this test."
         )
+
+
+class TestAgentManifestFields:
+    """Test agent budget fields round-trip through manifest."""
+
+    def test_agent_max_iterations_round_trip(self):
+        """max_iterations survives serialize -> parse -> serialize."""
+        from src.services.manifest import ManifestAgent, Manifest, serialize_manifest, parse_manifest
+
+        agent_id = str(uuid4())
+        agent = ManifestAgent(
+            id=agent_id,
+            name="Budget Agent",
+            path="agents/test.agent.yaml",
+            max_iterations=25,
+            max_token_budget=50000,
+        )
+        manifest = Manifest(agents={agent_id: agent})
+        yaml_out = serialize_manifest(manifest)
+        parsed = parse_manifest(yaml_out)
+        assert parsed.agents[agent_id].max_iterations == 25
+        assert parsed.agents[agent_id].max_token_budget == 50000
+
+        # Stability: second round-trip identical
+        yaml_out2 = serialize_manifest(parsed)
+        assert yaml_out == yaml_out2
+
+
+class TestEventSubscriptionManifestFields:
+    """Test event subscription agent fields round-trip."""
+
+    def test_agent_subscription_round_trip(self):
+        """target_type=agent with agent_id survives round-trip."""
+        from src.services.manifest import (
+            ManifestEventSource, ManifestEventSubscription, Manifest,
+            serialize_manifest, parse_manifest,
+        )
+
+        agent_id = str(uuid4())
+        sub_id = str(uuid4())
+        source_id = str(uuid4())
+        sub = ManifestEventSubscription(
+            id=sub_id,
+            target_type="agent",
+            agent_id=agent_id,
+            workflow_id=None,
+            is_active=True,
+        )
+        source = ManifestEventSource(
+            id=source_id,
+            name="Test Source",
+            source_type="webhook",
+            is_active=True,
+            subscriptions=[sub],
+        )
+        manifest = Manifest(events={source_id: source})
+        yaml_out = serialize_manifest(manifest)
+        parsed = parse_manifest(yaml_out)
+
+        parsed_sub = parsed.events[source_id].subscriptions[0]
+        assert parsed_sub.target_type == "agent"
+        assert parsed_sub.agent_id == agent_id
+        assert parsed_sub.workflow_id is None
+
+    def test_workflow_subscription_round_trip(self):
+        """target_type=workflow with workflow_id survives round-trip."""
+        from src.services.manifest import (
+            ManifestEventSource, ManifestEventSubscription, Manifest,
+            serialize_manifest, parse_manifest,
+        )
+
+        workflow_id = str(uuid4())
+        sub_id = str(uuid4())
+        source_id = str(uuid4())
+        sub = ManifestEventSubscription(
+            id=sub_id,
+            target_type="workflow",
+            workflow_id=workflow_id,
+            agent_id=None,
+            is_active=True,
+        )
+        source = ManifestEventSource(
+            id=source_id,
+            name="Test Source",
+            source_type="webhook",
+            is_active=True,
+            subscriptions=[sub],
+        )
+        manifest = Manifest(events={source_id: source})
+        yaml_out = serialize_manifest(manifest)
+        parsed = parse_manifest(yaml_out)
+
+        parsed_sub = parsed.events[source_id].subscriptions[0]
+        # target_type="workflow" is default, so after exclude_defaults it will be "workflow" on re-parse
+        assert parsed_sub.target_type == "workflow"
+        assert parsed_sub.workflow_id == workflow_id
+        assert parsed_sub.agent_id is None
