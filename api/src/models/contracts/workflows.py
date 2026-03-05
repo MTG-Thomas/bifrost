@@ -283,6 +283,16 @@ class WorkflowUpdateRequest(BaseModel):
         max_length=200,
         description="User-facing display name (defaults to code name if not set)"
     )
+    description: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Workflow description (initially set from code, editable in UI or manifest YAML)"
+    )
+    category: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Category for organization (initially set from code, editable in UI or manifest YAML)"
+    )
     timeout_seconds: int | None = Field(
         default=None,
         ge=1,

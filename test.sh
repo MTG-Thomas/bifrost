@@ -38,6 +38,7 @@ CLIENT_DEV=false
 LOCAL_MODE=false
 RESET_DB=false
 NO_RESET=false
+CI_MODE=false
 PYTEST_ARGS=()
 PLAYWRIGHT_ARGS=()
 
@@ -56,8 +57,7 @@ for arg in "$@"; do
     elif [ "$arg" = "--wait" ]; then
         WAIT_MODE=true
     elif [ "$arg" = "--ci" ]; then
-        # Legacy flag - now the default behavior, kept for backwards compatibility
-        true
+        CI_MODE=true
     elif [ "$arg" = "--e2e" ]; then
         # Legacy flag - E2E now runs by default, kept for backwards compatibility
         true
@@ -89,15 +89,24 @@ for arg in "$@"; do
 done
 
 # =============================================================================
-# Docker log export directory
+# Docker log export directory (skipped in CI mode)
 # =============================================================================
-LOG_DIR="/tmp/bifrost"
-mkdir -p "$LOG_DIR"
+if [ "$CI_MODE" = false ]; then
+    LOG_DIR="/tmp/bifrost"
+    mkdir -p "$LOG_DIR"
+else
+    LOG_DIR=""
+fi
 
 # =============================================================================
 # Function to export docker logs
 # =============================================================================
 export_docker_logs() {
+    # Skip log export in CI mode (no /tmp outputs)
+    if [ -z "$LOG_DIR" ]; then
+        return
+    fi
+
     echo "Exporting docker logs to $LOG_DIR/..."
 
     # Clean up old docker log files from previous runs (preserve test-runner.log and xml results)
@@ -559,14 +568,21 @@ if [ "$CLIENT_ONLY" = false ]; then
         echo ""
 
         # Ignore tests that require a running API service
-        PHASE1_CMD=("pytest" "tests/" "--ignore=tests/e2e/" "-v" "--junitxml=/tmp/bifrost/unit-results.xml")
+        PHASE1_CMD=("pytest" "tests/" "--ignore=tests/e2e/" "-v")
+        if [ -n "$LOG_DIR" ]; then
+            PHASE1_CMD+=("--junitxml=/tmp/bifrost/unit-results.xml")
+        fi
         if [ "$COVERAGE" = true ]; then
             PHASE1_CMD+=("--cov=src" "--cov-report=term-missing")
         fi
 
         trap - ERR
         set +e
-        docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE1_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
+        if [ -n "$LOG_DIR" ]; then
+            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE1_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
+        else
+            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE1_CMD[@]}"
+        fi
         TEST_EXIT_CODE=${PIPESTATUS[0]}
         set -e
 
@@ -612,14 +628,21 @@ if [ "$CLIENT_ONLY" = false ]; then
             echo ""
 
             # Run e2e tests that need a live API
-            PHASE2_CMD=("pytest" "tests/e2e/" "-v" "--junitxml=/tmp/bifrost/e2e-results.xml")
+            PHASE2_CMD=("pytest" "tests/e2e/" "-v")
+            if [ -n "$LOG_DIR" ]; then
+                PHASE2_CMD+=("--junitxml=/tmp/bifrost/e2e-results.xml")
+            fi
             if [ "$COVERAGE" = true ]; then
                 PHASE2_CMD+=("--cov=src" "--cov-append" "--cov-report=term-missing" "--cov-report=xml:/app/coverage.xml")
             fi
 
             trap - ERR
             set +e
-            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE2_CMD[@]}" 2>&1 | tee -a "$LOG_DIR/test-runner.log"
+            if [ -n "$LOG_DIR" ]; then
+                docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE2_CMD[@]}" 2>&1 | tee -a "$LOG_DIR/test-runner.log"
+            else
+                docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE2_CMD[@]}"
+            fi
             TEST_EXIT_CODE=${PIPESTATUS[0]}
             set -e
 
@@ -677,7 +700,11 @@ if [ "$CLIENT_ONLY" = false ]; then
 
         trap - ERR
         set +e
-        docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PYTEST_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
+        if [ -n "$LOG_DIR" ]; then
+            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PYTEST_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
+        else
+            docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PYTEST_CMD[@]}"
+        fi
         TEST_EXIT_CODE=${PIPESTATUS[0]}
         set -e
 
@@ -781,28 +808,36 @@ echo "============================================================"
 echo "Test Summary"
 echo "============================================================"
 if [ "$CLIENT_ONLY" = false ]; then
-    # Parse JUnit XML for counts
-    TOTAL_TESTS=0
-    TOTAL_PASSED=0
-    TOTAL_FAILED=0
-    TOTAL_SKIPPED=0
-    for xml in "$LOG_DIR"/unit-results.xml "$LOG_DIR"/e2e-results.xml; do
-        if [ -f "$xml" ]; then
-            tests=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('tests','0'))" 2>/dev/null || echo 0)
-            failures=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('failures','0'))" 2>/dev/null || echo 0)
-            errors=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('errors','0'))" 2>/dev/null || echo 0)
-            skipped=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('skipped','0'))" 2>/dev/null || echo 0)
-            TOTAL_TESTS=$((TOTAL_TESTS + tests))
-            TOTAL_FAILED=$((TOTAL_FAILED + failures + errors))
-            TOTAL_SKIPPED=$((TOTAL_SKIPPED + skipped))
-        fi
-    done
-    TOTAL_PASSED=$((TOTAL_TESTS - TOTAL_FAILED - TOTAL_SKIPPED))
+    if [ -n "$LOG_DIR" ]; then
+        # Parse JUnit XML for counts (only available when not in CI mode)
+        TOTAL_TESTS=0
+        TOTAL_PASSED=0
+        TOTAL_FAILED=0
+        TOTAL_SKIPPED=0
+        for xml in "$LOG_DIR"/unit-results.xml "$LOG_DIR"/e2e-results.xml; do
+            if [ -f "$xml" ]; then
+                tests=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('tests','0'))" 2>/dev/null || echo 0)
+                failures=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('failures','0'))" 2>/dev/null || echo 0)
+                errors=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('errors','0'))" 2>/dev/null || echo 0)
+                skipped=$(python3 -c "import xml.etree.ElementTree as ET; ts=ET.parse('$xml').find('.//testsuite'); print(ts.get('skipped','0'))" 2>/dev/null || echo 0)
+                TOTAL_TESTS=$((TOTAL_TESTS + tests))
+                TOTAL_FAILED=$((TOTAL_FAILED + failures + errors))
+                TOTAL_SKIPPED=$((TOTAL_SKIPPED + skipped))
+            fi
+        done
+        TOTAL_PASSED=$((TOTAL_TESTS - TOTAL_FAILED - TOTAL_SKIPPED))
 
-    if [ $TEST_EXIT_CODE -eq 0 ]; then
-        echo "  Backend tests: PASSED ($TOTAL_PASSED passed, $TOTAL_SKIPPED skipped, $TOTAL_FAILED failed / $TOTAL_TESTS total)"
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "  Backend tests: PASSED ($TOTAL_PASSED passed, $TOTAL_SKIPPED skipped, $TOTAL_FAILED failed / $TOTAL_TESTS total)"
+        else
+            echo "  Backend tests: FAILED ($TOTAL_PASSED passed, $TOTAL_SKIPPED skipped, $TOTAL_FAILED failed / $TOTAL_TESTS total)"
+        fi
     else
-        echo "  Backend tests: FAILED ($TOTAL_PASSED passed, $TOTAL_SKIPPED skipped, $TOTAL_FAILED failed / $TOTAL_TESTS total)"
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "  Backend tests: PASSED"
+        else
+            echo "  Backend tests: FAILED (exit code $TEST_EXIT_CODE)"
+        fi
     fi
 fi
 if [ "$CLIENT_TESTS" = true ]; then
@@ -812,9 +847,11 @@ if [ "$CLIENT_TESTS" = true ]; then
         echo "  Playwright tests: FAILED (exit code $PLAYWRIGHT_EXIT_CODE)"
     fi
 fi
-echo ""
-echo "  Logs: $LOG_DIR/test-runner.log"
-echo "  Results: $LOG_DIR/*-results.xml"
+if [ -n "$LOG_DIR" ]; then
+    echo ""
+    echo "  Logs: $LOG_DIR/test-runner.log"
+    echo "  Results: $LOG_DIR/*-results.xml"
+fi
 echo "============================================================"
 
 # In wait mode, wait for user before cleanup

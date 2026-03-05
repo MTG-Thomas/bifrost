@@ -128,6 +128,8 @@ export function WorkflowEditDialog({
 
 	// General tab state
 	const [displayName, setDisplayName] = useState("");
+	const [description, setDescription] = useState("");
+	const [category, setCategory] = useState("");
 	const [tags, setTags] = useState<string[]>([]);
 
 	// Execution tab state
@@ -178,6 +180,8 @@ export function WorkflowEditDialog({
 
 			// General
 			setDisplayName(workflow.display_name ?? "");
+			setDescription(workflow.description ?? "");
+			setCategory(workflow.category ?? "General");
 			setTags(workflow.tags ?? []);
 
 			// Execution
@@ -233,6 +237,8 @@ export function WorkflowEditDialog({
 				organization_id: organizationId,
 				access_level: accessLevel,
 				display_name: displayName || null,
+				description: description || null,
+				category: category || "General",
 				tags: tags,
 				timeout_seconds: timeoutSeconds,
 				execution_mode: executionMode,
@@ -422,22 +428,29 @@ export function WorkflowEditDialog({
 							</div>
 
 							<div className="space-y-2">
-								<Label>Description</Label>
-								<p className="text-sm text-muted-foreground bg-muted/50 rounded-md px-3 py-2">
-									{workflow?.description || "No description"}
-								</p>
+								<Label htmlFor="description">Description</Label>
+								<Textarea
+									id="description"
+									value={description}
+									onChange={(e) => setDescription(e.target.value)}
+									placeholder="Describe what this workflow does..."
+									rows={3}
+								/>
 								<p className="text-xs text-muted-foreground">
-									Set from the function docstring in code
+									Initially set from code. Can be edited here or in manifest YAML.
 								</p>
 							</div>
 
 							<div className="space-y-2">
-								<Label>Category</Label>
-								<p className="text-sm text-muted-foreground bg-muted/50 rounded-md px-3 py-2">
-									{workflow?.category || "General"}
-								</p>
+								<Label htmlFor="category">Category</Label>
+								<Input
+									id="category"
+									value={category}
+									onChange={(e) => setCategory(e.target.value)}
+									placeholder="General"
+								/>
 								<p className="text-xs text-muted-foreground">
-									Set via the decorator in code
+									Initially set from code. Can be edited here or in manifest YAML.
 								</p>
 							</div>
 

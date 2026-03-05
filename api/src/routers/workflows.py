@@ -1104,6 +1104,14 @@ async def update_workflow(
         if "display_name" in request.model_fields_set:
             workflow.display_name = request.display_name
 
+        # Update description if provided
+        if "description" in request.model_fields_set:
+            workflow.description = request.description
+
+        # Update category if provided (category is non-nullable, fallback to "General")
+        if "category" in request.model_fields_set:
+            workflow.category = request.category or "General"
+
         # Update timeout_seconds if provided
         if request.timeout_seconds is not None:
             if request.timeout_seconds < 1 or request.timeout_seconds > 7200:

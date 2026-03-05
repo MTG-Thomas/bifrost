@@ -283,7 +283,7 @@ export function KnowledgeDocumentDrawer({
 							<TiptapEditor
 								content={content}
 								onChange={setContent}
-								className="h-full border-0 rounded-none grid grid-rows-[auto_1fr] [&>div:last-child]:min-h-0 [&>div:last-child]:overflow-y-auto [&_.tiptap-editor]:!max-h-none"
+								className="h-full border-0 rounded-none"
 							/>
 						</div>
 

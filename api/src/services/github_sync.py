@@ -2003,6 +2003,10 @@ class GitHubSyncService:
             "tags": getattr(mwf, "tags", []),
         }
 
+        # Only include description if manifest explicitly provides it
+        if mwf.description is not None:
+            wf_values["description"] = mwf.description
+
         ops: list[SyncOp] = []
 
         if existing_by_natural is not None:

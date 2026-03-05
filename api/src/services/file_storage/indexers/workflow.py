@@ -163,11 +163,14 @@ class WorkflowIndexer:
 
                     # Get workflow name from decorator or function name
                     workflow_name = kwargs.get("name") or node.name
-                    description = kwargs.get("description")
-                    if description is None:
+
+                    # Track description source: decorator kwarg vs docstring
+                    decorator_description = kwargs.get("description")
+                    docstring_description = None
+                    if decorator_description is None:
                         docstring = ast.get_docstring(node)
                         if docstring:
-                            description = docstring.strip().split("\n")[0].strip()
+                            docstring_description = docstring.strip().split("\n")[0].strip()
 
                     is_tool = kwargs.get("is_tool", False)
                     workflow_type = "tool" if is_tool else "workflow"
@@ -183,9 +186,6 @@ class WorkflowIndexer:
                         "name": workflow_name,
                         "function_name": function_name,
                         "path": path,
-                        "description": description,
-                        "category": kwargs.get("category", "General"),
-                        "tags": kwargs.get("tags", []),
                         "parameters_schema": parameters_schema,
                         "type": workflow_type,
                         "is_active": True,
@@ -193,6 +193,22 @@ class WorkflowIndexer:
                         "last_seen_at": now,
                         "updated_at": now,
                     }
+
+                    # description/category/tags: only set initial values (when
+                    # DB field is NULL). YAML manifest and UI edits are the
+                    # source of truth — the indexer never overwrites them.
+                    if existing_workflow.description is None:
+                        initial_desc = decorator_description or docstring_description
+                        if initial_desc:
+                            update_values["description"] = initial_desc
+
+                    if existing_workflow.category is None:
+                        update_values["category"] = kwargs.get("category", "General")
+
+                    if not existing_workflow.tags:
+                        tags_from_decorator = kwargs.get("tags")
+                        if tags_from_decorator:
+                            update_values["tags"] = tags_from_decorator
 
                     if was_inactive:
                         logger.info(f"Reactivating workflow: {workflow_name} ({function_name}) from {path}")
@@ -255,7 +271,6 @@ class WorkflowIndexer:
                         )
                         continue
 
-                    description = kwargs.get("description")
                     parameters_schema = self._extract_parameters_from_ast(node)
 
                     if not existing_dp.is_active:
@@ -264,21 +279,36 @@ class WorkflowIndexer:
                     # Only update code-derived fields and valid decorator params.
                     # Operational settings (timeout_seconds, cache_ttl_seconds)
                     # are API/UI-only — never set from code.
+                    dp_update_values: dict[str, Any] = {
+                        "name": provider_name,
+                        "parameters_schema": parameters_schema,
+                        "type": "data_provider",
+                        "is_active": True,
+                        "is_orphaned": False,
+                        "last_seen_at": now,
+                        "updated_at": now,
+                    }
+
+                    # description/category/tags: only set initial values (when
+                    # DB field is NULL). YAML manifest and UI edits are the
+                    # source of truth — the indexer never overwrites them.
+                    if existing_dp.description is None:
+                        desc = kwargs.get("description")
+                        if desc:
+                            dp_update_values["description"] = desc
+
+                    if existing_dp.category is None:
+                        dp_update_values["category"] = kwargs.get("category", "General")
+
+                    if not existing_dp.tags:
+                        tags_from_decorator = kwargs.get("tags")
+                        if tags_from_decorator:
+                            dp_update_values["tags"] = tags_from_decorator
+
                     stmt = (
                         update(Workflow)
                         .where(Workflow.id == existing_dp.id)
-                        .values(
-                            name=provider_name,
-                            description=description,
-                            category=kwargs.get("category", "General"),
-                            tags=kwargs.get("tags", []),
-                            parameters_schema=parameters_schema,
-                            type="data_provider",
-                            is_active=True,
-                            is_orphaned=False,
-                            last_seen_at=now,
-                            updated_at=now,
-                        )
+                        .values(**dp_update_values)
                     )
                     await self.db.execute(stmt)
                     logger.debug(f"Enriched data provider: {provider_name} ({function_name}) from {path}")

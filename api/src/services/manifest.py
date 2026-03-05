@@ -71,6 +71,7 @@ class ManifestWorkflow(BaseModel):
     endpoint_enabled: bool = Field(default=False, description="Expose as HTTP API endpoint")
     timeout_seconds: int = Field(default=1800, description="Max execution time")
     public_endpoint: bool = Field(default=False, description="Allow unauthenticated API access")
+    description: str | None = Field(default=None, description="Workflow description")
     category: str = Field(default="General", description="Category for organization")
     tags: list[str] = Field(default_factory=list, description="Tags for filtering")
 
