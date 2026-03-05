@@ -202,8 +202,10 @@ class WorkflowIndexer:
                         if initial_desc:
                             update_values["description"] = initial_desc
 
-                    if existing_workflow.category is None:
-                        update_values["category"] = kwargs.get("category", "General")
+                    if existing_workflow.category is None or existing_workflow.category == "General":
+                        code_category = kwargs.get("category", "General")
+                        if code_category != "General":
+                            update_values["category"] = code_category
 
                     if not existing_workflow.tags:
                         tags_from_decorator = kwargs.get("tags")
@@ -297,8 +299,10 @@ class WorkflowIndexer:
                         if desc:
                             dp_update_values["description"] = desc
 
-                    if existing_dp.category is None:
-                        dp_update_values["category"] = kwargs.get("category", "General")
+                    if existing_dp.category is None or existing_dp.category == "General":
+                        code_category = kwargs.get("category", "General")
+                        if code_category != "General":
+                            dp_update_values["category"] = code_category
 
                     if not existing_dp.tags:
                         tags_from_decorator = kwargs.get("tags")
