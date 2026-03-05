@@ -83,7 +83,6 @@ from src.models.contracts.cli import (
     SDKBatchDocumentResponse,
     SDKBatchDeleteResponse,
 )
-from src.core.cache import config_hash_key, get_redis
 from src.core.pubsub import publish_cli_session_update, publish_execution_log, publish_execution_update, publish_history_update
 from src.repositories.cli_sessions import CLISessionRepository
 
@@ -360,46 +359,45 @@ async def cli_get_config(
     db: AsyncSession = Depends(get_db),
 ) -> CLIConfigValue | None:
     """Get a config value via CLI API."""
+    from src.core.config_resolver import ConfigResolver
+
     org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+    scope = org_id or "GLOBAL"
 
-    async with get_redis() as r:
-        data = await r.hget(config_hash_key(org_id), request.key)  # type: ignore[misc]
+    resolver = ConfigResolver()
+    all_config = await resolver.load_config_for_scope(scope, db=db)
 
-        if data is None:
-            return None
+    if request.key not in all_config:
+        return None
 
+    entry = all_config[request.key]
+    raw_value = entry.get("value")
+    config_type = entry.get("type", "string")
+
+    if config_type == "secret" and raw_value:
+        from src.core.security import decrypt_secret
         try:
-            cache_entry = json.loads(data)
+            raw_value = decrypt_secret(raw_value)
+        except Exception:
+            raw_value = None
+    elif config_type == "json" and isinstance(raw_value, str):
+        try:
+            raw_value = json.loads(raw_value)
         except json.JSONDecodeError:
-            return None
+            pass
+    elif config_type == "bool":
+        raw_value = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
+    elif config_type == "int":
+        try:
+            raw_value = int(raw_value)
+        except (ValueError, TypeError):
+            pass
 
-        raw_value = cache_entry.get("value")
-        config_type = cache_entry.get("type", "string")
-
-        if config_type == "secret" and raw_value:
-            from src.core.security import decrypt_secret
-            try:
-                raw_value = decrypt_secret(raw_value)
-            except Exception:
-                raw_value = None
-        elif config_type == "json" and isinstance(raw_value, str):
-            try:
-                raw_value = json.loads(raw_value)
-            except json.JSONDecodeError:
-                pass
-        elif config_type == "bool":
-            raw_value = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
-        elif config_type == "int":
-            try:
-                raw_value = int(raw_value)
-            except (ValueError, TypeError):
-                pass
-
-        return CLIConfigValue(
-            key=request.key,
-            value=raw_value,
-            config_type=config_type,
-        )
+    return CLIConfigValue(
+        key=request.key,
+        value=raw_value,
+        config_type=config_type,
+    )
 
 
 @router.post(
@@ -485,42 +483,40 @@ async def cli_list_config(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """List all config values via CLI API."""
+    from src.core.config_resolver import ConfigResolver
+
     org_id = await _get_cli_org_id(current_user.user_id, request.scope, db)
+    scope = org_id or "GLOBAL"
 
-    async with get_redis() as r:
-        all_data = await r.hgetall(config_hash_key(org_id))  # type: ignore[misc]
+    resolver = ConfigResolver()
+    all_config = await resolver.load_config_for_scope(scope, db=db)
 
-        if not all_data:
-            return {}
+    if not all_config:
+        return {}
 
-        config_dict: dict[str, Any] = {}
-        for config_key, data in all_data.items():
+    config_dict: dict[str, Any] = {}
+    for config_key, entry in all_config.items():
+        raw_value = entry.get("value")
+        config_type = entry.get("type", "string")
+
+        if config_type == "secret":
+            config_dict[config_key] = "[SECRET]"
+        elif config_type == "json" and isinstance(raw_value, str):
             try:
-                cache_entry = json.loads(data)
+                config_dict[config_key] = json.loads(raw_value)
             except json.JSONDecodeError:
-                continue
-
-            raw_value = cache_entry.get("value")
-            config_type = cache_entry.get("type", "string")
-
-            if config_type == "secret":
-                config_dict[config_key] = "[SECRET]"
-            elif config_type == "json" and isinstance(raw_value, str):
-                try:
-                    config_dict[config_key] = json.loads(raw_value)
-                except json.JSONDecodeError:
-                    config_dict[config_key] = raw_value
-            elif config_type == "bool":
-                config_dict[config_key] = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
-            elif config_type == "int":
-                try:
-                    config_dict[config_key] = int(raw_value)
-                except (ValueError, TypeError):
-                    config_dict[config_key] = raw_value
-            else:
                 config_dict[config_key] = raw_value
+        elif config_type == "bool":
+            config_dict[config_key] = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
+        elif config_type == "int":
+            try:
+                config_dict[config_key] = int(raw_value)
+            except (ValueError, TypeError):
+                config_dict[config_key] = raw_value
+        else:
+            config_dict[config_key] = raw_value
 
-        return config_dict
+    return config_dict
 
 
 @router.post(
