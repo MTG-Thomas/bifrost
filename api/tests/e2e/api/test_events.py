@@ -967,13 +967,17 @@ class TestDeliveryRetry:
         deliveries = result["deliveries"]
         delivery = deliveries[0]
 
-        # Try to retry non-failed delivery
-        if delivery["status"] not in ["failed", "skipped"]:
-            response = e2e_client.post(
-                f"/api/events/deliveries/{delivery['id']}/retry",
-                headers=platform_admin.headers,
+        # If delivery already raced to failed/skipped, the retry test is moot
+        if delivery["status"] in ["failed", "skipped"]:
+            pytest.skip(
+                f"Delivery already reached '{delivery['status']}' before retry test could run (race condition)"
             )
-            assert response.status_code == 400, f"Expected 400 for non-failed delivery: {response.text}"
+
+        response = e2e_client.post(
+            f"/api/events/deliveries/{delivery['id']}/retry",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 400, f"Expected 400 for non-failed delivery: {response.text}"
 
 
 # =============================================================================
