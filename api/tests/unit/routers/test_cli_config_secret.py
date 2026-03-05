@@ -1,6 +1,5 @@
 """Tests for secret decryption in CLI config/get endpoint."""
 
-import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,13 +18,10 @@ class TestConfigGetDecryptsSecrets:
         plaintext = "my_api_key_12345"
         encrypted = encrypt_secret(plaintext)
 
-        # Simulate what cache warming stores in Redis
-        cache_entry = json.dumps({"value": encrypted, "type": "secret"})
-
-        mock_redis = AsyncMock()
-        mock_redis.hget = AsyncMock(return_value=cache_entry)
-        mock_redis.__aenter__ = AsyncMock(return_value=mock_redis)
-        mock_redis.__aexit__ = AsyncMock(return_value=False)
+        mock_resolver = AsyncMock()
+        mock_resolver.load_config_for_scope = AsyncMock(return_value={
+            "test_secret": {"value": encrypted, "type": "secret"},
+        })
 
         mock_user = MagicMock()
         mock_user.user_id = "test-user-id"
@@ -34,7 +30,7 @@ class TestConfigGetDecryptsSecrets:
         request = CLIConfigGetRequest(key="test_secret")
 
         with patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value="org-123"), \
-             patch("src.routers.cli.get_redis", return_value=mock_redis):
+             patch("src.core.config_resolver.ConfigResolver", return_value=mock_resolver):
             result = await cli_get_config(request=request, current_user=mock_user, db=AsyncMock())
 
         assert isinstance(result, CLIConfigValue)
@@ -49,13 +45,10 @@ class TestConfigGetDecryptsSecrets:
         from src.routers.cli import cli_get_config
         from src.models.contracts.cli import CLIConfigGetRequest, CLIConfigValue
 
-        # Simulate a corrupt encrypted value
-        cache_entry = json.dumps({"value": "not-valid-encrypted-data", "type": "secret"})
-
-        mock_redis = AsyncMock()
-        mock_redis.hget = AsyncMock(return_value=cache_entry)
-        mock_redis.__aenter__ = AsyncMock(return_value=mock_redis)
-        mock_redis.__aexit__ = AsyncMock(return_value=False)
+        mock_resolver = AsyncMock()
+        mock_resolver.load_config_for_scope = AsyncMock(return_value={
+            "bad_secret": {"value": "not-valid-encrypted-data", "type": "secret"},
+        })
 
         mock_user = MagicMock()
         mock_user.user_id = "test-user-id"
@@ -63,7 +56,7 @@ class TestConfigGetDecryptsSecrets:
         request = CLIConfigGetRequest(key="bad_secret")
 
         with patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value="org-123"), \
-             patch("src.routers.cli.get_redis", return_value=mock_redis):
+             patch("src.core.config_resolver.ConfigResolver", return_value=mock_resolver):
             result = await cli_get_config(request=request, current_user=mock_user, db=AsyncMock())
 
         assert isinstance(result, CLIConfigValue)
@@ -76,12 +69,11 @@ class TestConfigGetDecryptsSecrets:
         from src.models.contracts.cli import CLIConfigGetRequest, CLIConfigValue
 
         plain_value = "just_a_string"
-        cache_entry = json.dumps({"value": plain_value, "type": "string"})
 
-        mock_redis = AsyncMock()
-        mock_redis.hget = AsyncMock(return_value=cache_entry)
-        mock_redis.__aenter__ = AsyncMock(return_value=mock_redis)
-        mock_redis.__aexit__ = AsyncMock(return_value=False)
+        mock_resolver = AsyncMock()
+        mock_resolver.load_config_for_scope = AsyncMock(return_value={
+            "normal_key": {"value": plain_value, "type": "string"},
+        })
 
         mock_user = MagicMock()
         mock_user.user_id = "test-user-id"
@@ -89,7 +81,7 @@ class TestConfigGetDecryptsSecrets:
         request = CLIConfigGetRequest(key="normal_key")
 
         with patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value="org-123"), \
-             patch("src.routers.cli.get_redis", return_value=mock_redis):
+             patch("src.core.config_resolver.ConfigResolver", return_value=mock_resolver):
             result = await cli_get_config(request=request, current_user=mock_user, db=AsyncMock())
 
         assert isinstance(result, CLIConfigValue)
@@ -109,16 +101,11 @@ class TestConfigListMasksSecrets:
 
         encrypted = encrypt_secret("real_api_key_value")
 
-        # Redis hgetall returns all config entries
-        all_data = {
-            "normal_key": json.dumps({"value": "normal_value", "type": "string"}),
-            "secret_key": json.dumps({"value": encrypted, "type": "secret"}),
-        }
-
-        mock_redis = AsyncMock()
-        mock_redis.hgetall = AsyncMock(return_value=all_data)
-        mock_redis.__aenter__ = AsyncMock(return_value=mock_redis)
-        mock_redis.__aexit__ = AsyncMock(return_value=False)
+        mock_resolver = AsyncMock()
+        mock_resolver.load_config_for_scope = AsyncMock(return_value={
+            "normal_key": {"value": "normal_value", "type": "string"},
+            "secret_key": {"value": encrypted, "type": "secret"},
+        })
 
         mock_user = MagicMock()
         mock_user.user_id = "test-user-id"
@@ -126,7 +113,7 @@ class TestConfigListMasksSecrets:
         request = CLIConfigListRequest()
 
         with patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value="org-123"), \
-             patch("src.routers.cli.get_redis", return_value=mock_redis):
+             patch("src.core.config_resolver.ConfigResolver", return_value=mock_resolver):
             result = await cli_list_config(request=request, current_user=mock_user, db=AsyncMock())
 
         assert result["normal_key"] == "normal_value"
@@ -142,14 +129,10 @@ class TestConfigListMasksSecrets:
         from src.routers.cli import cli_list_config
         from src.models.contracts.cli import CLIConfigListRequest
 
-        all_data = {
-            "empty_secret": json.dumps({"value": None, "type": "secret"}),
-        }
-
-        mock_redis = AsyncMock()
-        mock_redis.hgetall = AsyncMock(return_value=all_data)
-        mock_redis.__aenter__ = AsyncMock(return_value=mock_redis)
-        mock_redis.__aexit__ = AsyncMock(return_value=False)
+        mock_resolver = AsyncMock()
+        mock_resolver.load_config_for_scope = AsyncMock(return_value={
+            "empty_secret": {"value": None, "type": "secret"},
+        })
 
         mock_user = MagicMock()
         mock_user.user_id = "test-user-id"
@@ -157,7 +140,7 @@ class TestConfigListMasksSecrets:
         request = CLIConfigListRequest()
 
         with patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value="org-123"), \
-             patch("src.routers.cli.get_redis", return_value=mock_redis):
+             patch("src.core.config_resolver.ConfigResolver", return_value=mock_resolver):
             result = await cli_list_config(request=request, current_user=mock_user, db=AsyncMock())
 
         assert result["empty_secret"] == "[SECRET]"

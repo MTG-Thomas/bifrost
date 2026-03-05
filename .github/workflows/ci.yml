@@ -31,7 +31,7 @@ jobs:
       - name: Run all tests with coverage
         run: |
           chmod +x test.sh
-          ./test.sh --coverage
+          ./test.sh --coverage --ci
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

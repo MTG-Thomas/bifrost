@@ -34,6 +34,7 @@ def _mock_workflow(wf_id=WF_ID, name="det_wf"):
     wf.timeout_seconds = 1800
     wf.public_endpoint = False
     wf.category = "General"
+    wf.description = None
     wf.tags = []
     wf.is_active = True
     return wf
