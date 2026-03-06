@@ -435,6 +435,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             session_id=str(execution.session_id) if execution.session_id else None,
             # Admin-only fields (null for non-admins)
             variables=execution.variables if user.is_superuser else None,
+            execution_context=execution.execution_context if user.is_superuser else None,
             peak_memory_bytes=execution.peak_memory_bytes if user.is_superuser else None,
             cpu_total_seconds=execution.cpu_total_seconds if user.is_superuser else None,
             # ROI economics
