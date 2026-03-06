@@ -454,6 +454,7 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
             "metrics": result.get("metrics") or metrics,
             "cached": result.get("cached", False),
             "cache_expires_at": result.get("cache_expires_at"),
+            "execution_context": result.get("execution_context"),
             "worker_id": worker_id,
         }
 

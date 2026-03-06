@@ -282,6 +282,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             "error_type": exec_result.error_type,
             "cached": exec_result.cached,
             "cache_expires_at": exec_result.cache_expires_at,
+            "execution_context": exec_result.execution_context,
             "metrics": {
                 "peak_memory_bytes": metrics.peak_memory_bytes,
                 "cpu_user_seconds": metrics.cpu_user_seconds,
