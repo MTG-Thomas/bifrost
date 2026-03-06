@@ -628,10 +628,7 @@ export function ExecutionDetails({
 							requiredMemoryMb: streamState.requiredMemoryMb,
 						} : undefined}
 						errorMessage={execution.error_message}
-						executedBy={execution.executed_by}
-						orgId={execution.org_id}
-						timeSaved={execution.time_saved}
-						value={execution.value}
+						executionContext={execution.execution_context}
 					/>
 				</div>
 			</div>

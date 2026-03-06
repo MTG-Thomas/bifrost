@@ -91,14 +91,8 @@ interface ExecutionSidebarProps {
 	};
 	/** Error message from the execution */
 	errorMessage?: string | null;
-	/** Caller user ID */
-	executedBy?: string | null;
-	/** Organization ID */
-	orgId?: string | null;
-	/** ROI: time saved in minutes */
-	timeSaved?: number;
-	/** ROI: value generated */
-	value?: number;
+	/** Persisted execution context (admin only) */
+	executionContext?: Record<string, unknown> | null;
 }
 
 export function ExecutionSidebar({
@@ -121,10 +115,7 @@ export function ExecutionSidebar({
 	aiTotals,
 	streamState,
 	errorMessage,
-	executedBy,
-	orgId,
-	timeSaved,
-	value,
+	executionContext,
 }: ExecutionSidebarProps) {
 	const [isAiUsageOpen, setIsAiUsageOpen] = useState(true);
 
@@ -250,7 +241,7 @@ export function ExecutionSidebar({
 			</Card>
 
 			{/* Execution Context - Platform admins only */}
-			{isPlatformAdmin && isComplete && (
+			{executionContext && (
 				<motion.div
 					initial={{ opacity: 0, y: 20 }}
 					animate={{ opacity: 1, y: 0 }}
@@ -291,22 +282,7 @@ context.roi.time_saved   # ROI tracking`}
 						</CardHeader>
 						<CardContent>
 							<VariablesTreeView
-								data={{
-									caller: {
-										name: executedByName ?? "Unknown",
-										email: executedByEmail ?? null,
-										user_id: executedBy ?? "Unknown",
-									},
-									scope: {
-										org_id: orgId ?? null,
-										org_name: orgName ?? null,
-									},
-									roi: {
-										time_saved: timeSaved ?? 0,
-										value: value ?? 0,
-									},
-									parameters: (inputData as Record<string, unknown>) ?? {},
-								}}
+								data={executionContext as Record<string, unknown>}
 							/>
 						</CardContent>
 					</Card>
