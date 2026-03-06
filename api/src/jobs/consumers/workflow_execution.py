@@ -236,6 +236,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             error_type=result.get("error_type"),
             duration_ms=duration_ms,
             variables=result.get("variables"),
+            execution_context=result.get("execution_context"),
             metrics=result.get("metrics"),
             time_saved=roi_time_saved,
             value=roi_value,
