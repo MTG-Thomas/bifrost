@@ -151,6 +151,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         duration_ms: int | None = None,
         logs: list[dict] | None = None,
         variables: dict | None = None,
+        execution_context: dict | None = None,
         metrics: dict | None = None,
         time_saved: int | None = None,
         value: float | None = None,
@@ -167,6 +168,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             duration_ms: Execution duration in milliseconds
             logs: Execution logs to persist
             variables: Runtime variables
+            execution_context: Execution context (trigger, user, source metadata)
             metrics: Resource metrics (peak_memory_bytes, cpu_*_seconds)
             time_saved: Final time saved in minutes
             value: Final value generated
@@ -203,6 +205,9 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         if variables is not None:
             update_values["variables"] = _make_json_safe(variables)
+
+        if execution_context is not None:
+            update_values["execution_context"] = _make_json_safe(execution_context)
 
         # Resource metrics
         if metrics is not None:
@@ -683,6 +688,7 @@ async def update_execution(
     duration_ms: int | None = None,
     logs: list[dict] | None = None,
     variables: dict | None = None,
+    execution_context: dict | None = None,
     metrics: dict | None = None,
     time_saved: int | None = None,
     value: float | None = None,
@@ -712,6 +718,7 @@ async def update_execution(
             duration_ms=duration_ms,
             logs=logs,
             variables=variables,
+            execution_context=execution_context,
             metrics=metrics,
             time_saved=time_saved,
             value=value,
