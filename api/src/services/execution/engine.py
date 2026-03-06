@@ -130,6 +130,9 @@ class ExecutionResult:
     # ROI (final values after execution)
     roi: dict[str, Any] | None = None
 
+    # Persisted execution context snapshot
+    execution_context: dict[str, Any] | None = None
+
     # Error details
     error_message: str | None = None
     error_type: str | None = None
@@ -421,6 +424,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             variables=scrubbed_vars or {},
             integration_calls=context._integration_calls,
             roi=roi_data,
+            execution_context=context.to_public_dict(),
             cached=False,
             cache_expires_at=cache_expires_at_str
         )
@@ -510,6 +514,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             logs=scrubbed_logs or [],
             variables=scrubbed_vars or {},
             integration_calls=context._integration_calls,
+            execution_context=context.to_public_dict(),
             error_message=scrubbed_err,
             error_type=error_type
         )
@@ -550,6 +555,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             logs=scrubbed_logs or [],
             variables=scrubbed_vars or {},
             integration_calls=context._integration_calls,
+            execution_context=context.to_public_dict(),
             error_message=scrubbed_err,
             error_type=type(e).__name__
         )
@@ -610,6 +616,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             logs=scrubbed_logs or [],
             variables=scrubbed_vars or {},
             integration_calls=context._integration_calls,
+            execution_context=context.to_public_dict(),
             error_message=scrubbed_err,
             error_type=type(e).__name__
         )
@@ -1169,5 +1176,6 @@ def _build_cached_result(
         variables=None,
         integration_calls=[],
         cached=True,
-        cache_expires_at=expires_at
+        cache_expires_at=expires_at,
+        execution_context=None
     )
