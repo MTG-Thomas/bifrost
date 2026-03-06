@@ -45,6 +45,7 @@ class Execution(Base):
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     result_type: Mapped[str | None] = mapped_column(String(50), default=None)
     variables: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    execution_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, default=None)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
