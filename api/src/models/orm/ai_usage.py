@@ -26,6 +26,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.orm.base import Base
 
 if TYPE_CHECKING:
+    from src.models.orm.agent_runs import AgentRun
     from src.models.orm.agents import Conversation, Message
     from src.models.orm.executions import Execution
     from src.models.orm.organizations import Organization
@@ -78,6 +79,9 @@ class AIUsage(Base):
     conversation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), default=None
     )
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), default=None
+    )
     message_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL"), default=None
     )
@@ -107,13 +111,14 @@ class AIUsage(Base):
     # Relationships
     execution: Mapped["Execution | None"] = relationship(back_populates="ai_usages")
     conversation: Mapped["Conversation | None"] = relationship(back_populates="ai_usages")
+    agent_run: Mapped["AgentRun | None"] = relationship(back_populates="ai_usages")
     message: Mapped["Message | None"] = relationship()
     organization: Mapped["Organization | None"] = relationship()
     user: Mapped["User | None"] = relationship()
 
     __table_args__ = (
         CheckConstraint(
-            "execution_id IS NOT NULL OR conversation_id IS NOT NULL",
+            "execution_id IS NOT NULL OR conversation_id IS NOT NULL OR agent_run_id IS NOT NULL",
             name="ai_usage_context_check",
         ),
         Index(
@@ -125,6 +130,11 @@ class AIUsage(Base):
             "ix_ai_usage_conversation",
             "conversation_id",
             postgresql_where=text("conversation_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_ai_usage_agent_run",
+            "agent_run_id",
+            postgresql_where=text("agent_run_id IS NOT NULL"),
         ),
         Index("ix_ai_usage_org", "organization_id"),
         Index("ix_ai_usage_timestamp", "timestamp"),

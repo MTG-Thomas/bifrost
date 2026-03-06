@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "@/components/layout/Layout";
 import { ContentLayout } from "@/components/layout/ContentLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
@@ -40,6 +40,9 @@ const Forms = lazyWithReload(() =>
 );
 const Agents = lazyWithReload(() =>
 	import("@/pages/Agents").then((m) => ({ default: m.Agents })),
+);
+const AgentRunDetail = lazyWithReload(() =>
+	import("@/pages/AgentRunDetail").then((m) => ({ default: m.AgentRunDetail })),
 );
 const FormBuilder = lazyWithReload(() =>
 	import("@/pages/FormBuilder").then((m) => ({ default: m.FormBuilder })),
@@ -410,6 +413,11 @@ function AppRoutes() {
 							}
 						/>
 
+						{/* Agent Runs list — redirect to History with agents tab */}
+						<Route
+							path="agent-runs"
+							element={<Navigate to="/history?type=agents" replace />}
+						/>
 						{/* Knowledge - PlatformAdmin only */}
 						<Route
 							path="knowledge"
@@ -602,6 +610,15 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute requireOrgUser>
 									<ExecutionDetails />
+								</ProtectedRoute>
+							}
+						/>
+						{/* Agent Run Detail - manages its own padding like ExecutionDetails */}
+						<Route
+							path="agent-runs/:runId"
+							element={
+								<ProtectedRoute>
+									<AgentRunDetail />
 								</ProtectedRoute>
 							}
 						/>

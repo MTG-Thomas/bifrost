@@ -215,9 +215,11 @@ class EventSubscription(Base):
     event_source_id: Mapped[UUID] = mapped_column(
         ForeignKey("event_sources.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
-    workflow_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
+    workflow_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=True
     )
+    target_type: Mapped[str] = mapped_column(String(50), nullable=False, default="workflow")
+    agent_id: Mapped[UUID | None] = mapped_column(ForeignKey("agents.id", ondelete="CASCADE"), default=None)
 
     # Optional filtering
     event_type: Mapped[str | None] = mapped_column(
@@ -248,7 +250,8 @@ class EventSubscription(Base):
 
     # Relationships
     event_source: Mapped["EventSource"] = relationship(back_populates="subscriptions")
-    workflow: Mapped["Workflow"] = relationship(lazy="joined")
+    workflow: Mapped["Workflow | None"] = relationship(lazy="joined", foreign_keys=[workflow_id])
+    agent = relationship("Agent", lazy="joined", foreign_keys=[agent_id])
     deliveries: Mapped[list["EventDelivery"]] = relationship(
         back_populates="subscription",
         cascade="all, delete-orphan",
@@ -258,12 +261,9 @@ class EventSubscription(Base):
         Index("ix_event_subscriptions_event_source_id", "event_source_id"),
         Index("ix_event_subscriptions_workflow_id", "workflow_id"),
         Index("ix_event_subscriptions_is_active", "is_active"),
-        Index(
-            "ix_event_subscriptions_unique_source_workflow",
-            "event_source_id",
-            "workflow_id",
-            unique=True,
-        ),
+        # Note: unique constraint on (event_source_id, workflow_id) removed
+        # since workflow_id is now nullable (agent targets don't have workflow_id)
+        Index("ix_event_subscriptions_agent_id", "agent_id"),
     )
 
 
@@ -351,13 +351,18 @@ class EventDelivery(Base):
     event_subscription_id: Mapped[UUID] = mapped_column(
         ForeignKey("event_subscriptions.id", ondelete="CASCADE"), nullable=False
     )
-    workflow_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
+    workflow_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=True
     )
 
     # Execution reference (set when queued, before Execution record exists)
     # No FK constraint - Execution is created asynchronously by worker
     execution_id: Mapped[UUID | None] = mapped_column(default=None)
+
+    # Agent run reference (set when agent run is queued)
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), default=None
+    )
 
     # Delivery status
     status: Mapped[EventDeliveryStatus] = mapped_column(
@@ -394,12 +399,14 @@ class EventDelivery(Base):
         foreign_keys=[execution_id],
         primaryjoin="EventDelivery.execution_id == Execution.id",
     )
+    agent_run = relationship("AgentRun", lazy="joined", foreign_keys=[agent_run_id])
 
     __table_args__ = (
         Index("ix_event_deliveries_event_id", "event_id"),
         Index("ix_event_deliveries_subscription_id", "event_subscription_id"),
         Index("ix_event_deliveries_workflow_id", "workflow_id"),
         Index("ix_event_deliveries_execution_id", "execution_id"),
+        Index("ix_event_deliveries_agent_run_id", "agent_run_id"),
         Index("ix_event_deliveries_status", "status"),
         # For cleanup job
         Index("ix_event_deliveries_created_at", "created_at"),

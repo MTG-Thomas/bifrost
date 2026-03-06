@@ -38,6 +38,7 @@ from src.services.llm import (
     ToolDefinition,
     get_llm_client,
 )
+from src.services.execution.agent_helpers import resolve_agent_tools
 from src.services.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -207,12 +208,7 @@ class AgentExecutor:
             if tool_definitions:
                 logger.debug(f"Tools: {[t.name for t in tool_definitions]}")
 
-            # 4b. Add delegation tools if agent has delegations
-            if agent:
-                delegation_tools = await self._get_delegation_tools(agent)
-                tool_definitions.extend(delegation_tools)
-                if delegation_tools:
-                    logger.info(f"Added {len(delegation_tools)} delegation tools")
+            # 4b. Delegation tools are now included by resolve_agent_tools
 
             # 5. Build message history
             messages = await self._build_message_history(agent, conversation)
@@ -498,97 +494,16 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         """
         Get tool definitions for an agent from its assigned tools.
 
-        Tool Priority (for conflict resolution):
+        Delegates to the shared resolve_agent_tools helper which handles:
         1. System tools (unprefixed, e.g., "execute_workflow", "search_knowledge")
         2. Workflow tools (prefixed, e.g., "halopsa_list_tickets", "wf_add_comment")
+        3. Delegation tools (e.g., "delegate_to_agent_name")
 
         When a workflow tool's normalized name collides with a system tool,
-        the system tool wins and a notification is created.
+        the system tool wins and a warning is logged.
         """
-        tools: list[ToolDefinition] = []
-        seen_names: dict[str, str] = {}  # name → source description for conflict tracking
-        conflicts: list[tuple[str, str, str]] = []  # (name, loser_source, winner_source)
-
-        # 1. System tools first (they always win conflicts)
-        system_tool_ids = list(agent.system_tools or [])
-
-        # Auto-add search_knowledge when agent has knowledge sources
-        if agent.knowledge_sources and "search_knowledge" not in system_tool_ids:
-            system_tool_ids.append("search_knowledge")
-            logger.info(
-                f"Agent '{agent.name}' has knowledge sources {agent.knowledge_sources}, "
-                "auto-adding search_knowledge system tool"
-            )
-
-        if system_tool_ids:
-            system_tool_defs = self._get_system_tool_definitions(system_tool_ids)
-            for tool in system_tool_defs:
-                seen_names[tool.name] = f"system tool '{tool.name}'"
-                tools.append(tool)
-            logger.info(f"Agent '{agent.name}' has {len(system_tool_defs)} system tools")
-
-        # 2. Workflow tools (sorted by ID for determinism)
-        tool_ids = [tool.id for tool in agent.tools]
-        logger.debug(f"Agent '{agent.name}' has {len(agent.tools)} assigned workflow tools: {tool_ids}")
-
-        if tool_ids:
-            tool_definitions = await self.tool_registry.get_tool_definitions(tool_ids)
-            logger.debug(f"Tool registry returned {len(tool_definitions)} definitions for IDs {tool_ids}")
-
-            # Sort by ID for deterministic conflict resolution
-            tool_definitions_sorted = sorted(tool_definitions, key=lambda t: str(t.id))
-
-            for td in tool_definitions_sorted:
-                if td.name in seen_names:
-                    # Conflict: this workflow tool's name collides with existing tool
-                    conflicts.append((
-                        td.name,
-                        f"workflow '{td.workflow_name}'",
-                        seen_names[td.name],
-                    ))
-                    logger.warning(
-                        f"Tool name conflict: workflow '{td.workflow_name}' ({td.name}) "
-                        f"hidden by {seen_names[td.name]}"
-                    )
-                else:
-                    seen_names[td.name] = f"workflow '{td.workflow_name}'"
-                    self._tool_workflow_id_map[td.name] = td.id
-                    tools.append(
-                        ToolDefinition(
-                            name=td.name,
-                            description=td.description,
-                            parameters=td.parameters,
-                        )
-                    )
-        else:
-            logger.info(f"Agent '{agent.name}' has no workflow tools assigned")
-
-        # 3. Notify about conflicts (async, non-blocking)
-        if conflicts:
-            await self._notify_tool_conflicts(agent, conflicts)
-
+        tools, self._tool_workflow_id_map = await resolve_agent_tools(agent, self.session)
         return tools
-
-    def _get_system_tool_definitions(self, tool_ids: list[str]) -> list[ToolDefinition]:
-        """Get ToolDefinition objects for system tools by ID."""
-        from src.services.mcp_server.server import get_system_tools
-
-        all_system_tools = get_system_tools()
-        tool_map = {t["id"]: t for t in all_system_tools}
-
-        definitions = []
-        for tool_id in tool_ids:
-            if tool_id in tool_map:
-                t = tool_map[tool_id]
-                definitions.append(
-                    ToolDefinition(
-                        name=t["id"],
-                        description=t["description"],
-                        parameters=t["parameters"],
-                    )
-                )
-
-        return definitions
 
     async def _notify_tool_conflicts(
         self,
@@ -650,7 +565,8 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
         # Add system prompt (use agent's prompt or configurable default for agentless chat)
         if agent:
-            system_prompt = agent.system_prompt
+            from src.services.execution.agent_helpers import build_agent_system_prompt
+            system_prompt = build_agent_system_prompt(agent, execution_context={"mode": "chat"})
         else:
             system_prompt = await self._get_default_system_prompt()
         messages.append(
@@ -1242,50 +1158,6 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         count = result.scalar() or 0
         return count == 0
 
-    async def _get_delegation_tools(self, agent: Agent) -> list[ToolDefinition]:
-        """
-        Get tool definitions for delegated agents.
-
-        Each delegated agent becomes a tool that can be called to delegate
-        a task to that agent.
-        """
-        # Get delegated agent IDs
-        delegated_ids = [d.id for d in agent.delegated_agents]
-
-        if not delegated_ids:
-            return []
-
-        # Fetch the delegated agents
-        result = await self.session.execute(
-            select(Agent)
-            .where(Agent.id.in_(delegated_ids))
-            .where(Agent.is_active.is_(True))
-        )
-        delegated_agents = result.scalars().all()
-
-        tools = []
-        for delegated in delegated_agents:
-            # Create a tool for each delegated agent
-            tool_name = f"delegate_to_{delegated.name.lower().replace(' ', '_')}"
-            tools.append(
-                ToolDefinition(
-                    name=tool_name,
-                    description=f"Delegate a task to {delegated.name}. {delegated.description or ''}",
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "task": {
-                                "type": "string",
-                                "description": "The task or question to delegate to this agent",
-                            },
-                        },
-                        "required": ["task"],
-                    },
-                )
-            )
-
-        return tools
-
     async def _execute_knowledge_search(
         self,
         tool_call: ToolCallRequest,
@@ -1386,23 +1258,20 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         start_time = time.time()
 
         try:
-            # Extract agent name from tool call name (e.g., "delegate_to_sales_agent" -> "sales agent")
-            agent_name_slug = tool_call.name.replace("delegate_to_", "").replace("_", " ")
-
-            # Find the delegated agent
-            result = await self.session.execute(
-                select(Agent)
-                .where(Agent.name.ilike(f"%{agent_name_slug}%"))
-                .where(Agent.is_active.is_(True))
-            )
-            delegated_agent = result.scalar_one_or_none()
+            # Match by tool name convention: delegate_to_{name_slug}
+            delegated_agent = None
+            for d in (agent.delegated_agents or []):
+                slug = f"delegate_to_{d.name.lower().replace(' ', '_')}"
+                if slug == tool_call.name and d.is_active:
+                    delegated_agent = d
+                    break
 
             if not delegated_agent:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     tool_name=tool_call.name,
                     result=None,
-                    error=f"Delegated agent not found: {agent_name_slug}",
+                    error=f"Delegated agent not found: {tool_call.name}",
                     duration_ms=int((time.time() - start_time) * 1000),
                 )
 

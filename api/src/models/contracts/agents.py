@@ -52,6 +52,8 @@ class AgentCreate(BaseModel):
     llm_model: str | None = Field(default=None, description="Override model (null=use global config)")
     llm_max_tokens: int | None = Field(default=None, ge=1, le=200000, description="Override max tokens")
     llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Override temperature")
+    max_iterations: int | None = Field(default=None, ge=1, le=200, description="Max LLM iterations for autonomous runs")
+    max_token_budget: int | None = Field(default=None, ge=1000, le=1000000, description="Max token budget for autonomous runs")
 
 
 class AgentUpdate(BaseModel):
@@ -74,6 +76,8 @@ class AgentUpdate(BaseModel):
     llm_model: str | None = Field(default=None, description="Override model (null=use global config)")
     llm_max_tokens: int | None = Field(default=None, ge=1, le=200000, description="Override max tokens")
     llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Override temperature")
+    max_iterations: int | None = Field(default=None, ge=1, le=200, description="Max LLM iterations for autonomous runs")
+    max_token_budget: int | None = Field(default=None, ge=1000, le=1000000, description="Max token budget for autonomous runs")
 
 
 class AgentPromoteRequest(BaseModel):
@@ -130,6 +134,8 @@ class AgentPublic(BaseModel):
     llm_model: str | None = None
     llm_max_tokens: int | None = None
     llm_temperature: float | None = None
+    max_iterations: int | None = None
+    max_token_budget: int | None = None
 
     @field_serializer("id", "organization_id", "owner_user_id")
     def serialize_uuid(self, v: UUID | None) -> str | None:

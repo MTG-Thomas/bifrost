@@ -349,6 +349,8 @@ async def create_agent(
         llm_model=agent_data.llm_model,
         llm_max_tokens=agent_data.llm_max_tokens,
         llm_temperature=agent_data.llm_temperature,
+        max_iterations=agent_data.max_iterations,
+        max_token_budget=agent_data.max_token_budget,
         created_by=user.email,
         created_at=now,
         updated_at=now,
@@ -611,6 +613,10 @@ async def update_agent(
         agent.llm_max_tokens = agent_data.llm_max_tokens if agent_data.llm_max_tokens else None
     if agent_data.llm_temperature is not None:
         agent.llm_temperature = agent_data.llm_temperature if agent_data.llm_temperature else None
+    if "max_iterations" in agent_data.model_fields_set:
+        agent.max_iterations = agent_data.max_iterations
+    if "max_token_budget" in agent_data.model_fields_set:
+        agent.max_token_budget = agent_data.max_token_budget
 
     agent.updated_at = datetime.now(timezone.utc)
 

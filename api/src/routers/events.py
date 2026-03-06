@@ -141,7 +141,10 @@ async def _build_event_subscription_response(
     return EventSubscriptionResponse(
         id=subscription.id,
         event_source_id=subscription.event_source_id,
+        target_type=subscription.target_type,
         workflow_id=subscription.workflow_id,
+        agent_id=subscription.agent_id,
+        agent_name=subscription.agent.name if subscription.agent else None,
         workflow_name=subscription.workflow.name if subscription.workflow else None,
         event_type=subscription.event_type,
         filter_expression=subscription.filter_expression,
@@ -689,12 +692,23 @@ async def create_subscription(
             detail="Event source not found",
         )
 
-    # TODO: Verify workflow exists
-    # workflow = await get_workflow(request.workflow_id)
+    # Validate target
+    if request.target_type == "agent":
+        if not request.agent_id:
+            raise HTTPException(status_code=400, detail="agent_id required when target_type is 'agent'")
+        from src.models.orm.agents import Agent
+        agent = await db.get(Agent, request.agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+    elif request.target_type == "workflow":
+        if not request.workflow_id:
+            raise HTTPException(status_code=400, detail="workflow_id required when target_type is 'workflow'")
 
     subscription = EventSubscription(
         event_source_id=source_id,
+        target_type=request.target_type,
         workflow_id=request.workflow_id,
+        agent_id=request.agent_id,
         event_type=request.event_type,
         filter_expression=request.filter_expression,
         input_mapping=request.input_mapping,
@@ -706,10 +720,10 @@ async def create_subscription(
     db.add(subscription)
     await db.flush()
 
-    # Reload with workflow relationship
+    # Reload with workflow and agent relationships
     result = await db.execute(
         select(EventSubscription)
-        .options(joinedload(EventSubscription.workflow))
+        .options(joinedload(EventSubscription.workflow), joinedload(EventSubscription.agent))
         .where(EventSubscription.id == subscription.id)
     )
     subscription = result.unique().scalar_one()
@@ -766,7 +780,7 @@ async def update_subscription(
         subscription.event_type = request.event_type
     if "filter_expression" in request.model_fields_set:
         subscription.filter_expression = request.filter_expression
-    if "is_active" in request.model_fields_set:
+    if "is_active" in request.model_fields_set and request.is_active is not None:
         subscription.is_active = request.is_active
     if "input_mapping" in request.model_fields_set:
         subscription.input_mapping = request.input_mapping
@@ -1042,6 +1056,9 @@ async def list_deliveries(
 
     # Add existing deliveries
     for delivery in deliveries:
+        sub = delivery.subscription
+        target_type = (sub.target_type or "workflow") if sub else "workflow"
+        agent = sub.agent if sub else None
         items.append(
             EventDeliveryResponse(
                 id=delivery.id,
@@ -1049,7 +1066,11 @@ async def list_deliveries(
                 event_subscription_id=delivery.event_subscription_id,
                 workflow_id=delivery.workflow_id,
                 workflow_name=delivery.workflow.name if delivery.workflow else None,
+                target_type=target_type,
+                agent_id=sub.agent_id if sub else None,
+                agent_name=agent.name if agent else None,
                 execution_id=delivery.execution_id,
+                agent_run_id=delivery.agent_run_id,
                 status=delivery.status.value
                 if hasattr(delivery.status, "value")
                 else delivery.status,
@@ -1071,6 +1092,8 @@ async def list_deliveries(
     # Add "not_delivered" entries for subscriptions without deliveries
     for subscription in all_subscriptions:
         if subscription.id not in delivered_subscription_ids:
+            sub_target_type = subscription.target_type or "workflow"
+            sub_agent = subscription.agent
             items.append(
                 EventDeliveryResponse(
                     id=None,  # No delivery exists
@@ -1080,7 +1103,11 @@ async def list_deliveries(
                     workflow_name=subscription.workflow.name
                     if subscription.workflow
                     else None,
+                    target_type=sub_target_type,
+                    agent_id=subscription.agent_id,
+                    agent_name=sub_agent.name if sub_agent else None,
                     execution_id=None,
+                    agent_run_id=None,
                     status="not_delivered",
                     error_message=None,
                     attempt_count=0,

@@ -24,6 +24,7 @@ from src.models import (
     UsageTrend,
     WorkflowUsage,
     ConversationUsage,
+    AgentUsage,
     OrganizationUsage,
     KnowledgeStorageUsage,
     KnowledgeStorageTrend,
@@ -35,6 +36,8 @@ from src.models.orm import (
     KnowledgeStorageDaily,
     Organization,
 )
+from src.models.orm.agent_runs import AgentRun
+from src.models.orm.agents import Agent
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +57,8 @@ async def get_usage_report(
     db: DbSession,
     start_date: date = Query(..., description="Start date (inclusive)"),
     end_date: date = Query(..., description="End date (inclusive)"),
-    source: Literal["executions", "chat", "all"] = Query(
-        default="all", description="Source filter: executions, chat, or all"
+    source: Literal["executions", "chat", "agents", "all"] = Query(
+        default="all", description="Source filter: executions, chat, agents, or all"
     ),
     org_id: str | None = Query(default=None, description="Filter by organization ID"),
 ) -> UsageReportResponse:
@@ -85,6 +88,8 @@ async def get_usage_report(
         base_conditions.append(AIUsage.execution_id.isnot(None))
     elif source == "chat":
         base_conditions.append(AIUsage.conversation_id.isnot(None))
+    elif source == "agents":
+        base_conditions.append(AIUsage.agent_run_id.isnot(None))
 
     # 1. Get summary totals
     summary_query = select(
@@ -234,7 +239,46 @@ async def get_usage_report(
             for row in conv_result.all()
         ]
 
-    # 5. Get usage by organization
+    # 5. Get usage by agent (only if source includes agents)
+    by_agent: list[AgentUsage] = []
+    if source in ("agents", "all"):
+        agent_query = (
+            select(
+                Agent.name.label("agent_name"),
+                func.count(func.distinct(AgentRun.id)).label("run_count"),
+                func.coalesce(func.sum(AIUsage.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(AIUsage.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(AIUsage.cost), Decimal("0")).label("ai_cost"),
+            )
+            .join(AgentRun, AIUsage.agent_run_id == AgentRun.id)
+            .join(Agent, AgentRun.agent_id == Agent.id)
+            .where(
+                AIUsage.agent_run_id.isnot(None),
+                func.date(AIUsage.timestamp) >= start_date,
+                func.date(AIUsage.timestamp) <= end_date,
+            )
+        )
+
+        if filter_org_id:
+            agent_query = agent_query.where(AIUsage.organization_id == filter_org_id)
+
+        agent_query = agent_query.group_by(Agent.name).order_by(
+            func.sum(AIUsage.cost).desc()
+        ).limit(50)
+
+        agent_result = await db.execute(agent_query)
+        by_agent = [
+            AgentUsage(
+                agent_name=row.agent_name or "Unknown",
+                run_count=int(row.run_count or 0),
+                input_tokens=int(row.input_tokens or 0),
+                output_tokens=int(row.output_tokens or 0),
+                ai_cost=Decimal(str(row.ai_cost or 0)),
+            )
+            for row in agent_result.all()
+        ]
+
+    # 6. Get usage by organization
     org_query = (
         select(
             Organization.id.label("org_id"),
@@ -262,6 +306,8 @@ async def get_usage_report(
         org_query = org_query.where(AIUsage.execution_id.isnot(None))
     elif source == "chat":
         org_query = org_query.where(AIUsage.conversation_id.isnot(None))
+    elif source == "agents":
+        org_query = org_query.where(AIUsage.agent_run_id.isnot(None))
 
     org_query = org_query.group_by(Organization.id, Organization.name).order_by(
         func.sum(AIUsage.cost).desc()
@@ -363,6 +409,7 @@ async def get_usage_report(
         trends=trends,
         by_workflow=by_workflow,
         by_conversation=by_conversation,
+        by_agent=by_agent,
         by_organization=by_organization,
         knowledge_storage=knowledge_storage,
         knowledge_storage_trends=knowledge_storage_trends,

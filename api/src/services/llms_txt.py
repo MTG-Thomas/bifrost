@@ -21,17 +21,17 @@ def _generate_sdk_tokens() -> dict[str, str]:
             _generate_models_docs,
         )
         from bifrost import (
-            ai, config, executions, files, forms,
+            agents, ai, config, executions, files, forms,
             integrations, knowledge, organizations,
             roles, tables, users, workflows,
         )
 
         modules = [
-            ("ai", ai), ("config", config), ("executions", executions),
-            ("files", files), ("forms", forms), ("integrations", integrations),
-            ("knowledge", knowledge), ("organizations", organizations),
-            ("roles", roles), ("tables", tables), ("users", users),
-            ("workflows", workflows),
+            ("agents", agents), ("ai", ai), ("config", config),
+            ("executions", executions), ("files", files), ("forms", forms),
+            ("integrations", integrations), ("knowledge", knowledge),
+            ("organizations", organizations), ("roles", roles),
+            ("tables", tables), ("users", users), ("workflows", workflows),
         ]
 
         module_lines = []

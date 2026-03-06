@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	AlertTriangle,
+	Building2,
 	Globe,
 	Loader2,
 	Search,
@@ -35,10 +36,12 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { $api } from "@/lib/api-client";
 import { fetchWorkflowRolesBatch } from "@/hooks/useWorkflowRoles";
+import { useOrganizations } from "@/hooks/useOrganizations";
 import type { components } from "@/lib/v1";
 
 type WorkflowMetadata = components["schemas"]["WorkflowMetadata"];
 type ExecutableType = components["schemas"]["ExecutableType"];
+type Organization = components["schemas"]["OrganizationPublic"];
 
 /**
  * Role representation for the dialog
@@ -252,6 +255,20 @@ export function WorkflowSelectorDialog({
 		onOpenChange(false);
 	}, [onOpenChange]);
 
+	// Fetch organizations for name lookup
+	const { data: organizations } = useOrganizations({});
+
+	const getOrgName = useCallback(
+		(orgId: string | null | undefined): string | null => {
+			if (!orgId) return null;
+			const org = organizations?.find(
+				(o: Organization) => o.id === orgId,
+			);
+			return org?.name || orgId;
+		},
+		[organizations],
+	);
+
 	const isLoading = isLoadingWorkflows || isLoadingRoles;
 
 	return (
@@ -347,6 +364,7 @@ export function WorkflowSelectorDialog({
 												onToggle={() => handleWorkflowToggle(workflow.id)}
 												mode={mode}
 												showRoleBadges={entityRoles.length > 0}
+												orgName={getOrgName(workflow.organization_id)}
 											/>
 										);
 									})}
@@ -411,6 +429,7 @@ interface WorkflowListItemProps {
 	onToggle: () => void;
 	mode: "single" | "multi";
 	showRoleBadges: boolean;
+	orgName: string | null;
 }
 
 function WorkflowListItem({
@@ -419,6 +438,7 @@ function WorkflowListItem({
 	onToggle,
 	mode,
 	showRoleBadges,
+	orgName,
 }: WorkflowListItemProps) {
 	return (
 		<button
@@ -455,11 +475,19 @@ function WorkflowListItem({
 				<div className="flex-1 min-w-0">
 					<div className="flex items-center gap-2 flex-wrap">
 						<span className="font-medium">{workflow.name}</span>
-						{/* Global badge */}
-						{!workflow.organization_id && (
+						{/* Organization badge */}
+						{orgName ? (
 							<Badge
 								variant="outline"
 								className="text-xs px-1.5 py-0 h-5 text-muted-foreground"
+							>
+								<Building2 className="h-3 w-3 mr-1" />
+								{orgName}
+							</Badge>
+						) : (
+							<Badge
+								variant="default"
+								className="text-xs px-1.5 py-0 h-5"
 							>
 								<Globe className="h-3 w-3 mr-1" />
 								Global

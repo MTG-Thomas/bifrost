@@ -25,6 +25,14 @@ import type {
 	ConversationUsage,
 	OrganizationUsage,
 } from "@/services/usage";
+
+interface AgentUsage {
+	agent_name: string;
+	run_count: number;
+	input_tokens: number;
+	output_tokens: number;
+	ai_cost: string;
+}
 import {
 	formatCurrency,
 	formatNumber,
@@ -764,6 +772,134 @@ export function KnowledgeStorageTable({
 				) : (
 					<div className="flex items-center justify-center py-8 text-muted-foreground">
 						No knowledge storage data available
+					</div>
+				)}
+			</CardContent>
+		</Card>
+	);
+}
+
+// ============================================================================
+// Agent Table
+// ============================================================================
+
+interface AgentTableProps {
+	agents: AgentUsage[] | undefined;
+	isLoading: boolean;
+}
+
+export function AgentTable({ agents, isLoading }: AgentTableProps) {
+	const [sort, toggleSort] = useToggleSort({ by: "cost", dir: "desc" });
+
+	const sorted = useMemo(() => {
+		if (!agents) return [];
+		return [...agents].sort((a, b) => {
+			const mult = sort.dir === "desc" ? -1 : 1;
+			switch (sort.by) {
+				case "name":
+					return mult * a.agent_name.localeCompare(b.agent_name);
+				case "runs":
+					return mult * (a.run_count - b.run_count);
+				case "tokens":
+					return (
+						mult *
+						(a.input_tokens + a.output_tokens - (b.input_tokens + b.output_tokens))
+					);
+				case "cost":
+					return mult * (parseFloat(a.ai_cost || "0") - parseFloat(b.ai_cost || "0"));
+				default:
+					return 0;
+			}
+		});
+	}, [agents, sort]);
+
+	return (
+		<Card>
+			<CardHeader>
+				<div>
+					<CardTitle>Usage by Agent</CardTitle>
+					<CardDescription>
+						AI consumption per autonomous agent
+					</CardDescription>
+				</div>
+			</CardHeader>
+			<CardContent>
+				{isLoading ? (
+					<div className="space-y-2">
+						<Skeleton className="h-10 w-full" />
+						<Skeleton className="h-10 w-full" />
+						<Skeleton className="h-10 w-full" />
+					</div>
+				) : sorted.length > 0 ? (
+					<DataTable>
+						<DataTableHeader>
+							<DataTableRow>
+								<DataTableHead
+									className="cursor-pointer select-none hover:bg-muted/50"
+									onClick={() => toggleSort("name")}
+								>
+									<div className="flex items-center gap-1">
+										Agent
+										<SortIcon sort={sort} column="name" />
+									</div>
+								</DataTableHead>
+								<DataTableHead
+									className="text-right cursor-pointer select-none hover:bg-muted/50"
+									onClick={() => toggleSort("runs")}
+								>
+									<div className="flex items-center justify-end gap-1">
+										Runs
+										<SortIcon sort={sort} column="runs" />
+									</div>
+								</DataTableHead>
+								<DataTableHead
+									className="text-right cursor-pointer select-none hover:bg-muted/50"
+									onClick={() => toggleSort("tokens")}
+								>
+									<div className="flex items-center justify-end gap-1">
+										Input Tokens
+										<SortIcon sort={sort} column="tokens" />
+									</div>
+								</DataTableHead>
+								<DataTableHead className="text-right">
+									Output Tokens
+								</DataTableHead>
+								<DataTableHead
+									className="text-right cursor-pointer select-none hover:bg-muted/50"
+									onClick={() => toggleSort("cost")}
+								>
+									<div className="flex items-center justify-end gap-1">
+										AI Cost
+										<SortIcon sort={sort} column="cost" />
+									</div>
+								</DataTableHead>
+							</DataTableRow>
+						</DataTableHeader>
+						<DataTableBody>
+							{sorted.map((agent) => (
+								<DataTableRow key={agent.agent_name}>
+									<DataTableCell className="font-medium">
+										{agent.agent_name}
+									</DataTableCell>
+									<DataTableCell className="text-right">
+										{formatNumber(agent.run_count)}
+									</DataTableCell>
+									<DataTableCell className="text-right font-mono">
+										{formatNumber(agent.input_tokens)}
+									</DataTableCell>
+									<DataTableCell className="text-right font-mono">
+										{formatNumber(agent.output_tokens)}
+									</DataTableCell>
+									<DataTableCell className="text-right font-mono">
+										{formatCurrency(agent.ai_cost)}
+									</DataTableCell>
+								</DataTableRow>
+							))}
+						</DataTableBody>
+					</DataTable>
+				) : (
+					<div className="flex items-center justify-center py-8 text-muted-foreground">
+						No agent usage data for this period
 					</div>
 				)}
 			</CardContent>

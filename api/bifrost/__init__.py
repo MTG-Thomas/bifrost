@@ -90,6 +90,7 @@ from .roles import roles
 from .tables import tables
 from .users import users
 from .workflows import workflows
+from .agents import agents
 
 # SDK Models (single source of truth)
 from .models import (
@@ -185,6 +186,7 @@ except ImportError:
 
 __all__ = [
     # SDK Modules
+    'agents',
     'api',
     'ai',
     'config',

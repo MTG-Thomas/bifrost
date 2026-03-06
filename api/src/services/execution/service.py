@@ -503,6 +503,7 @@ async def execute_tool(
     org_id: str | None = None,
     org_name: str | None = None,
     is_platform_admin: bool = False,
+    is_agent: bool = False,
     execution_id: str | None = None,
 ) -> WorkflowExecutionResponse:
     """
@@ -550,6 +551,7 @@ async def execute_tool(
         organization=org,
         is_platform_admin=is_platform_admin,
         is_function_key=False,
+        is_agent=is_agent,
         execution_id=execution_id,
         workflow_name=workflow_name,  # Workflow name for context
         public_url=get_settings().public_url,

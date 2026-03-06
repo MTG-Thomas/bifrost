@@ -23,6 +23,7 @@ from src.core.database import init_db, close_db
 from src.jobs.rabbitmq import rabbitmq
 from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
 from src.jobs.consumers.package_install import PackageInstallConsumer
+from src.jobs.consumers.agent_run import AgentRunConsumer
 
 # Configure logging
 logging.basicConfig(
@@ -88,6 +89,7 @@ class Worker:
         self._consumers = [
             WorkflowExecutionConsumer(),
             PackageInstallConsumer(),
+            AgentRunConsumer(),
         ]
 
         # Start each consumer

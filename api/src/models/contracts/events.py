@@ -154,9 +154,17 @@ class EventSubscriptionCreate(BaseModel):
     POST /api/events/sources/{source_id}/subscriptions
     """
 
-    workflow_id: UUID = Field(
-        ...,
-        description="Workflow ID to trigger when events arrive",
+    target_type: str = Field(
+        default="workflow",
+        description="Target type: 'workflow' or 'agent'",
+    )
+    workflow_id: UUID | None = Field(
+        default=None,
+        description="Workflow ID (required when target_type='workflow')",
+    )
+    agent_id: UUID | None = Field(
+        default=None,
+        description="Agent ID (required when target_type='agent')",
     )
     event_type: str | None = Field(
         default=None,
@@ -327,7 +335,10 @@ class EventSubscriptionResponse(BaseModel):
 
     id: UUID = Field(..., description="Subscription ID")
     event_source_id: UUID = Field(..., description="Event source ID")
-    workflow_id: UUID = Field(..., description="Workflow ID")
+    target_type: str = Field(default="workflow", description="Target type")
+    workflow_id: UUID | None = Field(default=None, description="Workflow ID")
+    agent_id: UUID | None = Field(default=None, description="Agent ID")
+    agent_name: str | None = Field(default=None, description="Agent name (for display)")
     workflow_name: str | None = Field(
         default=None,
         description="Workflow name (for display)",
@@ -453,14 +464,21 @@ class EventDeliveryResponse(BaseModel):
     )
     event_id: UUID = Field(..., description="Event ID")
     event_subscription_id: UUID = Field(..., description="Subscription ID")
-    workflow_id: UUID = Field(..., description="Workflow ID")
+    workflow_id: UUID | None = Field(default=None, description="Workflow ID")
     workflow_name: str | None = Field(
         default=None,
         description="Workflow name (for display)",
     )
+    target_type: str = Field(default="workflow", description="Target type: 'workflow' or 'agent'")
+    agent_id: UUID | None = Field(default=None, description="Agent ID (when target_type='agent')")
+    agent_name: str | None = Field(default=None, description="Agent name (for display)")
     execution_id: UUID | None = Field(
         default=None,
         description="Execution ID (set when execution starts)",
+    )
+    agent_run_id: UUID | None = Field(
+        default=None,
+        description="Agent run ID (set when agent run is queued)",
     )
     status: str = Field(..., description="Delivery status")
     error_message: str | None = Field(

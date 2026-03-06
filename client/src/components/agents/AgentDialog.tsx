@@ -117,6 +117,8 @@ const formSchema = z.object({
 	llm_model: z.string().nullable(),
 	llm_max_tokens: z.number().min(1).max(200000).nullable(),
 	llm_temperature: z.number().min(0).max(2).nullable(),
+	max_iterations: z.number().min(1).max(200).nullable(),
+	max_token_budget: z.number().min(1000).max(1000000).nullable(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -167,6 +169,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 			llm_model: null,
 			llm_max_tokens: null,
 			llm_temperature: null,
+			max_iterations: null,
+			max_token_budget: null,
 		},
 	});
 
@@ -193,6 +197,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				llm_model?: string | null;
 				llm_max_tokens?: number | null;
 				llm_temperature?: number | null;
+				max_iterations?: number | null;
+				max_token_budget?: number | null;
 			};
 			form.reset({
 				name: agent.name,
@@ -211,6 +217,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				llm_model: agentWithOrg.llm_model ?? null,
 				llm_max_tokens: agentWithOrg.llm_max_tokens ?? null,
 				llm_temperature: agentWithOrg.llm_temperature ?? null,
+				max_iterations: agentWithOrg.max_iterations ?? null,
+				max_token_budget: agentWithOrg.max_token_budget ?? null,
 			});
 		} else if (!isEditing && open) {
 			form.reset({
@@ -228,6 +236,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				llm_model: null,
 				llm_max_tokens: null,
 				llm_temperature: null,
+				max_iterations: null,
+				max_token_budget: null,
 			});
 		}
 	}, [agent, isEditing, form, open, defaultOrgId]);
@@ -258,6 +268,8 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 				llm_model: values.llm_model,
 				llm_max_tokens: values.llm_max_tokens,
 				llm_temperature: values.llm_temperature,
+				max_iterations: values.max_iterations,
+				max_token_budget: values.max_token_budget,
 			} as Parameters<typeof createAgent.mutateAsync>[0]["body"];
 
 			if (isEditing && agentId) {
@@ -1390,6 +1402,75 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 													)}
 												/>
 
+												{/* Autonomous Budget Settings */}
+												<div className="border-t pt-4 mt-4">
+													<h4 className="text-sm font-medium mb-1">
+														Autonomous Run Budget
+													</h4>
+													<p className="text-xs text-muted-foreground mb-3">
+														Limits for when this agent runs autonomously (event-triggered or API-invoked).
+													</p>
+													<div className="grid grid-cols-2 gap-4">
+														<FormField
+															control={form.control}
+															name="max_iterations"
+															render={({ field }) => (
+																<FormItem>
+																	<FormLabel>
+																		Max Iterations
+																	</FormLabel>
+																	<FormControl>
+																		<Input
+																			type="number"
+																			placeholder="50"
+																			value={field.value ?? ""}
+																			onChange={(e) =>
+																				field.onChange(
+																					e.target.value
+																						? Number(e.target.value)
+																						: null,
+																				)
+																			}
+																		/>
+																	</FormControl>
+																	<FormDescription>
+																		LLM round-trips (1-200)
+																	</FormDescription>
+																	<FormMessage />
+																</FormItem>
+															)}
+														/>
+														<FormField
+															control={form.control}
+															name="max_token_budget"
+															render={({ field }) => (
+																<FormItem>
+																	<FormLabel>
+																		Max Token Budget
+																	</FormLabel>
+																	<FormControl>
+																		<Input
+																			type="number"
+																			placeholder="100000"
+																			value={field.value ?? ""}
+																			onChange={(e) =>
+																				field.onChange(
+																					e.target.value
+																						? Number(e.target.value)
+																						: null,
+																				)
+																			}
+																		/>
+																	</FormControl>
+																	<FormDescription>
+																		Total tokens (1k-1M)
+																	</FormDescription>
+																	<FormMessage />
+																</FormItem>
+															)}
+														/>
+													</div>
+												</div>
 											</div>
 										)}
 									</div>

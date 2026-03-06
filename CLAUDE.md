@@ -48,7 +48,7 @@ The client at `localhost:3000` proxies `/api/*` to the API container. This means
 |----------|---------------|--------------|
 | Code changes | Do nothing (hot reload) | Restart containers |
 | New Python dependency | `docker compose restart api` | Rebuild everything |
-| Database migration | `docker compose restart api` | Restart entire stack |
+| Database migration | Restart `bifrost-init` (runs alembic), then restart `api` | Restart entire stack |
 | Schema changes | Restart api, then `npm run generate:types` | Manual type updates |
 | Something broken | Check logs first: `docker compose logs api` | Nuke and restart |
 
@@ -231,8 +231,8 @@ cd client && npm run lint                 # Lint TypeScript
 **After creating a new migration:**
 1. Create migration: `cd api && alembic revision -m "description"`
 2. Edit the migration file
-3. Restart API to apply: `docker compose restart api`
-4. Migration runs automatically on container start
+3. Restart `bifrost-init` to run alembic: `docker compose restart bifrost-init`
+4. Restart API: `docker compose restart api`
 
 **After adding a Python dependency:**
 1. Add to `api/requirements.txt`

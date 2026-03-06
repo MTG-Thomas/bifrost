@@ -172,6 +172,39 @@ export interface EventSourceUpdate {
 	event: EventSourceEvent;
 }
 
+// Agent run update types for real-time streaming
+export interface AgentRunUpdate {
+	type: "agent_run_update";
+	run_id: string;
+	agent_id: string;
+	agent_name: string;
+	status: string;
+	trigger_type: string;
+	iterations_used: number;
+	tokens_used: number;
+	duration_ms: number | null;
+	error: string | null;
+	org_id: string | null;
+	started_at: string | null;
+	completed_at: string | null;
+	timestamp: string;
+}
+
+export interface AgentRunStepUpdate {
+	type: "agent_run_step";
+	run_id: string;
+	step: {
+		id: string;
+		run_id: string;
+		step_number: number;
+		type: string;
+		content: Record<string, unknown> | null;
+		tokens_used: number | null;
+		duration_ms: number | null;
+	};
+	timestamp: string;
+}
+
 // Chat streaming types
 export interface ChatToolCall {
 	id: string;
@@ -392,7 +425,9 @@ type WebSocketMessage =
 	| AppCodeFileUpdate
 	| AppPublishedUpdate
 	| PoolMessage
-	| FileActivityEvent;
+	| FileActivityEvent
+	| AgentRunUpdate
+	| AgentRunStepUpdate;
 
 // Notification payload from backend (snake_case)
 interface NotificationPayload {
@@ -444,6 +479,8 @@ type AppCodeFileUpdateCallback = (update: AppCodeFileUpdate) => void;
 type AppPublishedUpdateCallback = (update: AppPublishedUpdate) => void;
 type PoolMessageCallback = (message: PoolMessage) => void;
 type FileActivityCallback = (event: FileActivityEvent) => void;
+type AgentRunUpdateCallback = (update: AgentRunUpdate) => void;
+type AgentRunStepCallback = (update: AgentRunStepUpdate) => void;
 
 /**
  * Check if a JWT token is an embed token by inspecting its claims.
@@ -510,6 +547,8 @@ class WebSocketService {
 	>();
 	private poolMessageCallbacks = new Set<PoolMessageCallback>();
 	private fileActivityCallbacks = new Set<FileActivityCallback>();
+	private agentRunUpdateCallbacks: Set<AgentRunUpdateCallback> = new Set();
+	private agentRunStepCallbacks: Map<string, Set<AgentRunStepCallback>> = new Map();
 	private connectionStatusCallbacks = new Set<(connected: boolean) => void>();
 
 	// Track subscribed channels
@@ -864,6 +903,21 @@ class WebSocketService {
 			case "watch_stop":
 				this.fileActivityCallbacks.forEach((cb) => cb(message as FileActivityEvent));
 				break;
+
+			// Agent run update types
+			case "agent_run_update": {
+				const agentRunUpdate = message as unknown as AgentRunUpdate;
+				this.agentRunUpdateCallbacks.forEach((cb) => cb(agentRunUpdate));
+				break;
+			}
+			case "agent_run_step": {
+				const agentRunStepUpdate = message as unknown as AgentRunStepUpdate;
+				const runCallbacks = this.agentRunStepCallbacks.get(agentRunStepUpdate.run_id);
+				if (runCallbacks) {
+					runCallbacks.forEach((cb) => cb(agentRunStepUpdate));
+				}
+				break;
+			}
 
 			// Pool/worker message types for diagnostics
 			case "worker_heartbeat":
@@ -1567,6 +1621,35 @@ class WebSocketService {
 		this.fileActivityCallbacks.add(callback);
 		return () => {
 			this.fileActivityCallbacks.delete(callback);
+		};
+	}
+
+	/**
+	 * Subscribe to agent run updates (list page)
+	 */
+	onAgentRunUpdate(callback: AgentRunUpdateCallback): () => void {
+		this.agentRunUpdateCallbacks.add(callback);
+		return () => {
+			this.agentRunUpdateCallbacks.delete(callback);
+		};
+	}
+
+	/**
+	 * Subscribe to agent run step updates (detail page)
+	 */
+	onAgentRunStep(
+		runId: string,
+		callback: AgentRunStepCallback,
+	): () => void {
+		if (!this.agentRunStepCallbacks.has(runId)) {
+			this.agentRunStepCallbacks.set(runId, new Set());
+		}
+		this.agentRunStepCallbacks.get(runId)!.add(callback);
+		return () => {
+			this.agentRunStepCallbacks.get(runId)?.delete(callback);
+			if (this.agentRunStepCallbacks.get(runId)?.size === 0) {
+				this.agentRunStepCallbacks.delete(runId);
+			}
 		};
 	}
 
