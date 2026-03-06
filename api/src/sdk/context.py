@@ -197,6 +197,32 @@ class ExecutionContext:
         """Backwards compatibility: alias for name"""
         return self.name
 
+    def to_public_dict(self) -> dict[str, Any]:
+        """Serialize all non-private fields for persistence/API responses."""
+        return {
+            "user_id": self.user_id,
+            "email": self.email,
+            "name": self.name,
+            "scope": self.scope,
+            "organization": {
+                "id": self.organization.id,
+                "name": self.organization.name,
+                "is_active": self.organization.is_active,
+                "is_provider": self.organization.is_provider,
+            } if self.organization else None,
+            "is_platform_admin": self.is_platform_admin,
+            "is_function_key": self.is_function_key,
+            "execution_id": self.execution_id,
+            "workflow_name": self.workflow_name,
+            "is_agent": self.is_agent,
+            "public_url": self.public_url,
+            "parameters": self.parameters,
+            "startup": self.startup,
+            "roi": {
+                "time_saved": self.roi.time_saved,
+                "value": self.roi.value,
+            },
+        }
 
     # ==================== STATE TRACKING ====================
 
