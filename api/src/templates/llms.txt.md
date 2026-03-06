@@ -17,7 +17,7 @@ Workflows are async Python functions decorated with `@workflow`, `@tool`, or `@d
 All SDK methods are async and must be awaited.
 
 ```python
-from bifrost import ai, config, files, integrations, knowledge, tables
+from bifrost import agents, ai, config, files, integrations, knowledge, tables
 from bifrost import workflow, data_provider, context
 from bifrost import UserError, WorkflowError, ValidationError
 ```
@@ -84,7 +84,10 @@ Data providers are workflows decorated with `@data_provider` that return `[{"lab
 
 ## Agents
 
-Agents are AI-powered assistants with access to workflows as tools, knowledge bases, and delegation to other agents.
+Agents are AI-powered assistants with access to workflows as tools, knowledge bases, and delegation to other agents. Agents can operate in two modes:
+
+1. **Chat mode** — interactive conversations via the chat UI, Teams, Slack, or voice
+2. **Autonomous mode** — headless execution triggered by events, schedules, or SDK calls
 
 {agent_model_docs}
 
@@ -103,7 +106,56 @@ Agents are AI-powered assistants with access to workflows as tools, knowledge ba
 - `delegated_agent_ids`: Other agent UUIDs it can delegate to
 - `knowledge_sources`: Knowledge namespace names for RAG search
 - `system_tools`: Built-in tools (`http`, etc.)
+- `max_iterations`: Max LLM iterations for autonomous runs (default 50)
+- `max_token_budget`: Max token budget for autonomous runs (default 100000)
 - Scope: `"global"` (all orgs) or `"organization"` (scoped)
+
+### Autonomous Agent Runs
+
+Agents can run autonomously without a chat session. The agent receives input data, executes a tool-calling loop (LLM → tool → LLM), and returns structured output.
+
+#### SDK Invocation
+
+```python
+from bifrost import workflow, agents
+
+@workflow
+async def process_ticket(ticket_id: str):
+    result = await agents.run(
+        "ticket-triage-agent",
+        input={"ticket_id": ticket_id, "action": "triage"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "priority": {"type": "string"},
+                "category": {"type": "string"},
+                "summary": {"type": "string"}
+            }
+        },
+        timeout=300,
+    )
+    return result
+```
+
+#### Event-Triggered Agent Runs
+
+Event subscriptions can target agents directly using `target_type: "agent"`:
+
+```
+create_event_subscription(source_id=<id>, agent_id=<agent_id>,
+                          target_type="agent", event_type="ticket.created")
+```
+
+The event payload is passed as the agent's input data.
+
+#### Agent Run Observability
+
+Each autonomous run records:
+- **Steps**: Every LLM call and tool execution as an `AgentRunStep`
+- **Token usage**: Total tokens consumed across all iterations
+- **Iteration count**: Number of LLM call cycles used
+- **Status**: `queued` → `running` → `completed` | `failed` | `timeout`
+- **AI usage**: Full cost/token breakdown per LLM call
 
 ## Apps
 
@@ -359,6 +411,17 @@ create_event_subscription(source_id=<id>, workflow_id=<id>,
 ```
 
 Configure the external service to POST to the callback_url.
+
+### Agent-Targeted Subscriptions
+
+Subscriptions can target agents instead of workflows:
+
+```
+create_event_subscription(source_id=<id>, agent_id=<agent_id>,
+                          target_type="agent", event_type="ticket.created")
+```
+
+The event payload is passed as the agent's input data. The agent runs autonomously and results are recorded as agent runs.
 
 ## Manifest YAML Formats (SDK-First / Git Sync)
 

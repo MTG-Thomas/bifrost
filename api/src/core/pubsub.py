@@ -13,8 +13,11 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from src.models.orm.agent_runs import AgentRun
 
 import redis.asyncio as redis
 from fastapi import WebSocket
@@ -263,6 +266,60 @@ async def publish_history_update(
     # Always publish to user's channel and global admin channel
     await manager.broadcast(f"history:user:{executed_by}", message)
     await manager.broadcast("history:GLOBAL", message)
+
+
+# =============================================================================
+# Agent Run Pub/Sub
+# =============================================================================
+
+
+async def publish_agent_run_update(
+    run: "AgentRun",
+    agent_name: str,
+) -> None:
+    """
+    Publish agent run status update.
+
+    Broadcasts to:
+    - agent-run:{run_id} - for the detail page
+    - agent-runs - for the list page
+    """
+    message = {
+        "type": "agent_run_update",
+        "run_id": str(run.id),
+        "agent_id": str(run.agent_id),
+        "agent_name": agent_name,
+        "status": run.status,
+        "trigger_type": run.trigger_type,
+        "iterations_used": run.iterations_used or 0,
+        "tokens_used": run.tokens_used or 0,
+        "duration_ms": run.duration_ms,
+        "error": run.error,
+        "org_id": str(run.org_id) if run.org_id else None,
+        "started_at": run.started_at.isoformat() if isinstance(run.started_at, datetime) else run.started_at,
+        "completed_at": run.completed_at.isoformat() if isinstance(run.completed_at, datetime) else run.completed_at,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    await manager.broadcast(f"agent-run:{run.id}", message)
+    await manager.broadcast("agent-runs", message)
+
+
+async def publish_agent_run_step(
+    run_id: str | UUID,
+    step: dict[str, Any],
+) -> None:
+    """
+    Publish a new agent run step (for live detail page updates).
+
+    Broadcasts to agent-run:{run_id} channel.
+    """
+    message = {
+        "type": "agent_run_step",
+        "run_id": str(run_id),
+        "step": step,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    await manager.broadcast(f"agent-run:{run_id}", message)
 
 
 async def publish_user_notification(

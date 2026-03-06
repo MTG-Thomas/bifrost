@@ -96,6 +96,7 @@ class ExecutionContext:
     # ==================== EXECUTION ====================
     execution_id: str
     workflow_name: str = field(default="")  # Name of the executing workflow
+    is_agent: bool = False  # True when triggered by an autonomous agent
 
     # ==================== PLATFORM ====================
     # Public URL for constructing external links (e.g., workflow URLs, execution URLs)

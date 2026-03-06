@@ -32,6 +32,7 @@ import { UsageCharts } from "@/components/reports/UsageCharts";
 import {
 	WorkflowTable,
 	ConversationTable,
+	AgentTable,
 	OrganizationTable,
 	KnowledgeStorageTable,
 } from "@/components/reports/UsageTables";
@@ -521,6 +522,7 @@ export function UsageReports() {
 									Executions
 								</TabsTrigger>
 								<TabsTrigger value="chat">Chat</TabsTrigger>
+								<TabsTrigger value="agents">Agents</TabsTrigger>
 							</TabsList>
 						</Tabs>
 						{isPlatformAdmin && (
@@ -575,6 +577,16 @@ export function UsageReports() {
 					isDemo={showDemoData}
 				/>
 			)}
+
+			{/* By-Agent Table */}
+			{(source === "all" || source === "agents") &&
+				data?.by_agent &&
+				data.by_agent.length > 0 && (
+					<AgentTable
+						agents={data.by_agent}
+						isLoading={isLoadingData}
+					/>
+				)}
 
 			{/* By-Organization Table - Only shown in global scope */}
 			{isGlobalScope && (

@@ -21,7 +21,7 @@ export type KnowledgeStorageUsage =
 export type KnowledgeStorageTrend =
 	components["schemas"]["KnowledgeStorageTrend"];
 
-export type UsageSource = "executions" | "chat" | "all";
+export type UsageSource = "executions" | "chat" | "agents" | "all";
 
 /**
  * Hook to fetch usage report for a date range.

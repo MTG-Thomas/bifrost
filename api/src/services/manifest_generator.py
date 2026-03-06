@@ -332,6 +332,8 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
                 organization_id=str(agent.organization_id) if agent.organization_id else None,
                 roles=agent_roles_by_agent.get(str(agent.id), []),
                 access_level=agent.access_level.value if agent.access_level else "role_based",
+                max_iterations=agent.max_iterations,
+                max_token_budget=agent.max_token_budget,
             )
             for agent in agents_list
             if not agent.is_system  # Exclude system agents
@@ -402,7 +404,9 @@ def _build_event_source_manifest(
         subscriptions=[
             ManifestEventSubscription(
                 id=str(sub.id),
-                workflow_id=str(sub.workflow_id),
+                target_type=sub.target_type or "workflow",
+                workflow_id=str(sub.workflow_id) if sub.workflow_id else None,
+                agent_id=str(sub.agent_id) if sub.agent_id else None,
                 event_type=sub.event_type,
                 filter_expression=sub.filter_expression,
                 input_mapping=sub.input_mapping,

@@ -2942,46 +2942,79 @@ class GitHubSyncService:
         # Sync subscriptions: upsert each
         # workflow_id may be a UUID string, a path::function_name portable ref, or a name
         for msub in mes.subscriptions:
+            target_type = getattr(msub, "target_type", "workflow") or "workflow"
+
             wf_id: UUID | None = None
-            try:
-                wf_id = UUID(msub.workflow_id)
-            except (ValueError, AttributeError):
-                pass
+            agent_id: UUID | None = None
 
-            # For UUID workflow refs: skip if that workflow wasn't imported
-            # (its file is missing from disk, so plan_import skipped it)
-            if wf_id is not None and imported_wf_ids is not None and msub.workflow_id not in imported_wf_ids:
-                logger.warning(
-                    f"Event subscription {msub.id}: workflow {msub.workflow_id} "
-                    f"not imported (file missing?), skipping"
-                )
-                continue
-
-            if wf_id is None:
-                # Try path::function_name or name resolution
-                resolved = await self._resolve_workflow_ref(msub.workflow_id)
-                if resolved is None:
+            if target_type == "agent":
+                # Agent-targeted subscription
+                if msub.agent_id:
+                    try:
+                        agent_id = UUID(msub.agent_id)
+                    except ValueError:
+                        logger.warning(
+                            f"Event subscription {msub.id}: invalid agent_id "
+                            f"'{msub.agent_id}', skipping"
+                        )
+                        continue
+                else:
                     logger.warning(
-                        f"Event subscription {msub.id}: could not resolve workflow ref "
-                        f"'{msub.workflow_id}', skipping"
+                        f"Event subscription {msub.id}: target_type='agent' but "
+                        f"no agent_id, skipping"
                     )
                     continue
-                wf_id = resolved
+            else:
+                # Workflow-targeted subscription
+                try:
+                    wf_id = UUID(msub.workflow_id) if msub.workflow_id else None
+                except (ValueError, AttributeError):
+                    pass
+
+                # For UUID workflow refs: skip if that workflow wasn't imported
+                if wf_id is not None and imported_wf_ids is not None and msub.workflow_id not in imported_wf_ids:
+                    logger.warning(
+                        f"Event subscription {msub.id}: workflow {msub.workflow_id} "
+                        f"not imported (file missing?), skipping"
+                    )
+                    continue
+
+                if wf_id is None and msub.workflow_id:
+                    # Try path::function_name or name resolution
+                    resolved = await self._resolve_workflow_ref(msub.workflow_id)
+                    if resolved is None:
+                        logger.warning(
+                            f"Event subscription {msub.id}: could not resolve workflow ref "
+                            f"'{msub.workflow_id}', skipping"
+                        )
+                        continue
+                    wf_id = resolved
+
+                if wf_id is None:
+                    logger.warning(
+                        f"Event subscription {msub.id}: target_type='workflow' but "
+                        f"no workflow_id, skipping"
+                    )
+                    continue
 
             sub_stmt = insert(EventSubscription).values(
                 id=UUID(msub.id),
                 event_source_id=es_id,
+                target_type=target_type,
                 workflow_id=wf_id,
+                agent_id=agent_id,
                 event_type=msub.event_type,
                 filter_expression=msub.filter_expression,
                 input_mapping=msub.input_mapping,
                 is_active=msub.is_active,
                 created_by="git-sync",
             ).on_conflict_do_update(
-                index_elements=["event_source_id", "workflow_id"],
+                index_elements=["id"],
                 set_={
-                    "id": UUID(msub.id),
+                    "event_source_id": es_id,
+                    "target_type": target_type,
                     "workflow_id": wf_id,
+                    "agent_id": agent_id,
                     "event_type": msub.event_type,
                     "filter_expression": msub.filter_expression,
                     "input_mapping": msub.input_mapping,
@@ -3067,6 +3100,8 @@ class GitHubSyncService:
                 "is_active": True,
                 "created_by": "git-sync",
                 "organization_id": org_id,
+                "max_iterations": data.get("max_iterations"),
+                "max_token_budget": data.get("max_token_budget"),
             }
             if hasattr(magent, "access_level") and magent.access_level:
                 agent_values["access_level"] = magent.access_level

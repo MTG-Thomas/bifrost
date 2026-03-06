@@ -9,6 +9,7 @@ import {
 	ExternalLink,
 	AlertTriangle,
 	Workflow as WorkflowIcon,
+	Bot,
 	Send,
 	CircleDashed,
 } from "lucide-react";
@@ -135,7 +136,7 @@ export function DeliveriesTable({ deliveries, eventId }: DeliveriesTableProps) {
 					subscription_id: subscriptionId,
 				},
 			});
-			toast.success("Event sent to workflow");
+			toast.success("Event delivery queued");
 			// Refresh deliveries
 			queryClient.invalidateQueries({
 				predicate: (query) =>
@@ -182,40 +183,64 @@ export function DeliveriesTable({ deliveries, eventId }: DeliveriesTableProps) {
 					key={delivery.id || `sub-${delivery.event_subscription_id}`}
 					className={`border rounded-lg p-3 border-l-4 bg-muted/40 ${getBorderColor(delivery.status as DeliveryStatus)}`}
 				>
-					{/* Top row: Workflow + Status + Actions */}
+					{/* Top row: Target + Status + Actions */}
 					<div className="flex items-center justify-between gap-3">
 						<div className="flex items-center gap-2 min-w-0 flex-1">
-							<Badge
-								variant="outline"
-								className="font-mono text-xs shrink-0"
-							>
-								<WorkflowIcon className="mr-1 h-3 w-3" />
-								{delivery.workflow_name || delivery.workflow_id}
-							</Badge>
-							{delivery.execution_id && (
-								<TooltipProvider>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Button
-												variant="ghost"
-												size="icon"
-												className="h-6 w-6 shrink-0"
-												onClick={() => {
-													window.open(
-														`/history/${delivery.execution_id}`,
-														"_blank",
-													);
-												}}
-											>
-												<ExternalLink className="h-3.5 w-3.5" />
-											</Button>
-										</TooltipTrigger>
-										<TooltipContent>
-											View execution
-										</TooltipContent>
-									</Tooltip>
-								</TooltipProvider>
-							)}
+							{(() => {
+								// Cast to access agent fields pending type regeneration
+								const d = delivery as typeof delivery & {
+									target_type?: string;
+									agent_id?: string | null;
+									agent_name?: string | null;
+									agent_run_id?: string | null;
+								};
+								const isAgent = d.target_type === "agent";
+								const resourceName = isAgent
+									? (d.agent_name || d.agent_id || "Unknown Agent")
+									: (delivery.workflow_name || delivery.workflow_id);
+								const linkUrl = isAgent && d.agent_run_id
+									? `/agent-runs/${d.agent_run_id}`
+									: delivery.execution_id
+										? `/history/${delivery.execution_id}`
+										: null;
+
+								return (
+									<>
+										<Badge
+											variant="outline"
+											className="font-mono text-xs shrink-0"
+										>
+											{isAgent ? (
+												<Bot className="mr-1 h-3 w-3" />
+											) : (
+												<WorkflowIcon className="mr-1 h-3 w-3" />
+											)}
+											{resourceName}
+										</Badge>
+										{linkUrl && (
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<Button
+															variant="ghost"
+															size="icon"
+															className="h-6 w-6 shrink-0"
+															onClick={() => {
+																window.open(linkUrl, "_blank");
+															}}
+														>
+															<ExternalLink className="h-3.5 w-3.5" />
+														</Button>
+													</TooltipTrigger>
+													<TooltipContent>
+														{isAgent ? "View agent run" : "View execution"}
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										)}
+									</>
+								);
+							})()}
 						</div>
 						<div className="flex items-center gap-2">
 							<div className="flex items-center gap-1.5">

@@ -221,6 +221,20 @@ class OrganizationUsage(BaseModel):
         return str(d)
 
 
+class AgentUsage(BaseModel):
+    """AI usage by agent."""
+
+    agent_name: str
+    run_count: int = Field(default=0)
+    input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+    ai_cost: Decimal = Field(default=Decimal("0"))
+
+    @field_serializer("ai_cost")
+    def serialize_cost(self, d: Decimal) -> str:
+        return str(d)
+
+
 class KnowledgeStorageUsage(BaseModel):
     """Knowledge storage usage by organization and namespace."""
 
@@ -252,6 +266,7 @@ class UsageReportResponse(BaseModel):
     trends: list[UsageTrend] = Field(default_factory=list)
     by_workflow: list[WorkflowUsage] = Field(default_factory=list)
     by_conversation: list[ConversationUsage] = Field(default_factory=list)
+    by_agent: list[AgentUsage] = Field(default_factory=list)
     by_organization: list[OrganizationUsage] = Field(default_factory=list)
     knowledge_storage: list[KnowledgeStorageUsage] = Field(default_factory=list)
     knowledge_storage_trends: list[KnowledgeStorageTrend] = Field(default_factory=list)

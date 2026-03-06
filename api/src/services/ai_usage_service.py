@@ -1,13 +1,15 @@
 """
 AI Usage Recording Service
 
-Records AI usage from workflow executions (CLI AI endpoints) and chat conversations
-(agent executor) to the ai_usage table with Redis caching for pricing and aggregates.
+Records AI usage from workflow executions (CLI AI endpoints), chat conversations
+(agent executor), and autonomous agent runs to the ai_usage table with Redis
+caching for pricing and aggregates.
 
 Redis Key Structure:
 - ai_pricing:{provider}:{model} - Cached pricing data (TTL: 1 hour)
 - ai_usage_totals:{execution_id} - Execution aggregates (no TTL, invalidate on write)
 - ai_usage_totals:conv:{conversation_id} - Conversation aggregates (no TTL, invalidate on write)
+- ai_usage_totals:run:{agent_run_id} - Agent run aggregates (no TTL, invalidate on write)
 - ai_used_models - Redis SET of "provider:model" strings (no TTL, incremental adds via SADD)
 - ai_pricing_notified:{provider}:{model} - Deduplication for missing price notifications (TTL: 24 hours)
 """
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 PRICING_KEY_PREFIX = "ai_pricing:"
 USAGE_TOTALS_KEY_PREFIX = "ai_usage_totals:"
 USAGE_TOTALS_CONV_KEY_PREFIX = "ai_usage_totals:conv:"
+USAGE_TOTALS_RUN_KEY_PREFIX = "ai_usage_totals:run:"
 USED_MODELS_KEY = "ai_used_models"
 PRICING_NOTIFIED_KEY_PREFIX = "ai_pricing_notified:"
 
@@ -46,6 +49,7 @@ async def record_ai_usage(
     duration_ms: int | None = None,
     execution_id: UUID | None = None,
     conversation_id: UUID | None = None,
+    agent_run_id: UUID | None = None,
     message_id: UUID | None = None,
     organization_id: UUID | None = None,
     user_id: UUID | None = None,
@@ -72,6 +76,7 @@ async def record_ai_usage(
         duration_ms: Request duration in milliseconds
         execution_id: UUID of workflow execution (for CLI AI calls)
         conversation_id: UUID of conversation (for agent chat)
+        agent_run_id: UUID of agent run (for autonomous agent runs)
         message_id: UUID of message within conversation
         organization_id: UUID of organization
         user_id: UUID of user who initiated the call
@@ -106,6 +111,7 @@ async def record_ai_usage(
             duration_ms=duration_ms,
             execution_id=execution_id,
             conversation_id=conversation_id,
+            agent_run_id=agent_run_id,
             message_id=message_id,
             organization_id=organization_id,
             user_id=user_id,
@@ -114,7 +120,7 @@ async def record_ai_usage(
         await session.flush()
 
         # 5. Invalidate aggregates cache
-        await invalidate_usage_cache(redis_client, execution_id, conversation_id)
+        await invalidate_usage_cache(redis_client, execution_id, conversation_id, agent_run_id)
 
         # 6. Add model to used_models set (using display name)
         await _add_used_model(redis_client, provider, display_name)
@@ -243,9 +249,10 @@ async def get_usage_totals(
     session: AsyncSession,
     execution_id: UUID | None = None,
     conversation_id: UUID | None = None,
+    agent_run_id: UUID | None = None,
 ) -> dict:
     """
-    Get aggregated AI usage totals for an execution or conversation.
+    Get aggregated AI usage totals for an execution, conversation, or agent run.
 
     Returns:
         {
@@ -258,16 +265,19 @@ async def get_usage_totals(
     Cache key:
         - ai_usage_totals:{execution_id} for executions
         - ai_usage_totals:conv:{conversation_id} for conversations
+        - ai_usage_totals:run:{agent_run_id} for agent runs
     No TTL - invalidate on new AI call
     """
-    if not execution_id and not conversation_id:
+    if not execution_id and not conversation_id and not agent_run_id:
         return {"input_tokens": 0, "output_tokens": 0, "total_cost": None, "call_count": 0}
 
     # Build cache key
     if execution_id:
         cache_key = f"{USAGE_TOTALS_KEY_PREFIX}{execution_id}"
-    else:
+    elif conversation_id:
         cache_key = f"{USAGE_TOTALS_CONV_KEY_PREFIX}{conversation_id}"
+    else:
+        cache_key = f"{USAGE_TOTALS_RUN_KEY_PREFIX}{agent_run_id}"
 
     # Check cache
     try:
@@ -293,8 +303,10 @@ async def get_usage_totals(
 
     if execution_id:
         query = query.where(AIUsage.execution_id == execution_id)
-    else:
+    elif conversation_id:
         query = query.where(AIUsage.conversation_id == conversation_id)
+    else:
+        query = query.where(AIUsage.agent_run_id == agent_run_id)
 
     result = await session.execute(query)
     row = result.one_or_none()
@@ -325,8 +337,9 @@ async def invalidate_usage_cache(
     redis_client: redis.Redis,
     execution_id: UUID | None = None,
     conversation_id: UUID | None = None,
+    agent_run_id: UUID | None = None,
 ) -> None:
-    """Invalidate the totals cache for an execution or conversation."""
+    """Invalidate the totals cache for an execution, conversation, or agent run."""
     try:
         if execution_id:
             cache_key = f"{USAGE_TOTALS_KEY_PREFIX}{execution_id}"
@@ -334,6 +347,10 @@ async def invalidate_usage_cache(
 
         if conversation_id:
             cache_key = f"{USAGE_TOTALS_CONV_KEY_PREFIX}{conversation_id}"
+            await redis_client.delete(cache_key)
+
+        if agent_run_id:
+            cache_key = f"{USAGE_TOTALS_RUN_KEY_PREFIX}{agent_run_id}"
             await redis_client.delete(cache_key)
     except Exception as e:
         logger.warning(f"Failed to invalidate usage cache: {e}")

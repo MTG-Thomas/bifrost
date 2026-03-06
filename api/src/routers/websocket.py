@@ -271,6 +271,13 @@ async def websocket_connect(
                 allowed_channels.append(channel)
         elif channel == "system":
             allowed_channels.append(channel)
+        elif channel.startswith("agent-run:"):
+            # Agent run detail channels - any authenticated user can subscribe
+            # Org-level access is enforced at the API query level
+            allowed_channels.append(channel)
+        elif channel == "agent-runs":
+            # Agent run list channel for real-time updates
+            allowed_channels.append(channel)
         elif channel == "platform_workers":
             # Platform workers channel - diagnostics, platform admins only
             if user.is_superuser:
@@ -376,6 +383,15 @@ async def websocket_connect(
                     elif channel.startswith("git:"):
                         # Git sync job channels - ephemeral, job-specific UUIDs
                         # Any authenticated user can subscribe (job ID is a secret token)
+                        if channel not in manager.connections:
+                            manager.connections[channel] = set()
+                        manager.connections[channel].add(websocket)
+                        await websocket.send_json({
+                            "type": "subscribed",
+                            "channel": channel
+                        })
+                    elif channel.startswith("agent-run:") or channel == "agent-runs":
+                        # Agent run channels - any authenticated user can subscribe
                         if channel not in manager.connections:
                             manager.connections[channel] = set()
                         manager.connections[channel].add(websocket)

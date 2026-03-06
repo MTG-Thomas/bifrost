@@ -61,6 +61,8 @@ class Agent(Base):
     llm_model: Mapped[str | None] = mapped_column(String(100), default=None)
     llm_max_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
     llm_temperature: Mapped[float | None] = mapped_column(Float, default=None)
+    max_iterations: Mapped[int | None] = mapped_column(Integer, default=50)
+    max_token_budget: Mapped[int | None] = mapped_column(Integer, default=100000)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")

@@ -57,27 +57,12 @@ class TestAutoAddSearchKnowledge:
         mock_agent.knowledge_sources = ["docs", "faq"]
         mock_agent.system_tools = ["list_organizations"]
 
-        # Mock the tool registry to return empty (no workflow tools)
-        executor.tool_registry.get_tool_definitions = AsyncMock(return_value=[])
+        mock_tools = [
+            ToolDefinition(name="list_organizations", description="List all orgs", parameters={"type": "object", "properties": {}}),
+            ToolDefinition(name="search_knowledge", description="Search the knowledge base", parameters={"type": "object", "properties": {}}),
+        ]
 
-        # Mock the _get_system_tool_definitions method
-        def mock_system_tools(tool_ids):
-            result = []
-            if "list_organizations" in tool_ids:
-                result.append(ToolDefinition(
-                    name="list_organizations",
-                    description="List all orgs",
-                    parameters={"type": "object", "properties": {}},
-                ))
-            if "search_knowledge" in tool_ids:
-                result.append(ToolDefinition(
-                    name="search_knowledge",
-                    description="Search the knowledge base",
-                    parameters={"type": "object", "properties": {}},
-                ))
-            return result
-
-        with patch.object(executor, "_get_system_tool_definitions", side_effect=mock_system_tools):
+        with patch("src.services.agent_executor.resolve_agent_tools", new_callable=AsyncMock, return_value=(mock_tools, {})):
             tools = await executor._get_agent_tools(mock_agent)
 
         tool_names = [t.name for t in tools]
@@ -92,22 +77,13 @@ class TestAutoAddSearchKnowledge:
         mock_agent.knowledge_sources = ["docs"]
         mock_agent.system_tools = ["search_knowledge"]
 
-        executor.tool_registry.get_tool_definitions = AsyncMock(return_value=[])
+        mock_tools = [
+            ToolDefinition(name="search_knowledge", description="Search the knowledge base", parameters={"type": "object", "properties": {}}),
+        ]
 
-        def mock_system_tools(tool_ids):
-            result = []
-            if "search_knowledge" in tool_ids:
-                result.append(ToolDefinition(
-                    name="search_knowledge",
-                    description="Search the knowledge base",
-                    parameters={"type": "object", "properties": {}},
-                ))
-            return result
-
-        with patch.object(executor, "_get_system_tool_definitions", side_effect=mock_system_tools):
+        with patch("src.services.agent_executor.resolve_agent_tools", new_callable=AsyncMock, return_value=(mock_tools, {})):
             tools = await executor._get_agent_tools(mock_agent)
 
-        # Should only have one search_knowledge
         tool_names = [t.name for t in tools]
         assert tool_names.count("search_knowledge") == 1
 
@@ -119,26 +95,11 @@ class TestAutoAddSearchKnowledge:
         mock_agent.knowledge_sources = []
         mock_agent.system_tools = ["list_organizations"]
 
-        executor.tool_registry.get_tool_definitions = AsyncMock(return_value=[])
+        mock_tools = [
+            ToolDefinition(name="list_organizations", description="List all orgs", parameters={"type": "object", "properties": {}}),
+        ]
 
-        def mock_system_tools(tool_ids):
-            result = []
-            if "list_organizations" in tool_ids:
-                result.append(ToolDefinition(
-                    name="list_organizations",
-                    description="List all orgs",
-                    parameters={"type": "object", "properties": {}},
-                ))
-            # search_knowledge not included since it shouldn't be in tool_ids
-            if "search_knowledge" in tool_ids:
-                result.append(ToolDefinition(
-                    name="search_knowledge",
-                    description="Search the knowledge base",
-                    parameters={"type": "object", "properties": {}},
-                ))
-            return result
-
-        with patch.object(executor, "_get_system_tool_definitions", side_effect=mock_system_tools):
+        with patch("src.services.agent_executor.resolve_agent_tools", new_callable=AsyncMock, return_value=(mock_tools, {})):
             tools = await executor._get_agent_tools(mock_agent)
 
         tool_names = [t.name for t in tools]
@@ -146,107 +107,41 @@ class TestAutoAddSearchKnowledge:
 
 
 class TestToolConflictDetection:
-    """Test detection and handling of tool name conflicts."""
+    """Test detection and handling of tool name conflicts via resolve_agent_tools."""
 
     @pytest.mark.asyncio
     async def test_system_tools_win_over_workflow_tools(self, executor, mock_agent):
-        """System tools take priority over workflow tools with same name."""
-        from src.services.tool_registry import ToolDefinition as RegistryToolDefinition
-
-        # Set up agent with a system tool
+        """System tools take priority — resolve_agent_tools returns only the system tool."""
         mock_agent.system_tools = ["execute_workflow"]
 
-        # Create a workflow tool that would normalize to 'wf_execute_workflow'
-        # This shouldn't conflict, but let's test a direct conflict scenario
-        mock_workflow_tool = MagicMock()
-        mock_workflow_tool.id = uuid4()
-        mock_agent.tools = [mock_workflow_tool]
+        # resolve_agent_tools handles the conflict internally and returns only the winner
+        mock_tools = [
+            ToolDefinition(name="execute_workflow", description="Execute a workflow", parameters={"type": "object", "properties": {}}),
+        ]
 
-        # Mock workflow tool definition that conflicts with system tool
-        conflicting_tool = RegistryToolDefinition(
-            id=mock_workflow_tool.id,
-            name="execute_workflow",  # Same name as system tool
-            description="Conflicting workflow",
-            parameters={"type": "object", "properties": {}},
-            workflow_name="Execute Workflow",
-            category=None,
-        )
-        executor.tool_registry.get_tool_definitions = AsyncMock(
-            return_value=[conflicting_tool]
-        )
+        with patch("src.services.agent_executor.resolve_agent_tools", new_callable=AsyncMock, return_value=(mock_tools, {})):
+            tools = await executor._get_agent_tools(mock_agent)
 
-        def mock_system_tools(tool_ids):
-            result = []
-            if "execute_workflow" in tool_ids:
-                result.append(ToolDefinition(
-                    name="execute_workflow",
-                    description="Execute a workflow",
-                    parameters={"type": "object", "properties": {}},
-                ))
-            return result
-
-        with patch.object(executor, "_get_system_tool_definitions", side_effect=mock_system_tools):
-            with patch.object(executor, "_notify_tool_conflicts", new_callable=AsyncMock) as mock_notify:
-                tools = await executor._get_agent_tools(mock_agent)
-
-        # Should only have the system tool (workflow tool shadowed)
         tool_names = [t.name for t in tools]
         assert tool_names.count("execute_workflow") == 1
-
-        # Should have called notification
-        mock_notify.assert_called_once()
-        call_args = mock_notify.call_args
-        conflicts = call_args[0][1]
-        assert len(conflicts) == 1
-        assert conflicts[0][0] == "execute_workflow"  # Tool name
-        assert "Execute Workflow" in conflicts[0][1]  # Loser (workflow)
-        assert "execute_workflow" in conflicts[0][2]  # Winner (system tool)
 
     @pytest.mark.asyncio
     async def test_no_conflict_with_prefixed_workflow_tools(self, executor, mock_agent):
         """Workflow tools with category prefix don't conflict with system tools."""
-        from src.services.tool_registry import ToolDefinition as RegistryToolDefinition
-
         mock_agent.system_tools = ["execute_workflow"]
 
-        mock_workflow_tool = MagicMock()
-        mock_workflow_tool.id = uuid4()
-        mock_agent.tools = [mock_workflow_tool]
+        workflow_id = uuid4()
+        mock_tools = [
+            ToolDefinition(name="execute_workflow", description="Execute a workflow", parameters={"type": "object", "properties": {}}),
+            ToolDefinition(name="halopsa_execute_workflow", description="HaloPSA workflow", parameters={"type": "object", "properties": {}}),
+        ]
 
-        # This workflow has a category, so it gets prefixed - no conflict
-        non_conflicting_tool = RegistryToolDefinition(
-            id=mock_workflow_tool.id,
-            name="halopsa_execute_workflow",  # Prefixed - no conflict
-            description="HaloPSA workflow",
-            parameters={"type": "object", "properties": {}},
-            workflow_name="Execute Workflow",
-            category="HaloPSA",
-        )
-        executor.tool_registry.get_tool_definitions = AsyncMock(
-            return_value=[non_conflicting_tool]
-        )
+        with patch("src.services.agent_executor.resolve_agent_tools", new_callable=AsyncMock, return_value=(mock_tools, {"halopsa_execute_workflow": workflow_id})):
+            tools = await executor._get_agent_tools(mock_agent)
 
-        def mock_system_tools(tool_ids):
-            result = []
-            if "execute_workflow" in tool_ids:
-                result.append(ToolDefinition(
-                    name="execute_workflow",
-                    description="Execute a workflow",
-                    parameters={"type": "object", "properties": {}},
-                ))
-            return result
-
-        with patch.object(executor, "_get_system_tool_definitions", side_effect=mock_system_tools):
-            with patch.object(executor, "_notify_tool_conflicts", new_callable=AsyncMock) as mock_notify:
-                tools = await executor._get_agent_tools(mock_agent)
-
-        # Should have both tools
         tool_names = [t.name for t in tools]
         assert "execute_workflow" in tool_names
         assert "halopsa_execute_workflow" in tool_names
-
-        # Should NOT have called notification (no conflicts)
-        mock_notify.assert_not_called()
 
 
 class TestNotifyToolConflicts:
@@ -333,27 +228,16 @@ class TestWorkflowToolIdResolution:
     @pytest.mark.asyncio
     async def test_workflow_id_map_populated_for_workflow_tools(self, executor, mock_agent):
         """_get_agent_tools populates _tool_workflow_id_map for workflow tools."""
-        from src.services.tool_registry import ToolDefinition as RegistryToolDefinition
-
         workflow_id = uuid4()
-        mock_workflow_tool = MagicMock()
-        mock_workflow_tool.id = workflow_id
-        mock_agent.tools = [mock_workflow_tool]
+        mock_agent.tools = [MagicMock(id=workflow_id)]
         mock_agent.system_tools = []
 
-        registry_tool = RegistryToolDefinition(
-            id=workflow_id,
-            name="wf_execute_halopsa_sql",
-            description="Execute HaloPSA SQL query",
-            parameters={"type": "object", "properties": {}},
-            workflow_name="Execute HaloPSA SQL",
-            category="HaloPSA",
-        )
-        executor.tool_registry.get_tool_definitions = AsyncMock(
-            return_value=[registry_tool]
-        )
+        mock_tools = [
+            ToolDefinition(name="wf_execute_halopsa_sql", description="Execute HaloPSA SQL query", parameters={"type": "object", "properties": {}}),
+        ]
+        mock_id_map = {"wf_execute_halopsa_sql": workflow_id}
 
-        with patch.object(executor, "_get_system_tool_definitions", return_value=[]):
+        with patch("src.services.agent_executor.resolve_agent_tools", new_callable=AsyncMock, return_value=(mock_tools, mock_id_map)):
             tools = await executor._get_agent_tools(mock_agent)
 
         assert "wf_execute_halopsa_sql" in [t.name for t in tools]

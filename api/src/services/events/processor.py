@@ -335,18 +335,27 @@ class EventProcessor:
 
         deliveries_created = 0
         for subscription in subscriptions:
-            if not subscription.workflow_id or not subscription.workflow:
-                logger.warning(
-                    f"Subscription {subscription.id} has no workflow, skipping"
-                )
-                continue
+            target_type = getattr(subscription, "target_type", "workflow") or "workflow"
+
+            if target_type == "agent":
+                if not subscription.agent_id:
+                    logger.warning(
+                        f"Subscription {subscription.id} is agent type but has no agent_id, skipping"
+                    )
+                    continue
+            else:
+                if not subscription.workflow_id or not subscription.workflow:
+                    logger.warning(
+                        f"Subscription {subscription.id} has no workflow, skipping"
+                    )
+                    continue
 
             # Create delivery record
             delivery = EventDelivery(
                 id=uuid.uuid4(),
                 event_id=event.id,
                 event_subscription_id=subscription.id,
-                workflow_id=subscription.workflow_id,
+                workflow_id=subscription.workflow_id,  # None for agent targets
                 status=EventDeliveryStatus.PENDING,
             )
             self.session.add(delivery)
@@ -435,19 +444,23 @@ class EventProcessor:
         # Get all pending deliveries for this event
         deliveries = await self._delivery_repo.get_by_event(event_id)
 
+        # Get the event data (once, outside the loop)
+        event_obj = await self._event_repo.get_by_id(event_id)
+        if not event_obj:
+            logger.error(f"Event not found when queueing deliveries: {event_id}")
+            return 0
+
         queued = 0
         for delivery in deliveries:
             if delivery.status != EventDeliveryStatus.PENDING:
                 continue
 
-            # Get the event data
-            event = await self._event_repo.get_by_id(event_id)
-            if not event:
-                logger.error(f"Event not found when queueing delivery: {event_id}")
-                continue
-
             try:
-                await self._queue_workflow_execution(delivery, event)
+                subscription = delivery.subscription
+                if subscription and subscription.target_type == "agent":
+                    await self._queue_agent_run(delivery, event_obj)
+                else:
+                    await self._queue_workflow_execution(delivery, event_obj)
                 delivery.status = EventDeliveryStatus.QUEUED
                 queued += 1
             except Exception as e:
@@ -460,32 +473,29 @@ class EventProcessor:
 
         await self.session.flush()
 
-        # Broadcast update after queueing
-        if event:
-            # Count current delivery statuses
-            all_deliveries = await self._delivery_repo.get_by_event(event_id)
-            success_count = sum(
-                1 for d in all_deliveries if d.status == EventDeliveryStatus.SUCCESS
-            )
-            failed_count = sum(
-                1 for d in all_deliveries if d.status == EventDeliveryStatus.FAILED
-            )
-            queued_count = sum(
-                1 for d in all_deliveries if d.status == EventDeliveryStatus.QUEUED
-            )
-            pending_count = sum(
-                1 for d in all_deliveries if d.status == EventDeliveryStatus.PENDING
-            )
+        # Broadcast update after queueing (use already-loaded deliveries)
+        success_count = sum(
+            1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS
+        )
+        failed_count = sum(
+            1 for d in deliveries if d.status == EventDeliveryStatus.FAILED
+        )
+        queued_count = sum(
+            1 for d in deliveries if d.status == EventDeliveryStatus.QUEUED
+        )
+        pending_count = sum(
+            1 for d in deliveries if d.status == EventDeliveryStatus.PENDING
+        )
 
-            await self._broadcast_event_update(
-                event_source_id=event.event_source_id,
-                event=event,
-                update_type="deliveries_queued",
-                success_count=success_count,
-                failed_count=failed_count,
-                queued_count=queued_count,
-                pending_count=pending_count,
-            )
+        await self._broadcast_event_update(
+            event_source_id=event_obj.event_source_id,
+            event=event_obj,
+            update_type="deliveries_queued",
+            success_count=success_count,
+            failed_count=failed_count,
+            queued_count=queued_count,
+            pending_count=pending_count,
+        )
 
         return queued
 
@@ -565,6 +575,65 @@ class EventProcessor:
                 "execution_id": execution_id,
                 "delivery_id": str(delivery.id),
                 "workflow_id": str(workflow.id),
+                "event_id": str(event.id),
+            },
+        )
+
+    async def _queue_agent_run(
+        self,
+        delivery: EventDelivery,
+        event: Event,
+    ) -> None:
+        """Queue an agent run for an event delivery targeting an agent."""
+        from src.services.execution.agent_run_service import enqueue_agent_run
+
+        subscription = delivery.subscription
+        agent = subscription.agent
+
+        if not agent:
+            raise ValueError(f"Delivery {delivery.id} subscription has no agent")
+
+        # Build parameters from input mapping or raw event data
+        parameters: dict[str, Any] = {}
+        if subscription.input_mapping:
+            parameters = _process_input_mapping(
+                input_mapping=subscription.input_mapping,
+                event=event,
+                subscription=subscription,
+            )
+        else:
+            if isinstance(event.data, dict):
+                parameters.update(event.data)
+
+        # Include event context
+        parameters["_event"] = {
+            "id": str(event.id),
+            "type": event.event_type,
+            "body": event.data,
+            "headers": event.headers,
+            "received_at": event.received_at.isoformat() if event.received_at else None,
+            "source_ip": event.source_ip,
+        }
+
+        org_id = str(agent.organization_id) if agent.organization_id else None
+
+        run_id = await enqueue_agent_run(
+            agent_id=str(agent.id),
+            trigger_type="event",
+            trigger_source=f"event: {event.event_type or 'webhook'}",
+            input_data=parameters,
+            org_id=org_id,
+            event_delivery_id=str(delivery.id),
+        )
+
+        # agent_run_id will be set by the consumer after creating the AgentRun record
+
+        logger.info(
+            "Queued agent run for event delivery",
+            extra={
+                "run_id": run_id,
+                "delivery_id": str(delivery.id),
+                "agent_id": str(agent.id),
                 "event_id": str(event.id),
             },
         )
