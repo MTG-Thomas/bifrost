@@ -48,8 +48,6 @@ interface ExecutionSidebarProps {
 	workflowName: string;
 	/** Who executed the workflow */
 	executedByName?: string | null;
-	/** Email of who executed the workflow */
-	executedByEmail?: string | null;
 	/** Organization name (effective scope) */
 	orgName?: string | null;
 	/** Start timestamp */
@@ -99,7 +97,6 @@ export function ExecutionSidebar({
 	status,
 	workflowName,
 	executedByName,
-	executedByEmail,
 	orgName,
 	startedAt,
 	completedAt,
