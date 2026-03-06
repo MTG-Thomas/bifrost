@@ -101,6 +101,8 @@ class WorkflowExecution(BaseModel):
     # AI usage tracking
     ai_usage: list[AIUsagePublicSimple] | None = None
     ai_totals: AIUsageTotalsSimple | None = None
+    # Persisted execution context (admin only)
+    execution_context: dict[str, Any] | None = None
 
 
 class WorkflowExecutionRequest(BaseModel):
