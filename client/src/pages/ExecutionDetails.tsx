@@ -607,7 +607,6 @@ export function ExecutionDetails({
 						status={execution.status as ExecutionStatus}
 						workflowName={execution.workflow_name}
 						executedByName={execution.executed_by_name}
-						executedByEmail={execution.executed_by_email}
 						orgName={execution.org_name}
 						startedAt={execution.started_at}
 						completedAt={execution.completed_at}
