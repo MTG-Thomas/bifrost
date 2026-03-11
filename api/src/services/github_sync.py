@@ -315,130 +315,97 @@ async def import_manifest_from_repo(db: AsyncSession) -> ManifestImportResult:
         result.warnings.extend(validation_errors)
         return result
 
-    # 4. Create a temporary directory structure for plan_import
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        work_dir = Path(tmp_dir)
-
-        # Write manifest files to temp .bifrost/
-        bifrost_dir = work_dir / ".bifrost"
-        bifrost_dir.mkdir()
-        for filename, file_content in manifest_yaml_files.items():
-            (bifrost_dir / filename).write_text(file_content)
-
-        # Download workflow/form/agent source files from S3 to temp dir
-        for _wf_name, mwf in manifest.workflows.items():
-            local_path = work_dir / mwf.path
-            try:
-                content_bytes = await repo.read(mwf.path)
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                local_path.write_bytes(content_bytes)
-            except Exception:
-                pass
-
-        for _form_name, mform in manifest.forms.items():
-            local_path = work_dir / mform.path
-            try:
-                content_bytes = await repo.read(mform.path)
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                local_path.write_bytes(content_bytes)
-            except Exception:
-                pass
-
-        for _agent_name, magent in manifest.agents.items():
-            local_path = work_dir / magent.path
-            try:
-                content_bytes = await repo.read(magent.path)
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                local_path.write_bytes(content_bytes)
-            except Exception:
-                pass
-
-        # 5. Run entity resolution via GitHubSyncService
-        service = GitHubSyncService(db, repo_url="", branch="main")
-
+    # Helper: read a file from S3, returning None on failure
+    async def _read_or_none(path: str) -> bytes | None:
         try:
-            async with db.begin_nested():
-                await service.plan_import(manifest, work_dir)
+            return await repo.read(path)
+        except Exception:
+            return None
 
-                # Run indexer side-effects (same as _import_all_entities)
-                from src.services.file_storage.indexers.form import FormIndexer
-                form_indexer = FormIndexer(db)
-                for _form_name, mform in manifest.forms.items():
-                    form_path = work_dir / mform.path
-                    if form_path.exists():
-                        content_bytes = form_path.read_bytes()
-                        original_data = yaml.safe_load(content_bytes.decode("utf-8"))
-                        if original_data:
-                            data = dict(original_data)
-                            data["id"] = mform.id
-                            await service._resolve_ref_field(data, "workflow_id")
-                            await service._resolve_ref_field(data, "launch_workflow_id")
-                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
-                            await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
+    # 4. Run entity resolution via direct S3 reads (no temp dir needed)
+    service = GitHubSyncService(db, repo_url="", branch="main")
 
-                            # Only mark as modified if data actually changed (not just formatting)
-                            if data != original_data:
-                                result.modified_files[mform.path] = updated_content.decode("utf-8")
+    try:
+        async with db.begin_nested():
+            await service.plan_import(manifest, repo=repo)
 
-                            # Post-indexer: update org_id and access_level
-                            from sqlalchemy import update as sa_update
-                            from src.models.orm.forms import Form
-                            org_id_uuid = UUID(mform.organization_id) if mform.organization_id else None
-                            form_id_uuid = UUID(mform.id)
-                            post_values: dict = {}
-                            if org_id_uuid:
-                                post_values["organization_id"] = org_id_uuid
-                            if mform.access_level:
-                                post_values["access_level"] = mform.access_level
-                            if post_values:
-                                post_values["updated_at"] = datetime.now(timezone.utc)
-                                await db.execute(
-                                    sa_update(Form).where(Form.id == form_id_uuid).values(**post_values)
-                                )
+            # Run indexer side-effects (same as _import_all_entities)
+            from src.services.file_storage.indexers.form import FormIndexer
+            form_indexer = FormIndexer(db)
+            for _form_name, mform in manifest.forms.items():
+                content_bytes = await _read_or_none(mform.path)
+                if content_bytes is None:
+                    continue
+                original_data = yaml.safe_load(content_bytes.decode("utf-8"))
+                if original_data:
+                    data = dict(original_data)
+                    data["id"] = mform.id
+                    await service._resolve_ref_field(data, "workflow_id")
+                    await service._resolve_ref_field(data, "launch_workflow_id")
+                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
+                    await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
 
-                from src.services.file_storage.indexers.agent import AgentIndexer
-                agent_indexer = AgentIndexer(db)
-                for _agent_name, magent in manifest.agents.items():
-                    agent_path = work_dir / magent.path
-                    if agent_path.exists():
-                        content_bytes = agent_path.read_bytes()
-                        original_data = yaml.safe_load(content_bytes.decode("utf-8"))
-                        if original_data:
-                            data = dict(original_data)
-                            data["id"] = magent.id
-                            await service._resolve_ref_field(data, "tool_ids")
-                            if "tools" in data and "tool_ids" not in data:
-                                await service._resolve_ref_field(data, "tools")
-                            updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
-                            await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
+                    # Only mark as modified if data actually changed (not just formatting)
+                    if data != original_data:
+                        result.modified_files[mform.path] = updated_content.decode("utf-8")
 
-                            # Only mark as modified if data actually changed (not just formatting)
-                            if data != original_data:
-                                result.modified_files[magent.path] = updated_content.decode("utf-8")
+                    # Post-indexer: update org_id and access_level
+                    from sqlalchemy import update as sa_update
+                    from src.models.orm.forms import Form
+                    org_id_uuid = UUID(mform.organization_id) if mform.organization_id else None
+                    form_id_uuid = UUID(mform.id)
+                    post_values: dict = {}
+                    if org_id_uuid:
+                        post_values["organization_id"] = org_id_uuid
+                    if mform.access_level:
+                        post_values["access_level"] = mform.access_level
+                    if post_values:
+                        post_values["updated_at"] = datetime.now(timezone.utc)
+                        await db.execute(
+                            sa_update(Form).where(Form.id == form_id_uuid).values(**post_values)
+                        )
 
-                            # Post-indexer: update org_id and access_level
-                            from sqlalchemy import update as sa_update
-                            from src.models.orm.agents import Agent
-                            org_id_uuid = UUID(magent.organization_id) if magent.organization_id else None
-                            agent_id_uuid = UUID(magent.id)
-                            post_values_a: dict = {}
-                            if org_id_uuid:
-                                post_values_a["organization_id"] = org_id_uuid
-                            if magent.access_level:
-                                post_values_a["access_level"] = magent.access_level
-                            if post_values_a:
-                                post_values_a["updated_at"] = datetime.now(timezone.utc)
-                                await db.execute(
-                                    sa_update(Agent).where(Agent.id == agent_id_uuid).values(**post_values_a)
-                                )
+            from src.services.file_storage.indexers.agent import AgentIndexer
+            agent_indexer = AgentIndexer(db)
+            for _agent_name, magent in manifest.agents.items():
+                content_bytes = await _read_or_none(magent.path)
+                if content_bytes is None:
+                    continue
+                original_data = yaml.safe_load(content_bytes.decode("utf-8"))
+                if original_data:
+                    data = dict(original_data)
+                    data["id"] = magent.id
+                    await service._resolve_ref_field(data, "tool_ids")
+                    if "tools" in data and "tool_ids" not in data:
+                        await service._resolve_ref_field(data, "tools")
+                    updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
+                    await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
 
-                result.applied = True
+                    # Only mark as modified if data actually changed (not just formatting)
+                    if data != original_data:
+                        result.modified_files[magent.path] = updated_content.decode("utf-8")
 
-        except Exception as e:
-            result.warnings.append(f"Entity resolution failed: {e}")
-            logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)
+                    # Post-indexer: update org_id and access_level
+                    from sqlalchemy import update as sa_update
+                    from src.models.orm.agents import Agent
+                    org_id_uuid = UUID(magent.organization_id) if magent.organization_id else None
+                    agent_id_uuid = UUID(magent.id)
+                    post_values_a: dict = {}
+                    if org_id_uuid:
+                        post_values_a["organization_id"] = org_id_uuid
+                    if magent.access_level:
+                        post_values_a["access_level"] = magent.access_level
+                    if post_values_a:
+                        post_values_a["updated_at"] = datetime.now(timezone.utc)
+                        await db.execute(
+                            sa_update(Agent).where(Agent.id == agent_id_uuid).values(**post_values_a)
+                        )
+
+            result.applied = True
+
+    except Exception as e:
+        result.warnings.append(f"Entity resolution failed: {e}")
+        logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)
 
     # 6. Regenerate manifest from DB
     try:
