@@ -421,8 +421,6 @@ async def import_manifest(
 ) -> ManifestImportResponse:
     """Import .bifrost/ manifest files from S3 into DB."""
     from src.services.github_sync import import_manifest_from_repo
-    from src.services.manifest_generator import generate_manifest
-    from src.services.manifest import serialize_manifest_dir
 
     # Write provided .bifrost/ files to S3
     if request and request.files:
@@ -447,19 +445,14 @@ async def import_manifest(
     dry_run = request.dry_run if request else False
     result = await import_manifest_from_repo(db, delete_removed_entities=delete_entities, dry_run=dry_run)
 
-    manifest_files: dict[str, str] = {}
     if not dry_run:
         await db.commit()
-
-        # Regenerate manifests to return canonical versions
-        manifest = await generate_manifest(db)
-        manifest_files = serialize_manifest_dir(manifest)
 
     return ManifestImportResponse(
         applied=result.applied,
         dry_run=result.dry_run,
         warnings=result.warnings,
-        manifest_files=manifest_files,
+        manifest_files=result.manifest_files,
         modified_files=result.modified_files,
         deleted_entities=result.deleted_entities,
         entity_changes=result.entity_changes,
