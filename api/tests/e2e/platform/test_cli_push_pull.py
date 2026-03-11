@@ -263,9 +263,19 @@ def test_list_with_metadata(e2e_client, platform_admin):
 
 
 def test_list_with_metadata_excludes_git(e2e_client, platform_admin):
-    """List with metadata should not return .git/ objects."""
+    """Writing .git/ paths should be rejected, and .git/ should not appear in metadata listings."""
+    # The API rejects .git/ paths at write time
     b64_content = base64.b64encode(b"git object").decode("ascii")
-    _write_file(e2e_client, platform_admin.headers, ".git/objects/meta_test", b64_content, binary=True)
+    resp = e2e_client.post("/api/files/write", headers=platform_admin.headers, json={
+        "path": ".git/objects/meta_test",
+        "content": b64_content,
+        "mode": "cloud",
+        "location": "workspace",
+        "binary": True,
+    })
+    assert resp.status_code == 400, f"Expected .git/ write to be rejected, got {resp.status_code}"
+
+    # Verify .git/ doesn't appear in metadata listings either way
     resp = e2e_client.post("/api/files/list", headers=platform_admin.headers, json={
         "include_metadata": True,
         "mode": "cloud",
