@@ -395,6 +395,55 @@ def _diff_list_entities(
         })
 
 
+def _collect_changed_ids(incoming: "Manifest", current: "Manifest") -> set[str]:
+    """Return the set of entity IDs that differ between two manifests.
+
+    Compares all entity types by serialized equality.  When an integration
+    changes, all configs that reference that integration are also included
+    (because config schema / mapping changes may cascade).
+    """
+    changed: set[str] = set()
+
+    # List-based entities (organizations, roles)
+    for attr in ("organizations", "roles"):
+        inc_by_id = {e.id: e for e in getattr(incoming, attr)}
+        cur_by_id = {e.id: e for e in getattr(current, attr)}
+        for eid in set(inc_by_id) | set(cur_by_id):
+            inc = inc_by_id.get(eid)
+            cur = cur_by_id.get(eid)
+            if not inc or not cur:
+                changed.add(eid)
+            elif inc.model_dump(mode="json", by_alias=True) != cur.model_dump(mode="json", by_alias=True):
+                changed.add(eid)
+
+    # Dict-based entities
+    changed_integration_ids: set[str] = set()
+    for attr in ("workflows", "integrations", "configs", "tables", "events", "forms", "agents", "apps"):
+        inc_dict: dict = getattr(incoming, attr)
+        cur_dict: dict = getattr(current, attr)
+        inc_by_id = {v.id: v for v in inc_dict.values()}
+        cur_by_id = {v.id: v for v in cur_dict.values()}
+        for eid in set(inc_by_id) | set(cur_by_id):
+            inc = inc_by_id.get(eid)
+            cur = cur_by_id.get(eid)
+            if not inc or not cur:
+                changed.add(eid)
+                if attr == "integrations":
+                    changed_integration_ids.add(eid)
+            elif inc.model_dump(mode="json", by_alias=True) != cur.model_dump(mode="json", by_alias=True):
+                changed.add(eid)
+                if attr == "integrations":
+                    changed_integration_ids.add(eid)
+
+    # When an integration changes, include all its dependent configs
+    if changed_integration_ids:
+        for mcfg in incoming.configs.values():
+            if mcfg.integration_id in changed_integration_ids:
+                changed.add(mcfg.id)
+
+    return changed
+
+
 # =============================================================================
 # Standalone manifest import (no git, reads from S3)
 # =============================================================================
@@ -466,12 +515,27 @@ async def import_manifest_from_repo(
         result.warnings.extend(validation_errors)
         return result
 
-    # 4. Dry-run: pure manifest comparison (no DB writes)
+    # 4. Compute diff against current DB state
+    db_manifest = await generate_manifest(db)
+    entity_changes = _diff_manifests(manifest, db_manifest)
+    changed_ids = _collect_changed_ids(manifest, db_manifest)
+
+    # 4a. Dry-run: return diff without writing
     if dry_run:
-        db_manifest = await generate_manifest(db)
-        result.entity_changes = _diff_manifests(manifest, db_manifest)
+        result.entity_changes = entity_changes
         result.dry_run = True
         return result
+
+    # 4b. Short-circuit: nothing changed
+    if not changed_ids:
+        result.applied = True
+        result.entity_changes = entity_changes  # empty list
+        new_manifest = await generate_manifest(db)
+        result.manifest_files = serialize_manifest_dir(new_manifest)
+        return result
+
+    # Check if diff has any deletes (to skip _resolve_deletions later)
+    has_deletes = any(c["action"] == "delete" for c in entity_changes)
 
     # Helper: read a file from S3, returning None on failure
     async def _read_or_none(path: str) -> bytes | None:
@@ -485,22 +549,17 @@ async def import_manifest_from_repo(
 
     try:
         async with db.begin_nested():
-            all_ops = await service.plan_import(manifest, repo=repo, dry_run=False)
+            await service.plan_import(manifest, repo=repo, dry_run=False, changed_ids=changed_ids)
 
-            # Build entity_changes from upsert ops
-            from src.services.sync_ops import Upsert as UpsertOp
-            for op in all_ops:
-                if isinstance(op, UpsertOp) and op.action_taken:
-                    result.entity_changes.append({
-                        "action": "add" if op.action_taken == "inserted" else "update",
-                        "entity_type": getattr(op.model, "__tablename__", "unknown"),
-                        "name": op.values.get("name") or op.values.get("function_name") or op.values.get("key") or str(op.id),
-                    })
+            # Use diff-computed entity_changes (more accurate than op-based)
+            result.entity_changes = [c for c in entity_changes if c["action"] != "delete"]
 
             # Run indexer side-effects (same as _import_all_entities)
             from src.services.file_storage.indexers.form import FormIndexer
             form_indexer = FormIndexer(db)
             for _form_name, mform in manifest.forms.items():
+                if changed_ids is not None and mform.id not in changed_ids:
+                    continue
                 content_bytes = await _read_or_none(mform.path)
                 if content_bytes is None:
                     continue
@@ -536,6 +595,8 @@ async def import_manifest_from_repo(
             from src.services.file_storage.indexers.agent import AgentIndexer
             agent_indexer = AgentIndexer(db)
             for _agent_name, magent in manifest.agents.items():
+                if changed_ids is not None and magent.id not in changed_ids:
+                    continue
                 content_bytes = await _read_or_none(magent.path)
                 if content_bytes is None:
                     continue
@@ -569,8 +630,8 @@ async def import_manifest_from_repo(
                             sa_update(Agent).where(Agent.id == agent_id_uuid).values(**post_values_a)
                         )
 
-            # Run entity deletions if requested
-            if delete_removed_entities:
+            # Run entity deletions if requested (skip when diff has no deletes)
+            if delete_removed_entities and has_deletes:
                 deletion_changes = await service._resolve_deletions(
                     manifest=manifest, repo=repo, dry_run=False,
                 )
@@ -1564,7 +1625,7 @@ class GitHubSyncService:
 
         return cache
 
-    async def plan_import(self, manifest: "Manifest", work_dir: Path | None = None, progress_fn=None, repo: "RepoStorage | None" = None, dry_run: bool = False) -> "list[SyncOp]":
+    async def plan_import(self, manifest: "Manifest", work_dir: Path | None = None, progress_fn=None, repo: "RepoStorage | None" = None, dry_run: bool = False, changed_ids: set[str] | None = None) -> "list[SyncOp]":
         """Build and execute SyncOps for importing a manifest (entities only).
 
         Resolves and immediately executes ops in dependency order.
@@ -1639,6 +1700,8 @@ class GitHubSyncService:
         # 0a. Resolve organizations (no deps) — execute immediately
         org_ops: list[SyncOp] = []
         for morg in manifest.organizations:
+            if changed_ids is not None and morg.id not in changed_ids:
+                continue
             await _prog(f"Importing organization: {morg.name}")
             org_ops.extend(self._resolve_organization(morg, cache))
         for op in org_ops:
@@ -1652,6 +1715,8 @@ class GitHubSyncService:
         # 0b. Resolve roles (no deps) — execute immediately
         role_ops: list[SyncOp] = []
         for mrole in manifest.roles:
+            if changed_ids is not None and mrole.id not in changed_ids:
+                continue
             await _prog(f"Importing role: {mrole.name}")
             role_ops.extend(self._resolve_role(mrole, cache))
         for op in role_ops:
@@ -1666,6 +1731,9 @@ class GitHubSyncService:
         # Track which workflow IDs were actually imported (file exists in repo/disk)
         imported_wf_ids: set[str] = set()
         for key, mwf in manifest.workflows.items():
+            if changed_ids is not None and mwf.id not in changed_ids:
+                imported_wf_ids.add(mwf.id)  # Still track as present for event source refs
+                continue
             if await _file_exists(mwf.path):
                 await _prog(f"Importing workflow: {mwf.name or key}")
                 wf_ops = self._resolve_workflow(mwf.name or key, mwf, cache)
@@ -1680,6 +1748,8 @@ class GitHubSyncService:
 
         # 2. Resolve integrations (with config_schema, oauth_provider, mappings)
         for key, minteg in manifest.integrations.items():
+            if changed_ids is not None and minteg.id not in changed_ids:
+                continue
             await _prog(f"Importing integration: {minteg.name or key}")
             integ_ops = await self._resolve_integration(minteg.name or key, minteg, cache)
             for op in integ_ops:
@@ -1693,6 +1763,8 @@ class GitHubSyncService:
         # 3. Resolve configs
         _config_id_set = {v[0] for v in cache.get("config_by_natural", {}).values()}
         for _config_key, mcfg in manifest.configs.items():
+            if changed_ids is not None and mcfg.id not in changed_ids:
+                continue
             cfg_ops = self._resolve_config(mcfg, cache)
             for op in cfg_ops:
                 if dry_run:
@@ -1705,6 +1777,8 @@ class GitHubSyncService:
         # 4. Resolve apps (before tables — tables ref application_id)
         _app_id_set = set(cache.get("app_by_slug", {}).values())
         for _app_name, mapp in manifest.apps.items():
+            if changed_ids is not None and mapp.id not in changed_ids:
+                continue
             await _prog(f"Importing app: {mapp.name}")
             app_ops = self._resolve_app(mapp, cache)
             for op in app_ops:
@@ -1717,6 +1791,8 @@ class GitHubSyncService:
 
         # 5. Resolve tables (refs org + app UUIDs)
         for key, mtable in manifest.tables.items():
+            if changed_ids is not None and mtable.id not in changed_ids:
+                continue
             await _prog(f"Importing table: {mtable.name or key}")
             table_ops = await self._resolve_table(mtable.name or key, mtable, cache)
             for op in table_ops:
@@ -1729,6 +1805,8 @@ class GitHubSyncService:
 
         # 6. Resolve event sources + subscriptions
         for key, mes in manifest.events.items():
+            if changed_ids is not None and mes.id not in changed_ids:
+                continue
             await _prog(f"Importing event source: {mes.name or key}")
             es_ops = await self._resolve_event_source(mes.name or key, mes, imported_wf_ids)
             for op in es_ops:
@@ -1741,6 +1819,8 @@ class GitHubSyncService:
 
         # 7. Resolve forms (metadata ops only — indexer called in _import_all_entities)
         for _form_name, mform in manifest.forms.items():
+            if changed_ids is not None and mform.id not in changed_ids:
+                continue
             content = await _file_read(mform.path)
             if content is not None:
                 await _prog(f"Importing form: {mform.name}")
@@ -1755,6 +1835,8 @@ class GitHubSyncService:
 
         # 8. Resolve agents (metadata ops only — indexer called in _import_all_entities)
         for _agent_name, magent in manifest.agents.items():
+            if changed_ids is not None and magent.id not in changed_ids:
+                continue
             content = await _file_read(magent.path)
             if content is not None:
                 await _prog(f"Importing agent: {magent.name}")
