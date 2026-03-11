@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         SyncResult,
         WorkingTreeStatus,
     )
+    from src.services.repo_storage import RepoStorage
     from src.services.sync_ops import SyncOp
 
 from src.services.manifest import (
@@ -1413,7 +1414,7 @@ class GitHubSyncService:
 
         return cache
 
-    async def plan_import(self, manifest: "Manifest", work_dir: Path, progress_fn=None) -> "list[SyncOp]":
+    async def plan_import(self, manifest: "Manifest", work_dir: Path | None = None, progress_fn=None, repo: "RepoStorage | None" = None) -> "list[SyncOp]":
         """Build and execute SyncOps for importing a manifest (entities only).
 
         Resolves and immediately executes ops in dependency order.
@@ -1421,6 +1422,10 @@ class GitHubSyncService:
         Deletions are handled separately by _delete_removed_entities / _resolve_deletions.
         Indexer side-effects (WorkflowIndexer, FormIndexer, AgentIndexer) remain
         in _import_all_entities.
+
+        File reads use either ``repo`` (direct S3 via RepoStorage) or
+        ``work_dir`` (local filesystem).  At least one must be provided for
+        entities that reference source files (workflows, forms, agents).
 
         Import order:
         0a. Organizations (no deps)
@@ -1440,6 +1445,26 @@ class GitHubSyncService:
         from src.services.sync_ops import SyncOp  # noqa: F401
 
         all_ops: list[SyncOp] = []
+
+        # Helpers: abstract file reads over repo (S3) or work_dir (filesystem)
+        async def _file_exists(path: str) -> bool:
+            if repo:
+                return await repo.exists(path)
+            elif work_dir:
+                return (work_dir / path).exists()
+            return False
+
+        async def _file_read(path: str) -> bytes | None:
+            if repo:
+                try:
+                    return await repo.read(path)
+                except Exception:
+                    return None
+            elif work_dir:
+                p = work_dir / path
+                if p.exists():
+                    return p.read_bytes()
+            return None
 
         # Count total entities for progress tracking
         total = (len(manifest.organizations) + len(manifest.roles)
@@ -1477,11 +1502,10 @@ class GitHubSyncService:
         all_ops.extend(role_ops)
 
         # 1. Resolve workflows — execute immediately
-        # Track which workflow IDs were actually imported (file exists on disk)
+        # Track which workflow IDs were actually imported (file exists in repo/disk)
         imported_wf_ids: set[str] = set()
         for key, mwf in manifest.workflows.items():
-            wf_path = work_dir / mwf.path
-            if wf_path.exists():
+            if await _file_exists(mwf.path):
                 await _prog(f"Importing workflow: {mwf.name or key}")
                 wf_ops = self._resolve_workflow(mwf.name or key, mwf, cache)
                 for op in wf_ops:
@@ -1530,10 +1554,9 @@ class GitHubSyncService:
 
         # 7. Resolve forms (metadata ops only — indexer called in _import_all_entities)
         for _form_name, mform in manifest.forms.items():
-            form_path = work_dir / mform.path
-            if form_path.exists():
+            content = await _file_read(mform.path)
+            if content is not None:
                 await _prog(f"Importing form: {mform.name}")
-                content = form_path.read_bytes()
                 form_ops = self._resolve_form(mform, content)
                 for op in form_ops:
                     await op.execute(self.db)
@@ -1541,10 +1564,9 @@ class GitHubSyncService:
 
         # 8. Resolve agents (metadata ops only — indexer called in _import_all_entities)
         for _agent_name, magent in manifest.agents.items():
-            agent_path = work_dir / magent.path
-            if agent_path.exists():
+            content = await _file_read(magent.path)
+            if content is not None:
                 await _prog(f"Importing agent: {magent.name}")
-                content = agent_path.read_bytes()
                 agent_ops = self._resolve_agent(magent, content)
                 for op in agent_ops:
                     await op.execute(self.db)
