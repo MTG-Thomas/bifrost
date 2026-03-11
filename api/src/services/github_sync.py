@@ -1733,13 +1733,13 @@ class GitHubSyncService:
 
         return count, entity_changes
 
-    async def _delete_removed_entities(self, work_dir: Path) -> list:
+    async def _delete_removed_entities(self, work_dir: Path | None = None, manifest: "Manifest | None" = None, repo: "RepoStorage | None" = None) -> list:
         """Delete entities that disappeared from the manifest after a pull.
 
         Delegates to _resolve_deletions which executes bulk deletes inline.
         Returns list of EntityChange entries for removed entities.
         """
-        return await self._resolve_deletions(work_dir)
+        return await self._resolve_deletions(work_dir=work_dir, manifest=manifest, repo=repo)
 
     # -----------------------------------------------------------------
     # App preview sync
@@ -2160,7 +2160,7 @@ class GitHubSyncService:
                     resolved_list.append(item)
             data[field_name] = resolved_list
 
-    async def _resolve_deletions(self, work_dir: Path) -> list:
+    async def _resolve_deletions(self, work_dir: Path | None = None, manifest: "Manifest | None" = None, repo: "RepoStorage | None" = None) -> list:
         """Compute delete/deactivate ops for entities removed from the manifest.
 
         Optimized: pushes filtering to SQL with NOT IN clauses, returning only
@@ -2193,24 +2193,51 @@ class GitHubSyncService:
         from src.models.orm.users import Role
         from src.models.orm.workflows import Workflow
 
-        manifest = read_manifest_from_dir(work_dir / ".bifrost")
+        if manifest is None:
+            if work_dir:
+                manifest = read_manifest_from_dir(work_dir / ".bifrost")
+            else:
+                raise ValueError("Either manifest or work_dir must be provided")
+
+        # Build existence-check helpers based on repo or work_dir
+        if repo:
+            all_s3_paths = set(await repo.list(""))
+
+            def _path_exists(p: str) -> bool:
+                return p in all_s3_paths
+
+            def _dir_exists(p: str) -> bool:
+                prefix = p.rstrip("/") + "/"
+                return any(sp.startswith(prefix) for sp in all_s3_paths)
+        elif work_dir:
+            def _path_exists(p: str) -> bool:
+                return (work_dir / p).exists()
+
+            def _dir_exists(p: str) -> bool:
+                return (work_dir / p).is_dir()
+        else:
+            def _path_exists(p: str) -> bool:
+                return True
+
+            def _dir_exists(p: str) -> bool:
+                return True
 
         # Collect UUIDs of entities present in the manifest AND whose files exist
         present_wf_uuids = [
             UUID(mwf.id) for mwf in manifest.workflows.values()
-            if (work_dir / mwf.path).exists()
+            if _path_exists(mwf.path)
         ]
         present_form_uuids = [
             UUID(mform.id) for mform in manifest.forms.values()
-            if (work_dir / mform.path).exists()
+            if _path_exists(mform.path)
         ]
         present_agent_uuids = [
             UUID(magent.id) for magent in manifest.agents.values()
-            if (work_dir / magent.path).exists()
+            if _path_exists(magent.path)
         ]
         present_app_uuids = [
             UUID(mapp.id) for mapp in manifest.apps.values()
-            if (work_dir / mapp.path).is_dir()
+            if _dir_exists(mapp.path)
         ]
 
         present_integ_uuids = [UUID(m.id) for m in manifest.integrations.values()]
@@ -2371,7 +2398,7 @@ class GitHubSyncService:
 
         return entity_changes
 
-    async def _detect_stale_entities(self, work_dir: Path) -> list:
+    async def _detect_stale_entities(self, work_dir: Path | None = None, manifest: "Manifest | None" = None, repo: "RepoStorage | None" = None) -> list:
         """Read-only detection of entities that would be deleted during sync.
 
         Same logic as _resolve_deletions but only queries — no deletes or updates.
@@ -2390,23 +2417,50 @@ class GitHubSyncService:
         from src.models.orm.users import Role
         from src.models.orm.workflows import Workflow
 
-        manifest = read_manifest_from_dir(work_dir / ".bifrost")
+        if manifest is None:
+            if work_dir:
+                manifest = read_manifest_from_dir(work_dir / ".bifrost")
+            else:
+                raise ValueError("Either manifest or work_dir must be provided")
+
+        # Build existence-check helpers based on repo or work_dir
+        if repo:
+            all_s3_paths = set(await repo.list(""))
+
+            def _path_exists(p: str) -> bool:
+                return p in all_s3_paths
+
+            def _dir_exists(p: str) -> bool:
+                prefix = p.rstrip("/") + "/"
+                return any(sp.startswith(prefix) for sp in all_s3_paths)
+        elif work_dir:
+            def _path_exists(p: str) -> bool:
+                return (work_dir / p).exists()
+
+            def _dir_exists(p: str) -> bool:
+                return (work_dir / p).is_dir()
+        else:
+            def _path_exists(p: str) -> bool:
+                return True
+
+            def _dir_exists(p: str) -> bool:
+                return True
 
         present_wf_uuids = [
             UUID(mwf.id) for mwf in manifest.workflows.values()
-            if (work_dir / mwf.path).exists()
+            if _path_exists(mwf.path)
         ]
         present_form_uuids = [
             UUID(mform.id) for mform in manifest.forms.values()
-            if (work_dir / mform.path).exists()
+            if _path_exists(mform.path)
         ]
         present_agent_uuids = [
             UUID(magent.id) for magent in manifest.agents.values()
-            if (work_dir / magent.path).exists()
+            if _path_exists(magent.path)
         ]
         present_app_uuids = [
             UUID(mapp.id) for mapp in manifest.apps.values()
-            if (work_dir / mapp.path).is_dir()
+            if _dir_exists(mapp.path)
         ]
         present_integ_uuids = [UUID(m.id) for m in manifest.integrations.values()]
         present_config_uuids = [UUID(m.id) for m in manifest.configs.values()]
