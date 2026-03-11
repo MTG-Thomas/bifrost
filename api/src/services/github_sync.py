@@ -1411,6 +1411,9 @@ class GitHubSyncService:
         """
         from src.services.sync_ops import SyncOp  # noqa: F401
 
+        if not work_dir and not repo:
+            raise ValueError("plan_import requires either work_dir or repo")
+
         all_ops: list[SyncOp] = []
 
         # Helpers: abstract file reads over repo (S3) or work_dir (filesystem)
