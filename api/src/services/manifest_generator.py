@@ -27,7 +27,7 @@ from src.models.orm.tables import Table
 from src.models.orm.users import Role
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
-from src.services.manifest import (
+from bifrost.manifest import (
     Manifest,
     ManifestAgent,
     ManifestApp,

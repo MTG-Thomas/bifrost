@@ -48,7 +48,7 @@ def sample_manifest():
 
 def test_parse_manifest_from_yaml(sample_manifest):
     """Parse a YAML string into a Manifest object."""
-    from src.services.manifest import parse_manifest
+    from bifrost.manifest import parse_manifest
 
     yaml_str = yaml.dump(sample_manifest, default_flow_style=False)
     manifest = parse_manifest(yaml_str)
@@ -62,7 +62,7 @@ def test_parse_manifest_from_yaml(sample_manifest):
 
 def test_serialize_manifest(sample_manifest):
     """Serialize a Manifest back to YAML string."""
-    from src.services.manifest import parse_manifest, serialize_manifest
+    from bifrost.manifest import parse_manifest, serialize_manifest
 
     yaml_str = yaml.dump(sample_manifest, default_flow_style=False)
     manifest = parse_manifest(yaml_str)
@@ -76,7 +76,7 @@ def test_serialize_manifest(sample_manifest):
 
 def test_serialize_manifest_round_trip_stability(sample_manifest):
     """Serialize → parse → serialize should produce identical output (no false conflicts)."""
-    from src.services.manifest import parse_manifest, serialize_manifest
+    from bifrost.manifest import parse_manifest, serialize_manifest
 
     yaml_str = yaml.dump(sample_manifest, default_flow_style=False)
     manifest = parse_manifest(yaml_str)
@@ -88,7 +88,7 @@ def test_serialize_manifest_round_trip_stability(sample_manifest):
 
 def test_serialize_manifest_excludes_defaults():
     """Default-valued fields should be omitted from serialized YAML."""
-    from src.services.manifest import parse_manifest, serialize_manifest
+    from bifrost.manifest import parse_manifest, serialize_manifest
 
     yaml_str = """
 workflows:
@@ -117,7 +117,7 @@ workflows:
 
 def test_validate_manifest_broken_ref(sample_manifest):
     """Detect broken cross-references."""
-    from src.services.manifest import parse_manifest, validate_manifest
+    from bifrost.manifest import parse_manifest, validate_manifest
 
     # Form references a workflow UUID that exists — should be fine
     yaml_str = yaml.dump(sample_manifest, default_flow_style=False)
@@ -128,7 +128,7 @@ def test_validate_manifest_broken_ref(sample_manifest):
 
 def test_validate_manifest_missing_org(sample_manifest):
     """Detect reference to non-existent organization."""
-    from src.services.manifest import parse_manifest, validate_manifest
+    from bifrost.manifest import parse_manifest, validate_manifest
 
     wf_id = sample_manifest["_wf_id"]
     sample_manifest["workflows"][wf_id]["organization_id"] = str(uuid4())
@@ -140,7 +140,7 @@ def test_validate_manifest_missing_org(sample_manifest):
 
 def test_validate_manifest_missing_role(sample_manifest):
     """Detect reference to non-existent role."""
-    from src.services.manifest import parse_manifest, validate_manifest
+    from bifrost.manifest import parse_manifest, validate_manifest
 
     wf_id = sample_manifest["_wf_id"]
     sample_manifest["workflows"][wf_id]["roles"] = [str(uuid4())]
@@ -152,7 +152,7 @@ def test_validate_manifest_missing_role(sample_manifest):
 
 def test_empty_manifest():
     """Empty manifest should parse without error."""
-    from src.services.manifest import parse_manifest
+    from bifrost.manifest import parse_manifest
 
     manifest = parse_manifest("")
     assert len(manifest.workflows) == 0
@@ -161,7 +161,7 @@ def test_empty_manifest():
 
 def test_get_entity_ids():
     """Get all entity UUIDs from manifest."""
-    from src.services.manifest import parse_manifest, get_all_entity_ids
+    from bifrost.manifest import parse_manifest, get_all_entity_ids
 
     yaml_str = """
 workflows:
@@ -183,7 +183,7 @@ forms:
 
 def test_get_paths():
     """Get all file paths from manifest."""
-    from src.services.manifest import parse_manifest, get_all_paths
+    from bifrost.manifest import parse_manifest, get_all_paths
 
     yaml_str = """
 workflows:
@@ -211,7 +211,7 @@ forms:
 class TestSerializeManifestDir:
     def test_produces_correct_files(self, sample_manifest):
         """serialize_manifest_dir produces one file per non-empty entity type."""
-        from src.services.manifest import parse_manifest, serialize_manifest_dir
+        from bifrost.manifest import parse_manifest, serialize_manifest_dir
 
         yaml_str = yaml.dump(sample_manifest, default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -234,7 +234,7 @@ class TestSerializeManifestDir:
 
     def test_skips_empty_entity_types(self):
         """Empty entity types should not produce files."""
-        from src.services.manifest import Manifest, serialize_manifest_dir, ManifestWorkflow
+        from bifrost.manifest import Manifest, serialize_manifest_dir, ManifestWorkflow
 
         manifest = Manifest(
             workflows={
@@ -258,7 +258,7 @@ class TestSerializeManifestDir:
 class TestParseManifestDir:
     def test_round_trip(self, sample_manifest):
         """serialize_manifest_dir → parse_manifest_dir produces equivalent manifest."""
-        from src.services.manifest import parse_manifest, serialize_manifest_dir, parse_manifest_dir
+        from bifrost.manifest import parse_manifest, serialize_manifest_dir, parse_manifest_dir
 
         yaml_str = yaml.dump(sample_manifest, default_flow_style=False)
         original = parse_manifest(yaml_str)
@@ -277,7 +277,7 @@ class TestParseManifestDir:
 
     def test_missing_files(self):
         """Partial set of files should still work (missing = empty)."""
-        from src.services.manifest import parse_manifest_dir
+        from bifrost.manifest import parse_manifest_dir
 
         files = {
             "workflows.yaml": """
@@ -298,7 +298,7 @@ workflows:
 class TestReadWriteManifestDir:
     def test_write_and_read_split(self, tmp_path, sample_manifest):
         """write_manifest_to_dir → read_manifest_from_dir round-trip."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             parse_manifest,
             write_manifest_to_dir,
             read_manifest_from_dir,
@@ -323,7 +323,7 @@ class TestReadWriteManifestDir:
 
     def test_write_cleans_legacy_file(self, tmp_path):
         """write_manifest_to_dir removes legacy metadata.yaml if present."""
-        from src.services.manifest import Manifest, write_manifest_to_dir
+        from bifrost.manifest import Manifest, write_manifest_to_dir
 
         bifrost_dir = tmp_path / ".bifrost"
         bifrost_dir.mkdir()
@@ -336,7 +336,7 @@ class TestReadWriteManifestDir:
 
     def test_write_removes_stale_split_files(self, tmp_path):
         """write_manifest_to_dir removes split files for now-empty entity types."""
-        from src.services.manifest import Manifest, ManifestWorkflow, write_manifest_to_dir
+        from bifrost.manifest import Manifest, ManifestWorkflow, write_manifest_to_dir
 
         bifrost_dir = tmp_path / ".bifrost"
 
@@ -359,7 +359,7 @@ class TestReadWriteManifestDir:
 
     def test_read_split_format(self, tmp_path):
         """read_manifest_from_dir detects and reads split files."""
-        from src.services.manifest import read_manifest_from_dir
+        from bifrost.manifest import read_manifest_from_dir
 
         bifrost_dir = tmp_path / ".bifrost"
         bifrost_dir.mkdir()
@@ -375,7 +375,7 @@ workflows:
 
     def test_read_legacy_format(self, tmp_path):
         """read_manifest_from_dir falls back to legacy metadata.yaml."""
-        from src.services.manifest import read_manifest_from_dir
+        from bifrost.manifest import read_manifest_from_dir
 
         bifrost_dir = tmp_path / ".bifrost"
         bifrost_dir.mkdir()
@@ -391,7 +391,7 @@ workflows:
 
     def test_read_empty_directory(self, tmp_path):
         """Empty directory returns empty Manifest."""
-        from src.services.manifest import read_manifest_from_dir
+        from bifrost.manifest import read_manifest_from_dir
 
         bifrost_dir = tmp_path / ".bifrost"
         bifrost_dir.mkdir()
@@ -401,7 +401,7 @@ workflows:
 
     def test_read_missing_directory(self, tmp_path):
         """Missing directory returns empty Manifest."""
-        from src.services.manifest import read_manifest_from_dir
+        from bifrost.manifest import read_manifest_from_dir
 
         manifest = read_manifest_from_dir(tmp_path / "nonexistent")
         assert len(manifest.workflows) == 0
@@ -600,7 +600,7 @@ class TestIntegrationManifest:
 
     def test_parse_integration(self, full_manifest_data):
         """Parse integration with config_schema, oauth, and mappings."""
-        from src.services.manifest import parse_manifest
+        from bifrost.manifest import parse_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -638,7 +638,7 @@ class TestIntegrationManifest:
 
     def test_integration_round_trip(self, full_manifest_data):
         """Integration survives serialize → parse round-trip."""
-        from src.services.manifest import parse_manifest, serialize_manifest
+        from bifrost.manifest import parse_manifest, serialize_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         original = parse_manifest(yaml_str)
@@ -658,7 +658,7 @@ class TestIntegrationManifest:
 
     def test_integration_defaults_omitted(self):
         """Integration with defaults only serializes non-default fields."""
-        from src.services.manifest import Manifest, ManifestIntegration, serialize_manifest
+        from bifrost.manifest import Manifest, ManifestIntegration, serialize_manifest
 
         manifest = Manifest(
             integrations={
@@ -676,7 +676,7 @@ class TestIntegrationManifest:
 
     def test_mapping_oauth_token_id_round_trip(self):
         """Mapping oauth_token_id survives serialize → parse round-trip."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             Manifest, ManifestIntegration, ManifestIntegrationMapping,
             serialize_manifest, parse_manifest,
         )
@@ -701,7 +701,7 @@ class TestIntegrationManifest:
 
     def test_integration_split_file(self, full_manifest_data):
         """Integrations serialize to integrations.yaml in split format."""
-        from src.services.manifest import parse_manifest, serialize_manifest_dir, parse_manifest_dir
+        from bifrost.manifest import parse_manifest, serialize_manifest_dir, parse_manifest_dir
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -724,7 +724,7 @@ class TestConfigManifest:
 
     def test_parse_config(self, full_manifest_data):
         """Parse config entries including secret redaction."""
-        from src.services.manifest import parse_manifest
+        from bifrost.manifest import parse_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -747,7 +747,7 @@ class TestConfigManifest:
 
     def test_config_round_trip(self, full_manifest_data):
         """Configs survive serialize → parse round-trip."""
-        from src.services.manifest import parse_manifest, serialize_manifest
+        from bifrost.manifest import parse_manifest, serialize_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         original = parse_manifest(yaml_str)
@@ -762,7 +762,7 @@ class TestConfigManifest:
 
     def test_config_split_file(self, full_manifest_data):
         """Configs serialize to configs.yaml in split format."""
-        from src.services.manifest import parse_manifest, serialize_manifest_dir
+        from bifrost.manifest import parse_manifest, serialize_manifest_dir
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -779,7 +779,7 @@ class TestTableManifest:
 
     def test_parse_table_with_schema_alias(self, full_manifest_data):
         """Parse table with 'schema' alias → table_schema field."""
-        from src.services.manifest import parse_manifest
+        from bifrost.manifest import parse_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -798,7 +798,7 @@ class TestTableManifest:
 
     def test_table_serializes_as_schema(self, full_manifest_data):
         """Table serializes table_schema as 'schema' in YAML (via alias)."""
-        from src.services.manifest import parse_manifest, serialize_manifest
+        from bifrost.manifest import parse_manifest, serialize_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -812,7 +812,7 @@ class TestTableManifest:
 
     def test_table_round_trip(self, full_manifest_data):
         """Tables survive serialize → parse round-trip (alias preserved)."""
-        from src.services.manifest import parse_manifest, serialize_manifest
+        from bifrost.manifest import parse_manifest, serialize_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         original = parse_manifest(yaml_str)
@@ -825,7 +825,7 @@ class TestTableManifest:
 
     def test_table_split_file(self, full_manifest_data):
         """Tables serialize to tables.yaml in split format."""
-        from src.services.manifest import parse_manifest, serialize_manifest_dir
+        from bifrost.manifest import parse_manifest, serialize_manifest_dir
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -845,7 +845,7 @@ class TestEventManifest:
 
     def test_parse_event_source(self, full_manifest_data):
         """Parse event source with nested subscriptions."""
-        from src.services.manifest import parse_manifest
+        from bifrost.manifest import parse_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -872,7 +872,7 @@ class TestEventManifest:
 
     def test_schedule_event_source(self):
         """Parse a schedule-type event source."""
-        from src.services.manifest import parse_manifest
+        from bifrost.manifest import parse_manifest
 
         wf_id = str(uuid4())
         sub_id = str(uuid4())
@@ -914,7 +914,7 @@ class TestEventManifest:
 
     def test_event_round_trip(self, full_manifest_data):
         """Events survive serialize → parse round-trip."""
-        from src.services.manifest import parse_manifest, serialize_manifest
+        from bifrost.manifest import parse_manifest, serialize_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         original = parse_manifest(yaml_str)
@@ -932,7 +932,7 @@ class TestEventManifest:
 
     def test_event_split_file(self, full_manifest_data):
         """Events serialize to events.yaml in split format."""
-        from src.services.manifest import parse_manifest, serialize_manifest_dir, parse_manifest_dir
+        from bifrost.manifest import parse_manifest, serialize_manifest_dir, parse_manifest_dir
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -955,7 +955,7 @@ class TestFullManifestSplitRoundTrip:
 
     def test_all_entity_types_round_trip(self, full_manifest_data):
         """All entity types survive write_manifest_to_dir → read_manifest_from_dir."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             parse_manifest,
             write_manifest_to_dir,
             read_manifest_from_dir,
@@ -1001,7 +1001,7 @@ class TestValidateManifestNewTypes:
 
     def test_valid_full_manifest(self, full_manifest_data):
         """Full manifest with correct references passes validation."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -1010,7 +1010,7 @@ class TestValidateManifestNewTypes:
 
     def test_integration_bad_data_provider_ref(self, full_manifest_data):
         """Integration referencing unknown data provider workflow is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         data["integrations"][full_manifest_data["integ_id"]]["list_entities_data_provider_id"] = str(uuid4())
@@ -1021,7 +1021,7 @@ class TestValidateManifestNewTypes:
 
     def test_integration_bad_mapping_org_ref(self, full_manifest_data):
         """Integration mapping referencing unknown org is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         data["integrations"][full_manifest_data["integ_id"]]["mappings"][0]["organization_id"] = str(uuid4())
@@ -1032,7 +1032,7 @@ class TestValidateManifestNewTypes:
 
     def test_config_bad_integration_ref(self, full_manifest_data):
         """Config referencing unknown integration is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         config_id = full_manifest_data["config_id"]
@@ -1044,7 +1044,7 @@ class TestValidateManifestNewTypes:
 
     def test_config_bad_org_ref(self, full_manifest_data):
         """Config referencing unknown organization is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         config_id = full_manifest_data["config_id"]
@@ -1056,7 +1056,7 @@ class TestValidateManifestNewTypes:
 
     def test_table_bad_org_ref(self, full_manifest_data):
         """Table referencing unknown org is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         data["tables"][full_manifest_data["table_id"]]["organization_id"] = str(uuid4())
@@ -1067,7 +1067,7 @@ class TestValidateManifestNewTypes:
 
     def test_table_bad_app_ref(self, full_manifest_data):
         """Table referencing unknown application is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         data["tables"][full_manifest_data["table_id"]]["application_id"] = str(uuid4())
@@ -1078,7 +1078,7 @@ class TestValidateManifestNewTypes:
 
     def test_event_bad_org_ref(self, full_manifest_data):
         """Event source referencing unknown org is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         data["events"][full_manifest_data["event_source_id"]]["organization_id"] = str(uuid4())
@@ -1089,7 +1089,7 @@ class TestValidateManifestNewTypes:
 
     def test_event_bad_webhook_integration_ref(self, full_manifest_data):
         """Event source referencing unknown webhook integration is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         data["events"][full_manifest_data["event_source_id"]]["webhook_integration_id"] = str(uuid4())
@@ -1100,7 +1100,7 @@ class TestValidateManifestNewTypes:
 
     def test_event_sub_bad_workflow_ref(self, full_manifest_data):
         """Event subscription referencing unknown workflow is caught."""
-        from src.services.manifest import parse_manifest, validate_manifest
+        from bifrost.manifest import parse_manifest, validate_manifest
 
         data = full_manifest_data["manifest"]
         data["events"][full_manifest_data["event_source_id"]]["subscriptions"][0]["workflow_id"] = str(uuid4())
@@ -1115,7 +1115,7 @@ class TestConfigDictKeyCollision:
 
     def test_configs_with_same_key_different_orgs_survive_round_trip(self):
         """Two configs with same key but different org_ids both survive serialization."""
-        from src.services.manifest import Manifest, ManifestConfig, serialize_manifest, parse_manifest
+        from bifrost.manifest import Manifest, ManifestConfig, serialize_manifest, parse_manifest
 
         config_id_1 = str(uuid4())
         config_id_2 = str(uuid4())
@@ -1158,7 +1158,7 @@ class TestBackwardCompatNameKeys:
 
     def test_legacy_name_keyed_manifest_parses(self):
         """Old-format YAML with name keys parses; name field defaults to empty."""
-        from src.services.manifest import parse_manifest
+        from bifrost.manifest import parse_manifest
 
         yaml_str = """
 workflows:
@@ -1206,7 +1206,7 @@ class TestDuplicateNamesSurvive:
 
     def test_duplicate_workflow_names_survive_round_trip(self):
         """Two workflows with the same name but different UUIDs both survive."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             Manifest, ManifestWorkflow, serialize_manifest, parse_manifest,
         )
 
@@ -1246,7 +1246,7 @@ class TestGetAllEntityIdsNewTypes:
 
     def test_includes_new_entity_ids(self, full_manifest_data):
         """get_all_entity_ids includes integrations, configs, tables, events, subscriptions."""
-        from src.services.manifest import parse_manifest, get_all_entity_ids
+        from bifrost.manifest import parse_manifest, get_all_entity_ids
 
         yaml_str = yaml.dump(full_manifest_data["manifest"], default_flow_style=False)
         manifest = parse_manifest(yaml_str)
@@ -1302,7 +1302,7 @@ class TestManifestSchemaCoverage:
         """All Integration DB columns are in ManifestIntegration or explicitly ignored."""
         from sqlalchemy import inspect as sa_inspect
         from src.models.orm.integrations import Integration
-        from src.services.manifest import ManifestIntegration
+        from bifrost.manifest import ManifestIntegration
 
         db_columns = {c.name for c in sa_inspect(Integration).columns}
         manifest_fields = set(ManifestIntegration.model_fields.keys())
@@ -1316,7 +1316,7 @@ class TestManifestSchemaCoverage:
         """All IntegrationConfigSchema DB columns are in ManifestIntegrationConfigSchema or ignored."""
         from sqlalchemy import inspect as sa_inspect
         from src.models.orm.integrations import IntegrationConfigSchema
-        from src.services.manifest import ManifestIntegrationConfigSchema
+        from bifrost.manifest import ManifestIntegrationConfigSchema
 
         db_columns = {c.name for c in sa_inspect(IntegrationConfigSchema).columns}
         manifest_fields = set(ManifestIntegrationConfigSchema.model_fields.keys())
@@ -1330,7 +1330,7 @@ class TestManifestSchemaCoverage:
         """All IntegrationMapping DB columns are in ManifestIntegrationMapping or ignored."""
         from sqlalchemy import inspect as sa_inspect
         from src.models.orm.integrations import IntegrationMapping
-        from src.services.manifest import ManifestIntegrationMapping
+        from bifrost.manifest import ManifestIntegrationMapping
 
         db_columns = {c.name for c in sa_inspect(IntegrationMapping).columns}
         manifest_fields = set(ManifestIntegrationMapping.model_fields.keys())
@@ -1346,7 +1346,7 @@ class TestAgentManifestFields:
 
     def test_agent_max_iterations_round_trip(self):
         """max_iterations survives serialize -> parse -> serialize."""
-        from src.services.manifest import ManifestAgent, Manifest, serialize_manifest, parse_manifest
+        from bifrost.manifest import ManifestAgent, Manifest, serialize_manifest, parse_manifest
 
         agent_id = str(uuid4())
         agent = ManifestAgent(
@@ -1372,7 +1372,7 @@ class TestEventSubscriptionManifestFields:
 
     def test_agent_subscription_round_trip(self):
         """target_type=agent with agent_id survives round-trip."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             ManifestEventSource, ManifestEventSubscription, Manifest,
             serialize_manifest, parse_manifest,
         )
@@ -1405,7 +1405,7 @@ class TestEventSubscriptionManifestFields:
 
     def test_workflow_subscription_round_trip(self):
         """target_type=workflow with workflow_id survives round-trip."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             ManifestEventSource, ManifestEventSubscription, Manifest,
             serialize_manifest, parse_manifest,
         )
@@ -1443,7 +1443,7 @@ class TestManifestValidationAgents:
 
     def test_validate_unknown_agent_in_subscription(self):
         """Subscription referencing non-existent agent_id should fail validation."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             Manifest, ManifestEventSource, ManifestEventSubscription,
             validate_manifest,
         )
@@ -1470,7 +1470,7 @@ class TestManifestValidationAgents:
 
     def test_validate_known_agent_in_subscription(self):
         """Subscription referencing existing agent_id should pass."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             Manifest, ManifestEventSource, ManifestEventSubscription,
             ManifestAgent, validate_manifest,
         )
@@ -1507,7 +1507,7 @@ class TestManifestValidationAgents:
 
     def test_validate_agent_subscription_no_false_workflow_error(self):
         """Agent subscription with workflow_id=None should not produce workflow error."""
-        from src.services.manifest import (
+        from bifrost.manifest import (
             Manifest, ManifestEventSource, ManifestEventSubscription,
             ManifestAgent, validate_manifest,
         )
@@ -1553,7 +1553,7 @@ class TestDiffManifests:
     """Tests for _diff_manifests()."""
 
     def _make_manifest(self, **kwargs):
-        from src.services.manifest import Manifest
+        from bifrost.manifest import Manifest
         return Manifest(**kwargs)
 
     def _diff(self, incoming, current):
@@ -1667,7 +1667,7 @@ class TestCollectChangedIds:
     """Tests for _collect_changed_ids()."""
 
     def _make_manifest(self, **kwargs):
-        from src.services.manifest import Manifest
+        from bifrost.manifest import Manifest
         return Manifest(**kwargs)
 
     def _collect(self, incoming, current):

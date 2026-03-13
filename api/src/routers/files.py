@@ -362,7 +362,7 @@ async def pull_files(
     Code file reconciliation is handled by git, not by this endpoint.
     """
     from src.services.manifest_generator import generate_manifest
-    from src.services.manifest import serialize_manifest_dir
+    from bifrost.manifest import serialize_manifest_dir
 
     manifest_files: dict[str, str] = {}
     try:
@@ -399,7 +399,7 @@ async def get_manifest(
 ) -> dict[str, str]:
     """Return regenerated manifest files from DB state."""
     from src.services.manifest_generator import generate_manifest
-    from src.services.manifest import serialize_manifest_dir
+    from bifrost.manifest import serialize_manifest_dir
 
     manifest = await generate_manifest(db)
     return serialize_manifest_dir(manifest)

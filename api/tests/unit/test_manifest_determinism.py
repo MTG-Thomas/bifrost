@@ -180,7 +180,7 @@ def _build_side_effects(
 async def test_role_order_does_not_affect_output():
     """Swapping role assignment order should produce identical YAML."""
     from src.services.manifest_generator import generate_manifest
-    from src.services.manifest import serialize_manifest_dir
+    from bifrost.manifest import serialize_manifest_dir
 
     wf_r_a = _mock_wf_role(WF_ID, ROLE_A)
     wf_r_b = _mock_wf_role(WF_ID, ROLE_B)
@@ -250,7 +250,7 @@ def test_integration_mapping_query_has_secondary_sort():
 async def test_full_manifest_idempotent_serialization():
     """Running generate + serialize twice with same data produces identical bytes."""
     from src.services.manifest_generator import generate_manifest
-    from src.services.manifest import serialize_manifest_dir
+    from bifrost.manifest import serialize_manifest_dir
 
     wf_r_a = _mock_wf_role(WF_ID, ROLE_A)
     wf_r_b = _mock_wf_role(WF_ID, ROLE_B)

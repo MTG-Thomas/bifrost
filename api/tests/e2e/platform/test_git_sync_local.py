@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.orm.file_index import FileIndex
 from src.models.orm.forms import Form
 from src.models.orm.workflows import Workflow
-from src.services.manifest import read_manifest_from_dir
+from bifrost.manifest import read_manifest_from_dir
 
 
 # =============================================================================
@@ -131,7 +131,7 @@ def remove_entity_from_repo(persistent_dir: Path, rel_path: str) -> None:
 async def write_manifest_to_repo(db_session: AsyncSession, persistent_dir: Path) -> None:
     """Generate manifest from DB and write to persistent dir, simulating RepoSyncWriter.regenerate_manifest()."""
     from src.services.manifest_generator import generate_manifest
-    from src.services.manifest import write_manifest_to_dir
+    from bifrost.manifest import write_manifest_to_dir
     manifest = await generate_manifest(db_session)
     # Filter out entities whose files don't exist in the persistent dir
     # (the test DB may contain entities from other fixtures)

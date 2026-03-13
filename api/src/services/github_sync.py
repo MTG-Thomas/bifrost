@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     )
     from src.services.sync_ops import SyncOp
 
-from src.services.manifest import (
+from bifrost.manifest import (
     Manifest,
     get_all_entity_ids,
     read_manifest_from_dir,
@@ -689,7 +689,7 @@ class GitHubSyncService:
     @staticmethod
     async def _regenerate_manifest_to_dir(db, work_dir) -> None:
         """Generate manifest from DB and write split files to work_dir/.bifrost/."""
-        from src.services.manifest import serialize_manifest_dir, MANIFEST_FILES
+        from bifrost.manifest import serialize_manifest_dir, MANIFEST_FILES
         from src.services.manifest_generator import generate_manifest
 
         manifest = await generate_manifest(db)
@@ -1430,7 +1430,7 @@ class GitHubSyncService:
             try:
                 manifest = read_manifest_from_dir(bifrost_dir)
                 # Verify all paths exist
-                from src.services.manifest import get_all_paths
+                from bifrost.manifest import get_all_paths
                 for path in get_all_paths(manifest):
                     if not (repo_dir / path).exists():
                         issues.append(PreflightIssue(
@@ -1549,7 +1549,7 @@ class GitHubSyncService:
                         pass
 
             # 6. Cross-reference validation for new entity types
-            from src.services.manifest import validate_manifest
+            from bifrost.manifest import validate_manifest
             ref_errors = validate_manifest(manifest)
             for err in ref_errors:
                 issues.append(PreflightIssue(
