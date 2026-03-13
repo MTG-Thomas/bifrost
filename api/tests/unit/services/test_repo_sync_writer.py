@@ -149,7 +149,7 @@ class TestDeleteEntityFile:
 class TestRegenerateManifest:
     @pytest.mark.asyncio
     async def test_generates_and_writes_split_manifest_files(self, writer):
-        from src.services.manifest import Manifest, ManifestWorkflow
+        from bifrost.manifest import Manifest, ManifestWorkflow
 
         mock_manifest = Manifest(
             workflows={
@@ -175,7 +175,7 @@ class TestRegenerateManifest:
 
     @pytest.mark.asyncio
     async def test_empty_manifest_cleans_legacy(self, writer):
-        from src.services.manifest import Manifest
+        from bifrost.manifest import Manifest
 
         mock_manifest = Manifest()
         with patch(

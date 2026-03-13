@@ -21,12 +21,6 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-
-def _normalize_yaml(content: str) -> str:
-    """Ensure YAML content ends with exactly one newline."""
-    return content.rstrip() + "\n"
-
-
 # =============================================================================
 # Constants
 # =============================================================================
@@ -55,6 +49,7 @@ class ManifestOrganization(BaseModel):
     """Organization entry in manifest."""
     id: str
     name: str
+    is_active: bool = True
 
 
 class ManifestRole(BaseModel):
@@ -62,57 +57,60 @@ class ManifestRole(BaseModel):
     id: str
     name: str
     organization_id: str | None = None
+    is_active: bool = True
 
 
 class ManifestWorkflow(BaseModel):
     """Workflow entry in manifest."""
-    id: str
-    name: str | None = None
-    path: str
-    function_name: str
-    type: str = "workflow"  # workflow | tool | data_provider
-    organization_id: str | None = None
-    roles: list[str] = Field(default_factory=list)  # Role UUIDs
-    access_level: str = "role_based"
-    endpoint_enabled: bool = False
-    timeout_seconds: int = 1800
-    public_endpoint: bool = False
-    # Additional optional config
-    category: str = "General"
-    tags: list[str] = Field(default_factory=list)
+    id: str = Field(description="Workflow UUID")
+    name: str = Field(default="", description="Workflow display name")
+    path: str = Field(description="Relative path to Python file (e.g. 'workflows/onboard.py')")
+    function_name: str = Field(description="Python function name decorated with @workflow/@tool/@data_provider")
+    type: str = Field(default="workflow", description="workflow | tool | data_provider")
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
+    roles: list[str] = Field(default_factory=list, description="Role UUIDs that can access this workflow")
+    access_level: str = Field(default="role_based", description="role_based | authenticated | public")
+    endpoint_enabled: bool = Field(default=False, description="Expose as HTTP API endpoint")
+    timeout_seconds: int = Field(default=1800, description="Max execution time")
+    public_endpoint: bool = Field(default=False, description="Allow unauthenticated API access")
+    description: str | None = Field(default=None, description="Workflow description")
+    category: str = Field(default="General", description="Category for organization")
+    tags: list[str] = Field(default_factory=list, description="Tags for filtering")
 
 
 class ManifestForm(BaseModel):
     """Form entry in manifest."""
-    id: str
-    name: str | None = None
-    path: str
-    organization_id: str | None = None
-    roles: list[str] = Field(default_factory=list)
-    access_level: str = "role_based"
+    id: str = Field(description="Form UUID")
+    name: str = Field(default="", description="Form display name")
+    path: str = Field(description="Relative path to form YAML (e.g. 'forms/{uuid}.form.yaml')")
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
+    roles: list[str] = Field(default_factory=list, description="Role UUIDs that can access this form")
+    access_level: str = Field(default="role_based", description="role_based | authenticated | public")
 
 
 class ManifestAgent(BaseModel):
     """Agent entry in manifest."""
-    id: str
-    name: str | None = None
-    path: str
-    organization_id: str | None = None
-    roles: list[str] = Field(default_factory=list)
-    access_level: str = "role_based"
+    id: str = Field(description="Agent UUID")
+    name: str = Field(default="", description="Agent display name")
+    path: str = Field(description="Relative path to agent YAML (e.g. 'agents/{uuid}.agent.yaml')")
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
+    roles: list[str] = Field(default_factory=list, description="Role UUIDs that can access this agent")
+    access_level: str = Field(default="role_based", description="role_based | authenticated | public")
+    max_iterations: int | None = Field(default=None, description="Max LLM iterations for autonomous runs")
+    max_token_budget: int | None = Field(default=None, description="Max token budget for autonomous runs")
 
 
 class ManifestApp(BaseModel):
     """App entry in manifest."""
-    id: str
-    path: str              # app source directory (e.g. "apps/my-app"), NOT app.yaml
-    slug: str | None = None
-    name: str | None = None
-    description: str | None = None
-    dependencies: dict[str, str] = Field(default_factory=dict)
-    organization_id: str | None = None
-    roles: list[str] = Field(default_factory=list)
-    access_level: str = "authenticated"
+    id: str = Field(description="App UUID")
+    path: str = Field(description="App source directory (e.g. 'apps/my-dashboard'), not app.yaml")
+    slug: str | None = Field(default=None, description="URL slug (auto-generated from name if omitted)")
+    name: str | None = Field(default=None, description="Display name")
+    description: str | None = Field(default=None, description="App description")
+    dependencies: dict[str, str] = Field(default_factory=dict, description="NPM packages {name: version}")
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
+    roles: list[str] = Field(default_factory=list, description="Role UUIDs that can access this app")
+    access_level: str = Field(default="authenticated", description="role_based | authenticated | public")
 
 
 # -- New entity types for manifest expansion --
@@ -120,12 +118,12 @@ class ManifestApp(BaseModel):
 
 class ManifestIntegrationConfigSchema(BaseModel):
     """Config schema item within an integration."""
-    key: str
-    type: str  # string, int, bool, json, secret
-    required: bool = False
-    description: str | None = None
-    options: list[str] | None = None
-    position: int = 0
+    key: str = Field(description="Config key name")
+    type: str = Field(description="string | int | bool | json | secret")
+    required: bool = Field(default=False, description="Whether this config must be set")
+    description: str | None = Field(default=None, description="Human-readable description")
+    options: list[str] | None = Field(default=None, description="Allowed values (for string type)")
+    position: int = Field(default=0, description="Display order in UI")
 
 
 class ManifestOAuthProvider(BaseModel):
@@ -134,47 +132,47 @@ class ManifestOAuthProvider(BaseModel):
     client_id uses "__NEEDS_SETUP__" sentinel for new instances.
     client_secret is never serialized.
     """
-    provider_name: str
-    display_name: str | None = None
-    oauth_flow_type: str = "authorization_code"
-    client_id: str = "__NEEDS_SETUP__"
-    authorization_url: str | None = None
-    token_url: str | None = None
-    token_url_defaults: dict | None = None
-    scopes: list[str] = Field(default_factory=list)
-    redirect_uri: str | None = None
+    provider_name: str = Field(description="Provider identifier")
+    display_name: str | None = Field(default=None, description="UI display name")
+    oauth_flow_type: str = Field(default="authorization_code", description="OAuth flow type")
+    client_id: str = Field(default="__NEEDS_SETUP__", description="OAuth client ID (set via UI)")
+    authorization_url: str | None = Field(default=None, description="OAuth authorization endpoint")
+    token_url: str | None = Field(default=None, description="OAuth token endpoint")
+    token_url_defaults: dict | None = Field(default=None, description="Default params for token request")
+    scopes: list[str] = Field(default_factory=list, description="OAuth scopes")
+    redirect_uri: str | None = Field(default=None, description="OAuth redirect URI")
 
 
 class ManifestIntegrationMapping(BaseModel):
     """Integration mapping to an org + external entity."""
-    organization_id: str | None = None
-    entity_id: str
-    entity_name: str | None = None
-    oauth_token_id: str | None = None
+    organization_id: str | None = Field(default=None, description="Org UUID this mapping belongs to")
+    entity_id: str = Field(description="External entity identifier (e.g. tenant ID)")
+    entity_name: str | None = Field(default=None, description="Display name for the entity")
+    oauth_token_id: str | None = Field(default=None, description="Linked OAuth token (set via UI)")
 
 
 class ManifestIntegration(BaseModel):
     """Integration entry in manifest."""
-    id: str
-    name: str | None = None
-    entity_id: str | None = None
-    entity_id_name: str | None = None
-    default_entity_id: str | None = None
-    list_entities_data_provider_id: str | None = None  # workflow UUID
-    config_schema: list[ManifestIntegrationConfigSchema] = Field(default_factory=list)
-    oauth_provider: ManifestOAuthProvider | None = None
-    mappings: list[ManifestIntegrationMapping] = Field(default_factory=list)
+    id: str = Field(description="Integration UUID")
+    name: str = Field(default="", description="Integration display name")
+    entity_id: str | None = Field(default=None, description="Field name for entity identifier")
+    entity_id_name: str | None = Field(default=None, description="Display label for entity ID field")
+    default_entity_id: str | None = Field(default=None, description="Default entity ID value")
+    list_entities_data_provider_id: str | None = Field(default=None, description="Workflow UUID for entity dropdown")
+    config_schema: list[ManifestIntegrationConfigSchema] = Field(default_factory=list, description="Configuration fields")
+    oauth_provider: ManifestOAuthProvider | None = Field(default=None, description="OAuth provider config")
+    mappings: list[ManifestIntegrationMapping] = Field(default_factory=list, description="Per-org entity mappings")
 
 
 class ManifestConfig(BaseModel):
     """Config entry in manifest."""
-    id: str
-    integration_id: str | None = None
-    key: str
-    config_type: str = "string"
-    description: str | None = None
-    organization_id: str | None = None
-    value: object | None = None  # None for SECRET type
+    id: str = Field(description="Config UUID")
+    integration_id: str | None = Field(default=None, description="Parent integration UUID (if integration config)")
+    key: str = Field(description="Config key name")
+    config_type: str = Field(default="string", description="string | int | bool | json | secret")
+    description: str | None = Field(default=None, description="Human-readable description")
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
+    value: object | None = Field(default=None, description="Config value (null for secret type)")
 
 
 class ManifestTable(BaseModel):
@@ -183,45 +181,45 @@ class ManifestTable(BaseModel):
     Uses ``table_schema`` in Python but serializes as ``schema`` in YAML
     via the alias, matching the DB column name.
     """
-    id: str
-    name: str | None = None
-    description: str | None = None
-    organization_id: str | None = None
-    application_id: str | None = None
-    table_schema: dict | None = Field(default=None, alias="schema")
+    id: str = Field(description="Table UUID")
+    name: str = Field(default="", description="Table display name")
+    description: str | None = Field(default=None, description="Table description")
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
+    application_id: str | None = Field(default=None, description="App UUID (for app-scoped tables)")
+    table_schema: dict | None = Field(default=None, alias="schema", description="Column definitions and validation hints")
 
     model_config = {"populate_by_name": True}
 
 
 class ManifestEventSubscription(BaseModel):
     """Event subscription within an event source."""
-    id: str
-    target_type: str = "workflow"
-    workflow_id: str | None = None
-    agent_id: str | None = None
-    event_type: str | None = None
-    filter_expression: str | None = None
-    input_mapping: dict | None = None
-    is_active: bool = True
+    id: str = Field(description="Subscription UUID")
+    target_type: str = Field(default="workflow", description="'workflow' or 'agent'")
+    workflow_id: str | None = Field(default=None, description="Workflow UUID to trigger (when target_type='workflow')")
+    agent_id: str | None = Field(default=None, description="Agent UUID to run (when target_type='agent')")
+    event_type: str | None = Field(default=None, description="Filter by event type (e.g. 'ticket.created')")
+    filter_expression: str | None = Field(default=None, description="JSONPath filter expression")
+    input_mapping: dict | None = Field(default=None, description="Map event fields to workflow params")
+    is_active: bool = Field(default=True, description="Enable/disable this subscription")
 
 
 class ManifestEventSource(BaseModel):
     """Event source entry in manifest."""
-    id: str
-    name: str | None = None
-    source_type: str  # webhook, schedule, internal
-    organization_id: str | None = None
-    is_active: bool = True
+    id: str = Field(description="Event source UUID")
+    name: str = Field(default="", description="Event source display name")
+    source_type: str = Field(description="webhook | schedule | internal")
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
+    is_active: bool = Field(default=True, description="Enable/disable this source")
     # Schedule config
-    cron_expression: str | None = None
-    timezone: str | None = None
-    schedule_enabled: bool | None = None
+    cron_expression: str | None = Field(default=None, description="Cron schedule (e.g. '0 9 * * *')")
+    timezone: str | None = Field(default=None, description="Timezone (e.g. 'America/New_York')")
+    schedule_enabled: bool | None = Field(default=None, description="Enable/disable schedule")
     # Webhook config
-    adapter_name: str | None = None
-    webhook_integration_id: str | None = None  # integration UUID
-    webhook_config: dict | None = None
+    adapter_name: str | None = Field(default=None, description="Webhook adapter (e.g. 'generic', 'halopsa')")
+    webhook_integration_id: str | None = Field(default=None, description="Integration UUID for webhook auth")
+    webhook_config: dict | None = Field(default=None, description="Adapter-specific config")
     # Subscriptions
-    subscriptions: list[ManifestEventSubscription] = Field(default_factory=list)
+    subscriptions: list[ManifestEventSubscription] = Field(default_factory=list, description="Workflow subscriptions")
 
 
 class Manifest(BaseModel):
@@ -264,7 +262,7 @@ def serialize_manifest(manifest: Manifest) -> str:
     produces the same bytes, avoiding false conflicts during sync.
     """
     data = manifest.model_dump(mode="json", exclude_defaults=True, by_alias=True)
-    return _normalize_yaml(yaml.dump(data, default_flow_style=False, sort_keys=True, allow_unicode=True))
+    return yaml.dump(data, default_flow_style=False, sort_keys=True, allow_unicode=True)
 
 
 # =============================================================================
@@ -284,12 +282,15 @@ def serialize_manifest_dir(manifest: Manifest) -> dict[str, str]:
         section = data.get(key)
         if not section:
             continue
-        files[filename] = _normalize_yaml(yaml.dump(
+        # Sort top-level entity dicts by key (UUID) for deterministic YAML output
+        if isinstance(section, dict):
+            section = dict(sorted(section.items()))
+        files[filename] = yaml.dump(
             {key: section},
             default_flow_style=False,
             sort_keys=True,
             allow_unicode=True,
-        ))
+        ).rstrip("\n") + "\n"
     return files
 
 
@@ -384,50 +385,55 @@ def validate_manifest(manifest: Manifest) -> list[str]:
     org_ids = {org.id for org in manifest.organizations}
     role_ids = {role.id for role in manifest.roles}
     wf_ids = {wf.id for wf in manifest.workflows.values()}
-    agent_ids = {a.id for a in manifest.agents.values()}
     integration_ids = {integ.id for integ in manifest.integrations.values()}
     app_ids = {app.id for app in manifest.apps.values()}
+    agent_ids = {a.id for a in manifest.agents.values()}
 
     # Check organization references
-    for name, wf in manifest.workflows.items():
+    for _key, wf in manifest.workflows.items():
+        wf_label = wf.name or wf.id
         if wf.organization_id and wf.organization_id not in org_ids:
-            errors.append(f"Workflow '{name}' references unknown organization: {wf.organization_id}")
+            errors.append(f"Workflow '{wf_label}' references unknown organization: {wf.organization_id}")
         for role_id in wf.roles:
             if role_id not in role_ids:
-                errors.append(f"Workflow '{name}' references unknown role: {role_id}")
+                errors.append(f"Workflow '{wf_label}' references unknown role: {role_id}")
 
-    for name, form in manifest.forms.items():
+    for _key, form in manifest.forms.items():
+        form_label = form.name or form.id
         if form.organization_id and form.organization_id not in org_ids:
-            errors.append(f"Form '{name}' references unknown organization: {form.organization_id}")
+            errors.append(f"Form '{form_label}' references unknown organization: {form.organization_id}")
         for role_id in form.roles:
             if role_id not in role_ids:
-                errors.append(f"Form '{name}' references unknown role: {role_id}")
+                errors.append(f"Form '{form_label}' references unknown role: {role_id}")
 
-    for name, agent in manifest.agents.items():
+    for _key, agent in manifest.agents.items():
+        agent_label = agent.name or agent.id
         if agent.organization_id and agent.organization_id not in org_ids:
-            errors.append(f"Agent '{name}' references unknown organization: {agent.organization_id}")
+            errors.append(f"Agent '{agent_label}' references unknown organization: {agent.organization_id}")
         for role_id in agent.roles:
             if role_id not in role_ids:
-                errors.append(f"Agent '{name}' references unknown role: {role_id}")
+                errors.append(f"Agent '{agent_label}' references unknown role: {role_id}")
 
-    for name, app in manifest.apps.items():
+    for _key, app in manifest.apps.items():
+        app_label = app.name or app.id
         if app.organization_id and app.organization_id not in org_ids:
-            errors.append(f"App '{name}' references unknown organization: {app.organization_id}")
+            errors.append(f"App '{app_label}' references unknown organization: {app.organization_id}")
         for role_id in app.roles:
             if role_id not in role_ids:
-                errors.append(f"App '{name}' references unknown role: {role_id}")
+                errors.append(f"App '{app_label}' references unknown role: {role_id}")
 
     # Integrations: data_provider must be a known workflow
-    for name, integ in manifest.integrations.items():
+    for _key, integ in manifest.integrations.items():
+        integ_label = integ.name or integ.id
         if integ.list_entities_data_provider_id and integ.list_entities_data_provider_id not in wf_ids:
             errors.append(
-                f"Integration '{name}' references unknown data provider workflow: "
+                f"Integration '{integ_label}' references unknown data provider workflow: "
                 f"{integ.list_entities_data_provider_id}"
             )
         for mapping in integ.mappings:
             if mapping.organization_id and mapping.organization_id not in org_ids:
                 errors.append(
-                    f"Integration '{name}' mapping references unknown organization: "
+                    f"Integration '{integ_label}' mapping references unknown organization: "
                     f"{mapping.organization_id}"
                 )
 
@@ -439,32 +445,34 @@ def validate_manifest(manifest: Manifest) -> list[str]:
             errors.append(f"Config '{key}' references unknown organization: {cfg.organization_id}")
 
     # Tables: organization_id and application_id
-    for name, table in manifest.tables.items():
+    for _key, table in manifest.tables.items():
+        table_label = table.name or table.id
         if table.organization_id and table.organization_id not in org_ids:
-            errors.append(f"Table '{name}' references unknown organization: {table.organization_id}")
+            errors.append(f"Table '{table_label}' references unknown organization: {table.organization_id}")
         if table.application_id and table.application_id not in app_ids:
-            errors.append(f"Table '{name}' references unknown application: {table.application_id}")
+            errors.append(f"Table '{table_label}' references unknown application: {table.application_id}")
 
     # Events: source + subscription refs
-    for name, evt in manifest.events.items():
+    for _key, evt in manifest.events.items():
+        evt_label = evt.name or evt.id
         if evt.organization_id and evt.organization_id not in org_ids:
-            errors.append(f"Event source '{name}' references unknown organization: {evt.organization_id}")
+            errors.append(f"Event source '{evt_label}' references unknown organization: {evt.organization_id}")
         if evt.webhook_integration_id and evt.webhook_integration_id not in integration_ids:
             errors.append(
-                f"Event source '{name}' references unknown webhook integration: "
+                f"Event source '{evt_label}' references unknown webhook integration: "
                 f"{evt.webhook_integration_id}"
             )
         for sub in evt.subscriptions:
             if sub.target_type == "agent":
                 if sub.agent_id and sub.agent_id not in agent_ids:
                     errors.append(
-                        f"Event source '{name}' subscription '{sub.id}' references unknown agent: "
+                        f"Event source '{evt_label}' subscription '{sub.id}' references unknown agent: "
                         f"{sub.agent_id}"
                     )
             else:
                 if sub.workflow_id and sub.workflow_id not in wf_ids:
                     errors.append(
-                        f"Event source '{name}' subscription '{sub.id}' references unknown workflow: "
+                        f"Event source '{evt_label}' subscription '{sub.id}' references unknown workflow: "
                         f"{sub.workflow_id}"
                     )
 

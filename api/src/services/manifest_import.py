@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from src.services.repo_storage import RepoStorage
     from src.services.sync_ops import SyncOp
 
-from src.services.manifest import (
+from bifrost.manifest import (
     Manifest,
     read_manifest_from_dir,
 )
@@ -239,7 +239,7 @@ async def import_manifest_from_repo(
     7. Returns ManifestImportResult
     """
     from src.services.repo_storage import RepoStorage
-    from src.services.manifest import (
+    from bifrost.manifest import (
         MANIFEST_FILES,
         parse_manifest_dir,
         serialize_manifest_dir,

@@ -84,7 +84,7 @@ def _generate_model_tokens() -> dict[str, str]:
         (TableUpdate, "TableUpdate"),
     ], "Table Models")
 
-    from src.services.manifest import (
+    from bifrost.manifest import (
         ManifestWorkflow, ManifestForm, ManifestAgent, ManifestApp,
         ManifestIntegration, ManifestConfig, ManifestTable,
         ManifestEventSource, ManifestEventSubscription,

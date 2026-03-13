@@ -19,7 +19,7 @@ from src.config import get_settings
 from src.services.file_storage.indexers.form import _serialize_form_to_yaml
 from src.services.file_storage.indexers.agent import _serialize_agent_to_yaml
 from src.services.file_index_service import FileIndexService
-from src.services.manifest import MANIFEST_FILES, MANIFEST_LEGACY_FILE, serialize_manifest_dir
+from bifrost.manifest import MANIFEST_FILES, MANIFEST_LEGACY_FILE, serialize_manifest_dir
 from src.services.manifest_generator import generate_manifest
 from src.services.repo_storage import RepoStorage
 
