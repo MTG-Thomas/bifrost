@@ -54,6 +54,78 @@ _FORCE_INCLUDE_PATTERNS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Shared CLI utilities
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _CliColors:
+    """ANSI color codes, empty strings when not a TTY."""
+    green: str
+    yellow: str
+    red: str
+    dim: str
+    reset: str
+
+
+def _get_colors() -> _CliColors:
+    """Return ANSI color codes based on whether stdout is a TTY."""
+    use_color = sys.stdout.isatty()
+    return _CliColors(
+        green="\033[32m" if use_color else "",
+        yellow="\033[33m" if use_color else "",
+        red="\033[31m" if use_color else "",
+        dim="\033[2m" if use_color else "",
+        reset="\033[0m" if use_color else "",
+    )
+
+
+def _is_bifrost_path(path: str) -> bool:
+    """Check if a path refers to a .bifrost/ manifest directory."""
+    return ".bifrost" in path.replace("\\", "/").split("/")
+
+
+def _separate_manifest_files(files: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """Split a files dict into (bifrost_manifest_files, regular_files)."""
+    bifrost: dict[str, str] = {}
+    regular: dict[str, str] = {}
+    for repo_path, content in files.items():
+        if _is_bifrost_path(repo_path):
+            bifrost[repo_path] = content
+        else:
+            regular[repo_path] = content
+    return bifrost, regular
+
+
+def _format_count_summary(
+    counts: dict[str, int],
+    labels: dict[str, tuple[str, str]],
+    cc: _CliColors,
+    separator: str = ", ",
+) -> str:
+    """Format a colored count summary string.
+
+    Args:
+        counts: Dict of count_key -> count_value
+        labels: Dict of count_key -> (color_attr, label_template) where
+                label_template may use {n} for count and {s} for plural suffix
+        cc: CLI colors instance
+        separator: String to join parts with
+
+    Returns:
+        Formatted summary string, or empty string if no counts > 0.
+    """
+    parts: list[str] = []
+    for key, (color_attr, label_tpl) in labels.items():
+        n = counts.get(key, 0)
+        if n:
+            color = getattr(cc, color_attr, "")
+            s = "s" if n != 1 else ""
+            parts.append(f"{color}{label_tpl.format(n=n, s=s)}{cc.reset}")
+    return separator.join(parts)
+
+
 def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     """Build a gitignore-style file filter for the given directory.
 
@@ -1029,7 +1101,7 @@ def handle_push(args: list[str]) -> int:
     """
     Handle 'bifrost push' command.
 
-    Pushes local files to Bifrost _repo/ via the /api/files/push endpoint.
+    Pushes local files to Bifrost _repo/ via per-file writes and manifest import.
 
     Usage:
       bifrost push <path> [--mirror] [--validate]
@@ -1341,37 +1413,6 @@ async def _push_with_precheck(
         return await _push_files(local_path, repo_prefix=repo_prefix, mirror=mirror, validate=validate, force=force, client=client)
 
 
-async def _do_push(
-    files: dict[str, str],
-    delete_missing_prefix: str | None = None,
-    extra_headers: dict[str, str] | None = None,
-    client: "BifrostClient | None" = None,
-) -> dict[str, Any] | None:
-    """Push a files dict to the API. Returns the response JSON or None on error."""
-    if client is None:
-        client = BifrostClient.get_instance(require_auth=True)
-    payload: dict[str, Any] = {"files": files}
-    if delete_missing_prefix:
-        payload["delete_missing_prefix"] = delete_missing_prefix
-
-    try:
-        response = await client.post(
-            "/api/files/push",
-            json=payload,
-            headers=extra_headers or {},
-        )
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"Push failed: {response.status_code}", file=sys.stderr)
-            if response.text:
-                print(response.text, file=sys.stderr)
-            return None
-    except Exception as e:
-        print(f"Push error: {e}", file=sys.stderr)
-        return None
-
-
 class _WatchState:
     """Mutable shared state between the watcher thread and the async main loop."""
 
@@ -1382,6 +1423,12 @@ class _WatchState:
         self.pending_deletes: set[str] = set()
         self.lock = threading.Lock()
         self.writeback_paused = False
+        # Unique session ID for filtering own changes from WebSocket events
+        self.session_id: str = str(uuid4())
+        # Incoming changes from other sessions (populated by WebSocket listener)
+        self.incoming_files: list[tuple[list[str], str]] = []      # (paths, user_name)
+        self.incoming_deletes: list[tuple[list[str], str]] = []     # (paths, user_name)
+        self.incoming_entities: list[dict[str, Any]] = []           # entity_change events
 
     def drain(self) -> tuple[set[str], set[str]]:
         """Atomically drain pending changes and deletes."""
@@ -1403,6 +1450,36 @@ class _WatchState:
         with self.lock:
             self.pending_changes -= paths
             self.pending_deletes -= paths
+
+    def queue_incoming_files(self, paths: list[str], user_name: str) -> None:
+        """Queue incoming file changes from another session."""
+        with self.lock:
+            self.incoming_files.append((paths, user_name))
+
+    def queue_incoming_deletes(self, paths: list[str], user_name: str) -> None:
+        """Queue incoming file deletes from another session."""
+        with self.lock:
+            self.incoming_deletes.append((paths, user_name))
+
+    def queue_entity_change(self, event: dict[str, Any]) -> None:
+        """Queue incoming entity change from another session."""
+        with self.lock:
+            self.incoming_entities.append(event)
+
+    def drain_incoming(self) -> tuple[
+        list[tuple[list[str], str]],
+        list[tuple[list[str], str]],
+        list[dict[str, Any]],
+    ]:
+        """Atomically drain all incoming queues."""
+        with self.lock:
+            files = self.incoming_files.copy()
+            deletes = self.incoming_deletes.copy()
+            entities = self.incoming_entities.copy()
+            self.incoming_files.clear()
+            self.incoming_deletes.clear()
+            self.incoming_entities.clear()
+        return files, deletes, entities
 
 
 class _WatchChangeHandler:
@@ -1451,22 +1528,26 @@ async def _process_watch_deletes(
     deletes: set[str],
     base_path: pathlib.Path,
     repo_prefix: str,
+    session_id: str | None = None,
 ) -> tuple[int, list[str]]:
     """Process pending file deletions. Returns (count, relative_paths)."""
     deleted_count = 0
     deleted_rels: list[str] = []
+    extra_headers: dict[str, str] = {}
+    if session_id:
+        extra_headers["X-Bifrost-Watch-Session"] = session_id
 
     for abs_path_str in deletes:
         abs_p = pathlib.Path(abs_path_str)
         if not abs_p.exists():
             rel = abs_p.relative_to(base_path)
-            if str(rel).startswith(".bifrost/") or str(rel).startswith(".bifrost\\"):
+            if _is_bifrost_path(str(rel)):
                 continue
             repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
             try:
                 resp = await client.post("/api/files/delete", json={
                     "path": repo_path, "location": "workspace", "mode": "cloud",
-                })
+                }, headers=extra_headers)
                 if resp.status_code == 204:
                     deleted_count += 1
                     deleted_rels.append(str(rel))
@@ -1492,7 +1573,7 @@ async def _process_watch_batch(
 ) -> None:
     """Process a batch of file changes and deletions."""
     deleted_count, deleted_rels = await _process_watch_deletes(
-        client, deletes, base_path, repo_prefix,
+        client, deletes, base_path, repo_prefix, session_id=state.session_id,
     )
 
     # Build files dict from changed paths
@@ -1527,39 +1608,300 @@ async def _process_watch_batch(
                 state.requeue(changes, deletes)
                 return
 
-        result = await _do_push(
-            push_files, extra_headers={"X-Bifrost-Watch": "true"}, client=client,
-        )
-        if result:
-            ts = datetime.now().strftime('%H:%M:%S')
-            parts = []
-            if result.get("created"):
-                parts.append(f"{result['created']} created")
-            if result.get("updated"):
-                parts.append(f"{result['updated']} updated")
-            if deleted_count:
-                parts.append(f"{deleted_count} deleted")
-            if result.get("unchanged"):
-                parts.append(f"{result['unchanged']} unchanged")
-            print(f"  [{ts}] Pushed \u2192 {', '.join(parts) if parts else 'no changes'}", flush=True)
+        # Separate .bifrost/ manifest files from regular files
+        bifrost_watch_files, regular_watch_files = _separate_manifest_files(push_files)
 
-            if result.get("errors"):
-                for error in result["errors"]:
-                    print(f"    Error: {error}", flush=True)
-            if result.get("warnings"):
-                for warning in result["warnings"]:
-                    print(f"    Warning: {warning}", flush=True)
+        # Upload regular files via per-file writes
+        watch_created = 0
+        watch_errors: list[str] = []
+        for rp, c in regular_watch_files.items():
+            try:
+                resp = await client.post("/api/files/write", json={
+                    "path": rp,
+                    "content": c,
+                    "mode": "cloud",
+                    "location": "workspace",
+                    "binary": True,
+                }, headers={
+                    "X-Bifrost-Watch": "true",
+                    "X-Bifrost-Watch-Session": state.session_id,
+                })
+                if resp.status_code == 204:
+                    watch_created += 1
+                else:
+                    watch_errors.append(f"{rp}: HTTP {resp.status_code}")
+            except Exception as e:
+                watch_errors.append(f"{rp}: {e}")
 
-            # Write back server files (pause watcher to avoid re-trigger)
-            if result.get("manifest_files") or result.get("modified_files"):
-                state.writeback_paused = True
-                writeback_paths: set[str] = set()
+        # Import manifest if .bifrost/ files changed
+        watch_warnings: list[str] = []
+        manifest_result: dict[str, Any] = {}
+        if bifrost_watch_files:
+            try:
+                import_payload: dict[str, Any] = {
+                    "files": bifrost_watch_files,
+                    "delete_removed_entities": True,
+                }
+                resp = await client.post("/api/files/manifest/import", json=import_payload, headers={
+                    "X-Bifrost-Watch-Session": state.session_id,
+                })
+                if resp.status_code == 200:
+                    manifest_result = resp.json()
+                    watch_warnings = manifest_result.get("warnings", [])
+                else:
+                    watch_warnings.append(f"Manifest import failed: HTTP {resp.status_code}")
+            except Exception as e:
+                watch_warnings.append(f"Manifest import failed: {e}")
+
+        ts = datetime.now().strftime('%H:%M:%S')
+        parts = []
+        total_written = watch_created
+        if total_written:
+            parts.append(f"{total_written} written")
+        if deleted_count:
+            parts.append(f"{deleted_count} deleted")
+        if bifrost_watch_files:
+            parts.append("manifest imported")
+        print(f"  [{ts}] Pushed \u2192 {', '.join(parts) if parts else 'no changes'}", flush=True)
+
+        if watch_errors:
+            for error in watch_errors:
+                print(f"    Error: {error}", flush=True)
+        if watch_warnings:
+            for warning in watch_warnings:
+                print(f"    Warning: {warning}", flush=True)
+        deleted_entities = manifest_result.get("deleted_entities", [])
+        if deleted_entities:
+            print(f"  [{ts}] Removed {len(deleted_entities)} entity(ies):", flush=True)
+            for de in deleted_entities:
+                print(f"    - {de}", flush=True)
+
+        # Write back server files (pause watcher to avoid re-trigger)
+        result = manifest_result
+        if result.get("manifest_files") or result.get("modified_files"):
+            state.writeback_paused = True
+            writeback_paths: set[str] = set()
+            try:
+                writeback_paths = _write_back_server_files(base_path, repo_prefix, result)
+            finally:
+                await asyncio.sleep(0.2)
+                state.discard_writeback_paths(writeback_paths)
+                state.writeback_paused = False
+
+
+async def _ws_listener(state: _WatchState, api_url: str, token: str) -> None:
+    """Listen for file-activity WebSocket events from other sessions."""
+    try:
+        import websockets
+    except ImportError:
+        print("  ⚠ 'websockets' not installed — bidirectional sync disabled", flush=True)
+        print("  Reinstall CLI: pipx install --force <url>", flush=True)
+        return
+
+    ws_url = api_url.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url += "/ws/connect?channels=file-activity"
+    backoff = 1.0
+    connected_once = False
+
+    while True:
+        try:
+            async with websockets.connect(
+                ws_url,
+                additional_headers={"Authorization": f"Bearer {token}"},
+            ) as ws:
+                backoff = 1.0  # Reset on successful connect
+                if not connected_once:
+                    print("  WebSocket connected — listening for remote changes", flush=True)
+                    connected_once = True
+                async for msg in ws:
+                    try:
+                        event = json.loads(msg)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                    # Ignore events from our own session
+                    if event.get("session_id") == state.session_id:
+                        continue
+
+                    evt_type = event.get("type", "")
+                    if evt_type == "file_push":
+                        paths = event.get("paths", [])
+                        user_name = event.get("user_name", "unknown")
+                        if paths:
+                            state.queue_incoming_files(paths, user_name)
+                    elif evt_type == "file_delete":
+                        paths = event.get("paths", [])
+                        user_name = event.get("user_name", "unknown")
+                        if paths:
+                            state.queue_incoming_deletes(paths, user_name)
+                    elif evt_type == "entity_change":
+                        state.queue_entity_change(event)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            print(f"  WebSocket error: {e} — reconnecting in {backoff:.0f}s", flush=True)
+            await asyncio.sleep(min(backoff, 30))
+            backoff *= 2
+
+
+async def _process_incoming(
+    client: "BifrostClient",
+    files: list[tuple[list[str], str]],
+    deletes: list[tuple[list[str], str]],
+    entities: list[dict[str, Any]],
+    base_path: pathlib.Path,
+    repo_prefix: str,
+) -> set[str]:
+    """Process incoming changes from other sessions. Returns set of written absolute paths."""
+    written_paths: set[str] = set()
+    ts = datetime.now().strftime('%H:%M:%S')
+
+    # Process incoming file changes
+    for paths, user_name in files:
+        for repo_path in paths:
+            try:
+                resp = await client.post("/api/files/read", json={
+                    "path": repo_path,
+                    "mode": "cloud",
+                    "location": "workspace",
+                    "binary": True,
+                })
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = base64.b64decode(data["content"])
+                    # Convert repo_path to local path
+                    if repo_prefix and repo_path.startswith(repo_prefix + "/"):
+                        rel = repo_path[len(repo_prefix) + 1:]
+                    elif repo_prefix and repo_path.startswith(repo_prefix):
+                        rel = repo_path[len(repo_prefix):]
+                    else:
+                        rel = repo_path
+                    local_file = base_path / rel
+                    local_file.parent.mkdir(parents=True, exist_ok=True)
+                    # Skip if content is identical
+                    if local_file.exists():
+                        try:
+                            if local_file.read_bytes() == content:
+                                continue
+                        except OSError:
+                            pass
+                    local_file.write_bytes(content)
+                    written_paths.add(str(local_file))
+                    print(f"  [{ts}] \u2190 {user_name}: {rel}", flush=True)
+            except Exception as e:
+                print(f"  [{ts}] \u2190 Error pulling {repo_path}: {e}", flush=True)
+
+    # Process incoming deletes
+    for paths, user_name in deletes:
+        for repo_path in paths:
+            if repo_prefix and repo_path.startswith(repo_prefix + "/"):
+                rel = repo_path[len(repo_prefix) + 1:]
+            elif repo_prefix and repo_path.startswith(repo_prefix):
+                rel = repo_path[len(repo_prefix):]
+            else:
+                rel = repo_path
+            local_file = base_path / rel
+            if local_file.exists():
                 try:
-                    writeback_paths = _write_back_server_files(base_path, repo_prefix, result)
-                finally:
-                    await asyncio.sleep(0.2)
-                    state.discard_writeback_paths(writeback_paths)
-                    state.writeback_paused = False
+                    local_file.unlink()
+                    written_paths.add(str(local_file))
+                    print(f"  [{ts}] \u2190 {user_name} deleted: {rel}", flush=True)
+                except OSError as e:
+                    print(f"  [{ts}] \u2190 Error deleting {rel}: {e}", flush=True)
+
+    # Process incoming entity changes — update local .bifrost/*.yaml
+    if entities:
+        from bifrost.manifest import MANIFEST_FILES
+        import yaml
+
+        # Map entity_type → manifest yaml filename
+        entity_to_file = MANIFEST_FILES
+
+        bifrost_dir = _find_bifrost_dir(base_path)
+        for event in entities:
+            entity_type = event.get("entity_type", "")
+            entity_id = event.get("entity_id", "")
+            action = event.get("action", "")
+            user_name = event.get("user_name", "unknown")
+            filename = entity_to_file.get(entity_type)
+            if not filename or not entity_id:
+                continue
+
+            yaml_path = bifrost_dir / filename
+            try:
+                # Read existing yaml
+                existing_data: dict[str, Any] = {}
+                if yaml_path.exists():
+                    raw = yaml_path.read_text(encoding="utf-8")
+                    existing_data = yaml.safe_load(raw) or {}
+
+                section = existing_data.get(entity_type, {})
+                data = event.get("data")
+
+                # For list-type sections (organizations, roles)
+                if entity_type in ("organizations", "roles"):
+                    if not isinstance(section, list):
+                        section = []
+                    if action == "delete":
+                        section = [e for e in section if e.get("id") != entity_id]
+                        existing_data[entity_type] = section
+                        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+                        yaml_path.write_text(
+                            yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
+                            encoding="utf-8",
+                        )
+                        written_paths.add(str(yaml_path))
+                        print(f"  [{ts}] \u2190 {user_name} deleted {entity_type[:-1]} {entity_id}", flush=True)
+                    elif data:
+                        replaced = False
+                        for i, entry in enumerate(section):
+                            if entry.get("id") == entity_id:
+                                section[i] = data
+                                replaced = True
+                                break
+                        if not replaced:
+                            section.append(data)
+                        existing_data[entity_type] = section
+                        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+                        yaml_path.write_text(
+                            yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
+                            encoding="utf-8",
+                        )
+                        written_paths.add(str(yaml_path))
+                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id}", flush=True)
+                    else:
+                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id} (no data)", flush=True)
+                    continue
+
+                if isinstance(section, dict):
+                    if action == "delete":
+                        if entity_id in section:
+                            del section[entity_id]
+                            existing_data[entity_type] = section
+                            yaml_path.parent.mkdir(parents=True, exist_ok=True)
+                            yaml_path.write_text(
+                                yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
+                                encoding="utf-8",
+                            )
+                            written_paths.add(str(yaml_path))
+                            print(f"  [{ts}] \u2190 {user_name} deleted {entity_type[:-1]} {entity_id}", flush=True)
+                    elif data:
+                        section[entity_id] = data
+                        existing_data[entity_type] = section
+                        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+                        yaml_path.write_text(
+                            yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
+                            encoding="utf-8",
+                        )
+                        written_paths.add(str(yaml_path))
+                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id}", flush=True)
+                    else:
+                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id} (no data)", flush=True)
+
+            except Exception as e:
+                print(f"  [{ts}] \u2190 Error updating {filename}: {e}", flush=True)
+
+    return written_paths
 
 
 async def _watch_and_push(
@@ -1577,9 +1919,14 @@ async def _watch_and_push(
         print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
         return 1
 
-    # Notify server
+    # Set up file watcher state (generates session_id)
+    state = _WatchState(path)
+
+    # Notify server with session_id
     try:
-        await client.post("/api/files/watch", json={"action": "start", "prefix": repo_prefix})
+        await client.post("/api/files/watch", json={
+            "action": "start", "prefix": repo_prefix, "session_id": state.session_id,
+        })
     except Exception:
         pass
 
@@ -1588,13 +1935,22 @@ async def _watch_and_push(
     await _push_files(str(path), repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client)
 
     # Set up file watcher
-    state = _WatchState(path)
     handler = _WatchChangeHandler(state)
     observer = Observer()
     observer.schedule(handler, str(path), recursive=True)
     observer.start()
 
+    # Start WebSocket listener for incoming changes from other sessions
+    ws_task: asyncio.Task | None = None
+    try:
+        ws_task = asyncio.create_task(
+            _ws_listener(state, client.api_url, client._access_token)
+        )
+    except Exception:
+        pass  # WebSocket listener is best-effort
+
     print(f"Watching {path} for changes... (Ctrl+C to stop)", flush=True)
+    print(f"  Bidirectional sync enabled (session {state.session_id[:8]})", flush=True)
 
     heartbeat_interval = WATCH_HEARTBEAT_SECONDS
     last_heartbeat = asyncio.get_event_loop().time()
@@ -1632,11 +1988,27 @@ async def _watch_and_push(
                         print(f"  [{ts}] \u26a0 {consecutive_errors} consecutive errors, backing off to 5s", flush=True)
                         await asyncio.sleep(5)
 
+            # Process incoming changes from other sessions
+            inc_files, inc_deletes, inc_entities = state.drain_incoming()
+            if inc_files or inc_deletes or inc_entities:
+                state.writeback_paused = True
+                wb_paths: set[str] = set()
+                try:
+                    wb_paths = await _process_incoming(
+                        client, inc_files, inc_deletes, inc_entities, path, repo_prefix,
+                    )
+                finally:
+                    await asyncio.sleep(0.2)
+                    state.discard_writeback_paths(wb_paths)
+                    state.writeback_paused = False
+
             # Heartbeat
             now = asyncio.get_event_loop().time()
             if now - last_heartbeat > heartbeat_interval:
                 try:
-                    await client.post("/api/files/watch", json={"action": "heartbeat", "prefix": repo_prefix})
+                    await client.post("/api/files/watch", json={
+                        "action": "heartbeat", "prefix": repo_prefix, "session_id": state.session_id,
+                    })
                 except Exception:
                     pass
                 last_heartbeat = now
@@ -1644,6 +2016,12 @@ async def _watch_and_push(
     except KeyboardInterrupt:
         pass
     finally:
+        if ws_task and not ws_task.done():
+            ws_task.cancel()
+            try:
+                await ws_task
+            except (asyncio.CancelledError, Exception):
+                pass
         observer.stop()
         observer.join()
 
@@ -1871,7 +2249,8 @@ def _render_overwrite_table(
     uncommitted: set[str],
     direction: str = "pull",
     files_to_delete: list[str] | None = None,
-) -> None:
+    print_summary: bool = True,
+) -> dict[str, int]:
     """Render a color-coded table of ALL files involved in the operation.
 
     Colors indicate what happens to each file:
@@ -1885,17 +2264,12 @@ def _render_overwrite_table(
         direction: "pull" (server overwrites local) or "push" (local overwrites server)
         files_to_delete: files that will be deleted (--mirror only)
     """
-    use_color = sys.stdout.isatty()
-
-    # ANSI codes
-    GREEN = "\033[32m" if use_color else ""
-    ORANGE = "\033[33m" if use_color else ""
-    RED = "\033[31m" if use_color else ""
-    RESET = "\033[0m" if use_color else ""
+    c = _get_colors()
+    GREEN, ORANGE, RED, RESET = c.green, c.yellow, c.red, c.reset
 
     all_files = sorted(set(files_to_write) | set(files_to_delete or []))
     if not all_files:
-        return
+        return {"new": 0, "changed": 0, "deleted": 0}
 
     # Compute column widths
     max_name = max(len(f) for f in all_files)
@@ -1907,9 +2281,13 @@ def _render_overwrite_table(
     header_platform = "Platform".ljust(ts_width)
 
     if direction == "pull":
-        print("\nFiles to pull from platform:\n")
+        print()
+        print("  Files to pull from platform:")
+        print()
     else:
-        print("\nFiles to push to platform:\n")
+        print()
+        print("  Files to push to platform:")
+        print()
     print(f"  {header_file}  {header_local}  {header_platform}")
     print(f"  {'─' * max_name}  {'─' * ts_width}  {'─' * ts_width}")
 
@@ -1987,20 +2365,20 @@ def _render_overwrite_table(
             uncommitted_files.append(rel)
 
     # Summary line
-    summary_parts: list[str] = []
-    if count_new:
-        summary_parts.append(f"{GREEN}{count_new} new{RESET}")
-    if count_changed:
-        summary_parts.append(f"{ORANGE}{count_changed} changed{RESET}")
-    if count_deleted:
-        summary_parts.append(f"{RED}{count_deleted} deleted{RESET}")
-    if summary_parts:
-        print(f"\n  {'  '.join(summary_parts)}")
+    file_summary = _format_count_summary(
+        {"new": count_new, "changed": count_changed, "deleted": count_deleted},
+        {"new": ("green", "{n} new"), "changed": ("yellow", "{n} changed"), "deleted": ("red", "{n} deleted")},
+        c, separator="  ",
+    )
+    if file_summary and print_summary:
+        print(f"\n  {file_summary}")
 
     if uncommitted_files:
         print(f"\n  {RED}⚠ {len(uncommitted_files)} file(s) have uncommitted git changes (overwrite = lost work):{RESET}")
         for f in uncommitted_files:
             print(f"  {RED}  {f}{RESET}")
+
+    return {"new": count_new, "changed": count_changed, "deleted": count_deleted}
 
 
 async def _pull_from_server(
@@ -2068,7 +2446,7 @@ async def _pull_from_server(
     files_to_download: list[str] = []  # repo paths
     for path_str, meta in server_metadata.items():
         # Skip .bifrost/ files — manifests come from DB
-        if path_str.startswith(".bifrost/") or "/.bifrost/" in path_str:
+        if _is_bifrost_path(path_str):
             continue
         if _should_skip_path(path_str, pull_spec):
             continue
@@ -2097,15 +2475,14 @@ async def _pull_from_server(
     deleted = [
         p for p in local_hashes
         if p not in server_paths
-        and not p.startswith(".bifrost/")
-        and "/.bifrost/" not in p
+        and not _is_bifrost_path(p)
     ]
 
     # Files to delete when --mirror is used
     files_to_delete: list[str] = []
     if mirror:
         for local_path_str in local_hashes:
-            if local_path_str not in server_metadata and not local_path_str.startswith(".bifrost/") and "/.bifrost/" not in local_path_str:
+            if local_path_str not in server_metadata and not _is_bifrost_path(local_path_str):
                 rel = _strip_repo_prefix(local_path_str, repo_prefix)
                 if _should_skip_path(rel, pull_spec):
                     continue
@@ -2202,8 +2579,7 @@ async def _pull_from_server(
         local_only = [
             p for p in local_hashes
             if p not in server_metadata
-            and not p.startswith(".bifrost/")
-            and "/.bifrost/" not in p
+            and not _is_bifrost_path(p)
         ] if not mirror else []
         if local_only:
             print(f"\n  {len(local_only)} local file(s) not on platform (push to deploy):")
@@ -2262,28 +2638,106 @@ def _collect_push_files(
     return files, skipped
 
 
-def _print_push_summary(result: dict[str, Any]) -> None:
-    """Print push result summary."""
-    summary_parts = []
-    if result.get("created"):
-        summary_parts.append(f"{result['created']} created")
-    if result.get("updated"):
-        summary_parts.append(f"{result['updated']} updated")
-    if result.get("deleted"):
-        summary_parts.append(f"{result['deleted']} deleted")
-    if result.get("unchanged"):
-        summary_parts.append(f"{result['unchanged']} unchanged")
-    print(f"  {', '.join(summary_parts) if summary_parts else 'No changes'}")
 
-    if result.get("errors"):
-        print(f"\n  Errors ({len(result['errors'])}):")
-        for error in result["errors"]:
-            print(f"    - {error}")
+def _render_entity_changes_table(changes: list[dict[str, str]], print_summary: bool = True) -> dict[str, int]:
+    """Render a color-coded entity changes table from server dry-run data."""
+    if not changes:
+        return {"adds": 0, "updates": 0, "deletes": 0, "keeps": 0}
 
-    if result.get("warnings"):
-        print(f"\n  Warnings ({len(result['warnings'])}):")
-        for warning in result["warnings"]:
-            print(f"    - {warning}")
+    cc = _get_colors()
+    GREEN, YELLOW, RED, DIM, RESET = cc.green, cc.yellow, cc.red, cc.dim, cc.reset
+
+    max_type = max((len(c.get("entity_type", "")) for c in changes), default=4)
+    max_type = max(max_type, 4)
+    max_name = max((len(c.get("name", "")) for c in changes), default=4)
+    max_name = max(max_name, 4)
+    max_org = max((len(c.get("organization", "")) for c in changes), default=6)
+    max_org = max(max_org, 12)  # "Organization" header
+    max_action = max((len(c.get("action", "")) for c in changes), default=6)
+    max_action = max(max_action, 6)
+
+    print()
+    print("  Entity changes:")
+    print()
+    print(
+        f"  {'Type'.ljust(max_type)}  {'Name'.ljust(max_name)}  {'Organization'.ljust(max_org)}  {'Action'.ljust(max_action)}"
+    )
+    print(f"  {'─' * max_type}  {'─' * max_name}  {'─' * max_org}  {'─' * max_action}")
+
+    for c in changes:
+        action = c.get("action", "")
+        entity_type = c.get("entity_type", "")
+        name = c.get("name", "")
+        org = c.get("organization", "Global")
+
+        if action == "add":
+            color = GREEN
+        elif action == "update":
+            color = YELLOW
+        elif action == "delete":
+            color = RED
+        elif action == "keep":
+            color = DIM
+        else:
+            color = ""
+
+        action_padded = action.ljust(max_action)
+        action_display = f"{color}{action_padded}{RESET}" if color else action_padded
+
+        print(f"  {entity_type.ljust(max_type)}  {name.ljust(max_name)}  {org.ljust(max_org)}  {action_display}")
+
+    # Summary
+    adds = sum(1 for c in changes if c.get("action") == "add")
+    updates = sum(1 for c in changes if c.get("action") == "update")
+    deletes = sum(1 for c in changes if c.get("action") == "delete")
+    keeps = sum(1 for c in changes if c.get("action") == "keep")
+    entity_summary = _format_count_summary(
+        {"adds": adds, "updates": updates, "deletes": deletes, "keeps": keeps},
+        {
+            "adds": ("green", "{n} add{s}"),
+            "updates": ("yellow", "{n} update{s}"),
+            "deletes": ("red", "{n} delete{s}"),
+            "keeps": ("dim", "{n} kept (data preserved)"),
+        },
+        cc,
+    )
+    if entity_summary and print_summary:
+        print()
+        print(f"  {entity_summary}")
+
+    return {"adds": adds, "updates": updates, "deletes": deletes, "keeps": keeps}
+
+
+async def _entity_diff_pre_push(
+    client: "BifrostClient",
+    bifrost_files: dict[str, str],
+) -> dict[str, Any]:
+    """Compare local manifest against server via dry-run import.
+
+    Returns:
+        dict with keys:
+            - has_deletions: bool
+            - entity_changes: list of change dicts
+    """
+    try:
+        resp = await client.post("/api/files/manifest/import", json={
+            "files": bifrost_files,
+            "delete_removed_entities": True,
+            "dry_run": True,
+        })
+        if resp.status_code != 200:
+            return {"has_deletions": False, "entity_changes": []}
+
+        entity_changes = resp.json().get("entity_changes", [])
+        has_deletions = any(c["action"] == "delete" for c in entity_changes)
+
+        return {
+            "has_deletions": has_deletions,
+            "entity_changes": entity_changes,
+        }
+
+    except Exception:
+        return {"has_deletions": False, "entity_changes": []}
 
 
 async def _push_files(
@@ -2325,6 +2779,25 @@ async def _push_files(
                 print(f"  - {err}", file=sys.stderr)
             return 1
 
+    # Separate .bifrost/ manifest files from regular files
+    bifrost_files, regular_files = _separate_manifest_files(files)
+
+    # Entity diff: compare local manifest against server manifest
+    entity_changes: list[dict[str, Any]] = []
+    delete_removed_entities = False
+    if has_manifest:
+        entity_diff_result = await _entity_diff_pre_push(client, bifrost_files)
+        delete_removed_entities = entity_diff_result.get("has_deletions", False)
+        entity_changes = entity_diff_result.get("entity_changes", [])
+
+    scan_count = len(regular_files)
+    if repo_prefix:
+        print(f"Scanning {scan_count} file(s) in {repo_prefix}/...")
+    else:
+        print(f"Scanning {scan_count} file(s)...")
+    if skipped:
+        print(f"  (skipped {skipped} unreadable file(s))")
+
     # Fetch server file metadata for diff
     server_metadata: dict[str, dict[str, str]] = {}
     try:
@@ -2340,10 +2813,10 @@ async def _push_files(
     except Exception:
         pass
 
-    # Compute diff: compare local MD5 vs server ETag
+    # Compute diff: compare local MD5 vs server ETag (regular files only)
     files_to_upload: dict[str, str] = {}  # repo_path -> content
     unchanged = 0
-    for repo_path, content in files.items():
+    for repo_path, content in regular_files.items():
         local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
         server_info = server_metadata.get(repo_path)
         if server_info and server_info["etag"] == local_md5:
@@ -2362,72 +2835,93 @@ async def _push_files(
                 continue
             if server_path not in local_paths:
                 rel = _strip_repo_prefix(server_path, repo_prefix)
-                if rel.startswith(".bifrost/") or "/.bifrost/" in rel:
+                if _is_bifrost_path(rel):
                     continue
                 if _should_skip_path(rel, spec):
                     continue
                 files_to_delete_paths.append(server_path)
 
-    if not files_to_upload and not files_to_delete_paths:
+    # Check if anything changed at all
+    has_file_changes = bool(files_to_upload or files_to_delete_paths)
+    has_entity_changes = bool(entity_changes)
+    if not has_file_changes and not has_entity_changes:
         print("Already up to date.")
         return 0
 
-    if repo_prefix:
-        print(f"Scanning {len(files)} file(s) in {repo_prefix}/...")
-    else:
-        print(f"Scanning {len(files)} file(s)...")
-    if skipped:
-        print(f"  (skipped {skipped} unreadable file(s))")
+    # Render entity table if there are entity changes
+    entity_counts: dict[str, int] = {"adds": 0, "updates": 0, "deletes": 0, "keeps": 0}
+    if has_entity_changes:
+        entity_counts = _render_entity_changes_table(entity_changes, print_summary=False)
 
-    # Push confirmation — show only changed/new files (the actual diff)
-    if not force:
-        files_to_write_display: list[str] = []
+    # Render file table if there are file changes
+    file_counts: dict[str, int] = {"new": 0, "changed": 0, "deleted": 0}
+    files_to_write_display: list[str] = []
+    files_to_delete_display: list[str] = []
+    if has_file_changes:
         for repo_path in files_to_upload:
             rel = _strip_repo_prefix(repo_path, repo_prefix)
             files_to_write_display.append(rel)
-
-        files_to_delete_display: list[str] = []
         for server_path in files_to_delete_paths:
             rel = _strip_repo_prefix(server_path, repo_prefix)
             files_to_delete_display.append(rel)
-
-        # Build server_files dict for the table renderer
         table_server_files = {p: v for p, v in server_metadata.items()}
+        file_counts = _render_overwrite_table(
+            files_to_write_display, path, table_server_files, repo_prefix,
+            uncommitted=set(), direction="push", files_to_delete=files_to_delete_display,
+            print_summary=False,
+        )
 
-        if files_to_write_display or files_to_delete_display:
-            _render_overwrite_table(
-                files_to_write_display, path, table_server_files, repo_prefix,
-                uncommitted=set(), direction="push", files_to_delete=files_to_delete_display,
-            )
+    # Combined summary
+    cc = _get_colors()
 
-            try:
-                answer = input("\nPush these files? [y/N] ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print("\nPush cancelled.")
-                return 1
-            if answer not in ("y", "yes"):
-                print("Push cancelled.")
-                return 0
+    _ENTITY_LABELS: dict[str, tuple[str, str]] = {
+        "adds": ("green", "{n} add{s}"),
+        "updates": ("yellow", "{n} update{s}"),
+        "deletes": ("red", "{n} delete{s}"),
+        "keeps": ("dim", "{n} kept"),
+    }
+    _FILE_LABELS: dict[str, tuple[str, str]] = {
+        "new": ("green", "{n} new"),
+        "changed": ("yellow", "{n} changed"),
+        "deleted": ("red", "{n} deleted"),
+    }
 
-    # Upload files one at a time with progress
+    summary_sections: list[str] = []
+    if has_entity_changes:
+        entity_text = _format_count_summary(entity_counts, _ENTITY_LABELS, cc)
+        if entity_text:
+            summary_sections.append(f"Entities: {entity_text}")
+
+    if has_file_changes:
+        file_text = _format_count_summary(file_counts, _FILE_LABELS, cc)
+        if file_text:
+            summary_sections.append(f"Files: {file_text}")
+
+    if summary_sections:
+        print(f"\n  {' · '.join(summary_sections)}")
+
+    # Single combined prompt
+    if not force:
+        if delete_removed_entities:
+            prompt = "\nEntities marked 'delete' will be removed. Push changes? [y/N] "
+        else:
+            prompt = "\nPush changes? [y/N] "
+        try:
+            answer = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nPush cancelled.")
+            return 1
+        if answer not in ("y", "yes"):
+            print("Push cancelled.")
+            return 0
+
+    # Upload regular files one at a time with progress
     created = 0
     updated = 0
     errors: list[str] = []
     total = len(files_to_upload)
 
-    # Partition into regular files and .bifrost/ manifest files
-    regular_uploads: dict[str, str] = {}
-    bifrost_uploads: dict[str, str] = {}
-    for repo_path, content in files_to_upload.items():
-        parts = repo_path.replace("\\", "/").split("/")
-        if ".bifrost" in parts:
-            bifrost_uploads[repo_path] = content
-        else:
-            regular_uploads[repo_path] = content
-
-    idx = 0
-    for repo_path, content in regular_uploads.items():
-        idx += 1
+    for idx, (repo_path, content) in enumerate(files_to_upload.items(), 1):
         rel = _strip_repo_prefix(repo_path, repo_prefix)
         _print_progress(idx, total, f"Pushing {rel}")
         is_new = repo_path not in server_metadata
@@ -2449,39 +2943,28 @@ async def _push_files(
         except Exception as e:
             errors.append(f"{repo_path}: {e}")
 
-    # Upload .bifrost/ files
-    for repo_path, content in bifrost_uploads.items():
-        idx += 1
-        rel = _strip_repo_prefix(repo_path, repo_prefix)
-        _print_progress(idx, total, f"Pushing {rel}")
-        try:
-            resp = await client.post("/api/files/write", json={
-                "path": repo_path,
-                "content": content,
-                "mode": "cloud",
-                "location": "workspace",
-                "binary": True,
-            })
-            if resp.status_code != 204:
-                errors.append(f"{repo_path}: HTTP {resp.status_code}")
-        except Exception as e:
-            errors.append(f"{repo_path}: {e}")
-
-    # Import manifest if .bifrost/ files were written
+    # Import manifest via dedicated endpoint (sends .bifrost/ files inline)
     warnings: list[str] = []
     manifest_applied = False
-    manifest_files_response: dict[str, str] = {}
     modified_files_response: dict[str, str] = {}
 
-    if bifrost_uploads:
+    if has_manifest:
         try:
-            resp = await client.post("/api/files/manifest/import")
+            import_payload: dict[str, Any] = {"files": bifrost_files}
+            if delete_removed_entities:
+                import_payload["delete_removed_entities"] = True
+            resp = await client.post("/api/files/manifest/import", json=import_payload)
             if resp.status_code == 200:
                 manifest_data = resp.json()
                 manifest_applied = manifest_data.get("applied", False)
                 warnings = manifest_data.get("warnings", [])
-                manifest_files_response = manifest_data.get("manifest_files", {})
                 modified_files_response = manifest_data.get("modified_files", {})
+                # Print deleted entities summary
+                deleted_entities = manifest_data.get("deleted_entities", [])
+                if deleted_entities:
+                    print(f"  Removed {len(deleted_entities)} entity(ies):")
+                    for de in deleted_entities:
+                        print(f"    - {de}")
             else:
                 warnings.append(f"Manifest import failed: HTTP {resp.status_code}")
         except Exception as e:
@@ -2507,27 +2990,32 @@ async def _push_files(
                 errors.append(f"delete {server_path}: {e}")
 
     # Print summary
-    print(f"  \u2713 Pushed {total} file(s)")
-    result = {
-        "created": created,
-        "updated": updated,
-        "deleted": deleted,
-        "unchanged": unchanged,
-        "errors": errors,
-        "warnings": warnings,
-    }
-    _print_push_summary(result)
+    parts = []
+    if created:
+        parts.append(f"{created} created")
+    if updated:
+        parts.append(f"{updated} updated")
+    if deleted:
+        parts.append(f"{deleted} deleted")
+    if unchanged:
+        parts.append(f"{unchanged} unchanged")
+    if has_manifest and manifest_applied and has_entity_changes:
+        parts.append("manifest applied")
+    print(f"  \u2713 {', '.join(parts) if parts else 'No changes'}")
 
-    # Write back manifest files and modified files from server response
-    writeback_result = {
-        "manifest_files": manifest_files_response,
-        "modified_files": modified_files_response,
-    }
-    if manifest_files_response or modified_files_response:
-        _write_back_server_files(path, repo_prefix, writeback_result)
+    if errors:
+        print(f"\n  Errors ({len(errors)}):")
+        for error in errors:
+            print(f"    - {error}")
 
-    if manifest_applied:
-        print("  Manifest applied to platform.")
+    if warnings:
+        print(f"\n  Warnings ({len(warnings)}):")
+        for warning in warnings:
+            print(f"    - {warning}")
+
+    # Write back modified files from server response (e.g. forms/agents with resolved refs)
+    if modified_files_response:
+        _write_back_server_files(path, repo_prefix, {"modified_files": modified_files_response})
 
     # Validate if requested
     if validate and repo_prefix:
