@@ -1542,3 +1542,199 @@ class TestManifestValidationAgents:
         errors = validate_manifest(manifest)
         workflow_errors = [e for e in errors if "workflow" in e.lower()]
         assert len(workflow_errors) == 0, f"Agent subscription should not produce workflow errors: {workflow_errors}"
+
+
+# =============================================================================
+# _diff_manifests and _collect_changed_ids tests
+# =============================================================================
+
+
+class TestDiffManifests:
+    """Tests for _diff_manifests()."""
+
+    def _make_manifest(self, **kwargs):
+        from src.services.manifest import Manifest
+        return Manifest(**kwargs)
+
+    def _diff(self, incoming, current):
+        from src.services.manifest_import import _diff_manifests
+        return _diff_manifests(incoming, current)
+
+    def test_identical_manifests_empty_diff(self):
+        org_id = str(uuid4())
+        wf_id = str(uuid4())
+        data = {
+            "organizations": [{"id": org_id, "name": "Org"}],
+            "workflows": {wf_id: {"id": wf_id, "name": "wf", "path": "w.py", "function_name": "wf"}},
+        }
+        m1 = self._make_manifest(**data)
+        m2 = self._make_manifest(**data)
+        assert self._diff(m1, m2) == []
+
+    def test_new_entity_is_add(self):
+        wf_id = str(uuid4())
+        incoming = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "wf", "path": "w.py", "function_name": "wf"}}
+        )
+        current = self._make_manifest()
+        changes = self._diff(incoming, current)
+        assert len(changes) == 1
+        assert changes[0]["action"] == "add"
+        assert changes[0]["entity_type"] == "workflows"
+        assert changes[0]["name"] == "wf"
+
+    def test_removed_entity_is_delete(self):
+        wf_id = str(uuid4())
+        incoming = self._make_manifest()
+        current = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "wf", "path": "w.py", "function_name": "wf"}}
+        )
+        changes = self._diff(incoming, current)
+        assert len(changes) == 1
+        assert changes[0]["action"] == "delete"
+
+    def test_modified_entity_is_update(self):
+        wf_id = str(uuid4())
+        incoming = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "wf_v2", "path": "w.py", "function_name": "wf"}}
+        )
+        current = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "wf_v1", "path": "w.py", "function_name": "wf"}}
+        )
+        changes = self._diff(incoming, current)
+        assert len(changes) == 1
+        assert changes[0]["action"] == "update"
+
+    def test_unchanged_entities_omitted(self):
+        wf_id1 = str(uuid4())
+        wf_id2 = str(uuid4())
+        shared = {"id": wf_id1, "name": "same", "path": "w.py", "function_name": "wf"}
+        incoming = self._make_manifest(
+            workflows={
+                wf_id1: shared,
+                wf_id2: {"id": wf_id2, "name": "new", "path": "w2.py", "function_name": "wf2"},
+            }
+        )
+        current = self._make_manifest(workflows={wf_id1: shared})
+        changes = self._diff(incoming, current)
+        assert len(changes) == 1
+        assert changes[0]["name"] == "new"
+
+    def test_config_display_name_with_integration_prefix(self):
+        integ_id = str(uuid4())
+        cfg_id = str(uuid4())
+        incoming = self._make_manifest(
+            integrations={integ_id: {"id": integ_id, "name": "MyInteg"}},
+            configs={cfg_id: {"id": cfg_id, "key": "api_key", "integration_id": integ_id}},
+        )
+        current = self._make_manifest()
+        changes = self._diff(incoming, current)
+        config_changes = [c for c in changes if c["entity_type"] == "configs"]
+        assert len(config_changes) == 1
+        assert config_changes[0]["name"] == "MyInteg/api_key"
+
+    def test_organization_resolution(self):
+        org_id = str(uuid4())
+        wf_id = str(uuid4())
+        incoming = self._make_manifest(
+            organizations=[{"id": org_id, "name": "TestOrg"}],
+            workflows={wf_id: {"id": wf_id, "name": "wf", "path": "w.py", "function_name": "wf", "organization_id": org_id}},
+        )
+        current = self._make_manifest(organizations=[{"id": org_id, "name": "TestOrg"}])
+        changes = self._diff(incoming, current)
+        wf_changes = [c for c in changes if c["entity_type"] == "workflows"]
+        assert wf_changes[0]["organization"] == "TestOrg"
+
+    def test_sort_order(self):
+        """Changes are sorted by entity_type, then action priority, then name."""
+        wf_add = str(uuid4())
+        wf_del = str(uuid4())
+        org_id = str(uuid4())
+        incoming = self._make_manifest(
+            organizations=[{"id": org_id, "name": "Org"}],
+            workflows={wf_add: {"id": wf_add, "name": "alpha", "path": "a.py", "function_name": "a"}},
+        )
+        current = self._make_manifest(
+            workflows={wf_del: {"id": wf_del, "name": "beta", "path": "b.py", "function_name": "b"}},
+        )
+        changes = self._diff(incoming, current)
+        # orgs first (add), then workflows (add alpha, delete beta)
+        types = [c["entity_type"] for c in changes]
+        assert types == sorted(types)  # sorted by entity_type
+
+
+class TestCollectChangedIds:
+    """Tests for _collect_changed_ids()."""
+
+    def _make_manifest(self, **kwargs):
+        from src.services.manifest import Manifest
+        return Manifest(**kwargs)
+
+    def _collect(self, incoming, current):
+        from src.services.manifest_import import _collect_changed_ids
+        return _collect_changed_ids(incoming, current)
+
+    def test_identical_returns_empty(self):
+        wf_id = str(uuid4())
+        data = {"workflows": {wf_id: {"id": wf_id, "name": "wf", "path": "w.py", "function_name": "wf"}}}
+        assert self._collect(self._make_manifest(**data), self._make_manifest(**data)) == set()
+
+    def test_new_entity_in_set(self):
+        wf_id = str(uuid4())
+        incoming = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "wf", "path": "w.py", "function_name": "wf"}}
+        )
+        assert wf_id in self._collect(incoming, self._make_manifest())
+
+    def test_removed_entity_in_set(self):
+        wf_id = str(uuid4())
+        current = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "wf", "path": "w.py", "function_name": "wf"}}
+        )
+        assert wf_id in self._collect(self._make_manifest(), current)
+
+    def test_modified_entity_in_set(self):
+        wf_id = str(uuid4())
+        incoming = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "v2", "path": "w.py", "function_name": "wf"}}
+        )
+        current = self._make_manifest(
+            workflows={wf_id: {"id": wf_id, "name": "v1", "path": "w.py", "function_name": "wf"}}
+        )
+        assert wf_id in self._collect(incoming, current)
+
+    def test_unchanged_not_in_set(self):
+        wf_id = str(uuid4())
+        new_id = str(uuid4())
+        shared = {"id": wf_id, "name": "same", "path": "w.py", "function_name": "wf"}
+        incoming = self._make_manifest(
+            workflows={
+                wf_id: shared,
+                new_id: {"id": new_id, "name": "new", "path": "n.py", "function_name": "n"},
+            }
+        )
+        current = self._make_manifest(workflows={wf_id: shared})
+        ids = self._collect(incoming, current)
+        assert new_id in ids
+        assert wf_id not in ids
+
+    def test_integration_change_includes_dependent_configs(self):
+        integ_id = str(uuid4())
+        cfg_id = str(uuid4())
+        incoming = self._make_manifest(
+            integrations={integ_id: {"id": integ_id, "name": "v2"}},
+            configs={cfg_id: {"id": cfg_id, "key": "k", "integration_id": integ_id}},
+        )
+        current = self._make_manifest(
+            integrations={integ_id: {"id": integ_id, "name": "v1"}},
+            configs={cfg_id: {"id": cfg_id, "key": "k", "integration_id": integ_id}},
+        )
+        ids = self._collect(incoming, current)
+        assert integ_id in ids
+        assert cfg_id in ids  # dependent config included even though config itself unchanged
+
+    def test_list_entities_organizations(self):
+        org_id = str(uuid4())
+        incoming = self._make_manifest(organizations=[{"id": org_id, "name": "New"}])
+        current = self._make_manifest()
+        assert org_id in self._collect(incoming, current)
