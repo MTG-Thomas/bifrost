@@ -22,7 +22,7 @@ class _BatchRow(Static):
 
     DEFAULT_CSS = """
     _BatchRow {
-        height: 1;
+        height: auto;
         padding: 0 2;
     }
     """
