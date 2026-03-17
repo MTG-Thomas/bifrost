@@ -46,28 +46,51 @@ class GenericWebhookAdapter(WebhookAdapter):
                 "title": "Webhook Secret",
                 "description": "HMAC secret for signature verification (optional)",
                 "format": "password",
+                "x-help": {
+                    "text": "Shared secret used to verify webhook signatures via HMAC-SHA256. Set the same secret in both Bifrost and the sending service.",
+                    "code": (
+                        "# Python example: sign a webhook request\n"
+                        "import hmac, hashlib\n"
+                        "sig = hmac.new(\n"
+                        "    secret.encode(), body, hashlib.sha256\n"
+                        ").hexdigest()\n"
+                        'headers["X-Signature-256"] = f"sha256={sig}"'
+                    ),
+                },
             },
             "signature_header": {
                 "type": "string",
                 "title": "Signature Header",
                 "description": "Header containing the HMAC signature",
                 "default": "X-Signature-256",
+                "x-help": {
+                    "text": "The HTTP header where the sender places the HMAC signature. Common values: X-Signature-256 (default), X-Hub-Signature-256 (GitHub).",
+                },
             },
             "signature_prefix": {
                 "type": "string",
                 "title": "Signature Prefix",
                 "description": "Prefix in signature value (e.g., 'sha256=')",
                 "default": "sha256=",
+                "x-help": {
+                    "text": "Prefix before the hex digest in the signature header value. Bifrost strips this before comparing. Use 'sha256=' for GitHub-style signatures, or leave empty if the header contains only the hex digest.",
+                },
             },
             "event_type_header": {
                 "type": "string",
                 "title": "Event Type Header",
                 "description": "Header containing the event type (optional)",
+                "x-help": {
+                    "text": "HTTP header the sender uses to indicate the event type. This lets subscriptions filter by event type. Example: GitHub sends X-GitHub-Event.",
+                },
             },
             "event_type_field": {
                 "type": "string",
                 "title": "Event Type Field",
                 "description": "Field in payload containing event type (e.g., 'event', 'type')",
+                "x-help": {
+                    "text": "Top-level JSON field in the request body containing the event type. Takes precedence over the header if both are set. Example: Stripe uses 'type' (e.g. 'invoice.paid').",
+                },
             },
         },
     }

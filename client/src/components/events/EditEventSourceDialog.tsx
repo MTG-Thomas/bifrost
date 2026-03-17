@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
 	Dialog,
 	DialogContent,
@@ -23,7 +23,12 @@ import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { useAuth } from "@/contexts/AuthContext";
-import { useUpdateEventSource, type EventSource } from "@/services/events";
+import {
+	useUpdateEventSource,
+	useWebhookAdapters,
+	type EventSource,
+} from "@/services/events";
+import { DynamicConfigForm, type ConfigSchema } from "./DynamicConfigForm";
 import { authFetch } from "@/lib/api-client";
 
 interface CronValidationResult {
@@ -67,22 +72,30 @@ function EditEventSourceDialogContent({
 	const { isPlatformAdmin } = useAuth();
 	const updateMutation = useUpdateEventSource();
 
+	// Fetch adapter metadata for dynamic config
+	const { data: adaptersData } = useWebhookAdapters();
+	const adapters = adaptersData?.adapters || [];
+	const selectedAdapter = adapters.find(
+		(a) => a.name === source.webhook?.adapter_name,
+	);
+	const hasDynamicConfig = useMemo(() => {
+		if (!selectedAdapter?.config_schema) return false;
+		const schema = selectedAdapter.config_schema as {
+			properties?: Record<string, unknown>;
+		};
+		return schema.properties && Object.keys(schema.properties).length > 0;
+	}, [selectedAdapter]);
+
 	// Form state - initialized from props, component remounts when dialog opens
 	const [name, setName] = useState(source.name);
 	const [organizationId, setOrganizationId] = useState<string | null>(
 		source.organization_id ?? null,
 	);
 
-	// Webhook config fields (for generic adapter)
-	const [eventTypeHeader, setEventTypeHeader] = useState<string>(
-		(source.webhook?.config?.event_type_header as string) ?? "",
-	);
-	const [eventTypeField, setEventTypeField] = useState<string>(
-		(source.webhook?.config?.event_type_field as string) ?? "",
-	);
-	const [secret, setSecret] = useState<string>(
-		(source.webhook?.config?.secret as string) ?? "",
-	);
+	// Webhook config (unified for all adapters)
+	const [webhookConfig, setWebhookConfig] = useState<
+		Record<string, unknown>
+	>(source.webhook?.config || {});
 
 	// Schedule config fields
 	const [cronExpression, setCronExpression] = useState<string>(
@@ -104,9 +117,6 @@ function EditEventSourceDialogContent({
 	const isLoading = updateMutation.isPending;
 	const isWebhook = source.source_type === "webhook";
 	const isSchedule = source.source_type === "schedule";
-	const isGenericAdapter =
-		!source.webhook?.adapter_name ||
-		source.webhook?.adapter_name === "generic";
 
 	// Debounced cron validation
 	const validateCron = useCallback(async (expr: string) => {
@@ -176,18 +186,6 @@ function EditEventSourceDialogContent({
 		if (!validateForm()) return;
 
 		try {
-			// Build webhook config only if values are set
-			const webhookConfig: Record<string, unknown> = {};
-			if (eventTypeHeader.trim()) {
-				webhookConfig.event_type_header = eventTypeHeader.trim();
-			}
-			if (eventTypeField.trim()) {
-				webhookConfig.event_type_field = eventTypeField.trim();
-			}
-			if (secret.trim()) {
-				webhookConfig.secret = secret.trim();
-			}
-
 			// Build body - include organization_id if admin changed it
 			const body: Record<string, unknown> = {
 				name: name.trim(),
@@ -271,64 +269,27 @@ function EditEventSourceDialogContent({
 					/>
 				</div>
 
-				{/* Webhook Config (Generic Adapter Only) */}
-				{isWebhook && isGenericAdapter && (
+				{/* Webhook Config (Dynamic from adapter schema) */}
+				{isWebhook && hasDynamicConfig && selectedAdapter && (
 					<>
 						<div className="border-t pt-4">
 							<h4 className="text-sm font-medium mb-3">
 								Webhook Configuration
 							</h4>
+							{selectedAdapter.display_name !== "Generic Webhook" && (
+								<p className="text-xs text-muted-foreground mb-3">
+									Adapter: {selectedAdapter.display_name}
+								</p>
+							)}
 						</div>
-
-						<div className="space-y-2">
-							<Label htmlFor="event-type-header">
-								Event Type Header
-							</Label>
-							<Input
-								id="event-type-header"
-								value={eventTypeHeader}
-								onChange={(e) =>
-									setEventTypeHeader(e.target.value)
-								}
-								placeholder="e.g., X-Event-Type"
-							/>
-							<p className="text-xs text-muted-foreground">
-								HTTP header containing the event type (optional)
-							</p>
-						</div>
-
-						<div className="space-y-2">
-							<Label htmlFor="event-type-field">
-								Event Type Field
-							</Label>
-							<Input
-								id="event-type-field"
-								value={eventTypeField}
-								onChange={(e) =>
-									setEventTypeField(e.target.value)
-								}
-								placeholder="e.g., type or event"
-							/>
-							<p className="text-xs text-muted-foreground">
-								JSON payload field containing the event type
-								(optional, takes precedence over header)
-							</p>
-						</div>
-
-						<div className="space-y-2">
-							<Label htmlFor="secret">Webhook Secret</Label>
-							<Input
-								id="secret"
-								type="password"
-								value={secret}
-								onChange={(e) => setSecret(e.target.value)}
-								placeholder="Leave empty to disable signature verification"
-							/>
-							<p className="text-xs text-muted-foreground">
-								HMAC secret for signature verification
-								(optional)
-							</p>
-						</div>
+						<DynamicConfigForm
+							adapterName={selectedAdapter.name}
+							configSchema={
+								selectedAdapter.config_schema as unknown as ConfigSchema
+							}
+							config={webhookConfig}
+							onChange={setWebhookConfig}
+						/>
 					</>
 				)}
 
