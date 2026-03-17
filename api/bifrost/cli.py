@@ -18,7 +18,9 @@ import inspect
 import json
 import os
 import pathlib
+import shutil
 import sys
+import textwrap
 import time
 import webbrowser
 from dataclasses import dataclass
@@ -35,8 +37,8 @@ import httpx
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
 from bifrost.client import BifrostClient
-from bifrost.tui.file_select import interactive_file_select
 from bifrost.tui.progress import ProgressApp
+from bifrost.tui.sync_app import SyncResult, interactive_sync
 
 # Default ignore patterns applied even without a .gitignore file.
 # .bifrost/ is always force-included via negation.
@@ -331,6 +333,9 @@ def main(args: list[str] | None = None) -> int:
     if command == "git":
         return handle_git(args[1:])
 
+    if command == "sync":
+        return handle_sync(args[1:])
+
     if command == "push":
         return handle_push(args[1:])
 
@@ -358,10 +363,11 @@ Usage:
   bifrost <command> [options]
 
 Commands:
+  sync        Bidirectional sync between local files and Bifrost platform
   run         Run a workflow directly (silent JSON output) or interactively via browser
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
-  push        Push local files to Bifrost platform
-  pull        Pull files from Bifrost platform to local directory
+  push        Push local files to Bifrost platform (alias for sync)
+  pull        Pull files from Bifrost platform to local directory (alias for sync)
   watch       Watch for file changes and auto-push (requires .bifrost/ workspace)
   api         Generic authenticated API request
   login       Authenticate with device authorization flow
@@ -378,6 +384,8 @@ Examples:
   bifrost git commit -m "sync clients"
   bifrost git push
   bifrost git resolve workflows/billing.py=keep_remote
+  bifrost sync
+  bifrost sync apps/my-app --mirror
   bifrost push apps/my-app
   bifrost push apps/my-app --mirror
   bifrost pull
@@ -1159,8 +1167,64 @@ Examples:
     _warn_if_git_workspace(parsed.local_path)
 
     try:
-        return asyncio.run(_push_with_precheck(
-            parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, watch=False, force=parsed.force,
+        return asyncio.run(_sync_files(
+            parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, force=parsed.force,
+            client=client,
+        ))
+    except KeyboardInterrupt:
+        return 130
+
+
+def handle_sync(args: list[str]) -> int:
+    """
+    Handle 'bifrost sync' command.
+
+    Bidirectional sync between local files and Bifrost platform.
+
+    Usage:
+      bifrost sync [path] [--mirror] [--validate] [--force]
+    """
+    if args and args[0] in ("--help", "-h"):
+        print("""
+Usage: bifrost sync [path] [options]
+
+Bidirectional sync between local files and Bifrost platform.
+Compares local and server file states and lets you choose per-file
+actions (push, pull, delete, skip) in an interactive TUI.
+
+Arguments:
+  path                  Local directory to sync (default: current directory)
+
+Options:
+  --mirror              Include server-only files (for pull or delete)
+  --validate            Validate after sync (for apps)
+  --force               Skip confirmation prompts (use default actions)
+  --help, -h            Show this help message
+
+Examples:
+  bifrost sync
+  bifrost sync apps/my-app
+  bifrost sync --mirror
+  bifrost sync --force
+""".strip())
+        return 0
+
+    parsed = _parse_push_watch_args(args)
+    if parsed is None:
+        return 1
+
+    # Authenticate BEFORE entering asyncio.run()
+    try:
+        client = BifrostClient.get_instance(require_auth=True)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    _warn_if_git_workspace(parsed.local_path)
+
+    try:
+        return asyncio.run(_sync_files(
+            parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, force=parsed.force,
             client=client,
         ))
     except KeyboardInterrupt:
@@ -1314,21 +1378,10 @@ Examples:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    resolved = pathlib.Path(local_path).resolve()
-    if not resolved.exists() or not resolved.is_dir():
-        print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
-        return 1
-
-    repo_prefix = _detect_repo_prefix(resolved)
-
-    print(f"Pulling from platform{f' (prefix: {repo_prefix})' if repo_prefix else ''}...")
-
     try:
-        success = asyncio.run(_pull_from_server(
-            client, resolved, repo_prefix,
-            include_code_files=True, force=force, mirror=mirror,
+        return asyncio.run(_sync_files(
+            local_path, mirror=mirror, force=force, client=client,
         ))
-        return 0 if success else 1
     except KeyboardInterrupt:
         print("\nPull cancelled.")
         return 130
@@ -1414,7 +1467,7 @@ async def _push_with_precheck(
     if watch:
         return await _watch_and_push(local_path, repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client)
     else:
-        return await _push_files(local_path, repo_prefix=repo_prefix, mirror=mirror, validate=validate, force=force, client=client)
+        return await _sync_files(local_path, repo_prefix=repo_prefix, mirror=mirror, validate=validate, force=force, client=client)
 
 
 class _WatchState:
@@ -1721,13 +1774,15 @@ async def _process_watch_batch(
                 if watch_app:
                     watch_app.log_error(error)
                 else:
-                    print(f"    Error: {error}", flush=True)
+                    _cols = shutil.get_terminal_size((80, 24)).columns
+                    print(textwrap.fill(f"Error: {error}", width=_cols, initial_indent="    ", subsequent_indent="      "), flush=True)
         if watch_warnings:
             for warning in watch_warnings:
                 if watch_app:
                     watch_app.log_error(warning)
                 else:
-                    print(f"    Warning: {warning}", flush=True)
+                    _cols = shutil.get_terminal_size((80, 24)).columns
+                    print(textwrap.fill(f"Warning: {warning}", width=_cols, initial_indent="    ", subsequent_indent="      "), flush=True)
         deleted_entities = manifest_result.get("deleted_entities", [])
         if deleted_entities:
             msg = f"Removed {len(deleted_entities)} entity(ies): {', '.join(deleted_entities)}"
@@ -2129,10 +2184,10 @@ async def _watch_and_push(
     except Exception:
         pass
 
-    # Initial full push
+    # Initial full sync
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print(f"Initial push of {path}...", flush=True)
-    await _push_files(str(path), repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client)
+        print(f"Initial sync of {path}...", flush=True)
+    await _sync_files(str(path), repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client)
 
     # Set up file watcher
     handler = _WatchChangeHandler(state)
@@ -2501,7 +2556,8 @@ async def _pull_from_server(
                 "server_time": "", "author": "",
                 "_action": "delete",
             })
-        selected = await interactive_file_select(
+        from bifrost.tui.file_select import interactive_file_select as _ifs_pull
+        selected = await _ifs_pull(
             selector_items,
             columns=[
                 ("rel", "File", 40),
@@ -2746,6 +2802,485 @@ async def _entity_diff_pre_push(
         return {"has_deletions": False, "entity_changes": []}
 
 
+async def _sync_files(
+    local_path: str,
+    repo_prefix: str = "",
+    mirror: bool = False,
+    validate: bool = False,
+    force: bool = False,
+    client: "BifrostClient | None" = None,
+) -> int:
+    """Unified bidirectional sync between local directory and Bifrost platform.
+
+    Compares local files vs server state (MD5/ETag + timestamps) and entities
+    (dry-run manifest import), then presents a unified TUI for the user to
+    choose per-item actions (push/pull/delete/skip).
+    """
+    path = pathlib.Path(local_path).resolve()
+
+    if not path.exists():
+        print(f"Error: path does not exist: {local_path}", file=sys.stderr)
+        return 1
+    if not path.is_dir():
+        print(f"Error: path is not a directory: {local_path}", file=sys.stderr)
+        return 1
+
+    if client is None:
+        client = BifrostClient.get_instance(require_auth=True)
+
+    if not repo_prefix:
+        repo_prefix = _detect_repo_prefix(path)
+
+    # ── 1. Collect local files ───────────────────────────────────────────
+    files, skipped = _collect_push_files(path, repo_prefix)
+
+    # Local manifest validation
+    has_manifest = any(_is_bifrost_path(k) for k in files)
+    if has_manifest:
+        validation_errors = _validate_manifest_locally(path)
+        if validation_errors:
+            print("Manifest validation errors (sync skipped):", file=sys.stderr)
+            for err in validation_errors:
+                print(f"  - {err}", file=sys.stderr)
+            return 1
+
+    bifrost_files, regular_files = _separate_manifest_files(files)
+
+    # ── 2. Fetch server file metadata ────────────────────────────────────
+    server_metadata: dict[str, dict[str, str]] = {}
+    try:
+        resp = await client.post("/api/files/list", json={
+            "include_metadata": True,
+            "mode": "cloud",
+            "location": "workspace",
+        })
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get("files_metadata", []):
+                server_metadata[item["path"]] = {
+                    "etag": item["etag"],
+                    "last_modified": item["last_modified"],
+                    "updated_by": item.get("updated_by", ""),
+                }
+    except Exception:
+        pass
+
+    # Filter .git/ objects from server listing
+    server_metadata = {
+        p: m for p, m in server_metadata.items() if not p.startswith(".git/")
+    }
+
+    # ── 3. Compare files (local vs server) ───────────────────────────────
+    spec = _build_file_filter(path)
+    sync_items: list[dict[str, Any]] = []
+
+    # Track which server paths we've matched to a local file
+    matched_server_paths: set[str] = set()
+
+    for repo_path, content in regular_files.items():
+        rel = _strip_repo_prefix(repo_path, repo_prefix)
+        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
+        server_info = server_metadata.get(repo_path)
+
+        if server_info is None:
+            # New locally — not on server
+            sync_items.append({
+                "name": rel,
+                "why": "new locally",
+                "modified": _format_file_time(path / rel),
+                "author": "",
+                "default_action": "push",
+                "valid_actions": ["push", "delete", "skip"],
+                "section": "files",
+                "repo_path": repo_path,
+                "rel": rel,
+                "_content": content,
+            })
+        elif server_info["etag"] != local_md5:
+            matched_server_paths.add(repo_path)
+            # Content differs — check timestamps
+            local_file = path / rel
+            try:
+                local_mtime = local_file.stat().st_mtime
+                local_dt = datetime.fromtimestamp(local_mtime, tz=timezone.utc)
+            except OSError:
+                local_dt = datetime.min.replace(tzinfo=timezone.utc)
+
+            try:
+                server_dt = datetime.fromisoformat(server_info["last_modified"])
+                if server_dt.tzinfo is None:
+                    server_dt = server_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                server_dt = datetime.min.replace(tzinfo=timezone.utc)
+
+            if local_dt > server_dt:
+                why = "local newer"
+                default_action = "push"
+            else:
+                why = "server newer"
+                default_action = "pull"
+
+            sync_items.append({
+                "name": rel,
+                "why": why,
+                "modified": _format_file_time(local_file),
+                "author": server_info.get("updated_by", ""),
+                "default_action": default_action,
+                "valid_actions": ["push", "pull", "skip"],
+                "section": "files",
+                "repo_path": repo_path,
+                "rel": rel,
+                "_content": content,
+            })
+        else:
+            # Unchanged
+            matched_server_paths.add(repo_path)
+
+    # Server-only files (--mirror mode)
+    if mirror:
+        prefix_filter = repo_prefix + "/" if repo_prefix else ""
+        for server_path, server_info in server_metadata.items():
+            if prefix_filter and not server_path.startswith(prefix_filter):
+                continue
+            if server_path in matched_server_paths:
+                continue
+            if server_path in files:
+                continue
+            rel = _strip_repo_prefix(server_path, repo_prefix)
+            if _is_bifrost_path(rel):
+                continue
+            if _should_skip_path(rel, spec):
+                continue
+            sync_items.append({
+                "name": rel,
+                "why": "server only",
+                "modified": _format_server_time(server_info.get("last_modified", "")),
+                "author": server_info.get("updated_by", ""),
+                "default_action": "pull",
+                "valid_actions": ["pull", "delete", "skip"],
+                "section": "files",
+                "repo_path": server_path,
+                "rel": rel,
+                "_content": "",
+            })
+
+    # ── 4. Entity diff ───────────────────────────────────────────────────
+    entity_changes: list[dict[str, Any]] = []
+    delete_removed_entities = False
+    if has_manifest:
+        entity_diff_result = await _entity_diff_pre_push(client, bifrost_files)
+        delete_removed_entities = entity_diff_result.get("has_deletions", False)
+        entity_changes = entity_diff_result.get("entity_changes", [])
+
+    # Fetch platform manifest for entity pull
+    platform_manifest: dict[str, str] = {}
+    try:
+        resp = await client.get("/api/files/manifest")
+        if resp.status_code == 200:
+            platform_manifest = resp.json()
+    except Exception:
+        pass
+
+    # Build entity sync items from dry-run changes
+    for change in entity_changes:
+        action = change.get("action", "keep")
+        if action == "keep":
+            continue
+
+        entity_type = change.get("entity_type", "")
+        name = change.get("name", "")
+        org = change.get("organization", "Global")
+        display = f"{entity_type}: {name}"
+        if org and org != "Global":
+            display += f" ({org})"
+
+        if action in ("add", "update"):
+            why = "new locally" if action == "add" else "local changed"
+            sync_items.append({
+                "name": display,
+                "why": why,
+                "modified": "",
+                "author": "",
+                "default_action": "push",
+                "valid_actions": ["push", "pull", "skip"],
+                "section": "entities",
+                "entity_action": action,
+                "entity_type": entity_type,
+                "entity_name": name,
+                "entity_org": org,
+            })
+        elif action == "delete":
+            sync_items.append({
+                "name": display,
+                "why": "platform only",
+                "modified": "",
+                "author": "",
+                "default_action": "pull",
+                "valid_actions": ["pull", "delete", "skip"],
+                "section": "entities",
+                "entity_action": action,
+                "entity_type": entity_type,
+                "entity_name": name,
+                "entity_org": org,
+            })
+
+    # ── 5. Check if there's anything to sync ─────────────────────────────
+    if not sync_items:
+        print("Already up to date.")
+        return 0
+
+    file_count = sum(1 for i in sync_items if i.get("section") == "files")
+    entity_count = sum(1 for i in sync_items if i.get("section") == "entities")
+    unchanged = len(regular_files) - sum(1 for i in sync_items if i.get("section") == "files")
+
+    subtitle = f"Scanned {len(regular_files)} file(s), {unchanged} unchanged"
+    if skipped:
+        subtitle += f", {skipped} skipped"
+
+    # ── 6. Interactive TUI or auto-accept ────────────────────────────────
+    _is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+
+    if force or not _is_tty:
+        # Auto-accept: use default actions
+        result = SyncResult()
+        for item in sync_items:
+            action = item.get("default_action", "skip")
+            bucket = getattr(result, action, None)
+            if bucket is not None:
+                bucket.append(item)
+            else:
+                result.skip.append(item)
+        if not _is_tty:
+            push_count = len(result.push)
+            pull_count = len(result.pull)
+            delete_count = len(result.delete)
+            parts = []
+            if push_count:
+                parts.append(f"{push_count} to push")
+            if pull_count:
+                parts.append(f"{pull_count} to pull")
+            if delete_count:
+                parts.append(f"{delete_count} to delete")
+            print(f"Syncing: {', '.join(parts) if parts else 'nothing'}...")
+    else:
+        sync_result = await interactive_sync(
+            sync_items,
+            file_count=file_count,
+            entity_count=entity_count,
+            subtitle=subtitle,
+        )
+        if sync_result is None:
+            print("Sync cancelled.")
+            return 0
+        result = sync_result
+
+    # ── 7. Execute actions ───────────────────────────────────────────────
+    # Separate file vs entity items per action
+    push_files_items = [i for i in result.push if i.get("section") == "files"]
+    push_entity_items = [i for i in result.push if i.get("section") == "entities"]
+    pull_files_items = [i for i in result.pull if i.get("section") == "files"]
+    pull_entity_items = [i for i in result.pull if i.get("section") == "entities"]
+    delete_files_items = [i for i in result.delete if i.get("section") == "files"]
+    delete_entity_items = [i for i in result.delete if i.get("section") == "entities"]
+
+    has_work = (
+        push_files_items or push_entity_items
+        or pull_files_items or pull_entity_items
+        or delete_files_items or delete_entity_items
+    )
+    if not has_work:
+        print("Nothing selected.")
+        return 0
+
+    # Check if entity deletions were selected — controls delete_removed_entities flag
+    if delete_removed_entities:
+        has_selected_entity_deletes = any(
+            i.get("entity_action") == "delete" for i in delete_entity_items
+        )
+        if not has_selected_entity_deletes:
+            delete_removed_entities = False
+
+    # Build progress items
+    progress_items: list[tuple[str, dict[str, Any]]] = []
+    for item in push_files_items:
+        progress_items.append((f"Push {item['rel']}", {"action": "push_file", "item": item}))
+    for item in pull_files_items:
+        progress_items.append((f"Pull {item['rel']}", {"action": "pull_file", "item": item}))
+    for item in delete_files_items:
+        progress_items.append((f"Delete {item['rel']}", {"action": "delete_file", "item": item}))
+    if push_entity_items or delete_entity_items:
+        progress_items.append(("Import manifest", {"action": "push_entities"}))
+    if pull_entity_items:
+        progress_items.append(("Pull manifest", {"action": "pull_entities"}))
+
+    # Shared results for post-processing
+    sync_result_data: dict[str, Any] = {
+        "warnings": [],
+        "manifest_applied": False,
+        "modified_files": {},
+        "manifest_files": {},
+    }
+
+    async def _do_sync_work(work_data: dict[str, Any], name: str) -> None:
+        action = work_data["action"]
+
+        if action == "push_file":
+            item = work_data["item"]
+            resp = await client.post("/api/files/write", json={
+                "path": item["repo_path"],
+                "content": item["_content"],
+                "mode": "cloud", "location": "workspace", "binary": True,
+            })
+            if resp.status_code != 204:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+
+        elif action == "pull_file":
+            item = work_data["item"]
+            resp = await client.post("/api/files/read", json={
+                "path": item["repo_path"],
+                "mode": "cloud", "location": "workspace", "binary": True,
+            })
+            if resp.status_code == 200:
+                file_data = resp.json()
+                content_bytes = base64.b64decode(file_data["content"])
+                local_file = path / item["rel"]
+                local_file.parent.mkdir(parents=True, exist_ok=True)
+                local_file.write_bytes(content_bytes)
+            else:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+
+        elif action == "delete_file":
+            item = work_data["item"]
+            # Delete locally-only files (new locally + user chose delete)
+            if item.get("why") == "new locally":
+                local_file = path / item["rel"]
+                if local_file.exists():
+                    local_file.unlink()
+            else:
+                # Delete from server
+                resp = await client.post("/api/files/delete", json={
+                    "path": item["repo_path"],
+                    "mode": "cloud", "location": "workspace",
+                })
+                if resp.status_code not in (204, 404):
+                    raise RuntimeError(f"HTTP {resp.status_code}")
+
+        elif action == "push_entities":
+            import_payload: dict[str, Any] = {"files": bifrost_files}
+            if delete_removed_entities:
+                import_payload["delete_removed_entities"] = True
+            resp = await client.post("/api/files/manifest/import", json=import_payload)
+            if resp.status_code == 200:
+                manifest_data = resp.json()
+                sync_result_data["manifest_applied"] = manifest_data.get("applied", False)
+                sync_result_data["warnings"] = manifest_data.get("warnings", [])
+                sync_result_data["modified_files"] = manifest_data.get("modified_files", {})
+                sync_result_data["manifest_files"] = manifest_data.get("manifest_files", {})
+            else:
+                sync_result_data["warnings"].append(f"Manifest import failed: HTTP {resp.status_code}")
+
+        elif action == "pull_entities":
+            # Write platform manifest YAML files to local .bifrost/
+            bifrost_dir = _find_bifrost_dir(path)
+            m_dir = bifrost_dir if bifrost_dir.exists() else path / ".bifrost"
+            m_dir.mkdir(parents=True, exist_ok=True)
+            for filename, content in platform_manifest.items():
+                m_path = m_dir / filename
+                m_path.write_text(content, encoding="utf-8")
+
+    async def _post_sync(file_errors: list[str]) -> str:
+        """Compute summary string — runs after all progress items complete."""
+        error_names = {e.split(":")[0] for e in file_errors}
+        n_pushed = sum(1 for n, d in progress_items if d["action"] == "push_file" and n not in error_names)
+        n_pulled = sum(1 for n, d in progress_items if d["action"] == "pull_file" and n not in error_names)
+        n_deleted = sum(1 for n, d in progress_items if d["action"] == "delete_file" and n not in error_names)
+
+        parts = []
+        if n_pushed:
+            parts.append(f"{n_pushed} pushed")
+        if n_pulled:
+            parts.append(f"{n_pulled} pulled")
+        if n_deleted:
+            parts.append(f"{n_deleted} deleted")
+        if unchanged > 0:
+            parts.append(f"{unchanged} unchanged")
+        if sync_result_data["manifest_applied"]:
+            parts.append("manifest applied")
+        if pull_entity_items:
+            parts.append("manifest pulled")
+        summary = ", ".join(parts) if parts else "No changes"
+        if sync_result_data["warnings"]:
+            summary += f" ({len(sync_result_data['warnings'])} warning(s))"
+        return summary
+
+    errors: list[str] = []
+    if progress_items and _is_tty:
+        app = ProgressApp("Syncing", progress_items, _do_sync_work, post_fn=_post_sync)
+        errors = await app.run_async() or []
+    elif progress_items:
+        for name, data in progress_items:
+            try:
+                await _do_sync_work(data, name)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+                print(f"  Error: {name}: {e}", file=sys.stderr)
+        summary = await _post_sync(errors)
+        print(f"  \u2713 {summary}")
+
+    # Report errors and warnings
+    warnings = sync_result_data["warnings"]
+    _cols = shutil.get_terminal_size((80, 24)).columns
+    if errors:
+        print(f"\n  Errors ({len(errors)}):")
+        for error in errors:
+            print(textwrap.fill(f"- {error}", width=_cols, initial_indent="    ", subsequent_indent="      "))
+    if warnings:
+        print(f"\n  Warnings ({len(warnings)}):")
+        for warning in warnings:
+            print(textwrap.fill(f"- {warning}", width=_cols, initial_indent="    ", subsequent_indent="      "))
+
+    # Write back modified/manifest files from server response
+    writeback_data: dict[str, Any] = {}
+    if sync_result_data.get("modified_files"):
+        writeback_data["modified_files"] = sync_result_data["modified_files"]
+    if sync_result_data.get("manifest_files"):
+        writeback_data["manifest_files"] = sync_result_data["manifest_files"]
+    if writeback_data:
+        _write_back_server_files(path, repo_prefix, writeback_data)
+
+    # Validate if requested
+    if validate and repo_prefix:
+        slug = repo_prefix.rstrip("/").rsplit("/", 1)[-1]
+        print(f"\nValidating app '{slug}'...")
+        try:
+            val_response = await client.get(f"/api/applications/{slug}")
+            if val_response.status_code == 200:
+                app_data = val_response.json()
+                app_id = app_data.get("id")
+                if app_id:
+                    val_result = await client.post(f"/api/applications/{app_id}/validate")
+                    if val_result.status_code == 200:
+                        val_data = val_result.json()
+                        if val_data.get("errors"):
+                            print(f"  Errors ({len(val_data['errors'])}):")
+                            for err in val_data["errors"]:
+                                print(f"    - [{err.get('severity', 'error')}] {err.get('message', err)}")
+                        elif val_data.get("warnings"):
+                            print(f"  Warnings ({len(val_data['warnings'])}):")
+                            for warn in val_data["warnings"]:
+                                print(f"    - {warn.get('message', warn)}")
+                        else:
+                            print("  No issues found.")
+                    else:
+                        print(f"  Validation failed: {val_result.status_code}", file=sys.stderr)
+            else:
+                print(f"  Could not find app '{slug}' for validation", file=sys.stderr)
+        except Exception as e:
+            print(f"  Validation error: {e}", file=sys.stderr)
+
+    return 0 if not errors else 1
+
+
 async def _push_files(
     local_path: str,
     repo_prefix: str = "",
@@ -2860,11 +3395,6 @@ async def _push_files(
         print("Already up to date.")
         return 0
 
-    # Render entity table if there are entity changes
-    entity_counts: dict[str, int] = {"adds": 0, "updates": 0, "deletes": 0, "keeps": 0}
-    if has_entity_changes:
-        entity_counts = _render_entity_changes_table(entity_changes, print_summary=False)
-
     # Interactive file selector (replaces table + y/N prompt)
     if has_file_changes and not force:
         selector_items: list[dict[str, str]] = []
@@ -2902,7 +3432,8 @@ async def _push_files(
         push_subtitle = f"Scanned {scan_count} file(s), {unchanged} unchanged"
         if skipped:
             push_subtitle += f", {skipped} skipped"
-        selected = await interactive_file_select(
+        from bifrost.tui.file_select import interactive_file_select as _ifs_push
+        selected = await _ifs_push(
             selector_items,
             columns=[
                 ("rel", "File", 40),
@@ -2925,30 +3456,18 @@ async def _push_files(
             print("No files selected.")
             return 0
 
-    # Entity changes prompt (entities can't be cherry-picked)
+    # Entity changes review (entities can't be cherry-picked)
     if has_entity_changes and not force:
-        cc = _get_colors()
-        _ENTITY_LABELS: dict[str, tuple[str, str]] = {
-            "adds": ("green", "{n} add{s}"),
-            "updates": ("yellow", "{n} update{s}"),
-            "deletes": ("red", "{n} delete{s}"),
-            "keeps": ("dim", "{n} kept"),
-        }
-        entity_text = _format_count_summary(entity_counts, _ENTITY_LABELS, cc)
-        if entity_text:
-            print(f"\n  Entities: {entity_text}")
-        if delete_removed_entities:
-            prompt = "\nEntities marked 'delete' will be removed. Push entity changes? [y/N] "
-        else:
-            prompt = "\nPush entity changes? [y/N] "
-        try:
-            answer = input(prompt).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\nPush cancelled.")
-            return 1
-        if answer not in ("y", "yes"):
+        from bifrost.tui.entity_review import interactive_entity_review
+        selected_entities = await interactive_entity_review(entity_changes, has_deletions=delete_removed_entities)
+        if selected_entities is None:
             print("Push cancelled.")
             return 0
+        # If user deselected all delete actions, don't delete removed entities
+        if delete_removed_entities:
+            has_selected_deletes = any(e.get("action") == "delete" for e in selected_entities)
+            if not has_selected_deletes:
+                delete_removed_entities = False
 
     # Upload regular files and delete mirror files with progress TUI
     upload_items: list[tuple[str, tuple[str, str, bool]]] = [
@@ -3045,15 +3564,15 @@ async def _push_files(
     modified_files_response = push_result["modified_files"]
     manifest_files_response = push_result["manifest_files"]
 
-    if not _is_tty:
-        if errors:
-            print(f"\n  Errors ({len(errors)}):")
-            for error in errors:
-                print(f"    - {error}")
-        if warnings:
-            print(f"\n  Warnings ({len(warnings)}):")
-            for warning in warnings:
-                print(f"    - {warning}")
+    _cols = shutil.get_terminal_size((80, 24)).columns
+    if errors:
+        print(f"\n  Errors ({len(errors)}):")
+        for error in errors:
+            print(textwrap.fill(f"- {error}", width=_cols, initial_indent="    ", subsequent_indent="      "))
+    if warnings:
+        print(f"\n  Warnings ({len(warnings)}):")
+        for warning in warnings:
+            print(textwrap.fill(f"- {warning}", width=_cols, initial_indent="    ", subsequent_indent="      "))
 
     # Write back modified/manifest files from server response (e.g. forms/agents with resolved refs)
     writeback_data: dict[str, Any] = {}

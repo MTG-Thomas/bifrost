@@ -22,7 +22,7 @@ class _FileRow(Static):
 
     DEFAULT_CSS = """
     _FileRow {
-        height: 1;
+        height: auto;
         padding: 0 2;
     }
     """
