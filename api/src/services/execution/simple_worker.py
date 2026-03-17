@@ -334,6 +334,13 @@ def _clear_workspace_modules() -> None:
             # Unchanged — keep it
             modules_kept += 1
 
+    # If ANY workspace module changed, clear ALL workspace modules.
+    # Reason: kept modules may hold stale references to cleared modules
+    # via `from X import Y` bindings captured at import time.
+    if modules_to_clear:
+        modules_to_clear = [name for name, _ in workspace_modules]
+        modules_kept = 0
+
     # Clear namespace packages only if ALL their children were cleared
     cleared_set = set(modules_to_clear)
     for name, module in workspace_modules:
