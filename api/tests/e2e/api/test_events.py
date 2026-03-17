@@ -9,6 +9,8 @@ Tests the full event lifecycle:
 - Delivery retry
 """
 
+import hashlib
+import hmac
 import uuid
 
 import pytest
@@ -1161,3 +1163,144 @@ class TestScheduleSourceCRUD:
         assert sub["input_mapping"] is not None
         assert sub["input_mapping"]["report_type"] == "daily"
         assert sub["input_mapping"]["as_of_date"] == "{{ scheduled_time }}"
+
+
+# =============================================================================
+# TestWebhookAuthentication - Webhook HMAC Auth
+# =============================================================================
+
+
+def _hmac_sign(body: bytes, secret: str, prefix: str = "sha256=") -> str:
+    """Compute HMAC-SHA256 signature."""
+    sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return f"{prefix}{sig}"
+
+
+@pytest.mark.e2e
+class TestWebhookAuthentication:
+    """Tests for webhook HMAC signature verification."""
+
+    @pytest.fixture
+    def secret_source(self, e2e_client, platform_admin):
+        """Create a webhook source with a secret configured."""
+        source_name = f"E2E HMAC Webhook {uuid.uuid4().hex[:8]}"
+        secret = "test-webhook-secret-e2e"
+
+        response = e2e_client.post(
+            "/api/events/sources",
+            headers=platform_admin.headers,
+            json={
+                "name": source_name,
+                "source_type": "webhook",
+                "webhook": {
+                    "adapter_name": "generic",
+                    "config": {"secret": secret},
+                },
+            },
+        )
+        assert response.status_code == 201, f"Failed to create source: {response.text}"
+        source = response.json()
+        source["_secret"] = secret
+
+        yield source
+
+        e2e_client.delete(
+            f"/api/events/sources/{source['id']}",
+            headers=platform_admin.headers,
+        )
+
+    @pytest.fixture
+    def no_secret_source(self, e2e_client, platform_admin):
+        """Create a webhook source without a secret."""
+        source_name = f"E2E NoAuth Webhook {uuid.uuid4().hex[:8]}"
+
+        response = e2e_client.post(
+            "/api/events/sources",
+            headers=platform_admin.headers,
+            json={
+                "name": source_name,
+                "source_type": "webhook",
+                "webhook": {
+                    "adapter_name": "generic",
+                    "config": {},
+                },
+            },
+        )
+        assert response.status_code == 201, f"Failed to create source: {response.text}"
+        source = response.json()
+
+        yield source
+
+        e2e_client.delete(
+            f"/api/events/sources/{source['id']}",
+            headers=platform_admin.headers,
+        )
+
+    def test_webhook_with_valid_hmac_accepted(self, e2e_client, secret_source):
+        """Valid HMAC signature → 202 Accepted."""
+        callback_url = secret_source["webhook"]["callback_url"]
+        # Extract path from callback URL
+        from urllib.parse import urlparse
+
+        path = urlparse(callback_url).path
+
+        body = b'{"event": "test", "data": "hello"}'
+        secret = secret_source["_secret"]
+        signature = _hmac_sign(body, secret)
+
+        response = e2e_client.post(
+            path,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature-256": signature,
+            },
+        )
+        assert response.status_code == 202, f"Expected 202, got {response.status_code}: {response.text}"
+
+    def test_webhook_with_invalid_hmac_rejected(self, e2e_client, secret_source):
+        """Invalid HMAC signature → 401."""
+        callback_url = secret_source["webhook"]["callback_url"]
+        from urllib.parse import urlparse
+
+        path = urlparse(callback_url).path
+
+        body = b'{"event": "test"}'
+
+        response = e2e_client.post(
+            path,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature-256": "sha256=invalid_signature_value",
+            },
+        )
+        assert response.status_code == 401, f"Expected 401, got {response.status_code}: {response.text}"
+
+    def test_webhook_without_signature_rejected(self, e2e_client, secret_source):
+        """No signature header when secret is set → 401."""
+        callback_url = secret_source["webhook"]["callback_url"]
+        from urllib.parse import urlparse
+
+        path = urlparse(callback_url).path
+
+        response = e2e_client.post(
+            path,
+            content=b'{"event": "test"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 401, f"Expected 401, got {response.status_code}: {response.text}"
+
+    def test_webhook_no_secret_accepts_any(self, e2e_client, no_secret_source):
+        """No secret configured → 202 regardless of headers."""
+        callback_url = no_secret_source["webhook"]["callback_url"]
+        from urllib.parse import urlparse
+
+        path = urlparse(callback_url).path
+
+        response = e2e_client.post(
+            path,
+            content=b'{"event": "test"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 202, f"Expected 202, got {response.status_code}: {response.text}"

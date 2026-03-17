@@ -539,6 +539,11 @@ async def update_source(
         ws = source.webhook_source
         if request.webhook.config:
             ws.config = request.webhook.config
+            # Sync secret to state (adapter reads from state, not config)
+            if request.webhook.config.get("secret"):
+                new_state = dict(ws.state or {})
+                new_state["secret"] = request.webhook.config["secret"]
+                ws.state = new_state
         ws.updated_at = datetime.now(timezone.utc)
 
     # Update schedule-specific fields

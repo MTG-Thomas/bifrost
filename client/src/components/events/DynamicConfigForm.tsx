@@ -24,7 +24,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { AlertCircle, ChevronDown } from "lucide-react";
+import { AlertCircle, ChevronDown, Info } from "lucide-react";
 import {
 	Popover,
 	PopoverContent,
@@ -39,6 +39,11 @@ import {
 	CommandItem,
 	CommandList,
 } from "@/components/ui/command";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useDynamicValues } from "@/services/events";
 
@@ -60,6 +65,63 @@ export interface SchemaProperty {
 	items?: { type: string; enum?: string[] };
 	"x-dynamic-values"?: DynamicValuesSpec;
 	[key: string]: unknown; // Allow additional JSON Schema properties
+}
+
+// x-help extension for rich help content on fields
+interface HelpSpec {
+	text: string;
+	code?: string;
+}
+
+/**
+ * FieldLabel - Label with optional info popover for help content.
+ *
+ * Renders a label with a required marker and an (i) icon that opens
+ * a popover with help text and optional code example.
+ */
+function FieldLabel({
+	htmlFor,
+	title,
+	isRequired,
+	help,
+}: {
+	htmlFor?: string;
+	title: string;
+	isRequired?: boolean;
+	help?: HelpSpec;
+}) {
+	return (
+		<div className="flex items-center gap-1.5">
+			<Label htmlFor={htmlFor}>
+				{title}
+				{isRequired && <span className="text-destructive"> *</span>}
+			</Label>
+			{help && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							type="button"
+							className="text-muted-foreground hover:text-foreground transition-colors"
+							onClick={(e) => e.preventDefault()}
+						>
+							<Info className="h-3.5 w-3.5" />
+						</button>
+					</TooltipTrigger>
+					<TooltipContent
+						side="right"
+						className="max-w-xs text-left space-y-2 p-3"
+					>
+						<p>{help.text}</p>
+						{help.code && (
+							<pre className="bg-background/20 rounded px-2 py-1 text-[10px] font-mono whitespace-pre overflow-x-auto">
+								{help.code}
+							</pre>
+						)}
+					</TooltipContent>
+				</Tooltip>
+			)}
+		</div>
+	);
 }
 
 // Config schema structure
@@ -147,6 +209,7 @@ function DynamicField({
 	const [open, setOpen] = useState(false);
 
 	const dynamicSpec = property["x-dynamic-values"];
+	const help = property["x-help"] as HelpSpec | undefined;
 
 	// Check if dependencies are satisfied
 	const dependenciesSatisfied = useMemo(() => {
@@ -176,10 +239,11 @@ function DynamicField({
 
 		return (
 			<div className="space-y-2">
-				<Label>
-					{property.title || fieldName}
-					{isRequired && <span className="text-destructive"> *</span>}
-				</Label>
+				<FieldLabel
+					title={property.title || fieldName}
+					isRequired={isRequired}
+					help={help}
+				/>
 				<ToggleGroup
 					type="multiple"
 					value={arrayValue as string[]}
@@ -215,9 +279,35 @@ function DynamicField({
 					onCheckedChange={(checked) => onChange(checked)}
 				/>
 				<div className="space-y-1">
-					<Label htmlFor={fieldName} className="cursor-pointer">
-						{property.title || fieldName}
-					</Label>
+					<div className="flex items-center gap-1.5">
+						<Label htmlFor={fieldName} className="cursor-pointer">
+							{property.title || fieldName}
+						</Label>
+						{help && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<button
+										type="button"
+										className="text-muted-foreground hover:text-foreground transition-colors"
+										onClick={(e) => e.preventDefault()}
+									>
+										<Info className="h-3.5 w-3.5" />
+									</button>
+								</TooltipTrigger>
+								<TooltipContent
+									side="right"
+									className="max-w-xs text-left space-y-2 p-3"
+								>
+									<p>{help.text}</p>
+									{help.code && (
+										<pre className="bg-background/20 rounded px-2 py-1 text-[10px] font-mono whitespace-pre overflow-x-auto">
+											{help.code}
+										</pre>
+									)}
+								</TooltipContent>
+							</Tooltip>
+						)}
+					</div>
 					{property.description && (
 						<p className="text-xs text-muted-foreground">
 							{property.description}
@@ -232,10 +322,12 @@ function DynamicField({
 	if (property.enum && !dynamicSpec) {
 		return (
 			<div className="space-y-2">
-				<Label htmlFor={fieldName}>
-					{property.title || fieldName}
-					{isRequired && <span className="text-destructive"> *</span>}
-				</Label>
+				<FieldLabel
+					htmlFor={fieldName}
+					title={property.title || fieldName}
+					isRequired={isRequired}
+					help={help}
+				/>
 				<Select
 					value={(value as string) || ""}
 					onValueChange={(val) => onChange(val || undefined)}
@@ -268,12 +360,12 @@ function DynamicField({
 		if (!dependenciesSatisfied) {
 			return (
 				<div className="space-y-2">
-					<Label htmlFor={fieldName}>
-						{property.title || fieldName}
-						{isRequired && (
-							<span className="text-destructive"> *</span>
-						)}
-					</Label>
+					<FieldLabel
+						htmlFor={fieldName}
+						title={property.title || fieldName}
+						isRequired={isRequired}
+						help={help}
+					/>
 					<Input
 						id={fieldName}
 						disabled
@@ -292,7 +384,10 @@ function DynamicField({
 		if (isLoading) {
 			return (
 				<div className="space-y-2">
-					<Label>{property.title || fieldName}</Label>
+					<FieldLabel
+						title={property.title || fieldName}
+						help={help}
+					/>
 					<Skeleton className="h-10 w-full" />
 				</div>
 			);
@@ -303,12 +398,12 @@ function DynamicField({
 			return (
 				<div className="space-y-2">
 					<div className="flex items-center justify-between">
-						<Label htmlFor={fieldName}>
-							{property.title || fieldName}
-							{isRequired && (
-								<span className="text-destructive"> *</span>
-							)}
-						</Label>
+						<FieldLabel
+							htmlFor={fieldName}
+							title={property.title || fieldName}
+							isRequired={isRequired}
+							help={help}
+						/>
 						{error && !manualMode && (
 							<button
 								type="button"
@@ -360,12 +455,11 @@ function DynamicField({
 		return (
 			<div className="space-y-2">
 				<div className="flex items-center justify-between">
-					<Label>
-						{property.title || fieldName}
-						{isRequired && (
-							<span className="text-destructive"> *</span>
-						)}
-					</Label>
+					<FieldLabel
+						title={property.title || fieldName}
+						isRequired={isRequired}
+						help={help}
+					/>
 					<button
 						type="button"
 						className="text-xs text-muted-foreground hover:underline"
@@ -454,14 +548,19 @@ function DynamicField({
 	}
 
 	// Default: text input
+	const isPassword = property.format === "password";
+
 	return (
 		<div className="space-y-2">
-			<Label htmlFor={fieldName}>
-				{property.title || fieldName}
-				{isRequired && <span className="text-destructive"> *</span>}
-			</Label>
+			<FieldLabel
+				htmlFor={fieldName}
+				title={property.title || fieldName}
+				isRequired={isRequired}
+				help={help}
+			/>
 			<Input
 				id={fieldName}
+				type={isPassword ? "password" : "text"}
 				value={(value as string) || ""}
 				onChange={(e) => onChange(e.target.value || undefined)}
 				placeholder={
