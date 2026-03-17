@@ -18,7 +18,6 @@ import inspect
 import json
 import os
 import pathlib
-import shutil
 import sys
 import time
 import webbrowser
@@ -28,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import pathspec
+    from bifrost.tui.watch import WatchApp
 from uuid import uuid4
 
 import httpx
@@ -35,6 +35,8 @@ import httpx
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
 from bifrost.client import BifrostClient
+from bifrost.tui.file_select import interactive_file_select
+from bifrost.tui.progress import ProgressApp
 
 # Default ignore patterns applied even without a .gitignore file.
 # .bifrost/ is always force-included via negation.
@@ -1572,6 +1574,7 @@ async def _process_watch_batch(
     base_path: pathlib.Path,
     repo_prefix: str,
     state: _WatchState,
+    watch_app: "WatchApp | None" = None,
 ) -> None:
     """Process a batch of file changes and deletions."""
     deleted_count, deleted_rels = await _process_watch_deletes(
@@ -1593,10 +1596,21 @@ async def _process_watch_batch(
                 continue
 
     ts = datetime.now().strftime('%H:%M:%S')
-    for repo_path in sorted(push_files):
-        print(f"  [{ts}] File changed: {repo_path}", flush=True)
-    for rel_path in sorted(deleted_rels):
-        print(f"  [{ts}] File deleted: {rel_path}", flush=True)
+    if not watch_app:
+        for repo_path in sorted(push_files):
+            print(f"  [{ts}] File changed: {repo_path}", flush=True)
+        for rel_path in sorted(deleted_rels):
+            print(f"  [{ts}] File deleted: {rel_path}", flush=True)
+
+    # Log deletes that already completed (one row per file)
+    if deleted_rels:
+        for rel_path in sorted(deleted_rels):
+            if watch_app:
+                watch_app.log_delete(rel_path)
+            else:
+                if not push_files:
+                    # Already printed above for non-TUI
+                    pass
 
     if push_files:
         # Local manifest validation
@@ -1604,11 +1618,22 @@ async def _process_watch_batch(
         if has_manifest:
             val_errors = _validate_manifest_locally(base_path)
             if val_errors:
-                print(f"  [{ts}] Manifest invalid, push skipped:", flush=True)
-                for err in val_errors:
-                    print(f"    - {err}", flush=True)
+                if watch_app:
+                    watch_app.log_error(f"Manifest invalid, push skipped: {'; '.join(val_errors)}")
+                else:
+                    print(f"  [{ts}] Manifest invalid, push skipped:", flush=True)
+                    for err in val_errors:
+                        print(f"    - {err}", flush=True)
                 state.requeue(changes, deletes)
                 return
+
+        # Create per-file spinner rows in TUI
+        file_rows: dict[str, Any] = {}  # repo_path -> (batch_row, spinner_task)
+        if watch_app:
+            for rp in sorted(push_files):
+                row = watch_app.create_batch_row(f"Push {rp}")
+                stask = asyncio.create_task(watch_app.spin_row(row))
+                file_rows[rp] = (row, stask)
 
         # Separate .bifrost/ manifest files from regular files
         bifrost_watch_files, regular_watch_files = _separate_manifest_files(push_files)
@@ -1630,10 +1655,29 @@ async def _process_watch_batch(
                 })
                 if resp.status_code == 204:
                     watch_created += 1
+                    if rp in file_rows:
+                        row, stask = file_rows[rp]
+                        stask.cancel()
+                        row.freeze("success", "\u2713", f"Pushed {rp}")
                 else:
                     watch_errors.append(f"{rp}: HTTP {resp.status_code}")
+                    if rp in file_rows:
+                        row, stask = file_rows[rp]
+                        stask.cancel()
+                        row.freeze("error", "\u2717", f"Push failed {rp}: HTTP {resp.status_code}")
             except Exception as e:
                 watch_errors.append(f"{rp}: {e}")
+                if rp in file_rows:
+                    row, stask = file_rows[rp]
+                    stask.cancel()
+                    row.freeze("error", "\u2717", f"Push failed {rp}: {e}")
+
+        # Freeze any manifest file rows (they weren't uploaded individually)
+        for rp in bifrost_watch_files:
+            if rp in file_rows:
+                row, stask = file_rows[rp]
+                stask.cancel()
+                row.freeze("success", "\u2713", f"Pushed {rp}")
 
         # Import manifest if .bifrost/ files changed
         watch_warnings: list[str] = []
@@ -1655,28 +1699,44 @@ async def _process_watch_batch(
             except Exception as e:
                 watch_warnings.append(f"Manifest import failed: {e}")
 
-        ts = datetime.now().strftime('%H:%M:%S')
-        parts = []
-        total_written = watch_created
-        if total_written:
-            parts.append(f"{total_written} written")
-        if deleted_count:
-            parts.append(f"{deleted_count} deleted")
-        if bifrost_watch_files:
-            parts.append("manifest imported")
-        print(f"  [{ts}] Pushed \u2192 {', '.join(parts) if parts else 'no changes'}", flush=True)
+        # Update sync status
+        if watch_app and not watch_errors:
+            watch_app._last_sync = datetime.now().strftime("%H:%M:%S")
+            watch_app._update_status()
 
+        if not watch_app:
+            ts = datetime.now().strftime('%H:%M:%S')
+            parts = []
+            if watch_created:
+                parts.append(f"{watch_created} written")
+            if deleted_count:
+                parts.append(f"{deleted_count} deleted")
+            if bifrost_watch_files:
+                parts.append("manifest applied")
+            print(f"  [{ts}] \u2713 Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
+
+        # Log errors/warnings as separate rows
         if watch_errors:
             for error in watch_errors:
-                print(f"    Error: {error}", flush=True)
+                if watch_app:
+                    watch_app.log_error(error)
+                else:
+                    print(f"    Error: {error}", flush=True)
         if watch_warnings:
             for warning in watch_warnings:
-                print(f"    Warning: {warning}", flush=True)
+                if watch_app:
+                    watch_app.log_error(warning)
+                else:
+                    print(f"    Warning: {warning}", flush=True)
         deleted_entities = manifest_result.get("deleted_entities", [])
         if deleted_entities:
-            print(f"  [{ts}] Removed {len(deleted_entities)} entity(ies):", flush=True)
-            for de in deleted_entities:
-                print(f"    - {de}", flush=True)
+            msg = f"Removed {len(deleted_entities)} entity(ies): {', '.join(deleted_entities)}"
+            if watch_app:
+                watch_app.log_info(msg)
+            else:
+                print(f"  [{ts}] Removed {len(deleted_entities)} entity(ies):", flush=True)
+                for de in deleted_entities:
+                    print(f"    - {de}", flush=True)
 
         # Write back server files (pause watcher to avoid re-trigger)
         result = manifest_result
@@ -1763,6 +1823,7 @@ async def _process_incoming(
     entities: list[dict[str, Any]],
     base_path: pathlib.Path,
     repo_prefix: str,
+    watch_app: "WatchApp | None" = None,
 ) -> set[str]:
     """Process incoming changes from other sessions. Returns set of written absolute paths."""
     written_paths: set[str] = set()
@@ -1799,9 +1860,15 @@ async def _process_incoming(
                             pass
                     local_file.write_bytes(content)
                     written_paths.add(str(local_file))
-                    print(f"  [{ts}] \u2190 {user_name}: {rel}", flush=True)
+                    if watch_app:
+                        watch_app.log_pull(rel, user=user_name)
+                    else:
+                        print(f"  [{ts}] \u2190 {user_name}: {rel}", flush=True)
             except Exception as e:
-                print(f"  [{ts}] \u2190 Error pulling {repo_path}: {e}", flush=True)
+                if watch_app:
+                    watch_app.log_error(f"Error pulling {repo_path}: {e}")
+                else:
+                    print(f"  [{ts}] \u2190 Error pulling {repo_path}: {e}", flush=True)
 
     # Process incoming deletes
     for paths, user_name in deletes:
@@ -1817,14 +1884,26 @@ async def _process_incoming(
                 try:
                     local_file.unlink()
                     written_paths.add(str(local_file))
-                    print(f"  [{ts}] \u2190 {user_name} deleted: {rel}", flush=True)
+                    if watch_app:
+                        watch_app.log_delete(rel, user=user_name)
+                    else:
+                        print(f"  [{ts}] \u2190 {user_name} deleted: {rel}", flush=True)
                 except OSError as e:
-                    print(f"  [{ts}] \u2190 Error deleting {rel}: {e}", flush=True)
+                    if watch_app:
+                        watch_app.log_error(f"Error deleting {rel}: {e}")
+                    else:
+                        print(f"  [{ts}] \u2190 Error deleting {rel}: {e}", flush=True)
 
     # Process incoming entity changes — update local .bifrost/*.yaml
     if entities:
         from bifrost.manifest import MANIFEST_FILES
         import yaml
+
+        def _entity_log(msg: str) -> None:
+            if watch_app:
+                watch_app.log_pull(msg)
+            else:
+                print(f"  [{ts}] \u2190 {msg}", flush=True)
 
         # Map entity_type → manifest yaml filename
         entity_to_file = MANIFEST_FILES
@@ -1838,6 +1917,8 @@ async def _process_incoming(
             filename = entity_to_file.get(entity_type)
             if not filename or not entity_id:
                 continue
+
+            action_past = action + 'd' if action.endswith('e') else action + 'ed'
 
             yaml_path = bifrost_dir / filename
             try:
@@ -1863,7 +1944,7 @@ async def _process_incoming(
                             encoding="utf-8",
                         )
                         written_paths.add(str(yaml_path))
-                        print(f"  [{ts}] \u2190 {user_name} deleted {entity_type[:-1]} {entity_id}", flush=True)
+                        _entity_log(f"{user_name} deleted {entity_type[:-1]} {entity_id}")
                     elif data:
                         replaced = False
                         for i, entry in enumerate(section):
@@ -1880,9 +1961,9 @@ async def _process_incoming(
                             encoding="utf-8",
                         )
                         written_paths.add(str(yaml_path))
-                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id}", flush=True)
+                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id}")
                     else:
-                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id} (no data)", flush=True)
+                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id} (no data)")
                     continue
 
                 if isinstance(section, dict):
@@ -1896,7 +1977,7 @@ async def _process_incoming(
                                 encoding="utf-8",
                             )
                             written_paths.add(str(yaml_path))
-                            print(f"  [{ts}] \u2190 {user_name} deleted {entity_type[:-1]} {entity_id}", flush=True)
+                            _entity_log(f"{user_name} deleted {entity_type[:-1]} {entity_id}")
                     elif data:
                         section[entity_id] = data
                         existing_data[entity_type] = section
@@ -1906,14 +1987,120 @@ async def _process_incoming(
                             encoding="utf-8",
                         )
                         written_paths.add(str(yaml_path))
-                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id}", flush=True)
+                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id}")
                     else:
-                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id} (no data)", flush=True)
+                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id} (no data)")
 
             except Exception as e:
-                print(f"  [{ts}] \u2190 Error updating {filename}: {e}", flush=True)
+                if watch_app:
+                    watch_app.log_error(f"Error updating {filename}: {e}")
+                else:
+                    print(f"  [{ts}] \u2190 Error updating {filename}: {e}", flush=True)
 
     return written_paths
+
+
+async def _watch_loop(
+    path: pathlib.Path,
+    repo_prefix: str,
+    client: "BifrostClient",
+    state: _WatchState,
+    observer: Any,
+    handler: Any,
+    ws_task: "asyncio.Task[None] | None",
+    watch_app: "WatchApp | None" = None,
+) -> None:
+    """Core watch loop — runs either standalone or inside a WatchApp."""
+    heartbeat_interval = WATCH_HEARTBEAT_SECONDS
+    last_heartbeat = asyncio.get_event_loop().time()
+    consecutive_errors = 0
+
+    try:
+        while True:
+            await asyncio.sleep(0.5)
+
+            # Restart observer if thread died
+            if not observer.is_alive():
+                if watch_app:
+                    watch_app.log_error("File watcher died, attempting restart...")
+                else:
+                    print("  \u26a0 File watcher died, attempting restart...", flush=True)
+                try:
+                    from watchdog.observers import Observer
+                    observer = Observer()
+                    observer.schedule(handler, str(path), recursive=True)
+                    observer.start()
+                    if watch_app:
+                        watch_app.log_success("File watcher restarted")
+                    else:
+                        print("  \u2713 File watcher restarted", flush=True)
+                except Exception as e:
+                    if watch_app:
+                        watch_app.log_error(f"Could not restart file watcher: {e}")
+                    else:
+                        print(f"  \u2717 Could not restart file watcher: {e}", file=sys.stderr, flush=True)
+                    break
+
+            changes, deletes = state.drain()
+            if changes or deletes:
+                try:
+                    await _process_watch_batch(client, changes, deletes, path, repo_prefix, state, watch_app=watch_app)
+                    consecutive_errors = 0
+                except KeyboardInterrupt:
+                    raise
+                except Exception as batch_err:
+                    consecutive_errors += 1
+                    if watch_app:
+                        watch_app.log_error(f"Push error: {batch_err}")
+                    else:
+                        ts = datetime.now().strftime('%H:%M:%S')
+                        print(f"  [{ts}] Push error: {batch_err}", flush=True)
+                    state.requeue(changes, deletes)
+                    if consecutive_errors >= 10:
+                        if watch_app:
+                            watch_app.log_error(f"{consecutive_errors} consecutive errors, backing off to 5s")
+                        else:
+                            ts = datetime.now().strftime('%H:%M:%S')
+                            print(f"  [{ts}] \u26a0 {consecutive_errors} consecutive errors, backing off to 5s", flush=True)
+                        await asyncio.sleep(5)
+
+            # Process incoming changes from other sessions
+            inc_files, inc_deletes, inc_entities = state.drain_incoming()
+            if inc_files or inc_deletes or inc_entities:
+                state.writeback_paused = True
+                wb_paths: set[str] = set()
+                try:
+                    wb_paths = await _process_incoming(
+                        client, inc_files, inc_deletes, inc_entities, path, repo_prefix,
+                        watch_app=watch_app,
+                    )
+                finally:
+                    await asyncio.sleep(0.2)
+                    state.discard_writeback_paths(wb_paths)
+                    state.writeback_paused = False
+
+            # Heartbeat
+            now = asyncio.get_event_loop().time()
+            if now - last_heartbeat > heartbeat_interval:
+                try:
+                    await client.post("/api/files/watch", json={
+                        "action": "heartbeat", "prefix": repo_prefix, "session_id": state.session_id,
+                    })
+                except Exception:
+                    pass
+                last_heartbeat = now
+
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        if ws_task and not ws_task.done():
+            ws_task.cancel()
+            try:
+                await ws_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        observer.stop()
+        observer.join()
 
 
 async def _watch_and_push(
@@ -1943,7 +2130,8 @@ async def _watch_and_push(
         pass
 
     # Initial full push
-    print(f"Initial push of {path}...", flush=True)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(f"Initial push of {path}...", flush=True)
     await _push_files(str(path), repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client)
 
     # Set up file watcher
@@ -1953,7 +2141,7 @@ async def _watch_and_push(
     observer.start()
 
     # Start WebSocket listener for incoming changes from other sessions
-    ws_task: asyncio.Task | None = None
+    ws_task: asyncio.Task[None] | None = None
     try:
         ws_task = asyncio.create_task(
             _ws_listener(state, client)
@@ -1961,81 +2149,17 @@ async def _watch_and_push(
     except Exception:
         pass  # WebSocket listener is best-effort
 
-    print(f"Watching {path} for changes... (Ctrl+C to stop)", flush=True)
-    print(f"  Bidirectional sync enabled (session {state.session_id[:8]})", flush=True)
-
-    heartbeat_interval = WATCH_HEARTBEAT_SECONDS
-    last_heartbeat = asyncio.get_event_loop().time()
-    consecutive_errors = 0
-
-    try:
-        while True:
-            await asyncio.sleep(0.5)
-
-            # Restart observer if thread died
-            if not observer.is_alive():
-                print("  \u26a0 File watcher died, attempting restart...", flush=True)
-                try:
-                    observer = Observer()
-                    observer.schedule(handler, str(path), recursive=True)
-                    observer.start()
-                    print("  \u2713 File watcher restarted", flush=True)
-                except Exception as e:
-                    print(f"  \u2717 Could not restart file watcher: {e}", file=sys.stderr, flush=True)
-                    break
-
-            changes, deletes = state.drain()
-            if changes or deletes:
-                try:
-                    await _process_watch_batch(client, changes, deletes, path, repo_prefix, state)
-                    consecutive_errors = 0
-                except KeyboardInterrupt:
-                    raise
-                except Exception as batch_err:
-                    consecutive_errors += 1
-                    ts = datetime.now().strftime('%H:%M:%S')
-                    print(f"  [{ts}] Push error: {batch_err}", flush=True)
-                    state.requeue(changes, deletes)
-                    if consecutive_errors >= 10:
-                        print(f"  [{ts}] \u26a0 {consecutive_errors} consecutive errors, backing off to 5s", flush=True)
-                        await asyncio.sleep(5)
-
-            # Process incoming changes from other sessions
-            inc_files, inc_deletes, inc_entities = state.drain_incoming()
-            if inc_files or inc_deletes or inc_entities:
-                state.writeback_paused = True
-                wb_paths: set[str] = set()
-                try:
-                    wb_paths = await _process_incoming(
-                        client, inc_files, inc_deletes, inc_entities, path, repo_prefix,
-                    )
-                finally:
-                    await asyncio.sleep(0.2)
-                    state.discard_writeback_paths(wb_paths)
-                    state.writeback_paused = False
-
-            # Heartbeat
-            now = asyncio.get_event_loop().time()
-            if now - last_heartbeat > heartbeat_interval:
-                try:
-                    await client.post("/api/files/watch", json={
-                        "action": "heartbeat", "prefix": repo_prefix, "session_id": state.session_id,
-                    })
-                except Exception:
-                    pass
-                last_heartbeat = now
-
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if ws_task and not ws_task.done():
-            ws_task.cancel()
-            try:
-                await ws_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        observer.stop()
-        observer.join()
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from bifrost.tui.watch import WatchApp
+        app = WatchApp(str(path), state.session_id)
+        app.set_work(
+            _watch_loop(path, repo_prefix, client, state, observer, handler, ws_task, watch_app=app)
+        )
+        await app.run_async()
+    else:
+        print(f"Watching {path} for changes... (Ctrl+C to stop)", flush=True)
+        print(f"  Bidirectional sync enabled (session {state.session_id[:8]})", flush=True)
+        await _watch_loop(path, repo_prefix, client, state, observer, handler, ws_task, watch_app=None)
 
     return 0
 
@@ -2205,17 +2329,6 @@ def _format_file_time(file_path: pathlib.Path) -> str:
         return "unknown"
 
 
-def _print_progress(current: int, total: int, label: str) -> None:
-    """Print a single-line progress counter that overwrites itself."""
-    cols = shutil.get_terminal_size().columns
-    text = f"  [{current}/{total}] {label}"
-    # Truncate to terminal width and pad to clear previous line
-    sys.stdout.write(f"\r{text[:cols]:<{cols}}")
-    sys.stdout.flush()
-    if current >= total:
-        sys.stdout.write("\n")
-
-
 def _format_server_time(iso_str: str) -> str:
     """Format an ISO 8601 timestamp for display (short format)."""
     try:
@@ -2232,142 +2345,6 @@ def _strip_repo_prefix(repo_path: str, repo_prefix: str) -> str:
     if repo_prefix and repo_path.startswith(repo_prefix):
         return repo_path[len(repo_prefix):]
     return repo_path
-
-
-def _interactive_file_select(
-    items: list[dict[str, str]],
-    columns: list[tuple[str, str, int]],
-    prompt_text: str = "Select files to pull",
-) -> list[dict[str, str]] | None:
-    """Interactive multi-select table for file selection.
-
-    Args:
-        items: List of dicts, each representing a row
-        columns: List of (key, header, width) tuples for display
-        prompt_text: Text shown above the table
-
-    Returns:
-        Selected items, or None if cancelled. Returns all items if not a TTY.
-    """
-    if not items:
-        return []
-
-    # Non-TTY fallback: return all items
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return items
-
-    import tty
-    import termios
-
-    c = _get_colors()
-    selected = [True] * len(items)
-    cursor = 0
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-
-    import re
-    _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
-
-    def _trunc_and_pad(s: str, width: int) -> str:
-        """Truncate and pad a string to exact visible width, preserving ANSI codes."""
-        stripped = _ansi_re.sub("", s)
-        if len(stripped) <= width:
-            return s + " " * (width - len(stripped))
-        # Need to truncate: walk the original string tracking visible chars
-        result: list[str] = []
-        vis = 0
-        i = 0
-        while i < len(s) and vis < width:
-            m = _ansi_re.match(s, i)
-            if m:
-                result.append(m.group())
-                i = m.end()
-            else:
-                result.append(s[i])
-                vis += 1
-                i += 1
-        return "".join(result)
-
-    def _render() -> list[str]:
-        """Build display lines."""
-        lines: list[str] = []
-        lines.append("")
-        lines.append(f"  {prompt_text}:")
-        lines.append("  (↑/↓ navigate, Space toggle, a=all, n=none, Enter confirm, Esc cancel)")
-        lines.append("")
-
-        # Header
-        hdr = "  [ ]  "
-        for _, header, width in columns:
-            hdr += header.ljust(width) + "  "
-        lines.append(hdr)
-        lines.append("  " + "─" * (len(hdr) - 2))
-
-        # Rows
-        for i, item in enumerate(items):
-            check = f"{c.green}[✓]{c.reset}" if selected[i] else "[ ]"
-            prefix = f"  {check}  "
-            row = ""
-            for key, _, width in columns:
-                val = item.get(key) or ""
-                row += _trunc_and_pad(val, width) + "  "
-            if i == cursor:
-                lines.append(f"{c.bold}{prefix}{row}{c.reset}")
-            else:
-                lines.append(f"{prefix}{row}")
-
-        sel_count = sum(selected)
-        lines.append("")
-        lines.append(f"  {sel_count}/{len(items)} selected")
-        return lines
-
-    prev_line_count = 0
-    try:
-        tty.setraw(fd)
-
-        # Initial render
-        sys.stdout.write("\n")  # ensure we start on a new line
-        lines = _render()
-        sys.stdout.write("\n".join(lines))
-        sys.stdout.flush()
-        prev_line_count = len(lines)
-
-        while True:
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":  # Escape sequence
-                seq = sys.stdin.read(2)
-                if seq == "[A":  # Up
-                    cursor = max(0, cursor - 1)
-                elif seq == "[B":  # Down
-                    cursor = min(len(items) - 1, cursor + 1)
-                elif seq == "" or seq[0] != "[":  # Bare Esc
-                    return None
-            elif ch == " ":  # Toggle
-                selected[cursor] = not selected[cursor]
-            elif ch in ("\r", "\n"):  # Enter = confirm
-                break
-            elif ch == "a":  # Select all
-                selected[:] = [True] * len(items)
-            elif ch == "n":  # Select none
-                selected[:] = [False] * len(items)
-            elif ch == "q":  # Quit
-                return None
-            elif ch == "\x03":  # Ctrl-C
-                return None
-
-            # Redraw: move cursor up and clear
-            sys.stdout.write(f"\x1b[{prev_line_count}A")
-            sys.stdout.write("\x1b[J")  # Clear from cursor to end
-            lines = _render()
-            sys.stdout.write("\n".join(lines))
-            sys.stdout.flush()
-            prev_line_count = len(lines)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
-    return [item for item, sel in zip(items, selected) if sel]
 
 
 async def _pull_from_server(
@@ -2463,14 +2440,6 @@ async def _pull_from_server(
         if local_hash != content_hash:
             filtered_manifest_files[filename] = content
 
-    # Find local-only files (deleted from platform)
-    server_paths = set(server_metadata.keys())
-    deleted = [
-        p for p in local_hashes
-        if p not in server_paths
-        and not _is_bifrost_path(p)
-    ]
-
     # Files to delete when --mirror is used
     files_to_delete: list[str] = []
     if mirror:
@@ -2495,32 +2464,27 @@ async def _pull_from_server(
             rel for rel in files_to_write if (local_root / rel).exists()
         ])
 
-        # Show git warnings before selector
+        # Build pull prompt text with git safety info
+        pull_prompt = "Select files to pull"
         if uncommitted:
-            c = _get_colors()
-            print(f"\n  {c.red}⚠ {len(uncommitted)} file(s) have uncommitted git changes (overwrite = lost work):{c.reset}")
-            for f in sorted(uncommitted):
-                print(f"  {c.red}  {f}{c.reset}")
-        elif is_git:
-            print("\n  Git is enabled, so overwritten versions can be recovered from git history.")
-        else:
-            print("\n  Git is not detected — overwritten changes will be irreversibly lost.")
+            pull_prompt = f"Select files to pull — {len(uncommitted)} with uncommitted changes"
+        elif not is_git:
+            pull_prompt = "Select files to pull — no git, overwrites are permanent"
 
-        c = _get_colors()
         selector_items: list[dict[str, str]] = []
         for rel in files_to_write:
             repo_path_item = f"{repo_prefix}/{rel}" if repo_prefix else rel
             server_info = server_metadata.get(repo_path_item)
             local_path = local_root / rel
             is_new = not local_path.exists()
-            status = f"{c.green}new{c.reset}" if is_new else f"{c.yellow}changed{c.reset}"
+            status = "new" if is_new else "changed"
             local_ts = _format_file_time(local_path) if local_path.exists() else ""
             server_ts = ""
             author = ""
             if isinstance(server_info, dict):
                 server_ts = _format_server_time(server_info.get("last_modified") or "")
                 author = server_info.get("updated_by") or ""
-            warn = " ⚠" if rel in uncommitted else ""
+            warn = " \u26a0" if rel in uncommitted else ""
             selector_items.append({
                 "rel": rel, "repo_path": repo_path_item,
                 "status": status + warn, "local_time": local_ts,
@@ -2533,11 +2497,11 @@ async def _pull_from_server(
             local_ts = _format_file_time(local_root / rel) if (local_root / rel).exists() else ""
             selector_items.append({
                 "rel": rel, "repo_path": repo_path_item,
-                "status": f"{c.red}delete{c.reset}", "local_time": local_ts,
+                "status": "delete", "local_time": local_ts,
                 "server_time": "", "author": "",
                 "_action": "delete",
             })
-        selected = _interactive_file_select(
+        selected = await interactive_file_select(
             selector_items,
             columns=[
                 ("rel", "File", 40),
@@ -2546,7 +2510,7 @@ async def _pull_from_server(
                 ("server_time", "Platform", 16),
                 ("author", "Author", 20),
             ],
-            prompt_text="Select files to pull",
+            prompt_text=pull_prompt,
         )
         if selected is None:
             print("Pull cancelled.")
@@ -2562,84 +2526,84 @@ async def _pull_from_server(
             print("No files selected.")
             return True
 
-    # 5. Download files one at a time with progress
-    code_written = 0
-    total = len(files_to_download)
-    for idx, repo_path in enumerate(files_to_download, 1):
-        rel = _strip_repo_prefix(repo_path, repo_prefix)
-        _print_progress(idx, total, f"Pulling {rel}")
-        try:
+    # 5. Download files and delete mirror files with progress TUI
+    download_items: list[tuple[str, tuple[str, bool]]] = [
+        (_strip_repo_prefix(rp, repo_prefix), (rp, True))
+        for rp in files_to_download
+    ]
+    pull_delete_items: list[tuple[str, tuple[str, bool]]] = [
+        (rel, (rel, False))
+        for rel in (files_to_delete if mirror else [])
+    ]
+    all_pull_items = download_items + pull_delete_items
+
+    async def _do_one_pull(work_data: tuple[str, bool], name: str) -> None:
+        path_val, is_download = work_data
+        if is_download:
             resp = await client.post("/api/files/read", json={
-                "path": repo_path,
-                "mode": "cloud",
-                "location": "workspace",
-                "binary": True,
+                "path": path_val,
+                "mode": "cloud", "location": "workspace", "binary": True,
             })
             if resp.status_code == 200:
                 file_data = resp.json()
                 content_bytes = base64.b64decode(file_data["content"])
-                local_path = local_root / rel
+                local_path = local_root / name
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 local_path.write_bytes(content_bytes)
-                code_written += 1
             else:
-                print(f"  Warning: failed to read {repo_path}: HTTP {resp.status_code}", file=sys.stderr)
-        except Exception as e:
-            print(f"  Warning: failed to read {repo_path}: {e}", file=sys.stderr)
-
-    # Delete local-only files when --mirror
-    mirror_deleted = 0
-    if mirror and files_to_delete:
-        for del_idx, rel in enumerate(files_to_delete, 1):
-            target = local_root / rel
+                raise RuntimeError(f"HTTP {resp.status_code}")
+        else:
+            target = local_root / path_val
             if target.exists():
                 target.unlink()
-                mirror_deleted += 1
-                if include_code_files:
-                    _print_progress(del_idx, len(files_to_delete), f"Deleting {rel}")
 
-    # 6. Write manifest files
-    bifrost_dir = _find_bifrost_dir(local_root)
-    manifest_dir = bifrost_dir if bifrost_dir.exists() else local_root / ".bifrost"
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_written = 0
-    for filename, content in filtered_manifest_files.items():
-        local_path = manifest_dir / filename
-        local_path.write_text(content, encoding="utf-8")
-        manifest_written += 1
+    async def _post_pull(file_errors: list[str]) -> str:
+        """Write manifest files and compute summary — runs inside progress TUI."""
+        pull_error_names = {e.split(":")[0] for e in file_errors}
+        n_written = sum(1 for name, _ in download_items if name not in pull_error_names)
+        n_mirror_deleted = sum(1 for name, _ in pull_delete_items if name not in pull_error_names)
 
-    # Print summary
-    if include_code_files:
-        if code_written:
-            print(f"  \u2713 Downloaded {code_written} file(s)")
-        if manifest_written:
-            print(f"  Wrote {manifest_written} manifest file(s)")
-        if mirror_deleted:
-            print(f"  Deleted {mirror_deleted} local file(s)")
+        # Write manifest files
+        bifrost_dir = _find_bifrost_dir(local_root)
+        m_dir = bifrost_dir if bifrost_dir.exists() else local_root / ".bifrost"
+        m_dir.mkdir(parents=True, exist_ok=True)
+        m_written = 0
+        for filename, m_content in filtered_manifest_files.items():
+            m_path = m_dir / filename
+            m_path.write_text(m_content, encoding="utf-8")
+            m_written += 1
 
-        # Informational: local files not on platform (skip if --mirror already deleted them)
-        local_only = [
-            p for p in local_hashes
-            if p not in server_metadata
-            and not _is_bifrost_path(p)
-        ] if not mirror else []
-        if local_only:
-            print(f"\n  {len(local_only)} local file(s) not on platform (push to deploy):")
-            for p in sorted(local_only)[:10]:
-                print(f"    {p}")
-            if len(local_only) > 10:
-                print(f"    ... and {len(local_only) - 10} more")
+        parts = []
+        if n_written:
+            parts.append(f"{n_written} downloaded")
+        if m_written:
+            parts.append(f"{m_written} manifest")
+        if n_mirror_deleted:
+            parts.append(f"{n_mirror_deleted} deleted")
+        return ", ".join(parts) if parts else "No changes"
 
-        # Informational: platform files not local
-        if deleted:
-            print(f"\n  {len(deleted)} local file(s) not found on platform:")
-            for p in sorted(deleted)[:10]:
-                print(f"    {p}")
-            if len(deleted) > 10:
-                print(f"    ... and {len(deleted) - 10} more")
+    pull_errors: list[str] = []
+    _pull_is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    if all_pull_items and _pull_is_tty:
+        app = ProgressApp("Pulling files", all_pull_items, _do_one_pull, post_fn=_post_pull)
+        pull_errors = await app.run_async() or []
+    elif all_pull_items:
+        for name, data in all_pull_items:
+            try:
+                await _do_one_pull(data, name)
+            except Exception as e:
+                pull_errors.append(f"{name}: {e}")
+                print(f"  Warning: {name}: {e}", file=sys.stderr)
+        summary = await _post_pull(pull_errors)
+        print(f"  \u2713 {summary}")
     else:
-        if manifest_written:
-            print(f"  Updated {manifest_written} manifest file(s) from server.")
+        # No file items but maybe manifest-only changes
+        await _post_pull([])
+        if not _pull_is_tty and include_code_files:
+            pull_error_names = {e.split(":")[0] for e in pull_errors}
+            code_written = sum(1 for name, _ in download_items if name not in pull_error_names)
+            if code_written:
+                print(f"  \u2713 Downloaded {code_written} file(s)")
 
     return True
 
@@ -2833,12 +2797,14 @@ async def _push_files(
         entity_changes = entity_diff_result.get("entity_changes", [])
 
     scan_count = len(regular_files)
-    if repo_prefix:
-        print(f"Scanning {scan_count} file(s) in {repo_prefix}/...")
-    else:
-        print(f"Scanning {scan_count} file(s)...")
-    if skipped:
-        print(f"  (skipped {skipped} unreadable file(s))")
+    _is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    if not _is_tty or force:
+        if repo_prefix:
+            print(f"Scanning {scan_count} file(s) in {repo_prefix}/...")
+        else:
+            print(f"Scanning {scan_count} file(s)...")
+        if skipped:
+            print(f"  (skipped {skipped} unreadable file(s))")
 
     # Fetch server file metadata for diff
     server_metadata: dict[str, dict[str, str]] = {}
@@ -2901,13 +2867,12 @@ async def _push_files(
 
     # Interactive file selector (replaces table + y/N prompt)
     if has_file_changes and not force:
-        cc = _get_colors()
         selector_items: list[dict[str, str]] = []
         for repo_path_item in files_to_upload:
             rel = _strip_repo_prefix(repo_path_item, repo_prefix)
             server_info = server_metadata.get(repo_path_item)
             is_new = server_info is None
-            status = f"{cc.green}new{cc.reset}" if is_new else f"{cc.yellow}changed{cc.reset}"
+            status = "new" if is_new else "changed"
             local_ts = _format_file_time(path / rel)
             server_ts = ""
             author = ""
@@ -2930,11 +2895,14 @@ async def _push_files(
                 author = server_info.get("updated_by") or ""
             selector_items.append({
                 "rel": rel, "repo_path": server_path_item,
-                "status": f"{cc.red}delete{cc.reset}", "local_time": "",
+                "status": "delete", "local_time": "",
                 "server_time": server_ts, "author": author,
                 "_action": "delete",
             })
-        selected = _interactive_file_select(
+        push_subtitle = f"Scanned {scan_count} file(s), {unchanged} unchanged"
+        if skipped:
+            push_subtitle += f", {skipped} skipped"
+        selected = await interactive_file_select(
             selector_items,
             columns=[
                 ("rel", "File", 40),
@@ -2944,6 +2912,7 @@ async def _push_files(
                 ("author", "Author", 20),
             ],
             prompt_text="Select files to push",
+            subtitle_text=push_subtitle,
         )
         if selected is None:
             print("Push cancelled.")
@@ -2981,105 +2950,110 @@ async def _push_files(
             print("Push cancelled.")
             return 0
 
-    # Upload regular files one at a time with progress
-    created = 0
-    updated = 0
-    errors: list[str] = []
-    total = len(files_to_upload)
+    # Upload regular files and delete mirror files with progress TUI
+    upload_items: list[tuple[str, tuple[str, str, bool]]] = [
+        (_strip_repo_prefix(rp, repo_prefix), (rp, content, True))
+        for rp, content in files_to_upload.items()
+    ]
+    delete_items: list[tuple[str, tuple[str, str, bool]]] = [
+        (_strip_repo_prefix(sp, repo_prefix), (sp, "", False))
+        for sp in files_to_delete_paths
+    ]
+    all_progress_items = upload_items + delete_items
 
-    for idx, (repo_path, content) in enumerate(files_to_upload.items(), 1):
-        rel = _strip_repo_prefix(repo_path, repo_prefix)
-        _print_progress(idx, total, f"Pushing {rel}")
-        is_new = repo_path not in server_metadata
-        try:
+    async def _do_one_push(work_data: tuple[str, str, bool], name: str) -> None:
+        rp, content, is_upload = work_data
+        if is_upload:
             resp = await client.post("/api/files/write", json={
-                "path": repo_path,
-                "content": content,
-                "mode": "cloud",
-                "location": "workspace",
-                "binary": True,
+                "path": rp, "content": content,
+                "mode": "cloud", "location": "workspace", "binary": True,
             })
-            if resp.status_code == 204:
-                if is_new:
-                    created += 1
-                else:
-                    updated += 1
-            else:
-                errors.append(f"{repo_path}: HTTP {resp.status_code}")
-        except Exception as e:
-            errors.append(f"{repo_path}: {e}")
+            if resp.status_code != 204:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+        else:
+            resp = await client.post("/api/files/delete", json={
+                "path": rp, "mode": "cloud", "location": "workspace",
+            })
+            if resp.status_code != 204:
+                raise RuntimeError(f"HTTP {resp.status_code}")
 
-    # Import manifest via dedicated endpoint (sends .bifrost/ files inline)
-    warnings: list[str] = []
-    manifest_applied = False
-    modified_files_response: dict[str, str] = {}
-    manifest_files_response: dict[str, str] = {}
+    # Shared state for post-processing results (manifest import)
+    push_result: dict[str, Any] = {
+        "warnings": [],
+        "manifest_applied": False,
+        "modified_files": {},
+        "manifest_files": {},
+    }
 
-    if has_manifest:
-        try:
-            import_payload: dict[str, Any] = {"files": bifrost_files}
-            if delete_removed_entities:
-                import_payload["delete_removed_entities"] = True
-            resp = await client.post("/api/files/manifest/import", json=import_payload)
-            if resp.status_code == 200:
-                manifest_data = resp.json()
-                manifest_applied = manifest_data.get("applied", False)
-                warnings = manifest_data.get("warnings", [])
-                modified_files_response = manifest_data.get("modified_files", {})
-                manifest_files_response = manifest_data.get("manifest_files", {})
-                # Print deleted entities summary
-                deleted_entities = manifest_data.get("deleted_entities", [])
-                if deleted_entities:
-                    print(f"  Removed {len(deleted_entities)} entity(ies):")
-                    for de in deleted_entities:
-                        print(f"    - {de}")
-            else:
-                warnings.append(f"Manifest import failed: HTTP {resp.status_code}")
-        except Exception as e:
-            warnings.append(f"Manifest import failed: {e}")
+    async def _post_push(file_errors: list[str]) -> str:
+        """Run manifest import and compute summary — runs inside progress TUI."""
+        error_names = {e.split(":")[0] for e in file_errors}
+        n_created = sum(1 for name, (rp, _, is_up) in upload_items if name not in error_names and is_up and rp not in server_metadata)
+        n_updated = sum(1 for name, (rp, _, is_up) in upload_items if name not in error_names and is_up and rp in server_metadata)
+        n_deleted = sum(1 for name, _ in delete_items if name not in error_names)
 
-    # Delete server-only files (--mirror)
-    deleted = 0
-    if files_to_delete_paths:
-        for del_idx, server_path in enumerate(files_to_delete_paths, 1):
-            rel = _strip_repo_prefix(server_path, repo_prefix)
-            _print_progress(del_idx, len(files_to_delete_paths), f"Deleting {rel}")
+        # Import manifest
+        if has_manifest:
             try:
-                resp = await client.post("/api/files/delete", json={
-                    "path": server_path,
-                    "mode": "cloud",
-                    "location": "workspace",
-                })
-                if resp.status_code == 204:
-                    deleted += 1
+                import_payload: dict[str, Any] = {"files": bifrost_files}
+                if delete_removed_entities:
+                    import_payload["delete_removed_entities"] = True
+                resp = await client.post("/api/files/manifest/import", json=import_payload)
+                if resp.status_code == 200:
+                    manifest_data = resp.json()
+                    push_result["manifest_applied"] = manifest_data.get("applied", False)
+                    push_result["warnings"] = manifest_data.get("warnings", [])
+                    push_result["modified_files"] = manifest_data.get("modified_files", {})
+                    push_result["manifest_files"] = manifest_data.get("manifest_files", {})
                 else:
-                    errors.append(f"delete {server_path}: HTTP {resp.status_code}")
+                    push_result["warnings"].append(f"Manifest import failed: HTTP {resp.status_code}")
             except Exception as e:
-                errors.append(f"delete {server_path}: {e}")
+                push_result["warnings"].append(f"Manifest import failed: {e}")
 
-    # Print summary
-    parts = []
-    if created:
-        parts.append(f"{created} created")
-    if updated:
-        parts.append(f"{updated} updated")
-    if deleted:
-        parts.append(f"{deleted} deleted")
-    if unchanged:
-        parts.append(f"{unchanged} unchanged")
-    if has_manifest and manifest_applied and has_entity_changes:
-        parts.append("manifest applied")
-    print(f"  \u2713 {', '.join(parts) if parts else 'No changes'}")
+        parts = []
+        if n_created:
+            parts.append(f"{n_created} created")
+        if n_updated:
+            parts.append(f"{n_updated} updated")
+        if n_deleted:
+            parts.append(f"{n_deleted} deleted")
+        if unchanged:
+            parts.append(f"{unchanged} unchanged")
+        if has_manifest and push_result["manifest_applied"] and has_entity_changes:
+            parts.append("manifest applied")
+        summary = ", ".join(parts) if parts else "No changes"
+        if push_result["warnings"]:
+            summary += f" ({len(push_result['warnings'])} warning(s))"
+        return summary
 
-    if errors:
-        print(f"\n  Errors ({len(errors)}):")
-        for error in errors:
-            print(f"    - {error}")
+    errors: list[str] = []
+    if all_progress_items and sys.stdin.isatty() and sys.stdout.isatty():
+        app = ProgressApp("Pushing files", all_progress_items, _do_one_push, post_fn=_post_push)
+        errors = await app.run_async() or []
+    elif all_progress_items:
+        for name, data in all_progress_items:
+            try:
+                await _do_one_push(data, name)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+                print(f"  Error: {name}: {e}", file=sys.stderr)
+        # Non-TTY: run post-push inline and print summary
+        summary = await _post_push(errors)
+        print(f"  \u2713 {summary}")
 
-    if warnings:
-        print(f"\n  Warnings ({len(warnings)}):")
-        for warning in warnings:
-            print(f"    - {warning}")
+    warnings = push_result["warnings"]
+    modified_files_response = push_result["modified_files"]
+    manifest_files_response = push_result["manifest_files"]
+
+    if not _is_tty:
+        if errors:
+            print(f"\n  Errors ({len(errors)}):")
+            for error in errors:
+                print(f"    - {error}")
+        if warnings:
+            print(f"\n  Warnings ({len(warnings)}):")
+            for warning in warnings:
+                print(f"    - {warning}")
 
     # Write back modified/manifest files from server response (e.g. forms/agents with resolved refs)
     writeback_data: dict[str, Any] = {}
