@@ -8,6 +8,10 @@ import { queryClient } from "./lib/queryClient";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { OrgScopeQueryInvalidator } from "./components/OrgScopeQueryInvalidator";
 import { configureMonaco } from "./lib/monaco-setup";
+import { initReactShim } from "./lib/esm-react-shim";
+
+// Expose platform React via import map so esm.sh packages use the same instance
+initReactShim();
 
 // Configure Monaco editor before React renders (sets up CDN paths for workers)
 configureMonaco();

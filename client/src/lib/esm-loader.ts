@@ -1,22 +1,30 @@
 /**
  * ESM Loader — loads npm packages from esm.sh CDN at runtime.
  *
- * Packages are loaded with React version pinning to minimize
- * compatibility issues with React-dependent packages.
+ * React-based packages use `?external=` so they emit bare `import "react"`
+ * specifiers, which the browser resolves via the import map injected by
+ * esm-react-shim.ts — guaranteeing a single React instance.
  */
-import React from "react";
 
-const REACT_VERSION = React.version;
 const ESM_SH = "https://esm.sh";
+
+const EXTERNAL_SPECIFIERS = [
+	"react",
+	"react-dom",
+	"react/jsx-runtime",
+	"react/jsx-dev-runtime",
+	"react-dom/client",
+].join(",");
 
 /** Module-level cache: loaded once per session */
 const moduleCache = new Map<string, Record<string, unknown>>();
 
 /**
- * Build esm.sh URL for a package, pinning React version.
+ * Build esm.sh URL for a package, externalizing React so the import map
+ * redirects to the platform's single React instance.
  */
 function buildUrl(name: string, version: string): string {
-	return `${ESM_SH}/${name}@${version}?deps=react@${REACT_VERSION},react-dom@${REACT_VERSION}`;
+	return `${ESM_SH}/${name}@${version}?external=${EXTERNAL_SPECIFIERS}`;
 }
 
 /**
