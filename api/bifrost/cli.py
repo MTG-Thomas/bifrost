@@ -1689,7 +1689,7 @@ async def _process_watch_batch(
                 state.writeback_paused = False
 
 
-async def _ws_listener(state: _WatchState, api_url: str, token: str) -> None:
+async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
     """Listen for file-activity WebSocket events from other sessions."""
     try:
         import websockets
@@ -1698,7 +1698,7 @@ async def _ws_listener(state: _WatchState, api_url: str, token: str) -> None:
         print("  Reinstall CLI: pipx install --force <url>", flush=True)
         return
 
-    ws_url = api_url.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url = client.api_url.replace("https://", "wss://").replace("http://", "ws://")
     ws_url += "/ws/connect?channels=file-activity"
     backoff = 1.0
     connected_once = False
@@ -1707,7 +1707,7 @@ async def _ws_listener(state: _WatchState, api_url: str, token: str) -> None:
         try:
             async with websockets.connect(
                 ws_url,
-                additional_headers={"Authorization": f"Bearer {token}"},
+                additional_headers={"Authorization": f"Bearer {client._access_token}"},
             ) as ws:
                 backoff = 1.0  # Reset on successful connect
                 if not connected_once:
@@ -1739,6 +1739,16 @@ async def _ws_listener(state: _WatchState, api_url: str, token: str) -> None:
         except asyncio.CancelledError:
             return
         except Exception as e:
+            # Handle token expiry (server sends close code 4001)
+            close_code = getattr(getattr(e, "rcvd", None), "code", None)
+            if close_code == 4001:
+                if await client._refresh_and_update():
+                    print("  WebSocket token refreshed — reconnecting", flush=True)
+                    backoff = 1.0
+                    continue
+                else:
+                    print("  WebSocket token expired and refresh failed — re-authenticate with `bifrost auth`", flush=True)
+                    return
             print(f"  WebSocket error: {e} — reconnecting in {backoff:.0f}s", flush=True)
             await asyncio.sleep(min(backoff, 30))
             backoff *= 2
@@ -1868,9 +1878,9 @@ async def _process_incoming(
                             encoding="utf-8",
                         )
                         written_paths.add(str(yaml_path))
-                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id}", flush=True)
+                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id}", flush=True)
                     else:
-                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id} (no data)", flush=True)
+                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id} (no data)", flush=True)
                     continue
 
                 if isinstance(section, dict):
@@ -1894,9 +1904,9 @@ async def _process_incoming(
                             encoding="utf-8",
                         )
                         written_paths.add(str(yaml_path))
-                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id}", flush=True)
+                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id}", flush=True)
                     else:
-                        print(f"  [{ts}] \u2190 {user_name} {action}d {entity_type[:-1]} {entity_id} (no data)", flush=True)
+                        print(f"  [{ts}] \u2190 {user_name} {action + 'd' if action.endswith('e') else action + 'ed'} {entity_type[:-1]} {entity_id} (no data)", flush=True)
 
             except Exception as e:
                 print(f"  [{ts}] \u2190 Error updating {filename}: {e}", flush=True)
@@ -1944,7 +1954,7 @@ async def _watch_and_push(
     ws_task: asyncio.Task | None = None
     try:
         ws_task = asyncio.create_task(
-            _ws_listener(state, client.api_url, client._access_token)
+            _ws_listener(state, client)
         )
     except Exception:
         pass  # WebSocket listener is best-effort
