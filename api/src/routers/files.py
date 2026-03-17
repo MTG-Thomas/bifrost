@@ -17,6 +17,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import Context, CurrentSuperuser
@@ -111,6 +112,7 @@ class FileListMetadataItem(BaseModel):
     path: str
     etag: str
     last_modified: str  # ISO 8601
+    updated_by: str | None = None
 
 
 class FileListResponse(BaseModel):
@@ -253,6 +255,15 @@ async def list_files_simple(
                 if not path.startswith(".git/")
             }
 
+            # Look up updated_by from file_index
+            from src.models.orm.file_index import FileIndex
+            fi_result = await db.execute(
+                select(FileIndex.path, FileIndex.updated_by).where(
+                    FileIndex.path.in_(list(s3_metadata.keys()))
+                )
+            )
+            author_lookup = {row.path: row.updated_by for row in fi_result.all()}
+
             return FileListResponse(
                 files=sorted(s3_metadata.keys()),
                 files_metadata=[
@@ -260,6 +271,7 @@ async def list_files_simple(
                         path=path,
                         etag=meta.etag,
                         last_modified=meta.last_modified.isoformat(),
+                        updated_by=author_lookup.get(path),
                     )
                     for path, meta in sorted(s3_metadata.items())
                 ],

@@ -3410,22 +3410,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
         options?: never;
         head?: never;
         patch?: never;
@@ -11541,6 +11541,8 @@ export interface components {
             etag: string;
             /** Last Modified */
             last_modified: string;
+            /** Updated By */
+            updated_by?: string | null;
         };
         /**
          * FileListRequest
@@ -24575,7 +24577,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24608,7 +24610,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24641,7 +24643,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {
@@ -24674,7 +24676,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__get: {
         parameters: {
             query?: never;
             header: {

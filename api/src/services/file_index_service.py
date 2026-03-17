@@ -42,7 +42,7 @@ class FileIndexService:
         self.db = db
         self.repo_storage = repo_storage or RepoStorage()
 
-    async def write(self, path: str, content: bytes) -> str:
+    async def write(self, path: str, content: bytes, updated_by: str | None = None) -> str:
         """
         Write a file to S3 and index it in the DB.
 
@@ -63,12 +63,14 @@ class FileIndexService:
                 path=path,
                 content=content_str,
                 content_hash=content_hash,
+                updated_by=updated_by,
             ).on_conflict_do_update(
                 index_elements=[FileIndex.path],
                 set_={
                     "content": content_str,
                     "content_hash": content_hash,
                     "updated_at": text("NOW()"),
+                    "updated_by": updated_by,
                 },
             )
             await self.db.execute(stmt)
