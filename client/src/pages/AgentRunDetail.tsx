@@ -31,7 +31,7 @@ import {
 	PlayCircle,
 	Sparkles,
 } from "lucide-react";
-import { cn, formatNumber, formatCost, formatDuration } from "@/lib/utils";
+import { cn, formatNumber, formatCost } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -512,6 +512,31 @@ export function AgentRunDetail() {
 		onComplete: handleStreamComplete,
 	});
 
+	const groupedAiUsage = (() => {
+		if (!run?.ai_usage?.length) return [];
+		const groups = new Map<string, { provider: string; model: string; calls: number; input_tokens: number; output_tokens: number; cost: number }>();
+		for (const usage of run.ai_usage) {
+			const existing = groups.get(usage.model);
+			const costNum = usage.cost ? parseFloat(String(usage.cost)) || 0 : 0;
+			if (existing) {
+				existing.calls += 1;
+				existing.input_tokens += usage.input_tokens;
+				existing.output_tokens += usage.output_tokens;
+				existing.cost += costNum;
+			} else {
+				groups.set(usage.model, {
+					provider: usage.provider,
+					model: usage.model,
+					calls: 1,
+					input_tokens: usage.input_tokens,
+					output_tokens: usage.output_tokens,
+					cost: costNum,
+				});
+			}
+		}
+		return Array.from(groups.values());
+	})();
+
 	if (isLoading) {
 		return (
 			<div className="space-y-4 p-6">
@@ -792,27 +817,25 @@ export function AgentRunDetail() {
 												<table className="w-full text-xs">
 													<thead>
 														<tr className="border-b">
-															<th className="text-left py-2 pr-2 font-medium text-muted-foreground">Provider</th>
 															<th className="text-left py-2 pr-2 font-medium text-muted-foreground">Model</th>
+															<th className="text-right py-2 pr-2 font-medium text-muted-foreground">Calls</th>
 															<th className="text-right py-2 pr-2 font-medium text-muted-foreground">In</th>
 															<th className="text-right py-2 pr-2 font-medium text-muted-foreground">Out</th>
-															<th className="text-right py-2 pr-2 font-medium text-muted-foreground">Cost</th>
-															<th className="text-right py-2 font-medium text-muted-foreground">Time</th>
+															<th className="text-right py-2 font-medium text-muted-foreground">Cost</th>
 														</tr>
 													</thead>
 													<tbody>
-														{run.ai_usage.map((usage, index) => (
+														{groupedAiUsage.map((group, index) => (
 															<tr key={index} className="border-b last:border-0">
-																<td className="py-2 pr-2 capitalize">{usage.provider}</td>
 																<td className="py-2 pr-2 font-mono text-muted-foreground">
-																	{usage.model.length > 20
-																		? `${usage.model.substring(0, 18)}...`
-																		: usage.model}
+																	{group.model.length > 20
+																		? `${group.model.substring(0, 18)}...`
+																		: group.model}
 																</td>
-																<td className="py-2 pr-2 text-right font-mono">{formatNumber(usage.input_tokens)}</td>
-																<td className="py-2 pr-2 text-right font-mono">{formatNumber(usage.output_tokens)}</td>
-																<td className="py-2 pr-2 text-right font-mono">{formatCost(usage.cost)}</td>
-																<td className="py-2 text-right font-mono">{formatDuration(usage.duration_ms)}</td>
+																<td className="py-2 pr-2 text-right font-mono">{group.calls}</td>
+																<td className="py-2 pr-2 text-right font-mono">{formatNumber(group.input_tokens)}</td>
+																<td className="py-2 pr-2 text-right font-mono">{formatNumber(group.output_tokens)}</td>
+																<td className="py-2 text-right font-mono">{formatCost(group.cost)}</td>
 															</tr>
 														))}
 													</tbody>
@@ -822,8 +845,7 @@ export function AgentRunDetail() {
 																<td colSpan={2} className="py-2 pr-2">Total</td>
 																<td className="py-2 pr-2 text-right font-mono">{formatNumber(run.ai_totals.total_input_tokens)}</td>
 																<td className="py-2 pr-2 text-right font-mono">{formatNumber(run.ai_totals.total_output_tokens)}</td>
-																<td className="py-2 pr-2 text-right font-mono">{formatCost(run.ai_totals.total_cost)}</td>
-																<td className="py-2 text-right font-mono">{formatDuration(run.ai_totals.total_duration_ms)}</td>
+																<td className="py-2 text-right font-mono">{formatCost(run.ai_totals.total_cost)}</td>
 															</tr>
 														</tfoot>
 													)}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, Info, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,6 @@ import {
 	formatBytes,
 	formatNumber,
 	formatCost,
-	formatDuration,
 } from "@/lib/utils";
 import type { components } from "@/lib/v1";
 
@@ -115,6 +114,31 @@ export function ExecutionSidebar({
 	executionContext,
 }: ExecutionSidebarProps) {
 	const [isAiUsageOpen, setIsAiUsageOpen] = useState(true);
+
+	const groupedAiUsage = useMemo(() => {
+		if (!aiUsage?.length) return [];
+		const groups = new Map<string, { provider: string; model: string; calls: number; input_tokens: number; output_tokens: number; cost: number }>();
+		for (const usage of aiUsage) {
+			const existing = groups.get(usage.model);
+			const costNum = usage.cost ? parseFloat(String(usage.cost)) || 0 : 0;
+			if (existing) {
+				existing.calls += 1;
+				existing.input_tokens += usage.input_tokens;
+				existing.output_tokens += usage.output_tokens;
+				existing.cost += costNum;
+			} else {
+				groups.set(usage.model, {
+					provider: usage.provider,
+					model: usage.model,
+					calls: 1,
+					input_tokens: usage.input_tokens,
+					output_tokens: usage.output_tokens,
+					cost: costNum,
+				});
+			}
+		}
+		return Array.from(groups.values());
+	}, [aiUsage]);
 
 	const isLoadingVariables = isLoading;
 
@@ -513,10 +537,10 @@ context.roi.time_saved   # ROI tracking`}
 														<thead>
 															<tr className="border-b">
 																<th className="text-left py-2 pr-2 font-medium text-muted-foreground">
-																	Provider
-																</th>
-																<th className="text-left py-2 pr-2 font-medium text-muted-foreground">
 																	Model
+																</th>
+																<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
+																	Calls
 																</th>
 																<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
 																	In
@@ -524,20 +548,15 @@ context.roi.time_saved   # ROI tracking`}
 																<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
 																	Out
 																</th>
-																<th className="text-right py-2 pr-2 font-medium text-muted-foreground">
-																	Cost
-																</th>
 																<th className="text-right py-2 font-medium text-muted-foreground">
-																	Time
+																	Cost
 																</th>
 															</tr>
 														</thead>
 														<tbody>
-															{(
-																aiUsage as AIUsagePublicSimple[]
-															).map(
+															{groupedAiUsage.map(
 																(
-																	usage,
+																	group,
 																	index,
 																) => (
 																	<tr
@@ -546,37 +565,30 @@ context.roi.time_saved   # ROI tracking`}
 																		}
 																		className="border-b last:border-0"
 																	>
-																		<td className="py-2 pr-2 capitalize">
-																			{
-																				usage.provider
-																			}
-																		</td>
 																		<td className="py-2 pr-2 font-mono text-muted-foreground">
-																			{usage
+																			{group
 																				.model
 																				.length >
 																			20
-																				? `${usage.model.substring(0, 18)}...`
-																				: usage.model}
+																				? `${group.model.substring(0, 18)}...`
+																				: group.model}
+																		</td>
+																		<td className="py-2 pr-2 text-right font-mono">
+																			{group.calls}
 																		</td>
 																		<td className="py-2 pr-2 text-right font-mono">
 																			{formatNumber(
-																				usage.input_tokens,
+																				group.input_tokens,
 																			)}
 																		</td>
 																		<td className="py-2 pr-2 text-right font-mono">
 																			{formatNumber(
-																				usage.output_tokens,
-																			)}
-																		</td>
-																		<td className="py-2 pr-2 text-right font-mono">
-																			{formatCost(
-																				usage.cost,
+																				group.output_tokens,
 																			)}
 																		</td>
 																		<td className="py-2 text-right font-mono">
-																			{formatDuration(
-																				usage.duration_ms,
+																			{formatCost(
+																				group.cost,
 																			)}
 																		</td>
 																	</tr>
@@ -606,16 +618,10 @@ context.roi.time_saved   # ROI tracking`}
 																				.total_output_tokens,
 																		)}
 																	</td>
-																	<td className="py-2 pr-2 text-right font-mono">
+																	<td className="py-2 text-right font-mono">
 																		{formatCost(
 																			aiTotals
 																				.total_cost,
-																		)}
-																	</td>
-																	<td className="py-2 text-right font-mono">
-																		{formatDuration(
-																			aiTotals
-																				.total_duration_ms,
 																		)}
 																	</td>
 																</tr>
