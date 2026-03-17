@@ -16,6 +16,7 @@ from uuid import UUID
 
 import yaml
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
@@ -344,6 +345,17 @@ async def import_manifest_from_repo(
 
             result.applied = True
 
+    except IntegrityError as e:
+        detail = str(e.orig) if e.orig else str(e)
+        if "foreign key" in detail.lower():
+            result.warnings.append(
+                "Entity resolution failed: a referenced entity could not be "
+                "deleted because other entities still depend on it. "
+                "This is usually resolved by syncing again."
+            )
+        else:
+            result.warnings.append(f"Entity resolution failed (database constraint): {detail}")
+        logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)
     except Exception as e:
         result.warnings.append(f"Entity resolution failed: {e}")
         logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)

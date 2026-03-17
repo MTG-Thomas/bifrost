@@ -137,7 +137,7 @@ class IntegrationMapping(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     integration_id: Mapped[UUID] = mapped_column(
-        ForeignKey("integrations.id", onupdate="CASCADE"), nullable=False
+        ForeignKey("integrations.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
     organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id"), nullable=True, default=None
