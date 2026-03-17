@@ -28,3 +28,4 @@ class FileIndex(Base):
         server_default=text("NOW()"),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)

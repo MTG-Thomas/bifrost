@@ -244,12 +244,14 @@ class FileOperationsService:
             content="" if is_binary else content_str,
             content_hash=content_hash,
             updated_at=now,
+            updated_by=updated_by,
         ).on_conflict_do_update(
             index_elements=[FileIndex.path],
             set_={
                 "content": "" if is_binary else content_str,
                 "content_hash": content_hash,
                 "updated_at": now,
+                "updated_by": updated_by,
             },
         )
         await self.db.execute(fi_stmt)
@@ -564,12 +566,14 @@ class FileOperationsService:
             content=old_record.content,
             content_hash=old_record.content_hash,
             updated_at=now,
+            updated_by=old_record.updated_by,
         ).on_conflict_do_update(
             index_elements=[FileIndex.path],
             set_={
                 "content": old_record.content,
                 "content_hash": old_record.content_hash,
                 "updated_at": now,
+                "updated_by": old_record.updated_by,
             },
         )
         await self.db.execute(new_stmt)
