@@ -50,7 +50,7 @@ class OAuthProvider(Base):
         ForeignKey("organizations.id"), default=None
     )
     integration_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("integrations.id", onupdate="CASCADE"), default=None
+        ForeignKey("integrations.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )
     created_by: Mapped[str | None] = mapped_column(String(255), default=None)
     created_at: Mapped[datetime] = mapped_column(
