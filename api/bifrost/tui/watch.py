@@ -16,6 +16,59 @@ from bifrost.tui.theme import BifrostApp
 
 _SPINNER = "\u280b\u2819\u2838\u2830\u2826\u2807"
 
+# Column widths
+_COL_TIME = 8  # HH:MM:SS
+_COL_ACTION = 10  # "✗ Delete  " padded
+_COL_SEP = 2  # gap between columns
+_COL_USER = 12  # max username width
+
+# Color palette
+_CLR_TIME = "#6e7681"
+_CLR_PATH = "#e6edf3"
+_CLR_USER = "#484f58"
+_CLR_ACTION = {
+    "push": "#7aa2f7",
+    "pull": "#9ece6a",
+    "success": "#9ece6a",
+    "error": "#f7768e",
+    "warning": "#e0af68",
+    "info": "#6e7681",
+}
+
+
+def _format_row(
+    width: int,
+    timestamp: str,
+    action_color: str,
+    icon: str,
+    action_word: str,
+    path: str,
+    user: str = "",
+) -> str:
+    """Build a Rich-markup row with fixed columns."""
+    # Compute available path width
+    fixed = _COL_TIME + _COL_ACTION + _COL_SEP * 2
+    if user:
+        fixed += _COL_USER + _COL_SEP
+    path_width = max(8, width - fixed - 4)  # 4 for padding
+
+    # Truncate path if needed
+    if len(path) > path_width:
+        path = path[: path_width - 1] + "\u2026"
+
+    action_col = f"{icon} {action_word}"
+    parts = (
+        f"[{_CLR_TIME}]{timestamp:<{_COL_TIME}}[/]"
+        f"{'':>{_COL_SEP}}"
+        f"[{action_color}]{action_col:<{_COL_ACTION}}[/]"
+        f"{'':>{_COL_SEP}}"
+        f"[{_CLR_PATH}]{path:<{path_width}}[/]"
+    )
+    if user:
+        display_user = user[:_COL_USER]
+        parts += f"{'':>{_COL_SEP}}[{_CLR_USER}]{display_user}[/]"
+    return parts
+
 
 class _BatchRow(Static):
     """A single log row that can animate a spinner then freeze."""
@@ -30,31 +83,43 @@ class _BatchRow(Static):
     def __init__(self, text: str, style: str = "") -> None:
         markup = f"  [{style}]{text}[/]" if style else f"  {text}"
         super().__init__(markup)
+        self._action_word = ""
+        self._path = ""
+        self._user = ""
 
-    def set_spinning(self, label: str) -> None:
-        """Start showing spinner text (called each frame)."""
-        self._label = label
+    def set_spinning(self, action_word: str, path: str) -> None:
+        """Store structured data for spinner updates."""
+        self._action_word = action_word
+        self._path = path
 
     def update_spinner(self, frame: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
-        self.update(f"  [#7aa2f7]{ts}  {frame} {self._label}[/]")
+        try:
+            width = self.app.size.width
+        except Exception:
+            width = 120
+        markup = _format_row(
+            width, ts, _CLR_ACTION.get("push", ""), frame, self._action_word, self._path
+        )
+        self.update(markup)
 
-    def freeze(self, level: str, icon: str, text: str) -> None:
-        """Finalize this row with a static message."""
+    def freeze(
+        self,
+        level: str,
+        icon: str,
+        action_word: str,
+        path: str,
+        user: str = "",
+    ) -> None:
+        """Finalize this row with structured columnar data."""
         ts = datetime.now().strftime("%H:%M:%S")
-        color_map = {
-            "push": "#7aa2f7",
-            "pull": "#9ece6a",
-            "success": "#9ece6a",
-            "error": "#f7768e",
-            "warning": "#e0af68",
-            "info": "#6e7681",
-        }
-        color = color_map.get(level, "")
-        if color:
-            self.update(f"  [{color}]{ts}  {icon} {text}[/]")
-        else:
-            self.update(f"  {ts}  {icon} {text}")
+        color = _CLR_ACTION.get(level, "")
+        try:
+            width = self.app.size.width
+        except Exception:
+            width = 120
+        markup = _format_row(width, ts, color, icon, action_word, path, user)
+        self.update(markup)
 
 
 class WatchApp(BifrostApp[None]):
@@ -110,7 +175,14 @@ class WatchApp(BifrostApp[None]):
         except Exception:
             pass
 
-    def _add_row(self, level: str, icon: str, text: str) -> _BatchRow:
+    def _add_row(
+        self,
+        level: str,
+        icon: str,
+        action_word: str,
+        path: str,
+        user: str = "",
+    ) -> _BatchRow:
         """Add a finalized row to the log."""
         row = _BatchRow("")
         try:
@@ -119,13 +191,13 @@ class WatchApp(BifrostApp[None]):
             scroll.scroll_end(animate=False)
         except Exception:
             pass
-        row.freeze(level, icon, text)
+        row.freeze(level, icon, action_word, path, user)
         return row
 
-    def create_batch_row(self, label: str) -> _BatchRow:
+    def create_batch_row(self, action_word: str, path: str) -> _BatchRow:
         """Create a row with a spinner for an in-progress operation."""
         row = _BatchRow("")
-        row.set_spinning(label)
+        row.set_spinning(action_word, path)
         try:
             scroll = self.query_one("#activity-log", VerticalScroll)
             scroll.mount(row)
@@ -146,26 +218,24 @@ class WatchApp(BifrostApp[None]):
             pass
 
     def log_push(self, filename: str) -> None:
-        self._add_row("push", "\u2192", f"Push  {filename}")
+        self._add_row("push", "\u2192", "Push", filename)
 
     def log_pull(self, filename: str, user: str = "") -> None:
-        suffix = f"  ({user})" if user else ""
-        self._add_row("pull", "\u2190", f"Pull  {filename}{suffix}")
+        self._add_row("pull", "\u2190", "Pull", filename, user)
 
     def log_delete(self, filename: str, user: str = "") -> None:
-        suffix = f"  ({user})" if user else ""
-        self._add_row("warning", "\u2717", f"Delete  {filename}{suffix}")
+        self._add_row("warning", "\u2717", "Delete", filename, user)
 
     def log_success(self, message: str) -> None:
         self._last_sync = datetime.now().strftime("%H:%M:%S")
         self._update_status()
-        self._add_row("success", "\u2713", message)
+        self._add_row("success", "\u2713", "Push", message)
 
     def log_error(self, message: str) -> None:
-        self._add_row("error", "\u26a0", message)
+        self._add_row("error", "\u26a0", "Error", message)
 
     def log_info(self, message: str) -> None:
-        self._add_row("info", "\u00b7", message)
+        self._add_row("info", "\u00b7", "Info", message)
 
     def set_pending(self, count: int) -> None:
         self._pending = count

@@ -218,8 +218,46 @@ def _session_to_response(
 async def get_dev_context(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    org_id: UUID | None = None,
 ) -> DeveloperContextResponse:
-    """Get development context for CLI initialization."""
+    """Get development context for CLI initialization.
+
+    When org_id is provided, returns context for that specific organization
+    (superusers only). Otherwise uses the user's default organization.
+    """
+    # If org_id override requested, require superuser
+    if org_id is not None:
+        if not current_user.is_superuser:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only superusers can specify an organization override",
+            )
+        stmt = select(Organization).where(Organization.id == org_id)
+        result = await db.execute(stmt)
+        org = result.scalar_one_or_none()
+        if not org or not org.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Organization {org_id} not found or inactive",
+            )
+        org_data = {
+            "id": str(org.id),
+            "name": org.name,
+            "is_active": org.is_active,
+            "is_provider": org.is_provider,
+        }
+        return DeveloperContextResponse(
+            user={
+                "id": str(current_user.user_id),
+                "email": current_user.email,
+                "name": current_user.name,
+                "is_superuser": current_user.is_superuser,
+            },
+            organization=org_data,
+            default_parameters={},
+            track_executions=True,
+        )
+
     stmt = select(DeveloperContext).where(DeveloperContext.user_id == current_user.user_id)
     result = await db.execute(stmt)
     dev_ctx = result.scalar_one_or_none()
@@ -234,6 +272,7 @@ async def get_dev_context(
                 "id": str(org.id),
                 "name": org.name,
                 "is_active": org.is_active,
+                "is_provider": org.is_provider,
             }
 
     return DeveloperContextResponse(
@@ -241,6 +280,7 @@ async def get_dev_context(
             "id": str(current_user.user_id),
             "email": current_user.email,
             "name": current_user.name,
+            "is_superuser": current_user.is_superuser,
         },
         organization=org_data,
         default_parameters=dev_ctx.default_parameters if dev_ctx else {},
@@ -292,6 +332,7 @@ async def update_dev_context(
                 "id": str(org.id),
                 "name": org.name,
                 "is_active": org.is_active,
+                "is_provider": org.is_provider,
             }
 
     return DeveloperContextResponse(
@@ -299,6 +340,7 @@ async def update_dev_context(
             "id": str(current_user.user_id),
             "email": current_user.email,
             "name": current_user.name,
+            "is_superuser": current_user.is_superuser,
         },
         organization=org_data,
         default_parameters=dev_ctx.default_parameters,

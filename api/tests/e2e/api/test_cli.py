@@ -100,6 +100,140 @@ class TestCLIContext:
         assert response.json()["track_executions"] is True
 
 
+class TestCLIContextOrgOverride:
+    """Test /api/cli/context?org_id= for CLI org override (superuser only)."""
+
+    def test_superuser_can_get_org_context(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+    ):
+        """Superuser can fetch context for a specific org via ?org_id=."""
+        response = e2e_client.get(
+            "/api/cli/context",
+            params={"org_id": org1["id"]},
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        # User info should match the superuser
+        assert data["user"]["id"] == str(platform_admin.user_id)
+        assert data["user"]["email"] == platform_admin.email
+        assert data["user"]["is_superuser"] is True
+
+        # Organization should match the requested org
+        assert data["organization"] is not None
+        assert data["organization"]["id"] == org1["id"]
+        assert data["organization"]["name"] == org1["name"]
+        assert data["organization"]["is_active"] is True
+
+    def test_org_context_returns_all_required_fields(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+    ):
+        """Org context response has all fields needed to build ExecutionContext."""
+        response = e2e_client.get(
+            "/api/cli/context",
+            params={"org_id": org1["id"]},
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # User fields that _run_direct reads
+        user = data["user"]
+        assert "id" in user
+        assert "email" in user
+        assert "name" in user
+        assert "is_superuser" in user
+
+        # Organization fields that _run_direct reads
+        org = data["organization"]
+        assert "id" in org
+        assert "name" in org
+        assert "is_active" in org
+        assert "is_provider" in org
+
+    def test_non_superuser_gets_403(
+        self,
+        e2e_client,
+        org1_user,
+        org1,
+    ):
+        """Non-superuser cannot use ?org_id= override."""
+        response = e2e_client.get(
+            "/api/cli/context",
+            params={"org_id": org1["id"]},
+            headers=org1_user.headers,
+        )
+        assert response.status_code == 403
+
+    def test_nonexistent_org_gets_404(
+        self,
+        e2e_client,
+        platform_admin,
+    ):
+        """Request for a nonexistent org returns 404."""
+        import uuid
+        fake_org_id = str(uuid.uuid4())
+        response = e2e_client.get(
+            "/api/cli/context",
+            params={"org_id": fake_org_id},
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 404
+
+    def test_superuser_can_switch_between_orgs(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+        org2,
+    ):
+        """Superuser can fetch context for different orgs in sequence."""
+        # Get org1 context
+        resp1 = e2e_client.get(
+            "/api/cli/context",
+            params={"org_id": org1["id"]},
+            headers=platform_admin.headers,
+        )
+        assert resp1.status_code == 200
+        assert resp1.json()["organization"]["id"] == org1["id"]
+
+        # Get org2 context
+        resp2 = e2e_client.get(
+            "/api/cli/context",
+            params={"org_id": org2["id"]},
+            headers=platform_admin.headers,
+        )
+        assert resp2.status_code == 200
+        assert resp2.json()["organization"]["id"] == org2["id"]
+
+        # Confirm they're different orgs
+        assert resp1.json()["organization"]["id"] != resp2.json()["organization"]["id"]
+
+    def test_without_org_id_uses_default(
+        self,
+        e2e_client,
+        org1_user,
+    ):
+        """Without ?org_id, returns user's default org from developer context."""
+        response = e2e_client.get(
+            "/api/cli/context",
+            headers=org1_user.headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # org1_user's developer context has default_org_id set to org1
+        assert data["organization"] is not None
+        assert data["organization"]["id"] == str(org1_user.organization_id)
+
+
 # =============================================================================
 # File Operation Tests
 # =============================================================================
