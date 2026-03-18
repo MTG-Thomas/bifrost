@@ -115,16 +115,16 @@ from .models import (
     BatchDeleteResult,
 )
 
+# ExecutionContext lives in bifrost/ — available in both CLI and platform
+from ._execution_context import ExecutionContext
+
 # Import decorators - try platform module first, fall back to local SDK version
 try:
     from src.sdk.decorators import workflow, data_provider, tool
-    from src.sdk.context import ExecutionContext
 except ImportError:
     # CLI/standalone mode - use local decorators
     from .decorators import workflow, data_provider, tool
     _ = WorkflowMetadata  # noqa: F401 - re-exported from .models above
-    # Provide a minimal ExecutionContext for CLI mode
-    ExecutionContext = None  # type: ignore
 
 # Import context proxy for accessing ExecutionContext without parameter
 from ._context import context

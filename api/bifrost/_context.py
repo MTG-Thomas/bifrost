@@ -11,7 +11,6 @@ Usage in workflows:
         # Access context directly - no need to pass as parameter
         user = context.user_id
         org = context.org_id
-        config_value = await context.get_config("my_key")
         return {"greeting": f"Hello {name} from {user}"}
 """
 
@@ -19,7 +18,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from src.sdk.context import ExecutionContext
+    from bifrost._execution_context import ExecutionContext
 
 # Context variable for current execution context
 # Set by workflow engine before executing user code
