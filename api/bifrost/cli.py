@@ -37,8 +37,6 @@ import httpx
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
 from bifrost.client import BifrostClient
-from bifrost.tui.progress import ProgressApp
-from bifrost.tui.sync_app import SyncResult, interactive_sync
 
 # Default ignore patterns applied even without a .gitignore file.
 # .bifrost/ is always force-included via negation.
@@ -522,6 +520,7 @@ def _run_direct(
     workflows: dict[str, Any],
     params: dict[str, Any],
     verbose: bool = False,
+    organization_id: str | None = None,
 ) -> int:
     """
     Run a workflow directly in standalone mode.
@@ -531,6 +530,7 @@ def _run_direct(
         workflows: Dict of discovered workflow functions
         params: Parameters to pass to the workflow
         verbose: Whether to print status messages
+        organization_id: Optional org ID override (superusers only)
 
     Returns:
         Exit code (0 for success, 1 for error)
@@ -542,59 +542,53 @@ def _run_direct(
     try:
         client = BifrostClient.get_instance(require_auth=True)
 
+        # If --org was specified, fetch context for that org instead
+        if organization_id:
+            try:
+                response = client._sync_http.get(
+                    "/api/cli/context",
+                    params={"org_id": organization_id},
+                )
+                if response.status_code == 403:
+                    print("Error: --org requires superuser privileges", file=sys.stderr)
+                    return 1
+                if response.status_code == 404:
+                    print(f"Error: Organization {organization_id} not found or inactive", file=sys.stderr)
+                    return 1
+                if response.status_code >= 400:
+                    print(f"Error fetching org context: HTTP {response.status_code}", file=sys.stderr)
+                    return 1
+                ctx_data = response.json()
+                # Override the client's cached context
+                client._context = ctx_data
+            except Exception as e:
+                print(f"Error fetching org context: {e}", file=sys.stderr)
+                return 1
+
         # Set up execution context so context.org_id, context.user_id, etc. work
         try:
             from bifrost._context import set_execution_context
+            from bifrost._execution_context import ExecutionContext, Organization
 
             user_info = client.user
             org_info = client.organization
 
-            class _Org:
-                def __init__(self, id, name):
-                    self.id = id
-                    self.name = name
-
-            class _StandaloneContext:
-                def __init__(self, user_id, email, name, scope, organization, execution_id, workflow_name):
-                    self.user_id = user_id
-                    self.email = email
-                    self.name = name
-                    self.scope = scope
-                    self.organization = organization
-                    self.execution_id = execution_id
-                    self.workflow_name = workflow_name
-                    self.is_platform_admin = False
-                    self.is_function_key = False
-                    self.parameters = {}
-                    self.startup = None
-                    self._dynamic_secrets = set()
-
-                @property
-                def org_id(self):
-                    return self.organization.id if self.organization else None
-
-                @property
-                def org_name(self):
-                    return self.organization.name if self.organization else None
-
-                def _register_dynamic_secret(self, value):
-                    """Register a secret for redaction (standalone mode)."""
-                    if value and len(value) >= 4:
-                        self._dynamic_secrets.add(value)
-
-                def _collect_secret_values(self):
-                    """Return registered secrets (standalone mode)."""
-                    return self._dynamic_secrets
-
-            org = _Org(org_info["id"], org_info.get("name", "")) if org_info else None
+            org = Organization(
+                id=org_info["id"],
+                name=org_info.get("name", ""),
+                is_active=org_info.get("is_active", True),
+                is_provider=org_info.get("is_provider", False),
+            ) if org_info else None
             scope = org_info["id"] if org_info else "GLOBAL"
 
-            ctx = _StandaloneContext(
+            ctx = ExecutionContext(
                 user_id=user_info.get("id", "cli-user"),
                 email=user_info.get("email", ""),
                 name=user_info.get("name", "CLI User"),
                 scope=scope,
                 organization=org,
+                is_platform_admin=user_info.get("is_superuser", False),
+                is_function_key=False,
                 execution_id=f"standalone-{uuid.uuid4()}",
                 workflow_name=selected_workflow,
             )
@@ -603,6 +597,9 @@ def _run_direct(
             pass  # Context setup is best-effort
 
     except (RuntimeError, Exception):
+        if organization_id:
+            print("Error: --org requires authentication. Run 'bifrost login' first.", file=sys.stderr)
+            return 1
         pass  # Standalone mode works without auth
 
     if verbose:
@@ -648,6 +645,7 @@ def handle_run(args: list[str]) -> int:
     interactive = False
     verbose = False
     inline_params: dict[str, Any] | None = None
+    organization_id: str | None = None
 
     # Parse arguments
     i = 1
@@ -674,6 +672,12 @@ def handle_run(args: list[str]) -> int:
         elif args[i] in ("--verbose", "-v"):
             verbose = True
             i += 1
+        elif args[i] in ("--organization-id", "--org"):
+            if i + 1 >= len(args):
+                print("Error: --organization-id requires a UUID value", file=sys.stderr)
+                return 1
+            organization_id = args[i + 1]
+            i += 2
         elif args[i] in ("--no-browser", "-n"):
             no_browser = True
             i += 1
@@ -745,7 +749,7 @@ def handle_run(args: list[str]) -> int:
             return 1
 
         params = inline_params if inline_params is not None else {}
-        return _run_direct(selected_workflow, workflows, params, verbose=verbose)
+        return _run_direct(selected_workflow, workflows, params, verbose=verbose, organization_id=organization_id)
 
     # Interactive mode (--interactive) — browser-based session
     # Ensure user is authenticated (only needed for API-based flow)
@@ -1684,7 +1688,7 @@ async def _process_watch_batch(
         file_rows: dict[str, Any] = {}  # repo_path -> (batch_row, spinner_task)
         if watch_app:
             for rp in sorted(push_files):
-                row = watch_app.create_batch_row(f"Push {rp}")
+                row = watch_app.create_batch_row("Push", rp)
                 stask = asyncio.create_task(watch_app.spin_row(row))
                 file_rows[rp] = (row, stask)
 
@@ -1711,26 +1715,26 @@ async def _process_watch_batch(
                     if rp in file_rows:
                         row, stask = file_rows[rp]
                         stask.cancel()
-                        row.freeze("success", "\u2713", f"Pushed {rp}")
+                        row.freeze("success", "\u2713", "Push", rp)
                 else:
                     watch_errors.append(f"{rp}: HTTP {resp.status_code}")
                     if rp in file_rows:
                         row, stask = file_rows[rp]
                         stask.cancel()
-                        row.freeze("error", "\u2717", f"Push failed {rp}: HTTP {resp.status_code}")
+                        row.freeze("error", "\u2717", "Push", f"{rp}: HTTP {resp.status_code}")
             except Exception as e:
                 watch_errors.append(f"{rp}: {e}")
                 if rp in file_rows:
                     row, stask = file_rows[rp]
                     stask.cancel()
-                    row.freeze("error", "\u2717", f"Push failed {rp}: {e}")
+                    row.freeze("error", "\u2717", "Push", f"{rp}: {e}")
 
         # Freeze any manifest file rows (they weren't uploaded individually)
         for rp in bifrost_watch_files:
             if rp in file_rows:
                 row, stask = file_rows[rp]
                 stask.cancel()
-                row.freeze("success", "\u2713", f"Pushed {rp}")
+                row.freeze("success", "\u2713", "Push", rp)
 
         # Import manifest if .bifrost/ files changed
         watch_warnings: list[str] = []
@@ -2641,6 +2645,7 @@ async def _pull_from_server(
     pull_errors: list[str] = []
     _pull_is_tty = sys.stdin.isatty() and sys.stdout.isatty()
     if all_pull_items and _pull_is_tty:
+        from bifrost.tui.progress import ProgressApp
         app = ProgressApp("Pulling files", all_pull_items, _do_one_pull, post_fn=_post_pull)
         pull_errors = await app.run_async() or []
     elif all_pull_items:
@@ -3042,6 +3047,7 @@ async def _sync_files(
 
     if force or not _is_tty:
         # Auto-accept: use default actions
+        from bifrost.tui.sync_app import SyncResult
         result = SyncResult()
         for item in sync_items:
             action = item.get("default_action", "skip")
@@ -3063,6 +3069,7 @@ async def _sync_files(
                 parts.append(f"{delete_count} to delete")
             print(f"Syncing: {', '.join(parts) if parts else 'nothing'}...")
     else:
+        from bifrost.tui.sync_app import interactive_sync
         sync_result = await interactive_sync(
             sync_items,
             file_count=file_count,
@@ -3215,6 +3222,7 @@ async def _sync_files(
 
     errors: list[str] = []
     if progress_items and _is_tty:
+        from bifrost.tui.progress import ProgressApp
         app = ProgressApp("Syncing", progress_items, _do_sync_work, post_fn=_post_sync)
         errors = await app.run_async() or []
     elif progress_items:
@@ -3547,6 +3555,7 @@ async def _push_files(
 
     errors: list[str] = []
     if all_progress_items and sys.stdin.isatty() and sys.stdout.isatty():
+        from bifrost.tui.progress import ProgressApp
         app = ProgressApp("Pushing files", all_progress_items, _do_one_push, post_fn=_post_push)
         errors = await app.run_async() or []
     elif all_progress_items:
@@ -3718,12 +3727,13 @@ Arguments:
   file                  Python file containing @workflow decorated functions
 
 Options:
-  --workflow, -w NAME   Workflow to run (required in direct mode)
-  --params, -p JSON     JSON parameters to pass to the workflow (default: {})
-  --verbose, -v         Show status messages (e.g., "Running...", "Result:")
-  --interactive, -i     Open browser-based session instead of direct execution
-  --no-browser, -n      Don't auto-open browser (only with --interactive)
-  --help, -h            Show this help message
+  --workflow, -w NAME          Workflow to run (required in direct mode)
+  --params, -p JSON            JSON parameters to pass to the workflow (default: {})
+  --organization-id, --org ID  Run as a specific organization (superusers only)
+  --verbose, -v                Show status messages (e.g., "Running...", "Result:")
+  --interactive, -i            Open browser-based session instead of direct execution
+  --no-browser, -n             Don't auto-open browser (only with --interactive)
+  --help, -h                   Show this help message
 
 Examples:
   bifrost run workflow.py -w greet                                         # Direct execution, raw JSON output
