@@ -198,12 +198,11 @@ class PackageInstallConsumer(BroadcastConsumer):
             await self._send_complete("error", f"Installation failed: {package_spec}")
             return
 
-        # Step 2: Recycle processes only when updating an already-imported package.
-        # New packages don't need recycle — Python doesn't cache "not found".
-        is_update = body.get("is_update", True)
-        if is_update:
-            await self._send_log("Recycling worker processes...")
-            self._mark_workers_for_recycle()
+        # Step 2: Always recycle worker processes after installation.
+        # Worker subprocesses are forked before pip install runs, so they
+        # won't see newly installed packages on the filesystem until recycled.
+        await self._send_log("Recycling worker processes...")
+        self._mark_workers_for_recycle()
 
         # Step 3: Update package list in Redis
         await self._update_pool_packages()

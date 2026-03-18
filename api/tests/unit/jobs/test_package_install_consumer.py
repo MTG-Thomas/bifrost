@@ -45,8 +45,12 @@ class TestProcessMessage:
             mock_update.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_new_package_skips_recycle(self, consumer: PackageInstallConsumer):
-        """Test that a new package (is_update=False) skips recycle."""
+    async def test_new_package_also_recycles(self, consumer: PackageInstallConsumer):
+        """Test that a new package (is_update=False) still triggers recycle.
+
+        Worker subprocesses are forked before pip install, so they need
+        recycling to see newly installed packages on the filesystem.
+        """
         with (
             patch.object(
                 consumer, "_pip_install", new_callable=AsyncMock, return_value=True
@@ -66,7 +70,7 @@ class TestProcessMessage:
             })
 
             mock_pip.assert_called_once_with("new-package", "1.0.0")
-            mock_recycle.assert_not_called()
+            mock_recycle.assert_called_once()
             mock_update.assert_called_once()
 
     @pytest.mark.asyncio
