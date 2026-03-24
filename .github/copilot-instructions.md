@@ -217,9 +217,14 @@ Workflow files live in `workflows/category/name.py`. Register in `.bifrost/workf
 
 ### Dev server
 
-- URL: `http://10.1.23.240`
+- URL: `http://10.1.23.240` (stored in `pass` as `bifrost/dev-url`)
 - CLI installed via pipx
-- Re-authenticate: `bifrost login --url http://10.1.23.240`
+- Credentials stored in `pass` as `bifrost/credentials` (full JSON) and `bifrost/refresh-token`
+- Restore credentials at the start of a session:
+  ```bash
+  pass show bifrost/credentials > ~/.bifrost/credentials.json
+  ```
+- Re-authenticate (device flow, opens browser): `bifrost login --url http://10.1.23.240`
 - MCP (for Claude Code): `claude mcp add --transport http bifrost http://10.1.23.240/mcp`
 
 ---
