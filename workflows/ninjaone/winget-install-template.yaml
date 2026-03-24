@@ -1,0 +1,8 @@
+# Purpose: NinjaOne PowerShell winget install template
+# Name: ninjaone-winget-install-template
+# Usage: This template is a starting point for packaging winget install scripts for NinjaOne.
+# PowerShell script should be idempotent and non-interactive.
+ps1: |
+  # Placeholder PowerShell script - replace with extracted functions from winutil
+  Write-Output 'Ensure-WinGetInstalled - Implemented elsewhere'
+  # Example: winget install --id=Git.Git -e --silent

@@ -1,0 +1,8 @@
+# Purpose: MinIO S3 put/list smoke test
+# Name: minio-put-list
+# NOTE: Replace this placeholder with an executable S3 task that uses BIFROST_S3_* settings
+steps:
+  - name: minio-smoke-placeholder
+    run: |
+      echo "This workflow should perform an S3 put and then list to verify writes."
+      echo "Implement using boto3/aiobotocore in a task runner with access to BIFROST_S3_* env vars."

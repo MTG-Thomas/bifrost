@@ -1,0 +1,8 @@
+# Purpose: Sample workflow to return the public IP of the runner using an external service
+# Name: get-public-ip
+# Run instructions: This is a simple workflow that executes a single HTTP GET.
+steps:
+  - name: get-public-ip
+    run: |
+      echo "Fetching public IP..."
+      curl -sS https://api.ipify.org?format=json

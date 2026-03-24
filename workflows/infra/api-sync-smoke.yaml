@@ -1,0 +1,7 @@
+# Purpose: Exercise the API sync path to validate end-to-end sync
+# Name: api-sync-smoke
+steps:
+  - name: sync-smoke-placeholder
+    run: |
+      echo "Placeholder: trigger a sync/push and verify API returns 200."
+      echo "Replace with actual bifrost CLI commands or API calls for your environment."
