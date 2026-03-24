@@ -65,7 +65,5 @@ spec:
               mountPath: /var/lib/rabbitmq
       volumes:
         - name: rabbitmq-data
-          emptyDir: {}
-          # For persistent storage, use a PVC instead:
-          # persistentVolumeClaim:
-          #   claimName: rabbitmq-data
+          persistentVolumeClaim:
+            claimName: rabbitmq-data
