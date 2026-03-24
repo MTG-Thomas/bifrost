@@ -3,7 +3,7 @@
 MSP automation platform: FastAPI backend + React frontend, with a git-synced workflow workspace. This repo has two distinct development contexts:
 
 - **Platform development** (`bifrost/` subdir) — modifying Bifrost itself (API, client, workers, k8s)
-- **Workflow workspace** (`workflows/`, `.bifrost/`) — building and deploying workflows to the Bifrost instance at `http://10.1.23.240`
+- **Workflow workspace** (`workflows/`, `.bifrost/`) — building and deploying workflows to the Bifrost instance at `https://10.1.23.240.nip.io`
 
 ---
 
@@ -63,7 +63,7 @@ bifrost git commit -m "description"
 bifrost git push         # pull + push + import entities
 
 # Re-authenticate
-bifrost login --url http://10.1.23.240
+bifrost login --url https://10.1.23.240.nip.io
 ```
 
 ---
@@ -217,15 +217,25 @@ Workflow files live in `workflows/category/name.py`. Register in `.bifrost/workf
 
 ### Dev server
 
-- URL: `http://10.1.23.240` (stored in `pass` as `bifrost/dev-url`)
+- URL: `https://10.1.23.240.nip.io` (HTTPS, self-signed cert; stored in `pass` as `bifrost/dev-url`)
 - CLI installed via pipx
 - Credentials stored in `pass` as `bifrost/credentials` (full JSON) and `bifrost/refresh-token`
+- **No plaintext credentials on disk** — all secrets live in `pass` under `bifrost/`
 - Restore credentials at the start of a session:
   ```bash
   pass show bifrost/credentials > ~/.bifrost/credentials.json
   ```
-- Re-authenticate (device flow, opens browser): `bifrost login --url http://10.1.23.240`
-- MCP (for Claude Code): `claude mcp add --transport http bifrost http://10.1.23.240/mcp`
+- The self-signed TLS cert must be trusted for the CLI to connect:
+  ```bash
+  # Restore cert from pass and trust it for this session
+  pass show bifrost/tls-cert > /tmp/bifrost-tls.crt
+  export SSL_CERT_FILE=/tmp/bifrost-tls.crt
+  export REQUESTS_CA_BUNDLE=/tmp/bifrost-tls.crt
+  # Clean up after session
+  rm -f /tmp/bifrost-tls.crt
+  ```
+- Re-authenticate (device flow, opens browser): `bifrost login --url https://10.1.23.240.nip.io`
+- MCP (for Claude Code): `claude mcp add --transport http bifrost https://10.1.23.240.nip.io/mcp`
 
 ---
 
