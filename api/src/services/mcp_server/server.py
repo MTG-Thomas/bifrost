@@ -143,6 +143,9 @@ class MCPContext:
     # Knowledge namespaces accessible to this user (from agent.knowledge_sources)
     accessible_namespaces: list[str] = field(default_factory=list)
 
+    # Database session from executor context (None when running via MCP server)
+    session: Any = None
+
 
 # =============================================================================
 # Context Helper Functions (for FastMCP authentication)
