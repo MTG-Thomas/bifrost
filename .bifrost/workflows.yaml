@@ -12,3 +12,63 @@ a02961df-79e2-4b4f-aa39-5e217c1b88d3:
   tags:
     - sample
     - example
+
+0df08d7b-4d69-4b17-a92e-df056d2996b3:
+  id: 0df08d7b-4d69-4b17-a92e-df056d2996b3
+  name: "Autotask: Sync Customers"
+  path: "workflows/autotask/sync_customers.py"
+  function_name: "sync_autotask_customers"
+  type: "workflow"
+  category: "Autotask"
+  description: "Sync active Autotask customer companies to Bifrost organizations."
+  timeout_seconds: 300
+  endpoint_enabled: false
+  access_level: "authenticated"
+  tags:
+    - autotask
+    - sync
+
+32222c8b-5b11-40b2-aed3-e8840766cf15:
+  id: 32222c8b-5b11-40b2-aed3-e8840766cf15
+  name: "Autotask: List Companies"
+  path: "workflows/autotask/entities.py"
+  function_name: "list_autotask_companies"
+  type: "data_provider"
+  category: "Autotask"
+  description: "Returns active Autotask customer companies for org mapping."
+  timeout_seconds: 60
+  endpoint_enabled: false
+  access_level: "authenticated"
+  tags:
+    - autotask
+    - data-provider
+
+0c02bf22-0e1f-4362-a7e3-089abfcd2478:
+  id: 0c02bf22-0e1f-4362-a7e3-089abfcd2478
+  name: "Cove: Sync Customers"
+  path: "workflows/cove/sync_customers.py"
+  function_name: "sync_cove_customers"
+  type: "workflow"
+  category: "Cove"
+  description: "Sync Cove EndCustomer partner records to Bifrost organizations."
+  timeout_seconds: 300
+  endpoint_enabled: false
+  access_level: "authenticated"
+  tags:
+    - cove
+    - sync
+
+6a24ad7e-8574-49c5-856e-0df69a26711c:
+  id: 6a24ad7e-8574-49c5-856e-0df69a26711c
+  name: "Cove: List Partners"
+  path: "workflows/cove/entities.py"
+  function_name: "list_cove_partners"
+  type: "data_provider"
+  category: "Cove"
+  description: "Returns active Cove EndCustomer partners for org mapping."
+  timeout_seconds: 60
+  endpoint_enabled: false
+  access_level: "authenticated"
+  tags:
+    - cove
+    - data-provider
