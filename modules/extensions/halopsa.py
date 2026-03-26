@@ -11,14 +11,16 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import AsyncIterator, Literal, Any
+from typing import TYPE_CHECKING, AsyncIterator, Literal, Any
 
 import asyncio
 from collections.abc import Awaitable, Callable
 
 from bifrost import tables, executions, config, context, integrations, UserError
-from features.ai_ticketing.models import EnrichedTicket, TicketMetadata
 from modules import halopsa
+
+if TYPE_CHECKING:
+    from features.ai_ticketing.models import EnrichedTicket, TicketMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,13 @@ MATCH_TABLE = "automation_ticket_matches"
 
 _REF_CACHE_TTL = 600  # 10 minutes
 _ref_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _get_ai_ticket_models() -> tuple[type["EnrichedTicket"], type["TicketMetadata"]]:
+    """Import AI ticketing models lazily for workflows that actually need them."""
+    from features.ai_ticketing.models import EnrichedTicket, TicketMetadata
+
+    return EnrichedTicket, TicketMetadata
 
 
 def _get_cached(key: str) -> Any | None:
@@ -1639,6 +1648,7 @@ async def get_enriched_ticket(ticket_id: int) -> EnrichedTicket:
     # Extract metadata (now includes agents_involved from actions)
     metadata = extract_metadata(ticket_dict, actions_list)
 
+    EnrichedTicket, _ = _get_ai_ticket_models()
     return EnrichedTicket(
         ticket=ticket_dict,
         actions=actions_list,
@@ -1693,6 +1703,7 @@ def extract_metadata(ticket: dict, actions: list[dict] | None = None) -> TicketM
     # Extract agents from actions if provided
     agents_involved = extract_agents_involved(actions) if actions else None
 
+    _, TicketMetadata = _get_ai_ticket_models()
     return TicketMetadata(
         ticket_id=ticket.get("id"),
         client_id=ticket.get("client_id"),
@@ -2008,6 +2019,7 @@ async def enrich_from_paginated(ticket_dict: dict) -> EnrichedTicket:
     # Fetch actions — the only API call needed
     actions = await _fetch_actions(ticket_id)
     metadata = extract_metadata(ticket_dict, actions)
+    EnrichedTicket, _ = _get_ai_ticket_models()
     return EnrichedTicket(ticket=ticket_dict, actions=actions, metadata=metadata)
 
 
