@@ -39,7 +39,7 @@ Then use `Grep/Read` on `/tmp/bifrost-docs/llms.txt` whenever you need reference
 ### Principles
 
 - **Local first.** Use Glob, Read, Grep for discovery. `.bifrost/*.yaml` manifests are the source of truth.
-- **Write locally, sync to deploy.** Write files in the git repo. `bifrost watch` auto-syncs to the platform.
+- **Write locally, sync to deploy.** Write files + manifest entries in the git repo. `bifrost watch` syncs file changes to the platform. New entities (workflows, forms, apps, agents) MUST be registered in `.bifrost/*.yaml` manifest files first — watch does not auto-discover new entities.
 - **Never use MCP for discovery** (`list_*`), reading code (`list_content`, `search_content`), or docs when a local workspace exists.
 
 ### Before Building
@@ -99,7 +99,7 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 1. Generate UUIDs for all new entities
 2. Write entity files (workflow `.py`, form `.form.yaml`, agent `.agent.yaml`, app `.tsx`)
 3. Add entries to `.bifrost/*.yaml` manifest files
-4. Watch mode auto-syncs to platform
+4. Watch mode syncs file changes to platform (entities must already be in manifests)
 5. Test workflows: `bifrost run <file> --workflow <name> --org <UUID> --params '{...}'`
 6. When happy: `git add && git commit && git push`
 
@@ -107,7 +107,7 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 
 | Command | Purpose |
 |---------|---------|
-| `bifrost watch` | Primary dev command — starts interactive watch session, auto-syncs on save |
+| `bifrost watch` | Primary dev command — starts interactive watch session, syncs file changes on save |
 | `bifrost sync` | One-shot bidirectional sync — **interactive TUI, user must run manually** |
 | `bifrost run <file> -w <name> --org <UUID>` | Execute workflow in specific org context |
 | `bifrost api <METHOD> <path>` | Bifrost platform API client ONLY — inspect executions, validate apps, check platform state. NOT for third-party APIs. |
@@ -168,7 +168,7 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
    ```bash
    pgrep -f 'bifrost watch' > /dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING"
    ```
-2. **If watch is running**: Just write files locally. Watch auto-syncs everything. Do nothing else.
+2. **If watch is running**: Write files locally AND add `.bifrost/*.yaml` entries for any NEW entities. Watch syncs file changes but does NOT auto-discover unregistered entities.
 3. **If watch is NOT running**: Tell the user: "Please run `bifrost watch` in a terminal first." **Do NOT write files or attempt to sync until the user confirms watch is running.**
 4. **If the user asks to sync manually** (push/pull/sync): Tell them to run the command themselves in their terminal since it requires interactive TUI input.
 5. **`bifrost git push`** is for git-integrated deployments. Only mention it when the user explicitly asks about git deployment — and they must run it themselves.
@@ -356,7 +356,7 @@ return <div className="flex h-full"><Sidebar /><Outlet /></div>;
 
 1. Write files in `apps/{slug}/`
 2. Add entry to `.bifrost/apps.yaml`
-3. `bifrost watch` auto-syncs (auto-validates app dirs after each push)
+3. `bifrost watch` syncs file changes (auto-validates app dirs after each push). New apps must be added to `.bifrost/apps.yaml` first.
 4. Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`
 5. Fix any validation errors shown in watch output
 
