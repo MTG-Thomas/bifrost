@@ -41,8 +41,8 @@ workflow/content repos.
 
 ### File and Architecture Rules
 
-- Backend business logic belongs in `api/shared/`, not in thin HTTP handlers
-- Pydantic API models belong in `api/shared/models.py`
+- Cross-feature workspace logic belongs in top-level `shared/`, not in thin HTTP handlers
+- The repo no longer has `api/shared/`; Docker and local tooling should reference `shared/`
 - Frontend API types should be generated, not handwritten
 - S3/RepoStorage is the source of truth for repo content in the platform
 - For manifests and git sync, use non-destructive upsert patterns for
