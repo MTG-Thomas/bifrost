@@ -148,8 +148,13 @@ As of this note, `integrations.yaml` includes:
   Exchange after tenants are linked and consented
 - The Microsoft CSP app expects both integrations to be configured; one does not
   replace the other
+- Preferred security model: `Microsoft` should be a dedicated Bifrost Entra app
+  / service-principal style identity, while `Microsoft CSP` remains the
+  delegated partner-admin connection
 - Detailed rationale is in
   `docs/plans/2026-03-26-microsoft-integration-boundaries.md`
+- Additional service-account guidance is in
+  `docs/plans/2026-03-26-microsoft-service-account-model.md`
 - For Bifrost runtime secrets, prefer an external store such as Azure Key Vault
 - See `docs/plans/2026-03-25-keeper-msp-integration-design-note.md`
 
