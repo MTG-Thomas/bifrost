@@ -91,6 +91,17 @@ async def test_infer_sites_from_devices_deduplicates(monkeypatch):
     ]
 
 
+def test_extract_items_supports_devices_payload():
+    payload = {
+        "metadata": {"limit": 1, "offset": 0, "total": 1},
+        "devices": [
+            {"agentUuid": "agent-1", "siteUuid": "site-1", "siteName": "Alpha"},
+        ],
+    }
+
+    assert vipre.VipreClient._extract_items(payload) == payload["devices"]
+
+
 @pytest.mark.asyncio
 async def test_sync_vipre_sites_maps_unmapped_sites(monkeypatch):
     class FakeClient:
@@ -159,4 +170,3 @@ async def test_sync_vipre_sites_maps_unmapped_sites(monkeypatch):
         ("VIPRE", "org-new", "300", "New Org"),
     ]
     assert fake_client.closed is True
-
