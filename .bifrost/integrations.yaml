@@ -89,14 +89,14 @@ integrations:
     mappings: []
     name: Datto RMM
   342cff77-ef6b-4f46-a6f8-2545b2c6bab1:
-    default_entity_id: <your-tenant-id>
+    default_entity_id: null
     id: 342cff77-ef6b-4f46-a6f8-2545b2c6bab1
     list_entities_data_provider_id: cd0b2104-9e2b-5e59-a794-25a5d8d58ae4
     mappings: []
     name: Microsoft CSP
     oauth_provider:
-      authorization_url: https://login.microsoftonline.com/<your-tenant-id>/oauth2/v2.0/authorize
-      client_id: <your-client-id>
+      authorization_url: https://login.microsoftonline.com/{entity_id}/oauth2/v2.0/authorize
+      client_id: __NEEDS_SETUP__
       display_name: Microsoft CSP
       provider_name: Microsoft CSP
       scopes:
@@ -105,7 +105,7 @@ integrations:
       - DelegatedAdminRelationship.ReadWrite.All
       - ManagedTenants.Read.All
       - offline_access
-      token_url: https://login.microsoftonline.com/<your-tenant-id>/oauth2/v2.0/token
+      token_url: https://login.microsoftonline.com/{entity_id}/oauth2/v2.0/token
   42e2cb7a-cd29-47b9-a88f-81b2f09227b1:
     config_schema:
     - description: ConnectSecure public API base URI (e.g. https://api.myconnectsecure.com)
@@ -315,7 +315,7 @@ integrations:
     name: GoToConnect
     oauth_provider:
       authorization_url: https://authentication.logmeininc.com/oauth/authorize
-      client_id: <your-client-id>
+      client_id: __NEEDS_SETUP__
       display_name: GoToConnect
       provider_name: GoToConnect
       scopes:
@@ -340,7 +340,7 @@ integrations:
     mappings: []
     name: NinjaOne
     oauth_provider:
-      client_id: <your-client-id>
+      client_id: __NEEDS_SETUP__
       display_name: NinjaOne
       oauth_flow_type: client_credentials
       provider_name: NinjaOne
@@ -380,22 +380,22 @@ integrations:
     mappings: []
     name: HaloPSA
     oauth_provider:
-      client_id: <your-client-id>
+      client_id: __NEEDS_SETUP__
       display_name: HaloPSA
       oauth_flow_type: client_credentials
       provider_name: HaloPSA
       scopes:
       - all
-      token_url: https://<your-instance>.halopsa.com/auth/token
+      token_url: null
   dab30741-a455-4c50-bd2d-0ab3e78fe3cd:
-    default_entity_id: <your-tenant-id>
+    default_entity_id: null
     id: dab30741-a455-4c50-bd2d-0ab3e78fe3cd
     list_entities_data_provider_id: cd0b2104-9e2b-5e59-a794-25a5d8d58ae4
     mappings: []
     name: Microsoft
     oauth_provider:
       authorization_url: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
-      client_id: <your-client-id>
+      client_id: __NEEDS_SETUP__
       display_name: Microsoft Graph
       oauth_flow_type: client_credentials
       provider_name: Microsoft Graph
@@ -430,7 +430,7 @@ integrations:
     name: Pax8
     oauth_provider:
       audience: api://p8p.client
-      client_id: <your-client-id>
+      client_id: __NEEDS_SETUP__
       display_name: Pax8
       oauth_flow_type: client_credentials
       provider_name: Pax8
