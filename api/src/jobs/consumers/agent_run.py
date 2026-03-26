@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from src.config import get_settings
 from src.core.pubsub import publish_agent_run_update
+from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.cache.redis_client import get_redis
 from src.core.database import get_session_factory
 from src.jobs.rabbitmq import BaseConsumer
@@ -182,6 +183,13 @@ class AgentRunConsumer(BaseConsumer):
                     agent_run.error = run_result["error"]
                 await db.commit()
 
+                # Clean up Redis Stream now that steps are committed to DB
+                try:
+                    async with get_redis() as r:
+                        await r.delete(agent_run_steps_stream_key(run_id))
+                except Exception:
+                    pass
+
                 await publish_agent_run_update(agent_run, agent.name)
 
                 # Update event delivery status if triggered by event
@@ -218,6 +226,13 @@ class AgentRunConsumer(BaseConsumer):
                         await db.commit()
                     except Exception:
                         logger.exception(f"Failed to update agent_run {run_id} after error")
+
+                    # Clean up Redis Stream on failure too
+                    try:
+                        async with get_redis() as r:
+                            await r.delete(agent_run_steps_stream_key(run_id))
+                    except Exception:
+                        pass
 
                     try:
                         await publish_agent_run_update(

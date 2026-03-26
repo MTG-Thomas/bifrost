@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from src.models.orm.agents import Agent
 from src.models.orm.agent_runs import AgentRun, AgentRunStep
 from src.core.constants import SYSTEM_USER_ID, SYSTEM_USER_EMAIL
+from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.pubsub import publish_agent_run_step
 from src.services.execution.agent_helpers import build_agent_system_prompt, find_delegated_agent, resolve_agent_tools
 from src.services.llm import LLMMessage, ToolCallRequest, get_llm_client
@@ -608,18 +609,37 @@ class AutonomousAgentExecutor:
         await self.session.flush()
 
         # Broadcast step for real-time updates
+        step_data = {
+            "id": str(step.id),
+            "run_id": str(run_id),
+            "step_number": step_number,
+            "type": step_type,
+            "content": content,
+            "tokens_used": tokens_used,
+            "duration_ms": duration_ms,
+        }
         try:
-            await publish_agent_run_step(
-                run_id=str(run_id),
-                step={
-                    "id": str(step.id),
-                    "run_id": str(run_id),
-                    "step_number": step_number,
-                    "type": step_type,
-                    "content": content,
-                    "tokens_used": tokens_used,
-                    "duration_ms": duration_ms,
-                },
-            )
+            await publish_agent_run_step(run_id=str(run_id), step=step_data)
         except Exception:
             pass  # Don't fail the run if pub/sub fails
+
+        # Write to Redis Stream for dual-read (API reads from Redis when run is in-progress)
+        if self.redis_client:
+            try:
+                stream_key = agent_run_steps_stream_key(str(run_id))
+                await self.redis_client.xadd(
+                    stream_key,
+                    {
+                        "id": str(step.id),
+                        "run_id": str(run_id),
+                        "step_number": str(step_number),
+                        "type": step_type,
+                        "content": json.dumps(content) if content else "{}",
+                        "tokens_used": str(tokens_used) if tokens_used is not None else "",
+                        "duration_ms": str(duration_ms) if duration_ms is not None else "",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    maxlen=1000,
+                )
+            except Exception:
+                pass  # Don't fail the run if Redis write fails
