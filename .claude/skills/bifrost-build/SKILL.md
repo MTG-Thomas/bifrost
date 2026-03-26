@@ -108,11 +108,11 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 | Command | Purpose |
 |---------|---------|
 | `bifrost watch` | Primary dev command — starts interactive watch session, auto-syncs on save |
-| `bifrost sync` | One-shot bidirectional sync with TUI conflict resolution |
+| `bifrost sync` | One-shot bidirectional sync — **interactive TUI, user must run manually** |
 | `bifrost run <file> -w <name> --org <UUID>` | Execute workflow in specific org context |
-| `bifrost api <METHOD> <path>` | Authenticated API client — inspect executions, validate apps, check platform state |
-| `bifrost push` | One-shot upload (alias for sync, use when watch isn't running) |
-| `bifrost pull` | One-shot download (alias for sync) |
+| `bifrost api <METHOD> <path>` | Bifrost platform API client ONLY — inspect executions, validate apps, check platform state. NOT for third-party APIs. |
+| `bifrost push` | One-shot upload — **interactive TUI, user must run manually** |
+| `bifrost pull` | One-shot download — **interactive TUI, user must run manually** |
 
 ### Platform Operations
 
@@ -124,6 +124,23 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 | List executions | `bifrost api GET /api/executions` |
 | Verify platform state | `bifrost api GET /api/workflows` (only for debugging sync divergence) |
 | Validate an app | `bifrost api POST /api/applications/{id}/validate` |
+| Download platform docs | `bifrost api GET /api/llms.txt > /tmp/bifrost-docs/llms.txt` |
+
+### `bifrost api` Boundaries (CRITICAL)
+
+`bifrost api` is ONLY for the Bifrost platform API. It does NOT proxy to third-party integration APIs.
+
+- **Valid**: `/api/executions/{id}`, `/api/workflows`, `/api/applications/{id}/validate`, `/api/llms.txt`
+- **Invalid**: `/Client/237` (HaloPSA), `/companies` (Pax8), or any non-`/api/` path
+
+**If you don't know whether an endpoint exists, check first:**
+1. Download the docs if not already cached: `bifrost api GET /api/llms.txt > /tmp/bifrost-docs/llms.txt`
+2. Grep for the endpoint: `grep -i "endpoint_name" /tmp/bifrost-docs/llms.txt`
+3. If it's not documented, it doesn't exist — do NOT guess URL patterns
+
+**To call a third-party integration API** (HaloPSA, Pax8, NinjaOne, etc.):
+- Write a small test workflow using the SDK module and run it with `bifrost run`
+- Never try to route integration API calls through `bifrost api`
 
 ### MCP Tools (creation and events only)
 
@@ -134,15 +151,31 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 | Create an agent | `create_agent` |
 | Event triggers | `create_event_source`, `create_event_subscription` |
 | RAG search | `search_knowledge` |
-| Validate an app | `validate_app` or `bifrost push --validate` |
+| Validate an app | `validate_app` or `bifrost api POST /api/applications/{id}/validate` |
 | App dependencies | `get_app_dependencies`, `update_app_dependencies` |
 
 ### Syncing
 
-**`bifrost watch` handles all syncing.** Do NOT run `bifrost push` or `bifrost git push` while watch is running — watch already pushes every file change automatically.
+**`bifrost watch` handles all syncing.** The agent NEVER runs sync commands directly.
 
-- `bifrost git push` is for git-integrated deployments (pull + push + entity import). Only use when the user explicitly requests it.
-- `bifrost push` is a one-off direct upload. Only use when the user explicitly requests it or watch is not running.
+#### NEVER run these commands from the agent (CRITICAL)
+
+`bifrost sync`, `bifrost push`, and `bifrost pull` all launch an **interactive TUI** for conflict resolution. They will hang or fail when run non-interactively. The agent must NEVER execute these commands.
+
+#### Sync rules
+
+1. **Before writing any files**, verify `bifrost watch` is running:
+   ```bash
+   pgrep -f 'bifrost watch' > /dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING"
+   ```
+2. **If watch is running**: Just write files locally. Watch auto-syncs everything. Do nothing else.
+3. **If watch is NOT running**: Tell the user: "Please run `bifrost watch` in a terminal first." **Do NOT write files or attempt to sync until the user confirms watch is running.**
+4. **If the user asks to sync manually** (push/pull/sync): Tell them to run the command themselves in their terminal since it requires interactive TUI input.
+5. **`bifrost git push`** is for git-integrated deployments. Only mention it when the user explicitly asks about git deployment — and they must run it themselves.
+
+#### What about deploying without watch?
+
+If the user doesn't want to run watch and asks to deploy, tell them to run `bifrost sync` or `bifrost push` in their own terminal. The agent cannot do this for them.
 
 Preflight (runs automatically in watch): manifest YAML, file existence, Python syntax, ruff linting, UUID cross-references, orphan detection.
 
