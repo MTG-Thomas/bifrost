@@ -74,3 +74,7 @@ The Microsoft CSP app should describe these integrations as:
 
 - `Microsoft CSP`: Partner Center and GDAP delegated access
 - `Microsoft`: Customer-tenant application identity
+
+For the recommended security posture and operator model, see also:
+
+- `docs/plans/2026-03-26-microsoft-service-account-model.md`
