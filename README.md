@@ -203,6 +203,26 @@ npm run dev
 ./test.sh --e2e
 ```
 
+### CLI Authentication Storage
+
+The `bifrost` CLI now prefers the Unix `pass` password store for cached device
+flow credentials and only falls back to `~/.bifrost/credentials.json` when
+`pass` is unavailable.
+
+```bash
+# Default behavior on Unix: prefer pass, fallback to file
+bifrost login
+
+# Force pass-backed storage
+export BIFROST_CREDENTIALS_BACKEND=pass
+
+# Override the pass entry name (default: bifrost/credentials)
+export BIFROST_PASS_ENTRY=bifrost/credentials
+```
+
+If an older plaintext credentials file exists and `pass` is available, the CLI
+will migrate the stored credentials into `pass` automatically on the next read.
+
 ---
 
 ## Architecture
