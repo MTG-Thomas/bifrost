@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -206,6 +207,21 @@ class VipreClient:
             or identity.get("siteName")
             or ""
         )
+        if not site_name:
+            links = device.get("links", []) if isinstance(device, dict) else []
+            if isinstance(links, list):
+                for link in links:
+                    if not isinstance(link, dict):
+                        continue
+                    if link.get("rel") != "backtrack-details":
+                        continue
+                    raw_url = str(link.get("url") or "").strip()
+                    if not raw_url:
+                        continue
+                    hostname = (urlparse(raw_url).hostname or "").strip()
+                    if hostname:
+                        site_name = hostname
+                        break
 
         return {
             "id": str(site_uuid or ""),
