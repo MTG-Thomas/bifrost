@@ -150,7 +150,7 @@ docker compose logs -f api
 docker compose logs -f client
 ```
 
-Changes to files in `api/src/`, `api/shared/`, and `client/src/` automatically reload.
+Changes to files in `api/src/`, `shared/`, and `client/src/` automatically reload.
 
 **VS Code Debugging:**
 
