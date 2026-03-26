@@ -102,6 +102,23 @@ def test_extract_items_supports_devices_payload():
     assert vipre.VipreClient._extract_items(payload) == payload["devices"]
 
 
+def test_infer_site_from_device_falls_back_to_backtrack_hostname():
+    device = {
+        "siteUuid": "site-123",
+        "links": [
+            {
+                "rel": "backtrack-details",
+                "url": "https://wagoner.myvipre.com/device/details/agent-1/summary",
+            }
+        ],
+    }
+
+    assert vipre.VipreClient.infer_site_from_device(device) == {
+        "id": "site-123",
+        "name": "wagoner.myvipre.com",
+    }
+
+
 @pytest.mark.asyncio
 async def test_sync_vipre_sites_maps_unmapped_sites(monkeypatch):
     class FakeClient:
