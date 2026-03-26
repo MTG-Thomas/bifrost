@@ -113,7 +113,11 @@ class VipreClient:
     def _extract_items(payload: Any) -> list[dict]:
         if not isinstance(payload, dict):
             return []
-        items = payload.get("items", [])
+        # The documented payload shape uses "devices", but tolerate "items"
+        # so the client also works with generic paginated wrappers.
+        items = payload.get("devices")
+        if items is None:
+            items = payload.get("items", [])
         return [item for item in items if isinstance(item, dict)]
 
     @staticmethod
@@ -255,4 +259,3 @@ async def get_client(scope: str | None = None) -> VipreClient:
         api_key=config["api_key"],
         site_uuid=getattr(integration, "entity_id", None),
     )
-
