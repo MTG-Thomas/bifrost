@@ -57,6 +57,30 @@ Use:
 These already write via `/api/files/write`, `/api/files/delete`, and run
 manifest import via `/api/files/manifest/import`.
 
+### 2a. Interim Dev-Cert Wrapper
+
+The current dev endpoint still uses a self-signed certificate on
+`10.1.23.240.nip.io`, so raw `bifrost push` and `bifrost watch` can fail local
+TLS verification.
+
+Until Bifrost is moved behind a proper dev subdomain/certificate, use:
+
+- [bifrost-watch-dev.sh](/home/thomas/mtg-bifrost/bifrost/scripts/bifrost-watch-dev.sh)
+
+This wrapper:
+
+- resolves the current Bifrost API URL from env or pass-backed CLI credentials
+- fetches the current dev certificate into `/tmp`
+- sets `SSL_CERT_FILE`
+- runs `bifrost watch` through the repo `.venv`
+
+Recommended interim loop:
+
+```bash
+cd /home/thomas/mtg-bifrost/bifrost
+scripts/bifrost-watch-dev.sh .
+```
+
 ### 3. Treat Platform Code Separately
 
 Changes under these paths require an image rebuild or deployment rollout:
@@ -107,6 +131,8 @@ Preferred flow:
 
 - `bifrost watch` is still useful, but only for intentional workspace-content
   iteration
+- for this repo today, prefer the repo-local watch wrapper until the dev
+  certificate situation is cleaned up
 - direct platform sync is a better fit for this fork than continuing to depend
   on a feature upstream intends to remove
 - this workflow does not solve the fork's `.bifrost/` repo-model drift by
