@@ -61,17 +61,17 @@ async def _get_meraki_admin_governance_policy() -> dict[str, list[str] | str]:
     customer_org_exclusions_csv = await config.get(
         MERAKI_POLICY_CUSTOMER_EXCLUSIONS_KEY,
         default=_to_csv(DEFAULT_BASELINE_EXCLUDED_ORG_NAMES),
-        scope=None,
+        scope="global",
     )
     procurement_org_names_csv = await config.get(
         MERAKI_POLICY_PROCUREMENT_ORGS_KEY,
         default=_to_csv(DEFAULT_PROCUREMENT_LICENSE_ORG_NAMES),
-        scope=None,
+        scope="global",
     )
     procurement_allowed_admin_emails_csv = await config.get(
         MERAKI_POLICY_PROCUREMENT_ALLOWED_ADMINS_KEY,
         default=_to_csv(DEFAULT_PROCUREMENT_ALLOWED_ADMIN_EMAILS),
-        scope=None,
+        scope="global",
     )
     return {
         "customer_org_exclusions_csv": str(customer_org_exclusions_csv or ""),
@@ -260,17 +260,17 @@ async def save_meraki_admin_governance_policy(
     await config.set(
         MERAKI_POLICY_CUSTOMER_EXCLUSIONS_KEY,
         customer_org_exclusions_csv,
-        scope=None,
+        scope="global",
     )
     await config.set(
         MERAKI_POLICY_PROCUREMENT_ORGS_KEY,
         procurement_org_names_csv,
-        scope=None,
+        scope="global",
     )
     await config.set(
         MERAKI_POLICY_PROCUREMENT_ALLOWED_ADMINS_KEY,
         procurement_allowed_admin_emails_csv,
-        scope=None,
+        scope="global",
     )
     return await get_meraki_admin_governance_policy()
 

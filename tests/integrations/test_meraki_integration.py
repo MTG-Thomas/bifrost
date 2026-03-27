@@ -156,7 +156,7 @@ async def test_save_meraki_admin_governance_policy(monkeypatch):
 
     async def fake_set(key: str, value: str, is_secret: bool = False, scope: str | None = None):
         assert is_secret is False
-        assert scope is None
+        assert scope == "global"
         stored[key] = value
 
     async def fake_get_policy():

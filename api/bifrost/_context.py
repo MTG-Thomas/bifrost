@@ -133,6 +133,8 @@ def resolve_scope(scope: str | None) -> str | None:
     default = get_default_scope()
     if scope is None:
         return default
+    if scope == "global":
+        return "global"
     if scope == default:
         return scope
     ctx = _execution_context.get()
