@@ -1,0 +1,49 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: bifrost-selfsigned-issuer
+  namespace: bifrost
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bifrost-root-ca
+  namespace: bifrost
+spec:
+  isCA: true
+  commonName: Bifrost NetBird Root CA
+  secretName: bifrost-root-ca
+  privateKey:
+    algorithm: RSA
+    size: 4096
+  issuerRef:
+    name: bifrost-selfsigned-issuer
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: bifrost-ca
+  namespace: bifrost
+spec:
+  ca:
+    secretName: bifrost-root-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bifrost-netbird-tls
+  namespace: bifrost
+spec:
+  commonName: bifrost.nb.midtowntg.com
+  dnsNames:
+    - bifrost.nb.midtowntg.com
+  secretName: bifrost-netbird-tls
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: bifrost-ca
+    kind: Issuer
