@@ -1,0 +1,19 @@
+router:
+  enabled: true
+
+policies:
+  k8s-admins:
+    name: Kubernetes Admin Access
+    description: Allow NetBird peers in the All group to reach the k3s API.
+    sourceGroups:
+      - All
+    protocols:
+      - tcp
+    bidirectional: false
+
+kubernetesAPI:
+  enabled: true
+  groups:
+    - k8s-api
+  policies:
+    - k8s-admins
