@@ -1,6 +1,6 @@
 # Codex Session Notes
 
-**Last updated:** 2026-03-25
+**Last updated:** 2026-03-27
 
 This file is a Codex-friendly distillation of the top-level `CLAUDE.md`,
 selected `.claude/` behavior, and the current integration-session context.
@@ -15,10 +15,10 @@ workflow/content repos.
 ## Repo State
 
 - Repo: `~/mtg-bifrost/bifrost`
-- Active branch at time of writing: `feat/autotask-cove-integrations`
+- Active branch at time of writing: `main`
 - The platform is FastAPI + React and is developed primarily through Docker
-- `.bifrost/*.yaml` manifests are first-class source files for integrations,
-  workflows, forms, apps, and related entities
+- `.bifrost/*.yaml` manifests are currently committed in this fork, but that is
+  a fork-local model under active review rather than a stable upstream pattern
 
 ## Core Operating Rules
 
@@ -51,8 +51,9 @@ workflow/content repos.
   `.bifrost/` as generated/system-managed workspace state
 - See `docs/plans/2026-03-26-upstream-convergence-plan.md` before doing more
   repo-model work around manifests or dev image workflows
-- See `docs/plans/2026-03-26-feature-branch-closeout-plan.md` for the merge
-  path from `feat/autotask-cove-integrations` back to fork `main`
+- The built-in Git/GitHub integration should now be treated as deprecated for
+  this fork's day-to-day workflow; see
+  `docs/plans/2026-03-27-post-github-integration-workflow.md`
 
 ## Useful `.claude` Behavior That Matters
 
@@ -79,7 +80,8 @@ The main reusable ideas from `.claude/skills/bifrost-build/SKILL.md` are:
 - prefer local-repo discovery over remote platform discovery when source is
   available
 - fetch platform docs once per session if needed and reuse them
-- treat `.bifrost/*.yaml` as the main discovery surface for local work
+- treat `.bifrost/*.yaml` as a current discovery surface, but not as a safe
+  long-term source-of-truth assumption
 - generate UUIDs before writing cross-referenced manifest entities
 - rely on `bifrost watch` only when intentionally using SDK/watch workflows
 
@@ -109,6 +111,58 @@ For first-class vendor integrations, the working pattern has been:
    - config contract
    - sorting/normalization
    - sync behavior
+
+## Post-GitHub Workflow
+
+Jack plans to deprecate the in-app Git/GitHub integration. For this fork,
+assume that workflow is going away and prefer the direct platform sync path.
+
+### Source Control
+
+- local git is the source of truth for code review, branching, rebasing, and
+  merges
+- GitHub remains for repo hosting and collaboration
+- do not depend on Bifrost's `/api/github/*` workflow for normal delivery
+
+### Userland Changes
+
+For workspace-level changes that the platform can load from RepoStorage:
+
+- `features/`
+- `modules/`
+- `shared/`
+- `helpers/`
+- `workflows/`
+- `apps/`
+- current fork-local `.bifrost/` manifests
+
+Use the direct CLI/API sync path instead of GitHub sync:
+
+- `bifrost push [path]`
+- `bifrost sync [path]`
+- `bifrost watch [path]`
+
+These commands write files through `/api/files/*` and run manifest import via
+`/api/files/manifest/import`.
+
+### Platform Code Changes
+
+Changes under these paths are not "userland" and require an image rebuild or
+deployment update to affect the running platform:
+
+- `api/`
+- `client/`
+- `docker-compose*.yml`
+- image/build/deployment files
+
+For dev, use the SSH + k3s rollout path on `10.1.23.114` rather than relying on
+workspace sync.
+
+### Current Dev Server Baseline
+
+- dev GitHub config was switched back to `MTG-Thomas/bifrost` on branch `main`
+  on 2026-03-27
+- treat that as a temporary compatibility setting, not the preferred workflow
 
 ## Current Integration Coverage
 
