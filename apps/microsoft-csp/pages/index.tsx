@@ -71,24 +71,41 @@ interface GdapTenantStatus {
   relationships: GdapRelationship[];
 }
 
+const WORKFLOW_IDS = {
+  checkSetup: "ec165a28-94ef-4fef-9779-e32c1ce48979",
+  getPermissions: "b6317462-15cc-413c-afa7-dc0e8e1f3342",
+  listTenants: "ef8cf1f2-b451-47f4-aee8-336f7cb21d33",
+  getGdapStatus: "6bd5dd41-d695-4654-8eb6-a5be6a1c7bcf",
+  listPermissions: "94d8419c-44f2-4e86-bf5f-2df92b9ef933",
+  savePermissions: "7aa4065e-9c69-4056-a7ff-33145d78e70d",
+  applyPartnerPermissions: "07a5f9d5-48df-472d-b427-793eb6da2f45",
+  linkTenant: "9e9de8c5-d342-48c7-b0e3-21b8d0ff2bc1",
+  consentTenant: "74cafce3-5a5c-4a0c-ac45-5eddb852e2e4",
+  createOrganization: "f1473ec0-a303-4cdf-a039-ba3882332b27",
+  createGdapRelationship: "42f771af-09cb-4932-ab42-7355956b3961",
+  updateGdapAssignments: "245c0dbc-592d-4a5e-b0b5-0ebc256e72b1",
+  batchUpdateGdap: "0ad1083d-bcab-4f4e-856a-749e65fefd1d",
+  seedGdapTemplate: "dd50b0c5-2673-4cce-a488-a66c2421412f",
+} as const;
+
 export default function MicrosoftCspPage() {
   // Query hooks (auto-execute on mount)
-  const checkSetupWorkflow = useWorkflowQuery("features/microsoft_csp/workflows/check_setup.py::check_microsoft_setup");
-  const getPermissionsWorkflow = useWorkflowQuery("features/microsoft_csp/workflows/get_permissions.py::get_selected_permissions");
-  const tenantsWorkflow = useWorkflowQuery("features/microsoft_csp/workflows/list_tenants.py::list_csp_tenants");
-  const gdapStatusWorkflow = useWorkflowQuery("features/microsoft_csp/workflows/get_gdap_status.py::get_gdap_status");
+  const checkSetupWorkflow = useWorkflowQuery(WORKFLOW_IDS.checkSetup);
+  const getPermissionsWorkflow = useWorkflowQuery(WORKFLOW_IDS.getPermissions);
+  const tenantsWorkflow = useWorkflowQuery(WORKFLOW_IDS.listTenants);
+  const gdapStatusWorkflow = useWorkflowQuery(WORKFLOW_IDS.getGdapStatus);
 
   // Mutation hooks (triggered by user action)
-  const listPermissionsWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/list_permissions.py::list_available_permissions");
-  const savePermissionsWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/save_permissions.py::save_selected_permissions");
-  const applyPartnerWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/apply_partner_permissions.py::apply_partner_permissions");
-  const linkWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/link_tenant.py::link_csp_tenant");
-  const consentWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/consent_tenant.py::consent_csp_tenant");
-  const createOrgWorkflow = useWorkflowMutation("shared/bifrost/workflows/create_organization.py::create_organization");
-  const createGdapWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/create_gdap_relationship.py::create_gdap_relationship");
-  const syncGdapWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/update_gdap_assignments.py::update_gdap_assignments");
-  const batchSyncGdapWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/batch_update_gdap.py::batch_update_gdap");
-  const seedTemplateWorkflow = useWorkflowMutation("features/microsoft_csp/workflows/seed_gdap_template.py::seed_gdap_template");
+  const listPermissionsWorkflow = useWorkflowMutation(WORKFLOW_IDS.listPermissions);
+  const savePermissionsWorkflow = useWorkflowMutation(WORKFLOW_IDS.savePermissions);
+  const applyPartnerWorkflow = useWorkflowMutation(WORKFLOW_IDS.applyPartnerPermissions);
+  const linkWorkflow = useWorkflowMutation(WORKFLOW_IDS.linkTenant);
+  const consentWorkflow = useWorkflowMutation(WORKFLOW_IDS.consentTenant);
+  const createOrgWorkflow = useWorkflowMutation(WORKFLOW_IDS.createOrganization);
+  const createGdapWorkflow = useWorkflowMutation(WORKFLOW_IDS.createGdapRelationship);
+  const syncGdapWorkflow = useWorkflowMutation(WORKFLOW_IDS.updateGdapAssignments);
+  const batchSyncGdapWorkflow = useWorkflowMutation(WORKFLOW_IDS.batchUpdateGdap);
+  const seedTemplateWorkflow = useWorkflowMutation(WORKFLOW_IDS.seedGdapTemplate);
 
   // Local state seeded from query data (mutated locally by link/consent actions)
   const [tenants, setTenants] = useState<CspTenant[]>([]);
