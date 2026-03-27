@@ -42,7 +42,7 @@ class config:
             scope: Organization scope override. Omit to use the execution
                 context org (with automatic global fallback via cascade).
                 Pass an org UUID to target a specific org (provider orgs only).
-                Pass None explicitly for global scope.
+                Pass "global" for global scope.
 
         Returns:
             Any: Configuration value, or default if not found
@@ -93,7 +93,7 @@ class config:
             is_secret: If True, encrypts the value before storage
             scope: Organization scope override. Omit to use the execution
                 context org. Pass an org UUID to target a specific org
-                (provider orgs only). Pass None explicitly for global scope.
+                (provider orgs only). Pass "global" for global scope.
 
         Raises:
             RuntimeError: If not authenticated
@@ -129,7 +129,7 @@ class config:
             scope: Organization scope override. Omit to use the execution
                 context org (with automatic global fallback via cascade).
                 Pass an org UUID to target a specific org (provider orgs only).
-                Pass None explicitly for global scope.
+                Pass "global" for global scope.
 
         Returns:
             ConfigData: Configuration data with dot-notation and dict-like access:
@@ -170,7 +170,7 @@ class config:
             scope: Organization scope override. Omit to use the execution
                 context org (with automatic global fallback via cascade).
                 Pass an org UUID to target a specific org (provider orgs only).
-                Pass None explicitly for global scope.
+                Pass "global" for global scope.
 
         Returns:
             bool: True if deleted successfully
