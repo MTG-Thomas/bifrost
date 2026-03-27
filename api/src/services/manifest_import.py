@@ -1491,10 +1491,9 @@ class ManifestResolver:
         )
 
         # Delete agents not in manifest
-        # System agents are platform-managed and should not be treated as repo drift.
         await _bulk_delete(
             Agent,
-            [Agent.is_system == False],  # noqa: E712
+            [],
             present_agent_uuids,
             "agents",
         )
