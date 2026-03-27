@@ -422,6 +422,92 @@ async def test_audit_meraki_admins_against_baseline_excludes_orgs(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sync_meraki_admins_from_baseline_dedupes_against_filtered_admins(monkeypatch):
+    class FakeClient:
+        def __init__(self) -> None:
+            self.created: list[dict] = []
+            self.updated: list[dict] = []
+
+        async def list_organizations(self):
+            return [
+                _organization("100", "Midtown Technology Group"),
+                _organization("200", "Alpha"),
+            ]
+
+        async def list_organization_admins(self, organization_id: str, **_: object):
+            return {
+                "100": [
+                    _admin("doug@midtowntg.com", name="Doug", account_status="ok"),
+                ],
+                "200": [
+                    _admin(
+                        "doug@midtowntg.com",
+                        name="Doug Legacy",
+                        account_status="disabled",
+                    ),
+                ],
+            }[organization_id]
+
+        async def create_organization_admin(self, organization_id: str, **kwargs: object):
+            self.created.append({"organization_id": organization_id, **kwargs})
+            return {}
+
+        async def update_organization_admin(
+            self,
+            organization_id: str,
+            *,
+            admin_id: str,
+            name: str,
+            org_access: str,
+            tags: list[str] | None = None,
+            networks: list[str] | None = None,
+        ):
+            self.updated.append(
+                {
+                    "organization_id": organization_id,
+                    "admin_id": admin_id,
+                    "name": name,
+                    "org_access": org_access,
+                    "tags": tags,
+                    "networks": networks,
+                }
+            )
+            return {}
+
+        async def close(self) -> None:
+            return None
+
+    fake_client = FakeClient()
+
+    async def fake_get_client(scope: str | None = None):
+        assert scope == "global"
+        return fake_client
+
+    monkeypatch.setattr(meraki, "get_client", fake_get_client)
+
+    result = await sync_meraki_admins_from_baseline(
+        baseline_org_name="Midtown Technology Group",
+        required_admin_emails_csv="doug@midtowntg.com",
+        dry_run=False,
+        include_account_statuses_csv="ok",
+    )
+
+    assert result["created"] == []
+    assert [item["organization_name"] for item in result["updated"]] == ["Alpha"]
+    assert fake_client.created == []
+    assert fake_client.updated == [
+        {
+            "organization_id": "200",
+            "admin_id": "doug@midtowntg.com",
+            "name": "Doug",
+            "org_access": "full",
+            "tags": [],
+            "networks": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sync_meraki_admins_from_baseline_creates_missing(monkeypatch):
     class FakeClient:
         def __init__(self) -> None:

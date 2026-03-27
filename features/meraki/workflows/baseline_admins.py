@@ -67,6 +67,7 @@ async def _load_org_admin_inventory(
             "organization_id": org_id,
             "organization_name": org_name,
             "admins": eligible_admins,
+            "all_admins": normalized_admins,
         }
 
     results = await asyncio.gather(
@@ -267,7 +268,7 @@ async def sync_meraki_admins_from_baseline(
 
             existing_by_email = {
                 admin["email"]: admin
-                for admin in result["admins"]
+                for admin in result.get("all_admins", result["admins"])
             }
 
             for email in target_admin_emails:
