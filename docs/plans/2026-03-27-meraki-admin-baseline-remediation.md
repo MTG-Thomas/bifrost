@@ -40,7 +40,8 @@ Reusable Meraki workflows added for this operational pattern:
 - `Meraki: Sync Admins From Baseline Organization`
 
 These workflows are intended to support standard add/change remediation based on
-a known-good Meraki org rather than an inferred domain-wide heuristic.
+a known-good Meraki org rather than an inferred domain-wide heuristic. They now
+also support explicit org exclusions for legacy or vendor-disabled orgs.
 
 ## Live Remediation Scope
 
@@ -53,33 +54,33 @@ Known non-remediated orgs due Meraki API `403` on unlicensed orgs:
 - `Cynthia L Hovey DDS`
 - `Connected Healthcare Systems`
 
+Known intentionally excluded org:
+
+- `Taylor Computer Solutions`
+
+Known excluded org list for future baseline runs:
+
+- `Taylor Computer Solutions`
+- `Jacobson Hile Kight`
+- `Cynthia L Hovey DDS`
+- `Connected Healthcare Systems`
+
 ## Outcome
 
 Before remediation, the selected admin set had `238` missing placements across
 the audited Meraki estate.
 
-After remediation, the selected admin set is fully aligned everywhere we could
-successfully write except one holdout org:
+After remediation, the selected admin set is fully aligned across the active
+Meraki orgs we intend to manage.
 
-- `Taylor Computer Solutions`
+Remaining admin drift for the selected set exists only in explicitly excluded or
+vendor-disabled orgs:
 
-Current remaining gap count:
-
-- `patrick@midtowntg.com`: `1`
-- `steven@midtowntg.com`: `1`
-- `trevor@midtowntg.com`: `1`
-- `miles@midtowntg.com`: `1`
-- `matt@midtowntg.com`: `1`
-- `bfunk@midtowntg.com`: `1`
-- `chris@midtowntg.com`: `1`
-- `scott@midtowntg.com`: `1`
-
-All eight remaining misses are the same org:
-
-- `Taylor Computer Solutions`
-
-This org lists admins successfully, but Meraki returned a `404` on admin create
-for that organization during remediation.
+- intentionally excluded: `Taylor Computer Solutions`
+- Meraki-disabled for non-payment:
+  - `Jacobson Hile Kight`
+  - `Cynthia L Hovey DDS`
+  - `Connected Healthcare Systems`
 
 ## Team Note
 

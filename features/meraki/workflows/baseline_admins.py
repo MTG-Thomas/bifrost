@@ -102,6 +102,7 @@ async def audit_meraki_admins_against_baseline(
     baseline_org_name: str = "Midtown Technology Group",
     required_admin_emails_csv: str | None = None,
     extra_valid_admin_emails_csv: str = "eric@carbonpeaktech.com",
+    excluded_org_names_csv: str = "",
     include_account_statuses_csv: str = "ok,pending,unverified",
 ) -> dict:
     client, inventory, baseline = await _load_org_admin_inventory(
@@ -118,12 +119,23 @@ async def audit_meraki_admins_against_baseline(
         )
         selected_admins.update(_parse_csv(extra_valid_admin_emails_csv))
         expected_admins = sorted(selected_admins)
+        excluded_org_names = set(_parse_csv(excluded_org_names_csv))
 
         disparities = []
         errors = []
+        skipped_excluded = []
 
         for organization_name in sorted(inventory, key=str.lower):
             result = inventory[organization_name]
+            normalized_org_name = result["organization_name"].strip().lower()
+            if normalized_org_name in excluded_org_names:
+                skipped_excluded.append(
+                    {
+                        "organization_id": result["organization_id"],
+                        "organization_name": result["organization_name"],
+                    }
+                )
+                continue
             if result.get("error"):
                 errors.append(
                     {
@@ -136,8 +148,12 @@ async def audit_meraki_admins_against_baseline(
 
             admin_emails = sorted({admin["email"] for admin in result["admins"]})
             current_admins = set(admin_emails)
-            missing_admins = sorted(email for email in expected_admins if email not in current_admins)
-            extra_admins = sorted(email for email in current_admins if email not in expected_admins)
+            missing_admins = sorted(
+                email for email in expected_admins if email not in current_admins
+            )
+            extra_admins = sorted(
+                email for email in current_admins if email not in expected_admins
+            )
 
             if missing_admins or extra_admins:
                 disparities.append(
@@ -151,14 +167,23 @@ async def audit_meraki_admins_against_baseline(
                 )
 
         disparities.sort(
-            key=lambda item: (-len(item["missing_admins"]), item["organization_name"].lower())
+            key=lambda item: (
+                -len(item["missing_admins"]),
+                item["organization_name"].lower(),
+            )
         )
 
         return {
             "baseline_organization": baseline_org_name,
             "baseline_admins": expected_admins,
+            "excluded_org_names": sorted(excluded_org_names),
+            "skipped_excluded": skipped_excluded,
             "organizations_audited": len(
-                [item for item in inventory.values() if not item.get("error")]
+                [
+                    item for item in inventory.values()
+                    if not item.get("error")
+                    and item["organization_name"].strip().lower() not in excluded_org_names
+                ]
             ),
             "organizations_with_disparities": len(disparities),
             "disparities": disparities,
@@ -178,6 +203,7 @@ async def sync_meraki_admins_from_baseline(
     baseline_org_name: str = "Midtown Technology Group",
     required_admin_emails_csv: str = "",
     target_org_names_csv: str | None = None,
+    excluded_org_names_csv: str = "",
     include_account_statuses_csv: str = "ok,pending,unverified",
     dry_run: bool = True,
 ) -> dict:
@@ -205,16 +231,26 @@ async def sync_meraki_admins_from_baseline(
             )
 
         target_org_names = set(_parse_csv(target_org_names_csv))
+        excluded_org_names = set(_parse_csv(excluded_org_names_csv))
         created = []
         updated = []
         unchanged = []
         skipped_errors = []
+        skipped_excluded = []
 
         for organization_name in sorted(inventory, key=str.lower):
             result = inventory[organization_name]
             normalized_org_name = result["organization_name"].strip().lower()
 
             if target_org_names and normalized_org_name not in target_org_names:
+                continue
+            if normalized_org_name in excluded_org_names:
+                skipped_excluded.append(
+                    {
+                        "organization_id": result["organization_id"],
+                        "organization_name": result["organization_name"],
+                    }
+                )
                 continue
             if normalized_org_name == baseline_org_name.strip().lower():
                 continue
@@ -313,10 +349,12 @@ async def sync_meraki_admins_from_baseline(
         return {
             "baseline_organization": baseline_org_name,
             "target_admin_emails": target_admin_emails,
+            "excluded_org_names": sorted(excluded_org_names),
             "dry_run": dry_run,
             "created": created,
             "updated": updated,
             "unchanged_count": len(unchanged),
+            "skipped_excluded": skipped_excluded,
             "skipped_errors": skipped_errors,
         }
     finally:

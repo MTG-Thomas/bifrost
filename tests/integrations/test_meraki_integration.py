@@ -368,6 +368,59 @@ async def test_audit_meraki_admins_against_baseline(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_audit_meraki_admins_against_baseline_excludes_orgs(monkeypatch):
+    class FakeClient:
+        async def list_organizations(self):
+            return [
+                _organization("100", "Midtown Technology Group"),
+                _organization("200", "Alpha"),
+                _organization("300", "Legacy Org"),
+            ]
+
+        async def list_organization_admins(self, organization_id: str, **_: object):
+            return {
+                "100": [
+                    _admin("alice@midtowntg.com", name="Alice"),
+                ],
+                "200": [],
+                "300": [],
+            }[organization_id]
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_client(scope: str | None = None):
+        return FakeClient()
+
+    monkeypatch.setattr(meraki, "get_client", fake_get_client)
+
+    result = await audit_meraki_admins_against_baseline(
+        baseline_org_name="Midtown Technology Group",
+        required_admin_emails_csv="alice@midtowntg.com",
+        extra_valid_admin_emails_csv="",
+        excluded_org_names_csv="Legacy Org",
+    )
+
+    assert result["excluded_org_names"] == ["legacy org"]
+    assert result["skipped_excluded"] == [
+        {
+            "organization_id": "300",
+            "organization_name": "Legacy Org",
+        }
+    ]
+    assert result["organizations_audited"] == 2
+    assert result["disparities"] == [
+        {
+            "organization_id": "200",
+            "organization_name": "Alpha",
+            "missing_admins": ["alice@midtowntg.com"],
+            "extra_admins": [],
+            "admin_count": 0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sync_meraki_admins_from_baseline_creates_missing(monkeypatch):
     class FakeClient:
         def __init__(self) -> None:
@@ -456,6 +509,74 @@ async def test_sync_meraki_admins_from_baseline_creates_missing(monkeypatch):
             "organization_id": "300",
             "admin_id": "bob@midtowntg.com",
             "name": "Bob",
+            "org_access": "full",
+            "tags": [],
+            "networks": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sync_meraki_admins_from_baseline_excludes_orgs(monkeypatch):
+    class FakeClient:
+        def __init__(self) -> None:
+            self.created: list[dict] = []
+
+        async def list_organizations(self):
+            return [
+                _organization("100", "Midtown Technology Group"),
+                _organization("200", "Alpha"),
+                _organization("300", "Legacy Org"),
+            ]
+
+        async def list_organization_admins(self, organization_id: str, **_: object):
+            return {
+                "100": [_admin("alice@midtowntg.com", name="Alice")],
+                "200": [],
+                "300": [],
+            }[organization_id]
+
+        async def create_organization_admin(self, organization_id: str, **kwargs):
+            self.created.append({"organization_id": organization_id, **kwargs})
+            return {}
+
+        async def close(self) -> None:
+            return None
+
+    fake_client = FakeClient()
+
+    async def fake_get_client(scope: str | None = None):
+        return fake_client
+
+    monkeypatch.setattr(meraki, "get_client", fake_get_client)
+
+    result = await sync_meraki_admins_from_baseline(
+        baseline_org_name="Midtown Technology Group",
+        required_admin_emails_csv="alice@midtowntg.com",
+        excluded_org_names_csv="Legacy Org",
+        dry_run=False,
+    )
+
+    assert result["excluded_org_names"] == ["legacy org"]
+    assert result["skipped_excluded"] == [
+        {
+            "organization_id": "300",
+            "organization_name": "Legacy Org",
+        }
+    ]
+    assert result["created"] == [
+        {
+            "organization_id": "200",
+            "organization_name": "Alpha",
+            "email": "alice@midtowntg.com",
+            "action": "create",
+        }
+    ]
+    assert fake_client.created == [
+        {
+            "organization_id": "200",
+            "email": "alice@midtowntg.com",
+            "name": "Alice",
             "org_access": "full",
             "tags": [],
             "networks": [],
