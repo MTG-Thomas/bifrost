@@ -104,11 +104,49 @@ typo-account cleanup:
   - `kmiller@midtowntg.com`
 - decide whether the broader baseline should also include additional Midtown
   staff currently missing from many orgs, especially:
-  - `koerner@midtowntg.com`
-  - `adam@midtowntg.com`
-  - `mike@midtowntg.com`
-  - `doug@midtowntg.com`
-  - `tim@midtowntg.com`
+  - additional staff beyond the now-remediated second batch, if needed
+
+## Follow-up Remediation Batch
+
+A second Midtown-admin remediation batch was executed using the same
+`Meraki: Sync Admins From Baseline Organization` primitive, but in
+single-admin executions after the combined batch timed out.
+
+Second-batch admins:
+
+- `koerner@midtowntg.com`
+- `adam@midtowntg.com`
+- `mike@midtowntg.com`
+- `doug@midtowntg.com`
+- `tim@midtowntg.com`
+
+Observed change totals from the successful per-admin workflow executions:
+
+- `koerner@midtowntg.com`: `11` creates, `1` update
+- `adam@midtowntg.com`: `9` creates, `32` updates
+- `mike@midtowntg.com`: `6` creates, `36` updates
+- `doug@midtowntg.com`: `4` creates, `22` updates
+- `tim@midtowntg.com`: `7` creates, `2` updates
+
+Net second-batch totals:
+
+- `37` admin creates
+- `93` admin updates
+
+During this pass, the workflow exposed a primitive bug: the sync logic was
+deduping against only the filtered/eligible admin set, which could trigger a
+duplicate-email create attempt when Meraki already had the admin in a filtered
+status. That was fixed so baseline sync now dedupes against all discovered org
+admins before deciding whether to create or update.
+
+Post-change audit result for the second-batch admin set:
+
+- `0` remaining missing placements across the active managed estate
+- exclusions remain unchanged:
+  - `Taylor Computer Solutions`
+  - `Jacobson Hile Kight`
+  - `Cynthia L Hovey DDS`
+  - `Connected Healthcare Systems`
 
 ## Team Note
 
