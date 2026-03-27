@@ -8,11 +8,11 @@ Auth Type: oauth
 
 from __future__ import annotations
 
-import time
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import requests
+import httpx
 
 
 # =============================================================================
@@ -39119,28 +39119,41 @@ class _NinjaOnePublicAPIClient:
     def __init__(
         self,
         base_url: str,
-        session: requests.Session,
+        client: httpx.AsyncClient,
         timeout: float = 30.0,
         max_retries: int = 3,
         base_backoff: float = 1.0,
         max_backoff: float = 60.0,
     ):
         self.base_url = base_url.rstrip("/")
-        self.session = session
+        self.client = client
         self.timeout = timeout
         self.max_retries = max_retries
         self.base_backoff = base_backoff
         self.max_backoff = max_backoff
 
-    def _request_with_retry(
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client."""
+        await self.client.aclose()
+
+    async def _request_with_retry(
         self, method: str, url: str, **kwargs
-    ) -> requests.Response:
+    ) -> httpx.Response:
         """Execute HTTP request with exponential backoff retry for transient failures."""
         kwargs.setdefault("timeout", self.timeout)
         last_response = None
 
         for attempt in range(self.max_retries + 1):
-            response = self.session.request(method, url, **kwargs)
+            try:
+                response = await self.client.request(method, url, **kwargs)
+            except httpx.RequestError as exc:
+                if attempt >= self.max_retries:
+                    raise SDKError(f"Request failed: {exc}") from exc
+
+                wait = min(self.base_backoff * (2 ** attempt), self.max_backoff)
+                await asyncio.sleep(wait)
+                continue
+
             last_response = response
 
             # Success or non-retryable error - return immediately
@@ -39169,7 +39182,7 @@ class _NinjaOnePublicAPIClient:
 
             # Cap the wait time
             wait = min(wait, self.max_backoff)
-            time.sleep(wait)
+            await asyncio.sleep(wait)
 
         return last_response
 
@@ -39183,13 +39196,13 @@ class _NinjaOnePublicAPIClient:
             return DotDict(data)
         return data
 
-    def list_activities(self, **kwargs) -> GetActivitiesResponse:
+    async def list_activities(self, **kwargs) -> GetActivitiesResponse:
         """List activities"""
         url = f"{self.base_url}/v2/activities"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39198,7 +39211,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39206,13 +39219,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_alert(self, uid: str, **kwargs) -> Any:
+    async def delete_alert(self, uid: str, **kwargs) -> Any:
         """Reset alert/condition"""
         url = f"{self.base_url}/v2/alert/{uid}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39221,7 +39234,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39229,13 +39242,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_reset(self, uid: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_reset(self, uid: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Reset alert/condition and provide custom data for activity"""
         url = f"{self.base_url}/v2/alert/{uid}/reset"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39244,7 +39257,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39252,13 +39265,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_alerts(self, **kwargs) -> List[GetAlertsResponseItem]:
+    async def list_alerts(self, **kwargs) -> List[GetAlertsResponseItem]:
         """List active alerts (triggered conditions)"""
         url = f"{self.base_url}/v2/alerts"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39267,7 +39280,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39275,13 +39288,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_upload(self, data: Dict[str, Any] = None, **kwargs) -> List[UploadTempAttachmentsResponseItem]:
+    async def create_upload(self, data: Dict[str, Any] = None, **kwargs) -> List[UploadTempAttachmentsResponseItem]:
         """Upload temporary attachments"""
         url = f"{self.base_url}/v2/attachments/temp/upload"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39290,7 +39303,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39298,13 +39311,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_scripts(self, **kwargs) -> List[GetAutomationScriptsResponseItem]:
+    async def list_scripts(self, **kwargs) -> List[GetAutomationScriptsResponseItem]:
         """List all available automation scripts"""
         url = f"{self.base_url}/v2/automation/scripts"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39313,7 +39326,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39321,13 +39334,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_bandwidth_throttle(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_bandwidth_throttle(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Sets the bandwidth throttle for a device"""
         url = f"{self.base_url}/v2/backup/bandwidth-throttle"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39336,7 +39349,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39344,13 +39357,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_integrity_check_jobs(self, **kwargs) -> GetIntegrityCheckJobsResponse:
+    async def list_integrity_check_jobs(self, **kwargs) -> GetIntegrityCheckJobsResponse:
         """Integrity check jobs."""
         url = f"{self.base_url}/v2/backup/integrity-check-jobs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39359,7 +39372,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39367,13 +39380,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_integrity_check_jobs(self, data: Dict[str, Any] = None, **kwargs) -> SubmitIntegrityCheckJobResponse:
+    async def create_integrity_check_jobs(self, data: Dict[str, Any] = None, **kwargs) -> SubmitIntegrityCheckJobResponse:
         """Create an integrity check job"""
         url = f"{self.base_url}/v2/backup/integrity-check-jobs"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39382,7 +39395,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39390,13 +39403,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_jobs(self, **kwargs) -> GetBackupJobsResponse:
+    async def list_jobs(self, **kwargs) -> GetBackupJobsResponse:
         """Backup jobs"""
         url = f"{self.base_url}/v2/backup/jobs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39405,7 +39418,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39413,13 +39426,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive(self, data: Dict[str, Any] = None, **kwargs) -> List[ArchiveChecklistTemplateResponseItem]:
+    async def create_archive(self, data: Dict[str, Any] = None, **kwargs) -> List[ArchiveChecklistTemplateResponseItem]:
         """Archive a checklist template"""
         url = f"{self.base_url}/v2/checklist/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39428,7 +39441,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39436,13 +39449,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore(self, data: Dict[str, Any] = None, **kwargs) -> List[RestoreChecklistTemplateResponseItem]:
+    async def create_restore(self, data: Dict[str, Any] = None, **kwargs) -> List[RestoreChecklistTemplateResponseItem]:
         """Restore a checklist template"""
         url = f"{self.base_url}/v2/checklist/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39451,7 +39464,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39459,13 +39472,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_template(self, checklist_template_id: str, **kwargs) -> Any:
+    async def delete_template(self, checklist_template_id: str, **kwargs) -> Any:
         """Delete a checklist template"""
         url = f"{self.base_url}/v2/checklist/template/{checklist_template_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39474,7 +39487,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39482,13 +39495,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_templates(self, **kwargs) -> List[GetChecklistTemplatesResponseItem]:
+    async def list_templates(self, **kwargs) -> List[GetChecklistTemplatesResponseItem]:
         """List checklist templates"""
         url = f"{self.base_url}/v2/checklist/templates"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39497,7 +39510,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39505,13 +39518,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_templates(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateChecklistTemplatesResponseItem]:
+    async def create_templates(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateChecklistTemplatesResponseItem]:
         """Create checklist templates"""
         url = f"{self.base_url}/v2/checklist/templates"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39520,7 +39533,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39528,13 +39541,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_templates(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateChecklistTemplatesResponseItem]:
+    async def update_templates(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateChecklistTemplatesResponseItem]:
         """Update checklist templates"""
         url = f"{self.base_url}/v2/checklist/templates"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39543,7 +39556,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39551,13 +39564,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_delete(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_delete(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Delete checklist templates"""
         url = f"{self.base_url}/v2/checklist/templates/delete"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39566,7 +39579,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39574,13 +39587,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_contact(self, id: str, **kwargs) -> GetContactByIdResponse:
+    async def get_contact(self, id: str, **kwargs) -> GetContactByIdResponse:
         """Contact details"""
         url = f"{self.base_url}/v2/contact/{id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39589,7 +39602,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39597,13 +39610,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_contact(self, id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateContactResponse:
+    async def patch_contact(self, id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateContactResponse:
         """Update a contact"""
         url = f"{self.base_url}/v2/contact/{id}"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39612,7 +39625,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39620,13 +39633,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_contact(self, id: str, **kwargs) -> Any:
+    async def delete_contact(self, id: str, **kwargs) -> Any:
         """Delete a contact"""
         url = f"{self.base_url}/v2/contact/{id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39635,7 +39648,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39643,13 +39656,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_contacts(self, **kwargs) -> List[GetContactsResponseItem]:
+    async def list_contacts(self, **kwargs) -> List[GetContactsResponseItem]:
         """Contact list"""
         url = f"{self.base_url}/v2/contacts"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39658,7 +39671,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39666,13 +39679,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_contacts(self, data: Dict[str, Any] = None, **kwargs) -> CreateContactResponse:
+    async def create_contacts(self, data: Dict[str, Any] = None, **kwargs) -> CreateContactResponse:
         """Create a contact"""
         url = f"{self.base_url}/v2/contacts"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39681,7 +39694,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39689,13 +39702,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_custom_fields(self, **kwargs) -> GetAllNodeAttributesResponse:
+    async def list_custom_fields(self, **kwargs) -> GetAllNodeAttributesResponse:
         """Get custom fields with pagination"""
         url = f"{self.base_url}/v2/custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39704,7 +39717,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39712,13 +39725,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_custom_fields(self, data: Dict[str, Any] = None, **kwargs) -> CreateNodeAttributeResponse:
+    async def create_custom_fields(self, data: Dict[str, Any] = None, **kwargs) -> CreateNodeAttributeResponse:
         """Create a new custom field"""
         url = f"{self.base_url}/v2/custom-fields"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39727,7 +39740,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39735,13 +39748,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_bulk(self, data: Dict[str, Any] = None, **kwargs) -> List[BulkCreateNodeAttributesResponseItem]:
+    async def create_bulk(self, data: Dict[str, Any] = None, **kwargs) -> List[BulkCreateNodeAttributesResponseItem]:
         """Bulk create custom fields"""
         url = f"{self.base_url}/v2/custom-fields/bulk"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39750,7 +39763,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39758,13 +39771,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_bulk(self, data: Dict[str, Any] = None, **kwargs) -> List[BulkUpdateNodeAttributesResponseItem]:
+    async def update_bulk(self, data: Dict[str, Any] = None, **kwargs) -> List[BulkUpdateNodeAttributesResponseItem]:
         """Bulk update custom fields"""
         url = f"{self.base_url}/v2/custom-fields/bulk"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39773,7 +39786,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39781,13 +39794,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_bulk(self, **kwargs) -> List[str]:
+    async def delete_bulk(self, **kwargs) -> List[str]:
         """Bulk delete custom fields"""
         url = f"{self.base_url}/v2/custom-fields/bulk"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39796,7 +39809,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39804,13 +39817,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_signed_urls(self, entity_type: str, entity_id: str, **kwargs) -> str:
+    async def get_signed_urls(self, entity_type: str, entity_id: str, **kwargs) -> str:
         """Get custom field signed urls"""
         url = f"{self.base_url}/v2/custom-fields/entity-type/{entity_type}/{entity_id}/signed-urls"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39819,7 +39832,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39827,13 +39840,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_field_name(self, field_name: str, **kwargs) -> GetNodeAttributeByFieldNameResponse:
+    async def get_field_name(self, field_name: str, **kwargs) -> GetNodeAttributeByFieldNameResponse:
         """Get custom field by field name"""
         url = f"{self.base_url}/v2/custom-fields/field-name/{field_name}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39842,7 +39855,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39850,13 +39863,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_field_name(self, field_name: str, data: Dict[str, Any] = None, **kwargs) -> UpdateNodeAttributeByFieldNameResponse:
+    async def update_field_name(self, field_name: str, data: Dict[str, Any] = None, **kwargs) -> UpdateNodeAttributeByFieldNameResponse:
         """Update custom field by field name"""
         url = f"{self.base_url}/v2/custom-fields/field-name/{field_name}"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39865,7 +39878,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39873,13 +39886,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_field_name(self, field_name: str, **kwargs) -> Any:
+    async def delete_field_name(self, field_name: str, **kwargs) -> Any:
         """Delete custom field by field name"""
         url = f"{self.base_url}/v2/custom-fields/field-name/{field_name}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39888,7 +39901,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39896,13 +39909,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_device_custom_fields(self, **kwargs) -> List[GetDeviceGlobalCustomFieldsResponseItem]:
+    async def list_device_custom_fields(self, **kwargs) -> List[GetDeviceGlobalCustomFieldsResponseItem]:
         """Device Custom Fields"""
         url = f"{self.base_url}/v2/device-custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39911,7 +39924,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39919,13 +39932,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_device(self, id: str, **kwargs) -> GetDeviceResponse:
+    async def get_device(self, id: str, **kwargs) -> GetDeviceResponse:
         """Device details"""
         url = f"{self.base_url}/v2/device/{id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39934,7 +39947,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39942,13 +39955,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_device(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_device(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update device information"""
         url = f"{self.base_url}/v2/device/{id}"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39957,7 +39970,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39965,13 +39978,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_activities(self, id: str, **kwargs) -> GetDeviceActivitiesResponse:
+    async def get_activities(self, id: str, **kwargs) -> GetDeviceActivitiesResponse:
         """Device activities"""
         url = f"{self.base_url}/v2/device/{id}/activities"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -39980,7 +39993,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -39988,13 +40001,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_alerts(self, id: str, **kwargs) -> List[GetDeviceAlertsResponseItem]:
+    async def get_alerts(self, id: str, **kwargs) -> List[GetDeviceAlertsResponseItem]:
         """Device alerts (triggered conditions)"""
         url = f"{self.base_url}/v2/device/{id}/alerts"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40003,7 +40016,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40011,13 +40024,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_custom_fields(self, id: str, **kwargs) -> Dict[str, Any]:
+    async def get_custom_fields(self, id: str, **kwargs) -> Dict[str, Any]:
         """Device custom fields"""
         url = f"{self.base_url}/v2/device/{id}/custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40026,7 +40039,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40034,13 +40047,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_custom_fields(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_custom_fields(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update Field Values"""
         url = f"{self.base_url}/v2/device/{id}/custom-fields"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40049,7 +40062,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40057,13 +40070,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_dashboard_url(self, id: str, **kwargs) -> GetDeviceLinkResponse:
+    async def get_dashboard_url(self, id: str, **kwargs) -> GetDeviceLinkResponse:
         """Device link"""
         url = f"{self.base_url}/v2/device/{id}/dashboard-url"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40072,7 +40085,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40080,13 +40093,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_decommission(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_decommission(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Decommission device"""
         url = f"{self.base_url}/v2/device/{id}/decommission"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40095,7 +40108,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40103,13 +40116,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_disks(self, id: str, **kwargs) -> List[GetDeviceDiskDrivesResponseItem]:
+    async def get_disks(self, id: str, **kwargs) -> List[GetDeviceDiskDrivesResponseItem]:
         """Device disk drives"""
         url = f"{self.base_url}/v2/device/{id}/disks"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40118,7 +40131,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40126,13 +40139,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_jobs(self, id: str, **kwargs) -> List[GetDeviceActiveJobsResponseItem]:
+    async def get_jobs(self, id: str, **kwargs) -> List[GetDeviceActiveJobsResponseItem]:
         """Device currently running (active) jobs"""
         url = f"{self.base_url}/v2/device/{id}/jobs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40141,7 +40154,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40149,13 +40162,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_last_logged_on_user(self, id: str, **kwargs) -> GetDeviceLastLoggedOnUserResponse:
+    async def get_last_logged_on_user(self, id: str, **kwargs) -> GetDeviceLastLoggedOnUserResponse:
         """Last logged-on user information"""
         url = f"{self.base_url}/v2/device/{id}/last-logged-on-user"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40164,7 +40177,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40172,13 +40185,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_maintenance(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def update_maintenance(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Schedule maintenance"""
         url = f"{self.base_url}/v2/device/{id}/maintenance"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40187,7 +40200,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40195,13 +40208,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_maintenance(self, id: str, **kwargs) -> Any:
+    async def delete_maintenance(self, id: str, **kwargs) -> Any:
         """Cancel maintenance"""
         url = f"{self.base_url}/v2/device/{id}/maintenance"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40210,7 +40223,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40218,13 +40231,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_network_interfaces(self, id: str, **kwargs) -> List[GetDeviceNetworkInterfacesResponseItem]:
+    async def get_network_interfaces(self, id: str, **kwargs) -> List[GetDeviceNetworkInterfacesResponseItem]:
         """Device network interfaces"""
         url = f"{self.base_url}/v2/device/{id}/network-interfaces"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40233,7 +40246,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40241,13 +40254,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_os_patch_installs(self, id: str, **kwargs) -> List[GetDeviceInstalledOsPatchesResponseItem]:
+    async def get_os_patch_installs(self, id: str, **kwargs) -> List[GetDeviceInstalledOsPatchesResponseItem]:
         """OS Patch installation report for device"""
         url = f"{self.base_url}/v2/device/{id}/os-patch-installs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40256,7 +40269,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40264,13 +40277,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_os_patches(self, id: str, **kwargs) -> List[GetDevicePendingFailedRejectedOsPatchesResponseItem]:
+    async def get_os_patches(self, id: str, **kwargs) -> List[GetDevicePendingFailedRejectedOsPatchesResponseItem]:
         """OS Patches"""
         url = f"{self.base_url}/v2/device/{id}/os-patches"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40279,7 +40292,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40287,13 +40300,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_owner(self, id: str, **kwargs) -> Any:
+    async def delete_owner(self, id: str, **kwargs) -> Any:
         """Remove device owner"""
         url = f"{self.base_url}/v2/device/{id}/owner"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40302,7 +40315,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40310,13 +40323,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_owner(self, id: str, owner_uid: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_owner(self, id: str, owner_uid: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Set device owner"""
         url = f"{self.base_url}/v2/device/{id}/owner/{owner_uid}"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40325,7 +40338,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40333,13 +40346,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_apply(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_apply(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Run OS patch apply"""
         url = f"{self.base_url}/v2/device/{id}/patch/os/apply"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40348,7 +40361,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40356,13 +40369,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_scan(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_scan(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Run OS patch scan"""
         url = f"{self.base_url}/v2/device/{id}/patch/os/scan"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40371,7 +40384,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40379,13 +40392,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_apply_1(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_apply_1(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Run Software patch apply"""
         url = f"{self.base_url}/v2/device/{id}/patch/software/apply"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40394,7 +40407,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40402,13 +40415,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_scan_1(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_scan_1(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Run Software patch scan"""
         url = f"{self.base_url}/v2/device/{id}/patch/software/scan"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40417,7 +40430,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40425,13 +40438,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_overrides(self, id: str, **kwargs) -> GetPolicyOverridesResponse:
+    async def get_overrides(self, id: str, **kwargs) -> GetPolicyOverridesResponse:
         """Get summary of device policy overrides"""
         url = f"{self.base_url}/v2/device/{id}/policy/overrides"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40440,7 +40453,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40448,13 +40461,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_overrides(self, id: str, **kwargs) -> Any:
+    async def delete_overrides(self, id: str, **kwargs) -> Any:
         """Reset device policy overrides"""
         url = f"{self.base_url}/v2/device/{id}/policy/overrides"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40463,7 +40476,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40471,13 +40484,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_processors(self, id: str, **kwargs) -> List[GetDeviceProcessorsResponseItem]:
+    async def get_processors(self, id: str, **kwargs) -> List[GetDeviceProcessorsResponseItem]:
         """Device processors"""
         url = f"{self.base_url}/v2/device/{id}/processors"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40486,7 +40499,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40494,13 +40507,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_reboot(self, id: str, mode: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_reboot(self, id: str, mode: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Reboot device"""
         url = f"{self.base_url}/v2/device/{id}/reboot/{mode}"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40509,7 +40522,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40517,13 +40530,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_run(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_run(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Run script or built-in action"""
         url = f"{self.base_url}/v2/device/{id}/script/run"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40532,7 +40545,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40540,13 +40553,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_options(self, id: str, **kwargs) -> RequestScriptingOptionsResponse:
+    async def get_options(self, id: str, **kwargs) -> RequestScriptingOptionsResponse:
         """Device scripting options"""
         url = f"{self.base_url}/v2/device/{id}/scripting/options"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40555,7 +40568,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40563,13 +40576,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_software(self, id: str, **kwargs) -> List[GetDeviceSoftwareResponseItem]:
+    async def get_software(self, id: str, **kwargs) -> List[GetDeviceSoftwareResponseItem]:
         """Device software inventory"""
         url = f"{self.base_url}/v2/device/{id}/software"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40578,7 +40591,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40586,13 +40599,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_software_patch_installs(self, id: str, **kwargs) -> List[GetDeviceInstalledSoftwarePatchesResponseItem]:
+    async def get_software_patch_installs(self, id: str, **kwargs) -> List[GetDeviceInstalledSoftwarePatchesResponseItem]:
         """Software Patch history for device"""
         url = f"{self.base_url}/v2/device/{id}/software-patch-installs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40601,7 +40614,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40609,13 +40622,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_software_patches(self, id: str, **kwargs) -> List[GetDevicePendingFailedRejectedSoftwarePatchesResponseItem]:
+    async def get_software_patches(self, id: str, **kwargs) -> List[GetDevicePendingFailedRejectedSoftwarePatchesResponseItem]:
         """Pending, Failed and Rejected Software patches for device"""
         url = f"{self.base_url}/v2/device/{id}/software-patches"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40624,7 +40637,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40632,13 +40645,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_volumes(self, id: str, **kwargs) -> List[GetDeviceVolumesResponseItem]:
+    async def get_volumes(self, id: str, **kwargs) -> List[GetDeviceVolumesResponseItem]:
         """Device storage volumes"""
         url = f"{self.base_url}/v2/device/{id}/volumes"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40647,7 +40660,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40655,13 +40668,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_configure(self, id: str, service_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_configure(self, id: str, service_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Modify Windows Service configuration"""
         url = f"{self.base_url}/v2/device/{id}/windows-service/{service_id}/configure"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40670,7 +40683,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40678,13 +40691,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_control(self, id: str, service_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_control(self, id: str, service_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Windows service control"""
         url = f"{self.base_url}/v2/device/{id}/windows-service/{service_id}/control"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40693,7 +40706,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40701,13 +40714,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_windows_services(self, id: str, **kwargs) -> List[GetDeviceServicesResponseItem]:
+    async def get_windows_services(self, id: str, **kwargs) -> List[GetDeviceServicesResponseItem]:
         """Windows services"""
         url = f"{self.base_url}/v2/device/{id}/windows-services"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40716,7 +40729,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40724,13 +40737,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_devices(self, **kwargs) -> List[GetDevicesResponseItem]:
+    async def list_devices(self, **kwargs) -> List[GetDevicesResponseItem]:
         """List devices"""
         url = f"{self.base_url}/v2/devices"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40739,7 +40752,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40747,13 +40760,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_devices_detaileds(self, **kwargs) -> List[GetDevicesDetailedResponseItem]:
+    async def list_devices_detaileds(self, **kwargs) -> List[GetDevicesDetailedResponseItem]:
         """List devices (detailed)"""
         url = f"{self.base_url}/v2/devices-detailed"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40762,7 +40775,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40770,13 +40783,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_approval(self, mode: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_approval(self, mode: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Approve/Reject devices"""
         url = f"{self.base_url}/v2/devices/approval/{mode}"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40785,7 +40798,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40793,13 +40806,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_searches(self, **kwargs) -> SearchResponse:
+    async def list_searches(self, **kwargs) -> SearchResponse:
         """Find devices"""
         url = f"{self.base_url}/v2/devices/search"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40808,7 +40821,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40816,13 +40829,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_document_templates(self, **kwargs) -> List[GetDocumentTemplatesWithAttributesResponseItem]:
+    async def list_document_templates(self, **kwargs) -> List[GetDocumentTemplatesWithAttributesResponseItem]:
         """List document templates with fields"""
         url = f"{self.base_url}/v2/document-templates"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40831,7 +40844,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40839,13 +40852,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_document_templates(self, data: Dict[str, Any] = None, **kwargs) -> CreateDocumentTemplateResponse:
+    async def create_document_templates(self, data: Dict[str, Any] = None, **kwargs) -> CreateDocumentTemplateResponse:
         """Create document template"""
         url = f"{self.base_url}/v2/document-templates"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40854,7 +40867,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40862,13 +40875,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive_1(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_archive_1(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Archive multiple document templates"""
         url = f"{self.base_url}/v2/document-templates/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40877,7 +40890,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40885,13 +40898,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore_1(self, data: Dict[str, Any] = None, **kwargs) -> RestoreDocumentTemplatesResponse:
+    async def create_restore_1(self, data: Dict[str, Any] = None, **kwargs) -> RestoreDocumentTemplatesResponse:
         """Restore a document template"""
         url = f"{self.base_url}/v2/document-templates/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40900,7 +40913,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40908,13 +40921,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_document_templates(self, document_template_id: str, **kwargs) -> GetDocumentTemplateResponse:
+    async def get_document_templates(self, document_template_id: str, **kwargs) -> GetDocumentTemplateResponse:
         """Get document template"""
         url = f"{self.base_url}/v2/document-templates/{document_template_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40923,7 +40936,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40931,13 +40944,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_document_templates(self, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateDocumentTemplateResponse:
+    async def update_document_templates(self, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateDocumentTemplateResponse:
         """Update document template"""
         url = f"{self.base_url}/v2/document-templates/{document_template_id}"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40946,7 +40959,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40954,13 +40967,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_document_templates(self, document_template_id: str, **kwargs) -> Any:
+    async def delete_document_templates(self, document_template_id: str, **kwargs) -> Any:
         """Delete a document template"""
         url = f"{self.base_url}/v2/document-templates/{document_template_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40969,7 +40982,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -40977,13 +40990,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive_2(self, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_archive_2(self, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Archive a document template"""
         url = f"{self.base_url}/v2/document-templates/{document_template_id}/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -40992,7 +41005,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41000,13 +41013,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore_2(self, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> RestoreDocumentTemplateResponse:
+    async def create_restore_2(self, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> RestoreDocumentTemplateResponse:
         """Restore a document template"""
         url = f"{self.base_url}/v2/document-templates/{document_template_id}/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41015,7 +41028,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41023,13 +41036,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_device_ids(self, id: str, **kwargs) -> List[int]:
+    async def get_device_ids(self, id: str, **kwargs) -> List[int]:
         """Group members"""
         url = f"{self.base_url}/v2/group/{id}/device-ids"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41038,7 +41051,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41046,13 +41059,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_groups(self, **kwargs) -> List[GetGroupsResponseItem]:
+    async def list_groups(self, **kwargs) -> List[GetGroupsResponseItem]:
         """List groups (saved searches)"""
         url = f"{self.base_url}/v2/groups"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41061,7 +41074,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41069,13 +41082,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_unmanaged_device(self, data: Dict[str, Any] = None, **kwargs) -> CreateUnmanagedDevicePublicApiResponse:
+    async def create_unmanaged_device(self, data: Dict[str, Any] = None, **kwargs) -> CreateUnmanagedDevicePublicApiResponse:
         """Create an Unmanaged Device"""
         url = f"{self.base_url}/v2/itam/unmanaged-device"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41084,7 +41097,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41092,13 +41105,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_decommission_list(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_decommission_list(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Decommission an Unmanaged Device List"""
         url = f"{self.base_url}/v2/itam/unmanaged-device/decommissionList"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41107,7 +41120,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41115,13 +41128,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_unmanaged_device(self, node_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def update_unmanaged_device(self, node_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update an Unmanaged Device"""
         url = f"{self.base_url}/v2/itam/unmanaged-device/{node_id}"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41130,7 +41143,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41138,13 +41151,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_unmanaged_device(self, node_id: str, **kwargs) -> Any:
+    async def delete_unmanaged_device(self, node_id: str, **kwargs) -> Any:
         """Delete an Unmanaged Device"""
         url = f"{self.base_url}/v2/itam/unmanaged-device/{node_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41153,7 +41166,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41161,13 +41174,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_decommission_1(self, node_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_decommission_1(self, node_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Decommission an Unmanaged Device"""
         url = f"{self.base_url}/v2/itam/unmanaged-device/{node_id}/decommission"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41176,7 +41189,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41184,13 +41197,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_jobs_1(self, **kwargs) -> List[GetActiveJobsResponseItem]:
+    async def list_jobs_1(self, **kwargs) -> List[GetActiveJobsResponseItem]:
         """List active jobs"""
         url = f"{self.base_url}/v2/jobs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41199,7 +41212,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41207,13 +41220,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_download(self, article_id: str, **kwargs) -> Any:
+    async def get_download(self, article_id: str, **kwargs) -> Any:
         """Download knowledge base article"""
         url = f"{self.base_url}/v2/knowledgebase/article/{article_id}/download"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41222,7 +41235,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41230,13 +41243,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_signed_urls_1(self, article_id: str, **kwargs) -> str:
+    async def get_signed_urls_1(self, article_id: str, **kwargs) -> str:
         """Get knowledge base article signed urls"""
         url = f"{self.base_url}/v2/knowledgebase/article/{article_id}/signed-urls"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41245,7 +41258,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41253,13 +41266,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_articles(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateKnowledgeBaseArticlesResponseItem]:
+    async def create_articles(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateKnowledgeBaseArticlesResponseItem]:
         """Create knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/articles"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41268,7 +41281,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41276,13 +41289,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_articles(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateKnowledgeBaseArticlesResponseItem]:
+    async def patch_articles(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateKnowledgeBaseArticlesResponseItem]:
         """Update knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/articles"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41291,7 +41304,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41299,13 +41312,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive_3(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_archive_3(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Archive knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/articles/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41314,7 +41327,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41322,13 +41335,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_delete_1(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_delete_1(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Delete knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/articles/delete"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41337,7 +41350,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41345,13 +41358,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore_3(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_restore_3(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Restore archive knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/articles/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41360,7 +41373,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41368,13 +41381,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_upload_1(self, data: Dict[str, Any] = None, **kwargs) -> List[UploadKnowledgeBaseArticlesResponseItem]:
+    async def create_upload_1(self, data: Dict[str, Any] = None, **kwargs) -> List[UploadKnowledgeBaseArticlesResponseItem]:
         """Upload knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/articles/upload"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41383,7 +41396,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41391,13 +41404,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_folders(self, **kwargs) -> GetKnowledgeBaseFolderPathContentResponse:
+    async def list_folders(self, **kwargs) -> GetKnowledgeBaseFolderPathContentResponse:
         """Returns knowledge base folder"""
         url = f"{self.base_url}/v2/knowledgebase/folder"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41406,7 +41419,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41414,13 +41427,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_folder(self, folder_id: str, **kwargs) -> GetKnowledgeBaseFolderContentResponse:
+    async def get_folder(self, folder_id: str, **kwargs) -> GetKnowledgeBaseFolderContentResponse:
         """Returns knowledge base folder"""
         url = f"{self.base_url}/v2/knowledgebase/folder/{folder_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41429,7 +41442,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41437,13 +41450,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive_4(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_archive_4(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Archive knowledge base folders"""
         url = f"{self.base_url}/v2/knowledgebase/folders/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41452,7 +41465,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41460,13 +41473,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_delete_2(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_delete_2(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Delete knowledge base folders"""
         url = f"{self.base_url}/v2/knowledgebase/folders/delete"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41475,7 +41488,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41483,13 +41496,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_move(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_move(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Move knowledge base items"""
         url = f"{self.base_url}/v2/knowledgebase/folders/move"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41498,7 +41511,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41506,13 +41519,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore_4(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_restore_4(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Restore archived knowledge base folders"""
         url = f"{self.base_url}/v2/knowledgebase/folders/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41521,7 +41534,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41529,13 +41542,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_articles(self, **kwargs) -> List[GetGlobalKnowledgeBaseArticlesResponseItem]:
+    async def list_articles(self, **kwargs) -> List[GetGlobalKnowledgeBaseArticlesResponseItem]:
         """Lists global knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/global/articles"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41544,7 +41557,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41552,13 +41565,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_articles_1(self, **kwargs) -> List[GetClientKnowledgeBaseArticlesResponseItem]:
+    async def list_articles_1(self, **kwargs) -> List[GetClientKnowledgeBaseArticlesResponseItem]:
         """Lists organization knowledge base articles"""
         url = f"{self.base_url}/v2/knowledgebase/organization/articles"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41567,7 +41580,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41575,13 +41588,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_locations(self, **kwargs) -> List[GetLocationsResponseItem]:
+    async def list_locations(self, **kwargs) -> List[GetLocationsResponseItem]:
         """List locations"""
         url = f"{self.base_url}/v2/locations"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41590,7 +41603,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41598,13 +41611,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_noderole(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateNodeRolesResponseItem]:
+    async def create_noderole(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateNodeRolesResponseItem]:
         """Create node roles"""
         url = f"{self.base_url}/v2/noderole"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41613,7 +41626,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41621,13 +41634,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_noderole(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateNodeRolesResponseItem]:
+    async def patch_noderole(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateNodeRolesResponseItem]:
         """Update node roles"""
         url = f"{self.base_url}/v2/noderole"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41636,7 +41649,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41644,13 +41657,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_delete_3(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_delete_3(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Delete node roles"""
         url = f"{self.base_url}/v2/noderole/delete"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41659,7 +41672,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41667,13 +41680,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_lists(self, **kwargs) -> Any:
+    async def list_lists(self, **kwargs) -> Any:
         """Get all node roles"""
         url = f"{self.base_url}/v2/noderole/list"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41682,7 +41695,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41690,13 +41703,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_notification_channels(self, **kwargs) -> List[GetNotificationChannelsResponseItem]:
+    async def list_notification_channels(self, **kwargs) -> List[GetNotificationChannelsResponseItem]:
         """List notification channels"""
         url = f"{self.base_url}/v2/notification-channels"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41705,7 +41718,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41713,13 +41726,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_enableds(self, **kwargs) -> List[GetEnabledNotificationChannelsResponseItem]:
+    async def list_enableds(self, **kwargs) -> List[GetEnabledNotificationChannelsResponseItem]:
         """List enabled notification channels"""
         url = f"{self.base_url}/v2/notification-channels/enabled"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41728,7 +41741,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41736,13 +41749,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive_5(self, data: Dict[str, Any] = None, **kwargs) -> List[ArchiveOrganizationChecklistsResponseItem]:
+    async def create_archive_5(self, data: Dict[str, Any] = None, **kwargs) -> List[ArchiveOrganizationChecklistsResponseItem]:
         """Archive organization checklists"""
         url = f"{self.base_url}/v2/organization/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41751,7 +41764,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41759,13 +41772,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_checklist(self, checklist_id: str, **kwargs) -> GetClientChecklistResponse:
+    async def get_checklist(self, checklist_id: str, **kwargs) -> GetClientChecklistResponse:
         """Get client checklist"""
         url = f"{self.base_url}/v2/organization/checklist/{checklist_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41774,7 +41787,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41782,13 +41795,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_checklist(self, checklist_id: str, **kwargs) -> Any:
+    async def delete_checklist(self, checklist_id: str, **kwargs) -> Any:
         """Delete an organization checklist"""
         url = f"{self.base_url}/v2/organization/checklist/{checklist_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41797,7 +41810,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41805,13 +41818,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_signed_urls_2(self, checklist_id: str, **kwargs) -> str:
+    async def get_signed_urls_2(self, checklist_id: str, **kwargs) -> str:
         """Get organization checklist signed urls"""
         url = f"{self.base_url}/v2/organization/checklist/{checklist_id}/signed-urls"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41820,7 +41833,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41828,13 +41841,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_checklists(self, **kwargs) -> List[GetClientChecklistsResponseItem]:
+    async def list_checklists(self, **kwargs) -> List[GetClientChecklistsResponseItem]:
         """List client checklists"""
         url = f"{self.base_url}/v2/organization/checklists"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41843,7 +41856,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41851,13 +41864,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_checklists(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateOrganizationChecklistsResponseItem]:
+    async def create_checklists(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateOrganizationChecklistsResponseItem]:
         """Create organization checklists"""
         url = f"{self.base_url}/v2/organization/checklists"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41866,7 +41879,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41874,13 +41887,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_checklists(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateOrganizationChecklistsResponseItem]:
+    async def update_checklists(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateOrganizationChecklistsResponseItem]:
         """Update organization checklists"""
         url = f"{self.base_url}/v2/organization/checklists"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41889,7 +41902,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41897,13 +41910,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_delete_4(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_delete_4(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Delete organization checklists"""
         url = f"{self.base_url}/v2/organization/checklists/delete"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41912,7 +41925,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41920,13 +41933,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_promote(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_promote(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Promote organization checklists"""
         url = f"{self.base_url}/v2/organization/checklists/promote"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41935,7 +41948,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41943,13 +41956,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_promote_with_name(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_promote_with_name(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Promote organization checklists"""
         url = f"{self.base_url}/v2/organization/checklists/promote-with-name"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41958,7 +41971,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41966,13 +41979,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_document(self, client_document_id: str, **kwargs) -> Any:
+    async def delete_document(self, client_document_id: str, **kwargs) -> Any:
         """Delete an archived organization document"""
         url = f"{self.base_url}/v2/organization/document/{client_document_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -41981,7 +41994,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -41989,13 +42002,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive_6(self, client_document_id: str, data: Dict[str, Any] = None, **kwargs) -> ArchiveClientDocumentResponse:
+    async def create_archive_6(self, client_document_id: str, data: Dict[str, Any] = None, **kwargs) -> ArchiveClientDocumentResponse:
         """Archive an organization document"""
         url = f"{self.base_url}/v2/organization/document/{client_document_id}/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42004,7 +42017,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42012,13 +42025,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore_5(self, client_document_id: str, data: Dict[str, Any] = None, **kwargs) -> RestoreClientDocumentResponse:
+    async def create_restore_5(self, client_document_id: str, data: Dict[str, Any] = None, **kwargs) -> RestoreClientDocumentResponse:
         """Restore an organization document"""
         url = f"{self.base_url}/v2/organization/document/{client_document_id}/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42027,7 +42040,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42035,13 +42048,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_signed_urls_3(self, client_document_id: str, **kwargs) -> str:
+    async def get_signed_urls_3(self, client_document_id: str, **kwargs) -> str:
         """Get organization document signed urls"""
         url = f"{self.base_url}/v2/organization/document/{client_document_id}/signed-urls"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42050,7 +42063,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42058,13 +42071,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_documents(self, **kwargs) -> List[GetClientDocumentsWithAttributeValuesResponseItem]:
+    async def list_documents(self, **kwargs) -> List[GetClientDocumentsWithAttributeValuesResponseItem]:
         """List all organization documents with field values"""
         url = f"{self.base_url}/v2/organization/documents"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42073,7 +42086,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42081,13 +42094,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_documents(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateOrganizationDocumentsResponseItem]:
+    async def create_documents(self, data: Dict[str, Any] = None, **kwargs) -> List[CreateOrganizationDocumentsResponseItem]:
         """Create organization documents"""
         url = f"{self.base_url}/v2/organization/documents"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42096,7 +42109,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42104,13 +42117,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_documents(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateOrganizationDocumentsResponseItem]:
+    async def patch_documents(self, data: Dict[str, Any] = None, **kwargs) -> List[UpdateOrganizationDocumentsResponseItem]:
         """Update organization documents"""
         url = f"{self.base_url}/v2/organization/documents"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42119,7 +42132,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42127,13 +42140,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_archive_7(self, data: Dict[str, Any] = None, **kwargs) -> List[ArchiveMultiPageClientDocumentsResponseItem]:
+    async def create_archive_7(self, data: Dict[str, Any] = None, **kwargs) -> List[ArchiveMultiPageClientDocumentsResponseItem]:
         """Archives organization documents"""
         url = f"{self.base_url}/v2/organization/documents/archive"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42142,7 +42155,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42150,13 +42163,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore_6(self, data: Dict[str, Any] = None, **kwargs) -> List[RestoreMultiPageClientDocumentsResponseItem]:
+    async def create_restore_6(self, data: Dict[str, Any] = None, **kwargs) -> List[RestoreMultiPageClientDocumentsResponseItem]:
         """Restore multiple multi page organization documents"""
         url = f"{self.base_url}/v2/organization/documents/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42165,7 +42178,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42173,13 +42186,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_generate_installer(self, data: Dict[str, Any] = None, **kwargs) -> GetInstallerResponse:
+    async def create_generate_installer(self, data: Dict[str, Any] = None, **kwargs) -> GetInstallerResponse:
         """Generate installer"""
         url = f"{self.base_url}/v2/organization/generate-installer"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42188,7 +42201,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42196,13 +42209,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_restore_7(self, data: Dict[str, Any] = None, **kwargs) -> List[RestoreOrganizationChecklistsResponseItem]:
+    async def create_restore_7(self, data: Dict[str, Any] = None, **kwargs) -> List[RestoreOrganizationChecklistsResponseItem]:
         """Restore organization checklists"""
         url = f"{self.base_url}/v2/organization/restore"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42211,7 +42224,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42219,13 +42232,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_organization(self, id: str, **kwargs) -> GetOrganizationResponse:
+    async def get_organization(self, id: str, **kwargs) -> GetOrganizationResponse:
         """Organization information"""
         url = f"{self.base_url}/v2/organization/{id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42234,7 +42247,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42242,13 +42255,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_organization(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_organization(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update organization"""
         url = f"{self.base_url}/v2/organization/{id}"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42257,7 +42270,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42265,13 +42278,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_custom_fields_1(self, id: str, **kwargs) -> Dict[str, Any]:
+    async def get_custom_fields_1(self, id: str, **kwargs) -> Dict[str, Any]:
         """Organization custom fields"""
         url = f"{self.base_url}/v2/organization/{id}/custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42280,7 +42293,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42288,13 +42301,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_custom_fields_1(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_custom_fields_1(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update Field Values"""
         url = f"{self.base_url}/v2/organization/{id}/custom-fields"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42303,7 +42316,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42311,13 +42324,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_devices(self, id: str, **kwargs) -> List[GetOrganizationDevicesResponseItem]:
+    async def get_devices(self, id: str, **kwargs) -> List[GetOrganizationDevicesResponseItem]:
         """Organization devices"""
         url = f"{self.base_url}/v2/organization/{id}/devices"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42326,7 +42339,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42334,13 +42347,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_end_users(self, id: str, **kwargs) -> List[GetEndUsersResponseItem]:
+    async def get_end_users(self, id: str, **kwargs) -> List[GetEndUsersResponseItem]:
         """List users"""
         url = f"{self.base_url}/v2/organization/{id}/end-users"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42349,7 +42362,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42357,13 +42370,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_custom_fields_2(self, id: str, location_id: str, **kwargs) -> Dict[str, Any]:
+    async def get_custom_fields_2(self, id: str, location_id: str, **kwargs) -> Dict[str, Any]:
         """Location custom fields"""
         url = f"{self.base_url}/v2/organization/{id}/location/{location_id}/custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42372,7 +42385,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42380,13 +42393,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_custom_fields_2(self, id: str, location_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_custom_fields_2(self, id: str, location_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update Field Values"""
         url = f"{self.base_url}/v2/organization/{id}/location/{location_id}/custom-fields"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42395,7 +42408,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42403,13 +42416,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_installer(self, id: str, location_id: str, installer_type: str, **kwargs) -> GetInstallerForLocationResponse:
+    async def get_installer(self, id: str, location_id: str, installer_type: str, **kwargs) -> GetInstallerForLocationResponse:
         """Generate installer"""
         url = f"{self.base_url}/v2/organization/{id}/location/{location_id}/installer/{installer_type}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42418,7 +42431,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42426,13 +42439,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_locations(self, id: str, **kwargs) -> List[GetOrganizationLocationsResponseItem]:
+    async def get_locations(self, id: str, **kwargs) -> List[GetOrganizationLocationsResponseItem]:
         """Organization locations"""
         url = f"{self.base_url}/v2/organization/{id}/locations"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42441,7 +42454,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42449,13 +42462,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_locations(self, id: str, data: Dict[str, Any] = None, **kwargs) -> CreateLocationForOrganizationResponse:
+    async def create_locations(self, id: str, data: Dict[str, Any] = None, **kwargs) -> CreateLocationForOrganizationResponse:
         """Add new location to organization"""
         url = f"{self.base_url}/v2/organization/{id}/locations"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42464,7 +42477,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42472,13 +42485,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_usage(self, id: str, **kwargs) -> List[GetOrganizationLocationUsageResponseItem]:
+    async def get_usage(self, id: str, **kwargs) -> List[GetOrganizationLocationUsageResponseItem]:
         """Organization locations backup usage"""
         url = f"{self.base_url}/v2/organization/{id}/locations/backup/usage"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42487,7 +42500,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42495,13 +42508,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_locations(self, id: str, location_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateLocationResponse:
+    async def patch_locations(self, id: str, location_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateLocationResponse:
         """Update location"""
         url = f"{self.base_url}/v2/organization/{id}/locations/{location_id}"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42510,7 +42523,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42518,13 +42531,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_usage_1(self, id: str, location_id: str, **kwargs) -> GetLocationUsageResponse:
+    async def get_usage_1(self, id: str, location_id: str, **kwargs) -> GetLocationUsageResponse:
         """Organization location backup usage"""
         url = f"{self.base_url}/v2/organization/{id}/locations/{location_id}/backup/usage"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42533,7 +42546,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42541,13 +42554,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_policies(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def update_policies(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Change organization policy mappings"""
         url = f"{self.base_url}/v2/organization/{id}/policies"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42556,7 +42569,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42564,13 +42577,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_checklists_from_templates(self, organization_id: str, data: Dict[str, Any] = None, **kwargs) -> List[CreateOrganizationChecklistsFromTemplatesResponseItem]:
+    async def create_checklists_from_templates(self, organization_id: str, data: Dict[str, Any] = None, **kwargs) -> List[CreateOrganizationChecklistsFromTemplatesResponseItem]:
         """Create organization checklists from templates"""
         url = f"{self.base_url}/v2/organization/{organization_id}/checklists-from-templates"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42579,7 +42592,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42587,13 +42600,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_document(self, organization_id: str, client_document_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateOrganizationDocumentResponse:
+    async def create_document(self, organization_id: str, client_document_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateOrganizationDocumentResponse:
         """Update organization document"""
         url = f"{self.base_url}/v2/organization/{organization_id}/document/{client_document_id}"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42602,7 +42615,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42610,13 +42623,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_documents(self, organization_id: str, **kwargs) -> List[GetOrganizationDocumentsResponseItem]:
+    async def get_documents(self, organization_id: str, **kwargs) -> List[GetOrganizationDocumentsResponseItem]:
         """List organization documents with field values"""
         url = f"{self.base_url}/v2/organization/{organization_id}/documents"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42625,7 +42638,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42633,13 +42646,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_document_1(self, organization_id: str, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateOrganizationDocumentResponse:
+    async def create_document_1(self, organization_id: str, document_template_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateOrganizationDocumentResponse:
         """Create organization document"""
         url = f"{self.base_url}/v2/organization/{organization_id}/template/{document_template_id}/document"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42648,7 +42661,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42656,13 +42669,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_organizations(self, **kwargs) -> List[GetOrganizationsResponseItem]:
+    async def list_organizations(self, **kwargs) -> List[GetOrganizationsResponseItem]:
         """List organizations"""
         url = f"{self.base_url}/v2/organizations"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42671,7 +42684,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42679,13 +42692,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_organizations(self, data: Dict[str, Any] = None, **kwargs) -> CreateOrganizationResponse:
+    async def create_organizations(self, data: Dict[str, Any] = None, **kwargs) -> CreateOrganizationResponse:
         """Create new organization"""
         url = f"{self.base_url}/v2/organizations"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42694,7 +42707,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42702,13 +42715,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_organizations_detaileds(self, **kwargs) -> List[GetOrganizationsDetailedResponseItem]:
+    async def list_organizations_detaileds(self, **kwargs) -> List[GetOrganizationsDetailedResponseItem]:
         """List organizations (Detailed)"""
         url = f"{self.base_url}/v2/organizations-detailed"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42717,7 +42730,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42725,13 +42738,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_policies(self, **kwargs) -> List[GetPoliciesResponseItem]:
+    async def list_policies(self, **kwargs) -> List[GetPoliciesResponseItem]:
         """List policies"""
         url = f"{self.base_url}/v2/policies"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42740,7 +42753,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42748,13 +42761,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_policies(self, data: Dict[str, Any] = None, **kwargs) -> CreatePolicyResponse:
+    async def create_policies(self, data: Dict[str, Any] = None, **kwargs) -> CreatePolicyResponse:
         """Creates new Policy"""
         url = f"{self.base_url}/v2/policies"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42763,7 +42776,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42771,13 +42784,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_custom_fields_3(self, policy_id: str, **kwargs) -> List[GetCustomFieldsPolicyConditionsResponseItem]:
+    async def get_custom_fields_3(self, policy_id: str, **kwargs) -> List[GetCustomFieldsPolicyConditionsResponseItem]:
         """Get custom fields policy conditions"""
         url = f"{self.base_url}/v2/policies/{policy_id}/condition/custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42786,7 +42799,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42794,13 +42807,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_custom_fields_1(self, policy_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateCustomFieldsPolicyConditionResponse:
+    async def create_custom_fields_1(self, policy_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateCustomFieldsPolicyConditionResponse:
         """Create custom fields policy condition"""
         url = f"{self.base_url}/v2/policies/{policy_id}/condition/custom-fields"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42809,7 +42822,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42817,13 +42830,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_custom_fields_4(self, policy_id: str, condition_id: str, **kwargs) -> GetCustomFieldsPolicyConditionResponse:
+    async def get_custom_fields_4(self, policy_id: str, condition_id: str, **kwargs) -> GetCustomFieldsPolicyConditionResponse:
         """Get custom fields policy condition"""
         url = f"{self.base_url}/v2/policies/{policy_id}/condition/custom-fields/{condition_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42832,7 +42845,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42840,13 +42853,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_windows_event(self, policy_id: str, **kwargs) -> List[GetWindowsEventPolicyConditionsResponseItem]:
+    async def get_windows_event(self, policy_id: str, **kwargs) -> List[GetWindowsEventPolicyConditionsResponseItem]:
         """Get windows event conditions"""
         url = f"{self.base_url}/v2/policies/{policy_id}/condition/windows-event"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42855,7 +42868,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42863,13 +42876,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_windows_event(self, policy_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateWindowsEventPolicyConditionResponse:
+    async def create_windows_event(self, policy_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateWindowsEventPolicyConditionResponse:
         """Create windows event condition"""
         url = f"{self.base_url}/v2/policies/{policy_id}/condition/windows-event"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42878,7 +42891,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42886,13 +42899,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_windows_event_1(self, policy_id: str, condition_id: str, **kwargs) -> GetWindowsEventPolicyConditionResponse:
+    async def get_windows_event_1(self, policy_id: str, condition_id: str, **kwargs) -> GetWindowsEventPolicyConditionResponse:
         """Get windows event condition"""
         url = f"{self.base_url}/v2/policies/{policy_id}/condition/windows-event/{condition_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42901,7 +42914,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42909,13 +42922,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_condition(self, policy_id: str, condition_id: str, **kwargs) -> Any:
+    async def delete_condition(self, policy_id: str, condition_id: str, **kwargs) -> Any:
         """Delete policy condition"""
         url = f"{self.base_url}/v2/policies/{policy_id}/condition/{condition_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42924,7 +42937,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42932,13 +42945,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_antivirus_statuses(self, **kwargs) -> GetAntivirusStatusReportResponse:
+    async def list_antivirus_statuses(self, **kwargs) -> GetAntivirusStatusReportResponse:
         """Antivirus status report"""
         url = f"{self.base_url}/v2/queries/antivirus-status"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42947,7 +42960,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42955,13 +42968,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_antivirus_threats(self, **kwargs) -> GetAntivirusThreatsResponse:
+    async def list_antivirus_threats(self, **kwargs) -> GetAntivirusThreatsResponse:
         """Antivirus threats report"""
         url = f"{self.base_url}/v2/queries/antivirus-threats"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42970,7 +42983,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -42978,13 +42991,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_usages(self, **kwargs) -> GetDeviceUsageResponse:
+    async def list_usages(self, **kwargs) -> GetDeviceUsageResponse:
         """Device backup usage"""
         url = f"{self.base_url}/v2/queries/backup/usage"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -42993,7 +43006,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43001,13 +43014,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_computer_systems(self, **kwargs) -> GetComputerSystemsResponse:
+    async def list_computer_systems(self, **kwargs) -> GetComputerSystemsResponse:
         """Computer systems report"""
         url = f"{self.base_url}/v2/queries/computer-systems"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43016,7 +43029,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43024,13 +43037,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_custom_fields_1(self, **kwargs) -> GetCustomFieldsReportResponse:
+    async def list_custom_fields_1(self, **kwargs) -> GetCustomFieldsReportResponse:
         """Custom fields report"""
         url = f"{self.base_url}/v2/queries/custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43039,7 +43052,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43047,13 +43060,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_custom_fields_detaileds(self, **kwargs) -> GetCustomFieldsDetailedReportResponse:
+    async def list_custom_fields_detaileds(self, **kwargs) -> GetCustomFieldsDetailedReportResponse:
         """Custom fields detailed report"""
         url = f"{self.base_url}/v2/queries/custom-fields-detailed"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43062,7 +43075,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43070,13 +43083,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_device_healths(self, **kwargs) -> GetDeviceHealthReportResponse:
+    async def list_device_healths(self, **kwargs) -> GetDeviceHealthReportResponse:
         """Device health report"""
         url = f"{self.base_url}/v2/queries/device-health"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43085,7 +43098,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43093,13 +43106,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_disks(self, **kwargs) -> GetDiskDrivesResponse:
+    async def list_disks(self, **kwargs) -> GetDiskDrivesResponse:
         """Disk drives report"""
         url = f"{self.base_url}/v2/queries/disks"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43108,7 +43121,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43116,13 +43129,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_logged_on_users(self, **kwargs) -> GetLastLoggedOnUsersReportResponse:
+    async def list_logged_on_users(self, **kwargs) -> GetLastLoggedOnUsersReportResponse:
         """Last logged-on user report"""
         url = f"{self.base_url}/v2/queries/logged-on-users"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43131,7 +43144,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43139,13 +43152,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_network_interfaces(self, **kwargs) -> GetNetworkInterfacesResponse:
+    async def list_network_interfaces(self, **kwargs) -> GetNetworkInterfacesResponse:
         """List Network Interfaces"""
         url = f"{self.base_url}/v2/queries/network-interfaces"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43154,7 +43167,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43162,13 +43175,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_operating_systems(self, **kwargs) -> GetOperatingSystemsResponse:
+    async def list_operating_systems(self, **kwargs) -> GetOperatingSystemsResponse:
         """Operating systems report"""
         url = f"{self.base_url}/v2/queries/operating-systems"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43177,7 +43190,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43185,13 +43198,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_os_patch_installs(self, **kwargs) -> GetInstalledOsPatchesResponse:
+    async def list_os_patch_installs(self, **kwargs) -> GetInstalledOsPatchesResponse:
         """OS Patch installation report"""
         url = f"{self.base_url}/v2/queries/os-patch-installs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43200,7 +43213,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43208,13 +43221,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_os_patches(self, **kwargs) -> GetPendingFailedRejectedOsPatchesResponse:
+    async def list_os_patches(self, **kwargs) -> GetPendingFailedRejectedOsPatchesResponse:
         """Pending, Failed and Rejected OS patches report"""
         url = f"{self.base_url}/v2/queries/os-patches"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43223,7 +43236,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43231,13 +43244,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_policy_overrides(self, **kwargs) -> GetPolicyOverrides1Response:
+    async def list_policy_overrides(self, **kwargs) -> GetPolicyOverrides1Response:
         """Get summary of device policy overrides"""
         url = f"{self.base_url}/v2/queries/policy-overrides"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43246,7 +43259,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43254,13 +43267,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_processors(self, **kwargs) -> GetProcessorsResponse:
+    async def list_processors(self, **kwargs) -> GetProcessorsResponse:
         """Processor report"""
         url = f"{self.base_url}/v2/queries/processors"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43269,7 +43282,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43277,13 +43290,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_raid_controllers(self, **kwargs) -> GetRaidControllerReportResponse:
+    async def list_raid_controllers(self, **kwargs) -> GetRaidControllerReportResponse:
         """RAID controller report"""
         url = f"{self.base_url}/v2/queries/raid-controllers"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43292,7 +43305,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43300,13 +43313,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_raid_drives(self, **kwargs) -> GetRaidDriveReportResponse:
+    async def list_raid_drives(self, **kwargs) -> GetRaidDriveReportResponse:
         """RAID drive report"""
         url = f"{self.base_url}/v2/queries/raid-drives"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43315,7 +43328,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43323,13 +43336,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_scoped_custom_fields(self, **kwargs) -> GetScopedCustomFieldsReportResponse:
+    async def list_scoped_custom_fields(self, **kwargs) -> GetScopedCustomFieldsReportResponse:
         """Scoped custom fields report"""
         url = f"{self.base_url}/v2/queries/scoped-custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43338,7 +43351,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43346,13 +43359,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_scoped_custom_fields_detaileds(self, **kwargs) -> GetScopedCustomFieldsDetailedReportResponse:
+    async def list_scoped_custom_fields_detaileds(self, **kwargs) -> GetScopedCustomFieldsDetailedReportResponse:
         """Scoped custom fields detailed report"""
         url = f"{self.base_url}/v2/queries/scoped-custom-fields-detailed"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43361,7 +43374,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43369,13 +43382,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_softwares(self, **kwargs) -> GetSoftwareResponse:
+    async def list_softwares(self, **kwargs) -> GetSoftwareResponse:
         """Software inventory"""
         url = f"{self.base_url}/v2/queries/software"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43384,7 +43397,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43392,13 +43405,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_software_patch_installs(self, **kwargs) -> GetInstalledSoftwarePatchesResponse:
+    async def list_software_patch_installs(self, **kwargs) -> GetInstalledSoftwarePatchesResponse:
         """Software Patch history report"""
         url = f"{self.base_url}/v2/queries/software-patch-installs"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43407,7 +43420,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43415,13 +43428,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_software_patches(self, **kwargs) -> GetPendingFailedRejectedSoftwarePatchesResponse:
+    async def list_software_patches(self, **kwargs) -> GetPendingFailedRejectedSoftwarePatchesResponse:
         """Pending, Failed and Rejected Software patches report"""
         url = f"{self.base_url}/v2/queries/software-patches"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43430,7 +43443,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43438,13 +43451,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_volumes(self, **kwargs) -> GetVolumesResponse:
+    async def list_volumes(self, **kwargs) -> GetVolumesResponse:
         """Disk volumes report"""
         url = f"{self.base_url}/v2/queries/volumes"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43453,7 +43466,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43461,13 +43474,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_windows_services(self, **kwargs) -> GetWindowsServicesReportResponse:
+    async def list_windows_services(self, **kwargs) -> GetWindowsServicesReportResponse:
         """Windows services report"""
         url = f"{self.base_url}/v2/queries/windows-services"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43476,7 +43489,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43484,13 +43497,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_related_items(self, **kwargs) -> List[GetAllRelatedItemsResponseItem]:
+    async def list_related_items(self, **kwargs) -> List[GetAllRelatedItemsResponseItem]:
         """List all related items"""
         url = f"{self.base_url}/v2/related-items"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43499,7 +43512,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43507,13 +43520,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_attachment(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateRelatedItemResponse:
+    async def create_attachment(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateRelatedItemResponse:
         """Create Attachment Relation"""
         url = f"{self.base_url}/v2/related-items/entity/{entity_type}/{entity_id}/attachment"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43522,7 +43535,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43530,13 +43543,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_relation(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateRelatedItemForEntityResponse:
+    async def create_relation(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateRelatedItemForEntityResponse:
         """Create entity relation"""
         url = f"{self.base_url}/v2/related-items/entity/{entity_type}/{entity_id}/relation"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43545,7 +43558,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43553,13 +43566,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_relations(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> List[CreateRelatedItemForEntity1ResponseItem]:
+    async def create_relations(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> List[CreateRelatedItemForEntity1ResponseItem]:
         """Create entity relations"""
         url = f"{self.base_url}/v2/related-items/entity/{entity_type}/{entity_id}/relations"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43568,7 +43581,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43576,13 +43589,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_secure(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateSecureRelatedItemForEntityResponse:
+    async def create_secure(self, entity_type: str, entity_id: str, data: Dict[str, Any] = None, **kwargs) -> CreateSecureRelatedItemForEntityResponse:
         """Create Secure Relation"""
         url = f"{self.base_url}/v2/related-items/entity/{entity_type}/{entity_id}/secure"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43591,7 +43604,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43599,13 +43612,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_with_entity_type(self, entity_type: str, **kwargs) -> List[GetRelatedItemsWithHostEntityTypeResponseItem]:
+    async def get_with_entity_type(self, entity_type: str, **kwargs) -> List[GetRelatedItemsWithHostEntityTypeResponseItem]:
         """List host entity type related items"""
         url = f"{self.base_url}/v2/related-items/with-entity-type/{entity_type}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43614,7 +43627,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43622,13 +43635,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_with_entity(self, entity_type: str, entity_id: str, **kwargs) -> List[GetRelatedItemsForHostEntityResponseItem]:
+    async def get_with_entity(self, entity_type: str, entity_id: str, **kwargs) -> List[GetRelatedItemsForHostEntityResponseItem]:
         """List host entity related items by scope"""
         url = f"{self.base_url}/v2/related-items/with-entity/{entity_type}/{entity_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43637,7 +43650,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43645,13 +43658,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_signed_urls_4(self, entity_type: str, entity_id: str, **kwargs) -> str:
+    async def get_signed_urls_4(self, entity_type: str, entity_id: str, **kwargs) -> str:
         """Get related item attachments signed urls"""
         url = f"{self.base_url}/v2/related-items/with-entity/{entity_type}/{entity_id}/attachments/signed-urls"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43660,7 +43673,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43668,13 +43681,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_with_related_entity_type(self, related_entity_type: str, **kwargs) -> List[GetRelatedItemsWithEntityTypeResponseItem]:
+    async def get_with_related_entity_type(self, related_entity_type: str, **kwargs) -> List[GetRelatedItemsWithEntityTypeResponseItem]:
         """List related entity type related items"""
         url = f"{self.base_url}/v2/related-items/with-related-entity-type/{related_entity_type}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43683,7 +43696,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43691,13 +43704,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_with_related_entity(self, rel_entity_type: str, rel_entity_id: str, **kwargs) -> List[GetRelatedItemsWithEntityResponseItem]:
+    async def get_with_related_entity(self, rel_entity_type: str, rel_entity_id: str, **kwargs) -> List[GetRelatedItemsWithEntityResponseItem]:
         """List related entity related items"""
         url = f"{self.base_url}/v2/related-items/with-related-entity/{rel_entity_type}/{rel_entity_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43706,7 +43719,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43714,13 +43727,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_related_items(self, entity_type: str, entity_id: str, **kwargs) -> Any:
+    async def delete_related_items(self, entity_type: str, entity_id: str, **kwargs) -> Any:
         """Delete related items"""
         url = f"{self.base_url}/v2/related-items/{entity_type}/{entity_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43729,7 +43742,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43737,13 +43750,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_related_items_1(self, related_item_id: str, **kwargs) -> Any:
+    async def delete_related_items_1(self, related_item_id: str, **kwargs) -> Any:
         """Delete related item"""
         url = f"{self.base_url}/v2/related-items/{related_item_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43752,7 +43765,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43760,13 +43773,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_download_1(self, related_item_id: str, **kwargs) -> Any:
+    async def get_download_1(self, related_item_id: str, **kwargs) -> Any:
         """Download related item attachment"""
         url = f"{self.base_url}/v2/related-items/{related_item_id}/attachment/download"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43775,7 +43788,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43783,13 +43796,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_roles(self, **kwargs) -> List[GetNodeRoles1ResponseItem]:
+    async def list_roles(self, **kwargs) -> List[GetNodeRoles1ResponseItem]:
         """List device roles"""
         url = f"{self.base_url}/v2/roles"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43798,7 +43811,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43806,13 +43819,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_software_license(self, data: Dict[str, Any] = None, **kwargs) -> CreateResponse:
+    async def create_software_license(self, data: Dict[str, Any] = None, **kwargs) -> CreateResponse:
         """Create a Software License"""
         url = f"{self.base_url}/v2/software-license"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43821,7 +43834,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43829,13 +43842,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_upsert(self, data: Dict[str, Any] = None, **kwargs) -> UpsertResponse:
+    async def create_upsert(self, data: Dict[str, Any] = None, **kwargs) -> UpsertResponse:
         """Create or Update a Software License"""
         url = f"{self.base_url}/v2/software-license/upsert"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43844,7 +43857,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43852,13 +43865,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_software_license(self, license_id: str, **kwargs) -> GetByIdResponse:
+    async def get_software_license(self, license_id: str, **kwargs) -> GetByIdResponse:
         """Get Software License"""
         url = f"{self.base_url}/v2/software-license/{license_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43867,7 +43880,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43875,13 +43888,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_software_license(self, license_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateResponse:
+    async def update_software_license(self, license_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateResponse:
         """Update a Software License"""
         url = f"{self.base_url}/v2/software-license/{license_id}"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43890,7 +43903,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43898,13 +43911,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_software_license(self, license_id: str, **kwargs) -> Any:
+    async def delete_software_license(self, license_id: str, **kwargs) -> Any:
         """Delete a Software License"""
         url = f"{self.base_url}/v2/software-license/{license_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43913,7 +43926,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43921,13 +43934,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_software_products(self, **kwargs) -> List[GetSoftwareProductsResponseItem]:
+    async def list_software_products(self, **kwargs) -> List[GetSoftwareProductsResponseItem]:
         """List supported 3rd party software"""
         url = f"{self.base_url}/v2/software-products"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43936,7 +43949,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43944,13 +43957,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_staged_device(self, data: Dict[str, Any] = None, **kwargs) -> CreateStagedDeviceResponse:
+    async def create_staged_device(self, data: Dict[str, Any] = None, **kwargs) -> CreateStagedDeviceResponse:
         """Create staged device"""
         url = f"{self.base_url}/v2/staged-device"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43959,7 +43972,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43967,13 +43980,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_tab(self, data: Dict[str, Any] = None, **kwargs) -> CreateCustomTabPublicApiResponse:
+    async def create_tab(self, data: Dict[str, Any] = None, **kwargs) -> CreateCustomTabPublicApiResponse:
         """Create a new Custom Tab"""
         url = f"{self.base_url}/v2/tab"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -43982,7 +43995,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -43990,13 +44003,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_order(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_order(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update the order of custom tabs for end-user tabs"""
         url = f"{self.base_url}/v2/tab/end-user/order"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44005,7 +44018,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44013,13 +44026,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_order_1(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_order_1(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update the order of custom tabs for organizations and locations"""
         url = f"{self.base_url}/v2/tab/organization/order"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44028,7 +44041,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44036,13 +44049,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_rename(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_rename(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Rename a Custom Tab"""
         url = f"{self.base_url}/v2/tab/rename"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44051,7 +44064,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44059,13 +44072,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_order_2(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_order_2(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update the order of custom tabs for a specific role"""
         url = f"{self.base_url}/v2/tab/role/{role_id}/order"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44074,7 +44087,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44082,13 +44095,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_visibility(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_visibility(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Set the tab visibility of the specified tab"""
         url = f"{self.base_url}/v2/tab/role/{role_id}/visibility"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44097,7 +44110,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44105,13 +44118,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_end_users(self, **kwargs) -> Any:
+    async def list_end_users(self, **kwargs) -> Any:
         """Retrieve all of the custom tabs available to end user views"""
         url = f"{self.base_url}/v2/tab/summary/end-user"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44120,7 +44133,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44128,13 +44141,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_organizations_1(self, **kwargs) -> Any:
+    async def list_organizations_1(self, **kwargs) -> Any:
         """Retrieve all of the custom tabs available to organizations and locations"""
         url = f"{self.base_url}/v2/tab/summary/organization"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44143,7 +44156,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44151,13 +44164,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_role(self, role_id: str, **kwargs) -> Any:
+    async def get_role(self, role_id: str, **kwargs) -> Any:
         """Retrieve all of the custom tabs that would appear for the given role"""
         url = f"{self.base_url}/v2/tab/summary/role/{role_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44166,7 +44179,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44174,13 +44187,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_tab(self, tab_id: str, **kwargs) -> GetCustomTabPublicApiResponse:
+    async def get_tab(self, tab_id: str, **kwargs) -> GetCustomTabPublicApiResponse:
         """Retrieve a Custom Tab"""
         url = f"{self.base_url}/v2/tab/{tab_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44189,7 +44202,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44197,13 +44210,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_tab(self, tab_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_tab(self, tab_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update a Custom Tab"""
         url = f"{self.base_url}/v2/tab/{tab_id}"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44212,7 +44225,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44220,13 +44233,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_tab(self, tab_id: str, **kwargs) -> Any:
+    async def delete_tab(self, tab_id: str, **kwargs) -> Any:
         """Delete a Custom Tab"""
         url = f"{self.base_url}/v2/tab/{tab_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44235,7 +44248,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44243,13 +44256,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_end_user(self, tab_id: str, **kwargs) -> Any:
+    async def get_end_user(self, tab_id: str, **kwargs) -> Any:
         """Retrieve the requested tab along with any extensions for end-user tabs"""
         url = f"{self.base_url}/v2/tab/{tab_id}/end-user"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44258,7 +44271,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44266,13 +44279,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_organization_1(self, tab_id: str, **kwargs) -> Any:
+    async def get_organization_1(self, tab_id: str, **kwargs) -> Any:
         """Retrieve the requested tab along with any extensions for organization and location tabs"""
         url = f"{self.base_url}/v2/tab/{tab_id}/organization"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44281,7 +44294,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44289,13 +44302,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_role_1(self, tab_id: str, role_id: str, **kwargs) -> Any:
+    async def get_role_1(self, tab_id: str, role_id: str, **kwargs) -> Any:
         """Retrieve the requested tab along with any extensions based on the supplied roleId"""
         url = f"{self.base_url}/v2/tab/{tab_id}/role/{role_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44304,7 +44317,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44312,13 +44325,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_tags(self, **kwargs) -> GetTagsResponse:
+    async def list_tags(self, **kwargs) -> GetTagsResponse:
         """Get Asset Tags"""
         url = f"{self.base_url}/v2/tag"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44327,7 +44340,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44335,13 +44348,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_tag(self, data: Dict[str, Any] = None, **kwargs) -> CreateTagResponse:
+    async def create_tag(self, data: Dict[str, Any] = None, **kwargs) -> CreateTagResponse:
         """Create an Asset Tag"""
         url = f"{self.base_url}/v2/tag"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44350,7 +44363,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44358,13 +44371,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_delete_5(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_delete_5(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Delete several Asset Tags"""
         url = f"{self.base_url}/v2/tag/delete"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44373,7 +44386,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44381,13 +44394,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_merge(self, data: Dict[str, Any] = None, **kwargs) -> MergeTagsResponse:
+    async def create_merge(self, data: Dict[str, Any] = None, **kwargs) -> MergeTagsResponse:
         """Merge existing tags"""
         url = f"{self.base_url}/v2/tag/merge"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44396,7 +44409,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44404,13 +44417,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_tag_1(self, asset_type: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_tag_1(self, asset_type: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Batch tag assets"""
         url = f"{self.base_url}/v2/tag/{asset_type}"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44419,7 +44432,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44427,13 +44440,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_tag(self, asset_type: str, asset_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def update_tag(self, asset_type: str, asset_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Set tags for an asset"""
         url = f"{self.base_url}/v2/tag/{asset_type}/{asset_id}"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44442,7 +44455,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44450,13 +44463,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_tag_1(self, tag_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateTagResponse:
+    async def update_tag_1(self, tag_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateTagResponse:
         """Update an Asset Tag"""
         url = f"{self.base_url}/v2/tag/{tag_id}"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44465,7 +44478,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44473,13 +44486,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_tag(self, tag_id: str, **kwargs) -> Any:
+    async def delete_tag(self, tag_id: str, **kwargs) -> Any:
         """Delete an Asset Tag"""
         url = f"{self.base_url}/v2/tag/{tag_id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44488,7 +44501,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44496,13 +44509,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_tasks(self, **kwargs) -> List[GetScheduledTasksResponseItem]:
+    async def list_tasks(self, **kwargs) -> List[GetScheduledTasksResponseItem]:
         """List scheduled tasks"""
         url = f"{self.base_url}/v2/tasks"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44511,7 +44524,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44519,13 +44532,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_app_user_contacts(self, **kwargs) -> List[GetAllUserAndContactsResponseItem]:
+    async def list_app_user_contacts(self, **kwargs) -> List[GetAllUserAndContactsResponseItem]:
         """List of users by user type"""
         url = f"{self.base_url}/v2/ticketing/app-user-contact"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44534,7 +44547,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44542,13 +44555,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_attributes(self, **kwargs) -> List[GetTicketAttributesResponseItem]:
+    async def list_attributes(self, **kwargs) -> List[GetTicketAttributesResponseItem]:
         """List ticket attributes"""
         url = f"{self.base_url}/v2/ticketing/attributes"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44557,7 +44570,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44565,13 +44578,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_contacts_1(self, **kwargs) -> List[GetContacts1ResponseItem]:
+    async def list_contacts_1(self, **kwargs) -> List[GetContacts1ResponseItem]:
         """List contacts"""
         url = f"{self.base_url}/v2/ticketing/contact/contacts"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44580,7 +44593,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44588,13 +44601,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_statuses(self, **kwargs) -> List[GetAllStatusesResponseItem]:
+    async def list_statuses(self, **kwargs) -> List[GetAllStatusesResponseItem]:
         """Get list of ticket status"""
         url = f"{self.base_url}/v2/ticketing/statuses"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44603,7 +44616,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44611,13 +44624,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_ticket(self, data: Dict[str, Any] = None, **kwargs) -> Create1Response:
+    async def create_ticket(self, data: Dict[str, Any] = None, **kwargs) -> Create1Response:
         """Create ticket"""
         url = f"{self.base_url}/v2/ticketing/ticket"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44626,7 +44639,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44634,13 +44647,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_ticket_forms(self, **kwargs) -> List[GetTicketFormsResponseItem]:
+    async def list_ticket_forms(self, **kwargs) -> List[GetTicketFormsResponseItem]:
         """List ticket forms"""
         url = f"{self.base_url}/v2/ticketing/ticket-form"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44649,7 +44662,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44657,13 +44670,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_ticket_form(self, id: str, **kwargs) -> GetTicketFormByIdResponse:
+    async def get_ticket_form(self, id: str, **kwargs) -> GetTicketFormByIdResponse:
         """Ticket form"""
         url = f"{self.base_url}/v2/ticketing/ticket-form/{id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44672,7 +44685,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44680,13 +44693,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_ticket(self, ticket_id: str, **kwargs) -> GetTicketByIdResponse:
+    async def get_ticket(self, ticket_id: str, **kwargs) -> GetTicketByIdResponse:
         """Ticket"""
         url = f"{self.base_url}/v2/ticketing/ticket/{ticket_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44695,7 +44708,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44703,13 +44716,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_ticket(self, ticket_id: str, data: Dict[str, Any] = None, **kwargs) -> Update1Response:
+    async def update_ticket(self, ticket_id: str, data: Dict[str, Any] = None, **kwargs) -> Update1Response:
         """Update ticket"""
         url = f"{self.base_url}/v2/ticketing/ticket/{ticket_id}"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44718,7 +44731,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44726,13 +44739,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_comment(self, ticket_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def create_comment(self, ticket_id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Add comment to ticket"""
         url = f"{self.base_url}/v2/ticketing/ticket/{ticket_id}/comment"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44741,7 +44754,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44749,13 +44762,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_log_entry(self, ticket_id: str, **kwargs) -> List[GetTicketLogEntriesByTicketIdResponseItem]:
+    async def get_log_entry(self, ticket_id: str, **kwargs) -> List[GetTicketLogEntriesByTicketIdResponseItem]:
         """List ticket log entries"""
         url = f"{self.base_url}/v2/ticketing/ticket/{ticket_id}/log-entry"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44764,7 +44777,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44772,13 +44785,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_run_1(self, board_id: str, data: Dict[str, Any] = None, **kwargs) -> GetTicketsByBoardResponse:
+    async def create_run_1(self, board_id: str, data: Dict[str, Any] = None, **kwargs) -> GetTicketsByBoardResponse:
         """List of tickets for board"""
         url = f"{self.base_url}/v2/ticketing/trigger/board/{board_id}/run"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44787,7 +44800,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44795,13 +44808,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_boards(self, **kwargs) -> List[GetBoardsResponseItem]:
+    async def list_boards(self, **kwargs) -> List[GetBoardsResponseItem]:
         """List boards"""
         url = f"{self.base_url}/v2/ticketing/trigger/boards"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44810,7 +44823,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44818,13 +44831,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_end_user_1(self, id: str, **kwargs) -> GetEndUserResponse:
+    async def get_end_user_1(self, id: str, **kwargs) -> GetEndUserResponse:
         """End user details"""
         url = f"{self.base_url}/v2/user/end-user/{id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44833,7 +44846,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44841,13 +44854,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_end_user(self, id: str, data: Dict[str, Any] = None, **kwargs) -> PatchEndUserResponse:
+    async def patch_end_user(self, id: str, data: Dict[str, Any] = None, **kwargs) -> PatchEndUserResponse:
         """Update a specific end user"""
         url = f"{self.base_url}/v2/user/end-user/{id}"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44856,7 +44869,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44864,13 +44877,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_end_user(self, id: str, **kwargs) -> Any:
+    async def delete_end_user(self, id: str, **kwargs) -> Any:
         """Delete end user"""
         url = f"{self.base_url}/v2/user/end-user/{id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44879,7 +44892,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44887,13 +44900,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_custom_fields_5(self, id: str, **kwargs) -> Dict[str, Any]:
+    async def get_custom_fields_5(self, id: str, **kwargs) -> Dict[str, Any]:
         """End user custom fields"""
         url = f"{self.base_url}/v2/user/end-user/{id}/custom-fields"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44902,7 +44915,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44910,13 +44923,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_custom_fields_3(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_custom_fields_3(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update Field Values"""
         url = f"{self.base_url}/v2/user/end-user/{id}/custom-fields"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44925,7 +44938,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44933,13 +44946,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_end_users_1(self, **kwargs) -> List[GetEndUsers1ResponseItem]:
+    async def list_end_users_1(self, **kwargs) -> List[GetEndUsers1ResponseItem]:
         """End user list"""
         url = f"{self.base_url}/v2/user/end-users"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44948,7 +44961,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44956,13 +44969,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_end_users(self, data: Dict[str, Any] = None, **kwargs) -> CreateEndUserResponse:
+    async def create_end_users(self, data: Dict[str, Any] = None, **kwargs) -> CreateEndUserResponse:
         """Create end user"""
         url = f"{self.base_url}/v2/user/end-users"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44971,7 +44984,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -44979,13 +44992,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_add_members(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> AddUserRoleMembersResponse:
+    async def patch_add_members(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> AddUserRoleMembersResponse:
         """Add user role members"""
         url = f"{self.base_url}/v2/user/role/{role_id}/add-members"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -44994,7 +45007,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45002,13 +45015,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_remove_members(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> RemoveUserRoleMembersResponse:
+    async def patch_remove_members(self, role_id: str, data: Dict[str, Any] = None, **kwargs) -> RemoveUserRoleMembersResponse:
         """Remove users from user role"""
         url = f"{self.base_url}/v2/user/role/{role_id}/remove-members"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45017,7 +45030,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45025,13 +45038,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_roles_1(self, **kwargs) -> List[GetUserRolesResponseItem]:
+    async def list_roles_1(self, **kwargs) -> List[GetUserRolesResponseItem]:
         """Get user roles"""
         url = f"{self.base_url}/v2/user/roles"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45040,7 +45053,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45048,13 +45061,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_technician(self, id: str, **kwargs) -> GetTechnicianResponse:
+    async def get_technician(self, id: str, **kwargs) -> GetTechnicianResponse:
         """Technician details"""
         url = f"{self.base_url}/v2/user/technician/{id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45063,7 +45076,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45071,13 +45084,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def patch_technician(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def patch_technician(self, id: str, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update a technician"""
         url = f"{self.base_url}/v2/user/technician/{id}"
-        response = self._request_with_retry("PATCH", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PATCH", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45086,7 +45099,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45094,13 +45107,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_technician(self, id: str, **kwargs) -> Any:
+    async def delete_technician(self, id: str, **kwargs) -> Any:
         """Delete a technician"""
         url = f"{self.base_url}/v2/user/technician/{id}"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45109,7 +45122,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45117,13 +45130,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_technicians(self, **kwargs) -> List[GetTechniciansResponseItem]:
+    async def list_technicians(self, **kwargs) -> List[GetTechniciansResponseItem]:
         """Technicians list"""
         url = f"{self.base_url}/v2/user/technicians"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45132,7 +45145,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45140,13 +45153,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_technicians(self, data: Dict[str, Any] = None, **kwargs) -> CreateTechnicianResponse:
+    async def create_technicians(self, data: Dict[str, Any] = None, **kwargs) -> CreateTechnicianResponse:
         """Create a technician"""
         url = f"{self.base_url}/v2/user/technicians"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45155,7 +45168,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45163,13 +45176,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_users(self, **kwargs) -> List[GetUsersResponseItem]:
+    async def list_users(self, **kwargs) -> List[GetUsersResponseItem]:
         """List users"""
         url = f"{self.base_url}/v2/users"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45178,7 +45191,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45186,13 +45199,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def list_scan_groups(self, **kwargs) -> List[FetchAllScanGroupsResponseItem]:
+    async def list_scan_groups(self, **kwargs) -> List[FetchAllScanGroupsResponseItem]:
         """Fetch all Scan Groups"""
         url = f"{self.base_url}/v2/vulnerability/scan-groups"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45201,7 +45214,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45209,13 +45222,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def get_scan_groups(self, scan_group_id: str, **kwargs) -> FetchScanGroupByIdResponse:
+    async def get_scan_groups(self, scan_group_id: str, **kwargs) -> FetchScanGroupByIdResponse:
         """Fetch Scan Group"""
         url = f"{self.base_url}/v2/vulnerability/scan-groups/{scan_group_id}"
-        response = self._request_with_retry("GET", url, params=kwargs)
+        response = await self._request_with_retry("GET", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45224,7 +45237,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45232,13 +45245,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def create_upload_2(self, scan_group_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateScanGroupResponse:
+    async def create_upload_2(self, scan_group_id: str, data: Dict[str, Any] = None, **kwargs) -> UpdateScanGroupResponse:
         """Upload CSV"""
         url = f"{self.base_url}/v2/vulnerability/scan-groups/{scan_group_id}/upload"
-        response = self._request_with_retry("POST", url, json=data, params=kwargs)
+        response = await self._request_with_retry("POST", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45247,7 +45260,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45255,13 +45268,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def update_webhook(self, data: Dict[str, Any] = None, **kwargs) -> Any:
+    async def update_webhook(self, data: Dict[str, Any] = None, **kwargs) -> Any:
         """Update API Webhook configuration"""
         url = f"{self.base_url}/v2/webhook"
-        response = self._request_with_retry("PUT", url, json=data, params=kwargs)
+        response = await self._request_with_retry("PUT", url, json=data, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45270,7 +45283,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45278,13 +45291,13 @@ class _NinjaOnePublicAPIClient:
             )
         return self._auto_convert(result)
 
-    def delete_webhook(self, **kwargs) -> Any:
+    async def delete_webhook(self, **kwargs) -> Any:
         """Remove Webhook API channel"""
         url = f"{self.base_url}/v2/webhook"
-        response = self._request_with_retry("DELETE", url, params=kwargs)
+        response = await self._request_with_retry("DELETE", url, params=kwargs)
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -45293,7 +45306,7 @@ class _NinjaOnePublicAPIClient:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -45328,11 +45341,11 @@ class _LazyClient:
             raise RuntimeError(f"Integration '{self._integration_name}' not found")
 
         config = integration.config or {}
-        session = requests.Session()
+        headers = {}
 
         # OAuth authentication
         if integration.oauth and integration.oauth.access_token:
-            session.headers["Authorization"] = f"Bearer {integration.oauth.access_token}"
+            headers["Authorization"] = f"Bearer {integration.oauth.access_token}"
         else:
             raise RuntimeError("OAuth not configured or access token missing")
 
@@ -45345,10 +45358,11 @@ class _LazyClient:
         max_retries = int(config.get("max_retries", 3))
         base_backoff = float(config.get("base_backoff", 1.0))
         max_backoff = float(config.get("max_backoff", 60.0))
+        client = httpx.AsyncClient(headers=headers, timeout=timeout)
 
         return _NinjaOnePublicAPIClient(
             base_url,
-            session,
+            client,
             timeout=timeout,
             max_retries=max_retries,
             base_backoff=base_backoff,
@@ -45359,8 +45373,11 @@ class _LazyClient:
         """Proxy attribute access to the real client."""
         async def method_wrapper(*args, **kwargs):
             client = await self._ensure_client()
-            method = getattr(client, name)
-            return method(*args, **kwargs)
+            try:
+                method = getattr(client, name)
+                return await method(*args, **kwargs)
+            finally:
+                await client.aclose()
         return method_wrapper
 
 

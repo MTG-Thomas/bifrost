@@ -8,11 +8,11 @@ Auth Type: {{ auth_type }}
 
 from __future__ import annotations
 
-import time
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import requests
+import httpx
 
 
 # =============================================================================
@@ -102,28 +102,41 @@ class _{{ class_name }}Client:
     def __init__(
         self,
         base_url: str,
-        session: requests.Session,
+        client: httpx.AsyncClient,
         timeout: float = 30.0,
         max_retries: int = 3,
         base_backoff: float = 1.0,
         max_backoff: float = 60.0,
     ):
         self.base_url = base_url.rstrip("/")
-        self.session = session
+        self.client = client
         self.timeout = timeout
         self.max_retries = max_retries
         self.base_backoff = base_backoff
         self.max_backoff = max_backoff
 
-    def _request_with_retry(
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client."""
+        await self.client.aclose()
+
+    async def _request_with_retry(
         self, method: str, url: str, **kwargs
-    ) -> requests.Response:
+    ) -> httpx.Response:
         """Execute HTTP request with exponential backoff retry for transient failures."""
         kwargs.setdefault("timeout", self.timeout)
         last_response = None
 
         for attempt in range(self.max_retries + 1):
-            response = self.session.request(method, url, **kwargs)
+            try:
+                response = await self.client.request(method, url, **kwargs)
+            except httpx.RequestError as exc:
+                if attempt >= self.max_retries:
+                    raise SDKError(f"Request failed: {exc}") from exc
+
+                wait = min(self.base_backoff * (2 ** attempt), self.max_backoff)
+                await asyncio.sleep(wait)
+                continue
+
             last_response = response
 
             # Success or non-retryable error - return immediately
@@ -152,7 +165,7 @@ class _{{ class_name }}Client:
 
             # Cap the wait time
             wait = min(wait, self.max_backoff)
-            time.sleep(wait)
+            await asyncio.sleep(wait)
 
         return last_response
 
@@ -167,17 +180,17 @@ class _{{ class_name }}Client:
         return data
 
 {% for method in methods %}
-    def {{ method.name }}(self, {{ method.params }}) -> {{ method.return_type }}:
+    async def {{ method.name }}(self, {{ method.params }}) -> {{ method.return_type }}:
         """{{ method.summary }}"""
         url = f"{self.base_url}{{ method.url_template }}"
 {% if method.http_method in ['post', 'put', 'patch'] %}
-        response = self._request_with_retry("{{ method.http_method | upper }}", url, json=data, params=kwargs)
+        response = await self._request_with_retry("{{ method.http_method | upper }}", url, json=data, params=kwargs)
 {% else %}
-        response = self._request_with_retry("{{ method.http_method | upper }}", url, params=kwargs)
+        response = await self._request_with_retry("{{ method.http_method | upper }}", url, params=kwargs)
 {% endif %}
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             body = e.response.text[:1000] if e.response else "No response body"
             raise SDKError(
                 f"HTTP {e.response.status_code}: {body}",
@@ -186,7 +199,7 @@ class _{{ class_name }}Client:
             )
         try:
             result = response.json() if response.content else None
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             raise SDKError(
                 f"Invalid JSON response (HTTP {response.status_code}): {response.text[:500]}",
                 status_code=response.status_code,
@@ -222,19 +235,19 @@ class _LazyClient:
             raise RuntimeError(f"Integration '{self._integration_name}' not found")
 
         config = integration.config or {}
-        session = requests.Session()
+        headers = {}
 
 {% if auth_type == 'api_key' %}
         # API Key authentication
         header_name = config.get("header_name", "Authorization")
         api_key = config.get("api_key")
         if api_key:
-            session.headers[header_name] = api_key
+            headers[header_name] = api_key
 {% elif auth_type == 'bearer' %}
         # Bearer token authentication
         token = config.get("token")
         if token:
-            session.headers["Authorization"] = f"Bearer {token}"
+            headers["Authorization"] = f"Bearer {token}"
 {% elif auth_type == 'basic' %}
         # Basic authentication
         import base64
@@ -242,11 +255,11 @@ class _LazyClient:
         password = config.get("password", "")
         if username or password:
             credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
-            session.headers["Authorization"] = f"Basic {credentials}"
+            headers["Authorization"] = f"Basic {credentials}"
 {% elif auth_type == 'oauth' %}
         # OAuth authentication
         if integration.oauth and integration.oauth.access_token:
-            session.headers["Authorization"] = f"Bearer {integration.oauth.access_token}"
+            headers["Authorization"] = f"Bearer {integration.oauth.access_token}"
         else:
             raise RuntimeError("OAuth not configured or access token missing")
 {% endif %}
@@ -260,10 +273,11 @@ class _LazyClient:
         max_retries = int(config.get("max_retries", 3))
         base_backoff = float(config.get("base_backoff", 1.0))
         max_backoff = float(config.get("max_backoff", 60.0))
+        client = httpx.AsyncClient(headers=headers, timeout=timeout)
 
         return _{{ class_name }}Client(
             base_url,
-            session,
+            client,
             timeout=timeout,
             max_retries=max_retries,
             base_backoff=base_backoff,
@@ -274,8 +288,11 @@ class _LazyClient:
         """Proxy attribute access to the real client."""
         async def method_wrapper(*args, **kwargs):
             client = await self._ensure_client()
-            method = getattr(client, name)
-            return method(*args, **kwargs)
+            try:
+                method = getattr(client, name)
+                return await method(*args, **kwargs)
+            finally:
+                await client.aclose()
         return method_wrapper
 
 
