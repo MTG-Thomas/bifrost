@@ -1194,6 +1194,58 @@ workflows:
     - sync
     timeout_seconds: 300
     type: workflow
+  183ffeb9-0ecc-496a-87b4-adbd46528f3d:
+    category: LuxSci
+    description: Summarize LuxSci account inventory counts for users, domains, and aliases.
+    function_name: get_luxsci_account_inventory
+    id: 183ffeb9-0ecc-496a-87b4-adbd46528f3d
+    name: 'LuxSci: Get Account Inventory'
+    path: features/luxsci/workflows/tools.py
+    tags:
+    - luxsci
+    - inventory
+    - migration
+    timeout_seconds: 60
+    type: tool
+  b73ddb49-1fb2-42cb-a832-77cfd098c48d:
+    category: LuxSci
+    description: List LuxSci users for the connected account, with optional status and domain filtering.
+    function_name: list_luxsci_users
+    id: b73ddb49-1fb2-42cb-a832-77cfd098c48d
+    name: 'LuxSci: List Users'
+    path: features/luxsci/workflows/tools.py
+    tags:
+    - luxsci
+    - users
+    - migration
+    timeout_seconds: 60
+    type: tool
+  f9b61797-7b2a-4251-b0b4-2e148ebddd10:
+    category: LuxSci
+    description: List LuxSci domains for the connected account.
+    function_name: list_luxsci_domains
+    id: f9b61797-7b2a-4251-b0b4-2e148ebddd10
+    name: 'LuxSci: List Domains'
+    path: features/luxsci/workflows/tools.py
+    tags:
+    - luxsci
+    - domains
+    - migration
+    timeout_seconds: 60
+    type: tool
+  da41cceb-f2f4-49b8-b582-8c31f916c1c4:
+    category: LuxSci
+    description: List LuxSci aliases for the connected account.
+    function_name: list_luxsci_aliases
+    id: da41cceb-f2f4-49b8-b582-8c31f916c1c4
+    name: 'LuxSci: List Aliases'
+    path: features/luxsci/workflows/tools.py
+    tags:
+    - luxsci
+    - aliases
+    - migration
+    timeout_seconds: 60
+    type: tool
   b4324172-5d1d-4bf7-b37d-29b96a4b6461:
     category: TD SYNNEX Partner API
     description: Look up TD SYNNEX reseller order details by order number, with

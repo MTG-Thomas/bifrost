@@ -470,6 +470,31 @@ integrations:
     list_entities_data_provider_id: 70f8bbd0-b93a-43e4-bf05-5599d6c221cf
     mappings: []
     name: Idemeum
+  bb3d9a01-add6-4857-92bf-6f0e4c7aaf84:
+    config_schema:
+    - description: LuxSci API base URL (defaults to https://rest.luxsci.com/perl/api/v2)
+      key: base_url
+      position: 0
+      required: false
+      type: string
+    - description: LuxSci API Integration public token
+      key: api_token
+      position: 1
+      required: true
+      type: string
+    - description: LuxSci API Integration secret key
+      key: api_secret
+      position: 2
+      required: true
+      type: secret
+    - description: LuxSci account ID for the connected tenant
+      key: account_id
+      position: 3
+      required: true
+      type: string
+    id: bb3d9a01-add6-4857-92bf-6f0e4c7aaf84
+    mappings: []
+    name: LuxSci
   fffea9b0-03bd-46a1-89f8-41bb67d22ceb:
     config_schema:
     - description: TD SYNNEX Partner API client ID
