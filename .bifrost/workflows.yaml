@@ -1,5 +1,6 @@
 workflows:
   07a5f9d5-48df-472d-b427-793eb6da2f45:
+    access_level: role_based
     category: Microsoft CSP
     description: Apply selected application permissions to the "Bifrost Microsoft"
       app in the MSP's own tenant.
@@ -16,7 +17,6 @@ workflows:
     access_level: authenticated
     category: ConnectSecure
     description: Sync ConnectSecure companies to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_connectsecure_companies
     id: 09298a60-57fd-4540-890d-13923d0f57a8
     name: 'ConnectSecure: Sync Companies'
@@ -25,12 +25,10 @@ workflows:
     - connectsecure
     - sync
     timeout_seconds: 300
-    type: workflow
   0aa603b2-6143-4656-9d01-3b4895388203:
     access_level: authenticated
     category: Pax8
     description: Sync Pax8 companies to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_pax8_companies
     id: 0aa603b2-6143-4656-9d01-3b4895388203
     name: 'Pax8: Sync Companies'
@@ -39,8 +37,8 @@ workflows:
     - pax8
     - sync
     timeout_seconds: 300
-    type: workflow
   0ad1083d-bcab-4f4e-856a-749e65fefd1d:
+    access_level: role_based
     category: Microsoft CSP
     description: Sync GDAP assignments for all tenants with active relationships.
     function_name: batch_update_gdap
@@ -55,7 +53,6 @@ workflows:
     access_level: authenticated
     category: VIPRE
     description: Sync inferred VIPRE sites to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_vipre_sites
     id: 0af6ca86-dfea-4693-8906-1a0fb7341dad
     name: 'VIPRE: Sync Sites'
@@ -64,12 +61,10 @@ workflows:
     - vipre
     - sync
     timeout_seconds: 300
-    type: workflow
   0c02bf22-0e1f-4362-a7e3-089abfcd2478:
     access_level: authenticated
     category: Cove Data Protection
     description: Sync Cove EndCustomer partners to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_cove_customers
     id: 0c02bf22-0e1f-4362-a7e3-089abfcd2478
     name: 'Cove Data Protection: Sync Customers'
@@ -78,12 +73,10 @@ workflows:
     - cove
     - sync
     timeout_seconds: 300
-    type: workflow
   0df08d7b-4d69-4b17-a92e-df056d2996b3:
     access_level: authenticated
     category: Autotask
     description: Sync active Autotask customer companies to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_autotask_customers
     id: 0df08d7b-4d69-4b17-a92e-df056d2996b3
     name: 'Autotask: Sync Customers'
@@ -92,8 +85,8 @@ workflows:
     - autotask
     - sync
     timeout_seconds: 300
-    type: workflow
   0e86a4b8-046e-4b0b-a76d-37f62c13f22c:
+    access_level: role_based
     description: Save a HaloPSA schema rule or pattern to knowledge for future SQL
       generation.
     function_name: save_halopsa_rule
@@ -102,11 +95,30 @@ workflows:
     path: features/halopsa_reporting/workflows/knowledge_mgmt.py
     type: tool
   10bd1daa-33d8-4674-99a5-9ef9479da7c1:
+    access_level: role_based
     function_name: analyze_halopsa_report
     id: 10bd1daa-33d8-4674-99a5-9ef9479da7c1
     name: Analyze HaloPSA Report
     path: features/halopsa_reporting/workflows/analyze_report.py
+  1224a2c8-be63-40b7-aebd-919e77b050a9:
+    access_level: role_based
+    category: Amazon Business
+    description: Look up Amazon Business package tracking details for an order shipment
+      package.
+    function_name: get_package_tracking_details
+    id: 1224a2c8-be63-40b7-aebd-919e77b050a9
+    name: 'Amazon Business: Get Package Tracking Details'
+    path: features/amazonbusiness/workflows/tools.py
+    tags:
+    - amazon
+    - amazon-business
+    - tracking
+    - shipments
+    - procurement
+    timeout_seconds: 60
+    type: tool
   12cf234b-a018-49ec-9ee5-c713008a6280:
+    access_level: role_based
     category: AutoElevate
     description: Approve an AutoElevate elevation request, optionally creating a rule
     function_name: approve_request
@@ -121,7 +133,6 @@ workflows:
     access_level: authenticated
     category: Datto RMM
     description: Sync Datto RMM sites into Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_dattormm_sites
     id: 13889a0e-534e-4160-a34f-9eb4b4642ddb
     name: 'Datto RMM: Sync Sites'
@@ -129,12 +140,10 @@ workflows:
     tags:
     - datto
     - rmm
-    type: workflow
   15b4340b-f453-43f3-a839-400db487660e:
     access_level: authenticated
     category: IT Glue
     description: Sync IT Glue organizations into Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_itglue_organizations
     id: 15b4340b-f453-43f3-a839-400db487660e
     name: 'IT Glue: Sync Organizations'
@@ -142,8 +151,23 @@ workflows:
     tags:
     - itglue
     - documentation
-    type: workflow
+  183ffeb9-0ecc-496a-87b4-adbd46528f3d:
+    access_level: role_based
+    category: LuxSci
+    description: Summarize LuxSci account inventory counts for users, domains, and
+      aliases.
+    function_name: get_luxsci_account_inventory
+    id: 183ffeb9-0ecc-496a-87b4-adbd46528f3d
+    name: 'LuxSci: Get Account Inventory'
+    path: features/luxsci/workflows/tools.py
+    tags:
+    - luxsci
+    - inventory
+    - migration
+    timeout_seconds: 60
+    type: tool
   19b21fd8-8808-4f24-bec1-f8aba6b94f04:
+    access_level: role_based
     description: 'Get an agent''s timesheet for a specific day. Returns the full day
       state: logged events with ticket/customer context, target hours, actual hours,
       unlogged hours, and break allowance. Use this to review the current state of
@@ -154,6 +178,7 @@ workflows:
     path: shared/halopsa/tools/timeentry.py
     type: tool
   1becf769-2243-417c-ba4c-be3f7a2f7410:
+    access_level: role_based
     function_name: seed_report_to_knowledge
     id: 1becf769-2243-417c-ba4c-be3f7a2f7410
     name: Seed Report to Knowledge
@@ -162,7 +187,6 @@ workflows:
     access_level: authenticated
     category: DNSFilter
     description: Sync DNSFilter customer networks to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_dnsfilter_networks
     id: 1e3af6ff-317b-49f1-a5c9-cc8c42306ed5
     name: 'DNSFilter: Sync Networks'
@@ -171,8 +195,8 @@ workflows:
     - dnsfilter
     - sync
     timeout_seconds: 300
-    type: workflow
   245c0dbc-592d-4a5e-b0b5-0ebc256e72b1:
+    access_level: role_based
     category: Microsoft CSP
     description: Sync GDAP assignments to match the template for a single tenant.
     function_name: update_gdap_assignments
@@ -187,7 +211,6 @@ workflows:
     access_level: authenticated
     category: Datto Networking
     description: Returns Datto Networking networks for org mapping picker.
-    endpoint_enabled: false
     function_name: list_dattonetworking_networks
     id: 27a96906-e182-4c90-bd30-5257843bbdd0
     name: 'Datto Networking: List Networks'
@@ -199,6 +222,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   28985798-d75e-40de-bda5-4aeffdaa349c:
+    access_level: role_based
     description: Send an email from your Microsoft 365 mailbox via Graph API. Sends
       as the calling user (resolved from your login). Works for any Bifrost org with
       a Microsoft integration that has Mail.Send permissions. Supports to, cc, bcc
@@ -209,6 +233,7 @@ workflows:
     path: shared/microsoft/tools/email.py
     type: tool
   2c10be89-e286-47f7-9fef-276d0f23dc4c:
+    access_level: role_based
     description: Search HaloPSA knowledge base for relevant reports and schema rules.
     function_name: search_halopsa_knowledge
     id: 2c10be89-e286-47f7-9fef-276d0f23dc4c
@@ -219,7 +244,6 @@ workflows:
     access_level: authenticated
     category: Autotask
     description: Returns active Autotask customer companies for org mapping.
-    endpoint_enabled: false
     function_name: list_autotask_companies
     id: 32222c8b-5b11-40b2-aed3-e8840766cf15
     name: 'Autotask: List Companies'
@@ -230,6 +254,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   3322338c-3b3b-4055-9897-8f600849a4b8:
+    access_level: role_based
     description: Returns all active HaloPSA clients as {label, value} pairs for use
       in forms and dropdowns.
     function_name: halopsa_clients
@@ -242,7 +267,6 @@ workflows:
     access_level: authenticated
     category: Keeper MSP
     description: Sync Keeper managed companies into Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_keeper_managed_companies
     id: 371399ce-463a-4cce-870b-ac74091fdf1e
     name: 'Keeper MSP: Sync Managed Companies'
@@ -250,12 +274,10 @@ workflows:
     tags:
     - keeper
     - msp
-    type: workflow
   41d3fef1-f134-4ca9-a61a-4c9417151647:
     access_level: authenticated
     category: DNSFilter
     description: Returns DNSFilter networks for org mapping picker.
-    endpoint_enabled: false
     function_name: list_dnsfilter_networks
     id: 41d3fef1-f134-4ca9-a61a-4c9417151647
     name: 'DNSFilter: List Networks'
@@ -266,6 +288,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   42f771af-09cb-4932-ab42-7355956b3961:
+    access_level: role_based
     category: Microsoft CSP
     description: Create a new GDAP relationship for a customer tenant.
     function_name: create_gdap_relationship
@@ -277,6 +300,7 @@ workflows:
     - create
     - relationship
   434bcf19-22aa-48f1-90fd-b08eb8ee4b8a:
+    access_level: role_based
     category: Microsoft CSP
     description: Refresh/reconsent a tenant to ensure all permissions are up-to-date.
     function_name: refresh_csp_status
@@ -292,7 +316,6 @@ workflows:
     access_level: authenticated
     category: Google Workspace
     description: Discover and bind the current org-scoped Google Workspace tenant.
-    endpoint_enabled: false
     function_name: sync_google_workspace_tenant
     id: 43509af6-8ba0-4b68-bbe4-a939b1e15dd5
     name: 'Google Workspace: Sync Current Tenant'
@@ -300,8 +323,8 @@ workflows:
     tags:
     - google
     - workspace
-    type: workflow
   435d4f34-bfdc-417e-a0d4-11baeb36b7c8:
+    access_level: role_based
     description: Get the full content of a specific email by message ID. Use this
       after list_emails to read the body of a specific message. Returns the full email
       including body text, all recipients, and attachment names.
@@ -314,7 +337,6 @@ workflows:
     access_level: authenticated
     category: Pax8
     description: Returns Pax8 companies for org mapping picker.
-    endpoint_enabled: false
     function_name: list_pax8_companies
     id: 4371b6c0-7131-4447-bb81-777c6b6a5c63
     name: 'Pax8: List Companies'
@@ -325,13 +347,28 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   47eda484-6594-421d-bdb8-251c2cd7b595:
+    access_level: role_based
     description: Shared mailboxes from Exchange Online via Get-Mailbox
     function_name: list_shared_mailboxes
     id: 47eda484-6594-421d-bdb8-251c2cd7b595
     name: Exchange Shared Mailboxes
     path: shared/microsoft/exchange_data_providers.py
     type: data_provider
+  4fd6b9f0-3f2b-4b3d-96b1-0c1a28ac2a6b:
+    access_level: authenticated
+    category: Meraki
+    description: Audit Meraki organizations for missing internal admins.
+    function_name: audit_meraki_admin_coverage
+    id: 4fd6b9f0-3f2b-4b3d-96b1-0c1a28ac2a6b
+    name: 'Meraki: Audit Admin Coverage'
+    path: features/meraki/workflows/audit_admin_coverage.py
+    tags:
+    - meraki
+    - audit
+    - admins
+    timeout_seconds: 300
   51ae59d3-e8c2-42e5-aff7-d9930d3b39c0:
+    access_level: role_based
     description: Sites for the org's HaloPSA client, excluding inventory/stock locations
     function_name: halo_client_sites
     id: 51ae59d3-e8c2-42e5-aff7-d9930d3b39c0
@@ -339,6 +376,7 @@ workflows:
     path: shared/halopsa/data_providers.py
     type: data_provider
   51ba7782-9106-4310-b38e-e6025ee96e46:
+    access_level: role_based
     description: List emails from your mailbox. Searches inbox by default, or sent
       items, or all folders. Filter by date range, sender, or search query. Returns
       email metadata only (subject, from, to, timestamps) without message bodies to
@@ -360,7 +398,20 @@ workflows:
     path: shared/bifrost/data_providers.py
     timeout_seconds: 300
     type: data_provider
+  58926179-37af-445d-9f5f-c06d50060c59:
+    access_level: authenticated
+    category: Idemeum
+    description: Sync Idemeum customers to Bifrost organizations.
+    function_name: sync_idemeum_customers
+    id: 58926179-37af-445d-9f5f-c06d50060c59
+    name: 'Idemeum: Sync Customers'
+    path: features/idemeum/workflows/sync_customers.py
+    tags:
+    - idemeum
+    - sync
+    timeout_seconds: 300
   5bce1d17-3783-48f1-8c33-f2935377a106:
+    access_level: role_based
     description: Batch-analyze HaloPSA built-in reports and seed the knowledge base.
     function_name: batch_analyze_reports
     id: 5bce1d17-3783-48f1-8c33-f2935377a106
@@ -368,6 +419,7 @@ workflows:
     path: features/halopsa_reporting/workflows/batch_analyze.py
     timeout_seconds: 7200
   5d529005-6f27-4943-a4e5-16b7f40b9257:
+    access_level: role_based
     description: Send an email from a HaloPSA ticket. Creates an action with email
       delivery. Optionally include time entry fields if the email represents billable
       work. Uses email template 11 (Ticket Update with signature) by default.
@@ -377,6 +429,7 @@ workflows:
     path: shared/halopsa/tools/timeentry.py
     type: tool
   64c71f79-8f9e-4196-b98d-88f979dd91de:
+    access_level: role_based
     category: AutoElevate
     description: Fetch the current AutoElevate approval policy from Outline
     function_name: get_approval_policy
@@ -391,7 +444,6 @@ workflows:
     access_level: authenticated
     category: Datto SaaS Protection
     description: Sync Datto SaaS Protection domains to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_dattosaas_domains
     id: 68783b26-eaa8-4ca4-b6c3-7bdaa7341d1f
     name: 'Datto SaaS Protection: Sync Domains'
@@ -401,8 +453,8 @@ workflows:
     - saas
     - sync
     timeout_seconds: 300
-    type: workflow
   68b410cf-07f2-4312-8e99-a692bc978740:
+    access_level: role_based
     category: HaloPSA
     description: Get a HaloPSA ticket by ID with full details, recent notes, and metadata.
     function_name: get_ticket
@@ -417,7 +469,6 @@ workflows:
     access_level: authenticated
     category: Cove Data Protection
     description: Returns Cove EndCustomer partners for org mapping picker.
-    endpoint_enabled: false
     function_name: list_cove_customers
     id: 6a24ad7e-8574-49c5-856e-0df69a26711c
     name: 'Cove Data Protection: List Customers'
@@ -428,6 +479,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   6bd5dd41-d695-4654-8eb6-a5be6a1c7bcf:
+    access_level: role_based
     category: Microsoft CSP
     description: Get GDAP relationship status for all tenants.
     function_name: get_gdap_status
@@ -441,7 +493,6 @@ workflows:
     access_level: authenticated
     category: IT Glue
     description: Returns IT Glue organizations for org mapping picker.
-    endpoint_enabled: false
     function_name: list_itglue_organizations
     id: 6e0f976b-8d6b-4c70-8286-ee245194f49d
     name: 'IT Glue: List Organizations'
@@ -451,7 +502,35 @@ workflows:
     - data-provider
     timeout_seconds: 60
     type: data_provider
+  7041cd62-4fbf-469c-a913-b480e8ccce6d:
+    access_level: role_based
+    category: TD SYNNEX Partner API
+    description: Look up TD SYNNEX quote status by reseller order number.
+    function_name: get_quote_status
+    id: 7041cd62-4fbf-469c-a913-b480e8ccce6d
+    name: 'TD SYNNEX Partner API: Get Quote Status'
+    path: features/tdsynnex_partner/workflows/tools.py
+    tags:
+    - tdsynnex
+    - quotes
+    - procurement
+    timeout_seconds: 60
+    type: tool
+  70f8bbd0-b93a-43e4-bf05-5599d6c221cf:
+    access_level: authenticated
+    category: Idemeum
+    description: Returns Idemeum customers for org mapping picker.
+    function_name: list_idemeum_customers
+    id: 70f8bbd0-b93a-43e4-bf05-5599d6c221cf
+    name: 'Idemeum: List Customers'
+    path: features/idemeum/workflows/data_providers.py
+    tags:
+    - idemeum
+    - data-provider
+    timeout_seconds: 60
+    type: data_provider
   714aa855-eda3-4882-a4b7-1e63da942a77:
+    access_level: role_based
     category: HaloPSA
     description: List notes/actions on a HaloPSA ticket, newest first. Org users only
       see public notes.
@@ -464,6 +543,7 @@ workflows:
     - notes
     type: tool
   7457c662-79d1-4e7b-96b4-42c1112faf22:
+    access_level: role_based
     category: Platform
     description: Lists all users in an organization with their HR Admin role membership
       status. Provider access required.
@@ -476,6 +556,7 @@ workflows:
     - roles
     - admin
   74cafce3-5a5c-4a0c-ac45-5eddb852e2e4:
+    access_level: role_based
     category: Microsoft CSP
     description: Grant or refresh consent for a customer tenant.
     function_name: consent_csp_tenant
@@ -490,7 +571,6 @@ workflows:
     access_level: authenticated
     category: Datto RMM
     description: Returns Datto RMM sites for org mapping picker.
-    endpoint_enabled: false
     function_name: list_dattormm_sites
     id: 7966b43d-f27a-4ae9-921c-269eccdede6d
     name: 'Datto RMM: List Sites'
@@ -501,7 +581,22 @@ workflows:
     - data-provider
     timeout_seconds: 60
     type: data_provider
+  79dd693b-783e-4e65-b98b-53af4e6a7758:
+    access_level: role_based
+    category: TD SYNNEX Partner API
+    description: Look up TD SYNNEX shipment details for a reseller order number.
+    function_name: get_shipment_details
+    id: 79dd693b-783e-4e65-b98b-53af4e6a7758
+    name: 'TD SYNNEX Partner API: Get Shipment Details'
+    path: features/tdsynnex_partner/workflows/tools.py
+    tags:
+    - tdsynnex
+    - shipments
+    - procurement
+    timeout_seconds: 60
+    type: tool
   7aa4065e-9c69-4056-a7ff-33145d78e70d:
+    access_level: role_based
     category: Microsoft CSP
     description: Save selected Microsoft permissions.
     function_name: save_selected_permissions
@@ -513,6 +608,7 @@ workflows:
     - csp
     - permissions
   7dc97ed7-37ae-4603-875f-0841fa071d31:
+    access_level: role_based
     category: AutoElevate
     description: Look up the AutoElevate elevation request linked to a HaloPSA ticket
     function_name: get_elevation_request
@@ -527,7 +623,6 @@ workflows:
     access_level: authenticated
     category: Huntress
     description: Returns Huntress organizations for org mapping picker.
-    endpoint_enabled: false
     function_name: list_huntress_organizations
     id: 819b858f-ae9b-4653-beec-34420ba5d77c
     name: 'Huntress: List Organizations'
@@ -538,6 +633,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   8a4ff0d6-0aab-42f1-be04-0c400726eca1:
+    access_level: role_based
     description: Delete a break or lunch entry from the timesheet. Only works on timesheet
       events (event_type=1), not on ticket actions. Use adjust_time_entry with timetaken=0
       to remove work entries from the timesheet instead. The event ID comes from the
@@ -551,7 +647,6 @@ workflows:
     access_level: authenticated
     category: Huntress
     description: Sync Huntress organizations to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_huntress_organizations
     id: 8a85664e-c092-4450-8b65-c08cea3b1e02
     name: 'Huntress: Sync Organizations'
@@ -560,8 +655,38 @@ workflows:
     - huntress
     - sync
     timeout_seconds: 300
-    type: workflow
+  8b7cbc91-4b8d-40fd-9ea1-55d9dbf2dd4f:
+    access_level: authenticated
+    category: Meraki
+    description: Compare Meraki org admins to a baseline organization.
+    function_name: audit_meraki_admins_against_baseline
+    id: 8b7cbc91-4b8d-40fd-9ea1-55d9dbf2dd4f
+    name: 'Meraki: Audit Admins Against Baseline Organization'
+    path: features/meraki/workflows/baseline_admins.py
+    tags:
+    - meraki
+    - audit
+    - admins
+    - baseline
+    timeout_seconds: 300
+  8bc2ea7c-7c36-41ef-b026-0e6c28c7476c:
+    access_level: authenticated
+    category: Meraki
+    description: Audit restricted admin coverage for MTG procurement/license Meraki
+      orgs.
+    function_name: audit_meraki_procurement_license_admins
+    id: 8bc2ea7c-7c36-41ef-b026-0e6c28c7476c
+    name: 'Meraki: Audit Procurement License Organization Admins'
+    path: features/meraki/workflows/baseline_admins.py
+    tags:
+    - meraki
+    - audit
+    - admins
+    - license
+    - procurement
+    timeout_seconds: 300
   8c03ac58-5dcc-4d7d-b747-399889cc478d:
+    access_level: role_based
     description: Complete a HaloPSA appointment with time taken and an optional note.
       This logs the time entry, marks the appointment as done (clearing it from dispatch),
       and creates the action on the linked ticket if one exists. Use this instead
@@ -573,7 +698,23 @@ workflows:
     name: complete_appointment
     path: shared/halopsa/tools/timeentry.py
     type: tool
+  8c84e874-ff7c-4e8f-8d70-8072378e155a:
+    access_level: role_based
+    category: Amazon Business
+    description: Look up Amazon Business order details by external order ID.
+    function_name: get_order_details
+    id: 8c84e874-ff7c-4e8f-8d70-8072378e155a
+    name: 'Amazon Business: Get Order Details'
+    path: features/amazonbusiness/workflows/tools.py
+    tags:
+    - amazon
+    - amazon-business
+    - orders
+    - procurement
+    timeout_seconds: 60
+    type: tool
   900df916-9309-4001-b7b5-6fa4c06a13c2:
+    access_level: role_based
     category: HaloPSA
     description: Get the active service agreements for a HaloPSA client. Returns agreement
       types like Unified IT, Managed IT, Security Essentials.
@@ -586,6 +727,7 @@ workflows:
     - agreements
     type: tool
   90b14931-7c6d-4f1d-a41d-0007f1479049:
+    access_level: role_based
     category: HaloPSA
     description: Update fields on an existing HaloPSA ticket (summary, status, priority,
       agent, team, etc.).
@@ -598,6 +740,7 @@ workflows:
     - tickets
     type: tool
   94d8419c-44f2-4e86-bf5f-2df92b9ef933:
+    access_level: role_based
     category: Microsoft CSP
     description: Fetch available permissions from Microsoft APIs.
     function_name: list_available_permissions
@@ -609,6 +752,7 @@ workflows:
     - csp
     - permissions
   9848d539-d6fd-4ecd-a512-0558f14fb084:
+    access_level: role_based
     description: Returns HaloPSA report groups with report counts for use in form
       dropdowns.
     function_name: list_report_groups
@@ -620,7 +764,6 @@ workflows:
     access_level: authenticated
     category: Meraki
     description: Returns Meraki organizations for org mapping picker.
-    endpoint_enabled: false
     function_name: list_meraki_organizations
     id: 9c752875-4f3e-475e-92be-bc47f54f72fa
     name: 'Meraki: List Organizations'
@@ -630,70 +773,8 @@ workflows:
     - data-provider
     timeout_seconds: 60
     type: data_provider
-  4fd6b9f0-3f2b-4b3d-96b1-0c1a28ac2a6b:
-    access_level: authenticated
-    category: Meraki
-    description: Audit Meraki organizations for missing internal admins.
-    endpoint_enabled: false
-    function_name: audit_meraki_admin_coverage
-    id: 4fd6b9f0-3f2b-4b3d-96b1-0c1a28ac2a6b
-    name: 'Meraki: Audit Admin Coverage'
-    path: features/meraki/workflows/audit_admin_coverage.py
-    tags:
-    - meraki
-    - audit
-    - admins
-    timeout_seconds: 300
-    type: workflow
-  8b7cbc91-4b8d-40fd-9ea1-55d9dbf2dd4f:
-    access_level: authenticated
-    category: Meraki
-    description: Compare Meraki org admins to a baseline organization.
-    endpoint_enabled: false
-    function_name: audit_meraki_admins_against_baseline
-    id: 8b7cbc91-4b8d-40fd-9ea1-55d9dbf2dd4f
-    name: 'Meraki: Audit Admins Against Baseline Organization'
-    path: features/meraki/workflows/baseline_admins.py
-    tags:
-    - meraki
-    - audit
-    - admins
-    - baseline
-    timeout_seconds: 300
-    type: workflow
-  aec5ad45-96bb-4253-b3e6-8e67711f6e10:
-    access_level: authenticated
-    category: Meraki
-    description: Add or update standard Meraki admins from a baseline organization.
-    endpoint_enabled: false
-    function_name: sync_meraki_admins_from_baseline
-    id: aec5ad45-96bb-4253-b3e6-8e67711f6e10
-    name: 'Meraki: Sync Admins From Baseline Organization'
-    path: features/meraki/workflows/baseline_admins.py
-    tags:
-    - meraki
-    - sync
-    - admins
-    - baseline
-    timeout_seconds: 600
-    type: workflow
-  ffc07efb-fb27-4218-adda-743db368278e:
-    access_level: authenticated
-    category: Meraki
-    description: Remove a specific Meraki admin email across organizations.
-    endpoint_enabled: false
-    function_name: remove_meraki_admin_across_organizations
-    id: ffc07efb-fb27-4218-adda-743db368278e
-    name: 'Meraki: Remove Admin Across Organizations'
-    path: features/meraki/workflows/baseline_admins.py
-    tags:
-    - meraki
-    - cleanup
-    - admins
-    - remove
-    timeout_seconds: 600
-    type: workflow
   9dd8f037-400b-47c2-be1c-55d42a259541:
+    access_level: role_based
     description: Save a working HaloPSA SQL report to knowledge for future reuse.
     function_name: save_halopsa_report
     id: 9dd8f037-400b-47c2-be1c-55d42a259541
@@ -701,6 +782,7 @@ workflows:
     path: features/halopsa_reporting/workflows/knowledge_mgmt.py
     type: tool
   9e9de8c5-d342-48c7-b0e3-21b8d0ff2bc1:
+    access_level: role_based
     category: Microsoft CSP
     description: Link a CSP tenant to a Bifrost organization.
     function_name: link_csp_tenant
@@ -712,6 +794,7 @@ workflows:
     - csp
     - link
   9f0edded-2f53-41d4-869d-aab126267b3d:
+    access_level: role_based
     category: HaloPSA
     description: Create a new HaloPSA ticket. Org users' client and requester are
       set automatically.
@@ -723,26 +806,11 @@ workflows:
     - halopsa
     - tickets
     type: tool
-  f708a8ea-be19-48d4-8234-b422b1675090:
-    access_level: authenticated
-    category: Examples
-    description: A simple greeting workflow — says hi from Copilot CLI.
-    endpoint_enabled: false
-    function_name: hello_world
-    id: f708a8ea-be19-48d4-8234-b422b1675090
-    name: Hello World
-    path: workflows/sample/hello_world.py
-    tags:
-    - sample
-    - example
-    timeout_seconds: 300
-    type: workflow
   a0f7f3c4-0b42-4c63-a62b-adda48b1fb4a:
     access_level: authenticated
     category: Google Workspace Reseller
     description: Returns reseller-visible Google Workspace customers for org mapping
       picker.
-    endpoint_enabled: false
     function_name: list_google_workspace_reseller_customers
     id: a0f7f3c4-0b42-4c63-a62b-adda48b1fb4a
     name: 'Google Workspace Reseller: List Customers'
@@ -755,6 +823,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   a25d00d9-3702-4f1f-9fb0-e86e098804c2:
+    access_level: role_based
     description: 'Reconstruct your day by pulling timesheet, appointments, and email
       signals, then correlating everything to build a complete picture. Returns: timesheet
       assessment (coverage, anomalies), uncovered appointments that need time logged,
@@ -767,6 +836,7 @@ workflows:
     path: shared/halopsa/tools/reconstruct.py
     type: tool
   a637e66a-d3ab-4edb-9566-eb8090cde95f:
+    access_level: role_based
     category: AutoElevate
     description: Deny/escalate an AutoElevate elevation request for human review
     function_name: deny_request
@@ -781,7 +851,6 @@ workflows:
     access_level: authenticated
     category: Google Workspace Reseller
     description: Sync reseller-managed Google Workspace customers into Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_google_workspace_reseller_customers
     id: a88d4582-5fb1-4d11-acb4-9fb7a8318f1c
     name: 'Google Workspace Reseller: Sync Customers'
@@ -790,8 +859,8 @@ workflows:
     - google
     - workspace
     - reseller
-    type: workflow
   a8c25e73-6d14-4f87-b319-0e4a981c2d06:
+    access_level: role_based
     category: GoToConnect
     description: Per-tech call summary for the past N days. Useful for timesheet verification
       and capacity planning.
@@ -806,6 +875,7 @@ workflows:
     timeout_seconds: 60
     type: tool
   aaf2cc84-93ea-4436-b453-1c761925717e:
+    access_level: role_based
     category: HaloPSA
     description: List HaloPSA tickets with filtering, search, and pagination. Org
       users only see their own tickets.
@@ -817,11 +887,55 @@ workflows:
     - halopsa
     - tickets
     type: tool
+  ae3cb1e2-e78e-4ab1-bee1-4f61b13bb028:
+    access_level: authenticated
+    category: Meraki
+    description: Return the configured Meraki admin governance policy used by audit
+      and sync workflows.
+    function_name: get_meraki_admin_governance_policy
+    id: ae3cb1e2-e78e-4ab1-bee1-4f61b13bb028
+    name: 'Meraki: Get Admin Governance Policy'
+    path: features/meraki/workflows/baseline_admins.py
+    tags:
+    - meraki
+    - policy
+    - config
+    - admins
+    timeout_seconds: 60
+  aec5ad45-96bb-4253-b3e6-8e67711f6e10:
+    access_level: authenticated
+    category: Meraki
+    description: Add or update standard Meraki admins from a baseline organization.
+    function_name: sync_meraki_admins_from_baseline
+    id: aec5ad45-96bb-4253-b3e6-8e67711f6e10
+    name: 'Meraki: Sync Admins From Baseline Organization'
+    path: features/meraki/workflows/baseline_admins.py
+    tags:
+    - meraki
+    - sync
+    - admins
+    - baseline
+    timeout_seconds: 600
+  af01a92c-e12e-49d0-9d77-4c80b45ba451:
+    access_level: authenticated
+    category: Meraki
+    description: Enforce a restricted admin roster on MTG procurement/license Meraki
+      orgs.
+    function_name: sync_meraki_procurement_license_admins
+    id: af01a92c-e12e-49d0-9d77-4c80b45ba451
+    name: 'Meraki: Sync Procurement License Organization Admins'
+    path: features/meraki/workflows/baseline_admins.py
+    tags:
+    - meraki
+    - sync
+    - admins
+    - license
+    - procurement
+    timeout_seconds: 600
   af2c7f56-95ca-4a4c-a926-af8e892e13ec:
     access_level: authenticated
     category: Datto SaaS Protection
     description: Returns Datto SaaS Protection domains for org mapping picker.
-    endpoint_enabled: false
     function_name: list_dattosaas_domains
     id: af2c7f56-95ca-4a4c-a926-af8e892e13ec
     name: 'Datto SaaS Protection: List Domains'
@@ -833,6 +947,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   b2b0550b-f214-4dc6-9095-7e82711ff3da:
+    access_level: role_based
     description: Delete all documents in halopsa knowledge namespaces. Use before
       reseeding.
     function_name: clear_halopsa_knowledge
@@ -843,7 +958,6 @@ workflows:
     access_level: authenticated
     category: CIPP
     description: Sync CIPP-managed customer tenants to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_cipp_tenants
     id: b3c91e47-2f8a-4d09-a1e6-7c5d820f3b14
     name: 'CIPP: Sync Tenants'
@@ -852,8 +966,23 @@ workflows:
     - cipp
     - sync
     timeout_seconds: 300
-    type: workflow
+  b4324172-5d1d-4bf7-b37d-29b96a4b6461:
+    access_level: role_based
+    category: TD SYNNEX Partner API
+    description: Look up TD SYNNEX reseller order details by order number, with optional
+      order type.
+    function_name: get_order
+    id: b4324172-5d1d-4bf7-b37d-29b96a4b6461
+    name: 'TD SYNNEX Partner API: Get Order'
+    path: features/tdsynnex_partner/workflows/tools.py
+    tags:
+    - tdsynnex
+    - orders
+    - procurement
+    timeout_seconds: 60
+    type: tool
   b6317462-15cc-413c-afa7-dc0e8e1f3342:
+    access_level: role_based
     category: Microsoft CSP
     description: Get currently selected Microsoft permissions.
     function_name: get_selected_permissions
@@ -864,7 +993,37 @@ workflows:
     - microsoft
     - csp
     - permissions
+  b73ddb49-1fb2-42cb-a832-77cfd098c48d:
+    access_level: role_based
+    category: LuxSci
+    description: List LuxSci users for the connected account, with optional status
+      and domain filtering.
+    function_name: list_luxsci_users
+    id: b73ddb49-1fb2-42cb-a832-77cfd098c48d
+    name: 'LuxSci: List Users'
+    path: features/luxsci/workflows/tools.py
+    tags:
+    - luxsci
+    - users
+    - migration
+    timeout_seconds: 60
+    type: tool
+  c2cfcefb-7345-4218-89fd-bcd122c1c6c5:
+    access_level: role_based
+    category: TD SYNNEX Partner API
+    description: Look up TD SYNNEX invoice details by invoice number and type.
+    function_name: get_invoice
+    id: c2cfcefb-7345-4218-89fd-bcd122c1c6c5
+    name: 'TD SYNNEX Partner API: Get Invoice'
+    path: features/tdsynnex_partner/workflows/tools.py
+    tags:
+    - tdsynnex
+    - invoices
+    - procurement
+    timeout_seconds: 60
+    type: tool
   c2e8f147-3a91-4d05-b826-9f1e730d5c82:
+    access_level: role_based
     category: GoToConnect
     description: Get recent call history for a specific phone number. Useful for identifying
       callers and correlating calls to HaloPSA clients.
@@ -879,6 +1038,7 @@ workflows:
     timeout_seconds: 60
     type: tool
   c63d6c1e-80b9-44e6-aa1a-69246c2d0637:
+    access_level: role_based
     category: HaloPSA
     description: Add a note to a HaloPSA ticket. Private by default (hidden from end
       user).
@@ -891,6 +1051,7 @@ workflows:
     - notes
     type: tool
   c943c063-7ef0-4316-b8ff-3fd02c1b7869:
+    access_level: role_based
     description: Execute a SQL query against the HaloPSA reporting database and return
       structured results.
     function_name: execute_halopsa_sql
@@ -899,6 +1060,7 @@ workflows:
     path: features/halopsa_reporting/workflows/execute_halopsa_sql.py
     type: tool
   cd0b2104-9e2b-5e59-a794-25a5d8d58ae4:
+    access_level: role_based
     category: Microsoft
     description: List Microsoft CSP customers from Partner Center
     function_name: microsoft_customers
@@ -911,7 +1073,6 @@ workflows:
     access_level: authenticated
     category: Meraki
     description: Sync Meraki organizations to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_meraki_organizations
     id: cf6ab76a-f09c-417f-9362-ffcbe31f8649
     name: 'Meraki: Sync Organizations'
@@ -920,8 +1081,8 @@ workflows:
     - meraki
     - sync
     timeout_seconds: 300
-    type: workflow
   cff7890a-4fe2-4ecd-9769-67e41b9b84cf:
+    access_level: role_based
     category: HaloPSA
     description: Close a HaloPSA ticket with an optional resolution note.
     function_name: close_ticket
@@ -933,6 +1094,7 @@ workflows:
     - tickets
     type: tool
   d09ddc06-a7cc-4286-9668-583d12392e7a:
+    access_level: role_based
     description: Get your calendar appointments for a date range from HaloPSA. These
       are synced from Microsoft 365 and may already have client and ticket associations.
       Returns timed calendar events (not dateless tasks/reminders). Use this to see
@@ -947,7 +1109,6 @@ workflows:
     access_level: authenticated
     category: NinjaOne
     description: Returns NinjaOne organizations for org mapping picker.
-    endpoint_enabled: false
     function_name: list_ninjaone_organizations
     id: d1319af0-74d3-4f17-a4cd-73077d68d84c
     name: 'NinjaOne: List Organizations'
@@ -961,7 +1122,6 @@ workflows:
     access_level: authenticated
     category: Keeper MSP
     description: Returns Keeper managed companies for org mapping picker.
-    endpoint_enabled: false
     function_name: list_keeper_managed_companies
     id: d44e888b-600e-413f-8daa-75df583d5af4
     name: 'Keeper MSP: List Managed Companies'
@@ -973,6 +1133,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   d4f92b61-7c03-4e18-a537-2b8e641f9d04:
+    access_level: role_based
     category: GoToConnect
     description: Get presence and availability for all MTG GoToConnect users.
     function_name: get_tech_availability
@@ -989,7 +1150,6 @@ workflows:
     access_level: authenticated
     category: Datto Networking
     description: Sync Datto Networking networks into Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_dattonetworking_networks
     id: d636601c-80da-4e50-8aa9-10ca7b170e08
     name: 'Datto Networking: Sync Networks'
@@ -997,8 +1157,22 @@ workflows:
     tags:
     - datto
     - networking
-    type: workflow
+  da41cceb-f2f4-49b8-b582-8c31f916c1c4:
+    access_level: role_based
+    category: LuxSci
+    description: List LuxSci aliases for the connected account.
+    function_name: list_luxsci_aliases
+    id: da41cceb-f2f4-49b8-b582-8c31f916c1c4
+    name: 'LuxSci: List Aliases'
+    path: features/luxsci/workflows/tools.py
+    tags:
+    - luxsci
+    - aliases
+    - migration
+    timeout_seconds: 60
+    type: tool
   dd50b0c5-2673-4cce-a488-a66c2421412f:
+    access_level: role_based
     category: Microsoft CSP
     description: Seed the GDAP template from an existing relationship's assignments.
     function_name: seed_gdap_template
@@ -1010,6 +1184,7 @@ workflows:
     - template
     - setup
   df641a19-7f97-488e-8cb0-5054712931cf:
+    access_level: role_based
     description: Remove a time entry from the timesheet by zeroing out its duration.
       The underlying action (note, email, etc.) is preserved but will no longer count
       toward the timesheet. Use this to clean up duplicate entries, accidental time
@@ -1022,7 +1197,23 @@ workflows:
     tags:
     - HaloPSA
     type: tool
+  e391174e-b341-423d-bcd5-81e56c5e809d:
+    access_level: authenticated
+    category: Meraki
+    description: Persist the Meraki admin governance policy used by audit and sync
+      workflows.
+    function_name: save_meraki_admin_governance_policy
+    id: e391174e-b341-423d-bcd5-81e56c5e809d
+    name: 'Meraki: Save Admin Governance Policy'
+    path: features/meraki/workflows/baseline_admins.py
+    tags:
+    - meraki
+    - policy
+    - config
+    - admins
+    timeout_seconds: 60
   e7a13c84-5f2b-4901-8d46-3c9e752a0f17:
+    access_level: role_based
     category: GoToConnect
     description: Send an SMS to a customer from an MTG GoToConnect number.
     function_name: send_sms_to_customer
@@ -1040,7 +1231,6 @@ workflows:
     access_level: authenticated
     category: NinjaOne
     description: Sync NinjaOne organizations to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_ninjaone_organizations
     id: e85b9aed-dfd3-438a-8aca-c481e57d8321
     name: 'NinjaOne: Sync Organizations'
@@ -1049,8 +1239,8 @@ workflows:
     - ninjaone
     - sync
     timeout_seconds: 300
-    type: workflow
   eaf7753a-bdea-4221-9745-f195c4d06e72:
+    access_level: role_based
     description: 'Fill a timesheet by executing a confirmed day plan in one shot.
       Takes an array of time blocks, each specifying what to log. Handles work entries
       (via QuickTime), break/lunch entries, appointment completions, and time adjustments
@@ -1071,6 +1261,7 @@ workflows:
     path: shared/halopsa/tools/fill_day.py
     type: tool
   eb1b9114-5826-4f6d-9c4f-015fbc8808e7:
+    access_level: role_based
     description: Log a QuickTime entry. Creates a lightweight time entry that auto-creates
       and closes a ticket behind the scenes. Use for time accountability on quick
       calls, one-off meetings, QBRs, internal work, or anything that isn't a service
@@ -1082,6 +1273,7 @@ workflows:
     path: shared/halopsa/tools/timeentry.py
     type: tool
   ec165a28-94ef-4fef-9779-e32c1ce48979:
+    access_level: role_based
     category: Microsoft CSP
     description: Check if Microsoft integrations are properly configured.
     function_name: check_microsoft_setup
@@ -1093,6 +1285,7 @@ workflows:
     - csp
     - setup
   ef8cf1f2-b451-47f4-aee8-336f7cb21d33:
+    access_level: role_based
     category: Microsoft CSP
     description: List all CSP tenants with their current status.
     function_name: list_csp_tenants
@@ -1108,7 +1301,6 @@ workflows:
     category: Quoter
     description: Returns Quoter organizations inferred from contacts for org mapping
       picker.
-    endpoint_enabled: false
     function_name: list_quoter_organizations
     id: f04a1d7c-3efe-421d-af15-d3c8bc689ebc
     name: 'Quoter: List Organizations'
@@ -1119,6 +1311,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   f1473ec0-a303-4cdf-a039-ba3882332b27:
+    access_level: role_based
     category: Organizations
     description: Create a new Bifrost organization with optional domain.
     function_name: create_organization
@@ -1132,7 +1325,6 @@ workflows:
     access_level: authenticated
     category: Quoter
     description: Sync Quoter organizations inferred from contacts to Bifrost organizations.
-    endpoint_enabled: false
     function_name: sync_quoter_organizations
     id: f19712ec-53bc-4b13-af96-bd529c7c9d64
     name: 'Quoter: Sync Organizations'
@@ -1141,8 +1333,8 @@ workflows:
     - quoter
     - sync
     timeout_seconds: 300
-    type: workflow
   f1b04d92-8e47-4c23-9a58-7d2f863b1e05:
+    access_level: role_based
     category: GoToConnect
     description: Get recent missed inbound calls for proactive customer follow-up.
     function_name: get_recent_missed_calls
@@ -1156,6 +1348,7 @@ workflows:
     timeout_seconds: 30
     type: tool
   f5de214e-6df5-47dc-b0bb-aff679d3c47e:
+    access_level: role_based
     category: Platform
     description: Returns the calling user's role memberships and derived access flags
       for UI-level gating in apps. Provider users always receive full access.
@@ -1171,7 +1364,6 @@ workflows:
     access_level: authenticated
     category: ConnectSecure
     description: Returns ConnectSecure companies for org mapping picker.
-    endpoint_enabled: false
     function_name: list_connectsecure_companies
     id: f6896db3-bb71-4100-a806-c9daa9f1d802
     name: 'ConnectSecure: List Companies'
@@ -1181,11 +1373,22 @@ workflows:
     - data-provider
     timeout_seconds: 60
     type: data_provider
+  f708a8ea-be19-48d4-8234-b422b1675090:
+    access_level: authenticated
+    category: Examples
+    description: A simple greeting workflow — says hi from Copilot CLI.
+    function_name: hello_world
+    id: f708a8ea-be19-48d4-8234-b422b1675090
+    name: hello_world
+    path: workflows/sample/hello_world.py
+    tags:
+    - sample
+    - example
+    timeout_seconds: 300
   f72a1c85-9e3d-4b67-8f02-1a4e936d7c29:
     access_level: authenticated
     category: CIPP
     description: Returns CIPP-managed tenants for org mapping picker.
-    endpoint_enabled: false
     function_name: list_cipp_tenants
     id: f72a1c85-9e3d-4b67-8f02-1a4e936d7c29
     name: 'CIPP: List Tenants'
@@ -1196,6 +1399,7 @@ workflows:
     timeout_seconds: 60
     type: data_provider
   f89ed46b-566d-4b40-991b-768278dcceb7:
+    access_level: role_based
     category: Platform
     description: Grant or revoke the HR Admin role for a Bifrost user. Provider access
       required.
@@ -1207,83 +1411,8 @@ workflows:
     - permissions
     - roles
     - admin
-  fb8da981-cd23-4193-8dbc-694244386e52:
-    access_level: authenticated
-    category: VIPRE
-    description: Returns inferred VIPRE sites for org mapping picker.
-    endpoint_enabled: false
-    function_name: list_vipre_sites
-    id: fb8da981-cd23-4193-8dbc-694244386e52
-    name: 'VIPRE: List Sites'
-    path: features/vipre/workflows/data_providers.py
-    tags:
-    - vipre
-    - data-provider
-    timeout_seconds: 60
-    type: data_provider
-  fb8f484b-a7c4-400a-bb00-76f89452fa3d:
-    description: Open HaloPSA tickets for a given org, for use in ticket selector
-      dropdowns.
-    function_name: halo_open_tickets
-    id: fb8f484b-a7c4-400a-bb00-76f89452fa3d
-    name: HaloPSA Open Tickets
-    path: shared/halopsa/data_providers.py
-    type: data_provider
-  70f8bbd0-b93a-43e4-bf05-5599d6c221cf:
-    access_level: authenticated
-    category: Idemeum
-    description: Returns Idemeum customers for org mapping picker.
-    endpoint_enabled: false
-    function_name: list_idemeum_customers
-    id: 70f8bbd0-b93a-43e4-bf05-5599d6c221cf
-    name: 'Idemeum: List Customers'
-    path: features/idemeum/workflows/data_providers.py
-    tags:
-    - idemeum
-    - data-provider
-    timeout_seconds: 60
-    type: data_provider
-  58926179-37af-445d-9f5f-c06d50060c59:
-    access_level: authenticated
-    category: Idemeum
-    description: Sync Idemeum customers to Bifrost organizations.
-    endpoint_enabled: false
-    function_name: sync_idemeum_customers
-    id: 58926179-37af-445d-9f5f-c06d50060c59
-    name: 'Idemeum: Sync Customers'
-    path: features/idemeum/workflows/sync_customers.py
-    tags:
-    - idemeum
-    - sync
-    timeout_seconds: 300
-    type: workflow
-  183ffeb9-0ecc-496a-87b4-adbd46528f3d:
-    category: LuxSci
-    description: Summarize LuxSci account inventory counts for users, domains, and aliases.
-    function_name: get_luxsci_account_inventory
-    id: 183ffeb9-0ecc-496a-87b4-adbd46528f3d
-    name: 'LuxSci: Get Account Inventory'
-    path: features/luxsci/workflows/tools.py
-    tags:
-    - luxsci
-    - inventory
-    - migration
-    timeout_seconds: 60
-    type: tool
-  b73ddb49-1fb2-42cb-a832-77cfd098c48d:
-    category: LuxSci
-    description: List LuxSci users for the connected account, with optional status and domain filtering.
-    function_name: list_luxsci_users
-    id: b73ddb49-1fb2-42cb-a832-77cfd098c48d
-    name: 'LuxSci: List Users'
-    path: features/luxsci/workflows/tools.py
-    tags:
-    - luxsci
-    - users
-    - migration
-    timeout_seconds: 60
-    type: tool
   f9b61797-7b2a-4251-b0b4-2e148ebddd10:
+    access_level: role_based
     category: LuxSci
     description: List LuxSci domains for the connected account.
     function_name: list_luxsci_domains
@@ -1296,99 +1425,39 @@ workflows:
     - migration
     timeout_seconds: 60
     type: tool
-  da41cceb-f2f4-49b8-b582-8c31f916c1c4:
-    category: LuxSci
-    description: List LuxSci aliases for the connected account.
-    function_name: list_luxsci_aliases
-    id: da41cceb-f2f4-49b8-b582-8c31f916c1c4
-    name: 'LuxSci: List Aliases'
-    path: features/luxsci/workflows/tools.py
+  fb8da981-cd23-4193-8dbc-694244386e52:
+    access_level: authenticated
+    category: VIPRE
+    description: Returns inferred VIPRE sites for org mapping picker.
+    function_name: list_vipre_sites
+    id: fb8da981-cd23-4193-8dbc-694244386e52
+    name: 'VIPRE: List Sites'
+    path: features/vipre/workflows/data_providers.py
     tags:
-    - luxsci
-    - aliases
-    - migration
+    - vipre
+    - data-provider
     timeout_seconds: 60
-    type: tool
-  b4324172-5d1d-4bf7-b37d-29b96a4b6461:
-    category: TD SYNNEX Partner API
-    description: Look up TD SYNNEX reseller order details by order number, with
-      optional order type.
-    function_name: get_order
-    id: b4324172-5d1d-4bf7-b37d-29b96a4b6461
-    name: 'TD SYNNEX Partner API: Get Order'
-    path: features/tdsynnex_partner/workflows/tools.py
+    type: data_provider
+  fb8f484b-a7c4-400a-bb00-76f89452fa3d:
+    access_level: role_based
+    description: Open HaloPSA tickets for a given org, for use in ticket selector
+      dropdowns.
+    function_name: halo_open_tickets
+    id: fb8f484b-a7c4-400a-bb00-76f89452fa3d
+    name: HaloPSA Open Tickets
+    path: shared/halopsa/data_providers.py
+    type: data_provider
+  ffc07efb-fb27-4218-adda-743db368278e:
+    access_level: authenticated
+    category: Meraki
+    description: Remove a specific Meraki admin email across organizations.
+    function_name: remove_meraki_admin_across_organizations
+    id: ffc07efb-fb27-4218-adda-743db368278e
+    name: 'Meraki: Remove Admin Across Organizations'
+    path: features/meraki/workflows/baseline_admins.py
     tags:
-    - tdsynnex
-    - orders
-    - procurement
-    timeout_seconds: 60
-    type: tool
-  79dd693b-783e-4e65-b98b-53af4e6a7758:
-    category: TD SYNNEX Partner API
-    description: Look up TD SYNNEX shipment details for a reseller order number.
-    function_name: get_shipment_details
-    id: 79dd693b-783e-4e65-b98b-53af4e6a7758
-    name: 'TD SYNNEX Partner API: Get Shipment Details'
-    path: features/tdsynnex_partner/workflows/tools.py
-    tags:
-    - tdsynnex
-    - shipments
-    - procurement
-    timeout_seconds: 60
-    type: tool
-  c2cfcefb-7345-4218-89fd-bcd122c1c6c5:
-    category: TD SYNNEX Partner API
-    description: Look up TD SYNNEX invoice details by invoice number and type.
-    function_name: get_invoice
-    id: c2cfcefb-7345-4218-89fd-bcd122c1c6c5
-    name: 'TD SYNNEX Partner API: Get Invoice'
-    path: features/tdsynnex_partner/workflows/tools.py
-    tags:
-    - tdsynnex
-    - invoices
-    - procurement
-    timeout_seconds: 60
-    type: tool
-  7041cd62-4fbf-469c-a913-b480e8ccce6d:
-    category: TD SYNNEX Partner API
-    description: Look up TD SYNNEX quote status by reseller order number.
-    function_name: get_quote_status
-    id: 7041cd62-4fbf-469c-a913-b480e8ccce6d
-    name: 'TD SYNNEX Partner API: Get Quote Status'
-    path: features/tdsynnex_partner/workflows/tools.py
-    tags:
-    - tdsynnex
-    - quotes
-    - procurement
-    timeout_seconds: 60
-    type: tool
-  8c84e874-ff7c-4e8f-8d70-8072378e155a:
-    category: Amazon Business
-    description: Look up Amazon Business order details by external order ID.
-    function_name: get_order_details
-    id: 8c84e874-ff7c-4e8f-8d70-8072378e155a
-    name: 'Amazon Business: Get Order Details'
-    path: features/amazonbusiness/workflows/tools.py
-    tags:
-    - amazon
-    - amazon-business
-    - orders
-    - procurement
-    timeout_seconds: 60
-    type: tool
-  1224a2c8-be63-40b7-aebd-919e77b050a9:
-    category: Amazon Business
-    description: Look up Amazon Business package tracking details for an order shipment
-      package.
-    function_name: get_package_tracking_details
-    id: 1224a2c8-be63-40b7-aebd-919e77b050a9
-    name: 'Amazon Business: Get Package Tracking Details'
-    path: features/amazonbusiness/workflows/tools.py
-    tags:
-    - amazon
-    - amazon-business
-    - tracking
-    - shipments
-    - procurement
-    timeout_seconds: 60
-    type: tool
+    - meraki
+    - cleanup
+    - admins
+    - remove
+    timeout_seconds: 600

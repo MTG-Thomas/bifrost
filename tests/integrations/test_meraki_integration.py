@@ -13,17 +13,71 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from bifrost import integrations, organizations
+from features.meraki.workflows import baseline_admins as meraki_baseline_admins
 from features.meraki.workflows.audit_admin_coverage import (
     audit_meraki_admin_coverage,
 )
 from features.meraki.workflows.baseline_admins import (
     audit_meraki_admins_against_baseline,
+    audit_meraki_procurement_license_admins,
+    get_meraki_admin_governance_policy,
     remove_meraki_admin_across_organizations,
+    save_meraki_admin_governance_policy,
+    sync_meraki_procurement_license_admins,
     sync_meraki_admins_from_baseline,
 )
 from features.meraki.workflows.data_providers import list_meraki_organizations
 from features.meraki.workflows.sync_organizations import sync_meraki_organizations
 from modules import meraki
+
+
+def _default_meraki_policy() -> dict:
+    return {
+        "customer_org_exclusions_csv": (
+            "Taylor Computer Solutions,Jacobson Hile Kight,Cynthia L Hovey DDS,"
+            "Connected Healthcare Systems,MTG Kntlnd Licenses,MTG More Licenses,"
+            "MTG WAP Licenses,MTGLicense"
+        ),
+        "customer_org_exclusions": [
+            "taylor computer solutions",
+            "jacobson hile kight",
+            "cynthia l hovey dds",
+            "connected healthcare systems",
+            "mtg kntlnd licenses",
+            "mtg more licenses",
+            "mtg wap licenses",
+            "mtglicense",
+        ],
+        "procurement_org_names_csv": (
+            "MTG Kntlnd Licenses,MTG More Licenses,MTG WAP Licenses,MTGLicense"
+        ),
+        "procurement_org_names": [
+            "mtg kntlnd licenses",
+            "mtg more licenses",
+            "mtg wap licenses",
+            "mtglicense",
+        ],
+        "procurement_allowed_admin_emails_csv": (
+            "thomas@midtowntg.com,doug@midtowntg.com,eric@carbonpeaktech.com"
+        ),
+        "procurement_allowed_admin_emails": [
+            "thomas@midtowntg.com",
+            "doug@midtowntg.com",
+            "eric@carbonpeaktech.com",
+        ],
+    }
+
+
+@pytest.fixture(autouse=True)
+def _mock_meraki_policy(monkeypatch):
+    async def fake_policy():
+        return _default_meraki_policy()
+
+    monkeypatch.setattr(
+        meraki_baseline_admins,
+        "_get_meraki_admin_governance_policy",
+        fake_policy,
+    )
 
 
 def _organization(organization_id: str | None, name: str | None) -> dict:
@@ -67,6 +121,91 @@ async def test_get_client_uses_scoped_mapping(monkeypatch):
         assert client._base_url == meraki.MerakiClient.BASE_URL
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_meraki_admin_governance_policy(monkeypatch):
+    async def fake_policy():
+        return _default_meraki_policy()
+
+    monkeypatch.setattr(
+        meraki_baseline_admins,
+        "_get_meraki_admin_governance_policy",
+        fake_policy,
+    )
+
+    result = await get_meraki_admin_governance_policy()
+
+    assert result["customer_org_exclusions_csv"].startswith(
+        "Taylor Computer Solutions"
+    )
+    assert result["procurement_allowed_admin_emails"] == [
+        "thomas@midtowntg.com",
+        "doug@midtowntg.com",
+        "eric@carbonpeaktech.com",
+    ]
+    assert (
+        result["config_keys"]["customer_org_exclusions_csv"]
+        == meraki_baseline_admins.MERAKI_POLICY_CUSTOMER_EXCLUSIONS_KEY
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_meraki_admin_governance_policy(monkeypatch):
+    stored: dict[str, str] = {}
+
+    async def fake_set(key: str, value: str, is_secret: bool = False, scope: str | None = None):
+        assert is_secret is False
+        assert scope is None
+        stored[key] = value
+
+    async def fake_get_policy():
+        return {
+            "customer_org_exclusions_csv": stored.get(
+                meraki_baseline_admins.MERAKI_POLICY_CUSTOMER_EXCLUSIONS_KEY, ""
+            ),
+            "customer_org_exclusions": meraki_baseline_admins._parse_csv(
+                stored.get(meraki_baseline_admins.MERAKI_POLICY_CUSTOMER_EXCLUSIONS_KEY, "")
+            ),
+            "procurement_org_names_csv": stored.get(
+                meraki_baseline_admins.MERAKI_POLICY_PROCUREMENT_ORGS_KEY, ""
+            ),
+            "procurement_org_names": meraki_baseline_admins._parse_csv(
+                stored.get(meraki_baseline_admins.MERAKI_POLICY_PROCUREMENT_ORGS_KEY, "")
+            ),
+            "procurement_allowed_admin_emails_csv": stored.get(
+                meraki_baseline_admins.MERAKI_POLICY_PROCUREMENT_ALLOWED_ADMINS_KEY, ""
+            ),
+            "procurement_allowed_admin_emails": meraki_baseline_admins._parse_csv(
+                stored.get(
+                    meraki_baseline_admins.MERAKI_POLICY_PROCUREMENT_ALLOWED_ADMINS_KEY,
+                    "",
+                )
+            ),
+        }
+
+    monkeypatch.setattr(meraki_baseline_admins.config, "set", fake_set)
+    monkeypatch.setattr(
+        meraki_baseline_admins,
+        "_get_meraki_admin_governance_policy",
+        fake_get_policy,
+    )
+
+    result = await save_meraki_admin_governance_policy(
+        customer_org_exclusions_csv="Org A,Org B",
+        procurement_org_names_csv="License A,License B",
+        procurement_allowed_admin_emails_csv="a@example.com,b@example.com",
+    )
+
+    assert stored == {
+        meraki_baseline_admins.MERAKI_POLICY_CUSTOMER_EXCLUSIONS_KEY: "Org A,Org B",
+        meraki_baseline_admins.MERAKI_POLICY_PROCUREMENT_ORGS_KEY: "License A,License B",
+        meraki_baseline_admins.MERAKI_POLICY_PROCUREMENT_ALLOWED_ADMINS_KEY: "a@example.com,b@example.com",
+    }
+    assert result["procurement_allowed_admin_emails"] == [
+        "a@example.com",
+        "b@example.com",
+    ]
 
 
 @pytest.mark.asyncio
@@ -402,7 +541,7 @@ async def test_audit_meraki_admins_against_baseline_excludes_orgs(monkeypatch):
         excluded_org_names_csv="Legacy Org",
     )
 
-    assert result["excluded_org_names"] == ["legacy org"]
+    assert "legacy org" in result["excluded_org_names"]
     assert result["skipped_excluded"] == [
         {
             "organization_id": "300",
@@ -419,6 +558,47 @@ async def test_audit_meraki_admins_against_baseline_excludes_orgs(monkeypatch):
             "admin_count": 0,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_audit_meraki_admins_against_baseline_uses_default_exclusions(monkeypatch):
+    class FakeClient:
+        async def list_organizations(self):
+            return [
+                _organization("100", "Midtown Technology Group"),
+                _organization("200", "Alpha"),
+                _organization("300", "MTG WAP Licenses"),
+            ]
+
+        async def list_organization_admins(self, organization_id: str, **_: object):
+            return {
+                "100": [_admin("alice@midtowntg.com", name="Alice")],
+                "200": [],
+                "300": [],
+            }[organization_id]
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_client(scope: str | None = None):
+        return FakeClient()
+
+    monkeypatch.setattr(meraki, "get_client", fake_get_client)
+
+    result = await audit_meraki_admins_against_baseline(
+        baseline_org_name="Midtown Technology Group",
+        required_admin_emails_csv="alice@midtowntg.com",
+        extra_valid_admin_emails_csv="",
+    )
+
+    assert "mtg wap licenses" in result["excluded_org_names"]
+    assert result["skipped_excluded"] == [
+        {
+            "organization_id": "300",
+            "organization_name": "MTG WAP Licenses",
+        }
+    ]
+    assert result["organizations_audited"] == 2
 
 
 @pytest.mark.asyncio
@@ -490,6 +670,7 @@ async def test_sync_meraki_admins_from_baseline_dedupes_against_filtered_admins(
         required_admin_emails_csv="doug@midtowntg.com",
         dry_run=False,
         include_account_statuses_csv="ok",
+        write_delay_seconds=0,
     )
 
     assert result["created"] == []
@@ -504,6 +685,163 @@ async def test_sync_meraki_admins_from_baseline_dedupes_against_filtered_admins(
             "tags": [],
             "networks": [],
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_audit_meraki_procurement_license_admins(monkeypatch):
+    class FakeClient:
+        async def list_organizations(self):
+            return [
+                _organization("100", "Midtown Technology Group"),
+                _organization("200", "MTG WAP Licenses"),
+                _organization("300", "MTGLicense"),
+            ]
+
+        async def list_organization_admins(self, organization_id: str, **_: object):
+            return {
+                "100": [
+                    _admin("thomas@midtowntg.com", name="Thomas"),
+                    _admin("doug@midtowntg.com", name="Doug Eckhart"),
+                ],
+                "200": [
+                    _admin("thomas@midtowntg.com", name="Thomas"),
+                    _admin("someone@example.com", name="Someone"),
+                ],
+                "300": [
+                    _admin("thomas@midtowntg.com", name="Thomas"),
+                    _admin("doug@midtowntg.com", name="Doug Eckhart"),
+                    _admin("eric@carbonpeaktech.com", name="Eric Atlas"),
+                ],
+            }[organization_id]
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_client(scope: str | None = None):
+        assert scope == "global"
+        return FakeClient()
+
+    monkeypatch.setattr(meraki, "get_client", fake_get_client)
+
+    result = await audit_meraki_procurement_license_admins()
+
+    assert [item["organization_name"] for item in result["target_organizations"]] == [
+        "MTG WAP Licenses",
+        "MTGLicense",
+    ]
+    assert result["organizations_with_disparities"] == 1
+    assert result["disparities"] == [
+        {
+            "organization_id": "200",
+            "organization_name": "MTG WAP Licenses",
+            "missing_admins": [
+                "doug@midtowntg.com",
+                "eric@carbonpeaktech.com",
+            ],
+            "extra_admins": ["someone@example.com"],
+            "admin_count": 2,
+        },
+        {
+            "organization_id": "300",
+            "organization_name": "MTGLicense",
+            "missing_admins": [],
+            "extra_admins": [],
+            "admin_count": 3,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sync_meraki_procurement_license_admins(monkeypatch):
+    class FakeClient:
+        def __init__(self) -> None:
+            self.created: list[dict] = []
+            self.updated: list[dict] = []
+            self.deleted: list[dict] = []
+
+        async def list_organizations(self):
+            return [
+                _organization("100", "Midtown Technology Group"),
+                _organization("200", "MTG WAP Licenses"),
+            ]
+
+        async def list_organization_admins(self, organization_id: str, **_: object):
+            return {
+                "100": [
+                    _admin("thomas@midtowntg.com", name="Thomas"),
+                    _admin("doug@midtowntg.com", name="Doug Eckhart"),
+                    _admin("eric@carbonpeaktech.com", name="Eric Atlas"),
+                ],
+                "200": [
+                    _admin("thomas@midtowntg.com", name="Thomas"),
+                    _admin("doug@midtowntg.com", name="doug"),
+                    _admin("extra@example.com", name="Extra"),
+                ],
+            }[organization_id]
+
+        async def create_organization_admin(self, organization_id: str, **kwargs: object):
+            self.created.append({"organization_id": organization_id, **kwargs})
+            return {}
+
+        async def update_organization_admin(
+            self,
+            organization_id: str,
+            *,
+            admin_id: str,
+            name: str,
+            org_access: str,
+            tags: list[str] | None = None,
+            networks: list[str] | None = None,
+        ):
+            self.updated.append(
+                {
+                    "organization_id": organization_id,
+                    "admin_id": admin_id,
+                    "name": name,
+                    "org_access": org_access,
+                    "tags": tags,
+                    "networks": networks,
+                }
+            )
+            return {}
+
+        async def delete_organization_admin(self, organization_id: str, *, admin_id: str):
+            self.deleted.append(
+                {
+                    "organization_id": organization_id,
+                    "admin_id": admin_id,
+                }
+            )
+            return {}
+
+        async def close(self) -> None:
+            return None
+
+    fake_client = FakeClient()
+
+    async def fake_get_client(scope: str | None = None):
+        assert scope == "global"
+        return fake_client
+
+    monkeypatch.setattr(meraki, "get_client", fake_get_client)
+
+    result = await sync_meraki_procurement_license_admins(
+        dry_run=False,
+        write_delay_seconds=0,
+    )
+
+    assert [item["organization_name"] for item in result["target_organizations"]] == [
+        "MTG WAP Licenses"
+    ]
+    assert [item["email"] for item in result["created"]] == [
+        "eric@carbonpeaktech.com"
+    ]
+    assert [item["email"] for item in result["updated"]] == [
+        "doug@midtowntg.com"
+    ]
+    assert [item["email"] for item in result["removed"]] == [
+        "extra@example.com"
     ]
 
 
@@ -644,7 +982,7 @@ async def test_sync_meraki_admins_from_baseline_excludes_orgs(monkeypatch):
         dry_run=False,
     )
 
-    assert result["excluded_org_names"] == ["legacy org"]
+    assert "legacy org" in result["excluded_org_names"]
     assert result["skipped_excluded"] == [
         {
             "organization_id": "300",
@@ -657,6 +995,66 @@ async def test_sync_meraki_admins_from_baseline_excludes_orgs(monkeypatch):
             "organization_name": "Alpha",
             "email": "alice@midtowntg.com",
             "action": "create",
+        }
+    ]
+    assert fake_client.created == [
+        {
+            "organization_id": "200",
+            "email": "alice@midtowntg.com",
+            "name": "Alice",
+            "org_access": "full",
+            "tags": [],
+            "networks": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sync_meraki_admins_from_baseline_uses_default_exclusions(monkeypatch):
+    class FakeClient:
+        def __init__(self) -> None:
+            self.created: list[dict] = []
+
+        async def list_organizations(self):
+            return [
+                _organization("100", "Midtown Technology Group"),
+                _organization("200", "Alpha"),
+                _organization("300", "MTGLicense"),
+            ]
+
+        async def list_organization_admins(self, organization_id: str, **_: object):
+            return {
+                "100": [_admin("alice@midtowntg.com", name="Alice")],
+                "200": [],
+                "300": [],
+            }[organization_id]
+
+        async def create_organization_admin(self, organization_id: str, **kwargs):
+            self.created.append({"organization_id": organization_id, **kwargs})
+            return {}
+
+        async def close(self) -> None:
+            return None
+
+    fake_client = FakeClient()
+
+    async def fake_get_client(scope: str | None = None):
+        return fake_client
+
+    monkeypatch.setattr(meraki, "get_client", fake_get_client)
+
+    result = await sync_meraki_admins_from_baseline(
+        baseline_org_name="Midtown Technology Group",
+        required_admin_emails_csv="alice@midtowntg.com",
+        dry_run=False,
+        write_delay_seconds=0,
+    )
+
+    assert "mtglicense" in result["excluded_org_names"]
+    assert result["skipped_excluded"] == [
+        {
+            "organization_id": "300",
+            "organization_name": "MTGLicense",
         }
     ]
     assert fake_client.created == [

@@ -1,8 +1,17 @@
 apps:
-  microsoft-csp:
+  9f283367-4efe-431c-b071-372f1bb66870:
+    access_level: authenticated
+    description: Configure Meraki admin governance policy and audit baseline versus
+      procurement organization coverage.
+    id: 9f283367-4efe-431c-b071-372f1bb66870
+    name: Meraki Admin Governance
+    path: apps/meraki-admin-governance
+    slug: meraki-admin-governance
+  e17708e6-1291-417a-a69e-099f9760ee19:
+    access_level: authenticated
+    description: Manage Microsoft CSP tenants, link to Bifrost organizations, and
+      grant application consent.
     id: e17708e6-1291-417a-a69e-099f9760ee19
+    name: Microsoft CSP
     path: apps/microsoft-csp
     slug: microsoft-csp
-    name: Microsoft CSP
-    description: Manage Microsoft CSP tenants, link to Bifrost organizations, and grant application consent.
-    access_level: authenticated

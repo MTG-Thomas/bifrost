@@ -39,10 +39,19 @@ Reusable Meraki workflows added for this operational pattern:
 - `Meraki: Audit Admins Against Baseline Organization`
 - `Meraki: Sync Admins From Baseline Organization`
 - `Meraki: Remove Admin Across Organizations`
+- `Meraki: Get Admin Governance Policy`
+- `Meraki: Save Admin Governance Policy`
+- `Meraki Admin Governance` app
 
 These workflows are intended to support standard add/change remediation based on
 a known-good Meraki org rather than an inferred domain-wide heuristic. They now
 also support explicit org exclusions for legacy or vendor-disabled orgs.
+
+The durable policy for exclusions and procurement-license org handling now lives
+in Bifrost config and is managed through the `Meraki Admin Governance` app
+rather than being treated as intrinsic workflow defaults. The workflows still
+accept override parameters for one-off execution, but persistent operational
+policy should now be changed through that config surface.
 
 ## Live Remediation Scope
 
@@ -65,6 +74,14 @@ Known excluded org list for future baseline runs:
 - `Jacobson Hile Kight`
 - `Cynthia L Hovey DDS`
 - `Connected Healthcare Systems`
+- `MTG Kntlnd Licenses`
+- `MTG More Licenses`
+- `MTG WAP Licenses`
+- `MTGLicense`
+
+The standard baseline workflows now exclude those orgs by default so technician
+onboarding or broad Midtown-admin rollout runs do not copy customer-facing
+baseline admins into the procurement/license staging orgs.
 
 ## Outcome
 

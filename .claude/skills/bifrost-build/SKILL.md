@@ -178,6 +178,21 @@ Preflight (runs automatically in watch): manifest YAML, file existence, Python s
 - Prefer source files, platform APIs, and CLI sync operations over manual manifest editing whenever possible.
 - See `docs/plans/2026-03-27-manifest-transition-guidance.md` before doing more repo-model work.
 
+### Workflow Policy Rule
+
+- Do not treat workflow parameter defaults as the durable home for operational policy.
+- Use workflow parameters for execution-time overrides and one-off runs.
+- Put persistent operator-managed policy into Bifrost-managed configuration, ideally through an app-owned configuration surface.
+- Preferred pattern:
+  - workflow reads policy from `bifrost.config`
+  - app provides the operator UI to view/edit that policy
+  - workflow parameters remain available to override config temporarily
+- Examples of policy that should not be hard-coded into workflow defaults:
+  - excluded organization lists
+  - standard admin rosters
+  - special-case allowed admin lists
+  - rollout target lists
+
 ## MCP-Only Mode
 
 Best for: quick iterations, non-developers, no local git repo.
