@@ -29,6 +29,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Warm Docker test image cache
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./api/Dockerfile.dev
+          load: true
+          tags: bifrost-test-dev:ci
+          cache-from: type=gha,scope=bifrost-test-dev
+          cache-to: type=gha,scope=bifrost-test-dev,mode=max
+
       - name: Run unit tests with coverage
         run: |
           chmod +x test.sh
@@ -52,6 +62,16 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Warm Docker test image cache
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./api/Dockerfile.dev
+          load: true
+          tags: bifrost-test-dev:ci
+          cache-from: type=gha,scope=bifrost-test-dev
+          cache-to: type=gha,scope=bifrost-test-dev,mode=max
 
       - name: Run E2E tests
         run: |
