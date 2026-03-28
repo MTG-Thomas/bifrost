@@ -1462,6 +1462,7 @@ async def {name}(target_name: str = "{target_name}"):
             org_caller_workflow["id"],
             {"target_name": org_target_workflow["name"]},
             max_wait=60.0,
+            request_sync=True,
         )
 
         assert data["status"] == "Success", (
