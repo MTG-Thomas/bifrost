@@ -822,3 +822,179 @@ class TestAuthenticatedFormAccess:
         # Should be 403 or 404 - not their org
         assert response.status_code in [403, 404], \
             f"User from other org should not see form: {response.status_code}"
+
+
+@pytest.mark.e2e
+class TestOrgAssignmentValidation:
+    """Test that entities cannot be assigned to non-existent or inactive organizations."""
+
+    def test_register_workflow_rejects_nonexistent_org(
+        self, e2e_client, platform_admin
+    ):
+        """Workflow registration rejects a non-existent organization_id."""
+        # First write a minimal Python file so the register endpoint has something to parse
+        file_path = "workflows/test_org_validation.py"
+        e2e_client.put(
+            "/api/files/editor/content",
+            headers=platform_admin.headers,
+            json={
+                "path": file_path,
+                "content": (
+                    "from bifrost import workflow\n\n"
+                    "@workflow(category='Test')\n"
+                    "async def org_val_test():\n"
+                    "    return {'ok': True}\n"
+                ),
+                "encoding": "utf-8",
+            },
+        )
+
+        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        response = e2e_client.post(
+            "/api/workflows/register",
+            headers=platform_admin.headers,
+            json={
+                "path": file_path,
+                "function_name": "org_val_test",
+                "organization_id": fake_org_id,
+            },
+        )
+        assert response.status_code == 404, \
+            f"Should reject non-existent org: got {response.status_code} {response.text}"
+        assert "not found" in response.json().get("detail", "").lower()
+
+        # Cleanup
+        e2e_client.delete(
+            "/api/files/editor",
+            headers=platform_admin.headers,
+            params={"path": file_path},
+        )
+
+    def test_update_workflow_rejects_nonexistent_org(
+        self, e2e_client, platform_admin
+    ):
+        """Workflow update rejects a non-existent organization_id."""
+        # List existing workflows to grab one for testing
+        list_resp = e2e_client.get(
+            "/api/workflows",
+            headers=platform_admin.headers,
+        )
+        assert list_resp.status_code == 200
+        workflows = list_resp.json()
+        if not workflows:
+            pytest.skip("No workflows available to test update")
+
+        wf_id = workflows[0]["id"]
+        fake_org_id = "00000000-dead-dead-dead-000000000000"
+
+        response = e2e_client.patch(
+            f"/api/workflows/{wf_id}",
+            headers=platform_admin.headers,
+            json={"organization_id": fake_org_id},
+        )
+        assert response.status_code == 404, \
+            f"Should reject non-existent org: got {response.status_code} {response.text}"
+        assert "not found" in response.json().get("detail", "").lower()
+
+    def test_create_form_rejects_nonexistent_org(
+        self, e2e_client, platform_admin
+    ):
+        """Form creation rejects a non-existent organization_id."""
+        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        response = e2e_client.post(
+            "/api/forms",
+            headers=platform_admin.headers,
+            json={
+                "name": "Bogus Org Form",
+                "workflow_id": None,
+                "form_schema": {"fields": []},
+                "organization_id": fake_org_id,
+            },
+        )
+        assert response.status_code == 404, \
+            f"Should reject non-existent org: got {response.status_code} {response.text}"
+        assert "not found" in response.json().get("detail", "").lower()
+
+    def test_update_form_rejects_nonexistent_org(
+        self, e2e_client, platform_admin, org1
+    ):
+        """Form update rejects a non-existent organization_id."""
+        # Create a valid form first
+        create_resp = e2e_client.post(
+            "/api/forms",
+            headers=platform_admin.headers,
+            json={
+                "name": "Valid Form for Org Move Test",
+                "workflow_id": None,
+                "form_schema": {"fields": []},
+                "organization_id": org1["id"],
+            },
+        )
+        if create_resp.status_code != 201:
+            pytest.skip("Could not create test form")
+
+        form_id = create_resp.json()["id"]
+        fake_org_id = "00000000-dead-dead-dead-000000000000"
+
+        try:
+            response = e2e_client.patch(
+                f"/api/forms/{form_id}",
+                headers=platform_admin.headers,
+                json={"organization_id": fake_org_id},
+            )
+            assert response.status_code == 404, \
+                f"Should reject non-existent org: got {response.status_code} {response.text}"
+            assert "not found" in response.json().get("detail", "").lower()
+        finally:
+            # Cleanup
+            e2e_client.delete(
+                f"/api/forms/{form_id}",
+                headers=platform_admin.headers,
+            )
+
+    def test_create_event_source_rejects_nonexistent_org(
+        self, e2e_client, platform_admin
+    ):
+        """Event source creation rejects a non-existent organization_id."""
+        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        response = e2e_client.post(
+            "/api/events/sources",
+            headers=platform_admin.headers,
+            json={
+                "name": "Bogus Org Source",
+                "source_type": "schedule",
+                "organization_id": fake_org_id,
+                "schedule": {
+                    "cron_expression": "0 * * * *",
+                    "timezone": "UTC",
+                },
+            },
+        )
+        assert response.status_code == 404, \
+            f"Should reject non-existent org: got {response.status_code} {response.text}"
+        assert "not found" in response.json().get("detail", "").lower()
+
+    def test_event_sources_list_scope_filter(
+        self, e2e_client, platform_admin, org1
+    ):
+        """Event sources list respects scope filter (consistent with other list endpoints)."""
+        # List with scope=global should only return global sources
+        response = e2e_client.get(
+            "/api/events/sources",
+            params={"scope": "global"},
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200, \
+            f"Scope=global failed: {response.status_code} {response.text}"
+        data = response.json()
+        for source in data.get("items", []):
+            assert source.get("organization_id") is None, \
+                "scope=global should only return global event sources"
+
+        # List with scope=<org_id> should only return that org's sources
+        response = e2e_client.get(
+            "/api/events/sources",
+            params={"scope": org1["id"]},
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200

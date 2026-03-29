@@ -314,6 +314,12 @@ async def create_form(
 
     now = datetime.now(timezone.utc)
 
+    # Validate organization if provided
+    from src.core.org_validation import validate_org_assignment
+    validated_org_id = await validate_org_assignment(
+        db, request.organization_id, entity_label="form"
+    )
+
     # Create form record
     form = FormORM(
         name=request.name,
@@ -323,7 +329,7 @@ async def create_form(
         default_launch_params=request.default_launch_params,
         allowed_query_params=request.allowed_query_params,
         access_level=request.access_level,
-        organization_id=request.organization_id,
+        organization_id=validated_org_id,
         is_active=True,
         created_by=ctx.user.email,
         created_at=now,
@@ -519,7 +525,11 @@ async def update_form(
         form.access_level = request.access_level
     # Use model_fields_set to distinguish "not provided" from "explicitly set to null"
     if "organization_id" in request.model_fields_set:
-        form.organization_id = request.organization_id
+        from src.core.org_validation import validate_org_assignment
+        validated_org_id = await validate_org_assignment(
+            db, request.organization_id, entity_label="form"
+        )
+        form.organization_id = validated_org_id
 
     # Clear all role assignments if requested
     if request.clear_roles:

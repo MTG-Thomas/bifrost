@@ -1013,8 +1013,11 @@ async def register_workflow(
         "tool" if target_decorator_type == "tool" else "workflow"
     )
 
-    # Parse organization_id if provided
-    org_uuid = UUID(request.organization_id) if request.organization_id else None
+    # Validate and parse organization_id if provided
+    from src.core.org_validation import validate_org_assignment
+    org_uuid = await validate_org_assignment(
+        db, request.organization_id, entity_label="workflow"
+    )
 
     if existing_wf and existing_wf.is_active:
         raise HTTPException(status_code=409, detail="Workflow already registered")
@@ -1109,17 +1112,12 @@ async def update_workflow(
         # Update organization_id - use model_fields_set to distinguish "not provided" from "explicitly null"
         if "organization_id" in request.model_fields_set:
             if request.organization_id is not None:
-                # Validate organization exists if not setting to global
-                from src.models.orm.organizations import Organization
-                org_result = await db.execute(
-                    select(Organization).where(Organization.id == UUID(request.organization_id))
+                # Validate organization exists and is active
+                from src.core.org_validation import validate_org_assignment
+                validated_org_id = await validate_org_assignment(
+                    db, request.organization_id, entity_label="workflow"
                 )
-                if not org_result.scalar_one_or_none():
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Organization with ID '{request.organization_id}' not found",
-                    )
-                workflow.organization_id = UUID(request.organization_id)
+                workflow.organization_id = validated_org_id
             else:
                 # Explicitly set to global scope
                 workflow.organization_id = None

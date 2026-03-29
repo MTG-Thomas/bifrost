@@ -279,23 +279,43 @@ async def list_sources(
     source_type: EventSourceType | None = Query(
         None, description="Filter by source type"
     ),
-    organization_id: UUID | None = Query(None, description="Filter by organization"),
-    scope: str | None = Query(None, description="Filter scope: 'global' for global-only, omit for all"),
+    organization_id: UUID | None = Query(None, description="Filter by organization (deprecated, use scope)"),
+    scope: str | None = Query(
+        None,
+        description="Filter scope: omit for all (platform admins), 'global' for global-only, "
+                    "or org UUID for specific org's sources + global."
+    ),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Skip results"),
 ) -> EventSourceListResponse:
     """
     List event sources (Platform admin only).
 
-    Filtering:
-    - No scope/organization_id: show ALL sources
-    - scope=global: show only global (no org) sources
-    - organization_id=<uuid>: show that org's sources + global
+    Organization scoping (consistent with workflows, forms, agents):
+    - scope omitted: All sources (platform admins only)
+    - scope='global': Only global sources (organization_id IS NULL)
+    - scope=<uuid>: Only that org's sources + global
+
+    Legacy: organization_id query param is still supported but scope takes precedence.
     """
+    from src.core.org_filter import resolve_org_filter, OrgFilterType
+
+    # scope takes precedence; fall back to legacy organization_id param
+    effective_scope = scope
+    if effective_scope is None and organization_id is not None:
+        effective_scope = str(organization_id)
+
+    try:
+        filter_type, filter_org = resolve_org_filter(user, effective_scope)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
     repo = EventSourceRepository(db)
 
-    if scope == "global":
-        # Global-only: filter to org_id IS NULL
+    if filter_type == OrgFilterType.GLOBAL_ONLY:
         sources = await repo.get_by_organization(
             organization_id=None,
             source_type=source_type,
@@ -308,22 +328,21 @@ async def list_sources(
             source_type=source_type,
             include_global=True,
         )
-    elif organization_id:
-        # Specific org + global
+    elif filter_type in (OrgFilterType.ORG_ONLY, OrgFilterType.ORG_PLUS_GLOBAL):
         sources = await repo.get_by_organization(
-            organization_id=organization_id,
+            organization_id=filter_org,
             source_type=source_type,
-            include_global=True,
+            include_global=(filter_type == OrgFilterType.ORG_PLUS_GLOBAL),
             limit=limit,
             offset=offset,
         )
         total = await repo.count_by_organization(
-            organization_id=organization_id,
+            organization_id=filter_org,
             source_type=source_type,
-            include_global=True,
+            include_global=(filter_type == OrgFilterType.ORG_PLUS_GLOBAL),
         )
     else:
-        # No filter: show everything
+        # ALL: show everything (platform admin with no filter)
         sources = await repo.get_all_sources(
             source_type=source_type,
             limit=limit,
@@ -359,13 +378,20 @@ async def create_source(
     2. Call the adapter's subscribe method (if needed)
     3. Store the webhook configuration
     """
+    from src.core.org_validation import validate_org_assignment
+
     now = datetime.now(timezone.utc)
+
+    # Validate organization if provided
+    validated_org_id = await validate_org_assignment(
+        db, request.organization_id, entity_label="event source"
+    )
 
     # Create base event source
     source = EventSource(
         name=request.name,
         source_type=request.source_type,
-        organization_id=request.organization_id,
+        organization_id=validated_org_id,
         is_active=True,
         created_by=ctx.user.email,
         created_at=now,
@@ -530,7 +556,11 @@ async def update_source(
             source.error_message = None
 
     if "organization_id" in request.model_fields_set:
-        source.organization_id = request.organization_id
+        from src.core.org_validation import validate_org_assignment
+        validated_org_id = await validate_org_assignment(
+            db, request.organization_id, entity_label="event source"
+        )
+        source.organization_id = validated_org_id
 
     source.updated_at = datetime.now(timezone.utc)
 
