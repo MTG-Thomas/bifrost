@@ -606,3 +606,29 @@ integrations:
     id: 0a75adc3-1bd5-4bc2-99d0-d8f4964078d3
     mappings: []
     name: Amazon Business
+  380ba6f6-bf16-4075-8002-7ae0289f3b75:
+    config_schema:
+    - description: UniFi Site Manager API key used for cloud API authentication
+      key: api_key
+      position: 0
+      required: true
+      type: secret
+    - description: Optional UniFi Site Manager API base URL (defaults to https://api.ui.com)
+      key: site_manager_base_url
+      position: 1
+      required: false
+      type: string
+    - description: Optional local UniFi Network Application base URL for self-hosted controllers (for example https://unifi.example.com)
+      key: local_network_base_url
+      position: 2
+      required: false
+      type: string
+    - description: Optional TLS verification toggle (true/false) for cloud and local API calls
+      key: verify_tls
+      position: 3
+      required: false
+      type: string
+    id: 380ba6f6-bf16-4075-8002-7ae0289f3b75
+    list_entities_data_provider_id: e1a5d021-00be-4648-895f-343967ea3e15
+    mappings: []
+    name: UniFi

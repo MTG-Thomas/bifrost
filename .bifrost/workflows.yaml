@@ -1639,3 +1639,60 @@ workflows:
     - admins
     - remove
     timeout_seconds: 600
+  e1a5d021-00be-4648-895f-343967ea3e15:
+    access_level: authenticated
+    category: UniFi
+    description: Returns UniFi sites from Site Manager for org mapping picker.
+    function_name: list_unifi_sites
+    id: e1a5d021-00be-4648-895f-343967ea3e15
+    name: 'UniFi: List Sites'
+    path: features/unifi/workflows/data_providers.py
+    tags:
+    - unifi
+    - data-provider
+    - site-manager
+    timeout_seconds: 60
+    type: data_provider
+  7d97e766-f8b4-40ae-843e-03e6895e5b45:
+    access_level: authenticated
+    category: UniFi
+    description: Returns UniFi fabrics from Site Manager for mapping policy pickers.
+    function_name: list_unifi_fabrics
+    id: 7d97e766-f8b4-40ae-843e-03e6895e5b45
+    name: 'UniFi: List Fabrics'
+    path: features/unifi/workflows/data_providers.py
+    tags:
+    - unifi
+    - data-provider
+    - fabric
+    - site-manager
+    timeout_seconds: 60
+    type: data_provider
+  a523b9a8-a76a-49d2-807d-8d8b0fa8165a:
+    access_level: authenticated
+    category: UniFi
+    description: Sync UniFi Site Manager sites into Bifrost organizations.
+    function_name: sync_unifi_sites
+    id: a523b9a8-a76a-49d2-807d-8d8b0fa8165a
+    name: 'UniFi: Sync Sites'
+    path: features/unifi/workflows/sync_sites.py
+    tags:
+    - unifi
+    - sync
+    - site-manager
+    - sites
+    timeout_seconds: 300
+  956bb3fe-7230-4140-b027-44b30cccf9f2:
+    access_level: authenticated
+    category: UniFi
+    description: Sync UniFi fabrics into Bifrost organizations for policy allocation.
+    function_name: sync_unifi_fabrics
+    id: 956bb3fe-7230-4140-b027-44b30cccf9f2
+    name: 'UniFi: Sync Fabrics'
+    path: features/unifi/workflows/sync_fabrics.py
+    tags:
+    - unifi
+    - sync
+    - site-manager
+    - fabric
+    timeout_seconds: 300
