@@ -279,7 +279,11 @@ async def list_sources(
     source_type: EventSourceType | None = Query(
         None, description="Filter by source type"
     ),
-    organization_id: UUID | None = Query(None, description="Filter by organization (deprecated, use scope)"),
+    organization_id: UUID | None = Query(
+        None,
+        description="Filter by organization. Deprecated: use 'scope' parameter instead.",
+        deprecated=True,
+    ),
     scope: str | None = Query(
         None,
         description="Filter scope: omit for all (platform admins), 'global' for global-only, "

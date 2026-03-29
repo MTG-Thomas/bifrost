@@ -828,6 +828,9 @@ class TestAuthenticatedFormAccess:
 class TestOrgAssignmentValidation:
     """Test that entities cannot be assigned to non-existent or inactive organizations."""
 
+    # UUID guaranteed not to match any real org
+    FAKE_ORG_ID = "00000000-dead-dead-dead-000000000000"
+
     def test_register_workflow_rejects_nonexistent_org(
         self, e2e_client, platform_admin
     ):
@@ -849,7 +852,7 @@ class TestOrgAssignmentValidation:
             },
         )
 
-        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        fake_org_id = self.FAKE_ORG_ID
         response = e2e_client.post(
             "/api/workflows/register",
             headers=platform_admin.headers,
@@ -885,7 +888,7 @@ class TestOrgAssignmentValidation:
             pytest.skip("No workflows available to test update")
 
         wf_id = workflows[0]["id"]
-        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        fake_org_id = self.FAKE_ORG_ID
 
         response = e2e_client.patch(
             f"/api/workflows/{wf_id}",
@@ -900,7 +903,7 @@ class TestOrgAssignmentValidation:
         self, e2e_client, platform_admin
     ):
         """Form creation rejects a non-existent organization_id."""
-        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        fake_org_id = self.FAKE_ORG_ID
         response = e2e_client.post(
             "/api/forms",
             headers=platform_admin.headers,
@@ -934,7 +937,7 @@ class TestOrgAssignmentValidation:
             pytest.skip("Could not create test form")
 
         form_id = create_resp.json()["id"]
-        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        fake_org_id = self.FAKE_ORG_ID
 
         try:
             response = e2e_client.patch(
@@ -956,7 +959,7 @@ class TestOrgAssignmentValidation:
         self, e2e_client, platform_admin
     ):
         """Event source creation rejects a non-existent organization_id."""
-        fake_org_id = "00000000-dead-dead-dead-000000000000"
+        fake_org_id = self.FAKE_ORG_ID
         response = e2e_client.post(
             "/api/events/sources",
             headers=platform_admin.headers,
