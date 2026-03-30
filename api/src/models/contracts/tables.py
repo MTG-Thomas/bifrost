@@ -4,6 +4,7 @@ Table and Document contract models for Bifrost App Builder.
 Provides Pydantic models for API request/response handling.
 """
 
+import warnings
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -12,6 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 
 
 # ==================== TABLE MODELS ====================
+
+
+# Pydantic v2 warns when a field name shadows a BaseModel attribute.
+# "schema" is a valid domain name here (table schema) and renaming would
+# break the API contract, so suppress the warning for this module.
+warnings.filterwarnings("ignore", message='Field name "schema"')
 
 
 class TableBase(BaseModel):
