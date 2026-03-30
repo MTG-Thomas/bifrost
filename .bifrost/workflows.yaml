@@ -73,6 +73,34 @@ workflows:
     - cove
     - sync
     timeout_seconds: 300
+  1b67d81a-6433-4b7a-b5d3-8c8f1e32a45c:
+    access_level: authenticated
+    category: Cove Data Protection
+    description: Generate per-client weekly markdown digest from backup snapshots.
+    function_name: generate_cove_weekly_backup_digest
+    id: 1b67d81a-6433-4b7a-b5d3-8c8f1e32a45c
+    name: 'Cove Data Protection: Generate Weekly Backup Digest'
+    path: features/cove/workflows/backup_health.py
+    tags:
+    - cove
+    - backup
+    - digest
+    - reporting
+    timeout_seconds: 300
+  2a1aa176-5b7b-4ee2-aadc-668d265aebcd:
+    access_level: authenticated
+    category: Cove Data Protection
+    description: Poll nightly Cove backup status and create Autotask incidents for failures.
+    function_name: poll_cove_backup_health
+    id: 2a1aa176-5b7b-4ee2-aadc-668d265aebcd
+    name: 'Cove Data Protection: Poll Backup Health'
+    path: features/cove/workflows/backup_health.py
+    tags:
+    - cove
+    - backup
+    - polling
+    - autotask
+    timeout_seconds: 600
   0df08d7b-4d69-4b17-a92e-df056d2996b3:
     access_level: authenticated
     category: Autotask
@@ -85,6 +113,19 @@ workflows:
     - autotask
     - sync
     timeout_seconds: 300
+  ce064315-a459-425b-9eb6-6109edbfe95c:
+    access_level: authenticated
+    category: Cove Data Protection
+    description: Set per-client Cove backup monitoring configuration.
+    function_name: configure_cove_backup_monitoring
+    id: ce064315-a459-425b-9eb6-6109edbfe95c
+    name: 'Cove Data Protection: Configure Backup Monitoring'
+    path: features/cove/workflows/backup_health.py
+    tags:
+    - cove
+    - backup
+    - config
+    timeout_seconds: 120
   c2e944d3-fc19-44f3-9696-b7934c6feb9b:
     access_level: authenticated
     category: Autotask
