@@ -86,71 +86,74 @@ async def index_platform_docs() -> dict[str, Any]:
     skipped_count = 0
     errors: list[str] = []
 
+    # Phase 1: Load existing docs and get embedding client config (short-lived session)
     async with get_db_context() as db:
         try:
             embedding_client = await get_embedding_client(db)
         except ValueError as e:
-            # No embedding configuration - skip gracefully
             return {"status": "skipped", "reason": str(e)}
 
         repo = KnowledgeRepository(db, org_id=None, is_superuser=True)
+        existing_docs = await repo.get_all_by_namespace(namespace=NAMESPACE)
 
-        # Fetch existing docs upfront to compare content hashes
-        existing_docs = await repo.get_all_by_namespace(
-            namespace=NAMESPACE,
-        )
+    logger.info(
+        f"Checking {len(doc_files)} documentation files "
+        f"({len(existing_docs)} already indexed)..."
+    )
 
-        logger.info(
-            f"Checking {len(doc_files)} documentation files "
-            f"({len(existing_docs)} already indexed)..."
-        )
+    # Phase 2: Read files, compute hashes, generate embeddings (no DB connection held)
+    docs_to_upsert: list[dict] = []
+    for doc_file in doc_files:
+        try:
+            content = doc_file.read_text(encoding="utf-8")
+            key = str(doc_file.relative_to(DOCS_PATH)).replace(".txt", "")
+            current_keys.add(key)
 
-        for doc_file in doc_files:
-            try:
-                content = doc_file.read_text(encoding="utf-8")
-                # Key is the relative path without extension
-                key = str(doc_file.relative_to(DOCS_PATH)).replace(".txt", "")
-                current_keys.add(key)
+            content_hash = compute_content_hash(content)
 
-                # Compute hash of current content
-                content_hash = compute_content_hash(content)
+            existing_doc = existing_docs.get(key)
+            if existing_doc:
+                existing_hash = existing_doc.metadata.get("content_hash")
+                if existing_hash == content_hash:
+                    skipped_count += 1
+                    continue
 
-                # Check if this doc already exists with the same content
-                existing_doc = existing_docs.get(key)
-                if existing_doc:
-                    existing_hash = existing_doc.metadata.get("content_hash")
-                    if existing_hash == content_hash:
-                        # Content unchanged - skip embedding generation
-                        skipped_count += 1
-                        continue
+            # Generate embedding via LLM API (no DB connection held)
+            embedding = await embedding_client.embed_single(content)
 
-                # Content is new or changed - generate embedding
-                embedding = await embedding_client.embed_single(content)
+            docs_to_upsert.append({
+                "content": content,
+                "embedding": embedding,
+                "key": key,
+                "content_hash": content_hash,
+            })
+            indexed_count += 1
 
-                # Store with upsert (org_id=None for global scope set in repo constructor)
-                await repo.store(
-                    content=content,
-                    embedding=embedding,
-                    namespace=NAMESPACE,
-                    key=key,
-                    metadata={
-                        "source": "bifrost-docs",
-                        "path": key,
-                        "indexed_at": indexed_at,
-                        "content_hash": content_hash,
-                    },
-                )
+        except Exception as e:
+            error_msg = f"Failed to index {doc_file.name}: {e}"
+            logger.error(error_msg)
+            errors.append(error_msg)
 
-                indexed_count += 1
+    # Phase 3: Batch upsert embeddings and cleanup orphans (short-lived session)
+    deleted_count = 0
+    async with get_db_context() as db:
+        repo = KnowledgeRepository(db, org_id=None, is_superuser=True)
 
-            except Exception as e:
-                error_msg = f"Failed to index {doc_file.name}: {e}"
-                logger.error(error_msg)
-                errors.append(error_msg)
+        for doc in docs_to_upsert:
+            await repo.store(
+                content=doc["content"],
+                embedding=doc["embedding"],
+                namespace=NAMESPACE,
+                key=doc["key"],
+                metadata={
+                    "source": "bifrost-docs",
+                    "path": doc["key"],
+                    "indexed_at": indexed_at,
+                    "content_hash": doc["content_hash"],
+                },
+            )
 
-        # Phase 2: Delete orphaned documents (files that no longer exist)
-        deleted_count = 0
-        if current_keys:  # Only cleanup if we have valid files
+        if current_keys:
             try:
                 deleted_count = await repo.delete_orphaned_docs(
                     namespace=NAMESPACE,
