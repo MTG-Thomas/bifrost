@@ -24,10 +24,7 @@ Execution Model:
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
 
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
@@ -101,61 +98,39 @@ class WorkflowExecutionConsumer(BaseConsumer):
         This callback is invoked by the pool when a worker reports
         a result (success or failure, including timeouts and crashes).
 
-        All DB operations are batched into a single transaction.
+        DB sessions are short-lived — Redis reads and pub/sub happen outside.
         """
-        from src.core.database import get_session_factory
-
         execution_id = result.get("execution_id", "")
 
-        # Single session for all DB operations
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            try:
-                if result.get("success"):
-                    await self._process_success(execution_id, result, session)
-                else:
-                    await self._process_failure(execution_id, result, session)
-
-                await session.commit()
-            except Exception as e:
-                await session.rollback()
-                logger.error(f"Failed to process result for {execution_id}: {e}")
-                raise
+        try:
+            if result.get("success"):
+                await self._process_success(execution_id, result)
+            else:
+                await self._process_failure(execution_id, result)
+        except Exception as e:
+            logger.error(f"Failed to process result for {execution_id}: {e}")
+            raise
 
     async def _process_success(
         self,
         execution_id: str,
         result: dict[str, Any],
-        session: "AsyncSession",
     ) -> None:
         """
         Process a successful execution result.
 
         Updates the database, flushes logs, and publishes status updates.
-
-        The result dict from simple_worker contains:
-        - result["result"]: The workflow's return value (e.g., {"message": "Hello"})
-        - result["status"]: Execution status (e.g., "Success")
-        - result["roi"]: ROI data
-        - result["error"]/result["error_type"]: Error info if any
-        - result["variables"]: Runtime variables
-        - result["metrics"]: Resource metrics
-        - result["duration_ms"]: Execution duration
-
-        Args:
-            execution_id: The execution ID
-            result: Result dict from worker process
-            session: Database session (caller manages commit)
+        DB sessions are short-lived — Redis and pub/sub happen outside sessions.
         """
+        from src.core.database import get_session_factory
         from src.core.metrics import update_daily_metrics, update_workflow_roi_daily
         from src.models.enums import ExecutionStatus
         from src.repositories.executions import update_execution
 
-        # Extract workflow return value (what the @workflow function returned)
         workflow_result = result.get("result")
         duration_ms = result.get("duration_ms", 0)
 
-        # Get additional context from Redis for pubsub updates
+        # Redis read — no DB connection held
         pending = await self._redis_client.get_pending_execution(execution_id)
         if not pending:
             logger.warning(f"No pending record found for result: {execution_id}")
@@ -168,7 +143,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
         user_name = pending.get("user_name")
         is_sync = pending.get("sync", False)
 
-        # Determine status from result (at top level, not nested)
         status_str = result.get("status", "Success")
         status = (
             ExecutionStatus(status_str)
@@ -176,58 +150,78 @@ class WorkflowExecutionConsumer(BaseConsumer):
             else ExecutionStatus.SUCCESS
         )
 
-        # Extract ROI from result (at top level)
         roi_data = result.get("roi") or {}
         roi_time_saved = roi_data.get("time_saved", 0)
         roi_value = roi_data.get("value", 0.0)
 
-        # Update database
-        await update_execution(
-            execution_id=execution_id,
-            status=status,
-            result=workflow_result,
-            error_message=result.get("error"),
-            error_type=result.get("error_type"),
-            duration_ms=duration_ms,
-            variables=result.get("variables"),
-            execution_context=result.get("execution_context"),
-            metrics=result.get("metrics"),
-            time_saved=roi_time_saved,
-            value=roi_value,
-            session=session,
-        )
+        # DB operations + flush — single short-lived session
+        # (flush functions do Redis reads internally but DB writes share the session)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            await update_execution(
+                execution_id=execution_id,
+                status=status,
+                result=workflow_result,
+                error_message=result.get("error"),
+                error_type=result.get("error_type"),
+                duration_ms=duration_ms,
+                variables=result.get("variables"),
+                execution_context=result.get("execution_context"),
+                metrics=result.get("metrics"),
+                time_saved=roi_time_saved,
+                value=roi_value,
+                session=session,
+            )
 
-        # Update event delivery status if this execution was triggered by an event
-        try:
-            from src.services.events.processor import update_delivery_from_execution
-            await update_delivery_from_execution(execution_id, status.value, session=session)
-        except Exception as e:
-            # Don't fail the execution result if delivery update fails
-            logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
+            try:
+                from src.services.events.processor import update_delivery_from_execution
+                await update_delivery_from_execution(execution_id, status.value, session=session)
+            except Exception as e:
+                logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
 
-        # Flush pending changes (SDK writes) from Redis to Postgres BEFORE publishing
-        # This ensures data is in PostgreSQL when client refetches after receiving update
-        try:
-            from bifrost._sync import flush_pending_changes
-            changes_count = await flush_pending_changes(execution_id, session=session)
-            if changes_count > 0:
-                logger.info(f"Flushed {changes_count} pending changes for {execution_id[:8]}...")
-        except Exception as e:
-            logger.warning(f"Failed to flush pending changes for {execution_id[:8]}...: {e}")
+            # Flush pending changes and logs (Redis read + DB write in same session)
+            try:
+                from bifrost._sync import flush_pending_changes
+                changes_count = await flush_pending_changes(execution_id, session=session)
+                if changes_count > 0:
+                    logger.info(f"Flushed {changes_count} pending changes for {execution_id[:8]}...")
+            except Exception as e:
+                logger.warning(f"Failed to flush pending changes for {execution_id[:8]}...: {e}")
 
-        # Flush logs from Redis Stream to Postgres BEFORE publishing
-        # This ensures logs are in PostgreSQL when client refetches after receiving update
-        try:
-            from bifrost._logging import flush_logs_to_postgres
-            logs_count = await flush_logs_to_postgres(execution_id, session=session)
-            if logs_count > 0:
-                logger.debug(f"Flushed {logs_count} logs for {execution_id[:8]}...")
-        except Exception as e:
-            logger.warning(f"Failed to flush logs for {execution_id[:8]}...: {e}")
+            try:
+                from bifrost._logging import flush_logs_to_postgres
+                logs_count = await flush_logs_to_postgres(execution_id, session=session)
+                if logs_count > 0:
+                    logger.debug(f"Flushed {logs_count} logs for {execution_id[:8]}...")
+            except Exception as e:
+                logger.warning(f"Failed to flush logs for {execution_id[:8]}...: {e}")
 
-        # Publish updates AFTER flushing data to PostgreSQL
-        # Client will refetch and get the complete data including logs
-        # (pubsub operations don't need the session)
+            metrics_data = result.get("metrics") or {}
+            await update_daily_metrics(
+                org_id=org_id,
+                status=status.value,
+                duration_ms=duration_ms,
+                peak_memory_bytes=metrics_data.get("peak_memory_bytes"),
+                cpu_total_seconds=metrics_data.get("cpu_total_seconds"),
+                time_saved=roi_time_saved,
+                value=roi_value,
+                workflow_id=workflow_id,
+                db=session,
+            )
+
+            if workflow_id:
+                await update_workflow_roi_daily(
+                    workflow_id=workflow_id,
+                    org_id=org_id,
+                    status=status.value,
+                    time_saved=roi_time_saved,
+                    value=roi_value,
+                    db=session,
+                )
+
+            await session.commit()
+
+        # Pub/sub — no DB connection held
         await publish_execution_update(
             execution_id,
             status.value,
@@ -246,17 +240,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
             duration_ms=duration_ms,
         )
 
-        # Cleanup execution cache (remove temporary Redis keys)
+        # Redis cleanup — no DB connection held
         try:
             from src.core.cache import cleanup_execution_cache
             await cleanup_execution_cache(execution_id)
         except Exception as e:
             logger.warning(f"Failed to cleanup cache for {execution_id[:8]}...: {e}")
 
-        # Delete pending execution from Redis
         await self._redis_client.delete_pending_execution(execution_id)
 
-        # Push sync result if needed
         if is_sync:
             await self._redis_client.push_result(
                 execution_id=execution_id,
@@ -265,30 +257,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 error=result.get("error"),
                 error_type=result.get("error_type"),
                 duration_ms=duration_ms,
-            )
-
-        # Update metrics
-        metrics = result.get("metrics") or {}
-        await update_daily_metrics(
-            org_id=org_id,
-            status=status.value,
-            duration_ms=duration_ms,
-            peak_memory_bytes=metrics.get("peak_memory_bytes"),
-            cpu_total_seconds=metrics.get("cpu_total_seconds"),
-            time_saved=roi_time_saved,
-            value=roi_value,
-            workflow_id=workflow_id,
-            db=session,
-        )
-
-        if workflow_id:
-            await update_workflow_roi_daily(
-                workflow_id=workflow_id,
-                org_id=org_id,
-                status=status.value,
-                time_saved=roi_time_saved,
-                value=roi_value,
-                db=session,
             )
 
         logger.info(
@@ -306,18 +274,14 @@ class WorkflowExecutionConsumer(BaseConsumer):
         self,
         execution_id: str,
         result: dict[str, Any],
-        session: "AsyncSession",
     ) -> None:
         """
         Process a failed execution result.
 
         Handles various failure types (timeout, crash, execution error).
-
-        Args:
-            execution_id: The execution ID
-            result: Result dict from worker process
-            session: Database session (caller manages commit)
+        DB sessions are short-lived — Redis and pub/sub happen outside sessions.
         """
+        from src.core.database import get_session_factory
         from src.core.metrics import update_daily_metrics
         from src.models.enums import ExecutionStatus
         from src.repositories.executions import update_execution
@@ -326,7 +290,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         error_type = result.get("error_type", "ExecutionError")
         duration_ms = result.get("duration_ms", 0)
 
-        # Get additional context from Redis for pubsub updates
+        # Redis read — no DB connection held
         pending = await self._redis_client.get_pending_execution(execution_id)
         if not pending:
             logger.warning(f"No pending record found for failed result: {execution_id}")
@@ -339,7 +303,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
         user_name = pending.get("user_name")
         is_sync = pending.get("sync", False)
 
-        # Determine status based on error type
         if error_type == "TimeoutError":
             status = ExecutionStatus.TIMEOUT
         elif error_type == "CancelledError":
@@ -347,50 +310,53 @@ class WorkflowExecutionConsumer(BaseConsumer):
         else:
             status = ExecutionStatus.FAILED
 
-        # Update database
-        await update_execution(
-            execution_id=execution_id,
-            status=status,
-            error_message=error,
-            error_type=error_type,
-            duration_ms=duration_ms,
-            session=session,
-        )
-
-        # Update event delivery status if this execution was triggered by an event
-        try:
-            from src.services.events.processor import update_delivery_from_execution
-            await update_delivery_from_execution(
-                execution_id, status.value, error_message=error, session=session
+        # DB operations + flush — single short-lived session
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            await update_execution(
+                execution_id=execution_id,
+                status=status,
+                error_message=error,
+                error_type=error_type,
+                duration_ms=duration_ms,
+                session=session,
             )
-        except Exception as e:
-            # Don't fail the execution result if delivery update fails
-            logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
 
-        # Flush pending changes (SDK writes) from Redis to Postgres BEFORE publishing
-        # Even failed executions may have buffered writes
-        # This ensures data is in PostgreSQL when client refetches after receiving update
-        try:
-            from bifrost._sync import flush_pending_changes
-            changes_count = await flush_pending_changes(execution_id, session=session)
-            if changes_count > 0:
-                logger.info(f"Flushed {changes_count} pending changes for failed {execution_id[:8]}...")
-        except Exception as e:
-            logger.warning(f"Failed to flush pending changes for {execution_id[:8]}...: {e}")
+            try:
+                from src.services.events.processor import update_delivery_from_execution
+                await update_delivery_from_execution(
+                    execution_id, status.value, error_message=error, session=session
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
 
-        # Flush logs from Redis Stream to Postgres BEFORE publishing
-        # This ensures logs are in PostgreSQL when client refetches after receiving update
-        try:
-            from bifrost._logging import flush_logs_to_postgres
-            logs_count = await flush_logs_to_postgres(execution_id, session=session)
-            if logs_count > 0:
-                logger.debug(f"Flushed {logs_count} logs for failed {execution_id[:8]}...")
-        except Exception as e:
-            logger.warning(f"Failed to flush logs for {execution_id[:8]}...: {e}")
+            try:
+                from bifrost._sync import flush_pending_changes
+                changes_count = await flush_pending_changes(execution_id, session=session)
+                if changes_count > 0:
+                    logger.info(f"Flushed {changes_count} pending changes for failed {execution_id[:8]}...")
+            except Exception as e:
+                logger.warning(f"Failed to flush pending changes for {execution_id[:8]}...: {e}")
 
-        # Publish updates AFTER flushing data to PostgreSQL
-        # Client will refetch and get the complete data including logs
-        # (pubsub operations don't need the session)
+            try:
+                from bifrost._logging import flush_logs_to_postgres
+                logs_count = await flush_logs_to_postgres(execution_id, session=session)
+                if logs_count > 0:
+                    logger.debug(f"Flushed {logs_count} logs for failed {execution_id[:8]}...")
+            except Exception as e:
+                logger.warning(f"Failed to flush logs for {execution_id[:8]}...: {e}")
+
+            await update_daily_metrics(
+                org_id=org_id,
+                status=status.value,
+                duration_ms=duration_ms,
+                workflow_id=workflow_id,
+                db=session,
+            )
+
+            await session.commit()
+
+        # Pub/sub — no DB connection held
         await publish_execution_update(
             execution_id,
             status.value,
@@ -409,17 +375,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
             duration_ms=duration_ms,
         )
 
-        # Cleanup execution cache (remove temporary Redis keys)
+        # Redis cleanup — no DB connection held
         try:
             from src.core.cache import cleanup_execution_cache
             await cleanup_execution_cache(execution_id)
         except Exception as e:
             logger.warning(f"Failed to cleanup cache for {execution_id[:8]}...: {e}")
 
-        # Delete pending execution from Redis
         await self._redis_client.delete_pending_execution(execution_id)
 
-        # Push sync result if needed
         if is_sync:
             await self._redis_client.push_result(
                 execution_id=execution_id,
@@ -428,15 +392,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 error_type=error_type,
                 duration_ms=duration_ms,
             )
-
-        # Update metrics
-        await update_daily_metrics(
-            org_id=org_id,
-            status=status.value,
-            duration_ms=duration_ms,
-            workflow_id=workflow_id,
-            db=session,
-        )
 
         logger.warning(
             f"Execution failed: {execution_id[:8]}... status={status.value} error={error_type}",
