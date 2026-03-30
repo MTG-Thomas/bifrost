@@ -61,7 +61,9 @@ class TestResolveAgentTools:
         assert "search_knowledge" in tool_names
 
     @pytest.mark.asyncio
-    async def test_no_tools_returns_empty(self):
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @patch("src.services.mcp_server.server.get_system_tools", return_value=[])
+    async def test_no_tools_returns_empty(self, _mock_get_system_tools):
         """Agent with no tools returns empty lists."""
         mock_session = AsyncMock()
         mock_agent = MagicMock()

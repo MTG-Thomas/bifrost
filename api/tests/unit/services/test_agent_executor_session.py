@@ -208,7 +208,11 @@ class TestFlushToDb:
         step_count = len(executor._pending_steps)
         assert step_count > 0, "Expected buffered steps"
 
-        await executor.flush_to_db(flush_session)
+        with patch(
+            "src.services.ai_usage_service.record_ai_usage",
+            new_callable=AsyncMock,
+        ):
+            await executor.flush_to_db(flush_session)
 
         # All steps should have been added to the flush session
         assert flush_session.add.call_count >= step_count

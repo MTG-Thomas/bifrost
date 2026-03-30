@@ -20,18 +20,29 @@ from src.services.llm import ToolDefinition
 
 @pytest.fixture
 def mock_session():
-    """Mock database session."""
+    """Mock database session used inside the factory context manager."""
     session = AsyncMock()
     session.execute = AsyncMock()
     session.add = MagicMock()
     session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.get = AsyncMock(return_value=None)
     return session
 
 
 @pytest.fixture
-def executor(mock_session):
-    """Create an AgentExecutor instance with mocked session."""
-    return AgentExecutor(mock_session)
+def mock_session_factory(mock_session):
+    """Mock database session factory that yields mock_session."""
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    return factory
+
+
+@pytest.fixture
+def executor(mock_session_factory):
+    """Create an AgentExecutor instance with mocked session factory."""
+    return AgentExecutor(mock_session_factory)
 
 
 @pytest.fixture
@@ -244,7 +255,7 @@ class TestWorkflowToolIdResolution:
         assert executor._tool_workflow_id_map["wf_execute_halopsa_sql"] == workflow_id
 
     @pytest.mark.asyncio
-    async def test_execute_tool_uses_id_lookup_for_normalized_names(self, executor):
+    async def test_execute_tool_uses_id_lookup_for_normalized_names(self, executor, mock_session):
         """_execute_tool looks up workflows by ID when name is in _tool_workflow_id_map."""
         from src.services.llm.base import ToolCallRequest
 
@@ -258,7 +269,7 @@ class TestWorkflowToolIdResolution:
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_workflow
-        executor.session.execute = AsyncMock(return_value=mock_result)
+        mock_session.execute = AsyncMock(return_value=mock_result)
 
         tool_call = ToolCallRequest(
             id="call_123",
@@ -286,7 +297,7 @@ class TestWorkflowToolIdResolution:
             )
 
         # Verify the DB query used Workflow.id, not Workflow.name
-        call_args = executor.session.execute.call_args
+        call_args = mock_session.execute.call_args
         query = call_args[0][0]
         # The compiled query should reference the workflow ID, not the normalized name
         compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
@@ -294,14 +305,14 @@ class TestWorkflowToolIdResolution:
         assert "wf_execute_halopsa_sql" not in compiled
 
     @pytest.mark.asyncio
-    async def test_execute_tool_falls_back_to_name_lookup(self, executor):
+    async def test_execute_tool_falls_back_to_name_lookup(self, executor, mock_session):
         """_execute_tool falls back to name-based lookup when tool not in ID map."""
         from src.services.llm.base import ToolCallRequest
 
         # Don't populate _tool_workflow_id_map — simulate an unknown tool
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
-        executor.session.execute = AsyncMock(return_value=mock_result)
+        mock_session.execute = AsyncMock(return_value=mock_result)
 
         tool_call = ToolCallRequest(
             id="call_456",
@@ -314,7 +325,7 @@ class TestWorkflowToolIdResolution:
         assert result.error == "Tool 'some_unknown_tool' not found"
 
         # Verify the DB query used Workflow.name (fallback path)
-        call_args = executor.session.execute.call_args
+        call_args = mock_session.execute.call_args
         query = call_args[0][0]
         compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
         assert "some_unknown_tool" in compiled

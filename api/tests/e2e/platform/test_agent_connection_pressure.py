@@ -28,7 +28,33 @@ pytestmark = [
 
 
 @pytest.fixture(scope="module")
-def simple_agent(e2e_client, platform_admin):
+def _llm_configured(e2e_client, platform_admin):
+    """Configure LLM provider for the module (required for agent runs)."""
+    api_key = os.environ.get("ANTHROPIC_API_TEST_KEY")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_TEST_KEY not configured")
+
+    config = {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5-20251001",
+        "api_key": api_key,
+        "max_tokens": 1024,
+    }
+    response = e2e_client.post(
+        "/api/admin/llm/config",
+        json=config,
+        headers=platform_admin.headers,
+    )
+    assert response.status_code == 200, f"Failed to configure LLM: {response.text}"
+    yield config
+    try:
+        e2e_client.delete("/api/admin/llm/config", headers=platform_admin.headers)
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="module")
+def simple_agent(e2e_client, platform_admin, _llm_configured):
     """Create a minimal agent for connection pressure testing.
 
     Uses a trivial system prompt so the LLM responds quickly with no tool calls.

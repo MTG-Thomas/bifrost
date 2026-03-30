@@ -19,19 +19,24 @@ from src.services.llm import LLMMessage, ToolCallRequest
 
 
 @pytest.fixture
-def mock_session():
-    """Mock database session."""
+def mock_session_factory():
+    """Mock database session factory."""
     session = AsyncMock()
     session.execute = AsyncMock()
     session.add = MagicMock()
     session.flush = AsyncMock()
-    return session
+    session.commit = AsyncMock()
+
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=session)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    return factory
 
 
 @pytest.fixture
-def executor(mock_session):
-    """Create an AgentExecutor instance with mocked session."""
-    return AgentExecutor(mock_session)
+def executor(mock_session_factory):
+    """Create an AgentExecutor instance with mocked session factory."""
+    return AgentExecutor(mock_session_factory)
 
 
 class TestTokenEstimation:

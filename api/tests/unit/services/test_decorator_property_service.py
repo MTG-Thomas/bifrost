@@ -4,6 +4,11 @@ import sys
 
 import pytest
 
+# Suppress "coroutine was never awaited" warnings triggered by module cache
+# eviction in the reset_libcst_and_service fixture.  The GC'd coroutines
+# belong to other tests, not to this module.
+pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
+
 
 @pytest.fixture(autouse=True)
 def reset_libcst_and_service():
