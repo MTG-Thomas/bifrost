@@ -20,7 +20,6 @@ from src.models import (
     CreateOAuthConnectionRequest,
     UpdateOAuthConnectionRequest,
     OAuthConnectionDetail,
-    OAuthConnectionSummary,
     OAuthCredentialsResponse,
     OAuthCallbackRequest,
     OAuthCallbackResponse,
@@ -134,25 +133,6 @@ class OAuthConnectionRepository:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-
-    async def list_connections(
-        self,
-        org_id: UUID | None = None,
-    ) -> list[OAuthConnectionSummary]:
-        """List all OAuth connections, optionally filtered by org."""
-        query = select(OAuthProvider)
-        if org_id:
-            query = query.where(OAuthProvider.organization_id == org_id)
-        query = query.order_by(OAuthProvider.created_at.desc())
-
-        result = await self.db.execute(query)
-        providers = result.scalars().all()
-
-        # Convert to summaries (async method)
-        summaries = []
-        for p in providers:
-            summaries.append(await self._to_summary(p))
-        return summaries
 
     async def get_connection(
         self,
@@ -370,32 +350,6 @@ class OAuthConnectionRepository:
 
         return token
 
-    async def _to_summary(self, provider: OAuthProvider) -> OAuthConnectionSummary:
-        """Convert to summary model."""
-        # Get latest token expiry - query directly to avoid lazy load issues
-        expires_at = None
-        token = await self.get_token(provider.provider_name, provider.organization_id)
-        if token:
-            expires_at = token.expires_at
-
-        # Cast string values to literal types for Pydantic
-        oauth_flow_type: OAuthFlowType = provider.oauth_flow_type  # type: ignore[assignment]
-        status: OAuthStatus = provider.status or "not_connected"  # type: ignore[assignment]
-
-        return OAuthConnectionSummary(
-            connection_name=provider.provider_name,
-            name=provider.display_name,
-            provider=provider.provider_name,
-            oauth_flow_type=oauth_flow_type,
-            status=status,
-            status_message=provider.status_message,
-            integration_id=str(provider.integration_id) if provider.integration_id else None,
-            expires_at=expires_at,
-            last_refresh_at=provider.last_token_refresh,
-            created_at=provider.created_at,
-            updated_at=provider.updated_at,
-        )
-
     async def _to_detail(self, provider: OAuthProvider) -> OAuthConnectionDetail:
         """Convert to detail model."""
         # Get latest token expiry - query directly to avoid lazy load issues
@@ -437,24 +391,6 @@ class OAuthConnectionRepository:
 # =============================================================================
 # HTTP Endpoints
 # =============================================================================
-
-
-@router.get(
-    "/connections",
-    response_model=dict,
-    summary="List OAuth connections",
-    description="List all OAuth connections (Platform admin only)",
-)
-async def list_connections(
-    ctx: Context,
-    user: CurrentSuperuser,
-) -> dict:
-    """List all OAuth connections."""
-    repo = OAuthConnectionRepository(ctx.db)
-    org_id = ctx.org_id
-    connections = await repo.list_connections(org_id)
-
-    return {"connections": connections}
 
 
 @router.get(

@@ -299,44 +299,6 @@ class OAuthStorageService:
 
             return True
 
-    async def list_connections(
-        self,
-        org_id: str | None
-    ) -> list[OAuthConnection]:
-        """
-        List all OAuth connections for an organization.
-
-        Args:
-            org_id: Organization ID or None for GLOBAL
-
-        Returns:
-            List of OAuthConnections
-        """
-        from sqlalchemy import select, or_
-        from src.models import OAuthProvider
-
-        async with self._get_session_context() as db:
-            org_uuid = UUID(org_id) if org_id and org_id != "GLOBAL" else None
-
-            if org_uuid:
-                # Include both org-specific and GLOBAL connections
-                query = select(OAuthProvider).where(
-                    or_(
-                        OAuthProvider.organization_id == org_uuid,
-                        OAuthProvider.organization_id.is_(None)
-                    )
-                )
-            else:
-                # GLOBAL only
-                query = select(OAuthProvider).where(
-                    OAuthProvider.organization_id.is_(None)
-                )
-
-            result = await db.execute(query)
-            providers = result.scalars().all()
-
-            return [self._to_connection_model(p) for p in providers]
-
     async def store_tokens(
         self,
         org_id: str | None,

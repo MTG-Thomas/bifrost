@@ -301,14 +301,6 @@ class TestOAuthAccess:
         )
         assert response.status_code == 403
 
-    def test_org_user_cannot_access_oauth_admin(self, e2e_client, org1_user):
-        """Org user cannot access OAuth connections list."""
-        response = e2e_client.get(
-            "/api/oauth/connections",
-            headers=org1_user.headers,
-        )
-        assert response.status_code == 403, \
-            f"Org user should not list OAuth connections: {response.status_code}"
 
 
 @pytest.mark.e2e
