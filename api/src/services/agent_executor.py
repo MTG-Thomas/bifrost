@@ -16,12 +16,13 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from src.models.contracts.agents import (
@@ -42,7 +43,6 @@ from src.services.llm import (
 )
 from src.services.execution.agent_helpers import find_delegated_agent, resolve_agent_tools
 from src.services.execution.autonomous_agent_executor import AutonomousAgentExecutor
-from src.services.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +90,16 @@ class AgentExecutor:
     5. Final response
     """
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
-        self.tool_registry = ToolRegistry(session)
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+        self._session_factory = session_factory
         self._tool_workflow_id_map: dict[str, UUID] = {}  # normalized tool name → workflow UUID
+
+    @asynccontextmanager
+    async def _db(self):
+        """Short-lived DB session for discrete operations."""
+        async with self._session_factory() as session:
+            yield session
+            await session.commit()
 
     async def _switch_agent(
         self,
@@ -126,8 +132,12 @@ class AgentExecutor:
         )
 
         # 2. Persist to conversation
+        async with self._db() as session:
+            conv = await session.get(Conversation, conversation.id)
+            if conv:
+                conv.agent_id = new_agent.id
+        # Update in-memory object too so caller sees the change
         conversation.agent_id = new_agent.id
-        await self.session.flush()
 
     async def chat(
         self,
@@ -158,7 +168,7 @@ class AgentExecutor:
         from src.services.agent_router import AgentRouter
 
         start_time = time.time()
-        router = AgentRouter(self.session)
+        router = AgentRouter(self._session_factory)
 
         try:
             # 1. Check for @mention agent switching
@@ -230,7 +240,8 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 )
 
             # 4. Get LLM client
-            llm_client = await get_llm_client(self.session)
+            async with self._db() as session:
+                llm_client = await get_llm_client(session)
 
             # 5a. Check context size and prune if needed
             estimated_tokens = self._estimate_tokens(messages)
@@ -521,7 +532,8 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         When a workflow tool's normalized name collides with a system tool,
         the system tool wins and a warning is logged.
         """
-        tools, self._tool_workflow_id_map = await resolve_agent_tools(agent, self.session)
+        async with self._db() as session:
+            tools, self._tool_workflow_id_map = await resolve_agent_tools(agent, session)
         return tools
 
     async def _notify_tool_conflicts(
@@ -596,12 +608,13 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         )
 
         # Get conversation messages in order
-        result = await self.session.execute(
-            select(Message)
-            .where(Message.conversation_id == conversation.id)
-            .order_by(Message.sequence)
-        )
-        db_messages = result.scalars().all()
+        async with self._db() as session:
+            result = await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation.id)
+                .order_by(Message.sequence)
+            )
+            db_messages = result.scalars().all()
 
         # Track seen tool_call IDs to handle providers (e.g. Minimax) that
         # reuse the same IDs across turns. When a collision is detected, remap
@@ -1050,45 +1063,47 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         local_id: str | None = None,
     ) -> Message:
         """Save a message to the conversation."""
-        # Get next sequence number
-        result = await self.session.execute(
-            select(func.coalesce(func.max(Message.sequence), 0))
-            .where(Message.conversation_id == conversation_id)
-        )
-        max_sequence = result.scalar() or 0
-        next_sequence = max_sequence + 1
+        msg_id = message_id if message_id else uuid4()
 
-        message = Message(
-            id=message_id if message_id else uuid4(),
-            conversation_id=conversation_id,
-            role=role,
-            content=content,
-            tool_calls=tool_calls,
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
-            execution_id=execution_id,
-            token_count_input=token_count_input,
-            token_count_output=token_count_output,
-            model=model,
-            duration_ms=duration_ms,
-            sequence=next_sequence,
-            # New fields for TOOL_CALL messages
-            tool_state=tool_state,
-            tool_result=tool_result,
-            tool_input=tool_input,
-            # Client-generated ID for optimistic update reconciliation
-            local_id=local_id,
-        )
-        self.session.add(message)
-        await self.session.flush()
+        async with self._db() as session:
+            # Get next sequence number
+            result = await session.execute(
+                select(func.coalesce(func.max(Message.sequence), 0))
+                .where(Message.conversation_id == conversation_id)
+            )
+            max_sequence = result.scalar() or 0
+            next_sequence = max_sequence + 1
 
-        # Update conversation updated_at
-        conversation_result = await self.session.execute(
-            select(Conversation).where(Conversation.id == conversation_id)
-        )
-        conversation = conversation_result.scalar_one()
-        conversation.updated_at = datetime.now(timezone.utc)
-        await self.session.flush()
+            message = Message(
+                id=msg_id,
+                conversation_id=conversation_id,
+                role=role,
+                content=content,
+                tool_calls=tool_calls,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                execution_id=execution_id,
+                token_count_input=token_count_input,
+                token_count_output=token_count_output,
+                model=model,
+                duration_ms=duration_ms,
+                sequence=next_sequence,
+                # New fields for TOOL_CALL messages
+                tool_state=tool_state,
+                tool_result=tool_result,
+                tool_input=tool_input,
+                # Client-generated ID for optimistic update reconciliation
+                local_id=local_id,
+            )
+            session.add(message)
+
+            # Update conversation updated_at
+            conversation_result = await session.execute(
+                select(Conversation).where(Conversation.id == conversation_id)
+            )
+            conversation = conversation_result.scalar_one()
+            conversation.updated_at = datetime.now(timezone.utc)
+            # commit happens on context manager exit
 
         return message
 
@@ -1100,14 +1115,15 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         duration_ms: int | None = None,
     ) -> None:
         """Update a TOOL_CALL message with execution result."""
-        result = await self.session.execute(
-            select(Message).where(Message.id == message_id)
-        )
-        message = result.scalar_one()
-        message.tool_state = tool_state
-        message.tool_result = tool_result
-        message.duration_ms = duration_ms
-        await self.session.flush()
+        async with self._db() as session:
+            result = await session.execute(
+                select(Message).where(Message.id == message_id)
+            )
+            message = result.scalar_one()
+            message.tool_state = tool_state
+            message.tool_result = tool_result
+            message.duration_ms = duration_ms
+            # commit happens on context manager exit
 
     async def _execute_tool(
         self,
@@ -1139,19 +1155,20 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         try:
             # Get the workflow for this tool — prefer ID lookup (handles normalized names)
             workflow_id = self._tool_workflow_id_map.get(tool_call.name)
-            if workflow_id:
-                result = await self.session.execute(
-                    select(Workflow).where(Workflow.id == workflow_id)
-                )
-            else:
-                # Fallback: try by name (for non-prefixed tools or edge cases)
-                result = await self.session.execute(
-                    select(Workflow)
-                    .where(Workflow.name == tool_call.name)
-                    .where(Workflow.type == "tool")
-                    .where(Workflow.is_active.is_(True))
-                )
-            workflow = result.scalar_one_or_none()
+            async with self._db() as session:
+                if workflow_id:
+                    result = await session.execute(
+                        select(Workflow).where(Workflow.id == workflow_id)
+                    )
+                else:
+                    # Fallback: try by name (for non-prefixed tools or edge cases)
+                    result = await session.execute(
+                        select(Workflow)
+                        .where(Workflow.name == tool_call.name)
+                        .where(Workflow.type == "tool")
+                        .where(Workflow.is_active.is_(True))
+                    )
+                workflow = result.scalar_one_or_none()
 
             if not workflow:
                 return ToolResult(
@@ -1219,8 +1236,9 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         from src.services.llm_config_service import LLMConfigService
 
         try:
-            config_service = LLMConfigService(self.session)
-            config = await config_service.get_config()
+            async with self._db() as session:
+                config_service = LLMConfigService(session)
+                config = await config_service.get_config()
 
             if config and config.default_system_prompt:
                 return config.default_system_prompt
@@ -1234,13 +1252,14 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         Check if this is the first user message in a conversation.
         Used to determine whether to apply AI routing.
         """
-        result = await self.session.execute(
-            select(func.count())
-            .select_from(Message)
-            .where(Message.conversation_id == conversation_id)
-            .where(Message.role == MessageRole.USER)
-        )
-        count = result.scalar() or 0
+        async with self._db() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == conversation_id)
+                .where(Message.role == MessageRole.USER)
+            )
+            count = result.scalar() or 0
         return count == 0
 
     async def _execute_knowledge_search(
@@ -1284,19 +1303,21 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                 )
 
             # Generate query embedding
-            embedding_client = await get_embedding_client(self.session)
+            async with self._db() as session:
+                embedding_client = await get_embedding_client(session)
             query_embedding = await embedding_client.embed_single(query)
 
             # Search knowledge store
-            repo = KnowledgeRepository(
-                self.session, org_id=agent.organization_id, is_superuser=True
-            )
-            results = await repo.search(
-                query_embedding=query_embedding,
-                namespace=namespaces,
-                limit=limit,
-                fallback=True,  # Search org + global
-            )
+            async with self._db() as session:
+                repo = KnowledgeRepository(
+                    session, org_id=agent.organization_id, is_superuser=True
+                )
+                results = await repo.search(
+                    query_embedding=query_embedding,
+                    namespace=namespaces,
+                    limit=limit,
+                    fallback=True,  # Search org + global
+                )
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -1366,15 +1387,16 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
             # Re-fetch with relationships loaded — the parent's selectinload
             # doesn't transitively load the child agent's own relationships
-            result = await self.session.execute(
-                select(Agent)
-                .options(selectinload(Agent.tools), selectinload(Agent.delegated_agents))
-                .where(Agent.id == delegated_agent.id)
-            )
-            delegated_agent = result.scalar_one()
+            async with self._db() as session:
+                result = await session.execute(
+                    select(Agent)
+                    .options(selectinload(Agent.tools), selectinload(Agent.delegated_agents))
+                    .where(Agent.id == delegated_agent.id)
+                )
+                delegated_agent = result.scalar_one()
 
             redis_client = await get_shared_redis()
-            sub_executor = AutonomousAgentExecutor(self.session, redis_client=redis_client)
+            sub_executor = AutonomousAgentExecutor(self._session_factory, redis_client=redis_client)
             try:
                 sub_result = await asyncio.wait_for(
                     sub_executor.run(
@@ -1446,13 +1468,15 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             user = conversation.user if conversation else None
 
             # Create context from agent/conversation/user
+            # session=None: system tools create their own short-lived sessions
+            # via get_tool_db() fallback, avoiding long-lived connection holds
             context = MCPContext(
                 user_id=str(user.id) if user else "",
                 org_id=str(agent.organization_id) if agent.organization_id else None,
                 is_platform_admin=user.is_superuser if user else False,
                 user_email=user.email if user else "",
                 user_name=user.name if user else "",
-                session=self.session,
+                session=None,
             )
 
             # Call the tool function
@@ -1522,16 +1546,17 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         from src.services.ai_usage_service import record_ai_usage
 
         redis_client = await get_shared_redis()
-        await record_ai_usage(
-            session=self.session,
-            redis_client=redis_client,
-            provider=provider,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            duration_ms=duration_ms,
-            conversation_id=conversation_id,
-            message_id=message_id,
-            organization_id=organization_id,
-            user_id=user_id,
-        )
+        async with self._db() as session:
+            await record_ai_usage(
+                session=session,
+                redis_client=redis_client,
+                provider=provider,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                duration_ms=duration_ms,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            )

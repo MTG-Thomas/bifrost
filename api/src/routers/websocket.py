@@ -629,18 +629,24 @@ async def _process_chat_message(
     Sends streaming chunks directly to the WebSocket, then broadcasts
     the final message to the chat channel for any other subscribers.
 
+    DB connections are only held for short discrete operations (loading
+    conversation, saving messages, etc.) — never during LLM streaming.
+
     Args:
         websocket: The WebSocket connection
         user: The authenticated user
         conversation_id: The conversation ID
         message: The user's message
     """
+    from src.core.database import get_session_factory
     from src.services.agent_executor import AgentExecutor
 
     try:
-        async with get_db_context() as db:
-            # Re-fetch conversation with fresh session
-            conv_uuid = UUID(conversation_id)
+        session_factory = get_session_factory()
+        conv_uuid = UUID(conversation_id)
+
+        # Load conversation in a short-lived session (released before streaming)
+        async with session_factory() as db:
             result = await db.execute(
                 select(Conversation)
                 .options(
@@ -652,87 +658,86 @@ async def _process_chat_message(
             )
             conversation = result.scalar_one_or_none()
 
-            if not conversation:
-                await websocket.send_json({
-                    "type": "error",
-                    "conversation_id": conversation_id,
-                    "error": "Conversation not found"
-                })
-                return
+        if not conversation:
+            await websocket.send_json({
+                "type": "error",
+                "conversation_id": conversation_id,
+                "error": "Conversation not found"
+            })
+            return
 
-            # Check if conversation needs a title (no title set yet)
-            needs_title = conversation.title is None
+        # Check if conversation needs a title (no title set yet)
+        needs_title = conversation.title is None
 
-            # Execute chat
-            executor = AgentExecutor(db)
+        # Execute chat — executor manages its own short-lived sessions
+        executor = AgentExecutor(session_factory)
 
-            # Track streamed content so we can persist partial responses on cancellation
-            streamed_content = ""
-            assistant_message_id: str | None = None
+        # Track streamed content so we can persist partial responses on cancellation
+        streamed_content = ""
+        assistant_message_id: str | None = None
+
+        try:
+            async for chunk in executor.chat(
+                agent=conversation.agent,
+                conversation=conversation,
+                user_message=message,
+                stream=True,
+                local_id=local_id,
+            ):
+                # Track partial content from deltas
+                if chunk.type == "delta" and chunk.content:
+                    streamed_content += chunk.content
+                elif chunk.type == "message_start" and chunk.assistant_message_id:
+                    assistant_message_id = chunk.assistant_message_id
+                elif chunk.type == "assistant_message_end":
+                    # Text segment was saved by executor; reset for next segment
+                    streamed_content = ""
+                    assistant_message_id = None
+
+                # Send chunk to WebSocket with conversation_id for client routing
+                chunk_data = chunk.model_dump(exclude_none=True)
+                chunk_data["conversation_id"] = conversation_id
+                await websocket.send_json(chunk_data)
+        except asyncio.CancelledError:
+            logger.info(f"Chat processing cancelled for conversation {conversation_id}")
+
+            # Save partial assistant response if we have streamed content
+            # that hasn't been saved yet (no assistant_message_end was received)
+            if streamed_content:
+                from src.models.enums import MessageRole
+
+                await executor._save_message(
+                    conversation_id=UUID(conversation_id),
+                    role=MessageRole.ASSISTANT,
+                    content=streamed_content,
+                    message_id=UUID(assistant_message_id) if assistant_message_id else None,
+                )
 
             try:
-                async for chunk in executor.chat(
-                    agent=conversation.agent,
-                    conversation=conversation,
-                    user_message=message,
-                    stream=True,
-                    local_id=local_id,
-                ):
-                    # Track partial content from deltas
-                    if chunk.type == "delta" and chunk.content:
-                        streamed_content += chunk.content
-                    elif chunk.type == "message_start" and chunk.assistant_message_id:
-                        assistant_message_id = chunk.assistant_message_id
-                    elif chunk.type == "assistant_message_end":
-                        # Text segment was saved by executor; reset for next segment
-                        streamed_content = ""
-                        assistant_message_id = None
+                await websocket.send_json({
+                    "type": "done",
+                    "conversation_id": conversation_id,
+                })
+            except Exception:
+                pass  # WebSocket may already be closed
+            return
 
-                    # Send chunk to WebSocket with conversation_id for client routing
-                    chunk_data = chunk.model_dump(exclude_none=True)
-                    chunk_data["conversation_id"] = conversation_id
-                    await websocket.send_json(chunk_data)
-            except asyncio.CancelledError:
-                logger.info(f"Chat processing cancelled for conversation {conversation_id}")
-
-                # Save partial assistant response if we have streamed content
-                # that hasn't been saved yet (no assistant_message_end was received)
-                if streamed_content:
-                    from src.models.enums import MessageRole
-
-                    await executor._save_message(
-                        conversation_id=UUID(conversation_id),
-                        role=MessageRole.ASSISTANT,
-                        content=streamed_content,
-                        message_id=UUID(assistant_message_id) if assistant_message_id else None,
-                    )
-
-                # Commit user message + any partial response
-                await db.commit()
-                try:
-                    await websocket.send_json({
-                        "type": "done",
-                        "conversation_id": conversation_id,
-                    })
-                except Exception:
-                    pass  # WebSocket may already be closed
-                return
-
-            # Generate title if this is a new conversation (no title yet)
-            if needs_title:
+        # Generate title if this is a new conversation (no title yet)
+        if needs_title:
+            async with session_factory() as db:
                 title = await _generate_conversation_title(db, conversation, message)
                 if title:
-                    conversation.title = title
-
-            # Commit the transaction (before sending title_update so refetch sees new data)
-            await db.commit()
+                    conv = await db.get(Conversation, conv_uuid)
+                    if conv:
+                        conv.title = title
+                    await db.commit()
 
             # Send title update to client AFTER commit
-            if needs_title and conversation.title:
+            if title:
                 await websocket.send_json({
                     "type": "title_update",
                     "conversation_id": conversation_id,
-                    "title": conversation.title,
+                    "title": title,
                 })
 
     except Exception as e:

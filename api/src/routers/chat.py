@@ -343,8 +343,9 @@ async def send_message(
 
     # Agent is now optional - agentless chat uses default system prompt
 
-    # Execute chat (agent may be None for agentless chat)
-    executor = AgentExecutor(db)
+    # Execute chat — executor manages its own short-lived sessions
+    from src.core.database import get_session_factory
+    executor = AgentExecutor(get_session_factory())
 
     # Collect streaming response into a single response
     final_content = ""
@@ -377,8 +378,6 @@ async def send_message(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=chunk.error or "Unknown error during chat",
             )
-
-    await db.commit()
 
     return ChatResponse(
         message_id=UUID(final_message_id) if final_message_id else uuid4(),

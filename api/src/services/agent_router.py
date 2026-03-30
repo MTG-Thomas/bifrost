@@ -8,9 +8,10 @@ Routes user messages to the appropriate agent based on:
 
 import logging
 import re
+from contextlib import asynccontextmanager
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from src.models.orm import Agent
@@ -32,8 +33,15 @@ class AgentRouter:
     2. Automatic: AI analyzes message intent and routes to best-fit agent
     """
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+        self._session_factory = session_factory
+
+    @asynccontextmanager
+    async def _db(self):
+        """Short-lived DB session for discrete operations."""
+        async with self._session_factory() as session:
+            yield session
+            await session.commit()
 
     async def parse_mention(self, message: str) -> Agent | None:
         """
@@ -52,16 +60,17 @@ class AgentRouter:
         agent_name = match.group(1).strip()
 
         # Find agent by name (case-insensitive), with tools and delegations loaded
-        result = await self.session.execute(
-            select(Agent)
-            .options(
-                selectinload(Agent.tools),
-                selectinload(Agent.delegated_agents),
+        async with self._db() as session:
+            result = await session.execute(
+                select(Agent)
+                .options(
+                    selectinload(Agent.tools),
+                    selectinload(Agent.delegated_agents),
+                )
+                .where(Agent.name.ilike(agent_name))
+                .where(Agent.is_active.is_(True))
             )
-            .where(Agent.name.ilike(agent_name))
-            .where(Agent.is_active.is_(True))
-        )
-        agent = result.scalar_one_or_none()
+            agent = result.scalar_one_or_none()
 
         if agent:
             logger.info(f"@mention routing to agent: {agent.name}")
@@ -106,15 +115,16 @@ class AgentRouter:
         """
         # Get available agents if not provided (with tools and delegations eager-loaded)
         if available_agents is None:
-            result = await self.session.execute(
-                select(Agent)
-                .options(
-                    selectinload(Agent.tools),
-                    selectinload(Agent.delegated_agents),
+            async with self._db() as session:
+                result = await session.execute(
+                    select(Agent)
+                    .options(
+                        selectinload(Agent.tools),
+                        selectinload(Agent.delegated_agents),
+                    )
+                    .where(Agent.is_active.is_(True))
                 )
-                .where(Agent.is_active.is_(True))
-            )
-            available_agents = list(result.scalars().all())
+                available_agents = list(result.scalars().all())
 
         # If no agents available, return None
         if not available_agents:
@@ -149,7 +159,8 @@ Your response (agent name or DIRECT):"""
         logger.debug(f"Router prompt:\n{router_prompt}")
 
         try:
-            llm_client = await get_llm_client(self.session)
+            async with self._db() as session:
+                llm_client = await get_llm_client(session)
 
             # Use non-streaming for quick routing decision
             # Don't pass temperature or max_tokens — some models (e.g. OpenAI o-series)
@@ -189,10 +200,11 @@ Your response (agent name or DIRECT):"""
 
     async def get_available_agents(self) -> list[Agent]:
         """Get all active agents for routing."""
-        result = await self.session.execute(
-            select(Agent).where(Agent.is_active.is_(True))
-        )
-        return list(result.scalars().all())
+        async with self._db() as session:
+            result = await session.execute(
+                select(Agent).where(Agent.is_active.is_(True))
+            )
+            return list(result.scalars().all())
 
     def strip_mention(self, message: str) -> str:
         """
