@@ -1182,7 +1182,7 @@ Examples:
     _warn_if_git_workspace(parsed.local_path)
 
     try:
-        return asyncio.run(_sync_files(
+        return asyncio.run(_push_files(
             parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, force=parsed.force,
             client=client,
         ))

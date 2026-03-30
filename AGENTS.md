@@ -22,7 +22,8 @@ Use this file for stable repo rules. Use the repo-local skill packs in [`.codex/
 - Prefer authored source under `features/`, `modules/`, `shared/`, `helpers/`, `workflows/`, `apps/`, `api/`, and `client/`.
 - Treat `.bifrost/*.yaml` as generated or transitional workspace metadata, not the default source of truth.
 - Reading `.bifrost/*.yaml` for discovery is acceptable.
-- Editing `.bifrost/*.yaml` should be tactical and minimal when the current fork workflow still requires it.
+- Do not manually edit `.bifrost/*.yaml` as a normal workflow.
+- Manual `.bifrost/*.yaml` edits are only acceptable as a tactical repair when generated state is already broken and blocking sync/import, and the repair should stay minimal and be documented.
 
 ## Workflow Split
 
@@ -36,7 +37,7 @@ Usually includes:
 - `helpers/`
 - `workflows/`
 - `apps/`
-- unavoidable fork-local `.bifrost/` metadata changes
+- unavoidable fork-local `.bifrost/` repair work when broken generated state must be unblocked
 
 Preferred path:
 

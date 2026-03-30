@@ -71,6 +71,30 @@ except ImportError:
     pass  # dotenv not installed, rely on environment variables
 
 
+def _env_flag(name: str) -> bool:
+    """Parse a boolean-ish environment variable."""
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def get_ssl_verify_setting() -> str | bool:
+    """Resolve TLS verification mode for CLI/API HTTP clients.
+
+    Priority:
+    1. `BIFROST_CA_BUNDLE=/path/to/ca.pem` for custom trust chains
+    2. `BIFROST_SSL_NO_VERIFY=1` or `BIFROST_INSECURE=1` to disable verification
+    3. default system trust store
+    """
+    if _env_flag("BIFROST_SSL_NO_VERIFY") or _env_flag("BIFROST_INSECURE"):
+        return False
+    ca_bundle = os.environ.get("BIFROST_CA_BUNDLE")
+    if ca_bundle not in (None, ""):
+        return ca_bundle
+    return True
+
+
 async def refresh_tokens() -> bool:
     """
     Refresh access token using refresh token.
@@ -89,7 +113,11 @@ async def refresh_tokens() -> bool:
     refresh_token = creds["refresh_token"]
 
     try:
-        async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
+        async with httpx.AsyncClient(
+            base_url=api_url,
+            timeout=30.0,
+            verify=get_ssl_verify_setting(),
+        ) as client:
             response = await client.post(
                 "/auth/refresh",
                 json={"refresh_token": refresh_token}
@@ -140,7 +168,11 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
     api_url = api_url.rstrip("/")
 
     try:
-        async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
+        async with httpx.AsyncClient(
+            base_url=api_url,
+            timeout=30.0,
+            verify=get_ssl_verify_setting(),
+        ) as client:
             # Step 1: Request device code
             response = await client.post("/auth/device/code")
             if response.status_code != 200:
@@ -282,6 +314,7 @@ class BifrostClient:
             base_url=self.api_url,
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=30.0,
+            verify=get_ssl_verify_setting(),
         )
         self._context: dict[str, Any] | None = None
 
@@ -314,6 +347,7 @@ class BifrostClient:
                 base_url=self.api_url,
                 headers={"Authorization": f"Bearer {self._access_token}"},
                 timeout=30.0,
+                verify=get_ssl_verify_setting(),
             )
             self._http_loop = current_loop
 
