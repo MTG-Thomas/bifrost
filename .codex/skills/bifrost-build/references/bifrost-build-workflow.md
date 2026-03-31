@@ -54,7 +54,7 @@ For userland:
 - `modules/`
 - `shared/`
 - `helpers/`
-- `userland/workflows/` (MSP-specific — git submodule `MTG-Thomas/bifrost-userland`)
+- `userland/workflows/` (MSP-specific — git submodule `MTG-Thomas/bifrost-workspace`)
 - `userland/integrations/` (same submodule)
 - `userland/agents/` (same submodule)
 - `apps/`

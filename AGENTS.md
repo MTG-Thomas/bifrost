@@ -20,7 +20,7 @@ Use this file for stable repo rules. Use the repo-local skill packs in [`.codex/
 ## Repo Model
 
 - Prefer authored source under `features/`, `modules/`, `shared/`, `helpers/`, `userland/workflows/`, `apps/`, `api/`, and `client/`.
-- MSP-specific workflows, integrations, and agents live in the `userland/` git submodule (private repo `MTG-Thomas/bifrost-userland`). Do NOT author these files directly under the bifrost fork root — they belong in `userland/` and must be committed and pushed there separately before bumping the submodule pin in this repo.
+- MSP-specific workflows, integrations, and agents live in the `userland/` git submodule (private repo `MTG-Thomas/bifrost-workspace`). Do NOT author these files directly under the bifrost fork root — they belong in `userland/` and must be committed and pushed there separately before bumping the submodule pin in this repo.
 - Treat `.bifrost/*.yaml` as generated or transitional workspace metadata, not the default source of truth.
 - Reading `.bifrost/*.yaml` for discovery is acceptable.
 - Do not manually edit `.bifrost/*.yaml` as a normal workflow.

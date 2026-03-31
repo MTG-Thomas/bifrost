@@ -135,7 +135,7 @@ client/
 │       └── v1.d.ts   # Auto-generated TypeScript types
 └── ...
 
-userland/             # Git submodule → MTG-Thomas/bifrost-userland (private)
+userland/             # Git submodule → MTG-Thomas/bifrost-workspace (private)
 ├── workflows/        # MSP-specific workflow Python files (autotask, cove, halopsa, ninjaone, sample)
 ├── integrations/     # MSP-specific integration definitions (e.g. dnsfilter)
 └── agents/           # Agent YAML files
@@ -145,7 +145,7 @@ userland/             # Git submodule → MTG-Thomas/bifrost-userland (private)
 
 MSP-specific workflows, integrations, and agents live in a **separate private repo** mounted at `userland/`:
 
-- Repo: `git@github.com:MTG-Thomas/bifrost-userland.git`
+- Repo: `git@github.com:MTG-Thomas/bifrost-workspace.git`
 - Local path: `userland/` (git submodule)
 
 **When working on userland files**, treat `userland/` as its own independent git repo:
