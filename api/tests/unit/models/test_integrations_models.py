@@ -22,6 +22,11 @@ from src.models.contracts.integrations import (
 class TestConfigSchemaItem:
     """Tests for ConfigSchemaItem model."""
 
+    def test_config_schema_item_normalizes_legacy_boolean_type(self):
+        """Legacy manifest/data rows using 'boolean' should normalize to 'bool'."""
+        item = ConfigSchemaItem(key="test", type="boolean")  # type: ignore[arg-type]
+        assert item.type == "bool"
+
     def test_config_schema_item_invalid_type(self):
         """Test config schema item with invalid type."""
         with pytest.raises(ValidationError) as exc_info:
@@ -183,4 +188,3 @@ class TestIntegrationSDKResponse:
             e["type"] == "string_type" and e["loc"] == ("entity_id",)
             for e in errors
         )
-

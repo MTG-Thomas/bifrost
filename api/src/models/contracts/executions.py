@@ -107,6 +107,8 @@ class WorkflowExecution(BaseModel):
 
 class WorkflowExecutionRequest(BaseModel):
     """Request model for executing a workflow"""
+    model_config = ConfigDict(populate_by_name=True)
+
     workflow_id: str | None = Field(default=None, description="Workflow UUID or name. Names resolve using org-scoped lookup (org-specific > global). Required if code not provided.")
     input_data: dict[str, Any] = Field(default_factory=dict, description="Workflow input parameters")
     form_id: str | None = Field(default=None, description="Optional form ID that triggered this execution")
@@ -116,6 +118,18 @@ class WorkflowExecutionRequest(BaseModel):
     script_name: str | None = Field(default=None, description="Optional: Name/identifier for the script (used for logging when code is provided)")
     org_id: str | None = Field(default=None, description="Override execution org context. Requires platform admin.")
     run_as: str | None = Field(default=None, description="Execute as this user UUID (impersonation). Requires platform admin.")
+
+    @model_validator(mode='before')
+    @classmethod
+    def map_legacy_parameters_field(cls, data: Any) -> Any:
+        """Accept legacy `parameters` payloads as an alias for `input_data`."""
+        if not isinstance(data, dict):
+            return data
+        if "input_data" not in data and "parameters" in data:
+            mapped = dict(data)
+            mapped["input_data"] = mapped.pop("parameters")
+            return mapped
+        return data
 
     @model_validator(mode='after')
     def validate_workflow_or_code(self) -> 'WorkflowExecutionRequest':

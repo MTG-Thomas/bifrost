@@ -351,7 +351,7 @@ class IntegrationsRepository:
                         detail=f"Config key '{key}' expects integer, got {type(value).__name__}"
                     )
 
-        elif schema_type == "bool":
+        elif schema_type in {"bool", "boolean"}:
             if not isinstance(value, bool):
                 raise HTTPException(
                     status_code=400,

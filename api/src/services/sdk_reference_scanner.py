@@ -17,7 +17,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.orm import Config, Integration, IntegrationMapping
+from src.models.orm import Config, Integration
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class SDKReferenceScanner:
 
     Performs global validation (not org-scoped) since any org could run the code:
     - config.get("X") is valid if "X" exists in Config table for any org
-    - integrations.get("Y") is valid if "Y" has any mapping in IntegrationMapping
+    - integrations.get("Y") is valid if an Integration named "Y" exists
 
     Only flags issues when the key/name doesn't exist at all in the system.
     """
@@ -127,12 +127,12 @@ class SDKReferenceScanner:
         result = await self.db.execute(stmt)
         return {row[0] for row in result.fetchall()}
 
-    async def get_all_mapped_integrations(self) -> set[str]:
-        """Get all integration names that have at least one org mapping."""
+    async def get_all_integrations(self) -> set[str]:
+        """Get all non-deleted integration names that exist in the system."""
         stmt = (
             select(Integration.name)
             .distinct()
-            .join(IntegrationMapping, Integration.id == IntegrationMapping.integration_id)
+            .where(Integration.is_deleted.is_(False))
         )
         result = await self.db.execute(stmt)
         return {row[0] for row in result.fetchall()}
@@ -194,7 +194,7 @@ class SDKReferenceScanner:
 
         # Validate integration references
         if integration_refs:
-            valid_integrations = await self.get_all_mapped_integrations()
+            valid_integrations = await self.get_all_integrations()
             missing_integrations = integration_refs - valid_integrations
             for name in missing_integrations:
                 line_num = self._find_line_number(lines, 'integrations.get', name)

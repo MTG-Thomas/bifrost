@@ -42,6 +42,23 @@ export BIFROST_SSL_NO_VERIFY=1
 ./scripts/bifrost-local-sync.sh features/autotask
 ```
 
+Preferred repo-local Python test flow:
+
+```bash
+cd ~/mtg-bifrost/bifrost/api
+../.venv/bin/python -m pytest
+```
+
+Notes:
+
+- This repo now has a repo-local virtualenv at `~/mtg-bifrost/bifrost/.venv`
+- Prefer `../.venv/bin/python -m pytest` over host `pytest`
+- On this machine, that avoids host package drift and stale console-script shebangs
+
+Do not use the sync/watch wrappers against `.bifrost` in normal development.
+Those wrappers now refuse `.bifrost` unless you explicitly opt in with
+`BIFROST_ALLOW_MANIFEST_SYNC=1` for a one-off tactical repair.
+
 If you have a trusted CA bundle instead of using insecure mode:
 
 ```bash
@@ -67,9 +84,11 @@ Important CLI behavior difference:
 - The repo-local CLI in this checkout changed on 2026-02-26:
   direct local execution is now the default, and browser-backed execution
   requires `--interactive`
+- The repo-local wrapper now hard-blocks `run` unless
+  `BIFROST_ALLOW_LOCAL_RUN=1` is set
 - If you want runs to appear in Bifrost's UI/Workbench, use:
   - `./scripts/bifrost-local-devrun.sh <file> -w <workflow>`
-  - or `./scripts/bifrost-local.sh run <file> --interactive -w <workflow>`
+  - or `BIFROST_ALLOW_LOCAL_RUN=1 ./scripts/bifrost-local.sh run <file> --interactive -w <workflow>`
 - If you want workflows to be runnable from the normal Bifrost UI and show up in
   standard execution history, sync them first with:
   - `./scripts/bifrost-local-sync.sh` as the default
@@ -79,8 +98,8 @@ Recommended workflow default:
 
 - Prefer `sync` for normal userland changes so server state stays intentional and reviewable
 - Use `watch` only when making rapid repeated edits and you need fast feedback
-- Use `run --interactive` / `bifrost-local-devrun.sh` when you specifically want
-  local-file execution through the Workbench UI
+- Use `run --interactive` / `bifrost-local-devrun.sh` only when the user
+  explicitly asked for local-file execution through the Workbench UI
 
 ## Autotask Primitives Added
 
@@ -93,17 +112,6 @@ Current reusable Autotask workflows added in this session:
 - `features/autotask/workflows/work_item_index.py`
   - `sync_autotask_work_item_index`
   - `search_autotask_work_item_index`
-
-Preferred local invocation pattern:
-
-```bash
-cd ~/mtg-bifrost/bifrost
-export BIFROST_CREDENTIALS_BACKEND=pass
-export BIFROST_SSL_NO_VERIFY=1
-./scripts/bifrost-local.sh run features/autotask/workflows/work_item_index.py \
-  -w sync_autotask_work_item_index \
-  -p '{"include_tickets":true,"include_tasks":true,"prune_missing":false}'
-```
 
 Watchable invocation pattern:
 

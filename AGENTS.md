@@ -24,6 +24,7 @@ Use this file for stable repo rules. Use the repo-local skill packs in [`.codex/
 - Reading `.bifrost/*.yaml` for discovery is acceptable.
 - Do not manually edit `.bifrost/*.yaml` as a normal workflow.
 - Manual `.bifrost/*.yaml` edits are only acceptable as a tactical repair when generated state is already broken and blocking sync/import, and the repair should stay minimal and be documented.
+- Do not sync or watch `.bifrost/` as part of normal development. If a tactical repair is unavoidable, make it an explicit exception instead of a habitual CLI path.
 
 ## Workflow Split
 
@@ -81,6 +82,7 @@ Current pack:
 - `bifrost-ci-debugging`
 - `bifrost-app-authoring`
 - `bifrost-test-authoring`
+- `github-triage`
 
 Use them when the task clearly matches their scope. Keep this file short; do not duplicate their detailed instructions here.
 

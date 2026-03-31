@@ -55,6 +55,9 @@ _FORCE_INCLUDE_PATTERNS = [
     "!.bifrost/",
 ]
 
+_CHUNKED_WRITE_THRESHOLD_BYTES = 512 * 1024
+_CHUNKED_WRITE_SIZE_BYTES = 256 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Shared CLI utilities
@@ -107,6 +110,65 @@ def _separate_manifest_files(files: dict[str, str]) -> tuple[dict[str, str], dic
         else:
             regular[repo_path] = content
     return bifrost, regular
+
+
+def _encode_push_content(raw: bytes) -> tuple[str, bool]:
+    """Encode file content for workspace uploads.
+
+    Text files stay plain UTF-8 to avoid base64 inflation on large source files.
+    Binary files are base64 encoded and marked binary for the file API.
+    """
+    if b"\x00" in raw[:8192]:
+        return base64.b64encode(raw).decode("ascii"), True
+    return raw.decode("utf-8"), False
+
+
+async def _write_workspace_file(
+    client: "BifrostClient",
+    repo_path: str,
+    content: str,
+    is_binary: bool,
+    headers: dict[str, str] | None = None,
+) -> None:
+    """Write a workspace file, falling back to chunked temp assembly for large payloads."""
+    payload_size = len(content.encode("utf-8"))
+    if payload_size <= _CHUNKED_WRITE_THRESHOLD_BYTES:
+        resp = await client.post("/api/files/write", json={
+            "path": repo_path,
+            "content": content,
+            "mode": "cloud",
+            "location": "workspace",
+            "binary": is_binary,
+        }, headers=headers)
+        if resp.status_code != 204:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+        return
+
+    raw = base64.b64decode(content) if is_binary else content.encode("utf-8")
+    upload_id = uuid4().hex
+    chunk_paths: list[str] = []
+    for idx, start in enumerate(range(0, len(raw), _CHUNKED_WRITE_SIZE_BYTES)):
+        chunk = raw[start:start + _CHUNKED_WRITE_SIZE_BYTES]
+        chunk_path = f"cli-chunks/{upload_id}/{idx:05d}.part"
+        chunk_paths.append(chunk_path)
+        resp = await client.post("/api/files/write", json={
+            "path": chunk_path,
+            "content": base64.b64encode(chunk).decode("ascii"),
+            "mode": "cloud",
+            "location": "temp",
+            "binary": True,
+        }, headers=headers)
+        if resp.status_code != 204:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+
+    resp = await client.post("/api/files/assemble", json={
+        "path": repo_path,
+        "chunk_paths": chunk_paths,
+        "mode": "cloud",
+        "location": "workspace",
+    }, headers=headers)
+    if resp.status_code != 204:
+        raise RuntimeError(f"HTTP {resp.status_code}")
 
 
 def _format_count_summary(
@@ -1656,10 +1718,10 @@ async def _process_watch_batch(
         if abs_p.exists():
             try:
                 raw = _normalize_line_endings(abs_p.read_bytes())
-                content = base64.b64encode(raw).decode("ascii")
+                content, is_binary = _encode_push_content(raw)
                 rel = abs_p.relative_to(base_path)
                 repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
-                push_files[repo_path] = content
+                push_files[repo_path] = {"content": content, "binary": is_binary}
             except OSError:
                 continue
 
@@ -1705,34 +1767,28 @@ async def _process_watch_batch(
 
         # Separate .bifrost/ manifest files from regular files
         bifrost_watch_files, regular_watch_files = _separate_manifest_files(push_files)
+        bifrost_watch_manifest = {repo_path: entry["content"] for repo_path, entry in bifrost_watch_files.items()}
 
         # Upload regular files via per-file writes
         watch_created = 0
         watch_errors: list[str] = []
-        for rp, c in regular_watch_files.items():
+        for rp, file_entry in regular_watch_files.items():
             try:
-                resp = await client.post("/api/files/write", json={
-                    "path": rp,
-                    "content": c,
-                    "mode": "cloud",
-                    "location": "workspace",
-                    "binary": True,
-                }, headers={
-                    "X-Bifrost-Watch": "true",
-                    "X-Bifrost-Watch-Session": state.session_id,
-                })
-                if resp.status_code == 204:
-                    watch_created += 1
-                    if rp in file_rows:
-                        row, stask = file_rows[rp]
-                        stask.cancel()
-                        row.freeze("success", "\u2713", "Push", rp)
-                else:
-                    watch_errors.append(f"{rp}: HTTP {resp.status_code}")
-                    if rp in file_rows:
-                        row, stask = file_rows[rp]
-                        stask.cancel()
-                        row.freeze("error", "\u2717", "Push", f"{rp}: HTTP {resp.status_code}")
+                await _write_workspace_file(
+                    client,
+                    rp,
+                    file_entry["content"],
+                    file_entry["binary"],
+                    headers={
+                        "X-Bifrost-Watch": "true",
+                        "X-Bifrost-Watch-Session": state.session_id,
+                    },
+                )
+                watch_created += 1
+                if rp in file_rows:
+                    row, stask = file_rows[rp]
+                    stask.cancel()
+                    row.freeze("success", "\u2713", "Push", rp)
             except Exception as e:
                 watch_errors.append(f"{rp}: {e}")
                 if rp in file_rows:
@@ -1753,7 +1809,7 @@ async def _process_watch_batch(
         if bifrost_watch_files:
             try:
                 import_payload: dict[str, Any] = {
-                    "files": bifrost_watch_files,
+                    "files": bifrost_watch_manifest,
                     "delete_removed_entities": True,
                 }
                 resp = await client.post("/api/files/manifest/import", json=import_payload, headers={
@@ -2774,12 +2830,12 @@ def _should_skip_path(rel_path: str, spec: "pathspec.PathSpec") -> bool:
 def _collect_push_files(
     path: pathlib.Path,
     repo_prefix: str,
-) -> tuple[dict[str, str], int]:
+) -> tuple[dict[str, dict[str, Any]], int]:
     """Walk a directory and collect text files for push.
 
     Returns (files_dict, skipped_count).
     """
-    files: dict[str, str] = {}
+    files: dict[str, dict[str, Any]] = {}
     skipped = 0
     spec = _build_file_filter(path)
 
@@ -2792,9 +2848,13 @@ def _collect_push_files(
             continue
         try:
             raw = _normalize_line_endings(file_path.read_bytes())
-            content = base64.b64encode(raw).decode("ascii")
+            content, is_binary = _encode_push_content(raw)
             repo_path = f"{repo_prefix}/{rel_str}" if repo_prefix else rel_str
-            files[repo_path] = content
+            files[repo_path] = {
+                "content": content,
+                "binary": is_binary,
+                "md5": hashlib.md5(raw).hexdigest(),
+            }
         except OSError:
             skipped += 1
             continue
@@ -2946,7 +3006,8 @@ async def _sync_files(
                 print(f"  - {err}", file=sys.stderr)
             return 1
 
-    bifrost_files, regular_files = _separate_manifest_files(files)
+    bifrost_file_entries, regular_files = _separate_manifest_files(files)
+    bifrost_files = {repo_path: entry["content"] for repo_path, entry in bifrost_file_entries.items()}
 
     # ── 2. Fetch server file metadata ────────────────────────────────────
     server_metadata: dict[str, dict[str, str]] = {}
@@ -2979,9 +3040,9 @@ async def _sync_files(
     # Track which server paths we've matched to a local file
     matched_server_paths: set[str] = set()
 
-    for repo_path, content in regular_files.items():
+    for repo_path, file_entry in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
+        local_md5 = file_entry["md5"]
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:
@@ -2996,7 +3057,8 @@ async def _sync_files(
                 "section": "files",
                 "repo_path": repo_path,
                 "rel": rel,
-                "_content": content,
+                "_content": file_entry["content"],
+                "_binary": file_entry["binary"],
             })
         elif server_info["etag"] != local_md5:
             matched_server_paths.add(repo_path)
@@ -3032,7 +3094,8 @@ async def _sync_files(
                 "section": "files",
                 "repo_path": repo_path,
                 "rel": rel,
-                "_content": content,
+                "_content": file_entry["content"],
+                "_binary": file_entry["binary"],
             })
         else:
             # Unchanged
@@ -3229,13 +3292,12 @@ async def _sync_files(
 
         if action == "push_file":
             item = work_data["item"]
-            resp = await client.post("/api/files/write", json={
-                "path": item["repo_path"],
-                "content": item["_content"],
-                "mode": "cloud", "location": "workspace", "binary": True,
-            })
-            if resp.status_code != 204:
-                raise RuntimeError(f"HTTP {resp.status_code}")
+            await _write_workspace_file(
+                client,
+                item["repo_path"],
+                item["_content"],
+                item["_binary"],
+            )
 
         elif action == "pull_file":
             item = work_data["item"]
@@ -3465,15 +3527,15 @@ async def _push_files(
         pass
 
     # Compute diff: compare local MD5 vs server ETag (regular files only)
-    files_to_upload: dict[str, str] = {}  # repo_path -> content
+    files_to_upload: dict[str, dict[str, Any]] = {}  # repo_path -> encoded file entry
     unchanged = 0
-    for repo_path, content in regular_files.items():
-        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
+    for repo_path, file_entry in regular_files.items():
+        local_md5 = file_entry["md5"]
         server_info = server_metadata.get(repo_path)
         if server_info and server_info["etag"] == local_md5:
             unchanged += 1
         else:
-            files_to_upload[repo_path] = content
+            files_to_upload[repo_path] = file_entry
 
     # Determine files to delete (--mirror)
     files_to_delete_paths: list[str] = []
@@ -3574,25 +3636,20 @@ async def _push_files(
                 delete_removed_entities = False
 
     # Upload regular files and delete mirror files with progress TUI
-    upload_items: list[tuple[str, tuple[str, str, bool]]] = [
-        (_strip_repo_prefix(rp, repo_prefix), (rp, content, True))
-        for rp, content in files_to_upload.items()
+    upload_items: list[tuple[str, tuple[str, str, bool, bool]]] = [
+        (_strip_repo_prefix(rp, repo_prefix), (rp, file_entry["content"], file_entry["binary"], True))
+        for rp, file_entry in files_to_upload.items()
     ]
-    delete_items: list[tuple[str, tuple[str, str, bool]]] = [
-        (_strip_repo_prefix(sp, repo_prefix), (sp, "", False))
+    delete_items: list[tuple[str, tuple[str, str, bool, bool]]] = [
+        (_strip_repo_prefix(sp, repo_prefix), (sp, "", False, False))
         for sp in files_to_delete_paths
     ]
     all_progress_items = upload_items + delete_items
 
-    async def _do_one_push(work_data: tuple[str, str, bool], name: str) -> None:
-        rp, content, is_upload = work_data
+    async def _do_one_push(work_data: tuple[str, str, bool, bool], name: str) -> None:
+        rp, content, is_binary, is_upload = work_data
         if is_upload:
-            resp = await client.post("/api/files/write", json={
-                "path": rp, "content": content,
-                "mode": "cloud", "location": "workspace", "binary": True,
-            })
-            if resp.status_code != 204:
-                raise RuntimeError(f"HTTP {resp.status_code}")
+            await _write_workspace_file(client, rp, content, is_binary)
         else:
             resp = await client.post("/api/files/delete", json={
                 "path": rp, "mode": "cloud", "location": "workspace",
@@ -3611,8 +3668,8 @@ async def _push_files(
     async def _post_push(file_errors: list[str]) -> str:
         """Run manifest import and compute summary — runs inside progress TUI."""
         error_names = {e.split(":")[0] for e in file_errors}
-        n_created = sum(1 for name, (rp, _, is_up) in upload_items if name not in error_names and is_up and rp not in server_metadata)
-        n_updated = sum(1 for name, (rp, _, is_up) in upload_items if name not in error_names and is_up and rp in server_metadata)
+        n_created = sum(1 for name, (rp, _, _, is_up) in upload_items if name not in error_names and is_up and rp not in server_metadata)
+        n_updated = sum(1 for name, (rp, _, _, is_up) in upload_items if name not in error_names and is_up and rp in server_metadata)
         n_deleted = sum(1 for name, _ in delete_items if name not in error_names)
 
         # Import manifest

@@ -64,6 +64,24 @@ class TestWorkflowExecutionRequest:
         assert request.form_id == "form-123"
         assert request.workflow_id == "550e8400-e29b-41d4-a716-446655440002"
 
+    def test_execution_request_accepts_legacy_parameters_alias(self):
+        """Test that legacy `parameters` payloads map into input_data."""
+        request = WorkflowExecutionRequest.model_validate(
+            {
+                "workflow_id": "550e8400-e29b-41d4-a716-446655440003",
+                "parameters": {
+                    "start_date": "2026-03-01",
+                    "end_date": "2026-03-03",
+                },
+            }
+        )
+
+        assert request.workflow_id == "550e8400-e29b-41d4-a716-446655440003"
+        assert request.input_data == {
+            "start_date": "2026-03-01",
+            "end_date": "2026-03-03",
+        }
+
     def test_sync_field_defaults_none(self):
         """Test that sync field defaults to None"""
         request = WorkflowExecutionRequest(

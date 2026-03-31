@@ -86,8 +86,21 @@ class TestCollectFilesCRLF:
 
         assert crlf_files["file.txt"] == lf_files["file.txt"]
         # Verify content is LF-normalized
-        decoded = base64.b64decode(crlf_files["file.txt"])
-        assert decoded == text.encode()
+        assert crlf_files["file.txt"]["binary"] is False
+        assert crlf_files["file.txt"]["content"] == text
+        assert lf_files["file.txt"]["content"] == text
+
+    @patch("bifrost.cli._build_file_filter", side_effect=_mock_file_filter)
+    def test_binary_files_stay_base64(self, _mock_filter, tmp_path: pathlib.Path):
+        binary_dir = tmp_path / "bin"
+        binary_dir.mkdir()
+        raw = b"\x00PNG\r\n\x1a\nbinary"
+        (binary_dir / "image.bin").write_bytes(raw)
+
+        files, _ = _collect_push_files(binary_dir, "")
+
+        assert files["image.bin"]["binary"] is True
+        assert base64.b64decode(files["image.bin"]["content"]) == raw
 
 
 class TestManifestHashCRLF:

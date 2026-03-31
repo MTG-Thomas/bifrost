@@ -79,6 +79,14 @@ class FileWriteRequest(BaseModel):
     binary: bool = Field(default=False, description="If true, content is base64-encoded")
 
 
+class FileAssembleRequest(BaseModel):
+    """Request to assemble temp chunks into a single file."""
+    path: str = Field(..., description="Destination file path relative to location root")
+    chunk_paths: list[str] = Field(..., description="Ordered temp chunk paths to concatenate")
+    location: Location = Field(default="workspace", description="Destination storage location")
+    mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
+
+
 class FileDeleteRequest(BaseModel):
     """Request to delete a file."""
     path: str = Field(..., description="File path relative to location root")
@@ -205,6 +213,49 @@ async def write_file(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+@router.post("/assemble", status_code=status.HTTP_204_NO_CONTENT)
+async def assemble_file(
+    request: FileAssembleRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Assemble temp chunks into a destination file."""
+    if not request.chunk_paths:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="chunk_paths must not be empty",
+        )
+
+    backend = get_backend(request.mode, db)
+    updated_by = user.email if user else "system"
+
+    try:
+        parts: list[bytes] = []
+        for chunk_path in request.chunk_paths:
+            parts.append(await backend.read(chunk_path, "temp"))
+
+        await backend.write(request.path, b"".join(parts), request.location, updated_by)
+        logger.info(
+            "Assembled file: %s from %d chunk(s) (mode=%s, location=%s)",
+            request.path,
+            len(request.chunk_paths),
+            request.mode,
+            request.location,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    finally:
+        for chunk_path in request.chunk_paths:
+            try:
+                await backend.delete(chunk_path, "temp")
+            except Exception:
+                logger.warning("Failed to delete temp chunk after assembly: %s", chunk_path)
 
 
 @router.post("/delete", status_code=status.HTTP_204_NO_CONTENT)

@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     pass
@@ -55,6 +55,13 @@ class ConfigSchemaItem(BaseModel):
         default=None,
         description="List of valid string options for dropdown UI",
     )
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_legacy_type_aliases(cls, value: Any) -> Any:
+        if value == "boolean":
+            return "bool"
+        return value
 
 
 # ==================== INTEGRATION REQUEST MODELS ====================

@@ -156,7 +156,7 @@ class TestScanFile:
     async def test_no_issues_when_all_exist(self, async_scanner):
         code = 'key = await config.get("api_key")\nhalo = await integrations.get("HaloPSA")'
         async_scanner.get_all_config_keys = AsyncMock(return_value={"api_key"})
-        async_scanner.get_all_mapped_integrations = AsyncMock(return_value={"HaloPSA"})
+        async_scanner.get_all_integrations = AsyncMock(return_value={"HaloPSA"})
         issues = await async_scanner.scan_file("test.py", code)
         assert issues == []
 
@@ -164,7 +164,7 @@ class TestScanFile:
     async def test_missing_config(self, async_scanner):
         code = 'key = await config.get("missing_key")'
         async_scanner.get_all_config_keys = AsyncMock(return_value=set())
-        async_scanner.get_all_mapped_integrations = AsyncMock(return_value=set())
+        async_scanner.get_all_integrations = AsyncMock(return_value=set())
         issues = await async_scanner.scan_file("test.py", code)
         assert len(issues) == 1
         assert issues[0].issue_type == "config"
@@ -175,7 +175,7 @@ class TestScanFile:
     async def test_missing_integration(self, async_scanner):
         code = 'halo = await integrations.get("Unknown")'
         async_scanner.get_all_config_keys = AsyncMock(return_value=set())
-        async_scanner.get_all_mapped_integrations = AsyncMock(return_value=set())
+        async_scanner.get_all_integrations = AsyncMock(return_value=set())
         issues = await async_scanner.scan_file("test.py", code)
         assert len(issues) == 1
         assert issues[0].issue_type == "integration"
@@ -196,13 +196,21 @@ class TestScanFile:
         code = """
 key = config.get("miss_cfg")
 i = integrations.get("miss_int")
-"""
+        """
         async_scanner.get_all_config_keys = AsyncMock(return_value=set())
-        async_scanner.get_all_mapped_integrations = AsyncMock(return_value=set())
+        async_scanner.get_all_integrations = AsyncMock(return_value=set())
         issues = await async_scanner.scan_file("wf.py", code)
         assert len(issues) == 2
         keys = {i.key for i in issues}
         assert keys == {"miss_cfg", "miss_int"}
+
+    @pytest.mark.asyncio
+    async def test_existing_integration_without_mapping_is_not_flagged(self, async_scanner):
+        code = 'autotask = await integrations.get("Autotask")'
+        async_scanner.get_all_config_keys = AsyncMock(return_value=set())
+        async_scanner.get_all_integrations = AsyncMock(return_value={"Autotask"})
+        issues = await async_scanner.scan_file("modules/autotask.py", code)
+        assert issues == []
 
 
 class TestSDKIssue:

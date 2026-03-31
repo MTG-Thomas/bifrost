@@ -427,7 +427,7 @@ async def cli_get_config(
             raw_value = json.loads(raw_value)
         except json.JSONDecodeError:
             pass
-    elif config_type == "bool":
+    elif config_type in {"bool", "boolean"}:
         raw_value = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
     elif config_type == "int":
         try:
@@ -548,7 +548,7 @@ async def cli_list_config(
                 config_dict[config_key] = json.loads(raw_value)
             except json.JSONDecodeError:
                 config_dict[config_key] = raw_value
-        elif config_type == "bool":
+        elif config_type in {"bool", "boolean"}:
             config_dict[config_key] = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
         elif config_type == "int":
             try:

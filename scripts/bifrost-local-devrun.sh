@@ -9,4 +9,6 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
+export BIFROST_ALLOW_LOCAL_RUN=1
+
 exec "${SCRIPT_DIR}/bifrost-local.sh" run "$1" --interactive "${@:2}"

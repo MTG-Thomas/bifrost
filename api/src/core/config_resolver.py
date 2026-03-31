@@ -146,7 +146,7 @@ class ConfigResolver:
         try:
             if config_type == ConfigType.INT.value or config_type == "int":
                 return int(value)
-            elif config_type == ConfigType.BOOL.value or config_type == "bool":
+            elif config_type == ConfigType.BOOL.value or config_type in {"bool", "boolean"}:
                 return value.lower() in ("true", "1", "yes")
             elif config_type == ConfigType.JSON.value or config_type == "json":
                 return json.loads(value)
