@@ -14,7 +14,8 @@ Treat the upstream-supported setup flow as the default contract. If this fork us
 1. Detect current state first.
    - Check whether the current directory is inside a Bifrost source tree.
    - Check whether the `bifrost` CLI is installed.
-   - Check whether credentials already exist in `~/.bifrost/credentials.json`.
+   - On this machine, check `pass`-backed credentials first and only fall back
+     to `~/.bifrost/credentials.json` if `pass` is unavailable.
    - Check whether a usable Python 3.11+ and install path are available.
 
 2. If source, CLI, and credentials already exist, stop early.
@@ -24,6 +25,9 @@ Treat the upstream-supported setup flow as the default contract. If this fork us
 3. If CLI is missing, install it from the user's Bifrost instance.
    - Ask for the instance URL only if it cannot be discovered from existing credentials.
    - Prefer `pipx` when available; otherwise fall back to `python -m pip`.
+   - In this repo, default to
+     `https://bifrost-poc-host.netbird.cloud:18443/` unless the user says
+     otherwise.
 
 4. If credentials are missing, run `bifrost login --url <instance>`.
    - Treat login as the critical step for local CLI and API access.
@@ -38,6 +42,8 @@ Treat the upstream-supported setup flow as the default contract. If this fork us
 - Do not suggest placeholder Bifrost URLs if the user needs a real instance URL.
 - Prefer quick environment checks over long setup instructions.
 - Prefer repo-local source + CLI workflows over remote-only guidance when both are available.
+- Do not assume `localhost` is the active dev instance for this repo. Treat it
+  as local Docker only.
 
 ## Reference
 

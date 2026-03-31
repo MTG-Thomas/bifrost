@@ -1,6 +1,6 @@
 # Codex Session Notes
 
-**Last updated:** 2026-03-30
+**Last updated:** 2026-03-31
 
 This file is a Codex-friendly distillation of the top-level `CLAUDE.md`,
 selected `.claude/` behavior, and the current integration-session context.
@@ -10,16 +10,22 @@ from Claude-specific config files.
 ## Scope
 
 These notes describe how to work in the `bifrost` repo, not the separate
-workflow/content repos.
+workspace/content repos. MSP workspace content lives in the private
+`userland/` git submodule (`MTG-Thomas/bifrost-workspace`). See
+`userland/docs/BIFROST_WORKSPACE_NOTES.md` for workspace-specific context.
 
 ## Fast Bootstrap
 
 - Repo root for platform/source work: `~/mtg-bifrost/bifrost`
+- Session bootstrap helper: [`scripts/bifrost-session-bootstrap.sh`](/home/thomas/mtg-bifrost/bifrost/scripts/bifrost-session-bootstrap.sh)
 - Preferred repo-local CLI wrapper: [`scripts/bifrost-local.sh`](/home/thomas/mtg-bifrost/bifrost/scripts/bifrost-local.sh)
 - Preferred repo-local sync helper: [`scripts/bifrost-local-sync.sh`](/home/thomas/mtg-bifrost/bifrost/scripts/bifrost-local-sync.sh)
 - Repo-local watch helper for fast iteration: [`scripts/bifrost-local-watch.sh`](/home/thomas/mtg-bifrost/bifrost/scripts/bifrost-local-watch.sh)
 - Watchable repo-local dev-run helper: [`scripts/bifrost-local-devrun.sh`](/home/thomas/mtg-bifrost/bifrost/scripts/bifrost-local-devrun.sh)
+- Default remote dev instance: `https://bifrost-poc-host.netbird.cloud:18443/`
 - Default credentials backend should be `pass`
+- Default `pass` entry: `bifrost/credentials`
+- On this machine, check `pass` before assuming `~/.bifrost/credentials.json`
 - If the Bifrost instance is only reachable through NetBird and uses a private
   or self-signed certificate chain, run the repo-local CLI with
   `BIFROST_SSL_NO_VERIFY=1` unless a proper CA bundle has been installed
@@ -28,18 +34,19 @@ Bootstrap commands:
 
 ```bash
 cd ~/mtg-bifrost/bifrost
+./scripts/bifrost-session-bootstrap.sh
 export BIFROST_CREDENTIALS_BACKEND=pass
 export BIFROST_SSL_NO_VERIFY=1
 ./scripts/bifrost-local.sh api GET /health
 ```
 
-Preferred day-to-day directory sync flow:
+Preferred day-to-day directory sync flow (workspace content lives in `userland/`):
 
 ```bash
 cd ~/mtg-bifrost/bifrost
 export BIFROST_CREDENTIALS_BACKEND=pass
 export BIFROST_SSL_NO_VERIFY=1
-./scripts/bifrost-local-sync.sh features/autotask
+./scripts/bifrost-local-sync.sh userland/features/autotask
 ```
 
 Preferred repo-local Python test flow:
@@ -101,45 +108,6 @@ Recommended workflow default:
 - Use `run --interactive` / `bifrost-local-devrun.sh` only when the user
   explicitly asked for local-file execution through the Workbench UI
 
-## Autotask Primitives Added
-
-Current reusable Autotask workflows added in this session:
-
-- `features/autotask/workflows/review_timesheet.py`
-  - `review_autotask_timesheet_coverage`
-- `features/autotask/workflows/get_task.py`
-  - `get_autotask_task`
-- `features/autotask/workflows/work_item_index.py`
-  - `sync_autotask_work_item_index`
-  - `search_autotask_work_item_index`
-
-Watchable invocation pattern:
-
-```bash
-cd ~/mtg-bifrost/bifrost
-export BIFROST_CREDENTIALS_BACKEND=pass
-export BIFROST_SSL_NO_VERIFY=1
-./scripts/bifrost-local-devrun.sh features/autotask/workflows/work_item_index.py \
-  -w sync_autotask_work_item_index
-```
-
-Notes on the work-item index:
-
-- Table name: `autotask_work_items`
-- The index stores normalized metadata, not raw Autotask payloads
-- Included fields are intended for lookup/reporting:
-  - item IDs/type, task or ticket number, title, status
-  - company ID/name
-  - project ID
-  - assigned resource ID/name
-  - contact ID/name/email when present on tickets
-  - created/updated/completed timestamps
-  - `is_closed`
-- It intentionally does **not** store descriptions, notes, internal notes, or
-  raw payload blobs
-- Tasks do not reliably carry company/contact directly; task company enrichment
-  currently comes from the linked Autotask project record when available
-
 ## Repo State
 
 - Repo: `~/mtg-bifrost/bifrost`
@@ -147,6 +115,9 @@ Notes on the work-item index:
 - The platform is FastAPI + React and is developed primarily through Docker
 - `.bifrost/*.yaml` manifests are currently committed in this fork, but that is
   a fork-local model under active review rather than a stable upstream pattern
+- MSP workspace content (features, modules, apps, helpers, .bifrost) lives in
+  the private `userland/` git submodule (`MTG-Thomas/bifrost-workspace`). Run
+  workspace sync/watch from `userland/` where `.bifrost/` lives.
 
 ## Core Operating Rules
 
@@ -154,7 +125,9 @@ Notes on the work-item index:
 
 - Treat Docker as the normal development environment
 - Start the stack with `./debug.sh`
-- Access the app through `http://localhost:3000`
+- Default SDK/CLI/API target is `https://bifrost-poc-host.netbird.cloud:18443/`
+- Access the app through `http://localhost:3000` only when the local Docker
+  stack is actually running
 - Do not assume host-level Python or frontend processes are the intended path
 - Hot reload is expected; do not restart the whole stack for normal file edits
 
@@ -175,8 +148,8 @@ Notes on the work-item index:
 - S3/RepoStorage is the source of truth for repo content in the platform
 - For manifests and git sync, use non-destructive upsert patterns for
   integrations, config schema, and mappings
-- The fork currently carries committed `.bifrost/*.yaml`, but upstream treats
-  `.bifrost/` as generated/system-managed workspace state
+- The fork currently carries committed `.bifrost/*.yaml` in `userland/`, but
+  upstream treats `.bifrost/` as generated/system-managed workspace state
 - Do not treat manual `.bifrost/*.yaml` editing as a normal development path
 - If `.bifrost/*.yaml` must be edited at all, limit it to tactical repair of
   already-broken generated state that is blocking manifest import or sync, and
@@ -227,24 +200,24 @@ The main reusable ideas from `.claude/skills/bifrost-build/SKILL.md` are:
 For this repo specifically, those ideas are secondary to the repo-level Docker
 and test rules above.
 
-## Integration Work Pattern Used In This Session
+## Integration Work Pattern
 
-For first-class vendor integrations, the working pattern has been:
+For first-class vendor integrations, the working pattern is:
 
-1. `modules/{vendor}.py`
+1. `userland/modules/{vendor}.py`
    - focused async `httpx` client
    - auth handling
    - normalized customer/entity helpers
    - `get_client(scope: str | None = None)` that reads Bifrost integration config
-2. `features/{vendor}/workflows/data_providers.py`
+2. `userland/features/{vendor}/workflows/data_providers.py`
    - returns sorted `{value, label}` options for org mapping
-3. `features/{vendor}/workflows/sync_*.py`
+3. `userland/features/{vendor}/workflows/sync_*.py`
    - lists vendor entities
    - matches or creates Bifrost orgs
    - upserts `IntegrationMapping`
-4. `.bifrost/integrations.yaml`
+4. `userland/.bifrost/integrations.yaml`
    - add integration entry and config schema
-5. `.bifrost/workflows.yaml`
+5. `userland/.bifrost/workflows.yaml`
    - add workflow + data provider metadata
 6. `api/tests/unit/test_{vendor}_integration.py`
    - config contract
@@ -265,15 +238,16 @@ assume that workflow is going away and prefer the direct platform sync path.
 
 ### Userland Changes
 
-For workspace-level changes that the platform can load from RepoStorage:
+Private MSP workspace content lives in the `userland/` git submodule
+(`MTG-Thomas/bifrost-workspace`). For workspace-level changes that the platform
+can load from RepoStorage:
 
-- `features/`
-- `modules/`
-- `shared/`
-- `helpers/`
-- `workflows/`
-- `apps/`
-- current fork-local `.bifrost/` manifests
+- `userland/features/`
+- `userland/modules/`
+- `userland/helpers/`
+- `userland/workflows/`
+- `userland/apps/`
+- `userland/.bifrost/` manifests (transitional)
 
 Use the direct CLI/API sync path instead of GitHub sync:
 
@@ -284,103 +258,17 @@ Use the direct CLI/API sync path instead of GitHub sync:
 These commands write files through `/api/files/*` and run manifest import via
 `/api/files/manifest/import`.
 
+The workspace-scoped sync wrapper (`userland/scripts/bifrost-watch-dev.sh`)
+handles TLS setup for the NetBird dev endpoint.
+
 ### Platform Code Changes
 
-Changes under these paths are not "userland" and require an image rebuild or
-deployment update to affect the running platform:
+Changes under these paths require an image rebuild or deployment update:
 
 - `api/`
 - `client/`
 - `docker-compose*.yml`
 - image/build/deployment files
-
-For dev, use the SSH + k3s rollout path on `10.1.23.114` rather than relying on
-workspace sync.
-
-### Current Dev Server Baseline
-
-- dev GitHub config was switched back to `MTG-Thomas/bifrost` on branch `main`
-  on 2026-03-27
-- treat that as a temporary compatibility setting, not the preferred workflow
-
-## Current Integration Coverage
-
-As of this note, `integrations.yaml` includes:
-
-- CIPP
-- Microsoft CSP
-- Microsoft
-- GoToConnect
-- DNSFilter
-- Meraki
-- VIPRE
-- Quoter
-- ConnectSecure
-- Pax8
-- Huntress
-- HaloPSA
-- AutoElevate
-- NinjaOne
-- Cove Data Protection
-- Datto SaaS Protection
-- Google Workspace Reseller
-- Google Workspace
-- Datto RMM
-- Datto Networking
-- IT Glue
-- Keeper MSP
-
-## Current Architectural Decisions Worth Preserving
-
-### Keeper
-
-- Keeper is integrated as `Keeper MSP` through Commander Service Mode over HTTP
-- Keeper is treated as a system Bifrost manages, not as Bifrost's primary
-  secrets backend
-
-### Microsoft
-
-- `Microsoft CSP` and `Microsoft` are intentionally separate integrations
-- `Microsoft CSP` is the partner-side delegated OAuth connection for Partner
-  Center, tenant discovery, GDAP, and consent workflows
-- `Microsoft` is the Bifrost customer-tenant app identity used for Graph and
-  Exchange after tenants are linked and consented
-- The Microsoft CSP app expects both integrations to be configured; one does not
-  replace the other
-- Preferred security model: `Microsoft` should be a dedicated Bifrost Entra app
-  / service-principal style identity, while `Microsoft CSP` remains the
-  delegated partner-admin connection
-- Detailed rationale is in
-  `docs/plans/2026-03-26-microsoft-integration-boundaries.md`
-- Additional service-account guidance is in
-  `docs/plans/2026-03-26-microsoft-service-account-model.md`
-- For Bifrost runtime secrets, prefer an external store such as Azure Key Vault
-- See `docs/plans/2026-03-25-keeper-msp-integration-design-note.md`
-
-### Vendor Order-Lifecycle Research
-
-Current conclusion:
-
-- Amazon Business is the cleanest fit for order / shipment / delivery events
-- Dell appears workable but requires partner onboarding and webhook setup
-- TD SYNNEX is clearly workable for StreamOne cloud orders, but physical-order
-  shipment tracking is not verified from public API docs
-- LuxSci remains deferred pending business relevance
-
-See `docs/plans/2026-03-25-order-lifecycle-vendor-api-research.md`
-
-## Operational Constraints Observed In This Session
-
-- Docker was not available in the execution environment, so `./test.sh` could
-  not be run here
-- local `pytest` was blocked by missing dependencies such as `pytest_asyncio`
-- in that constrained environment, lightweight validation used:
-  - `python3 -m py_compile`
-  - YAML parse checks
-  - import sanity checks with adjusted `sys.path`
-
-Future sessions should still prefer the full Docker-backed validation path when
-available.
 
 ## Suggested Start-of-Session Checklist
 
@@ -389,7 +277,8 @@ available.
 3. Check whether Docker and `./test.sh` are usable
 4. Read any note in `docs/plans/` that matches the feature area being touched
 5. Confirm whether the task is:
-   - platform/repo work in `bifrost`
+   - platform/repo work in `bifrost/`
+   - MSP workspace authoring work in `userland/` (submodule `MTG-Thomas/bifrost-workspace`)
    - community contribution work in `bifrost-workspace-community`
    - external integration research in `~/agents/integrations`
 

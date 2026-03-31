@@ -64,7 +64,10 @@ Need pipx (recommended for CLI tools on modern systems):
 
 **If `$BIFROST_DEV_URL` is set:** Use that URL (already detected from credentials).
 
-**Otherwise:** Ask the user: "What is your Bifrost instance URL? (e.g., https://yourcompany.gobifrost.com)"
+**Otherwise in this repo:** Default to
+`https://bifrost-poc-host.netbird.cloud:18443/` before asking for another URL.
+
+Ask the user only if they are not using the repo default above.
 
 Do NOT suggest placeholder URLs - every Bifrost instance has a unique URL provided by the user's organization.
 
@@ -87,7 +90,15 @@ bifrost help
 bifrost login --url {url}
 ```
 
-This opens a browser for authentication and saves credentials to `~/.bifrost/credentials.json`.
+On this machine, prefer `pass`-backed credentials:
+
+```bash
+export BIFROST_CREDENTIALS_BACKEND=pass
+bifrost login --url {url}
+```
+
+`~/.bifrost/credentials.json` should be treated as fallback-only when `pass` is
+not available.
 
 ## MCP Configuration
 

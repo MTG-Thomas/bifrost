@@ -40,13 +40,13 @@ Do not rely on Bifrost to own repo state or branch state.
 For content that lives in workspace storage and can be imported into platform
 state without rebuilding the running image:
 
-- `features/`
-- `modules/`
+- `userland/features/`
+- `userland/modules/`
 - `shared/`
-- `helpers/`
-- `workflows/`
-- `apps/`
-- current fork-local `.bifrost/` manifest files
+- `userland/helpers/`
+- `userland/workflows/`
+- `userland/apps/`
+- `userland/.bifrost/` manifest files
 
 Use:
 

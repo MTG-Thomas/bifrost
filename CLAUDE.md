@@ -11,6 +11,18 @@ MSP automation platform built with FastAPI and React.
 
 ## Development Environment (CRITICAL - READ FIRST)
 
+### Default Instance Target
+
+**Default Bifrost dev target on this machine is
+`https://bifrost-poc-host.netbird.cloud:18443/`. Do not assume `localhost`
+unless you are explicitly starting the local Docker stack.**
+
+For SDK/CLI/API work in normal sessions:
+- Prefer the remote NetBird dev instance above
+- Prefer `pass`-backed credentials on this machine
+- Treat `~/.bifrost/credentials.json` as fallback-only
+- Use `localhost:3000` / `localhost:8000` only for local Docker validation
+
 ### Everything Runs in Docker
 
 **Development happens inside Docker containers, not on the host machine.**
@@ -26,7 +38,8 @@ This uses `docker-compose.dev.yml` and launches containers prefixed with `bifros
 - Client (port 3000 - **this is your entry point**)
 - Scheduler, Workers
 
-**Access the app at http://localhost:3000** - Vite proxies API requests to the backend.
+**If you start the local stack, access the app at http://localhost:3000** -
+Vite proxies API requests to the backend.
 
 ### Hot Reload is Automatic
 
@@ -136,9 +149,14 @@ client/
 └── ...
 
 userland/             # Git submodule → MTG-Thomas/bifrost-workspace (private)
-├── workflows/        # MSP-specific workflow Python files (autotask, cove, halopsa, ninjaone, sample)
-├── integrations/     # MSP-specific integration definitions (e.g. dnsfilter)
-└── agents/           # Agent YAML files
+├── features/         # Vendor integration feature packages
+├── modules/          # Vendor API clients
+├── apps/             # MSP-specific React apps
+├── helpers/          # Shared workspace utilities
+├── workflows/        # MSP-specific workflow Python files
+├── integrations/     # MSP-specific integration definitions
+├── agents/           # Agent YAML files
+└── .bifrost/         # Workspace manifests (generated/transitional)
 ```
 
 ## Userland Submodule

@@ -14,34 +14,57 @@ Use this file for stable repo rules. Use the repo-local skill packs in [`.codex/
 - Treat Docker as the normal development environment.
 - Prefer `./debug.sh` for local stack startup.
 - Prefer `./test.sh` for backend validation instead of raw host `pytest`.
+- Default development target for SDK/CLI/API work on this machine is the remote
+  dev instance at `https://bifrost-poc-host.netbird.cloud:18443/`, not
+  `localhost`.
+- On this machine, prefer `pass`-backed Bifrost credentials over
+  `~/.bifrost/credentials.json`. Treat file-backed credentials as a fallback for
+  environments where `pass` is unavailable.
 - If Docker-backed validation is unavailable, run narrower syntax/import checks and say the validation is partial.
 - Keep local git as the source of truth for branches, rebases, and code review.
 
+## Dev Instance Defaults
+
+- Unless the task is explicitly about local Docker stack behavior, assume the
+  active Bifrost dev instance is
+  `https://bifrost-poc-host.netbird.cloud:18443/`.
+- Treat `http://localhost:3000` and `http://localhost:8000` as local-container
+  endpoints only. Do not assume they are running.
+- When verifying CLI or API access, check `pass`-backed credentials first.
+- Default `pass` entry on this machine is `bifrost/credentials`.
+- The current machine's long-term direction is Azure Key Vault, but the current
+  working credential store is `pass`.
+- For quick orientation at session start, run
+  `./scripts/bifrost-session-bootstrap.sh`.
+
 ## Repo Model
 
-- Prefer authored source under `features/`, `modules/`, `shared/`, `helpers/`, `userland/workflows/`, `apps/`, `api/`, and `client/`.
+- Prefer authored source under `shared/`, `api/`, and `client/` for platform work. MSP workspace content lives in `userland/` (see below).
 - MSP-specific workflows, integrations, and agents live in the `userland/` git submodule (private repo `MTG-Thomas/bifrost-workspace`). Do NOT author these files directly under the bifrost fork root — they belong in `userland/` and must be committed and pushed there separately before bumping the submodule pin in this repo.
-- Treat `.bifrost/*.yaml` as generated or transitional workspace metadata, not the default source of truth.
-- Reading `.bifrost/*.yaml` for discovery is acceptable.
-- Do not manually edit `.bifrost/*.yaml` as a normal workflow.
+- Treat `userland/.bifrost/*.yaml` as generated or transitional workspace metadata, not the default source of truth.
+- Reading `userland/.bifrost/*.yaml` for discovery is acceptable.
+- Do not manually edit `userland/.bifrost/*.yaml` as a normal workflow.
 - Manual `.bifrost/*.yaml` edits are only acceptable as a tactical repair when generated state is already broken and blocking sync/import, and the repair should stay minimal and be documented.
 - Do not sync or watch `.bifrost/` as part of normal development. If a tactical repair is unavoidable, make it an explicit exception instead of a habitual CLI path.
 
 ## Workflow Split
 
-### Userland changes
+### Userland changes (MSP workspace — `userland/` submodule)
 
-Usually includes:
+All MSP workspace content lives in `userland/` (`MTG-Thomas/bifrost-workspace`):
 
-- `features/`
-- `modules/`
-- `shared/`
-- `helpers/`
-- `userland/workflows/` (MSP-specific — commit in the submodule, then bump the pin here)
-- `userland/integrations/` (MSP-specific — same submodule git workflow)
-- `userland/agents/` (MSP-specific — same submodule git workflow)
-- `apps/`
-- unavoidable fork-local `.bifrost/` repair work when broken generated state must be unblocked
+- `userland/features/` (vendor integrations)
+- `userland/modules/` (vendor API clients)
+- `userland/shared/` (cross-feature workspace logic)
+- `userland/helpers/`
+- `userland/workflows/`
+- `userland/integrations/`
+- `userland/agents/`
+- `userland/apps/`
+- `userland/.bifrost/` (workspace manifests — generated/transitional)
+- unavoidable `userland/.bifrost/` repair work when broken generated state must be unblocked
+
+**Do NOT author these files at the bifrost fork root.** They belong in `userland/` and must be committed and pushed there separately before bumping the submodule pin in this repo.
 
 Preferred path:
 

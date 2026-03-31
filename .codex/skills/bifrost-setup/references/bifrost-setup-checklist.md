@@ -24,11 +24,25 @@ command -v bifrost
 
 ### Detect credentials
 
+Prefer `pass` on this machine:
+
+```bash
+pass show bifrost/credentials >/dev/null 2>&1 && echo present || echo missing
+```
+
+Only fall back to the legacy file check if `pass` is unavailable or empty:
+
 ```bash
 test -f "$HOME/.bifrost/credentials.json" && echo present || echo missing
 ```
 
-If present, inspect `api_url`:
+Default instance for this repo on this machine:
+
+```bash
+printf '%s\n' 'https://bifrost-poc-host.netbird.cloud:18443/'
+```
+
+If the legacy file is present, inspect `api_url`:
 
 ```bash
 jq -r '.api_url // empty' "$HOME/.bifrost/credentials.json"
@@ -79,7 +93,15 @@ bifrost help
 bifrost login --url <bifrost-url>
 ```
 
-Credentials are stored in `~/.bifrost/credentials.json`.
+On this machine, prefer:
+
+```bash
+export BIFROST_CREDENTIALS_BACKEND=pass
+bifrost login --url https://bifrost-poc-host.netbird.cloud:18443/
+```
+
+Credentials should land in `pass` when available. `~/.bifrost/credentials.json`
+is fallback-only.
 
 ## Repo-Specific Boundaries
 
@@ -87,6 +109,10 @@ Credentials are stored in `~/.bifrost/credentials.json`.
 - For repo work, local source + CLI + credentials are enough for most tasks.
 - The repo's normal development environment is Docker.
 - Prefer `./debug.sh` for the local stack and `./test.sh` for validation.
+- The default remote dev instance is
+  `https://bifrost-poc-host.netbird.cloud:18443/`.
+- Do not assume `localhost` is running unless the user explicitly started the
+  local Docker stack.
 
 ## Quick Interpretation
 
