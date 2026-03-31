@@ -3,7 +3,7 @@
 ## Structural Rules
 
 - Root layout uses `<Outlet />`, not `{children}`
-- App code lives under `apps/{slug}/`
+- App code lives under `userland/apps/{slug}/`
 - `styles.css` sits at app root
 - custom components live in `components/`
 

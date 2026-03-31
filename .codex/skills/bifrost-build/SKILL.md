@@ -5,7 +5,7 @@ description: Build or modify Bifrost workflows, forms, agents, and related userl
 
 # Bifrost Build
 
-Use local source and the Bifrost CLI first when they are available. Treat `.bifrost/` as discovery or transitional metadata, not the default authored surface.
+Use local source and the Bifrost CLI first when they are available. Treat `userland/.bifrost/` as discovery or transitional metadata, not the default authored surface for private MSP workspace content.
 
 When local practice has drifted from upstream expectations, prefer the upstream-supported implementation pattern unless there is a clear repo-specific reason to diverge.
 
@@ -23,9 +23,10 @@ When local practice has drifted from upstream expectations, prefer the upstream-
    - Cache `/api/llms.txt` locally and grep it rather than re-fetching for every question.
 
 4. Choose the authored surface carefully.
-   - Prefer source files in `features/`, `modules/`, `shared/`, `helpers/`, `userland/workflows/`, and `apps/`.
+   - For platform work, prefer `shared/`, `api/`, and `client/`.
+   - For private MSP workspace work, prefer source files in `userland/features/`, `userland/modules/`, `userland/apps/`, `userland/helpers/`, `userland/workflows/`, `userland/integrations/`, and `userland/agents/`.
    - MSP-specific workflows, integrations, and agents live under `userland/` (a git submodule). Commit changes there first, push, then bump the submodule pin in this repo.
-   - Use `.bifrost/*.yaml` only when the current local sync path still requires tactical updates.
+   - Use `userland/.bifrost/*.yaml` only when the current local sync path still requires tactical updates.
 
 5. Respect the post-GitHub workflow.
    - Local git is canonical for source control.
@@ -38,7 +39,7 @@ When local practice has drifted from upstream expectations, prefer the upstream-
 
 ## Rules
 
-- Do not teach manual `.bifrost/*.yaml` authoring as the default workflow.
+- Do not teach manual `userland/.bifrost/*.yaml` authoring as the default workflow.
 - Do not use `bifrost api` as a proxy for third-party vendor APIs.
 - Do not run interactive CLI flows on the user's behalf when they require a TUI.
 - Generate UUIDs before writing cross-referenced entities.

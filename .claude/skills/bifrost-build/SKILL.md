@@ -35,7 +35,7 @@ Then use `Grep/Read` on `/tmp/bifrost-docs/llms.txt` whenever you need reference
 
 ## Step 2: Detect Development Mode
 
-**Auto-detect:** If a `.bifrost/` directory exists in the workspace, use **SDK-First**. Otherwise, **MCP-Only**. Only ask the user if ambiguous.
+**Auto-detect:** If a `userland/.bifrost/` directory exists in the repo workspace, use **SDK-First** for private MSP workspace work. Otherwise, **MCP-Only**. Only ask the user if ambiguous.
 
 ## SDK-First Mode
 
@@ -66,14 +66,14 @@ If not running, start it as a background Bash task: `bifrost watch`
 
 | To find... | Read this file |
 |---|---|
-| Workflows/tools/data_providers | source files first, then `.bifrost/workflows.yaml` if needed |
-| Forms and linked workflows | `forms/*.form.yaml`, then `.bifrost/forms.yaml` if needed |
-| Agents and tool assignments | `userland/agents/*.agent.yaml`, then `.bifrost/agents.yaml` if needed |
-| Apps | `apps/*/app.yaml`, then `.bifrost/apps.yaml` if needed |
-| Organizations | platform data first, `.bifrost/organizations.yaml` only if present |
-| Integrations | source + platform config, then `.bifrost/integrations.yaml` if needed |
-| Tables | `.bifrost/tables.yaml` if present |
-| Events | `.bifrost/events.yaml` if present |
+| Workflows/tools/data_providers | source files first under `userland/features/` or `userland/workflows/`, then `userland/.bifrost/workflows.yaml` if needed |
+| Forms and linked workflows | `userland/forms/*.form.yaml` if present, then `userland/.bifrost/forms.yaml` if needed |
+| Agents and tool assignments | `userland/agents/*.agent.yaml`, then `userland/.bifrost/agents.yaml` if needed |
+| Apps | `userland/apps/*/app.yaml`, then `userland/.bifrost/apps.yaml` if needed |
+| Organizations | platform data first, `userland/.bifrost/organizations.yaml` only if present |
+| Integrations | source + platform config, then `userland/.bifrost/integrations.yaml` if needed |
+| Tables | `userland/.bifrost/tables.yaml` if present |
+| Events | `userland/.bifrost/events.yaml` if present |
 
 For YAML field formats, grep `/tmp/bifrost-docs/llms.txt` for `ManifestWorkflow`, `ManifestForm`, etc.
 
@@ -94,7 +94,7 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
 
 1. Generate UUIDs for all new entities
 2. Write entity files (workflow `.py`, form `.form.yaml`, agent `.agent.yaml`, app `.tsx`)
-3. If the chosen local sync path still requires manifest entries for new entities, update the generated `.bifrost/*.yaml` files minimally and expect later regeneration/import
+3. If the chosen local sync path still requires manifest entries for new entities, update the generated `userland/.bifrost/*.yaml` files minimally and expect later regeneration/import
 4. Sync through `bifrost watch`, `bifrost push`, or `bifrost sync` as appropriate for the current workspace flow
 5. Test workflows: `bifrost run <file> --workflow <name> --org <UUID> --params '{...}'`
 6. When happy: `git add && git commit && git push`
@@ -163,8 +163,8 @@ Then use these IDs in all files — workflow code, manifest entries, form/agent 
    ```bash
    pgrep -f 'bifrost watch' > /dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING"
    ```
-2. **If watch is running**: Write files locally. Only touch `.bifrost/*.yaml` for new entities when the current watch/import flow requires it, and treat those edits as transitional metadata rather than durable authored source.
-3. **If watch is NOT running**: Tell the user: "Please run `bifrost watch` in a terminal first." **Do NOT write files or attempt to sync until the user confirms watch is running.**
+2. **If watch is running**: Write files locally under `userland/`. Only touch `userland/.bifrost/*.yaml` for new entities when the current watch/import flow requires it, and treat those edits as transitional metadata rather than durable authored source.
+3. **If watch is NOT running**: Tell the user: "Please run `cd userland && bifrost watch` in a terminal first." **Do NOT write files or attempt to sync until the user confirms watch is running.**
 4. **If the user asks to sync manually** (push/pull/sync): Tell them to run the command themselves in their terminal since it requires interactive TUI input.
 5. **GitHub/git-integrated deployment is deprecated.** Use normal local git for source control, and use `bifrost watch`, `bifrost sync`, or explicit platform image deploys as appropriate.
 
@@ -245,11 +245,11 @@ For component lists, hooks API, CSS examples, sandbox constraints — grep `/tmp
 
 ### App Workflow (SDK-First)
 
-1. Write files in `apps/{slug}/`
+1. Write files in `userland/apps/{slug}/`
 2. If the current local sync path requires it, reconcile the generated app manifest metadata
 3. `bifrost watch` syncs file changes (auto-validates app dirs after each push)
 4. Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`
-5. Validate with `bifrost push apps/{slug} --validate`
+5. Validate with `cd userland && bifrost push apps/{slug} --validate`
 
 ### App Workflow (MCP-Only)
 

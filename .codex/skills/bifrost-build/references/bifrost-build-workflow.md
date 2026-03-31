@@ -6,8 +6,8 @@ Check:
 
 ```bash
 command -v bifrost
-test -f "$HOME/.bifrost/credentials.json" && echo logged-in || echo missing-creds
-test -d .bifrost && echo local-workspace || echo no-bifrost-dir
+pass show bifrost/credentials >/dev/null 2>&1 && echo logged-in || echo missing-creds
+test -d userland/.bifrost && echo local-workspace || echo no-bifrost-dir
 ```
 
 If local source, CLI, or credentials are missing, use `$bifrost-setup`.
@@ -20,14 +20,14 @@ Use this when local source and the CLI are available.
 
 - Prefer local file reads over platform discovery.
 - Read source files first.
-- Only inspect `.bifrost/*.yaml` as a secondary discovery surface.
+- Only inspect `userland/.bifrost/*.yaml` as a secondary discovery surface.
 
 Practical paths:
 
-- workflows and data providers: `features/**/workflows/*.py`, `userland/workflows/`
-- modules: `modules/*.py`
-- apps: `apps/*/`
-- transitional metadata: `.bifrost/*.yaml`
+- workflows and data providers: `userland/features/**/workflows/*.py`, `userland/workflows/`
+- modules: `userland/modules/*.py`
+- apps: `userland/apps/*/`
+- transitional metadata: `userland/.bifrost/*.yaml`
 
 ### Docs
 
@@ -50,15 +50,15 @@ Current fork guidance:
 
 For userland:
 
-- `features/`
-- `modules/`
-- `shared/`
-- `helpers/`
+- `userland/features/`
+- `userland/modules/`
+- `userland/shared/` when that subtree actually exists in the workspace repo
+- `userland/helpers/`
 - `userland/workflows/` (MSP-specific — git submodule `MTG-Thomas/bifrost-workspace`)
 - `userland/integrations/` (same submodule)
 - `userland/agents/` (same submodule)
-- `apps/`
-- current fork-local `.bifrost/` files when unavoidable
+- `userland/apps/`
+- `userland/.bifrost/` files when unavoidable
 
 When editing files under `userland/`, commit and push inside the submodule first, then bump the pin: `git add userland && git commit` in the bifrost fork.
 
@@ -79,10 +79,10 @@ These require rebuild or rollout, not workspace sync:
 
 ## Transitional Manifest Rule
 
-- Treat `.bifrost/` as generated or system-managed metadata.
+- Treat `userland/.bifrost/` as generated or system-managed metadata.
 - Small edits may still be required locally.
 - Keep such edits minimal and expect regeneration/import to normalize them later.
-- Do not open upstream PRs centered on `.bifrost/*.yaml` changes unless upstream explicitly asks for them.
+- Do not open upstream PRs centered on `userland/.bifrost/*.yaml` changes unless upstream explicitly asks for them.
 
 ## Cross-Referenced Entity Rule
 

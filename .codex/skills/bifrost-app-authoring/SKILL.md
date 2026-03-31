@@ -1,6 +1,6 @@
 ---
 name: bifrost-app-authoring
-description: Design and implement Bifrost apps within the platform's frontend constraints. Use when creating or modifying `apps/*` code, planning app UX before coding, choosing Bifrost-specific component and hook patterns, or validating that an app follows the repo's supported SDK-first workflow.
+description: Design and implement Bifrost apps within the platform's frontend constraints. Use when creating or modifying `userland/apps/*` code, planning app UX before coding, choosing Bifrost-specific component and hook patterns, or validating that an app follows the repo's supported SDK-first workflow.
 ---
 
 # Bifrost App Authoring
@@ -31,7 +31,7 @@ Default to upstream-supported app structure and data-flow patterns. Treat fork-l
    - Build custom components for the app's defining interaction model.
 
 5. Validate through the supported workflow.
-   - prefer local app file edits in `apps/{slug}/`
+   - prefer local app file edits in `userland/apps/{slug}/`
    - use the CLI/platform validation path, not hand-wavy visual assumptions
 
 ## Rules
