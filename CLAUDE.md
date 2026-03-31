@@ -134,6 +134,41 @@ client/
 │   └── lib/
 │       └── v1.d.ts   # Auto-generated TypeScript types
 └── ...
+
+userland/             # Git submodule → MTG-Thomas/bifrost-userland (private)
+├── workflows/        # MSP-specific workflow Python files (autotask, cove, halopsa, ninjaone, sample)
+├── integrations/     # MSP-specific integration definitions (e.g. dnsfilter)
+└── agents/           # Agent YAML files
+```
+
+## Userland Submodule
+
+MSP-specific workflows, integrations, and agents live in a **separate private repo** mounted at `userland/`:
+
+- Repo: `git@github.com:MTG-Thomas/bifrost-userland.git`
+- Local path: `userland/` (git submodule)
+
+**When working on userland files**, treat `userland/` as its own independent git repo:
+
+```bash
+# Edit files under userland/, then:
+cd userland
+git add <files>
+git commit -m "..."
+git push
+
+# Then bump the submodule pin in the bifrost fork:
+cd ..
+git add userland
+git commit -m "chore: update userland submodule"
+```
+
+**On a fresh clone of this repo**, initialize the submodule:
+
+```bash
+git clone --recurse-submodules <bifrost-repo-url>
+# or after a plain clone:
+git submodule update --init
 ```
 
 ## Project-Specific Rules

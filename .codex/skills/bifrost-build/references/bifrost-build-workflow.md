@@ -24,7 +24,7 @@ Use this when local source and the CLI are available.
 
 Practical paths:
 
-- workflows and data providers: `features/**/workflows/*.py`, `workflows/`
+- workflows and data providers: `features/**/workflows/*.py`, `userland/workflows/`
 - modules: `modules/*.py`
 - apps: `apps/*/`
 - transitional metadata: `.bifrost/*.yaml`
@@ -54,9 +54,13 @@ For userland:
 - `modules/`
 - `shared/`
 - `helpers/`
-- `workflows/`
+- `userland/workflows/` (MSP-specific — git submodule `MTG-Thomas/bifrost-userland`)
+- `userland/integrations/` (same submodule)
+- `userland/agents/` (same submodule)
 - `apps/`
 - current fork-local `.bifrost/` files when unavoidable
+
+When editing files under `userland/`, commit and push inside the submodule first, then bump the pin: `git add userland && git commit` in the bifrost fork.
 
 Use:
 

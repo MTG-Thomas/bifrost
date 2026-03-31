@@ -23,7 +23,8 @@ When local practice has drifted from upstream expectations, prefer the upstream-
    - Cache `/api/llms.txt` locally and grep it rather than re-fetching for every question.
 
 4. Choose the authored surface carefully.
-   - Prefer source files in `features/`, `modules/`, `shared/`, `helpers/`, `workflows/`, and `apps/`.
+   - Prefer source files in `features/`, `modules/`, `shared/`, `helpers/`, `userland/workflows/`, and `apps/`.
+   - MSP-specific workflows, integrations, and agents live under `userland/` (a git submodule). Commit changes there first, push, then bump the submodule pin in this repo.
    - Use `.bifrost/*.yaml` only when the current local sync path still requires tactical updates.
 
 5. Respect the post-GitHub workflow.

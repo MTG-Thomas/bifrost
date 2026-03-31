@@ -68,7 +68,7 @@ If not running, start it as a background Bash task: `bifrost watch`
 |---|---|
 | Workflows/tools/data_providers | source files first, then `.bifrost/workflows.yaml` if needed |
 | Forms and linked workflows | `forms/*.form.yaml`, then `.bifrost/forms.yaml` if needed |
-| Agents and tool assignments | `agents/*.agent.yaml`, then `.bifrost/agents.yaml` if needed |
+| Agents and tool assignments | `userland/agents/*.agent.yaml`, then `.bifrost/agents.yaml` if needed |
 | Apps | `apps/*/app.yaml`, then `.bifrost/apps.yaml` if needed |
 | Organizations | platform data first, `.bifrost/organizations.yaml` only if present |
 | Integrations | source + platform config, then `.bifrost/integrations.yaml` if needed |

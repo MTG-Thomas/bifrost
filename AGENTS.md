@@ -19,7 +19,8 @@ Use this file for stable repo rules. Use the repo-local skill packs in [`.codex/
 
 ## Repo Model
 
-- Prefer authored source under `features/`, `modules/`, `shared/`, `helpers/`, `workflows/`, `apps/`, `api/`, and `client/`.
+- Prefer authored source under `features/`, `modules/`, `shared/`, `helpers/`, `userland/workflows/`, `apps/`, `api/`, and `client/`.
+- MSP-specific workflows, integrations, and agents live in the `userland/` git submodule (private repo `MTG-Thomas/bifrost-userland`). Do NOT author these files directly under the bifrost fork root — they belong in `userland/` and must be committed and pushed there separately before bumping the submodule pin in this repo.
 - Treat `.bifrost/*.yaml` as generated or transitional workspace metadata, not the default source of truth.
 - Reading `.bifrost/*.yaml` for discovery is acceptable.
 - Do not manually edit `.bifrost/*.yaml` as a normal workflow.
@@ -36,13 +37,15 @@ Usually includes:
 - `modules/`
 - `shared/`
 - `helpers/`
-- `workflows/`
+- `userland/workflows/` (MSP-specific — commit in the submodule, then bump the pin here)
+- `userland/integrations/` (MSP-specific — same submodule git workflow)
+- `userland/agents/` (MSP-specific — same submodule git workflow)
 - `apps/`
 - unavoidable fork-local `.bifrost/` repair work when broken generated state must be unblocked
 
 Preferred path:
 
-- local git for source control
+- local git for source control (for `userland/` files: commit inside the submodule, push, then `git add userland && git commit` in this repo to update the pin)
 - direct Bifrost CLI sync flows such as `bifrost watch`, `bifrost push`, and `bifrost sync`
 
 ### Platform/runtime changes
