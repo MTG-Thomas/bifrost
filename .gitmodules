@@ -1,0 +1,3 @@
+[submodule "userland"]
+	path = userland
+	url = git@github.com:MTG-Thomas/bifrost-userland.git
