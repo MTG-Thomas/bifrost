@@ -18,7 +18,9 @@ import inspect
 import json
 import os
 import pathlib
+import signal
 import shutil
+import subprocess
 import sys
 import textwrap
 import time
@@ -1246,6 +1248,64 @@ Examples:
         return 130
 
 
+def _check_existing_watch() -> list[tuple[int, str]]:
+    """Check for other running 'bifrost watch' processes. Returns list of (pid, cmdline)."""
+    current_pid = os.getpid()
+    parent_pid = os.getppid()
+    results: list[tuple[int, str]] = []
+    try:
+        proc = subprocess.run(
+            ["ps", "ax", "-o", "pid=,args="],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in proc.stdout.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            cmdline = parts[1]
+            if pid in (current_pid, parent_pid):
+                continue
+            if "bifrost" in cmdline and "watch" in cmdline and "grep" not in cmdline:
+                results.append((pid, cmdline))
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return results
+
+
+def _kill_watch_processes(processes: list[tuple[int, str]]) -> bool:
+    """Kill watch processes via SIGTERM, wait up to 5s. Returns True if all stopped."""
+    for pid, _cmdline in processes:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            print(f"  Permission denied killing PID {pid}. Kill it manually.", file=sys.stderr)
+            return False
+
+    for _ in range(50):  # 5 seconds in 100ms increments
+        time.sleep(0.1)
+        all_dead = True
+        for pid, _ in processes:
+            try:
+                os.kill(pid, 0)  # check if still alive
+                all_dead = False
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                all_dead = False
+        if all_dead:
+            return True
+    return False
+
+
 def handle_watch(args: list[str]) -> int:
     """
     Handle 'bifrost watch' command.
@@ -1278,6 +1338,29 @@ Examples:
   bifrost watch --mirror
 """.strip())
         return 0
+
+    # Check for other running bifrost watch processes
+    existing = _check_existing_watch()
+    if existing:
+        print("\n⚠ Another bifrost watch process is already running:", file=sys.stderr)
+        for pid, cmdline in existing:
+            print(f"  PID {pid} — {cmdline}", file=sys.stderr)
+        print(file=sys.stderr)
+        if not sys.stdin.isatty():
+            print("Cannot prompt in non-interactive mode. Stop the existing watch first.", file=sys.stderr)
+            return 1
+        try:
+            answer = input("Kill and start a new watch session? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return 1
+        if answer != "y":
+            return 1
+        print("Stopping existing watch...", file=sys.stderr)
+        if not _kill_watch_processes(existing):
+            print("Failed to stop existing watch processes. Kill them manually.", file=sys.stderr)
+            return 1
+        print("Stopped.", file=sys.stderr)
 
     parsed = _parse_push_watch_args(args)
     if parsed is None:
