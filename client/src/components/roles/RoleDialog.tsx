@@ -86,7 +86,6 @@ export function RoleDialog({ role, open, onClose }: RoleDialogProps) {
 				body: {
 					name: values.name,
 					description: values.description || null,
-					is_active: true,
 					permissions: { can_promote_agent: values.can_promote_agent },
 				},
 			});

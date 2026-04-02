@@ -938,7 +938,7 @@ class ManifestResolver:
             return [Upsert(
                 model=Role,
                 id=role_id,
-                values={"name": mrole.name, "is_active": mrole.is_active},
+                values={"name": mrole.name},
                 match_on="id",
             )]
 
@@ -948,7 +948,7 @@ class ManifestResolver:
             return [Upsert(
                 model=Role,
                 id=role_id,
-                values={"id": role_id, "name": mrole.name, "is_active": mrole.is_active},
+                values={"id": role_id, "name": mrole.name},
                 match_on="name",
             )]
 
@@ -956,7 +956,7 @@ class ManifestResolver:
         return [Upsert(
             model=Role,
             id=role_id,
-            values={"name": mrole.name, "is_active": mrole.is_active, "created_by": "git-sync"},
+            values={"name": mrole.name, "created_by": "git-sync"},
             match_on="id",
         )]
 
@@ -1407,14 +1407,9 @@ class ManifestResolver:
                 "organizations",
             )
 
-        # Soft-delete roles not in manifest (only when manifest has roles)
+        # Delete roles not in manifest (only when manifest has roles)
         if present_role_uuids:
-            await _bulk_deactivate(
-                Role,
-                [Role.is_active == True],  # noqa: E712
-                present_role_uuids,
-                "roles",
-            )
+            await _bulk_delete(Role, [], present_role_uuids, "roles")
 
         return entity_changes
 

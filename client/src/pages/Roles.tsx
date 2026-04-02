@@ -20,7 +20,6 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
@@ -30,7 +29,7 @@ import { RoleDetailsDialog } from "@/components/roles/RoleDetailsDialog";
 import type { components } from "@/lib/v1";
 type Role = components["schemas"]["RolePublic"];
 
-type SortColumn = "name" | "status" | "created";
+type SortColumn = "name" | "created";
 type SortDirection = "asc" | "desc";
 
 function SortIcon({ column, sortColumn, sortDirection }: { column: SortColumn; sortColumn: SortColumn; sortDirection: SortDirection }) {
@@ -70,11 +69,6 @@ export function Roles() {
 			switch (sortColumn) {
 				case "name":
 					return dir * (a.name || "").localeCompare(b.name || "");
-				case "status": {
-					const aVal = a.is_active ? 1 : 0;
-					const bVal = b.is_active ? 1 : 0;
-					return dir * (aVal - bVal);
-				}
 				case "created": {
 					const aDate = a.created_at ? new Date(a.created_at).getTime() : 0;
 					const bDate = b.created_at ? new Date(b.created_at).getTime() : 0;
@@ -199,13 +193,6 @@ export function Roles() {
 								<DataTableHead>Description</DataTableHead>
 								<DataTableHead
 									className="w-0 whitespace-nowrap cursor-pointer select-none"
-									onClick={() => handleSort("status")}
-								>
-									Status
-									<SortIcon column="status" sortColumn={sortColumn} sortDirection={sortDirection} />
-								</DataTableHead>
-								<DataTableHead
-									className="w-0 whitespace-nowrap cursor-pointer select-none"
 									onClick={() => handleSort("created")}
 								>
 									Created
@@ -228,19 +215,6 @@ export function Roles() {
 									</DataTableCell>
 									<DataTableCell className="max-w-xs truncate text-muted-foreground">
 										{role.description || "-"}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap">
-										<Badge
-											variant={
-												role.is_active
-													? "default"
-													: "secondary"
-											}
-										>
-											{role.is_active
-												? "Active"
-												: "Inactive"}
-										</Badge>
 									</DataTableCell>
 									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
 										{role.created_at

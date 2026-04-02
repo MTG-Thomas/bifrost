@@ -167,7 +167,6 @@ async def _user_has_permission(
         select(Role.permissions)
         .join(UserRole, UserRole.role_id == Role.id)
         .where(UserRole.user_id == user_id)
-        .where(Role.is_active.is_(True))
     )
     for permissions in result.scalars().all():
         if permissions and permissions.get(permission):
@@ -402,9 +401,7 @@ async def create_agent(
             try:
                 role_uuid = UUID(role_id)
                 result = await db.execute(
-                    select(Role)
-                    .where(Role.id == role_uuid)
-                    .where(Role.is_active.is_(True))
+                    select(Role).where(Role.id == role_uuid)
                 )
                 role = result.scalar_one_or_none()
                 if role:
@@ -681,9 +678,7 @@ async def update_agent(
             try:
                 role_uuid = UUID(role_id)
                 result = await db.execute(
-                    select(Role)
-                    .where(Role.id == role_uuid)
-                    .where(Role.is_active.is_(True))
+                    select(Role).where(Role.id == role_uuid)
                 )
                 role = result.scalar_one_or_none()
                 if role:
@@ -809,7 +804,7 @@ async def promote_agent(
             try:
                 role_uuid = UUID(role_id)
                 result = await db.execute(
-                    select(Role).where(Role.id == role_uuid).where(Role.is_active.is_(True))
+                    select(Role).where(Role.id == role_uuid)
                 )
                 role = result.scalar_one_or_none()
                 if role:

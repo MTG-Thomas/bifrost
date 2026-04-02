@@ -3487,7 +3487,6 @@ class TestRoleImport:
         )).scalar_one_or_none()
         assert row is not None
         assert row.name == "TestRole"
-        assert row.is_active is True
 
     async def test_update_role_by_id_rename(
         self, db_session: AsyncSession, sync_service, working_clone,
@@ -3496,7 +3495,7 @@ class TestRoleImport:
         from src.models.orm.users import Role
 
         role_id = uuid4()
-        db_session.add(Role(id=role_id, name="OldRole", is_active=True, created_by="git-sync"))
+        db_session.add(Role(id=role_id, name="OldRole", created_by="git-sync"))
         await db_session.commit()
 
         work_dir = Path(working_clone.working_dir)
@@ -3525,7 +3524,7 @@ class TestRoleImport:
 
         old_id = uuid4()
         new_id = uuid4()
-        db_session.add(Role(id=old_id, name="SharedRole", is_active=True, created_by="git-sync"))
+        db_session.add(Role(id=old_id, name="SharedRole", created_by="git-sync"))
         await db_session.commit()
 
         work_dir = Path(working_clone.working_dir)
@@ -3555,7 +3554,7 @@ class TestRoleImport:
 
         role_id = uuid4()
         db_session.add(Role(
-            id=role_id, name="PermRole", is_active=True, created_by="git-sync",
+            id=role_id, name="PermRole", created_by="git-sync",
             description="Important role", permissions={"read": True},
         ))
         await db_session.commit()
@@ -3579,16 +3578,16 @@ class TestRoleImport:
         assert row.description == "Important role"
         assert row.permissions == {"read": True}
 
-    async def test_deactivate_removed_role(
+    async def test_delete_removed_role(
         self, db_session: AsyncSession, sync_service, working_clone,
     ):
-        """Role in DB not in manifest → is_active=False."""
+        """Role in DB not in manifest → deleted."""
         from src.models.orm.users import Role
 
         role_id = uuid4()
         keep_id = uuid4()
-        db_session.add(Role(id=role_id, name="ToDeactivateRole", is_active=True, created_by="git-sync"))
-        db_session.add(Role(id=keep_id, name="KeepRole", is_active=True, created_by="git-sync"))
+        db_session.add(Role(id=role_id, name="ToDeleteRole", created_by="git-sync"))
+        db_session.add(Role(id=keep_id, name="KeepRole", created_by="git-sync"))
         await db_session.commit()
 
         work_dir = Path(working_clone.working_dir)
@@ -3604,10 +3603,15 @@ class TestRoleImport:
         result = await sync_service.desktop_sync(confirm_deletes=True)
         assert result.success
 
-        deactivated = (await db_session.execute(
+        deleted = (await db_session.execute(
             select(Role).where(Role.id == role_id)
-        )).scalar_one()
-        assert deactivated.is_active is False
+        )).scalar_one_or_none()
+        assert deleted is None
+
+        kept = (await db_session.execute(
+            select(Role).where(Role.id == keep_id)
+        )).scalar_one_or_none()
+        assert kept is not None
 
 
 @pytest.mark.e2e
@@ -3624,8 +3628,8 @@ class TestRoleAssignmentSync:
 
         role_a = uuid4()
         role_b = uuid4()
-        db_session.add(Role(id=role_a, name="RoleA", is_active=True, created_by="git-sync"))
-        db_session.add(Role(id=role_b, name="RoleB", is_active=True, created_by="git-sync"))
+        db_session.add(Role(id=role_a, name="RoleA", created_by="git-sync"))
+        db_session.add(Role(id=role_b, name="RoleB", created_by="git-sync"))
         await db_session.commit()
 
         wf_id = str(uuid4())
@@ -3687,8 +3691,8 @@ class TestRoleAssignmentSync:
         role_b = uuid4()
         wf_id = uuid4()
 
-        db_session.add(Role(id=role_a, name="KeepRA", is_active=True, created_by="git-sync"))
-        db_session.add(Role(id=role_b, name="RemoveRB", is_active=True, created_by="git-sync"))
+        db_session.add(Role(id=role_a, name="KeepRA", created_by="git-sync"))
+        db_session.add(Role(id=role_b, name="RemoveRB", created_by="git-sync"))
         db_session.add(Workflow(
             id=wf_id, name="role_removal_wf", function_name="git_sync_test",
             path="workflows/role_removal.py", is_active=True,
@@ -3752,7 +3756,7 @@ class TestRoleAssignmentSync:
         from src.models.orm.users import Role
 
         role_id = uuid4()
-        db_session.add(Role(id=role_id, name="FormRole", is_active=True, created_by="git-sync"))
+        db_session.add(Role(id=role_id, name="FormRole", created_by="git-sync"))
         await db_session.commit()
 
         wf_id = uuid4()

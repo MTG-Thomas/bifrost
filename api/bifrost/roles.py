@@ -146,7 +146,7 @@ class roles:
     @staticmethod
     async def delete(role_id: str) -> None:
         """
-        Delete a role (soft delete - sets is_active to false).
+        Delete a role. CASCADE removes all role assignments.
 
         Requires: Platform admin or organization admin privileges
 
