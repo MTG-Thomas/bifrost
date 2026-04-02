@@ -5,7 +5,7 @@
  * Handles form state, validation, and API mutations.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -151,9 +151,38 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 		? null
 		: (user?.organizationId ?? null);
 
-	const form = useForm<FormValues>({
-		resolver: zodResolver(formSchema),
-		defaultValues: {
+	// Compute form defaults from agent data when editing, so the form
+	// initializes with correct values instead of showing placeholders
+	// while a useEffect reset catches up.
+	const formDefaults = useMemo<FormValues>(() => {
+		if (isEditing && agent) {
+			const agentWithOrg = agent as typeof agent & {
+				organization_id?: string | null;
+				system_tools?: string[];
+				llm_model?: string | null;
+				llm_max_tokens?: number | null;
+				max_iterations?: number | null;
+				max_token_budget?: number | null;
+			};
+			return {
+				name: agent.name,
+				description: agent.description ?? "",
+				system_prompt: agent.system_prompt,
+				channels: (agent.channels as AgentChannel[]) || ["chat"],
+				access_level: agent.access_level as "authenticated" | "role_based",
+				organization_id: agentWithOrg.organization_id ?? null,
+				tool_ids: agent.tool_ids ?? [],
+				system_tools: agentWithOrg.system_tools ?? [],
+				delegated_agent_ids: agent.delegated_agent_ids ?? [],
+				role_ids: agent.role_ids ?? [],
+				knowledge_sources: agent.knowledge_sources ?? [],
+				llm_model: agentWithOrg.llm_model ?? null,
+				llm_max_tokens: agentWithOrg.llm_max_tokens ?? null,
+				max_iterations: agentWithOrg.max_iterations ?? null,
+				max_token_budget: agentWithOrg.max_token_budget ?? null,
+			};
+		}
+		return {
 			name: "",
 			description: "",
 			system_prompt: "",
@@ -167,10 +196,15 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 			knowledge_sources: [],
 			llm_model: null,
 			llm_max_tokens: null,
-
 			max_iterations: null,
 			max_token_budget: null,
-		},
+		};
+	}, [isEditing, agent, defaultOrgId]);
+
+	const form = useForm<FormValues>({
+		resolver: zodResolver(formSchema),
+		defaultValues: formDefaults,
+		values: isEditing && agent ? formDefaults : undefined,
 	});
 
 	// eslint-disable-next-line react-hooks/incompatible-library -- React Hook Form's watch() is intentionally used for dynamic form state
@@ -186,58 +220,12 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 	// - UUID (org agent): show org + global knowledge sources (cascade)
 	const { data: knowledgeNamespaces } = useKnowledgeNamespaces(watchedOrgId);
 
-	// Load existing agent data when editing
+	// Reset form to create-mode defaults when opening for a new agent
 	useEffect(() => {
-		if (agent && isEditing) {
-			// Cast agent to access organization_id which may exist on the response
-			const agentWithOrg = agent as typeof agent & {
-				organization_id?: string | null;
-				system_tools?: string[];
-				llm_model?: string | null;
-				llm_max_tokens?: number | null;
-				max_iterations?: number | null;
-				max_token_budget?: number | null;
-			};
-			form.reset({
-				name: agent.name,
-				description: agent.description ?? "",
-				system_prompt: agent.system_prompt,
-				channels: (agent.channels as AgentChannel[]) || ["chat"],
-				access_level: agent.access_level as
-					| "authenticated"
-					| "role_based",
-				organization_id: agentWithOrg.organization_id ?? null,
-				tool_ids: agent.tool_ids ?? [],
-				system_tools: agentWithOrg.system_tools ?? [],
-				delegated_agent_ids: agent.delegated_agent_ids ?? [],
-				role_ids: agent.role_ids ?? [],
-				knowledge_sources: agent.knowledge_sources ?? [],
-				llm_model: agentWithOrg.llm_model ?? null,
-				llm_max_tokens: agentWithOrg.llm_max_tokens ?? null,
-				max_iterations: agentWithOrg.max_iterations ?? null,
-				max_token_budget: agentWithOrg.max_token_budget ?? null,
-			});
-		} else if (!isEditing && open) {
-			form.reset({
-				name: "",
-				description: "",
-				system_prompt: "",
-				channels: ["chat"],
-				access_level: "role_based",
-				organization_id: defaultOrgId,
-				tool_ids: [],
-				system_tools: [],
-				delegated_agent_ids: [],
-				role_ids: [],
-				knowledge_sources: [],
-				llm_model: null,
-				llm_max_tokens: null,
-	
-				max_iterations: null,
-				max_token_budget: null,
-			});
+		if (!isEditing && open) {
+			form.reset(formDefaults);
 		}
-	}, [agent, isEditing, form, open, defaultOrgId]);
+	}, [isEditing, open, form, formDefaults]);
 
 	// Filter out current agent from delegation options (and agents with null ids)
 	const delegationOptions = allAgents?.filter((a): a is typeof a & { id: string } => a.id !== null && a.id !== agentId) ?? [];
