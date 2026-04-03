@@ -6,8 +6,14 @@ import {
 	Loader2,
 	Code2,
 	RefreshCw,
+	ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageLoader } from "@/components/PageLoader";
 import { useExecution, cancelExecution } from "@/hooks/useExecutions";
@@ -28,6 +34,8 @@ import {
 	ExecutionSidebar,
 	ExecutionCancelDialog,
 	ExecutionRerunDialog,
+	ExecutionMetadataBar,
+	PrettyInputDisplay,
 	type LogEntry,
 } from "@/components/execution";
 import type { components } from "@/lib/v1";
@@ -492,12 +500,144 @@ export function ExecutionDetails({
 		);
 	}
 
+	// Embedded mode — single-column layout for slideout drawer
+	if (embedded) {
+		const aiUsageList = execution.ai_usage as
+			| {
+					provider: string;
+					model: string;
+					input_tokens: number;
+					output_tokens: number;
+					cost?: string | number | null;
+			  }[]
+			| undefined;
+		const hasAiUsage = aiUsageList && aiUsageList.length > 0;
+		const hasMetrics =
+			isPlatformAdmin &&
+			(execution.peak_memory_bytes || execution.cpu_total_seconds);
+		const hasVariables =
+			isPlatformAdmin &&
+			isComplete &&
+			variablesData &&
+			Object.keys(variablesData).length > 0;
+		const hasExtras = hasAiUsage || hasMetrics || hasVariables;
+
+		return (
+			<div className="h-full overflow-y-auto">
+				<div className="p-4 space-y-4">
+					{/* Compact metadata header */}
+					<ExecutionMetadataBar
+						workflowName={execution.workflow_name}
+						status={executionStatus as ExecutionStatus}
+						executedByName={execution.executed_by_name}
+						orgName={execution.org_name}
+						startedAt={execution.started_at}
+						durationMs={execution.duration_ms}
+						queuePosition={streamState?.queuePosition}
+						waitReason={streamState?.waitReason}
+						availableMemoryMb={streamState?.availableMemoryMb}
+						requiredMemoryMb={streamState?.requiredMemoryMb}
+					/>
+
+					{/* Error message */}
+					{execution.error_message && (
+						<div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+							<div className="flex items-start gap-2">
+								<XCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
+								<pre className="text-sm whitespace-pre-wrap font-mono text-destructive/90 overflow-x-auto">
+									{execution.error_message}
+								</pre>
+							</div>
+						</div>
+					)}
+
+					{/* Result */}
+					{isComplete && execution.result != null && (
+						<ExecutionResultPanel
+							result={resultData?.result}
+							resultType={resultData?.result_type}
+							workflowName={execution.workflow_name}
+							isLoading={isLoadingResult}
+						/>
+					)}
+
+					{/* Input data */}
+					{execution.input_data && (
+						<div className="space-y-2">
+							<h4 className="text-sm font-medium text-muted-foreground">
+								Input Parameters
+							</h4>
+							<PrettyInputDisplay
+								inputData={
+									execution.input_data as Record<string, unknown>
+								}
+								showToggle={true}
+								defaultView="pretty"
+							/>
+						</div>
+					)}
+
+					{/* Logs */}
+					<ExecutionLogsPanel
+						logs={mergedLogs as LogEntry[]}
+						streamingLogs={streamingLogs}
+						status={executionStatus}
+						isConnected={isConnected}
+						isLoading={isLoadingLogs}
+						isPlatformAdmin={isPlatformAdmin}
+						maxHeight="50vh"
+						embedded
+					/>
+
+					{/* Extra details — collapsible */}
+					{isComplete && hasExtras && (
+						<Collapsible>
+							<CollapsibleTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors w-full py-2 [&[data-state=open]>svg]:rotate-180">
+								<ChevronDown className="h-4 w-4 transition-transform duration-200" />
+								More details
+							</CollapsibleTrigger>
+							<CollapsibleContent className="space-y-4 pt-2">
+								<ExecutionSidebar
+									status={
+										execution.status as ExecutionStatus
+									}
+									workflowName={execution.workflow_name}
+									executedByName={
+										execution.executed_by_name
+									}
+									orgName={execution.org_name}
+									startedAt={execution.started_at}
+									completedAt={execution.completed_at}
+									inputData={execution.input_data}
+									isComplete={isComplete}
+									isPlatformAdmin={isPlatformAdmin}
+									isLoading={isLoading}
+									variablesData={variablesData}
+									peakMemoryBytes={
+										execution.peak_memory_bytes
+									}
+									cpuTotalSeconds={
+										execution.cpu_total_seconds
+									}
+									durationMs={execution.duration_ms}
+									aiUsage={execution.ai_usage}
+									aiTotals={execution.ai_totals}
+									errorMessage={execution.error_message}
+									executionContext={
+										execution.execution_context
+									}
+									extrasOnly
+								/>
+							</CollapsibleContent>
+						</Collapsible>
+					)}
+				</div>
+			</div>
+		);
+	}
+
 	return (
-		<div
-			className={
-				embedded ? "h-full overflow-y-auto" : "h-full overflow-y-auto"
-			}
-		>
+		<div className="h-full overflow-y-auto">
 			{/* Page Header - hidden in embedded mode */}
 			{!embedded && !isEmbed && (
 				<div className="sticky top-0 bg-background/80 backdrop-blur-sm py-6 border-b flex items-center gap-4 px-6 lg:px-8 z-10">
