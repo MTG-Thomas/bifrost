@@ -521,10 +521,12 @@ export function ExecutionDetails({
 			isComplete &&
 			variablesData &&
 			Object.keys(variablesData).length > 0;
-		const hasExtras = hasAiUsage || hasMetrics || hasVariables;
+		const hasExecutionContext = !!execution.execution_context;
+		const hasExtras =
+			hasAiUsage || hasMetrics || hasVariables || hasExecutionContext;
 
 		return (
-			<div className="h-full overflow-y-auto">
+			<div className="h-full">
 				<div className="p-4 space-y-4">
 					{/* Compact metadata header */}
 					<ExecutionMetadataBar
