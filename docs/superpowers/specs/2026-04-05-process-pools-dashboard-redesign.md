@@ -96,7 +96,7 @@ Index on `(timestamp)` for range queries. Index on `(worker_id, timestamp)` for 
 
 ### Sampling
 
-The heartbeat fires every ~10s. Sample one snapshot per minute per container (write on every 6th heartbeat). At 3 containers this produces ~4,300 rows/day.
+**Important:** Worker processes are forked and cannot connect to the database. Sampling is done by a **scheduler job** that runs every 60s in the scheduler container. It reads the latest heartbeat from Redis for each registered worker and persists a snapshot to `worker_metrics`. At 3 containers this produces ~4,300 rows/day.
 
 ### Retention
 
