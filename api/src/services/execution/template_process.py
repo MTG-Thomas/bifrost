@@ -408,7 +408,7 @@ class TemplateProcess:
     """
 
     def __init__(self) -> None:
-        self._process: multiprocessing.Process | None = None
+        self._process: Any = None  # multiprocessing.Process or SpawnProcess
         self._pipe: Connection | None = None
         self.pid: int | None = None
 
