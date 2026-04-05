@@ -681,6 +681,18 @@ class WorkflowExecutionConsumer(BaseConsumer):
             await self._redis_client.delete_pending_execution(execution_id)
             raise
 
+        except MemoryError as e:
+            # Admission rejected due to memory pressure — requeue for retry
+            logger.warning(
+                f"Admission rejected for {execution_id[:8]}: {e}. "
+                "Will requeue for retry."
+            )
+            # Don't mark as failed — the execution hasn't started yet.
+            # Clean up pending state so it can be re-routed.
+            await self._redis_client.delete_pending_execution(execution_id)
+            # Re-raise so the consumer framework NACKs with requeue=True
+            raise
+
         except Exception as e:
             # Unexpected error during setup (before routing to pool)
             duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
