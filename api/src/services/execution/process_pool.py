@@ -43,10 +43,12 @@ import psutil
 import redis.asyncio as redis
 
 from src.config import get_settings
+from src.services.execution.memory_monitor import has_sufficient_memory_cgroup
 from src.services.execution.simple_worker import (
     install_requirements,
     run_worker_process as simple_run_worker_process,
 )
+from src.services.execution.template_process import TemplateProcess
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +154,44 @@ class ProcessHandle:
         return (datetime.now(timezone.utc) - self.started_at).total_seconds()
 
 
+class _PidWrapper:
+    """
+    Minimal wrapper around a PID to satisfy ProcessHandle.process interface.
+
+    Forked children are not multiprocessing.Process objects — they're raw PIDs.
+    This wrapper provides is_alive() and join() so ProcessHandle works uniformly.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.exitcode: int | None = None
+
+    def is_alive(self) -> bool:
+        try:
+            os.kill(self.pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def join(self, timeout: float | None = None) -> None:
+        import time
+        try:
+            if timeout is not None:
+                # Non-blocking waitpid with polling
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    pid, status = os.waitpid(self.pid, os.WNOHANG)
+                    if pid != 0:
+                        self.exitcode = os.waitstatus_to_exitcode(status)
+                        return
+                    time.sleep(0.1)
+            else:
+                _, status = os.waitpid(self.pid, 0)
+                self.exitcode = os.waitstatus_to_exitcode(status)
+        except ChildProcessError:
+            pass  # Already reaped
+
+
 # Type alias for result callback
 ResultCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -245,6 +285,9 @@ class ProcessPoolManager:
         # Lock for idle process waiting
         self._idle_condition = asyncio.Condition()
 
+        # Template process for fork-based workers
+        self._template: TemplateProcess | None = None
+
     async def _get_redis(self) -> redis.Redis:  # type: ignore[type-arg]
         """Get or create Redis connection."""
         if self._redis is None:
@@ -255,55 +298,94 @@ class ProcessPoolManager:
             )
         return self._redis
 
-    def _spawn_process(self) -> ProcessHandle:
-        """
-        Spawn a new worker process.
+    async def _start_template(self) -> None:
+        """Start the template process for fork-based workers."""
+        self._template = TemplateProcess()
+        try:
+            await asyncio.to_thread(self._template.start)
+            logger.info(f"Template process started (PID={self._template.pid})")
+        except Exception as e:
+            logger.error(f"Failed to start template process: {e}. Falling back to spawn.")
+            self._template = None
 
-        Creates queues for communication and starts the worker process.
-        The new process is set to IDLE state.
+    async def restart_template(self) -> None:
+        """
+        Restart the template process (e.g., after pip install).
+
+        All children must be drained/killed before calling this.
+        """
+        if self._template is not None:
+            logger.info("Shutting down template process for restart")
+            await asyncio.to_thread(self._template.shutdown)
+
+        await self._start_template()
+        logger.info("Template process restarted")
+
+    def _spawn_or_fork_process(self, persistent: bool | None = None) -> ProcessHandle:
+        """
+        Create a new worker process by forking from the template.
+
+        If the template is not running (e.g., during tests), falls back
+        to multiprocessing.spawn.
+
+        Args:
+            persistent: If None, inferred from self.min_workers > 0.
+                        If True, child loops. If False, child runs once.
 
         Returns:
-            ProcessHandle instance for the new process
+            ProcessHandle instance for the new process.
         """
-        # Create communication queues
-        ctx = multiprocessing.get_context("spawn")
-        work_queue: MPQueue[str] = ctx.Queue()
-        result_queue: MPQueue[dict[str, Any]] = ctx.Queue()
+        if persistent is None:
+            persistent = self.min_workers > 0
 
-        # Generate process ID
         self._process_counter += 1
         process_id = f"process-{self._process_counter}"
 
-        # Create process with target function
-        # Use simple_worker's run_worker_process which has:
-        # - Virtual import hook installation
-        # - Workspace module clearing between executions
-        process = ctx.Process(
-            target=simple_run_worker_process,
-            args=(work_queue, result_queue, process_id),
-            name=process_id,
-        )
-        process.start()
+        if self._template is not None and self._template.is_alive():
+            # Fork from template (COW memory sharing)
+            child_pid, work_queue, result_queue = self._template.fork(
+                worker_id=process_id,
+                persistent=persistent,
+            )
 
-        # Create handle
-        handle = ProcessHandle(
-            id=process_id,
-            process=process,
-            pid=process.pid,
-            state=ProcessState.IDLE,
-            work_queue=work_queue,
-            result_queue=result_queue,
-            started_at=datetime.now(timezone.utc),
-            current_execution=None,
-            executions_completed=0,
-        )
+            handle = ProcessHandle(
+                id=process_id,
+                process=_PidWrapper(child_pid),
+                pid=child_pid,
+                state=ProcessState.IDLE,
+                work_queue=work_queue,
+                result_queue=result_queue,
+                started_at=datetime.now(timezone.utc),
+                current_execution=None,
+                executions_completed=0,
+            )
+        else:
+            # Fallback to spawn (tests, or template not yet started)
+            ctx = multiprocessing.get_context("spawn")
+            work_queue_mp: MPQueue[str] = ctx.Queue()
+            result_queue_mp: MPQueue[dict[str, Any]] = ctx.Queue()
+
+            process = ctx.Process(
+                target=simple_run_worker_process,
+                args=(work_queue_mp, result_queue_mp, process_id),
+                name=process_id,
+            )
+            process.start()
+
+            handle = ProcessHandle(
+                id=process_id,
+                process=process,
+                pid=process.pid,
+                state=ProcessState.IDLE,
+                work_queue=work_queue_mp,
+                result_queue=result_queue_mp,
+                started_at=datetime.now(timezone.utc),
+                current_execution=None,
+                executions_completed=0,
+            )
 
         self.processes[process_id] = handle
-
-        logger.info(
-            f"Spawned worker process {process_id} with PID={process.pid}"
-        )
-
+        logger.info(f"Created worker {process_id} (PID={handle.pid}, persistent={persistent})")
         return handle
 
     async def start(self) -> None:
@@ -334,9 +416,12 @@ class ProcessPoolManager:
         # Compute requirements status for heartbeat reporting
         self._update_requirements_status()
 
+        # Start template process (loads deps, ready to fork)
+        await self._start_template()
+
         # Spawn initial pool
         for _ in range(self.min_workers):
-            self._spawn_process()
+            self._spawn_or_fork_process()
 
         # Register in Redis
         await self._register_worker()
@@ -450,6 +535,11 @@ class ProcessPoolManager:
         for handle in list(self.processes.values()):
             await self._terminate_process(handle)
 
+        # Shutdown template process
+        if self._template is not None:
+            self._template.shutdown()
+            self._template = None
+
         # Unregister from Redis
         await self._unregister_worker()
 
@@ -553,12 +643,23 @@ class ProcessPoolManager:
         # Write context to Redis
         await self._write_context_to_redis(execution_id, context)
 
+        # Admission control: check memory pressure before forking
+        settings = get_settings()
+        if not has_sufficient_memory_cgroup(threshold=settings.memory_pressure_threshold):
+            # Clean up the context we just wrote
+            r = await self._get_redis()
+            await r.delete(f"bifrost:exec:{execution_id}:context")
+            raise MemoryError(
+                f"Cannot route execution {execution_id[:8]}: memory pressure "
+                f"exceeds {settings.memory_pressure_threshold:.0%} threshold"
+            )
+
         # Find or create idle process
         idle = self._get_idle_process()
         if idle is None:
             # Scale up if possible
             if len(self.processes) < self.max_workers:
-                idle = self._spawn_process()
+                idle = self._spawn_or_fork_process()
             else:
                 # Wait for a process to become idle
                 idle = await self._wait_for_idle_process()
@@ -617,6 +718,14 @@ class ProcessPoolManager:
 
         while not self._shutdown:
             try:
+                # Check template health — restart if crashed
+                if self._template is not None and not self._template.is_alive():
+                    logger.error("Template process died — restarting")
+                    try:
+                        await self._start_template()
+                    except Exception as e:
+                        logger.error(f"Failed to restart template: {e}")
+
                 await self._check_timeouts()
                 await self._check_process_health()
                 await self._maybe_scale_down()
@@ -670,7 +779,7 @@ class ProcessPoolManager:
 
                 # Spawn replacement if below min_workers
                 if len(self.processes) < self.min_workers:
-                    self._spawn_process()
+                    self._spawn_or_fork_process()
 
     async def _kill_process(self, handle: ProcessHandle) -> None:
         """
@@ -932,7 +1041,7 @@ class ProcessPoolManager:
                 # Remove from pool and replace
                 del self.processes[handle.id]
                 if len(self.processes) < self.min_workers:
-                    self._spawn_process()
+                    self._spawn_or_fork_process()
 
                 return
 
@@ -988,7 +1097,7 @@ class ProcessPoolManager:
 
         # Spawn replacements to maintain min_workers
         while len(self.processes) < self.min_workers:
-            self._spawn_process()
+            self._spawn_or_fork_process()
 
     async def _report_crash(self, exec_info: ExecutionInfo) -> None:
         """
@@ -1105,6 +1214,18 @@ class ProcessPoolManager:
         handle.current_execution = None
         handle.executions_completed += 1
 
+        # On-demand mode: child exits after one execution, just clean up
+        if self.min_workers == 0:
+            if handle.id in self.processes:
+                del self.processes[handle.id]
+            # Forward result to callback
+            if self.on_result:
+                try:
+                    await self.on_result(result)
+                except Exception as e:
+                    logger.exception(f"Error in result callback: {e}")
+            return
+
         # Check if should recycle (pending flag or execution count threshold)
         if handle.pending_recycle:
             logger.info(f"Recycling process {handle.id} (pending recycle flag)")
@@ -1168,7 +1289,7 @@ class ProcessPoolManager:
         del self.processes[handle.id]
 
         # Spawn replacement immediately so we maintain worker count
-        self._spawn_process()
+        self._spawn_or_fork_process()
 
         # Then terminate the old process (this includes grace period wait)
         await self._terminate_process(handle)
@@ -1209,7 +1330,7 @@ class ProcessPoolManager:
         # graceful shutdown wait. Only delete if still present.
         if target.id in self.processes:
             del self.processes[target.id]
-        self._spawn_process()
+        self._spawn_or_fork_process()
 
         return True
 
@@ -1232,8 +1353,8 @@ class ProcessPoolManager:
             ValueError: If new_min < 2 or new_min > new_max
         """
         # Validate bounds
-        if new_min < 2:
-            raise ValueError(f"min_workers must be >= 2, got {new_min}")
+        if new_min < 0:
+            raise ValueError(f"min_workers must be >= 0, got {new_min}")
         if new_min > new_max:
             raise ValueError(
                 f"min_workers ({new_min}) cannot be greater than max_workers ({new_max})"
@@ -1285,7 +1406,7 @@ class ProcessPoolManager:
                 except Exception as e:
                     logger.warning(f"Failed to publish progress: {e}")
 
-                self._spawn_process()
+                self._spawn_or_fork_process()
                 processes_spawned += 1
 
         # Scale down if needed (mark excess idle processes for termination)

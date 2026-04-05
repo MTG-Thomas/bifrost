@@ -82,8 +82,8 @@ class WorkerPoolConfigService:
             ValueError: If min_workers < 2 or min_workers > max_workers
         """
         # Validate
-        if min_workers < 2:
-            raise ValueError(f"min_workers must be >= 2, got {min_workers}")
+        if min_workers < 0:
+            raise ValueError(f"min_workers must be >= 0, got {min_workers}")
         if min_workers > max_workers:
             raise ValueError(
                 f"min_workers ({min_workers}) cannot be greater than max_workers ({max_workers})"

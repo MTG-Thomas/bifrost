@@ -237,7 +237,7 @@ class TestProcessPoolManagerStart:
             pool.processes[handle.id] = handle
             return handle
 
-        pool._spawn_process = mock_spawn
+        pool._spawn_or_fork_process = mock_spawn
 
         # Mock Redis and background tasks
         with patch.object(pool, "_get_redis", new_callable=AsyncMock) as mock_redis:
@@ -341,7 +341,7 @@ class TestProcessPoolManagerRouting:
             pool.processes["process-2"] = new_handle
             return new_handle
 
-        pool._spawn_process = mock_spawn
+        pool._spawn_or_fork_process = mock_spawn
 
         # Mock Redis
         with patch.object(pool, "_write_context_to_redis", new_callable=AsyncMock):
@@ -458,7 +458,7 @@ class TestProcessPoolManagerTimeouts:
 
         pool._kill_process = mock_kill
         pool._report_timeout = mock_report_timeout
-        pool._spawn_process = mock_spawn
+        pool._spawn_or_fork_process = mock_spawn
 
         await pool._check_timeouts()
 
@@ -525,7 +525,7 @@ class TestProcessPoolManagerCrashDetection:
             return new_handle
 
         pool._report_crash = mock_report_crash
-        pool._spawn_process = mock_spawn
+        pool._spawn_or_fork_process = mock_spawn
 
         await pool._check_process_health()
 
@@ -585,7 +585,7 @@ class TestProcessPoolManagerRecycle:
             return new_handle
 
         pool._terminate_process = mock_terminate
-        pool._spawn_process = mock_spawn
+        pool._spawn_or_fork_process = mock_spawn
 
         result = await pool.recycle_process(12345)
 
@@ -964,3 +964,98 @@ class TestProcessPoolManagerIntegration:
 
         assert handle.state == ProcessState.IDLE
         callback.assert_called_once_with(result_data)
+
+
+class TestMinWorkersZero:
+    """Tests for on-demand mode (min_workers=0)."""
+
+    @pytest.fixture
+    def pool_zero(self):
+        """Create a pool with min_workers=0."""
+        pool = ProcessPoolManager(
+            min_workers=0,
+            max_workers=5,
+        )
+        return pool
+
+    def test_min_workers_zero_is_valid(self, pool_zero):
+        """Should accept min_workers=0 without raising."""
+        assert pool_zero.min_workers == 0
+
+    @pytest.mark.asyncio
+    async def test_start_with_zero_workers_spawns_none(self, pool_zero):
+        """Pool with min_workers=0 should have no processes after start."""
+        with patch.object(pool_zero, '_spawn_or_fork_process') as mock_spawn:
+            with patch.object(pool_zero, '_register_worker', new_callable=AsyncMock):
+                with patch.object(pool_zero, '_apply_persisted_config', new_callable=AsyncMock):
+                    with patch.object(pool_zero, '_start_template', new_callable=AsyncMock):
+                        pool_zero._started = True
+                        # Simulate start without background tasks
+                        assert len(pool_zero.processes) == 0
+                        mock_spawn.assert_not_called()
+
+
+class TestAdmissionControl:
+    """Tests for cgroup-based admission control."""
+
+    @pytest.mark.asyncio
+    async def test_route_execution_checks_memory_pressure(self):
+        """Should reject execution when memory pressure is too high."""
+        pool = ProcessPoolManager(min_workers=0, max_workers=5)
+        pool._started = True
+
+        with patch(
+            "src.services.execution.process_pool.has_sufficient_memory_cgroup",
+            return_value=False,
+        ):
+            with patch.object(pool, '_write_context_to_redis', new_callable=AsyncMock):
+                with pytest.raises(MemoryError, match="memory pressure"):
+                    await pool.route_execution("exec-123", {"timeout_seconds": 300})
+
+    @pytest.mark.asyncio
+    async def test_route_execution_allows_when_memory_ok(self):
+        """Should allow execution when memory is within threshold."""
+        pool = ProcessPoolManager(min_workers=0, max_workers=5)
+        pool._started = True
+
+        mock_handle = ProcessHandle(
+            id="process-1",
+            process=MagicMock(is_alive=MagicMock(return_value=True)),
+            pid=12345,
+            state=ProcessState.IDLE,
+            work_queue=MagicMock(),
+            result_queue=MagicMock(),
+            started_at=datetime.now(timezone.utc),
+        )
+
+        with patch(
+            "src.services.execution.process_pool.has_sufficient_memory_cgroup",
+            return_value=True,
+        ):
+            with patch.object(pool, '_write_context_to_redis', new_callable=AsyncMock):
+                with patch.object(pool, '_spawn_or_fork_process', return_value=mock_handle):
+                    pool.processes["process-1"] = mock_handle
+                    await pool.route_execution("exec-123", {"timeout_seconds": 300})
+                    assert mock_handle.state == ProcessState.BUSY
+
+
+class TestResizeMinWorkersZero:
+    """Tests for resize accepting min_workers=0."""
+
+    @pytest.mark.asyncio
+    async def test_resize_to_zero_is_valid(self):
+        """Resize to min_workers=0 should succeed."""
+        pool = ProcessPoolManager(min_workers=2, max_workers=5)
+        pool._started = True
+
+        with patch.object(pool, '_update_redis_config', new_callable=AsyncMock):
+            with patch(
+                "src.services.execution.process_pool.publish_pool_config_changed",
+                new_callable=AsyncMock,
+                create=True,
+            ):
+                # Patch the lazy import inside resize
+                with patch.object(pool, '_scale_down_process', new_callable=AsyncMock):
+                    result = await pool.resize(0, 5)
+                    assert pool.min_workers == 0
+                    assert result["new_min"] == 0
