@@ -3,8 +3,6 @@
 from unittest.mock import patch
 from datetime import datetime, timezone
 
-import pytest
-
 
 class TestHeartbeatCgroupData:
     """Tests for cgroup memory data in heartbeat payload."""

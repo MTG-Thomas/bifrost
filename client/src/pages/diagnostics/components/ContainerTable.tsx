@@ -121,8 +121,8 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                     {pools.map((pool) => {
                         const isExpanded = expanded.has(pool.worker_id);
                         const counts = getPoolCounts(pool);
-                        const memCurrent = (pool as any).memory_current_bytes ?? -1;
-                        const memMax = (pool as any).memory_max_bytes ?? -1;
+                        const memCurrent = "memory_current_bytes" in pool ? (pool.memory_current_bytes ?? -1) : -1;
+                        const memMax = "memory_max_bytes" in pool ? (pool.memory_max_bytes ?? -1) : -1;
                         const memPct =
                             memMax > 0 ? (memCurrent / memMax) * 100 : 0;
                         const ci = colorIndex(pool.worker_id);

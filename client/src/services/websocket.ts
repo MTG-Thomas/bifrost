@@ -314,6 +314,8 @@ export interface PoolHeartbeatMessage {
 	max_workers?: number;
 	requirements_installed?: number;
 	requirements_total?: number;
+	memory_current_bytes?: number;
+	memory_max_bytes?: number;
 	processes?: Array<{
 		process_id: string;
 		pid: number;
