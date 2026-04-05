@@ -82,8 +82,6 @@ export function useWorkerWebSocket(): UseWorkerWebSocketReturn {
 						status: message.status || null,
 						started_at: message.started_at || null,
 						last_heartbeat: message.timestamp || null,
-						min_workers: message.min_workers ?? 2,
-						max_workers: message.max_workers ?? 10,
 						processes,
 						requirements_installed: message.requirements_installed ?? null,
 						requirements_total: message.requirements_total ?? null,
@@ -116,8 +114,6 @@ export function useWorkerWebSocket(): UseWorkerWebSocketReturn {
 							status: "online",
 							started_at: message.started_at || null,
 							last_heartbeat: null,
-							min_workers: 2,
-							max_workers: 10,
 							processes: [],
 							requirements_installed: null,
 							requirements_total: null,
@@ -157,21 +153,7 @@ export function useWorkerWebSocket(): UseWorkerWebSocketReturn {
 			}
 
 			case "pool_config_changed": {
-				// Update pool config (min/max workers)
-				setPools((prev) => {
-					const idx = prev.findIndex(
-						(p) => p.worker_id === message.worker_id
-					);
-					if (idx < 0) return prev;
-
-					const updated = [...prev];
-					updated[idx] = {
-						...updated[idx],
-						min_workers: message.new_min,
-						max_workers: message.new_max,
-					};
-					return updated;
-				});
+				// No-op: pool config is no longer runtime-configurable
 				break;
 			}
 

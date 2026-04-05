@@ -310,8 +310,6 @@ export interface PoolHeartbeatMessage {
 	pool_size?: number;
 	idle_count?: number;
 	busy_count?: number;
-	min_workers?: number;
-	max_workers?: number;
 	requirements_installed?: number;
 	requirements_total?: number;
 	memory_current_bytes?: number;

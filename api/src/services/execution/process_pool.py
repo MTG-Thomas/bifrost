@@ -472,53 +472,6 @@ class ProcessPoolManager:
             f"ProcessPoolManager started with {len(self.processes)} workers"
         )
 
-        # Check for persisted configuration and apply if different
-        await self._apply_persisted_config()
-
-    async def _apply_persisted_config(self) -> None:
-        """
-        Check for persisted pool configuration and apply if different from current.
-
-        This ensures config changes survive container restarts.
-        Called after pool start to check system_configs table.
-        """
-        try:
-            # Import here to avoid circular dependencies
-            from sqlalchemy.ext.asyncio import create_async_engine
-            from sqlalchemy.ext.asyncio import async_sessionmaker
-
-            from src.config import get_settings
-            from src.services.worker_pool_config_service import get_pool_config
-
-            settings = get_settings()
-
-            # Create a temporary session for config lookup
-            engine = create_async_engine(settings.database_url)
-            async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-            async with async_session() as session:
-                config = await get_pool_config(session)
-
-                # Check if persisted config differs from current
-                if (config.min_workers != self.min_workers or
-                        config.max_workers != self.max_workers):
-                    logger.info(
-                        f"Applying persisted config: min={config.min_workers}, "
-                        f"max={config.max_workers} (current: min={self.min_workers}, "
-                        f"max={self.max_workers})"
-                    )
-
-                    # Apply the persisted config
-                    await self.resize(config.min_workers, config.max_workers)
-                else:
-                    logger.debug("Persisted config matches current settings")
-
-            await engine.dispose()
-
-        except Exception as e:
-            # Don't fail startup if we can't load persisted config
-            logger.warning(f"Failed to apply persisted config (using defaults): {e}")
-
     async def stop(self) -> None:
         """
         Gracefully stop the pool manager and all processes.
@@ -934,8 +887,6 @@ class ProcessPoolManager:
             await self._handle_recycle_process_command(command)
         elif action == "recycle_all":
             await self._handle_recycle_all_command(command)
-        elif action == "resize":
-            await self._handle_resize_command(command)
         else:
             logger.warning(f"Unknown command action: {action}")
 
@@ -1012,28 +963,6 @@ class ProcessPoolManager:
 
             # Recycle this idle process
             await self._recycle_idle_process(handle)
-
-    async def _handle_resize_command(self, command: dict[str, Any]) -> None:
-        """
-        Handle resize command - update min/max workers and scale pool.
-
-        Args:
-            command: Command dict with 'min_workers' and 'max_workers' fields
-        """
-        new_min = command.get("min_workers")
-        new_max = command.get("max_workers")
-
-        if new_min is None or new_max is None:
-            logger.warning("resize command missing min_workers or max_workers")
-            return
-
-        logger.info(f"Processing resize command: min={new_min}, max={new_max}")
-
-        try:
-            result = await self.resize(new_min, new_max)
-            logger.info(f"Resize complete: {result}")
-        except ValueError as e:
-            logger.error(f"Resize failed: {e}")
 
     async def _handle_cancel_request(self, execution_id: str) -> None:
         """
@@ -1354,154 +1283,6 @@ class ProcessPoolManager:
 
         return True
 
-    async def resize(self, new_min: int, new_max: int) -> dict[str, Any]:
-        """
-        Dynamically resize the pool.
-
-        Adjusts min_workers and max_workers, then scales the pool:
-        - Scale up: spawn processes if current size < new_min
-        - Scale down: mark excess idle processes for removal (preserve busy)
-
-        Args:
-            new_min: New minimum worker count (must be >= 2)
-            new_max: New maximum worker count (must be >= new_min)
-
-        Returns:
-            Dict with old/new config and scaling actions taken
-
-        Raises:
-            ValueError: If new_min < 2 or new_min > new_max
-        """
-        # Validate bounds
-        if new_min < 0:
-            raise ValueError(f"min_workers must be >= 0, got {new_min}")
-        if new_min > new_max:
-            raise ValueError(
-                f"min_workers ({new_min}) cannot be greater than max_workers ({new_max})"
-            )
-
-        old_min = self.min_workers
-        old_max = self.max_workers
-        current_size = len(self.processes)
-
-        logger.info(
-            f"Resizing pool: min {old_min}->{new_min}, max {old_max}->{new_max}, "
-            f"current size: {current_size}"
-        )
-
-        # Update config
-        self.min_workers = new_min
-        self.max_workers = new_max
-
-        processes_spawned = 0
-        processes_marked_for_removal = 0
-
-        # Scale up if needed
-        if current_size < new_min:
-            to_spawn = new_min - current_size
-            logger.info(f"Scaling up: spawning {to_spawn} processes")
-
-            # Publish initial scaling event
-            try:
-                from src.core.pubsub import publish_pool_scaling, publish_pool_progress
-                await publish_pool_scaling(
-                    worker_id=self.worker_id,
-                    action="scale_up",
-                    processes_affected=to_spawn,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to publish scale_up event: {e}")
-
-            for i in range(to_spawn):
-                # Publish progress before spawning
-                try:
-                    from src.core.pubsub import publish_pool_progress
-                    await publish_pool_progress(
-                        worker_id=self.worker_id,
-                        action="scale_up",
-                        current=i + 1,
-                        total=to_spawn,
-                        message=f"Spawning process {i + 1} of {to_spawn}...",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to publish progress: {e}")
-
-                self._spawn_or_fork_process()
-                processes_spawned += 1
-
-        # Scale down if needed (mark excess idle processes for termination)
-        elif current_size > new_max:
-            excess = current_size - new_max
-            logger.info(f"Scaling down: marking {excess} idle processes for removal")
-
-            # Find idle processes to remove (oldest first)
-            idle_handles = [
-                h for h in self.processes.values()
-                if h.state == ProcessState.IDLE
-            ]
-            # Sort by started_at to remove oldest first
-            idle_handles.sort(key=lambda h: h.started_at or datetime.min)
-
-            to_remove = idle_handles[:excess]
-
-            # Publish initial scaling event
-            if to_remove:
-                try:
-                    from src.core.pubsub import publish_pool_scaling
-                    await publish_pool_scaling(
-                        worker_id=self.worker_id,
-                        action="scale_down",
-                        processes_affected=len(to_remove),
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to publish scale_down event: {e}")
-
-            for i, handle in enumerate(to_remove):
-                # Publish progress before terminating
-                try:
-                    from src.core.pubsub import publish_pool_progress
-                    await publish_pool_progress(
-                        worker_id=self.worker_id,
-                        action="scale_down",
-                        current=i + 1,
-                        total=len(to_remove),
-                        message=f"Terminating process {i + 1} of {len(to_remove)}...",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to publish progress: {e}")
-
-                # Mark for removal and terminate
-                asyncio.create_task(self._scale_down_process(handle))
-                processes_marked_for_removal += 1
-
-        # Update Redis registration with new config
-        await self._update_redis_config()
-
-        # Publish config changed event
-        try:
-            from src.core.pubsub import publish_pool_config_changed
-            await publish_pool_config_changed(
-                worker_id=self.worker_id,
-                old_min=old_min,
-                old_max=old_max,
-                new_min=new_min,
-                new_max=new_max,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to publish config changed event: {e}")
-
-        result = {
-            "old_min": old_min,
-            "old_max": old_max,
-            "new_min": new_min,
-            "new_max": new_max,
-            "processes_spawned": processes_spawned,
-            "processes_marked_for_removal": processes_marked_for_removal,
-        }
-
-        logger.info(f"Resize complete: {result}")
-        return result
-
     async def _scale_down_process(self, handle: ProcessHandle) -> None:
         """
         Terminate a process as part of scale-down operation.
@@ -1526,24 +1307,6 @@ class ProcessPoolManager:
 
         # Terminate the process
         await self._terminate_process(handle)
-
-    async def _update_redis_config(self) -> None:
-        """Update the Redis registration with current min/max workers."""
-        try:
-            r = await self._get_redis()
-            redis_key = f"bifrost:pool:{self.worker_id}"
-            await r.hset(  # type: ignore[misc]
-                redis_key,
-                mapping={
-                    "min_workers": str(self.min_workers),
-                    "max_workers": str(self.max_workers),
-                }
-            )
-            logger.debug(
-                f"Updated Redis config: min={self.min_workers}, max={self.max_workers}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to update Redis config: {e}")
 
     def mark_for_recycle(self) -> tuple[int, list[ProcessHandle]]:
         """
@@ -1631,8 +1394,6 @@ class ProcessPoolManager:
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "status": "online",
                 "hostname": os.environ.get("HOSTNAME", "unknown"),
-                "min_workers": str(self.min_workers),
-                "max_workers": str(self.max_workers),
                 "packages": json.dumps(packages),
             }
         )
@@ -1773,8 +1534,6 @@ class ProcessPoolManager:
             "pool_size": len(self.processes),
             "idle_count": idle_count,
             "busy_count": busy_count,
-            "min_workers": self.min_workers,
-            "max_workers": self.max_workers,
             "requirements_installed": self._requirements_installed,
             "requirements_total": self._requirements_total,
             "memory_current_bytes": memory_current,
@@ -1825,8 +1584,6 @@ class ProcessPoolManager:
             "shutdown": self._shutdown,
             "worker_id": self.worker_id,
             "pool_size": len(self.processes),
-            "min_workers": self.min_workers,
-            "max_workers": self.max_workers,
             "processes": [
                 {
                     "process_id": p.id,
@@ -1856,7 +1613,7 @@ def get_process_pool() -> ProcessPoolManager:
     if _pool is None:
         settings = get_settings()
         _pool = ProcessPoolManager(
-            min_workers=settings.min_workers,
+            min_workers=0,  # On-demand (JIT) mode — no warm pool
             max_workers=settings.max_workers,
             execution_timeout_seconds=settings.execution_timeout_seconds,
             graceful_shutdown_seconds=settings.graceful_shutdown_seconds,

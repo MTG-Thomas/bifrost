@@ -54,8 +54,6 @@ export interface PoolDetail {
 	status: string | null;
 	started_at: string | null;
 	last_heartbeat: string | null;
-	min_workers: number;
-	max_workers: number;
 	processes: ProcessInfo[];
 	requirements_installed: number | null;
 	requirements_total: number | null;
@@ -96,23 +94,6 @@ export interface RecycleResponse {
 	worker_id: string;
 	process_id: string | null;
 	pid: number | null;
-}
-
-export interface PoolConfigUpdateRequest {
-	min_workers: number;
-	max_workers: number;
-}
-
-export interface PoolConfigUpdateResponse {
-	success: boolean;
-	message: string;
-	worker_id: string;
-	old_min: number;
-	old_max: number;
-	new_min: number;
-	new_max: number;
-	processes_spawned: number;
-	processes_marked_for_removal: number;
 }
 
 export interface RecycleAllRequest {

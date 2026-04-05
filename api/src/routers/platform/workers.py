@@ -23,8 +23,6 @@ from src.core.auth import CurrentSuperuser, get_current_superuser
 from src.core.database import get_db
 from src.models import Execution, Workflow
 from src.models.contracts.platform import (
-    PoolConfigUpdateRequest,
-    PoolConfigUpdateResponse,
     PoolDetail,
     PoolsListResponse,
     PoolStatsResponse,
@@ -183,123 +181,6 @@ async def get_worker_metrics(
         ]
 
     return WorkerMetricsResponse(range=range, points=points)
-
-
-@router.get(
-    "/config",
-    response_model=PoolConfigUpdateResponse,
-    summary="Get global pool configuration",
-    description="Get the current global min/max workers configuration",
-)
-async def get_pool_config(
-    _admin: CurrentSuperuser,
-    db: AsyncSession = Depends(get_db),
-) -> PoolConfigUpdateResponse:
-    """
-    Get global pool configuration.
-
-    Returns the current min/max workers settings that apply to all pools.
-    """
-    from src.services.worker_pool_config_service import get_pool_config as get_config
-
-    config = await get_config(db)
-
-    return PoolConfigUpdateResponse(
-        success=True,
-        message="Current pool configuration",
-        worker_id="global",
-        old_min=config.min_workers,
-        old_max=config.max_workers,
-        new_min=config.min_workers,
-        new_max=config.max_workers,
-    )
-
-
-@router.patch(
-    "/config",
-    response_model=PoolConfigUpdateResponse,
-    summary="Update global pool configuration",
-    description="Update min/max workers for all pools. Changes take effect immediately and are persisted.",
-)
-async def update_pool_config(
-    admin: CurrentSuperuser,
-    request: PoolConfigUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-) -> PoolConfigUpdateResponse:
-    """
-    Update global pool min/max workers configuration.
-
-    Changes are:
-    1. Persisted to the database (survives container restarts)
-    2. Published via Redis pub/sub to ALL workers for immediate effect
-    3. All pools scale up/down as needed based on new config
-
-    Scale up happens immediately if current < new_min.
-    Scale down marks excess idle processes for graceful removal.
-    """
-    from src.services.worker_pool_config_service import get_pool_config as get_config, save_pool_config
-
-    r = await _get_redis()
-
-    # Get current config
-    current_config = await get_config(db)
-    old_min = current_config.min_workers
-    old_max = current_config.max_workers
-
-    # Save to database for persistence
-    await save_pool_config(
-        session=db,
-        min_workers=request.min_workers,
-        max_workers=request.max_workers,
-        updated_by=str(admin.user_id),
-    )
-    await db.commit()
-
-    # Find all registered pools and broadcast resize command to each
-    cursor = 0
-    pool_keys: list[str] = []
-    pools_notified = 0
-
-    while True:
-        cursor, keys = await r.scan(cursor, match="bifrost:pool:*", count=100)
-        for key in keys:
-            if ":heartbeat" not in key and ":commands" not in key:
-                pool_keys.append(key)
-        if cursor == 0:
-            break
-
-    command = {
-        "action": "resize",
-        "min_workers": request.min_workers,
-        "max_workers": request.max_workers,
-        "requested_by": str(admin.user_id),
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    for key in pool_keys:
-        parts = key.split(":")
-        if len(parts) != 3:
-            continue
-        worker_id = parts[2]
-        command_channel = f"bifrost:pool:{worker_id}:commands"
-        await r.publish(command_channel, json.dumps(command))
-        pools_notified += 1
-
-    logger.info(
-        f"Published resize command to {pools_notified} pools: "
-        f"min {old_min}->{request.min_workers}, max {old_max}->{request.max_workers} "
-        f"by user {admin.user_id}"
-    )
-
-    return PoolConfigUpdateResponse(
-        success=True,
-        message=f"Pool configuration updated for {pools_notified} pools",
-        worker_id="global",
-        old_min=old_min,
-        old_max=old_max,
-        new_min=request.min_workers,
-        new_max=request.max_workers,
-    )
 
 
 @router.get(
@@ -476,8 +357,6 @@ async def get_pool(
         hostname=data.get("hostname"),
         status=data.get("status"),
         started_at=data.get("started_at"),
-        min_workers=int(data.get("min_workers", 2)),
-        max_workers=int(data.get("max_workers", 10)),
     )
 
     if heartbeat_data:
