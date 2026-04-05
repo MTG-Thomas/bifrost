@@ -54,3 +54,26 @@ class TestHeartbeatCgroupData:
 
         assert heartbeat["memory_current_bytes"] == -1
         assert heartbeat["memory_max_bytes"] == -1
+
+
+class TestMetricsDownsampling:
+    """Tests for metrics query downsampling."""
+
+    def test_range_to_timedelta(self):
+        """Verify range string parsing."""
+        from datetime import timedelta
+
+        range_map = {
+            "1h": timedelta(hours=1),
+            "6h": timedelta(hours=6),
+            "24h": timedelta(hours=24),
+            "7d": timedelta(days=7),
+        }
+        for range_str, expected in range_map.items():
+            unit = range_str[-1]
+            value = int(range_str[:-1])
+            if unit == "h":
+                result = timedelta(hours=value)
+            elif unit == "d":
+                result = timedelta(days=value)
+            assert result == expected

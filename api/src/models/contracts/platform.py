@@ -222,3 +222,26 @@ class StuckHistoryResponse(BaseModel):
     workflows: list[StuckWorkflowStats]
 
 
+# =============================================================================
+# Worker Metrics Models (Time-Series for Diagnostics Chart)
+# =============================================================================
+
+
+class WorkerMetricPoint(BaseModel):
+    """A single time-series data point for the memory chart."""
+
+    timestamp: str = Field(..., description="ISO timestamp")
+    worker_id: str = Field(..., description="Container/pool identifier")
+    memory_current: int = Field(..., description="cgroup memory.current in bytes")
+    memory_max: int = Field(..., description="cgroup memory.max in bytes")
+    fork_count: int = Field(default=0)
+    busy_count: int = Field(default=0)
+    idle_count: int = Field(default=0)
+
+
+class WorkerMetricsResponse(BaseModel):
+    """Response for worker metrics time-series endpoint."""
+
+    range: str = Field(..., description="Requested time range: 1h, 6h, 24h, 7d")
+    points: list[WorkerMetricPoint] = Field(default_factory=list)
+

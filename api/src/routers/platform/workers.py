@@ -38,6 +38,8 @@ from src.models.contracts.platform import (
     RecycleProcessResponse,
     StuckHistoryResponse,
     StuckWorkflowStats,
+    WorkerMetricPoint,
+    WorkerMetricsResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,118 @@ async def _get_redis() -> aioredis.Redis:
 # =============================================================================
 # Static routes MUST be defined before dynamic routes (/{worker_id})
 # =============================================================================
+
+
+@router.get(
+    "/metrics",
+    response_model=WorkerMetricsResponse,
+    summary="Get worker metrics time-series",
+    description="Returns time-series memory data for the aggregate chart. "
+    "Downsampled for longer ranges.",
+)
+async def get_worker_metrics(
+    _admin: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+    range: str = Query(
+        default="1h",
+        regex=r"^(1h|6h|24h|7d)$",
+        description="Time range: 1h, 6h, 24h, 7d",
+    ),
+) -> WorkerMetricsResponse:
+    """Get worker metrics for the diagnostics memory chart."""
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from src.models.orm.worker_metric import WorkerMetric
+
+    # Parse range
+    range_map = {
+        "1h": timedelta(hours=1),
+        "6h": timedelta(hours=6),
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
+    }
+    delta = range_map[range]
+    cutoff = datetime.now(timezone.utc) - delta
+
+    # Determine bucket size for downsampling
+    # 1h: raw data, 6h/24h: 5-min buckets, 7d: 30-min buckets
+    if range == "1h":
+        # Raw data — no downsampling
+        stmt = (
+            select(WorkerMetric)
+            .where(WorkerMetric.timestamp >= cutoff)
+            .order_by(WorkerMetric.timestamp)
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+
+        points = [
+            WorkerMetricPoint(
+                timestamp=row.timestamp.isoformat(),
+                worker_id=row.worker_id,
+                memory_current=row.memory_current,
+                memory_max=row.memory_max,
+                fork_count=row.fork_count,
+                busy_count=row.busy_count,
+                idle_count=row.idle_count,
+            )
+            for row in rows
+        ]
+    else:
+        # Downsampled — bucket by time interval
+        bucket_minutes = 5 if range in ("6h", "24h") else 30
+
+        stmt = (
+            select(
+                func.date_trunc("hour", WorkerMetric.timestamp).label("hour"),
+                func.floor(
+                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
+                ).label("bucket"),
+                WorkerMetric.worker_id,
+                func.avg(WorkerMetric.memory_current).label("avg_memory_current"),
+                func.max(WorkerMetric.memory_max).label("memory_max"),
+                func.round(func.avg(WorkerMetric.fork_count)).label("avg_fork_count"),
+                func.round(func.avg(WorkerMetric.busy_count)).label("avg_busy_count"),
+                func.round(func.avg(WorkerMetric.idle_count)).label("avg_idle_count"),
+            )
+            .where(WorkerMetric.timestamp >= cutoff)
+            .group_by(
+                func.date_trunc("hour", WorkerMetric.timestamp),
+                func.floor(
+                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
+                ),
+                WorkerMetric.worker_id,
+            )
+            .order_by(
+                func.date_trunc("hour", WorkerMetric.timestamp),
+                func.floor(
+                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
+                ),
+            )
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        points = [
+            WorkerMetricPoint(
+                timestamp=(
+                    row.hour.replace(
+                        minute=int(row.bucket * bucket_minutes)
+                    )
+                ).isoformat(),
+                worker_id=row.worker_id,
+                memory_current=int(row.avg_memory_current),
+                memory_max=int(row.memory_max),
+                fork_count=int(row.avg_fork_count),
+                busy_count=int(row.avg_busy_count),
+                idle_count=int(row.avg_idle_count),
+            )
+            for row in rows
+        ]
+
+    return WorkerMetricsResponse(range=range, points=points)
 
 
 @router.get(

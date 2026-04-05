@@ -221,6 +221,38 @@ class Scheduler:
         except ImportError:
             logger.warning("Stuck event cleanup job not available")
 
+        # Worker metrics sampling - every 60 seconds
+        # Reads heartbeats from Redis and persists to DB for the diagnostics chart
+        try:
+            from src.jobs.schedulers.worker_metrics_sampling import sample_worker_metrics
+            scheduler.add_job(
+                sample_worker_metrics,
+                IntervalTrigger(seconds=60),
+                id="worker_metrics_sampling",
+                name="Sample worker metrics from Redis heartbeats",
+                replace_existing=True,
+                next_run_time=datetime.now(timezone.utc),
+                **misfire_options,
+            )
+            logger.info("Worker metrics sampling job scheduled (every 60s)")
+        except ImportError:
+            logger.warning("Worker metrics sampling job not available")
+
+        # Worker metrics cleanup - daily at 4:00 AM UTC (7-day retention)
+        try:
+            from src.jobs.schedulers.worker_metrics_cleanup import cleanup_old_worker_metrics
+            scheduler.add_job(
+                cleanup_old_worker_metrics,
+                CronTrigger(hour=4, minute=0),  # Daily at 4:00 AM UTC
+                id="worker_metrics_cleanup",
+                name="Cleanup old worker metrics (7-day retention)",
+                replace_existing=True,
+                **misfire_options,
+            )
+            logger.info("Worker metrics cleanup job scheduled (daily at 4:00 AM)")
+        except ImportError:
+            logger.warning("Worker metrics cleanup job not available")
+
         scheduler.start()
         self._scheduler = scheduler
         logger.info("APScheduler started with scheduled jobs")
