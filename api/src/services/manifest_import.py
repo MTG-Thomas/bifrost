@@ -242,6 +242,7 @@ async def import_manifest_from_repo(
     from src.services.repo_storage import RepoStorage
     from bifrost.manifest import (
         MANIFEST_FILES,
+        filter_manifest_by_ids,
         parse_manifest_dir,
         serialize_manifest_dir,
         validate_manifest,
@@ -272,11 +273,10 @@ async def import_manifest_from_repo(
         result.warnings.append(f"Failed to parse manifest: {e}")
         return result
 
-    # 3. Validate
+    # 3. Validate (warnings only — DB FK constraints are the real safety net)
     validation_errors = validate_manifest(manifest)
     if validation_errors:
         result.warnings.extend(validation_errors)
-        return result
 
     # 4. Compute diff against current DB state
     db_manifest = await generate_manifest(db)
@@ -288,12 +288,10 @@ async def import_manifest_from_repo(
         result.dry_run = True
         return result
 
-    # 4b. Short-circuit: nothing changed
+    # 4b. Short-circuit: nothing changed — no write-back needed
     if not changed_ids:
         result.applied = True
         result.entity_changes = entity_changes  # empty list
-        new_manifest = await generate_manifest(db)
-        result.manifest_files = serialize_manifest_dir(new_manifest)
         return result
 
     # Check if diff has any deletes (to skip _resolve_deletions later)
@@ -361,10 +359,22 @@ async def import_manifest_from_repo(
         result.warnings.append(f"Entity resolution failed: {e}")
         logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)
 
-    # 7. Regenerate manifest from DB
+    # 6b. Refresh MCP tool registry so new/changed tools appear immediately
+    if result.applied and not dry_run:
+        try:
+            from src.services.mcp_server.server import refresh_workflow_tools
+            await refresh_workflow_tools()
+        except Exception as e:
+            logger.warning(f"Failed to refresh MCP workflow tools after manifest import: {e}")
+
+    # 7. Regenerate manifest from DB (partial: only changed entities)
     try:
         new_manifest = await generate_manifest(db)
-        result.manifest_files = serialize_manifest_dir(new_manifest)
+        if changed_ids:
+            partial = filter_manifest_by_ids(new_manifest, changed_ids)
+            result.manifest_files = serialize_manifest_dir(partial)
+        else:
+            result.manifest_files = serialize_manifest_dir(new_manifest)
     except Exception as e:
         result.warnings.append(f"Manifest regeneration failed: {e}")
 
@@ -938,7 +948,7 @@ class ManifestResolver:
             return [Upsert(
                 model=Role,
                 id=role_id,
-                values={"name": mrole.name, "is_active": mrole.is_active},
+                values={"name": mrole.name},
                 match_on="id",
             )]
 
@@ -948,7 +958,7 @@ class ManifestResolver:
             return [Upsert(
                 model=Role,
                 id=role_id,
-                values={"id": role_id, "name": mrole.name, "is_active": mrole.is_active},
+                values={"id": role_id, "name": mrole.name},
                 match_on="name",
             )]
 
@@ -956,7 +966,7 @@ class ManifestResolver:
         return [Upsert(
             model=Role,
             id=role_id,
-            values={"name": mrole.name, "is_active": mrole.is_active, "created_by": "git-sync"},
+            values={"name": mrole.name, "created_by": "git-sync"},
             match_on="id",
         )]
 
@@ -1407,14 +1417,9 @@ class ManifestResolver:
                 "organizations",
             )
 
-        # Soft-delete roles not in manifest (only when manifest has roles)
+        # Delete roles not in manifest (only when manifest has roles)
         if present_role_uuids:
-            await _bulk_deactivate(
-                Role,
-                [Role.is_active == True],  # noqa: E712
-                present_role_uuids,
-                "roles",
-            )
+            await _bulk_delete(Role, [], present_role_uuids, "roles")
 
         return entity_changes
 

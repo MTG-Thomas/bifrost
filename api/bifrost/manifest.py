@@ -56,8 +56,6 @@ class ManifestRole(BaseModel):
     """Role entry in manifest."""
     id: str
     name: str
-    organization_id: str | None = None
-    is_active: bool = True
 
 
 class ManifestWorkflow(BaseModel):
@@ -263,6 +261,26 @@ def serialize_manifest(manifest: Manifest) -> str:
     """
     data = manifest.model_dump(mode="json", exclude_defaults=True, by_alias=True)
     return yaml.dump(data, default_flow_style=False, sort_keys=True, allow_unicode=True)
+
+
+def filter_manifest_by_ids(manifest: Manifest, entity_ids: set[str]) -> Manifest:
+    """Return a new Manifest containing only entities whose IDs are in entity_ids.
+
+    Dict-based entities (workflows, integrations, etc.) are filtered by key.
+    List-based entities (organizations, roles) are filtered by id attribute.
+    """
+    return Manifest(
+        organizations=[o for o in manifest.organizations if o.id in entity_ids],
+        roles=[r for r in manifest.roles if r.id in entity_ids],
+        workflows={k: v for k, v in manifest.workflows.items() if k in entity_ids},
+        integrations={k: v for k, v in manifest.integrations.items() if k in entity_ids},
+        configs={k: v for k, v in manifest.configs.items() if k in entity_ids},
+        tables={k: v for k, v in manifest.tables.items() if k in entity_ids},
+        events={k: v for k, v in manifest.events.items() if k in entity_ids},
+        forms={k: v for k, v in manifest.forms.items() if k in entity_ids},
+        agents={k: v for k, v in manifest.agents.items() if k in entity_ids},
+        apps={k: v for k, v in manifest.apps.items() if k in entity_ids},
+    )
 
 
 # =============================================================================

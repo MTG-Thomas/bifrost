@@ -185,6 +185,5 @@ async def get_user_roles(
         select(Role.name)
         .join(UserRole, UserRole.role_id == Role.id)
         .where(UserRole.user_id == user_id)
-        .where(Role.is_active == True)  # noqa: E712
     )
     return list(result.scalars().all())

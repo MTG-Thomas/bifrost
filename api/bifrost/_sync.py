@@ -166,7 +166,7 @@ async def _apply_role_change(db: "AsyncSession", change: dict[str, Any]) -> None
         result = await db.execute(select(Role).where(Role.id == role_uuid))
         role = result.scalars().first()
         if role:
-            role.is_active = False
+            await db.delete(role)
     elif operation == "update":
         result = await db.execute(select(Role).where(Role.id == role_uuid))
         role = result.scalars().first()

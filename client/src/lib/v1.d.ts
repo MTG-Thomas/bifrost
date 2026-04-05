@@ -1323,7 +1323,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a role
-         * @description Soft delete a role (Platform admin only)
+         * @description Delete a role (Platform admin only). CASCADE removes all role assignments.
          */
         delete: operations["delete_role_api_roles__role_id__delete"];
         options?: never;
@@ -3207,30 +3207,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/oauth/connections": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List OAuth connections
-         * @description List all OAuth connections (Platform admin only)
-         */
-        get: operations["list_connections_api_oauth_connections_get"];
-        put?: never;
-        /**
-         * Create OAuth connection
-         * @description Create a new OAuth connection (Platform admin only)
-         */
-        post: operations["create_connection_api_oauth_connections_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/oauth/connections/{connection_name}": {
         parameters: {
             query?: never;
@@ -3254,6 +3230,26 @@ export interface paths {
          * @description Delete an OAuth connection (Platform admin only)
          */
         delete: operations["delete_connection_api_oauth_connections__connection_name__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/oauth/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create OAuth connection
+         * @description Create a new OAuth connection (Platform admin only)
+         */
+        post: operations["create_connection_api_oauth_connections_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3410,22 +3406,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3441,6 +3437,9 @@ export interface paths {
         /**
          * Get developer context
          * @description Get development context for CLI initialization.
+         *
+         *     When org_id is provided, returns context for that specific organization
+         *     (superusers only). Otherwise uses the user's default organization.
          */
         get: operations["get_dev_context_api_cli_context_get"];
         /**
@@ -4734,6 +4733,46 @@ export interface paths {
         get: operations["get_agent_run_api_agent_runs__run_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rerun Agent Run
+         * @description Rerun an agent run with the same input (async, non-blocking).
+         */
+        post: operations["rerun_agent_run_api_agent_runs__run_id__rerun_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Agent Run
+         * @description Cancel a queued or running agent run.
+         */
+        post: operations["cancel_agent_run_api_agent_runs__run_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7756,11 +7795,6 @@ export interface components {
             organization_id?: string | null;
             /** Is Active */
             is_active: boolean;
-            /**
-             * Is System
-             * @default false
-             */
-            is_system: boolean;
             /** Created By */
             created_by?: string | null;
             /** Owner User Id */
@@ -7871,8 +7905,12 @@ export interface components {
             started_at?: string | null;
             /** Completed At */
             completed_at?: string | null;
+            /** Parent Run Id */
+            parent_run_id?: string | null;
             /** Steps */
             steps?: components["schemas"]["AgentRunStepResponse"][];
+            /** Child Run Ids */
+            child_run_ids?: string[];
             /** Ai Usage */
             ai_usage?: components["schemas"]["AIUsagePublicSimple"][] | null;
             ai_totals?: components["schemas"]["AIUsageTotalsSimple"] | null;
@@ -7885,6 +7923,14 @@ export interface components {
             total: number;
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /** AgentRunRerunResponse */
+        AgentRunRerunResponse: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
         };
         /** AgentRunResponse */
         AgentRunResponse: {
@@ -7949,6 +7995,8 @@ export interface components {
             started_at?: string | null;
             /** Completed At */
             completed_at?: string | null;
+            /** Parent Run Id */
+            parent_run_id?: string | null;
         };
         /** AgentRunStepResponse */
         AgentRunStepResponse: {
@@ -15369,6 +15417,16 @@ export interface components {
             busy_count: number;
             /** Last Heartbeat */
             last_heartbeat?: string | null;
+            /**
+             * Requirements Installed
+             * @description Number of required packages (from requirements.txt) installed on this worker
+             */
+            requirements_installed?: number | null;
+            /**
+             * Requirements Total
+             * @description Total number of required packages from requirements.txt
+             */
+            requirements_total?: number | null;
         };
         /**
          * PoolsListResponse
@@ -16171,11 +16229,6 @@ export interface components {
             name: string;
             /** Description */
             description?: string | null;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
             /** Permissions */
             permissions?: {
                 [key: string]: unknown;
@@ -16204,11 +16257,6 @@ export interface components {
             /** Description */
             description?: string | null;
             /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-            /**
              * Id
              * Format: uuid
              */
@@ -16233,8 +16281,6 @@ export interface components {
             name?: string | null;
             /** Description */
             description?: string | null;
-            /** Is Active */
-            is_active?: boolean | null;
             /** Permissions */
             permissions?: {
                 [key: string]: unknown;
@@ -18475,6 +18521,16 @@ export interface components {
              * @description Optional: Name/identifier for the script (used for logging when code is provided)
              */
             script_name?: string | null;
+            /**
+             * Org Id
+             * @description Override execution org context. Requires platform admin.
+             */
+            org_id?: string | null;
+            /**
+             * Run As
+             * @description Execute as this user UUID (impersonation). Requires platform admin.
+             */
+            run_as?: string | null;
         };
         /**
          * WorkflowExecutionResponse
@@ -18734,7 +18790,7 @@ export interface components {
             execution_mode: "sync" | "async";
             /**
              * Timeout Seconds
-             * @description Max execution time in seconds (default 30 min, max 2 hours)
+             * @description Max execution time in seconds. 0 = no timeout. Default 1800 (30 min), max 86400 (24h).
              * @default 1800
              */
             timeout_seconds: number;
@@ -18975,7 +19031,7 @@ export interface components {
             category?: string | null;
             /**
              * Timeout Seconds
-             * @description Max execution time in seconds (1-7200, default 1800)
+             * @description Max execution time in seconds. 0 = no timeout. Default 1800 (30 min), max 86400 (24h).
              */
             timeout_seconds?: number | null;
             /**
@@ -24225,61 +24281,6 @@ export interface operations {
             };
         };
     };
-    list_connections_api_oauth_connections_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
-    create_connection_api_oauth_connections_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateOAuthConnectionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OAuthConnectionDetail"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_connection_api_oauth_connections__connection_name__get: {
         parameters: {
             query?: never;
@@ -24363,6 +24364,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_connection_api_oauth_connections_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOAuthConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthConnectionDetail"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -24577,7 +24611,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24610,7 +24644,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24643,7 +24677,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24676,7 +24710,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24711,7 +24745,9 @@ export interface operations {
     };
     get_dev_context_api_cli_context_get: {
         parameters: {
-            query?: never;
+            query?: {
+                org_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -24725,6 +24761,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeveloperContextResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -26894,6 +26939,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentRunDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rerun_agent_run_api_agent_runs__run_id__rerun_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunRerunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_agent_run_api_agent_runs__run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

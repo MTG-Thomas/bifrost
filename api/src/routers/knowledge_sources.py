@@ -124,7 +124,7 @@ async def assign_namespace_roles(
 
         # Verify role exists
         result = await db.execute(
-            select(Role).where(Role.id == role_uuid, Role.is_active.is_(True))
+            select(Role).where(Role.id == role_uuid)
         )
         if not result.scalar_one_or_none():
             continue

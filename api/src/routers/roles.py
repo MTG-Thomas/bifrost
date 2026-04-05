@@ -76,7 +76,7 @@ async def list_roles(
     db: DbSession,
 ) -> list[RolePublic]:
     """List all roles."""
-    query = select(RoleORM).where(RoleORM.is_active).order_by(RoleORM.name)
+    query = select(RoleORM).order_by(RoleORM.name)
     result = await db.execute(query)
     roles = result.scalars().all()
     return [RolePublic.model_validate(r) for r in roles]
@@ -101,7 +101,6 @@ async def create_role(
         name=request.name,
         description=request.description,
         permissions=request.permissions or {},
-        is_active=request.is_active,
         created_by=user.email,
         created_at=now,
         updated_at=now,
@@ -170,8 +169,6 @@ async def update_role(
         role.name = request.name
     if request.description is not None:
         role.description = request.description
-    if request.is_active is not None:
-        role.is_active = request.is_active
     if request.permissions is not None:
         role.permissions = request.permissions
 
@@ -211,14 +208,14 @@ async def update_role_put(
     "/{role_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a role",
-    description="Soft delete a role (Platform admin only)",
+    description="Delete a role (Platform admin only). CASCADE removes all role assignments.",
 )
 async def delete_role(
     role_id: UUID,
     user: CurrentSuperuser,
     db: DbSession,
 ) -> None:
-    """Soft delete a role."""
+    """Delete a role."""
     result = await db.execute(select(RoleORM).where(RoleORM.id == role_id))
     role = result.scalar_one_or_none()
 
@@ -228,11 +225,9 @@ async def delete_role(
             detail="Role not found",
         )
 
-    role.is_active = False
-    role.updated_at = datetime.now(timezone.utc)
-
+    await db.delete(role)
     await db.flush()
-    logger.info(f"Soft deleted role {role_id}")
+    logger.info(f"Deleted role {role_id}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:

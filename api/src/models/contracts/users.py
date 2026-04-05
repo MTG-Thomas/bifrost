@@ -136,7 +136,6 @@ class Role(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str | None = None
     permissions: dict = Field(default_factory=dict)
-    is_active: bool = Field(default=True)
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -161,7 +160,6 @@ class RoleBase(BaseModel):
     """Shared role fields."""
     name: str = Field(max_length=100)
     description: str | None = Field(default=None)
-    is_active: bool = Field(default=True)
 
 
 class RoleCreate(RoleBase):
@@ -176,7 +174,6 @@ class RoleUpdate(BaseModel):
     """Input for updating a role."""
     name: str | None = None
     description: str | None = None
-    is_active: bool | None = None
     permissions: dict | None = Field(default=None)
 
 
