@@ -842,8 +842,6 @@ class TestProcessPoolManagerStatus:
         assert status["shutdown"] is False
         assert status["worker_id"] == "test-worker"
         assert status["pool_size"] == 1
-        assert status["min_workers"] == 2
-        assert status["max_workers"] == 10
         assert len(status["processes"]) == 1
         assert status["processes"][0]["process_id"] == "process-1"
         assert status["processes"][0]["state"] == "idle"
@@ -987,12 +985,11 @@ class TestMinWorkersZero:
         """Pool with min_workers=0 should have no processes after start."""
         with patch.object(pool_zero, '_spawn_or_fork_process') as mock_spawn:
             with patch.object(pool_zero, '_register_worker', new_callable=AsyncMock):
-                with patch.object(pool_zero, '_apply_persisted_config', new_callable=AsyncMock):
-                    with patch.object(pool_zero, '_start_template', new_callable=AsyncMock):
-                        pool_zero._started = True
-                        # Simulate start without background tasks
-                        assert len(pool_zero.processes) == 0
-                        mock_spawn.assert_not_called()
+                with patch.object(pool_zero, '_start_template', new_callable=AsyncMock):
+                    pool_zero._started = True
+                    # Simulate start without background tasks
+                    assert len(pool_zero.processes) == 0
+                    mock_spawn.assert_not_called()
 
 
 class TestAdmissionControl:
@@ -1039,23 +1036,10 @@ class TestAdmissionControl:
                     assert mock_handle.state == ProcessState.BUSY
 
 
-class TestResizeMinWorkersZero:
-    """Tests for resize accepting min_workers=0."""
+class TestOnDemandMode:
+    """Tests for on-demand mode (min_workers is always 0 now)."""
 
-    @pytest.mark.asyncio
-    async def test_resize_to_zero_is_valid(self):
-        """Resize to min_workers=0 should succeed."""
-        pool = ProcessPoolManager(min_workers=2, max_workers=5)
-        pool._started = True
-
-        with patch.object(pool, '_update_redis_config', new_callable=AsyncMock):
-            with patch(
-                "src.services.execution.process_pool.publish_pool_config_changed",
-                new_callable=AsyncMock,
-                create=True,
-            ):
-                # Patch the lazy import inside resize
-                with patch.object(pool, '_scale_down_process', new_callable=AsyncMock):
-                    result = await pool.resize(0, 5)
-                    assert pool.min_workers == 0
-                    assert result["new_min"] == 0
+    def test_pool_starts_with_zero_min_workers(self):
+        """Pool should always have min_workers=0 for on-demand mode."""
+        pool = ProcessPoolManager(min_workers=0, max_workers=5)
+        assert pool.min_workers == 0
