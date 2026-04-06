@@ -132,8 +132,8 @@ class PoolConfigUpdateRequest(BaseModel):
 
     min_workers: int = Field(
         ...,
-        ge=2,
-        description="Minimum worker processes to maintain (must be >= 2)"
+        ge=0,
+        description="Minimum worker processes to maintain (must be >= 0)"
     )
     max_workers: int = Field(
         ...,

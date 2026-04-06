@@ -42,10 +42,10 @@ export function ExecutionMetadataBar({
 	requiredMemoryMb,
 }: ExecutionMetadataBarProps) {
 	return (
-		<div className="space-y-3">
+		<div className="space-y-1.5">
 			{/* Workflow name + status */}
-			<div className="flex items-center justify-between gap-3 flex-wrap">
-				<h3 className="text-lg font-semibold truncate">
+			<div className="flex items-center gap-2 min-w-0">
+				<h3 className="text-base font-semibold truncate">
 					{workflowName}
 				</h3>
 				<ExecutionStatusBadge
@@ -56,30 +56,26 @@ export function ExecutionMetadataBar({
 					requiredMemoryMb={requiredMemoryMb}
 				/>
 			</div>
-			{/* Compact metadata grid */}
-			<div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-				<div className="flex items-center gap-1.5 text-muted-foreground">
-					<User className="h-3.5 w-3.5 flex-shrink-0" />
-					<span className="truncate">{executedByName || "Unknown"}</span>
-				</div>
-				<div className="flex items-center gap-1.5 text-muted-foreground">
-					<Building2 className="h-3.5 w-3.5 flex-shrink-0" />
-					<span className="truncate">{orgName || "Global"}</span>
-				</div>
-				<div className="flex items-center gap-1.5 text-muted-foreground">
-					<Clock className="h-3.5 w-3.5 flex-shrink-0" />
-					<span className="truncate">
-						{startedAt ? formatDate(startedAt) : "Not started"}
-					</span>
-				</div>
-				<div className="flex items-center gap-1.5 text-muted-foreground">
-					<Timer className="h-3.5 w-3.5 flex-shrink-0" />
-					<span>
-						{durationMs != null
-							? formatDuration(durationMs)
-							: "In progress..."}
-					</span>
-				</div>
+			{/* Inline metadata */}
+			<div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+				<span className="flex items-center gap-1">
+					<User className="h-3 w-3" />
+					{executedByName || "Unknown"}
+				</span>
+				<span className="flex items-center gap-1">
+					<Building2 className="h-3 w-3" />
+					{orgName || "Global"}
+				</span>
+				<span className="flex items-center gap-1">
+					<Clock className="h-3 w-3" />
+					{startedAt ? formatDate(startedAt) : "Not started"}
+				</span>
+				<span className="flex items-center gap-1">
+					<Timer className="h-3 w-3" />
+					{durationMs != null
+						? formatDuration(durationMs)
+						: "In progress..."}
+				</span>
 			</div>
 		</div>
 	);

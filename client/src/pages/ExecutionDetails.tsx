@@ -7,6 +7,7 @@ import {
 	Code2,
 	RefreshCw,
 	ChevronDown,
+	Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -527,7 +528,7 @@ export function ExecutionDetails({
 
 		return (
 			<div className="h-full">
-				<div className="p-4 space-y-4">
+				<div className="p-4 space-y-3">
 					{/* Compact metadata header */}
 					<ExecutionMetadataBar
 						workflowName={execution.workflow_name}
@@ -583,7 +584,6 @@ export function ExecutionDetails({
 					{/* Logs */}
 					<ExecutionLogsPanel
 						logs={mergedLogs as LogEntry[]}
-						streamingLogs={streamingLogs}
 						status={executionStatus}
 						isConnected={isConnected}
 						isLoading={isLoadingLogs}
@@ -644,26 +644,20 @@ export function ExecutionDetails({
 			{/* Page Header - hidden in embedded mode */}
 			{!embedded && !isEmbed && (
 				<div className="sticky top-0 bg-background/80 backdrop-blur-sm border-b z-10">
-					<div className="px-6 lg:px-8 py-4 space-y-3">
-						{/* Row 1: Back + workflow name */}
-						<div className="flex items-center gap-3">
+					<div className="px-6 lg:px-8 py-3 space-y-1">
+						{/* Row 1: Back + workflow name + status + action buttons */}
+						<div className="flex items-center gap-3 min-w-0">
 							<Button
 								variant="ghost"
 								size="icon"
-								className="flex-shrink-0"
+								className="flex-shrink-0 h-8 w-8"
 								onClick={() => navigate("/history")}
 							>
 								<ArrowLeft className="h-4 w-4" />
 							</Button>
-							<h1 className="text-2xl font-bold tracking-tight truncate">
+							<h1 className="text-lg font-semibold tracking-tight truncate">
 								{execution.workflow_name}
 							</h1>
-						</div>
-						{/* Row 2: Execution ID + status */}
-						<div className="flex items-center gap-3 flex-wrap pl-11">
-							<span className="text-sm text-muted-foreground font-mono">
-								{execution.execution_id}
-							</span>
 							<ExecutionStatusBadge
 								status={executionStatus as string}
 								queuePosition={streamState?.queuePosition}
@@ -671,53 +665,67 @@ export function ExecutionDetails({
 								availableMemoryMb={streamState?.availableMemoryMb}
 								requiredMemoryMb={streamState?.requiredMemoryMb}
 							/>
-						</div>
-						{/* Row 3: Action buttons */}
-						<div className="flex gap-2 flex-wrap pl-11">
-							{metadata?.workflows?.find(
-								(w: WorkflowMetadata) =>
-									w.name === execution.workflow_name,
-							)?.source_file_path && (
+							<div className="flex gap-1.5 flex-wrap ml-auto flex-shrink-0">
+								{metadata?.workflows?.find(
+									(w: WorkflowMetadata) =>
+										w.name === execution.workflow_name,
+								)?.source_file_path && (
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 text-xs"
+										onClick={handleOpenInEditor}
+										disabled={isOpeningInEditor}
+									>
+										{isOpeningInEditor ? (
+											<Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+										) : (
+											<Code2 className="mr-1.5 h-3.5 w-3.5" />
+										)}
+										Editor
+									</Button>
+								)}
+								{isComplete && (
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 text-xs"
+										onClick={() => setShowRerunDialog(true)}
+										disabled={isRerunning}
+									>
+										{isRerunning ? (
+											<Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+										) : (
+											<RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+										)}
+										Rerun
+									</Button>
+								)}
+								{(execution.status === "Running" ||
+									execution.status === "Pending") && (
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 text-xs"
+										onClick={() => setShowCancelDialog(true)}
+									>
+										<XCircle className="mr-1.5 h-3.5 w-3.5" />
+										Cancel
+									</Button>
+								)}
 								<Button
-									variant="outline"
-									size="sm"
-									onClick={handleOpenInEditor}
-									disabled={isOpeningInEditor}
+									variant="ghost"
+									size="icon"
+									className="h-7 w-7"
+									onClick={() => {
+										navigator.clipboard.writeText(execution.execution_id);
+										toast.success("Execution ID copied");
+									}}
+									title="Copy execution ID"
 								>
-									{isOpeningInEditor ? (
-										<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-									) : (
-										<Code2 className="mr-2 h-4 w-4" />
-									)}
-									Open in Editor
+									<Copy className="h-3.5 w-3.5" />
 								</Button>
-							)}
-							{isComplete && (
-								<Button
-									variant="outline"
-									size="sm"
-									onClick={() => setShowRerunDialog(true)}
-									disabled={isRerunning}
-								>
-									{isRerunning ? (
-										<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-									) : (
-										<RefreshCw className="mr-2 h-4 w-4" />
-									)}
-									Rerun
-								</Button>
-							)}
-							{(execution.status === "Running" ||
-								execution.status === "Pending") && (
-								<Button
-									variant="outline"
-									size="sm"
-									onClick={() => setShowCancelDialog(true)}
-								>
-									<XCircle className="mr-2 h-4 w-4" />
-									Cancel
-								</Button>
-							)}
+							</div>
 						</div>
 					</div>
 				</div>
@@ -752,7 +760,6 @@ export function ExecutionDetails({
 						>
 							<ExecutionLogsPanel
 								logs={mergedLogs as LogEntry[]}
-								streamingLogs={streamingLogs}
 								status={executionStatus}
 								isConnected={isConnected}
 								isLoading={isLoadingLogs}

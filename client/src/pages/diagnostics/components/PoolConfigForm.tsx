@@ -44,8 +44,8 @@ export function PoolConfigForm({
 	};
 
 	const validate = (): boolean => {
-		if (minWorkers < 2) {
-			setError("Minimum workers must be at least 2");
+		if (minWorkers < 0) {
+			setError("Minimum workers must be at least 0");
 			return false;
 		}
 		if (minWorkers > maxWorkers) {
@@ -96,7 +96,7 @@ export function PoolConfigForm({
 						<Input
 							id="min-workers"
 							type="number"
-							min={2}
+							min={0}
 							value={minWorkers}
 							onChange={(e) => setMinWorkers(Number(e.target.value))}
 							className="col-span-3"

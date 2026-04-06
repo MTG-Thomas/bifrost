@@ -3,10 +3,10 @@ import {
 	SheetContent,
 	SheetHeader,
 	SheetTitle,
-	SheetDescription,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Copy } from "lucide-react";
+import { toast } from "sonner";
 import { ExecutionDetails } from "@/pages/ExecutionDetails";
 
 interface ExecutionDrawerProps {
@@ -32,25 +32,39 @@ export function ExecutionDrawer({
 				side="right"
 				className="w-full sm:max-w-xl md:max-w-2xl overflow-y-auto p-0"
 			>
-				<div className="sticky top-0 bg-background z-10 px-6 pt-6 pb-4 border-b">
+				<div className="sticky top-0 bg-background z-10 px-4 py-2 border-b">
 					<SheetHeader>
 						<div className="flex items-center justify-between">
-							<SheetTitle className="text-lg">
+							<SheetTitle className="text-sm font-medium text-muted-foreground">
 								Execution Details
 							</SheetTitle>
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={handleOpenInNewTab}
-								disabled={!executionId}
-							>
-								<ExternalLink className="h-4 w-4 mr-2" />
-								Open in new tab
-							</Button>
+							<div className="flex items-center gap-1">
+								<Button
+									variant="ghost"
+									size="icon"
+									className="h-7 w-7"
+									onClick={() => {
+										if (executionId) {
+											navigator.clipboard.writeText(executionId);
+											toast.success("Execution ID copied");
+										}
+									}}
+									disabled={!executionId}
+									title="Copy execution ID"
+								>
+									<Copy className="h-3.5 w-3.5" />
+								</Button>
+								<Button
+									variant="ghost"
+									size="icon"
+									className="h-7 w-7"
+									onClick={handleOpenInNewTab}
+									disabled={!executionId}
+								>
+									<ExternalLink className="h-3.5 w-3.5" />
+								</Button>
+							</div>
 						</div>
-						<SheetDescription>
-							View workflow execution details and logs
-						</SheetDescription>
 					</SheetHeader>
 				</div>
 

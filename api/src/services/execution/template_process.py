@@ -39,6 +39,10 @@ class _SendQueue:
         """Send an item to the child."""
         self._conn.send(item)
 
+    def put_nowait(self, item: Any) -> None:
+        """Send an item to the child (non-blocking alias for put)."""
+        self._conn.send(item)
+
     def close(self) -> None:
         try:
             self._conn.close()
@@ -66,6 +70,10 @@ class _RecvQueue:
             if not self._conn.poll(0):
                 raise Empty
         return self._conn.recv()
+
+    def get_nowait(self) -> Any:
+        """Receive an item without blocking."""
+        return self.get(block=False)
 
     def close(self) -> None:
         try:

@@ -419,7 +419,7 @@ context.roi.time_saved   # ROI tracking`}
 											{peakMemoryBytes && (
 												<div>
 													<p className="text-sm font-medium text-muted-foreground">
-														Peak Memory
+														Memory
 													</p>
 													<p className="text-sm font-mono">
 														{formatBytes(

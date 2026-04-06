@@ -22,10 +22,8 @@ export type ExecutionLogPublic = components["schemas"]["ExecutionLogPublic"];
 export type LogEntry = ExecutionLogPublic | StreamingLog;
 
 interface ExecutionLogsPanelProps {
-	/** Logs from API (persisted) */
+	/** Logs to display (already merged/deduped by parent) */
 	logs?: LogEntry[];
-	/** Logs from real-time streaming */
-	streamingLogs?: StreamingLog[];
 	/** Current execution status */
 	status?: ExecutionStatus;
 	/** Whether the WebSocket connection is active */
@@ -52,7 +50,6 @@ const levelColors: Record<string, string> = {
 
 export function ExecutionLogsPanel({
 	logs = [],
-	streamingLogs = [],
 	status,
 	isConnected = false,
 	isLoading = false,
@@ -74,11 +71,8 @@ export function ExecutionLogsPanel({
 		status === "Timeout" ||
 		status === "Cancelled";
 
-	// Combine API logs with streaming logs for display during execution
-	const displayLogs = useMemo(
-		() => (isRunning ? [...logs, ...streamingLogs] : logs),
-		[isRunning, logs, streamingLogs],
-	);
+	// Parent (ExecutionDetails) already merges API + streaming logs via mergeLogsWithDedup
+	const displayLogs = useMemo(() => logs, [logs]);
 
 	// Auto-scroll to bottom when new logs arrive.
 	// Uses scrollTop instead of scrollIntoView to avoid scrolling the outer page.

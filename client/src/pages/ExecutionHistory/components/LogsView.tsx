@@ -110,6 +110,7 @@ function LogsViewInner({
                     onNextPage={handleNextPage}
                     onPrevPage={handlePrevPage}
                     canGoBack={pageStack.length > 0}
+                    currentPage={pageStack.length + 1}
                     onLogClick={handleLogClick}
                 />
             </div>
