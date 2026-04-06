@@ -66,10 +66,16 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
     const [range, setRange] = useState<TimeRange>("1h");
     const { data, isLoading } = useWorkerMetrics(range);
 
-    const { chartData, workerIds, totalCurrent, totalMax } = useMemo(() => {
+    const { chartData, workerIds, totalCurrent, totalMax, hasUnlimitedWorker } = useMemo(() => {
         const allPoints = [...(data?.points ?? []), ...(livePoints ?? [])];
         if (allPoints.length === 0) {
-            return { chartData: [], workerIds: [], totalCurrent: 0, totalMax: 0 };
+            return {
+                chartData: [],
+                workerIds: [],
+                totalCurrent: 0,
+                totalMax: 0,
+                hasUnlimitedWorker: false,
+            };
         }
 
         // Get unique worker IDs
@@ -110,16 +116,29 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
         }
         let current = 0;
         let max = 0;
+        let unlimited = false;
         for (const point of latestByWorker.values()) {
             current += Math.max(0, point.memory_current);
-            max += Math.max(0, point.memory_max);
+            if (point.memory_max > 0) {
+                max += point.memory_max;
+            } else {
+                unlimited = true;
+            }
         }
 
-        return { chartData: result, workerIds: ids, totalCurrent: current, totalMax: max };
+        return {
+            chartData: result,
+            workerIds: ids,
+            totalCurrent: current,
+            totalMax: max,
+            hasUnlimitedWorker: unlimited,
+        };
     }, [data, livePoints, range]);
 
+    const hasData = chartData.length > 0;
+    const showLimit = totalMax > 0 && !hasUnlimitedWorker;
     const thresholdBytes = totalMax * 0.85;
-    const utilizationPct = totalMax > 0 ? ((totalCurrent / totalMax) * 100).toFixed(0) : "0";
+    const utilizationPct = showLimit ? ((totalCurrent / totalMax) * 100).toFixed(0) : "0";
 
     if (isLoading) {
         return (
@@ -141,18 +160,39 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
                             Total Memory Usage
                         </div>
                         <div className="flex items-baseline gap-2 mt-1">
-                            <span className="text-3xl font-bold">
-                                {formatBytes(totalCurrent)}
-                            </span>
-                            <span className="text-sm text-muted-foreground">
-                                / {formatBytes(totalMax)} across{" "}
-                                {workerIds.length} container
-                                {workerIds.length !== 1 ? "s" : ""}
-                            </span>
+                            {!hasData ? (
+                                <span className="text-sm text-muted-foreground">
+                                    No metrics data yet
+                                </span>
+                            ) : showLimit ? (
+                                <>
+                                    <span className="text-3xl font-bold">
+                                        {formatBytes(totalCurrent)}
+                                    </span>
+                                    <span className="text-sm text-muted-foreground">
+                                        / {formatBytes(totalMax)} across{" "}
+                                        {workerIds.length} container
+                                        {workerIds.length !== 1 ? "s" : ""}
+                                    </span>
+                                </>
+                            ) : (
+                                <>
+                                    <span className="text-3xl font-bold">
+                                        {formatBytes(totalCurrent)}
+                                    </span>
+                                    <span className="text-sm text-muted-foreground">
+                                        across {workerIds.length} container
+                                        {workerIds.length !== 1 ? "s" : ""}{" "}
+                                        &middot; no memory limit set
+                                    </span>
+                                </>
+                            )}
                         </div>
-                        <div className="text-xs text-muted-foreground mt-0.5">
-                            {utilizationPct}% utilized &middot; Threshold: 85%
-                        </div>
+                        {showLimit && (
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                                {utilizationPct}% utilized &middot; Threshold: 85%
+                            </div>
+                        )}
                     </div>
                     <div className="flex gap-1">
                         {TIME_RANGES.map((r) => (
@@ -207,7 +247,7 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
                                 ]}
                                 labelFormatter={(label) => label}
                             />
-                            {totalMax > 0 && (
+                            {showLimit && (
                                 <ReferenceLine
                                     y={thresholdBytes}
                                     stroke="hsl(var(--destructive))"

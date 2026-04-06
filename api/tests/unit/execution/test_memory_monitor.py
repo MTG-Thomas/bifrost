@@ -138,15 +138,15 @@ class TestGetCgroupMemory:
             assert current == -1
             assert limit == -1
 
-    def test_returns_negative_when_memory_max_is_max(self):
-        """Should return (-1, -1) when memory.max is 'max' (no limit set)."""
+    def test_returns_current_with_negative_limit_when_memory_max_is_max(self):
+        """Should return (current, -1) when memory.max is 'max' (no limit set)."""
         with patch("builtins.open", side_effect=[
             mock_open(read_data="524288000\n")(),
             mock_open(read_data="max\n")(),
         ]):
             with patch("pathlib.Path.exists", return_value=True):
                 current, limit = get_cgroup_memory()
-                assert current == -1
+                assert current == 524288000
                 assert limit == -1
 
     def test_handles_read_error_gracefully(self):
@@ -182,6 +182,14 @@ class TestHasSufficientMemoryCgroup:
         with patch(
             "src.services.execution.memory_monitor.get_cgroup_memory",
             return_value=(-1, -1),
+        ):
+            assert has_sufficient_memory_cgroup(threshold=0.85) is True
+
+    def test_returns_true_when_limit_unknown_but_current_known(self):
+        """Should be permissive when max is unset (current readable, limit=-1)."""
+        with patch(
+            "src.services.execution.memory_monitor.get_cgroup_memory",
+            return_value=(500_000_000, -1),
         ):
             assert has_sufficient_memory_cgroup(threshold=0.85) is True
 

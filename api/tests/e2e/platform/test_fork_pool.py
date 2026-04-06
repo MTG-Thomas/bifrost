@@ -197,14 +197,22 @@ class TestForkBasedExecution:
 
     def test_execution_timeout(self, e2e_client, platform_admin, timeout_workflow):
         """Timeout should still kill forked processes."""
-        # Request execution with a short timeout
+        # Bake a short timeout into the workflow definition itself
+        # (WorkflowExecutionRequest has no per-request timeout override)
+        put_resp = e2e_client.put(
+            f"/api/workflows/{timeout_workflow['id']}",
+            headers=platform_admin.headers,
+            json={"timeout_seconds": 3},
+        )
+        assert put_resp.status_code == 200, f"Failed to set timeout: {put_resp.text}"
+
+        # Request execution
         response = e2e_client.post(
             "/api/workflows/execute",
             headers=platform_admin.headers,
             json={
                 "workflow_id": timeout_workflow["id"],
                 "input_data": {"sleep_seconds": 60},
-                "timeout_seconds": 3,
             },
         )
         assert response.status_code in [200, 202], f"Execute failed: {response.text}"

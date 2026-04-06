@@ -61,14 +61,17 @@ def get_cgroup_memory() -> tuple[int, int]:
     Read current and max memory from cgroup v2.
 
     Returns:
-        Tuple of (current_bytes, max_bytes), or (-1, -1) if unavailable.
+        Tuple of (current_bytes, max_bytes). `current_bytes` is -1 only when
+        memory.current is unreadable. `max_bytes` is -1 when memory.max is
+        unset ("max") or unreadable — callers that need a hard limit (e.g.
+        admission control) should treat that as "unknown".
     """
     global _warned_no_cgroup
 
     cgroup_current = Path("/sys/fs/cgroup/memory.current")
     cgroup_max = Path("/sys/fs/cgroup/memory.max")
 
-    if not cgroup_current.exists() or not cgroup_max.exists():
+    if not cgroup_current.exists():
         if not _warned_no_cgroup:
             logger.warning(
                 "cgroup v2 memory files not found - cgroup admission disabled. "
@@ -80,22 +83,28 @@ def get_cgroup_memory() -> tuple[int, int]:
     try:
         with open(cgroup_current) as f:
             current = int(f.read().strip())
-        with open(cgroup_max) as f:
-            max_raw = f.read().strip()
+    except (OSError, ValueError) as e:
+        logger.warning(f"Failed to read cgroup memory.current: {e}")
+        return (-1, -1)
+
+    limit = -1
+    if cgroup_max.exists():
+        try:
+            with open(cgroup_max) as f:
+                max_raw = f.read().strip()
             if max_raw == "max":
-                # No memory limit set on container
                 if not _warned_no_cgroup:
                     logger.warning(
                         "cgroup memory.max is 'max' (no limit) - "
                         "cgroup admission disabled. Set a memory limit on the container."
                     )
                     _warned_no_cgroup = True
-                return (-1, -1)
-            limit = int(max_raw)
-        return (current, limit)
-    except (OSError, ValueError) as e:
-        logger.warning(f"Failed to read cgroup memory: {e}")
-        return (-1, -1)
+            else:
+                limit = int(max_raw)
+        except (OSError, ValueError) as e:
+            logger.warning(f"Failed to read cgroup memory.max: {e}")
+
+    return (current, limit)
 
 
 def has_sufficient_memory_cgroup(threshold: float = 0.85) -> bool:
@@ -111,8 +120,8 @@ def has_sufficient_memory_cgroup(threshold: float = 0.85) -> bool:
     """
     current, limit = get_cgroup_memory()
 
-    if current < 0 or limit <= 0:
-        return True  # Permissive when unable to check
+    if current < 0 or limit < 0 or limit == 0:
+        return True  # Permissive when unable to check or no limit set
 
     ratio = current / limit
     if ratio > threshold:

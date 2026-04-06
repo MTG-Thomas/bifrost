@@ -176,13 +176,13 @@ class TestConcurrentAgentRuns:
 
         run_id = runs[0]["id"]
 
-        # Fetch steps for this run
-        steps_resp = e2e_client.get(
-            f"/api/agent-runs/{run_id}/steps",
+        # Fetch steps embedded in the run response
+        run_resp = e2e_client.get(
+            f"/api/agent-runs/{run_id}",
             headers=platform_admin.headers,
         )
-        assert steps_resp.status_code == 200
-        steps = steps_resp.json()
+        assert run_resp.status_code == 200
+        steps = run_resp.json()["steps"]
 
         # Should have at least: llm_request + llm_response
         assert len(steps) >= 2, (

@@ -22,7 +22,7 @@ class WorkerMetric(Base):
         server_default=text("NOW()"),
     )
     memory_current: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    memory_max: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    memory_max: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     fork_count: Mapped[int] = mapped_column(Integer, nullable=False)
     busy_count: Mapped[int] = mapped_column(Integer, nullable=False)
     idle_count: Mapped[int] = mapped_column(Integer, nullable=False)

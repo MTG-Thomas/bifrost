@@ -52,14 +52,16 @@ async def sample_worker_metrics() -> dict:
                     memory_current = heartbeat.get("memory_current_bytes", -1)
                     memory_max = heartbeat.get("memory_max_bytes", -1)
 
-                    # Skip if cgroup data unavailable
-                    if memory_current < 0 or memory_max <= 0:
+                    # Skip only if current reading is unavailable. An unknown
+                    # max (no cgroup limit) is a legitimate state — persist
+                    # NULL so the chart still has data points.
+                    if memory_current < 0:
                         continue
 
                     metric = WorkerMetric(
                         worker_id=heartbeat.get("worker_id", "unknown"),
                         memory_current=memory_current,
-                        memory_max=memory_max,
+                        memory_max=memory_max if memory_max > 0 else None,
                         fork_count=heartbeat.get("pool_size", 0),
                         busy_count=heartbeat.get("busy_count", 0),
                         idle_count=heartbeat.get("idle_count", 0),

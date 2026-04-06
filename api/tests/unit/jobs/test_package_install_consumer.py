@@ -26,7 +26,7 @@ class TestProcessMessage:
             patch.object(
                 consumer, "_pip_install", new_callable=AsyncMock, return_value=True
             ) as mock_pip,
-            patch.object(consumer, "_mark_workers_for_recycle") as mock_recycle,
+            patch.object(consumer, "_recycle_workers", new_callable=AsyncMock) as mock_recycle,
             patch.object(
                 consumer, "_update_pool_packages", new_callable=AsyncMock
             ) as mock_update,
@@ -55,7 +55,7 @@ class TestProcessMessage:
             patch.object(
                 consumer, "_pip_install", new_callable=AsyncMock, return_value=True
             ) as mock_pip,
-            patch.object(consumer, "_mark_workers_for_recycle") as mock_recycle,
+            patch.object(consumer, "_recycle_workers", new_callable=AsyncMock) as mock_recycle,
             patch.object(
                 consumer, "_update_pool_packages", new_callable=AsyncMock
             ) as mock_update,
@@ -80,7 +80,7 @@ class TestProcessMessage:
             patch.object(
                 consumer, "_pip_install", new_callable=AsyncMock, return_value=True
             ),
-            patch.object(consumer, "_mark_workers_for_recycle") as mock_recycle,
+            patch.object(consumer, "_recycle_workers", new_callable=AsyncMock) as mock_recycle,
             patch.object(
                 consumer, "_update_pool_packages", new_callable=AsyncMock
             ),
@@ -102,7 +102,7 @@ class TestProcessMessage:
             patch.object(
                 consumer, "_pip_install_requirements", new_callable=AsyncMock, return_value=True
             ) as mock_pip_req,
-            patch.object(consumer, "_mark_workers_for_recycle") as mock_recycle,
+            patch.object(consumer, "_recycle_workers", new_callable=AsyncMock) as mock_recycle,
             patch.object(
                 consumer, "_update_pool_packages", new_callable=AsyncMock
             ) as mock_update,
@@ -120,48 +120,52 @@ class TestProcessMessage:
             mock_update.assert_called_once()
 
 
-class TestMarkWorkersForRecycle:
-    """Tests for _mark_workers_for_recycle method."""
+class TestRecycleWorkers:
+    """Tests for _recycle_workers method."""
 
     @pytest.fixture
     def consumer(self) -> PackageInstallConsumer:
         return PackageInstallConsumer()
 
-    def test_marks_pool_for_recycle(self, consumer: PackageInstallConsumer):
-        """Test that worker processes are marked for recycling."""
+    @pytest.mark.asyncio
+    async def test_drains_and_restarts_template(self, consumer: PackageInstallConsumer):
+        """Test that workers are drained and template is restarted."""
         mock_pool = MagicMock()
         mock_pool._started = True
-        mock_pool.mark_for_recycle.return_value = (3, [])
+        mock_pool.drain_and_restart_template = AsyncMock()
 
         with patch(
             "src.services.execution.process_pool.get_process_pool",
             return_value=mock_pool,
         ):
-            consumer._mark_workers_for_recycle()
+            await consumer._recycle_workers()
 
-            mock_pool.mark_for_recycle.assert_called_once()
+            mock_pool.drain_and_restart_template.assert_called_once()
 
-    def test_skips_when_pool_not_started(self, consumer: PackageInstallConsumer):
+    @pytest.mark.asyncio
+    async def test_skips_when_pool_not_started(self, consumer: PackageInstallConsumer):
         """Test that recycle is skipped when pool is not started."""
         mock_pool = MagicMock()
         mock_pool._started = False
+        mock_pool.drain_and_restart_template = AsyncMock()
 
         with patch(
             "src.services.execution.process_pool.get_process_pool",
             return_value=mock_pool,
         ):
-            consumer._mark_workers_for_recycle()
+            await consumer._recycle_workers()
 
-            mock_pool.mark_for_recycle.assert_not_called()
+            mock_pool.drain_and_restart_template.assert_not_called()
 
-    def test_handles_pool_error_gracefully(self, consumer: PackageInstallConsumer):
+    @pytest.mark.asyncio
+    async def test_handles_pool_error_gracefully(self, consumer: PackageInstallConsumer):
         """Test that pool errors are handled gracefully."""
         with patch(
             "src.services.execution.process_pool.get_process_pool",
             side_effect=RuntimeError("Pool not initialized"),
         ):
             # Should not raise
-            consumer._mark_workers_for_recycle()
+            await consumer._recycle_workers()
 
 
 class TestUpdatePoolPackages:

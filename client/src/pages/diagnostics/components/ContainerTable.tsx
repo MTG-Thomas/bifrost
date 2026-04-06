@@ -195,7 +195,7 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                                         )}
                                     </TableCell>
                                     <TableCell>
-                                        {memMax > 0 ? (
+                                        {memCurrent >= 0 && memMax > 0 ? (
                                             <div className="flex items-center gap-2">
                                                 <Progress
                                                     value={memPct}
@@ -204,6 +204,15 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                                                 <span className="text-xs">
                                                     {formatBytes(memCurrent)} /{" "}
                                                     {formatBytes(memMax)}
+                                                </span>
+                                            </div>
+                                        ) : memCurrent >= 0 ? (
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-xs">
+                                                    {formatBytes(memCurrent)}
+                                                </span>
+                                                <span className="text-[10px] text-muted-foreground">
+                                                    no limit
                                                 </span>
                                             </div>
                                         ) : (

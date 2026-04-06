@@ -31,6 +31,7 @@ import multiprocessing
 import os
 import signal
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -340,6 +341,39 @@ class ProcessPoolManager:
 
         await self._start_template()
         logger.info("Template process restarted")
+
+    async def drain_and_restart_template(self, drain_timeout: float = 60.0) -> None:
+        """
+        Drain all existing workers, restart the template process, then
+        respawn workers from the fresh template.
+
+        Called after pip install so children get a fresh sys.modules
+        that can see newly installed packages.
+        """
+        # 1. Mark all for recycle (stops routing new work to them)
+        for handle in list(self.processes.values()):
+            handle.pending_recycle = True
+
+        # 2. Wait for busy processes to finish (bounded)
+        deadline = time.monotonic() + drain_timeout
+        while time.monotonic() < deadline:
+            busy = [h for h in self.processes.values() if h.state == ProcessState.BUSY]
+            if not busy:
+                break
+            await asyncio.sleep(0.2)
+
+        # 3. Terminate all remaining processes (don't spawn replacements yet)
+        for handle in list(self.processes.values()):
+            if handle.id in self.processes:
+                del self.processes[handle.id]
+            await self._terminate_process(handle)
+
+        # 4. Restart template with fresh sys.modules
+        await self.restart_template()
+
+        # 5. Respawn to min_workers
+        for _ in range(self.min_workers):
+            self._spawn_or_fork_process()
 
     def _spawn_or_fork_process(self, persistent: bool | None = None) -> ProcessHandle:
         """
@@ -1500,12 +1534,21 @@ class ProcessPoolManager:
         """
         processes = []
         for p in self.processes.values():
+            private_dirty_kb = _get_private_dirty_kb(p.pid) if p.pid else -1
+            # Prefer private-dirty (USS-like) for display: RSS counts COW-shared
+            # pages from the fork template, inflating per-fork memory and not
+            # summing cleanly across forks. Fall back to RSS if smaps_rollup
+            # is unavailable.
+            if private_dirty_kb >= 0:
+                memory_mb: float = private_dirty_kb / 1024
+            else:
+                memory_mb = self._get_process_memory(p.pid)
             info: dict[str, Any] = {
                 "pid": p.pid,
                 "process_id": p.id,
                 "state": p.state.value,
-                "memory_mb": self._get_process_memory(p.pid),
-                "private_dirty_kb": _get_private_dirty_kb(p.pid) if p.pid else -1,
+                "memory_mb": memory_mb,
+                "private_dirty_kb": private_dirty_kb,
                 "uptime_seconds": p.uptime_seconds,
                 "executions_completed": p.executions_completed,
                 "pending_recycle": p.pending_recycle,
