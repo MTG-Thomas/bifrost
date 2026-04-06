@@ -87,8 +87,6 @@ class PoolDetail(BaseModel):
     status: str | None = None
     started_at: str | None = None
     last_heartbeat: str | None = None
-    min_workers: int = Field(default=2, description="Minimum pool size")
-    max_workers: int = Field(default=10, description="Maximum pool size")
     processes: list[ProcessInfo] = Field(default_factory=list)
 
 
@@ -125,42 +123,6 @@ class RecycleProcessResponse(BaseModel):
     worker_id: str
     process_id: str | None = None
     pid: int | None = None
-
-
-class PoolConfigUpdateRequest(BaseModel):
-    """Request to update pool configuration."""
-
-    min_workers: int = Field(
-        ...,
-        ge=0,
-        description="Minimum worker processes to maintain (must be >= 0)"
-    )
-    max_workers: int = Field(
-        ...,
-        ge=2,
-        description="Maximum worker processes for scaling"
-    )
-
-    def model_post_init(self, __context: object) -> None:
-        """Validate min_workers <= max_workers."""
-        if self.min_workers > self.max_workers:
-            raise ValueError(
-                f"min_workers ({self.min_workers}) cannot be greater than max_workers ({self.max_workers})"
-            )
-
-
-class PoolConfigUpdateResponse(BaseModel):
-    """Response from pool config update."""
-
-    success: bool
-    message: str
-    worker_id: str
-    old_min: int
-    old_max: int
-    new_min: int
-    new_max: int
-    processes_spawned: int = 0
-    processes_marked_for_removal: int = 0
 
 
 class RecycleAllRequest(BaseModel):
@@ -221,4 +183,27 @@ class StuckHistoryResponse(BaseModel):
     hours: int
     workflows: list[StuckWorkflowStats]
 
+
+# =============================================================================
+# Worker Metrics Models (Time-Series for Diagnostics Chart)
+# =============================================================================
+
+
+class WorkerMetricPoint(BaseModel):
+    """A single time-series data point for the memory chart."""
+
+    timestamp: str = Field(..., description="ISO timestamp")
+    worker_id: str = Field(..., description="Container/pool identifier")
+    memory_current: int = Field(..., description="cgroup memory.current in bytes")
+    memory_max: int = Field(..., description="cgroup memory.max in bytes")
+    fork_count: int = Field(default=0)
+    busy_count: int = Field(default=0)
+    idle_count: int = Field(default=0)
+
+
+class WorkerMetricsResponse(BaseModel):
+    """Response for worker metrics time-series endpoint."""
+
+    range: str = Field(..., description="Requested time range: 1h, 6h, 24h, 7d")
+    points: list[WorkerMetricPoint] = Field(default_factory=list)
 
