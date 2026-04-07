@@ -39,7 +39,7 @@ from src.routers import (
     files_router,
     schedules_router,
     workflow_keys_router,
-    logs_router,
+    audit_router,
     metrics_router,
     packages_router,
     github_router,
@@ -435,6 +435,8 @@ def create_app() -> FastAPI:
 
     # Set request-scoped ContextVars for user attribution and session tracking
     from src.core.request_context import RequestUser, set_request_user, set_request_session_id
+    from src.core.rate_limit import get_client_ip
+    from src.services.audit_context import ActorContext, set_actor, clear_actor
 
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next):
@@ -442,8 +444,13 @@ def create_app() -> FastAPI:
         session_id = request.headers.get("x-bifrost-watch-session")
         set_request_session_id(session_id)
 
-        # Try to extract user from JWT (best-effort, non-blocking)
+        # Parse token once; use for both request_user and audit actor contexts.
+        audit_user_id = None
+        audit_org_id = None
+        audit_email = None
+        audit_name = None
         try:
+            from uuid import UUID as _UUID
             from src.core.security import decode_token
             token = None
             auth_header = request.headers.get("authorization", "")
@@ -457,16 +464,46 @@ def create_app() -> FastAPI:
                     user_id = payload.get("sub", "")
                     user_name = payload.get("name") or payload.get("email") or user_id
                     set_request_user(RequestUser(user_id=user_id, user_name=user_name))
+                    # Populate audit actor fields
+                    try:
+                        audit_user_id = _UUID(user_id) if user_id else None
+                    except ValueError:
+                        audit_user_id = None
+                    org_id_raw = payload.get("org_id")
+                    if org_id_raw:
+                        try:
+                            audit_org_id = _UUID(org_id_raw)
+                        except ValueError:
+                            audit_org_id = None
+                    audit_email = payload.get("email")
+                    audit_name = payload.get("name")
             else:
                 set_request_user(None)
         except Exception:
             set_request_user(None)
 
-        response = await call_next(request)
+        # Always set audit actor context — for unauthenticated requests,
+        # user_id is None but IP/UA are still captured (so failed logins
+        # are recorded with network metadata).
+        actor_token = set_actor(
+            ActorContext(
+                user_id=audit_user_id,
+                organization_id=audit_org_id,
+                email=audit_email,
+                name=audit_name,
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent"),
+                source="http",
+            )
+        )
 
-        # Reset context after request
-        set_request_user(None)
-        set_request_session_id(None)
+        try:
+            response = await call_next(request)
+        finally:
+            # Reset context after request
+            set_request_user(None)
+            set_request_session_id(None)
+            clear_actor(actor_token)
         return response
 
     # Register routers
@@ -487,7 +524,7 @@ def create_app() -> FastAPI:
     app.include_router(files_router)
     app.include_router(schedules_router)
     app.include_router(workflow_keys_router)
-    app.include_router(logs_router)
+    app.include_router(audit_router)
     app.include_router(metrics_router)
     app.include_router(packages_router)
     app.include_router(github_router)

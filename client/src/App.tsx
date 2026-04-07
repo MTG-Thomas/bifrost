@@ -88,10 +88,14 @@ const Settings = lazyWithReload(() =>
 const UserSettings = lazyWithReload(() =>
 	import("@/pages/UserSettings").then((m) => ({ default: m.UserSettings })),
 );
-const SystemLogs = lazyWithReload(() => import("@/pages/SystemLogs"));
 const DiagnosticsPage = lazyWithReload(() =>
 	import("@/pages/diagnostics/DiagnosticsPage").then((m) => ({
 		default: m.DiagnosticsPage,
+	})),
+);
+const AuditLogPage = lazyWithReload(() =>
+	import("@/pages/audit/AuditLogPage").then((m) => ({
+		default: m.AuditLogPage,
 	})),
 );
 const Login = lazyWithReload(() =>
@@ -510,21 +514,13 @@ function AppRoutes() {
 								</ProtectedRoute>
 							}
 						/>
-						<Route
-							path="diagnostics/:tab"
-							element={
-								<ProtectedRoute requirePlatformAdmin>
-									<DiagnosticsPage />
-								</ProtectedRoute>
-							}
-						/>
 
-						{/* Legacy System Logs route - redirect to Diagnostics */}
+						{/* Audit Log - PlatformAdmin only */}
 						<Route
-							path="logs"
+							path="audit"
 							element={
 								<ProtectedRoute requirePlatformAdmin>
-									<SystemLogs />
+									<AuditLogPage />
 								</ProtectedRoute>
 							}
 						/>

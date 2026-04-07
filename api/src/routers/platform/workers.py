@@ -83,7 +83,7 @@ async def get_worker_metrics(
     db: AsyncSession = Depends(get_db),
     range: str = Query(
         default="1h",
-        regex=r"^(1h|6h|24h|7d)$",
+        pattern=r"^(1h|6h|24h|7d)$",
         description="Time range: 1h, 6h, 24h, 7d",
     ),
 ) -> WorkerMetricsResponse:

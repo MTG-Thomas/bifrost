@@ -394,49 +394,5 @@ class TestMetrics:
             f"Org user should not access daily metrics: {response.status_code}"
 
 
-@pytest.mark.e2e
-class TestLogs:
-    """Test log access and management."""
-
-    def test_list_logs_superuser(self, e2e_client, platform_admin):
-        """Superuser can list logs."""
-        response = e2e_client.get(
-            "/api/logs",
-            headers=platform_admin.headers,
-        )
-        assert response.status_code == 200, f"List logs failed: {response.text}"
-        data = response.json()
-
-        # Verify response structure (stub returns empty, but should be valid)
-        assert isinstance(data, dict)
-        assert "logs" in data
-        assert isinstance(data["logs"], list)
-
-    def test_list_logs_org_user_denied(self, e2e_client, org1_user):
-        """Org user cannot list logs (403)."""
-        response = e2e_client.get(
-            "/api/logs",
-            headers=org1_user.headers,
-        )
-        assert response.status_code == 403, \
-            f"Org user should not list logs: {response.status_code}"
-
-    def test_get_single_log_superuser(self, e2e_client, platform_admin):
-        """Superuser can attempt to get single log."""
-        # This should return 404 for non-existent log (stub implementation)
-        response = e2e_client.get(
-            "/api/logs/test_category/test_key",
-            headers=platform_admin.headers,
-        )
-        # Stub returns 404 for missing logs
-        assert response.status_code == 404, \
-            f"Non-existent log should return 404: {response.status_code}"
-
-    def test_get_single_log_org_user_denied(self, e2e_client, org1_user):
-        """Org user cannot get single log (403)."""
-        response = e2e_client.get(
-            "/api/logs/test_category/test_key",
-            headers=org1_user.headers,
-        )
-        assert response.status_code == 403, \
-            f"Org user should not access logs: {response.status_code}"
+# TestLogs removed: the /api/logs stub endpoint was replaced by /api/audit.
+# See tests/e2e/api/test_audit_log.py for the audit log test coverage.

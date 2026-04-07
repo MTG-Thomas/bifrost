@@ -16,7 +16,7 @@ from src.routers.branding import router as branding_router
 from src.routers.files import router as files_router
 from src.routers.schedules import router as schedules_router
 from src.routers.workflow_keys import router as workflow_keys_router
-from src.routers.logs import router as logs_router
+from src.routers.audit import router as audit_router
 from src.routers.metrics import router as metrics_router
 from src.routers.packages import router as packages_router
 from src.routers.github import router as github_router
@@ -79,7 +79,7 @@ __all__ = [
     "files_router",
     "schedules_router",
     "workflow_keys_router",
-    "logs_router",
+    "audit_router",
     "metrics_router",
     "packages_router",
     "github_router",

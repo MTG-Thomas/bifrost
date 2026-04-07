@@ -1,9 +1,9 @@
 """
-Execution and system log contract models for Bifrost.
+Execution contract models for Bifrost.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
@@ -225,22 +225,3 @@ class ExecutionPublic(ExecutionBase):
         return dt.isoformat() if dt else None
 
 
-# ==================== SYSTEM LOGS MODELS ====================
-
-
-class SystemLog(BaseModel):
-    """System log entry (platform events, not workflow executions)"""
-    event_id: str = Field(..., description="Unique event ID (UUID)")
-    timestamp: datetime = Field(..., description="When the event occurred (ISO 8601)")
-    category: Literal["discovery", "organization", "user", "role", "config", "secret", "form", "oauth", "execution", "system", "error"] = Field(..., description="Event category")
-    level: Literal["info", "warning", "error", "critical"] = Field(..., description="Event severity level")
-    message: str = Field(..., description="Human-readable event description")
-    executed_by: str = Field(..., description="User ID or 'System'")
-    executed_by_name: str = Field(..., description="Display name or 'System'")
-    details: dict[str, Any] | None = Field(default=None, description="Additional event-specific data")
-
-
-class SystemLogsListResponse(BaseModel):
-    """Response model for listing system logs with pagination"""
-    logs: list[SystemLog] = Field(..., description="List of system log entries")
-    continuation_token: str | None = Field(default=None, description="Continuation token for next page (opaque, base64-encoded)")

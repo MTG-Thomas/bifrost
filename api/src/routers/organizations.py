@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from src.core.auth import CurrentSuperuser
 from src.core.database import DbSession
+from src.services.audit import emit_audit
 from src.models import Organization as OrganizationORM
 from src.models import OrganizationCreate, OrganizationPublic, OrganizationUpdate
 
@@ -97,6 +98,13 @@ async def create_organization(
         )
 
     logger.info(f"Created organization {org.id}: {org.name}")
+    await emit_audit(
+        db,
+        "organization.create",
+        resource_type="organization",
+        resource_id=org.id,
+        details={"name": org.name, "domain": org.domain},
+    )
     return OrganizationPublic.model_validate(org)
 
 
@@ -175,6 +183,16 @@ async def update_organization(
         )
 
     logger.info(f"Updated organization {org_id}")
+    changed_fields = [
+        k for k, v in request.model_dump(exclude_unset=True).items() if v is not None
+    ]
+    await emit_audit(
+        db,
+        "organization.update",
+        resource_type="organization",
+        resource_id=org.id,
+        details={"name": org.name, "changed_fields": changed_fields},
+    )
     return OrganizationPublic.model_validate(org)
 
 
@@ -218,3 +236,10 @@ async def delete_organization(
         await invalidate_org(str(org_id))
 
     logger.info(f"Soft deleted organization {org_id}")
+    await emit_audit(
+        db,
+        "organization.delete",
+        resource_type="organization",
+        resource_id=org.id,
+        details={"name": org.name},
+    )

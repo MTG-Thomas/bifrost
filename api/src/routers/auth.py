@@ -50,6 +50,8 @@ from src.config import get_settings
 from src.core.auth import CurrentActiveUser
 from src.core.database import DbSession
 from src.core.rate_limit import auth_limiter, mfa_limiter, get_client_ip
+from src.services.audit import emit_audit
+from src.services.audit_context import ActorContext, current_actor
 from src.core.security import (
     create_access_token,
     create_mfa_token,
@@ -308,6 +310,12 @@ async def login(
     user = await user_repo.get_by_email(form_data.username)
 
     if not user:
+        await emit_audit(
+            db,
+            "auth.login.failed",
+            outcome="failure",
+            details={"email": form_data.username, "reason": "user_not_found"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -315,6 +323,14 @@ async def login(
         )
 
     if not user.hashed_password:
+        await emit_audit(
+            db,
+            "auth.login.failed",
+            resource_type="user",
+            resource_id=user.id,
+            outcome="failure",
+            details={"email": user.email, "reason": "no_password"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Account does not have password authentication enabled",
@@ -322,6 +338,14 @@ async def login(
         )
 
     if not verify_password(form_data.password, user.hashed_password):
+        await emit_audit(
+            db,
+            "auth.login.failed",
+            resource_type="user",
+            resource_id=user.id,
+            outcome="failure",
+            details={"email": user.email, "reason": "wrong_password"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -329,6 +353,14 @@ async def login(
         )
 
     if not user.is_active:
+        await emit_audit(
+            db,
+            "auth.login.failed",
+            resource_type="user",
+            resource_id=user.id,
+            outcome="failure",
+            details={"email": user.email, "reason": "inactive"},
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is inactive",
@@ -767,6 +799,27 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
         }
     )
 
+    # Emit with an actor_override built from the freshly-authenticated user,
+    # since the middleware couldn't populate the contextvar (no token yet).
+    base_actor = current_actor()
+    login_actor = ActorContext(
+        user_id=user.id,
+        organization_id=user.organization_id,
+        email=user.email,
+        name=user.name,
+        ip_address=base_actor.ip_address if base_actor else None,
+        user_agent=base_actor.user_agent if base_actor else None,
+        source="http",
+    )
+    await emit_audit(
+        db,
+        "auth.login.success",
+        resource_type="user",
+        resource_id=user.id,
+        details={"email": user.email, "is_superuser": user.is_superuser},
+        actor_override=login_actor,
+    )
+
     return LoginResponse(
         access_token=access_token,
         refresh_token=refresh_token_str,
@@ -959,6 +1012,7 @@ async def logout(
     request: Request,
     response: Response,
     current_user: CurrentActiveUser,
+    db: DbSession,
     body: LogoutRequest | None = None,
 ) -> LogoutResponse:
     """
@@ -999,6 +1053,13 @@ async def logout(
     clear_auth_cookies(response)
 
     logger.info(f"User logged out: {current_user.email}")
+    await emit_audit(
+        db,
+        "auth.logout",
+        resource_type="user",
+        resource_id=current_user.user_id,
+        details={"email": current_user.email},
+    )
 
     return LogoutResponse()
 

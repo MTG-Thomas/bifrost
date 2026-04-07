@@ -30,6 +30,8 @@ class AuditLog(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), default=None)
     user_agent: Mapped[str | None] = mapped_column(Text, default=None)
+    outcome: Mapped[str] = mapped_column(String(16), default="success", server_default=text("'success'"))
+    source: Mapped[str] = mapped_column(String(32), default="http", server_default=text("'http'"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
@@ -37,4 +39,5 @@ class AuditLog(Base):
     __table_args__ = (
         Index("ix_audit_logs_org_time", "organization_id", "created_at"),
         Index("ix_audit_logs_user", "user_id"),
+        Index("ix_audit_logs_action_created", "action", "created_at"),
     )
