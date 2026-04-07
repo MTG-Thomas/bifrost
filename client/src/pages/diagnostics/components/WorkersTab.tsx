@@ -37,8 +37,17 @@ export function WorkersTab() {
         }
     };
 
-    const restPools = poolsData?.pools || [];
-    const pools = wsPools.length > 0 ? wsPools : restPools;
+    // Merge REST snapshot + WS heartbeats by worker_id. The REST call returns
+    // the full container list on mount (fast — Redis SCAN); WS heartbeats then
+    // upgrade individual rows with live process/memory data as they arrive.
+    // Using either/or here caused containers to "trickle in" because the first
+    // WS heartbeat would replace the full REST list with a single-container WS list.
+    const pools = useMemo(() => {
+        const byId = new Map<string, PoolSummary | typeof wsPools[number]>();
+        for (const p of poolsData?.pools ?? []) byId.set(p.worker_id, p);
+        for (const p of wsPools) byId.set(p.worker_id, p);
+        return [...byId.values()];
+    }, [poolsData, wsPools]);
     const queueItems = queueData?.items || [];
 
     // Stable sorted worker IDs for consistent color assignment
@@ -121,7 +130,7 @@ export function WorkersTab() {
             </div>
 
             {/* Memory Chart */}
-            <MemoryChart />
+            <MemoryChart livePools={pools} />
 
             {/* Container Table */}
             {poolsLoading && pools.length === 0 ? (

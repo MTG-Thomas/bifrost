@@ -15446,6 +15446,16 @@ export interface components {
              * @description Total number of required packages from requirements.txt
              */
             requirements_total?: number | null;
+            /**
+             * Memory Current Bytes
+             * @description Current memory usage of the worker container in bytes (from cgroup)
+             */
+            memory_current_bytes?: number | null;
+            /**
+             * Memory Max Bytes
+             * @description Memory limit of the worker container in bytes (from cgroup, -1 if unlimited)
+             */
+            memory_max_bytes?: number | null;
         };
         /**
          * PoolsListResponse

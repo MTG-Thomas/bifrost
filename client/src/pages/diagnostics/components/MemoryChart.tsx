@@ -13,29 +13,38 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useWorkerMetrics, type WorkerMetricPoint } from "@/services/workers";
+import {
+    useWorkerMetrics,
+    type WorkerMetricPoint,
+    type PoolSummary,
+    type PoolDetail,
+    type ProcessInfo,
+} from "@/services/workers";
 
 const TIME_RANGES = ["1h", "6h", "24h", "7d"] as const;
 type TimeRange = (typeof TIME_RANGES)[number];
 
-// Consistent colors for up to 10 containers
-const CONTAINER_COLORS = [
-    "hsl(var(--chart-1))",
-    "hsl(var(--chart-2))",
-    "hsl(var(--chart-3))",
-    "hsl(var(--chart-4))",
-    "hsl(var(--chart-5))",
-    "#f97316",
-    "#06b6d4",
-    "#8b5cf6",
-    "#ec4899",
-    "#14b8a6",
+// Consistent colors for up to 10 containers — keep alarm-y warm tones at the end
+// so a single-container view doesn't look like an error.
+export const CONTAINER_COLORS = [
+    "#3b82f6", // blue-500
+    "#10b981", // emerald-500
+    "#06b6d4", // cyan-500
+    "#8b5cf6", // violet-500
+    "#14b8a6", // teal-500
+    "#ec4899", // pink-500
+    "#f59e0b", // amber-500
+    "#84cc16", // lime-500
+    "#6366f1", // indigo-500
+    "#f97316", // orange-500
 ];
+
+type LivePool = PoolSummary | PoolDetail;
 
 interface ChartDataPoint {
     timestamp: string;
     label: string;
-    [workerId: string]: number | string;
+    total: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -60,15 +69,22 @@ function formatTimeLabel(isoString: string, range: TimeRange): string {
 interface MemoryChartProps {
     /** Optional live data points from WebSocket to append */
     livePoints?: WorkerMetricPoint[];
+    /**
+     * Live pool data from WebSocket. When present, the header denominator
+     * (total memory limit + container count) is sourced from this instead of
+     * the 60s-polled metrics endpoint, so it stays in sync with ContainerTable.
+     */
+    livePools?: LivePool[];
 }
 
-export function MemoryChart({ livePoints }: MemoryChartProps) {
+export function MemoryChart({ livePoints, livePools }: MemoryChartProps) {
     const [range, setRange] = useState<TimeRange>("1h");
     const { data, isLoading } = useWorkerMetrics(range);
 
     const { chartData, workerIds, totalCurrent, totalMax, hasUnlimitedWorker } = useMemo(() => {
         const allPoints = [...(data?.points ?? []), ...(livePoints ?? [])];
-        if (allPoints.length === 0) {
+        const hasLivePools = !!livePools && livePools.length > 0;
+        if (allPoints.length === 0 && !hasLivePools) {
             return {
                 chartData: [],
                 workerIds: [],
@@ -78,32 +94,27 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
             };
         }
 
-        // Get unique worker IDs
-        const ids = [...new Set(allPoints.map((p) => p.worker_id))];
-
-        // Group by timestamp
-        const byTimestamp = new Map<string, Map<string, WorkerMetricPoint>>();
+        // Group by timestamp and sum across all workers — we render a single
+        // "total memory" series. Per-container breakdown lives in ContainerTable;
+        // overlaying N translucent areas here doesn't scale (and is unreadable
+        // even at N=2 because the overlap is invisible).
+        const totalsByTimestamp = new Map<string, number>();
         for (const point of allPoints) {
-            if (!byTimestamp.has(point.timestamp)) {
-                byTimestamp.set(point.timestamp, new Map());
-            }
-            byTimestamp.get(point.timestamp)!.set(point.worker_id, point);
+            totalsByTimestamp.set(
+                point.timestamp,
+                (totalsByTimestamp.get(point.timestamp) ?? 0) +
+                    Math.max(0, point.memory_current),
+            );
         }
 
-        // Build chart data
         const result: ChartDataPoint[] = [];
-        const sortedTimestamps = [...byTimestamp.keys()].sort();
+        const sortedTimestamps = [...totalsByTimestamp.keys()].sort();
         for (const ts of sortedTimestamps) {
-            const workers = byTimestamp.get(ts)!;
-            const row: ChartDataPoint = {
+            result.push({
                 timestamp: ts,
                 label: formatTimeLabel(ts, range),
-            };
-            for (const id of ids) {
-                const point = workers.get(id);
-                row[id] = point ? point.memory_current : 0;
-            }
-            result.push(row);
+                total: totalsByTimestamp.get(ts)!,
+            });
         }
 
         // Compute current totals from latest data points
@@ -126,16 +137,57 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
             }
         }
 
+        // If we have live pool data from the WebSocket, prefer it for the
+        // header totals — the metrics endpoint only refreshes every 60s, so
+        // its denominator goes stale as containers come and go.
+        let headerWorkerIds: string[] = [...new Set(allPoints.map((p) => p.worker_id))];
+        if (hasLivePools) {
+            let liveCurrent = 0;
+            let liveMax = 0;
+            let liveUnlimited = false;
+            const liveIds: string[] = [];
+            for (const pool of livePools!) {
+                liveIds.push(pool.worker_id);
+                const memCurrent =
+                    "memory_current_bytes" in pool && pool.memory_current_bytes != null
+                        ? pool.memory_current_bytes
+                        : 0;
+                const memMax =
+                    "memory_max_bytes" in pool && pool.memory_max_bytes != null
+                        ? pool.memory_max_bytes
+                        : 0;
+                liveCurrent += Math.max(0, memCurrent);
+                if (memMax > 0) {
+                    liveMax += memMax;
+                } else {
+                    // Only treat as unlimited if we know there are processes
+                    // running — an empty pool with memMax=0 just means we
+                    // haven't seen a heartbeat yet.
+                    if (
+                        "processes" in pool &&
+                        Array.isArray(pool.processes) &&
+                        (pool.processes as ProcessInfo[]).length > 0
+                    ) {
+                        liveUnlimited = true;
+                    }
+                }
+            }
+            current = liveCurrent;
+            max = liveMax;
+            unlimited = liveUnlimited;
+            headerWorkerIds = liveIds.sort();
+        }
+
         return {
             chartData: result,
-            workerIds: ids,
+            workerIds: headerWorkerIds,
             totalCurrent: current,
             totalMax: max,
             hasUnlimitedWorker: unlimited,
         };
-    }, [data, livePoints, range]);
+    }, [data, livePoints, livePools, range]);
 
-    const hasData = chartData.length > 0;
+    const hasData = chartData.length > 0 || workerIds.length > 0;
     const showLimit = totalMax > 0 && !hasUnlimitedWorker;
     const thresholdBytes = totalMax * 0.85;
     const utilizationPct = showLimit ? ((totalCurrent / totalMax) * 100).toFixed(0) : "0";
@@ -233,6 +285,8 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
                                 axisLine={false}
                                 tickFormatter={(v) => formatBytes(v)}
                                 width={60}
+                                domain={showLimit ? [0, totalMax] : [0, "auto"]}
+                                allowDataOverflow={false}
                             />
                             <Tooltip
                                 contentStyle={{
@@ -263,44 +317,20 @@ export function MemoryChart({ livePoints }: MemoryChartProps) {
                                     }}
                                 />
                             )}
-                            {workerIds.map((id, i) => (
-                                <Area
-                                    key={id}
-                                    type="monotone"
-                                    dataKey={id}
-                                    stackId="memory"
-                                    fill={CONTAINER_COLORS[i % CONTAINER_COLORS.length]}
-                                    fillOpacity={0.2}
-                                    stroke={CONTAINER_COLORS[i % CONTAINER_COLORS.length]}
-                                    strokeWidth={1.5}
-                                />
-                            ))}
+                            <Area
+                                type="monotone"
+                                dataKey="total"
+                                name="Total memory"
+                                fill="#3b82f6"
+                                fillOpacity={0.25}
+                                stroke="#3b82f6"
+                                strokeWidth={1.75}
+                                activeDot={{ r: 4 }}
+                            />
                         </AreaChart>
                     </ResponsiveContainer>
                 )}
 
-                {/* Legend */}
-                {workerIds.length > 0 && (
-                    <div className="flex flex-wrap gap-4 mt-3 text-xs">
-                        {workerIds.map((id, i) => (
-                            <span
-                                key={id}
-                                className="flex items-center gap-1.5"
-                            >
-                                <span
-                                    className="inline-block w-2.5 h-0.5 rounded-sm"
-                                    style={{
-                                        backgroundColor:
-                                            CONTAINER_COLORS[
-                                                i % CONTAINER_COLORS.length
-                                            ],
-                                    }}
-                                />
-                                {id}
-                            </span>
-                        ))}
-                    </div>
-                )}
             </CardContent>
         </Card>
     );

@@ -310,6 +310,8 @@ async def list_pools(
                 pool_info.last_heartbeat = hb.get("timestamp")
                 pool_info.requirements_installed = hb.get("requirements_installed")
                 pool_info.requirements_total = hb.get("requirements_total")
+                pool_info.memory_current_bytes = hb.get("memory_current_bytes")
+                pool_info.memory_max_bytes = hb.get("memory_max_bytes")
             except json.JSONDecodeError:
                 logger.warning(f"Invalid heartbeat JSON for pool {worker_id}")
 

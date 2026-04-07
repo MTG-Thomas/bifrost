@@ -15,22 +15,15 @@ import {
 import { ForkTable } from "./ForkTable";
 import type { ExecutionRowData } from "./ExecutionRow";
 import type { ProcessInfo, PoolDetail, PoolSummary } from "@/services/workers";
+import { CONTAINER_COLORS } from "./MemoryChart";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type PoolData = PoolSummary | PoolDetail;
-
-/** Consistent colors for container color dots (same order as MemoryChart) */
-const CONTAINER_COLORS = [
-    "hsl(var(--chart-1))",
-    "hsl(var(--chart-2))",
-    "hsl(var(--chart-3))",
-    "hsl(var(--chart-4))",
-    "hsl(var(--chart-5))",
-    "#f97316",
-    "#06b6d4",
-    "#8b5cf6",
-    "#ec4899",
-    "#14b8a6",
-];
 
 function formatUptime(seconds: number): string {
     if (seconds < 60) return `${Math.floor(seconds)}s`;
@@ -113,7 +106,7 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                         <TableHead>Container</TableHead>
                         <TableHead className="w-[80px]">Status</TableHead>
                         <TableHead className="w-[100px]">Forks</TableHead>
-                        <TableHead className="w-[180px]">Memory</TableHead>
+                        <TableHead className="w-[200px]">Memory</TableHead>
                         <TableHead className="w-[90px]">Uptime</TableHead>
                     </TableRow>
                 </TableHeader>
@@ -161,16 +154,27 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                                     </TableCell>
                                     <TableCell className="font-medium">
                                         <div className="flex items-center gap-2">
-                                            <span
-                                                className="inline-block w-2 h-2 rounded-sm flex-shrink-0"
-                                                style={{
-                                                    backgroundColor:
-                                                        CONTAINER_COLORS[
-                                                            ci %
-                                                                CONTAINER_COLORS.length
-                                                        ],
-                                                }}
-                                            />
+                                            <TooltipProvider delayDuration={200}>
+                                                <Tooltip>
+                                                    <TooltipTrigger asChild>
+                                                        <span
+                                                            aria-label="Container chart color"
+                                                            className="inline-block w-2 h-2 rounded-sm flex-shrink-0"
+                                                            style={{
+                                                                backgroundColor:
+                                                                    CONTAINER_COLORS[
+                                                                        ci %
+                                                                            CONTAINER_COLORS.length
+                                                                    ],
+                                                            }}
+                                                        />
+                                                    </TooltipTrigger>
+                                                    <TooltipContent>
+                                                        Color matches this container's
+                                                        series in the memory chart above.
+                                                    </TooltipContent>
+                                                </Tooltip>
+                                            </TooltipProvider>
                                             {pool.worker_id}
                                         </div>
                                     </TableCell>
@@ -201,14 +205,14 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                                                     value={memPct}
                                                     className="h-1.5 w-16"
                                                 />
-                                                <span className="text-xs">
+                                                <span className="text-xs whitespace-nowrap">
                                                     {formatBytes(memCurrent)} /{" "}
                                                     {formatBytes(memMax)}
                                                 </span>
                                             </div>
                                         ) : memCurrent >= 0 ? (
                                             <div className="flex items-center gap-2">
-                                                <span className="text-xs">
+                                                <span className="text-xs whitespace-nowrap">
                                                     {formatBytes(memCurrent)}
                                                 </span>
                                                 <span className="text-[10px] text-muted-foreground">

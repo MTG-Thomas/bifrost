@@ -77,6 +77,14 @@ class PoolSummary(BaseModel):
         default=None,
         description="Total number of required packages from requirements.txt"
     )
+    memory_current_bytes: int | None = Field(
+        default=None,
+        description="Current memory usage of the worker container in bytes (from cgroup)"
+    )
+    memory_max_bytes: int | None = Field(
+        default=None,
+        description="Memory limit of the worker container in bytes (from cgroup, -1 if unlimited)"
+    )
 
 
 class PoolDetail(BaseModel):
