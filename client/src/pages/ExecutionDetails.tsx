@@ -6,8 +6,15 @@ import {
 	Loader2,
 	Code2,
 	RefreshCw,
+	ChevronDown,
+	Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageLoader } from "@/components/PageLoader";
 import { useExecution, cancelExecution } from "@/hooks/useExecutions";
@@ -28,6 +35,9 @@ import {
 	ExecutionSidebar,
 	ExecutionCancelDialog,
 	ExecutionRerunDialog,
+	ExecutionMetadataBar,
+	ExecutionStatusBadge,
+	PrettyInputDisplay,
 	type LogEntry,
 } from "@/components/execution";
 import type { components } from "@/lib/v1";
@@ -492,78 +502,231 @@ export function ExecutionDetails({
 		);
 	}
 
+	// Embedded mode — single-column layout for slideout drawer
+	if (embedded) {
+		const aiUsageList = execution.ai_usage as
+			| {
+					provider: string;
+					model: string;
+					input_tokens: number;
+					output_tokens: number;
+					cost?: string | number | null;
+			  }[]
+			| undefined;
+		const hasAiUsage = aiUsageList && aiUsageList.length > 0;
+		const hasMetrics =
+			isPlatformAdmin &&
+			(execution.peak_memory_bytes || execution.cpu_total_seconds);
+		const hasVariables =
+			isPlatformAdmin &&
+			isComplete &&
+			variablesData &&
+			Object.keys(variablesData).length > 0;
+		const hasExecutionContext = !!execution.execution_context;
+		const hasExtras =
+			hasAiUsage || hasMetrics || hasVariables || hasExecutionContext;
+
+		return (
+			<div className="h-full">
+				<div className="p-4 space-y-3">
+					{/* Compact metadata header */}
+					<ExecutionMetadataBar
+						workflowName={execution.workflow_name}
+						status={executionStatus as ExecutionStatus}
+						executedByName={execution.executed_by_name}
+						orgName={execution.org_name}
+						startedAt={execution.started_at}
+						durationMs={execution.duration_ms}
+						queuePosition={streamState?.queuePosition}
+						waitReason={streamState?.waitReason}
+						availableMemoryMb={streamState?.availableMemoryMb}
+						requiredMemoryMb={streamState?.requiredMemoryMb}
+					/>
+
+					{/* Error message */}
+					{execution.error_message && (
+						<div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+							<div className="flex items-start gap-2">
+								<XCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
+								<pre className="text-sm whitespace-pre-wrap font-mono text-destructive/90 overflow-x-auto">
+									{execution.error_message}
+								</pre>
+							</div>
+						</div>
+					)}
+
+					{/* Result */}
+					{isComplete && execution.result != null && (
+						<ExecutionResultPanel
+							result={resultData?.result}
+							resultType={resultData?.result_type}
+							workflowName={execution.workflow_name}
+							isLoading={isLoadingResult}
+						/>
+					)}
+
+					{/* Input data */}
+					{execution.input_data && (
+						<div className="space-y-2">
+							<h4 className="text-sm font-medium text-muted-foreground">
+								Input Parameters
+							</h4>
+							<PrettyInputDisplay
+								inputData={
+									execution.input_data as Record<string, unknown>
+								}
+								showToggle={true}
+								defaultView="pretty"
+							/>
+						</div>
+					)}
+
+					{/* Logs */}
+					<ExecutionLogsPanel
+						logs={mergedLogs as LogEntry[]}
+						status={executionStatus}
+						isConnected={isConnected}
+						isLoading={isLoadingLogs}
+						isPlatformAdmin={isPlatformAdmin}
+						maxHeight="50vh"
+						embedded
+					/>
+
+					{/* Extra details — collapsible */}
+					{isComplete && hasExtras && (
+						<Collapsible>
+							<CollapsibleTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors w-full py-2 [&[data-state=open]>svg]:rotate-180">
+								<ChevronDown className="h-4 w-4 transition-transform duration-200" />
+								More details
+							</CollapsibleTrigger>
+							<CollapsibleContent className="space-y-4 pt-2">
+								<ExecutionSidebar
+									status={
+										execution.status as ExecutionStatus
+									}
+									workflowName={execution.workflow_name}
+									executedByName={
+										execution.executed_by_name
+									}
+									orgName={execution.org_name}
+									startedAt={execution.started_at}
+									completedAt={execution.completed_at}
+									inputData={execution.input_data}
+									isComplete={isComplete}
+									isPlatformAdmin={isPlatformAdmin}
+									isLoading={isLoading}
+									variablesData={variablesData}
+									peakMemoryBytes={
+										execution.peak_memory_bytes
+									}
+									cpuTotalSeconds={
+										execution.cpu_total_seconds
+									}
+									durationMs={execution.duration_ms}
+									aiUsage={execution.ai_usage}
+									aiTotals={execution.ai_totals}
+									errorMessage={execution.error_message}
+									executionContext={
+										execution.execution_context
+									}
+									extrasOnly
+								/>
+							</CollapsibleContent>
+						</Collapsible>
+					)}
+				</div>
+			</div>
+		);
+	}
+
 	return (
-		<div
-			className={
-				embedded ? "h-full overflow-y-auto" : "h-full overflow-y-auto"
-			}
-		>
+		<div className="h-full overflow-y-auto">
 			{/* Page Header - hidden in embedded mode */}
 			{!embedded && !isEmbed && (
-				<div className="sticky top-0 bg-background/80 backdrop-blur-sm py-6 border-b flex items-center gap-4 px-6 lg:px-8 z-10">
-					<Button
-						variant="ghost"
-						size="icon"
-						onClick={() => navigate("/history")}
-					>
-						<ArrowLeft className="h-4 w-4" />
-					</Button>
-					<div className="flex-1">
-						<h1 className="text-4xl font-extrabold tracking-tight">
-							Execution Details
-						</h1>
-						<p className="mt-2 text-muted-foreground">
-							Execution ID:{" "}
-							<span className="font-mono">
-								{execution.execution_id}
-							</span>
-						</p>
-					</div>
-					<div className="flex gap-2">
-						{/* Open in Editor button - show for workflows with source files */}
-						{metadata?.workflows?.find(
-							(w: WorkflowMetadata) =>
-								w.name === execution.workflow_name,
-						)?.source_file_path && (
+				<div className="sticky top-0 bg-background/80 backdrop-blur-sm border-b z-10">
+					<div className="px-6 lg:px-8 py-3 space-y-1">
+						{/* Row 1: Back + workflow name + status + action buttons */}
+						<div className="flex items-center gap-3 min-w-0">
 							<Button
-								variant="outline"
-								onClick={handleOpenInEditor}
-								disabled={isOpeningInEditor}
+								variant="ghost"
+								size="icon"
+								className="flex-shrink-0 h-8 w-8"
+								onClick={() => navigate("/history")}
 							>
-								{isOpeningInEditor ? (
-									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-								) : (
-									<Code2 className="mr-2 h-4 w-4" />
+								<ArrowLeft className="h-4 w-4" />
+							</Button>
+							<h1 className="text-lg font-semibold tracking-tight truncate">
+								{execution.workflow_name}
+							</h1>
+							<ExecutionStatusBadge
+								status={executionStatus as string}
+								queuePosition={streamState?.queuePosition}
+								waitReason={streamState?.waitReason}
+								availableMemoryMb={streamState?.availableMemoryMb}
+								requiredMemoryMb={streamState?.requiredMemoryMb}
+							/>
+							<div className="flex gap-1.5 flex-wrap ml-auto flex-shrink-0">
+								{metadata?.workflows?.find(
+									(w: WorkflowMetadata) =>
+										w.name === execution.workflow_name,
+								)?.source_file_path && (
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 text-xs"
+										onClick={handleOpenInEditor}
+										disabled={isOpeningInEditor}
+									>
+										{isOpeningInEditor ? (
+											<Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+										) : (
+											<Code2 className="mr-1.5 h-3.5 w-3.5" />
+										)}
+										Editor
+									</Button>
 								)}
-								Open in Editor
-							</Button>
-						)}
-						{/* Rerun button - show when complete */}
-						{isComplete && (
-							<Button
-								variant="outline"
-								onClick={() => setShowRerunDialog(true)}
-								disabled={isRerunning}
-							>
-								{isRerunning ? (
-									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-								) : (
-									<RefreshCw className="mr-2 h-4 w-4" />
+								{isComplete && (
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 text-xs"
+										onClick={() => setShowRerunDialog(true)}
+										disabled={isRerunning}
+									>
+										{isRerunning ? (
+											<Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+										) : (
+											<RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+										)}
+										Rerun
+									</Button>
 								)}
-								Rerun
-							</Button>
-						)}
-						{/* Cancel button - show when running/pending */}
-						{(execution.status === "Running" ||
-							execution.status === "Pending") && (
-							<Button
-								variant="outline"
-								onClick={() => setShowCancelDialog(true)}
-							>
-								<XCircle className="mr-2 h-4 w-4" />
-								Cancel
-							</Button>
-						)}
+								{(execution.status === "Running" ||
+									execution.status === "Pending") && (
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 text-xs"
+										onClick={() => setShowCancelDialog(true)}
+									>
+										<XCircle className="mr-1.5 h-3.5 w-3.5" />
+										Cancel
+									</Button>
+								)}
+								<Button
+									variant="ghost"
+									size="icon"
+									className="h-7 w-7"
+									onClick={() => {
+										navigator.clipboard.writeText(execution.execution_id);
+										toast.success("Execution ID copied");
+									}}
+									title="Copy execution ID"
+								>
+									<Copy className="h-3.5 w-3.5" />
+								</Button>
+							</div>
+						</div>
 					</div>
 				</div>
 			)}
@@ -597,7 +760,6 @@ export function ExecutionDetails({
 						>
 							<ExecutionLogsPanel
 								logs={mergedLogs as LogEntry[]}
-								streamingLogs={streamingLogs}
 								status={executionStatus}
 								isConnected={isConnected}
 								isLoading={isLoadingLogs}

@@ -154,26 +154,23 @@ class PackageInstallConsumer(BroadcastConsumer):
         except Exception as e:
             logger.warning(f"Failed to update packages in Redis: {e}")
 
-    def _mark_workers_for_recycle(self) -> None:
+    async def _recycle_workers(self) -> None:
         """
-        Mark all worker processes for recycling after their current execution.
-
-        Recycling clears Python's import cache (sys.modules) so child processes
-        can see newly installed packages on the shared filesystem.
+        Drain all worker processes and restart the template so that child
+        processes forked afterward have a fresh sys.modules that can see
+        newly installed packages.
         """
         try:
             from src.services.execution.process_pool import get_process_pool
 
             pool = get_process_pool()
             if pool._started:
-                count, idle_handles = pool.mark_for_recycle()
-                logger.info(f"Marked {count} worker processes for recycle")
-                for handle in idle_handles:
-                    asyncio.create_task(pool._recycle_idle_process(handle))
+                await pool.drain_and_restart_template()
+                logger.info("Drained workers and restarted template after pip install")
             else:
                 logger.warning("Pool not started, skipping worker recycle")
         except Exception as e:
-            logger.warning(f"Failed to mark workers for recycle: {e}")
+            logger.warning(f"Failed to drain/restart after pip install: {e}")
 
     async def process_message(self, body: dict[str, Any]) -> None:
         """Process a package installation message."""
@@ -202,7 +199,7 @@ class PackageInstallConsumer(BroadcastConsumer):
         # Worker subprocesses are forked before pip install runs, so they
         # won't see newly installed packages on the filesystem until recycled.
         await self._send_log("Recycling worker processes...")
-        self._mark_workers_for_recycle()
+        await self._recycle_workers()
 
         # Step 3: Update package list in Redis
         await self._update_pool_packages()

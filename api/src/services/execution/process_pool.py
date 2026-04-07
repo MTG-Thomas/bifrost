@@ -31,6 +31,7 @@ import multiprocessing
 import os
 import signal
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,10 +44,12 @@ import psutil
 import redis.asyncio as redis
 
 from src.config import get_settings
+from src.services.execution.memory_monitor import get_cgroup_memory, has_sufficient_memory_cgroup
 from src.services.execution.simple_worker import (
     install_requirements,
     run_worker_process as simple_run_worker_process,
 )
+from src.services.execution.template_process import TemplateProcess
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +155,66 @@ class ProcessHandle:
         return (datetime.now(timezone.utc) - self.started_at).total_seconds()
 
 
+class _PidWrapper:
+    """
+    Minimal wrapper around a PID to satisfy ProcessHandle.process interface.
+
+    Forked children are not multiprocessing.Process objects — they're raw PIDs.
+    This wrapper provides is_alive() and join() so ProcessHandle works uniformly.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.exitcode: int | None = None
+
+    def is_alive(self) -> bool:
+        try:
+            os.kill(self.pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def join(self, timeout: float | None = None) -> None:
+        import time
+        try:
+            if timeout is not None:
+                # Non-blocking waitpid with polling
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    pid, status = os.waitpid(self.pid, os.WNOHANG)
+                    if pid != 0:
+                        self.exitcode = os.waitstatus_to_exitcode(status)
+                        return
+                    time.sleep(0.1)
+            else:
+                _, status = os.waitpid(self.pid, 0)
+                self.exitcode = os.waitstatus_to_exitcode(status)
+        except ChildProcessError:
+            pass  # Already reaped
+
+
 # Type alias for result callback
 ResultCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+def _get_private_dirty_kb(pid: int) -> int:
+    """
+    Read Private_Dirty from /proc/{pid}/smaps_rollup.
+
+    Returns the total private dirty memory in KB, which represents
+    the unique (non-shared/COW) memory for this process.
+    Returns -1 if unable to read.
+    """
+    try:
+        with open(f"/proc/{pid}/smaps_rollup") as f:
+            for line in f:
+                if line.startswith("Private_Dirty:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except (OSError, ValueError):
+        pass
+    return -1
 
 
 class ProcessPoolManager:
@@ -245,6 +306,9 @@ class ProcessPoolManager:
         # Lock for idle process waiting
         self._idle_condition = asyncio.Condition()
 
+        # Template process for fork-based workers
+        self._template: TemplateProcess | None = None
+
     async def _get_redis(self) -> redis.Redis:  # type: ignore[type-arg]
         """Get or create Redis connection."""
         if self._redis is None:
@@ -255,55 +319,137 @@ class ProcessPoolManager:
             )
         return self._redis
 
-    def _spawn_process(self) -> ProcessHandle:
-        """
-        Spawn a new worker process.
+    async def _start_template(self) -> None:
+        """Start the template process for fork-based workers.
 
-        Creates queues for communication and starts the worker process.
-        The new process is set to IDLE state.
+        The new TemplateProcess is only assigned to self._template AFTER
+        start() completes successfully. This prevents fork() from racing
+        against the startup ready-handshake on the same pipe — if
+        self._template were assigned beforehand, a concurrent
+        route_execution → _spawn_or_fork_process → template.fork() could
+        consume the "ready" message intended for start()'s recv.
+        """
+        new_template = TemplateProcess()
+        try:
+            await asyncio.to_thread(new_template.start)
+        except Exception as e:
+            logger.error(f"Failed to start template process: {e}. Falling back to spawn.")
+            self._template = None
+            return
+        self._template = new_template
+        logger.info(f"Template process started (PID={self._template.pid})")
+
+    async def restart_template(self) -> None:
+        """
+        Restart the template process (e.g., after pip install).
+
+        All children must be drained/killed before calling this.
+        """
+        if self._template is not None:
+            logger.info("Shutting down template process for restart")
+            await asyncio.to_thread(self._template.shutdown)
+
+        await self._start_template()
+        logger.info("Template process restarted")
+
+    async def drain_and_restart_template(self, drain_timeout: float = 60.0) -> None:
+        """
+        Drain all existing workers, restart the template process, then
+        respawn workers from the fresh template.
+
+        Called after pip install so children get a fresh sys.modules
+        that can see newly installed packages.
+        """
+        # 1. Mark all for recycle (stops routing new work to them)
+        for handle in list(self.processes.values()):
+            handle.pending_recycle = True
+
+        # 2. Wait for busy processes to finish (bounded)
+        deadline = time.monotonic() + drain_timeout
+        while time.monotonic() < deadline:
+            busy = [h for h in self.processes.values() if h.state == ProcessState.BUSY]
+            if not busy:
+                break
+            await asyncio.sleep(0.2)
+
+        # 3. Terminate all remaining processes (don't spawn replacements yet)
+        for handle in list(self.processes.values()):
+            if handle.id in self.processes:
+                del self.processes[handle.id]
+            await self._terminate_process(handle)
+
+        # 4. Restart template with fresh sys.modules
+        await self.restart_template()
+
+        # 5. Respawn to min_workers
+        for _ in range(self.min_workers):
+            self._spawn_or_fork_process()
+
+    def _spawn_or_fork_process(self, persistent: bool | None = None) -> ProcessHandle:
+        """
+        Create a new worker process by forking from the template.
+
+        If the template is not running (e.g., during tests), falls back
+        to multiprocessing.spawn.
+
+        Args:
+            persistent: If None, inferred from self.min_workers > 0.
+                        If True, child loops. If False, child runs once.
 
         Returns:
-            ProcessHandle instance for the new process
+            ProcessHandle instance for the new process.
         """
-        # Create communication queues
-        ctx = multiprocessing.get_context("spawn")
-        work_queue: MPQueue[str] = ctx.Queue()
-        result_queue: MPQueue[dict[str, Any]] = ctx.Queue()
+        if persistent is None:
+            persistent = self.min_workers > 0
 
-        # Generate process ID
         self._process_counter += 1
         process_id = f"process-{self._process_counter}"
 
-        # Create process with target function
-        # Use simple_worker's run_worker_process which has:
-        # - Virtual import hook installation
-        # - Workspace module clearing between executions
-        process = ctx.Process(
-            target=simple_run_worker_process,
-            args=(work_queue, result_queue, process_id),
-            name=process_id,
-        )
-        process.start()
+        if self._template is not None and self._template.is_alive():
+            # Fork from template (COW memory sharing)
+            child_pid, work_queue, result_queue = self._template.fork(
+                worker_id=process_id,
+                persistent=persistent,
+            )
 
-        # Create handle
-        handle = ProcessHandle(
-            id=process_id,
-            process=process,
-            pid=process.pid,
-            state=ProcessState.IDLE,
-            work_queue=work_queue,
-            result_queue=result_queue,
-            started_at=datetime.now(timezone.utc),
-            current_execution=None,
-            executions_completed=0,
-        )
+            handle = ProcessHandle(
+                id=process_id,
+                process=_PidWrapper(child_pid),
+                pid=child_pid,
+                state=ProcessState.IDLE,
+                work_queue=work_queue,
+                result_queue=result_queue,
+                started_at=datetime.now(timezone.utc),
+                current_execution=None,
+                executions_completed=0,
+            )
+        else:
+            # Fallback to spawn (tests, or template not yet started)
+            ctx = multiprocessing.get_context("spawn")
+            work_queue_mp: MPQueue[str] = ctx.Queue()
+            result_queue_mp: MPQueue[dict[str, Any]] = ctx.Queue()
+
+            process = ctx.Process(
+                target=simple_run_worker_process,
+                args=(work_queue_mp, result_queue_mp, process_id),
+                name=process_id,
+            )
+            process.start()
+
+            handle = ProcessHandle(
+                id=process_id,
+                process=process,
+                pid=process.pid,
+                state=ProcessState.IDLE,
+                work_queue=work_queue_mp,
+                result_queue=result_queue_mp,
+                started_at=datetime.now(timezone.utc),
+                current_execution=None,
+                executions_completed=0,
+            )
 
         self.processes[process_id] = handle
-
-        logger.info(
-            f"Spawned worker process {process_id} with PID={process.pid}"
-        )
-
+        logger.info(f"Created worker {process_id} (PID={handle.pid}, persistent={persistent})")
         return handle
 
     async def start(self) -> None:
@@ -334,9 +480,12 @@ class ProcessPoolManager:
         # Compute requirements status for heartbeat reporting
         self._update_requirements_status()
 
+        # Start template process (loads deps, ready to fork)
+        await self._start_template()
+
         # Spawn initial pool
         for _ in range(self.min_workers):
-            self._spawn_process()
+            self._spawn_or_fork_process()
 
         # Register in Redis
         await self._register_worker()
@@ -366,53 +515,6 @@ class ProcessPoolManager:
         logger.info(
             f"ProcessPoolManager started with {len(self.processes)} workers"
         )
-
-        # Check for persisted configuration and apply if different
-        await self._apply_persisted_config()
-
-    async def _apply_persisted_config(self) -> None:
-        """
-        Check for persisted pool configuration and apply if different from current.
-
-        This ensures config changes survive container restarts.
-        Called after pool start to check system_configs table.
-        """
-        try:
-            # Import here to avoid circular dependencies
-            from sqlalchemy.ext.asyncio import create_async_engine
-            from sqlalchemy.ext.asyncio import async_sessionmaker
-
-            from src.config import get_settings
-            from src.services.worker_pool_config_service import get_pool_config
-
-            settings = get_settings()
-
-            # Create a temporary session for config lookup
-            engine = create_async_engine(settings.database_url)
-            async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-            async with async_session() as session:
-                config = await get_pool_config(session)
-
-                # Check if persisted config differs from current
-                if (config.min_workers != self.min_workers or
-                        config.max_workers != self.max_workers):
-                    logger.info(
-                        f"Applying persisted config: min={config.min_workers}, "
-                        f"max={config.max_workers} (current: min={self.min_workers}, "
-                        f"max={self.max_workers})"
-                    )
-
-                    # Apply the persisted config
-                    await self.resize(config.min_workers, config.max_workers)
-                else:
-                    logger.debug("Persisted config matches current settings")
-
-            await engine.dispose()
-
-        except Exception as e:
-            # Don't fail startup if we can't load persisted config
-            logger.warning(f"Failed to apply persisted config (using defaults): {e}")
 
     async def stop(self) -> None:
         """
@@ -449,6 +551,11 @@ class ProcessPoolManager:
         # Terminate all processes
         for handle in list(self.processes.values()):
             await self._terminate_process(handle)
+
+        # Shutdown template process
+        if self._template is not None:
+            self._template.shutdown()
+            self._template = None
 
         # Unregister from Redis
         await self._unregister_worker()
@@ -553,12 +660,23 @@ class ProcessPoolManager:
         # Write context to Redis
         await self._write_context_to_redis(execution_id, context)
 
+        # Admission control: check memory pressure before forking
+        settings = get_settings()
+        if not has_sufficient_memory_cgroup(threshold=settings.memory_pressure_threshold):
+            # Clean up the context we just wrote
+            r = await self._get_redis()
+            await r.delete(f"bifrost:exec:{execution_id}:context")
+            raise MemoryError(
+                f"Cannot route execution {execution_id[:8]}: memory pressure "
+                f"exceeds {settings.memory_pressure_threshold:.0%} threshold"
+            )
+
         # Find or create idle process
         idle = self._get_idle_process()
         if idle is None:
             # Scale up if possible
             if len(self.processes) < self.max_workers:
-                idle = self._spawn_process()
+                idle = self._spawn_or_fork_process()
             else:
                 # Wait for a process to become idle
                 idle = await self._wait_for_idle_process()
@@ -617,6 +735,14 @@ class ProcessPoolManager:
 
         while not self._shutdown:
             try:
+                # Check template health — restart if crashed
+                if self._template is not None and not self._template.is_alive():
+                    logger.error("Template process died — restarting")
+                    try:
+                        await self._start_template()
+                    except Exception as e:
+                        logger.error(f"Failed to restart template: {e}")
+
                 await self._check_timeouts()
                 await self._check_process_health()
                 await self._maybe_scale_down()
@@ -670,7 +796,7 @@ class ProcessPoolManager:
 
                 # Spawn replacement if below min_workers
                 if len(self.processes) < self.min_workers:
-                    self._spawn_process()
+                    self._spawn_or_fork_process()
 
     async def _kill_process(self, handle: ProcessHandle) -> None:
         """
@@ -805,8 +931,6 @@ class ProcessPoolManager:
             await self._handle_recycle_process_command(command)
         elif action == "recycle_all":
             await self._handle_recycle_all_command(command)
-        elif action == "resize":
-            await self._handle_resize_command(command)
         else:
             logger.warning(f"Unknown command action: {action}")
 
@@ -884,28 +1008,6 @@ class ProcessPoolManager:
             # Recycle this idle process
             await self._recycle_idle_process(handle)
 
-    async def _handle_resize_command(self, command: dict[str, Any]) -> None:
-        """
-        Handle resize command - update min/max workers and scale pool.
-
-        Args:
-            command: Command dict with 'min_workers' and 'max_workers' fields
-        """
-        new_min = command.get("min_workers")
-        new_max = command.get("max_workers")
-
-        if new_min is None or new_max is None:
-            logger.warning("resize command missing min_workers or max_workers")
-            return
-
-        logger.info(f"Processing resize command: min={new_min}, max={new_max}")
-
-        try:
-            result = await self.resize(new_min, new_max)
-            logger.info(f"Resize complete: {result}")
-        except ValueError as e:
-            logger.error(f"Resize failed: {e}")
-
     async def _handle_cancel_request(self, execution_id: str) -> None:
         """
         Handle cancellation request for a running execution.
@@ -932,7 +1034,7 @@ class ProcessPoolManager:
                 # Remove from pool and replace
                 del self.processes[handle.id]
                 if len(self.processes) < self.min_workers:
-                    self._spawn_process()
+                    self._spawn_or_fork_process()
 
                 return
 
@@ -988,7 +1090,7 @@ class ProcessPoolManager:
 
         # Spawn replacements to maintain min_workers
         while len(self.processes) < self.min_workers:
-            self._spawn_process()
+            self._spawn_or_fork_process()
 
     async def _report_crash(self, exec_info: ExecutionInfo) -> None:
         """
@@ -1105,6 +1207,18 @@ class ProcessPoolManager:
         handle.current_execution = None
         handle.executions_completed += 1
 
+        # On-demand mode: child exits after one execution, just clean up
+        if self.min_workers == 0:
+            if handle.id in self.processes:
+                del self.processes[handle.id]
+            # Forward result to callback
+            if self.on_result:
+                try:
+                    await self.on_result(result)
+                except Exception as e:
+                    logger.exception(f"Error in result callback: {e}")
+            return
+
         # Check if should recycle (pending flag or execution count threshold)
         if handle.pending_recycle:
             logger.info(f"Recycling process {handle.id} (pending recycle flag)")
@@ -1168,7 +1282,7 @@ class ProcessPoolManager:
         del self.processes[handle.id]
 
         # Spawn replacement immediately so we maintain worker count
-        self._spawn_process()
+        self._spawn_or_fork_process()
 
         # Then terminate the old process (this includes grace period wait)
         await self._terminate_process(handle)
@@ -1209,157 +1323,9 @@ class ProcessPoolManager:
         # graceful shutdown wait. Only delete if still present.
         if target.id in self.processes:
             del self.processes[target.id]
-        self._spawn_process()
+        self._spawn_or_fork_process()
 
         return True
-
-    async def resize(self, new_min: int, new_max: int) -> dict[str, Any]:
-        """
-        Dynamically resize the pool.
-
-        Adjusts min_workers and max_workers, then scales the pool:
-        - Scale up: spawn processes if current size < new_min
-        - Scale down: mark excess idle processes for removal (preserve busy)
-
-        Args:
-            new_min: New minimum worker count (must be >= 2)
-            new_max: New maximum worker count (must be >= new_min)
-
-        Returns:
-            Dict with old/new config and scaling actions taken
-
-        Raises:
-            ValueError: If new_min < 2 or new_min > new_max
-        """
-        # Validate bounds
-        if new_min < 2:
-            raise ValueError(f"min_workers must be >= 2, got {new_min}")
-        if new_min > new_max:
-            raise ValueError(
-                f"min_workers ({new_min}) cannot be greater than max_workers ({new_max})"
-            )
-
-        old_min = self.min_workers
-        old_max = self.max_workers
-        current_size = len(self.processes)
-
-        logger.info(
-            f"Resizing pool: min {old_min}->{new_min}, max {old_max}->{new_max}, "
-            f"current size: {current_size}"
-        )
-
-        # Update config
-        self.min_workers = new_min
-        self.max_workers = new_max
-
-        processes_spawned = 0
-        processes_marked_for_removal = 0
-
-        # Scale up if needed
-        if current_size < new_min:
-            to_spawn = new_min - current_size
-            logger.info(f"Scaling up: spawning {to_spawn} processes")
-
-            # Publish initial scaling event
-            try:
-                from src.core.pubsub import publish_pool_scaling, publish_pool_progress
-                await publish_pool_scaling(
-                    worker_id=self.worker_id,
-                    action="scale_up",
-                    processes_affected=to_spawn,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to publish scale_up event: {e}")
-
-            for i in range(to_spawn):
-                # Publish progress before spawning
-                try:
-                    from src.core.pubsub import publish_pool_progress
-                    await publish_pool_progress(
-                        worker_id=self.worker_id,
-                        action="scale_up",
-                        current=i + 1,
-                        total=to_spawn,
-                        message=f"Spawning process {i + 1} of {to_spawn}...",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to publish progress: {e}")
-
-                self._spawn_process()
-                processes_spawned += 1
-
-        # Scale down if needed (mark excess idle processes for termination)
-        elif current_size > new_max:
-            excess = current_size - new_max
-            logger.info(f"Scaling down: marking {excess} idle processes for removal")
-
-            # Find idle processes to remove (oldest first)
-            idle_handles = [
-                h for h in self.processes.values()
-                if h.state == ProcessState.IDLE
-            ]
-            # Sort by started_at to remove oldest first
-            idle_handles.sort(key=lambda h: h.started_at or datetime.min)
-
-            to_remove = idle_handles[:excess]
-
-            # Publish initial scaling event
-            if to_remove:
-                try:
-                    from src.core.pubsub import publish_pool_scaling
-                    await publish_pool_scaling(
-                        worker_id=self.worker_id,
-                        action="scale_down",
-                        processes_affected=len(to_remove),
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to publish scale_down event: {e}")
-
-            for i, handle in enumerate(to_remove):
-                # Publish progress before terminating
-                try:
-                    from src.core.pubsub import publish_pool_progress
-                    await publish_pool_progress(
-                        worker_id=self.worker_id,
-                        action="scale_down",
-                        current=i + 1,
-                        total=len(to_remove),
-                        message=f"Terminating process {i + 1} of {len(to_remove)}...",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to publish progress: {e}")
-
-                # Mark for removal and terminate
-                asyncio.create_task(self._scale_down_process(handle))
-                processes_marked_for_removal += 1
-
-        # Update Redis registration with new config
-        await self._update_redis_config()
-
-        # Publish config changed event
-        try:
-            from src.core.pubsub import publish_pool_config_changed
-            await publish_pool_config_changed(
-                worker_id=self.worker_id,
-                old_min=old_min,
-                old_max=old_max,
-                new_min=new_min,
-                new_max=new_max,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to publish config changed event: {e}")
-
-        result = {
-            "old_min": old_min,
-            "old_max": old_max,
-            "new_min": new_min,
-            "new_max": new_max,
-            "processes_spawned": processes_spawned,
-            "processes_marked_for_removal": processes_marked_for_removal,
-        }
-
-        logger.info(f"Resize complete: {result}")
-        return result
 
     async def _scale_down_process(self, handle: ProcessHandle) -> None:
         """
@@ -1385,24 +1351,6 @@ class ProcessPoolManager:
 
         # Terminate the process
         await self._terminate_process(handle)
-
-    async def _update_redis_config(self) -> None:
-        """Update the Redis registration with current min/max workers."""
-        try:
-            r = await self._get_redis()
-            redis_key = f"bifrost:pool:{self.worker_id}"
-            await r.hset(  # type: ignore[misc]
-                redis_key,
-                mapping={
-                    "min_workers": str(self.min_workers),
-                    "max_workers": str(self.max_workers),
-                }
-            )
-            logger.debug(
-                f"Updated Redis config: min={self.min_workers}, max={self.max_workers}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to update Redis config: {e}")
 
     def mark_for_recycle(self) -> tuple[int, list[ProcessHandle]]:
         """
@@ -1490,8 +1438,6 @@ class ProcessPoolManager:
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "status": "online",
                 "hostname": os.environ.get("HOSTNAME", "unknown"),
-                "min_workers": str(self.min_workers),
-                "max_workers": str(self.max_workers),
                 "packages": json.dumps(packages),
             }
         )
@@ -1598,11 +1544,21 @@ class ProcessPoolManager:
         """
         processes = []
         for p in self.processes.values():
+            private_dirty_kb = _get_private_dirty_kb(p.pid) if p.pid else -1
+            # Prefer private-dirty (USS-like) for display: RSS counts COW-shared
+            # pages from the fork template, inflating per-fork memory and not
+            # summing cleanly across forks. Fall back to RSS if smaps_rollup
+            # is unavailable.
+            if private_dirty_kb >= 0:
+                memory_mb: float = private_dirty_kb / 1024
+            else:
+                memory_mb = self._get_process_memory(p.pid)
             info: dict[str, Any] = {
                 "pid": p.pid,
                 "process_id": p.id,
                 "state": p.state.value,
-                "memory_mb": self._get_process_memory(p.pid),
+                "memory_mb": memory_mb,
+                "private_dirty_kb": private_dirty_kb,
                 "uptime_seconds": p.uptime_seconds,
                 "executions_completed": p.executions_completed,
                 "pending_recycle": p.pending_recycle,
@@ -1618,6 +1574,8 @@ class ProcessPoolManager:
         idle_count = len([p for p in self.processes.values() if p.state == ProcessState.IDLE])
         busy_count = len([p for p in self.processes.values() if p.state == ProcessState.BUSY])
 
+        memory_current, memory_max = get_cgroup_memory()
+
         return {
             "type": "worker_heartbeat",
             "worker_id": self.worker_id,
@@ -1629,10 +1587,10 @@ class ProcessPoolManager:
             "pool_size": len(self.processes),
             "idle_count": idle_count,
             "busy_count": busy_count,
-            "min_workers": self.min_workers,
-            "max_workers": self.max_workers,
             "requirements_installed": self._requirements_installed,
             "requirements_total": self._requirements_total,
+            "memory_current_bytes": memory_current,
+            "memory_max_bytes": memory_max,
         }
 
     def _get_process_memory(self, pid: int | None) -> float:
@@ -1679,8 +1637,6 @@ class ProcessPoolManager:
             "shutdown": self._shutdown,
             "worker_id": self.worker_id,
             "pool_size": len(self.processes),
-            "min_workers": self.min_workers,
-            "max_workers": self.max_workers,
             "processes": [
                 {
                     "process_id": p.id,
@@ -1710,7 +1666,7 @@ def get_process_pool() -> ProcessPoolManager:
     if _pool is None:
         settings = get_settings()
         _pool = ProcessPoolManager(
-            min_workers=settings.min_workers,
+            min_workers=0,  # On-demand (JIT) mode — no warm pool
             max_workers=settings.max_workers,
             execution_timeout_seconds=settings.execution_timeout_seconds,
             graceful_shutdown_seconds=settings.graceful_shutdown_seconds,

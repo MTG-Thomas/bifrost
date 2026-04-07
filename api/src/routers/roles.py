@@ -15,6 +15,7 @@ from sqlalchemy import select, delete
 
 from src.core.auth import CurrentSuperuser
 from src.core.database import DbSession
+from src.services.audit import emit_audit
 from src.models import (
     Role as RoleORM,
     UserRole as UserRoleORM,
@@ -116,6 +117,13 @@ async def create_role(
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
         await invalidate_role(None, str(role.id))
 
+    await emit_audit(
+        db,
+        "role.create",
+        resource_type="role",
+        resource_id=role.id,
+        details={"name": role.name},
+    )
     return RolePublic.model_validate(role)
 
 
@@ -183,6 +191,16 @@ async def update_role(
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
         await invalidate_role(None, str(role_id))
 
+    changed_fields = [
+        k for k, v in request.model_dump(exclude_unset=True).items() if v is not None
+    ]
+    await emit_audit(
+        db,
+        "role.update",
+        resource_type="role",
+        resource_id=role.id,
+        details={"name": role.name, "changed_fields": changed_fields},
+    )
     return RolePublic.model_validate(role)
 
 
@@ -225,6 +243,7 @@ async def delete_role(
             detail="Role not found",
         )
 
+    deleted_name = role.name
     await db.delete(role)
     await db.flush()
     logger.info(f"Deleted role {role_id}")
@@ -232,6 +251,14 @@ async def delete_role(
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
         await invalidate_role(None, str(role_id))
+
+    await emit_audit(
+        db,
+        "role.delete",
+        resource_type="role",
+        resource_id=role_id,
+        details={"name": deleted_name},
+    )
 
 
 # =============================================================================
@@ -311,6 +338,14 @@ async def assign_users_to_role(
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
         await invalidate_role_users(None, str(role_id))
 
+    await emit_audit(
+        db,
+        "role.user_assigned",
+        resource_type="role",
+        resource_id=role_id,
+        details={"user_ids": request.user_ids},
+    )
+
 
 @router.delete(
     "/{role_id}/users/{user_id}",
@@ -354,6 +389,14 @@ async def remove_user_from_role(
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
         await invalidate_role_users(None, str(role_id))
+
+    await emit_audit(
+        db,
+        "role.user_unassigned",
+        resource_type="role",
+        resource_id=role_id,
+        details={"user_id": str(user_uuid)},
+    )
 
 
 # =============================================================================

@@ -32,6 +32,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { LogsView } from "./ExecutionHistory/components/LogsView";
+import { ExecutionDrawer } from "./ExecutionHistory/components/ExecutionDrawer";
 import {
 	Tooltip,
 	TooltipContent,
@@ -127,6 +128,8 @@ export function ExecutionHistory() {
 	const [showLocal, setShowLocal] = useState(false);
 	const [viewMode, setViewMode] = useState<"executions" | "logs">("executions");
 	const [logLevelFilter, setLogLevelFilter] = useState<string>("all");
+	const [drawerExecutionId, setDrawerExecutionId] = useState<string | null>(null);
+	const [drawerOpen, setDrawerOpen] = useState(false);
 	const isGlobalScope = useScopeStore((state) => state.isGlobalScope);
 	const orgId = useScopeStore((state) => state.scope.orgId);
 
@@ -283,7 +286,8 @@ export function ExecutionHistory() {
 	};
 
 	const handleViewDetails = (execution_id: string) => {
-		navigate(`/history/${execution_id}`);
+		setDrawerExecutionId(execution_id);
+		setDrawerOpen(true);
 	};
 
 	const handleCancelExecution = async (
@@ -752,6 +756,7 @@ export function ExecutionHistory() {
 										<DataTableRow
 											key={execution.execution_id}
 											clickable
+											href={`/history/${execution.execution_id}`}
 											onClick={() =>
 												handleViewDetails(
 													execution.execution_id,
@@ -989,6 +994,11 @@ export function ExecutionHistory() {
 				</TabsContent>
 				</Tabs>
 			)}
+			<ExecutionDrawer
+				executionId={drawerExecutionId}
+				open={drawerOpen}
+				onOpenChange={setDrawerOpen}
+			/>
 		</div>
 	);
 }

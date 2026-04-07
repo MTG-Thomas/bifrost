@@ -400,6 +400,9 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
     try:
         from src.services.execution.worker import _run_execution
 
+        # Capture baseline PSS before execution so we can measure the delta
+        baseline_pss = _get_pss_bytes()
+
         result = await _run_execution(execution_id, context)
 
         # Calculate duration
@@ -409,8 +412,14 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
         status = result.get("status", "Failed")
         success = status in ("Success", "CompletedWithErrors")
 
-        # Capture resource metrics
-        metrics = _capture_resource_metrics()
+        # Capture resource metrics (use worker's metrics if available, else local)
+        metrics = result.get("metrics") or _capture_resource_metrics()
+
+        # Overwrite peak_memory_bytes with PSS delta — the memory uniquely
+        # attributable to this execution, excluding shared parent pages.
+        end_pss = _get_pss_bytes()
+        if baseline_pss > 0 and end_pss > 0:
+            metrics["peak_memory_bytes"] = max(0, end_pss - baseline_pss)
 
         return {
             "execution_id": execution_id,
@@ -424,7 +433,7 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
             "variables": result.get("variables"),
             "integration_calls": result.get("integration_calls", []),
             "roi": result.get("roi"),
-            "metrics": result.get("metrics") or metrics,
+            "metrics": metrics,
             "cached": result.get("cached", False),
             "cache_expires_at": result.get("cache_expires_at"),
             "execution_context": result.get("execution_context"),
@@ -479,6 +488,24 @@ async def _read_context_from_redis(execution_id: str) -> dict[str, Any] | None:
         return None
     finally:
         await redis_client.aclose()
+
+
+def _get_pss_bytes() -> int:
+    """Get current PSS (Proportional Set Size) in bytes.
+
+    PSS divides shared pages proportionally among all processes sharing them
+    and counts private pages fully — giving the true unique memory footprint.
+    Reads from /proc/self/smaps_rollup on Linux/Docker.
+    Falls back to 0 if unavailable.
+    """
+    try:
+        with open("/proc/self/smaps_rollup") as f:
+            for line in f:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1]) * 1024  # kB to bytes
+    except (OSError, ValueError):
+        pass
+    return 0
 
 
 def _get_process_rss() -> int:

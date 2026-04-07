@@ -8,8 +8,14 @@ import {
     DataTableRow,
 } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import {
+    Pagination,
+    PaginationContent,
+    PaginationItem,
+    PaginationLink,
+    PaginationNext,
+    PaginationPrevious,
+} from "@/components/ui/pagination";
 import type { components } from "@/lib/v1";
 import { formatDate } from "@/lib/utils";
 
@@ -22,6 +28,7 @@ interface LogsTableProps {
     onNextPage: () => void;
     onPrevPage: () => void;
     canGoBack: boolean;
+    currentPage: number;
     onLogClick: (log: LogListEntry) => void;
 }
 
@@ -48,6 +55,7 @@ export function LogsTable({
     onNextPage,
     onPrevPage,
     canGoBack,
+    currentPage,
     onLogClick,
 }: LogsTableProps) {
     return (
@@ -88,6 +96,7 @@ export function LogsTable({
                         <DataTableRow
                             key={log.id}
                             clickable
+                            href={`/history/${log.execution_id}`}
                             onClick={() => onLogClick(log)}
                             className="cursor-pointer"
                         >
@@ -115,31 +124,45 @@ export function LogsTable({
             </DataTableBody>
             <DataTableFooter>
                 <DataTableRow>
-                    <DataTableCell colSpan={5}>
-                        <div className="flex items-center justify-between">
-                            <span className="text-sm text-muted-foreground">
-                                {logs.length} logs shown
-                            </span>
-                            <div className="flex gap-2">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={onPrevPage}
-                                    disabled={!canGoBack}
-                                >
-                                    <ChevronLeft className="h-4 w-4 mr-1" />
-                                    Previous
-                                </Button>
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={onNextPage}
-                                    disabled={!continuationToken}
-                                >
-                                    Next
-                                    <ChevronRight className="h-4 w-4 ml-1" />
-                                </Button>
-                            </div>
+                    <DataTableCell colSpan={5} className="p-0">
+                        <div className="px-6 py-4 flex items-center justify-center">
+                            <Pagination>
+                                <PaginationContent>
+                                    <PaginationItem>
+                                        <PaginationPrevious
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                onPrevPage();
+                                            }}
+                                            className={
+                                                !canGoBack
+                                                    ? "pointer-events-none opacity-50"
+                                                    : "cursor-pointer"
+                                            }
+                                            aria-disabled={!canGoBack}
+                                        />
+                                    </PaginationItem>
+                                    <PaginationItem>
+                                        <PaginationLink isActive>
+                                            {currentPage}
+                                        </PaginationLink>
+                                    </PaginationItem>
+                                    <PaginationItem>
+                                        <PaginationNext
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                onNextPage();
+                                            }}
+                                            className={
+                                                !continuationToken
+                                                    ? "pointer-events-none opacity-50"
+                                                    : "cursor-pointer"
+                                            }
+                                            aria-disabled={!continuationToken}
+                                        />
+                                    </PaginationItem>
+                                </PaginationContent>
+                            </Pagination>
                         </div>
                     </DataTableCell>
                 </DataTableRow>

@@ -2587,7 +2587,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/logs": {
+    "/api/audit": {
         parameters: {
             query?: never;
             header?: never;
@@ -2595,30 +2595,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List system logs
-         * @description List system logs (stub - returns empty for now)
+         * List audit log entries
+         * @description List audit log entries with filters (Platform admin only)
          */
-        get: operations["list_logs_api_logs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/logs/{category}/{row_key}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get single log
-         * @description Get a single system log entry (stub - returns 404)
-         */
-        get: operations["get_log_api_logs__category___row_key__get"];
+        get: operations["list_audit_logs_api_audit_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3406,22 +3386,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         options?: never;
         head?: never;
         patch?: never;
@@ -7240,7 +7220,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/platform/workers/config": {
+    "/api/platform/workers/metrics": {
         parameters: {
             query?: never;
             header?: never;
@@ -7248,20 +7228,16 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get global pool configuration
-         * @description Get the current global min/max workers configuration
+         * Get worker metrics time-series
+         * @description Returns time-series memory data for the aggregate chart. Downsampled for longer ranges.
          */
-        get: operations["get_pool_config_api_platform_workers_config_get"];
+        get: operations["get_worker_metrics_api_platform_workers_metrics_get"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /**
-         * Update global pool configuration
-         * @description Update min/max workers for all pools. Changes take effect immediately and are persisted.
-         */
-        patch: operations["update_pool_config_api_platform_workers_config_patch"];
+        patch?: never;
         trace?: never;
     };
     "/api/platform/workers/stats": {
@@ -8509,6 +8485,107 @@ export interface components {
              * @description List of user IDs to assign
              */
             user_ids: string[];
+        };
+        /**
+         * AuditLogActor
+         * @description Who performed the action.
+         */
+        AuditLogActor: {
+            /**
+             * User Id
+             * @description Acting user's ID (null for system events)
+             */
+            user_id?: string | null;
+            /**
+             * User Email
+             * @description Acting user's email
+             */
+            user_email?: string | null;
+            /**
+             * User Name
+             * @description Acting user's display name
+             */
+            user_name?: string | null;
+            /**
+             * Organization Id
+             * @description Acting user's organization
+             */
+            organization_id?: string | null;
+            /**
+             * Organization Name
+             * @description Acting user's organization name
+             */
+            organization_name?: string | null;
+        };
+        /**
+         * AuditLogEntry
+         * @description A single audit log entry.
+         */
+        AuditLogEntry: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Timestamp
+             * @description When the event occurred
+             */
+            timestamp: string;
+            /**
+             * Action
+             * @description Dotted event name, e.g. 'user.create'
+             */
+            action: string;
+            /**
+             * Resource Type
+             * @description Target entity type
+             */
+            resource_type?: string | null;
+            /**
+             * Resource Id
+             * @description Target entity ID
+             */
+            resource_id?: string | null;
+            /**
+             * Outcome
+             * @description 'success' or 'failure'
+             */
+            outcome: string;
+            /**
+             * Source
+             * @description Event source: 'http', 'sso_sync', 'scheduler', 'cli', ...
+             */
+            source: string;
+            /** @description Who performed the action */
+            actor: components["schemas"]["AuditLogActor"];
+            /** Ip Address */
+            ip_address?: string | null;
+            /** User Agent */
+            user_agent?: string | null;
+            /**
+             * Details
+             * @description Event-specific metadata
+             */
+            details?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * AuditLogListResponse
+         * @description Paginated audit log list response.
+         */
+        AuditLogListResponse: {
+            /**
+             * Entries
+             * @description Audit log entries, newest first
+             */
+            entries: components["schemas"]["AuditLogEntry"][];
+            /**
+             * Continuation Token
+             * @description Opaque token for next page (null when no more)
+             */
+            continuation_token?: string | null;
         };
         /**
          * AuthStatusResponse
@@ -15277,52 +15354,6 @@ export interface components {
             refreshed_at: string;
         };
         /**
-         * PoolConfigUpdateRequest
-         * @description Request to update pool configuration.
-         */
-        PoolConfigUpdateRequest: {
-            /**
-             * Min Workers
-             * @description Minimum worker processes to maintain (must be >= 2)
-             */
-            min_workers: number;
-            /**
-             * Max Workers
-             * @description Maximum worker processes for scaling
-             */
-            max_workers: number;
-        };
-        /**
-         * PoolConfigUpdateResponse
-         * @description Response from pool config update.
-         */
-        PoolConfigUpdateResponse: {
-            /** Success */
-            success: boolean;
-            /** Message */
-            message: string;
-            /** Worker Id */
-            worker_id: string;
-            /** Old Min */
-            old_min: number;
-            /** Old Max */
-            old_max: number;
-            /** New Min */
-            new_min: number;
-            /** New Max */
-            new_max: number;
-            /**
-             * Processes Spawned
-             * @default 0
-             */
-            processes_spawned: number;
-            /**
-             * Processes Marked For Removal
-             * @default 0
-             */
-            processes_marked_for_removal: number;
-        };
-        /**
          * PoolDetail
          * @description Detailed pool information including all processes.
          */
@@ -15337,18 +15368,6 @@ export interface components {
             started_at?: string | null;
             /** Last Heartbeat */
             last_heartbeat?: string | null;
-            /**
-             * Min Workers
-             * @description Minimum pool size
-             * @default 2
-             */
-            min_workers: number;
-            /**
-             * Max Workers
-             * @description Maximum pool size
-             * @default 10
-             */
-            max_workers: number;
             /** Processes */
             processes?: components["schemas"]["ProcessInfo"][];
         };
@@ -15427,6 +15446,16 @@ export interface components {
              * @description Total number of required packages from requirements.txt
              */
             requirements_total?: number | null;
+            /**
+             * Memory Current Bytes
+             * @description Current memory usage of the worker container in bytes (from cgroup)
+             */
+            memory_current_bytes?: number | null;
+            /**
+             * Memory Max Bytes
+             * @description Memory limit of the worker container in bytes (from cgroup, -1 if unlimited)
+             */
+            memory_max_bytes?: number | null;
         };
         /**
          * PoolsListResponse
@@ -17539,73 +17568,6 @@ export interface components {
             confirm_deletes: boolean;
         };
         /**
-         * SystemLog
-         * @description System log entry (platform events, not workflow executions)
-         */
-        SystemLog: {
-            /**
-             * Event Id
-             * @description Unique event ID (UUID)
-             */
-            event_id: string;
-            /**
-             * Timestamp
-             * Format: date-time
-             * @description When the event occurred (ISO 8601)
-             */
-            timestamp: string;
-            /**
-             * Category
-             * @description Event category
-             * @enum {string}
-             */
-            category: "discovery" | "organization" | "user" | "role" | "config" | "secret" | "form" | "oauth" | "execution" | "system" | "error";
-            /**
-             * Level
-             * @description Event severity level
-             * @enum {string}
-             */
-            level: "info" | "warning" | "error" | "critical";
-            /**
-             * Message
-             * @description Human-readable event description
-             */
-            message: string;
-            /**
-             * Executed By
-             * @description User ID or 'System'
-             */
-            executed_by: string;
-            /**
-             * Executed By Name
-             * @description Display name or 'System'
-             */
-            executed_by_name: string;
-            /**
-             * Details
-             * @description Additional event-specific data
-             */
-            details?: {
-                [key: string]: unknown;
-            } | null;
-        };
-        /**
-         * SystemLogsListResponse
-         * @description Response model for listing system logs with pagination
-         */
-        SystemLogsListResponse: {
-            /**
-             * Logs
-             * @description List of system log entries
-             */
-            logs: components["schemas"]["SystemLog"][];
-            /**
-             * Continuation Token
-             * @description Continuation token for next page (opaque, base64-encoded)
-             */
-            continuation_token?: string | null;
-        };
-        /**
          * TableCreate
          * @description Input for creating a table.
          */
@@ -18403,6 +18365,60 @@ export interface components {
             expires_at?: string | null;
         };
         /**
+         * WorkerMetricPoint
+         * @description A single time-series data point for the memory chart.
+         */
+        WorkerMetricPoint: {
+            /**
+             * Timestamp
+             * @description ISO timestamp
+             */
+            timestamp: string;
+            /**
+             * Worker Id
+             * @description Container/pool identifier
+             */
+            worker_id: string;
+            /**
+             * Memory Current
+             * @description cgroup memory.current in bytes
+             */
+            memory_current: number;
+            /**
+             * Memory Max
+             * @description cgroup memory.max in bytes
+             */
+            memory_max: number;
+            /**
+             * Fork Count
+             * @default 0
+             */
+            fork_count: number;
+            /**
+             * Busy Count
+             * @default 0
+             */
+            busy_count: number;
+            /**
+             * Idle Count
+             * @default 0
+             */
+            idle_count: number;
+        };
+        /**
+         * WorkerMetricsResponse
+         * @description Response for worker metrics time-series endpoint.
+         */
+        WorkerMetricsResponse: {
+            /**
+             * Range
+             * @description Requested time range: 1h, 6h, 24h, 7d
+             */
+            range: string;
+            /** Points */
+            points?: components["schemas"]["WorkerMetricPoint"][];
+        };
+        /**
          * WorkflowExecution
          * @description Workflow execution entity
          */
@@ -18456,6 +18472,8 @@ export interface components {
             session_id?: string | null;
             /** Peak Memory Bytes */
             peak_memory_bytes?: number | null;
+            /** Process Rss Bytes */
+            process_rss_bytes?: number | null;
             /** Cpu Total Seconds */
             cpu_total_seconds?: number | null;
             /** Execution Model */
@@ -23365,19 +23383,26 @@ export interface operations {
             };
         };
     };
-    list_logs_api_logs_get: {
+    list_audit_logs_api_audit_get: {
         parameters: {
             query?: {
-                /** @description Log category filter */
-                category?: string | null;
-                /** @description Start date filter */
+                /** @description Action prefix filter, e.g. 'user.' or 'auth.login' */
+                action?: string | null;
+                /** @description Filter by resource type */
+                resource_type?: string | null;
+                /** @description Filter by outcome: 'success' or 'failure' */
+                outcome?: string | null;
+                /** @description Filter by acting user ID */
+                user_id?: string | null;
+                /** @description Start of time range (inclusive) */
                 start_date?: string | null;
-                /** @description End date filter */
+                /** @description End of time range (inclusive) */
                 end_date?: string | null;
-                /** @description Result limit */
+                /** @description Free-text search on action/resource_type */
+                search?: string | null;
                 limit?: number;
-                /** @description Result offset */
-                offset?: number;
+                /** @description Pagination cursor */
+                continuation_token?: string | null;
             };
             header?: never;
             path?: never;
@@ -23391,39 +23416,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SystemLogsListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_log_api_logs__category___row_key__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                category: string;
-                row_key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SystemLog"];
+                    "application/json": components["schemas"]["AuditLogListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -24611,7 +24604,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -24644,7 +24637,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -24677,7 +24670,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -24710,7 +24703,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -31831,9 +31824,12 @@ export interface operations {
             };
         };
     };
-    get_pool_config_api_platform_workers_config_get: {
+    get_worker_metrics_api_platform_workers_metrics_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Time range: 1h, 6h, 24h, 7d */
+                range?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -31846,31 +31842,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PoolConfigUpdateResponse"];
-                };
-            };
-        };
-    };
-    update_pool_config_api_platform_workers_config_patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PoolConfigUpdateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PoolConfigUpdateResponse"];
+                    "application/json": components["schemas"]["WorkerMetricsResponse"];
                 };
             };
             /** @description Validation Error */

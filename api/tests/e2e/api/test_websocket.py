@@ -67,8 +67,7 @@ class TestWebSocketConnection:
                     pytest.fail("Should have received close frame, not a message")
                 except ConnectionClosedError as e:
                     # Expected - server accepted then closed with auth failure code
-                    # Use .code attribute (websockets 13+) or fall back to rcvd.code
-                    close_code = e.code if hasattr(e, 'code') else (e.rcvd.code if e.rcvd else None)
+                    close_code = e.rcvd.code if e.rcvd else None
                     assert close_code == 4001, f"Expected close code 4001, got {close_code}"
         except ConnectionClosedError as e:
             # Connection might be rejected at HTTP level with close code
@@ -93,8 +92,7 @@ class TestWebSocketConnection:
                     pytest.fail("Should have received close frame without auth")
                 except ConnectionClosedError as e:
                     # Expected - server closed connection due to missing auth
-                    # Use .code attribute (websockets 13+) or fall back to rcvd.code
-                    close_code = e.code if hasattr(e, 'code') else (e.rcvd.code if e.rcvd else None)
+                    close_code = e.rcvd.code if e.rcvd else None
                     assert close_code == 4001, f"Expected close code 4001, got {close_code}"
         except ConnectionClosedError as e:
             # Connection might be rejected at HTTP level

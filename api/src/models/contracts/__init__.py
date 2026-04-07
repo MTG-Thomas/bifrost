@@ -134,6 +134,13 @@ from src.models.contracts.agents import (
     ToolResult,
 )
 
+# Audit log
+from src.models.contracts.audit import (
+    AuditLogActor,
+    AuditLogEntry,
+    AuditLogListResponse,
+)
+
 # Executions & Logs
 from src.models.contracts.executions import (
     AIUsagePublicSimple,
@@ -146,8 +153,6 @@ from src.models.contracts.executions import (
     ExecutionUpdate,
     ExecutionsListResponse,
     StuckExecutionsResponse,
-    SystemLog,
-    SystemLogsListResponse,
     WorkflowExecution,
     WorkflowExecutionRequest,
     WorkflowExecutionResponse,
@@ -637,8 +642,10 @@ __all__ = [
     "ExecutionCreate",
     "ExecutionUpdate",
     "ExecutionPublic",
-    "SystemLog",
-    "SystemLogsListResponse",
+    # Audit log
+    "AuditLogActor",
+    "AuditLogEntry",
+    "AuditLogListResponse",
     # Config - use ConfigResponse or ConfigPublic for responses
     "SetConfigRequest",
     "UpdateConfigRequest",

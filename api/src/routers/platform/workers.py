@@ -23,8 +23,6 @@ from src.core.auth import CurrentSuperuser, get_current_superuser
 from src.core.database import get_db
 from src.models import Execution, Workflow
 from src.models.contracts.platform import (
-    PoolConfigUpdateRequest,
-    PoolConfigUpdateResponse,
     PoolDetail,
     PoolsListResponse,
     PoolStatsResponse,
@@ -38,6 +36,8 @@ from src.models.contracts.platform import (
     RecycleProcessResponse,
     StuckHistoryResponse,
     StuckWorkflowStats,
+    WorkerMetricPoint,
+    WorkerMetricsResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,120 +72,115 @@ async def _get_redis() -> aioredis.Redis:
 
 
 @router.get(
-    "/config",
-    response_model=PoolConfigUpdateResponse,
-    summary="Get global pool configuration",
-    description="Get the current global min/max workers configuration",
+    "/metrics",
+    response_model=WorkerMetricsResponse,
+    summary="Get worker metrics time-series",
+    description="Returns time-series memory data for the aggregate chart. "
+    "Downsampled for longer ranges.",
 )
-async def get_pool_config(
+async def get_worker_metrics(
     _admin: CurrentSuperuser,
     db: AsyncSession = Depends(get_db),
-) -> PoolConfigUpdateResponse:
-    """
-    Get global pool configuration.
+    range: str = Query(
+        default="1h",
+        pattern=r"^(1h|6h|24h|7d)$",
+        description="Time range: 1h, 6h, 24h, 7d",
+    ),
+) -> WorkerMetricsResponse:
+    """Get worker metrics for the diagnostics memory chart."""
+    from datetime import timedelta
 
-    Returns the current min/max workers settings that apply to all pools.
-    """
-    from src.services.worker_pool_config_service import get_pool_config as get_config
+    from sqlalchemy import func, select
 
-    config = await get_config(db)
+    from src.models.orm.worker_metric import WorkerMetric
 
-    return PoolConfigUpdateResponse(
-        success=True,
-        message="Current pool configuration",
-        worker_id="global",
-        old_min=config.min_workers,
-        old_max=config.max_workers,
-        new_min=config.min_workers,
-        new_max=config.max_workers,
-    )
-
-
-@router.patch(
-    "/config",
-    response_model=PoolConfigUpdateResponse,
-    summary="Update global pool configuration",
-    description="Update min/max workers for all pools. Changes take effect immediately and are persisted.",
-)
-async def update_pool_config(
-    admin: CurrentSuperuser,
-    request: PoolConfigUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-) -> PoolConfigUpdateResponse:
-    """
-    Update global pool min/max workers configuration.
-
-    Changes are:
-    1. Persisted to the database (survives container restarts)
-    2. Published via Redis pub/sub to ALL workers for immediate effect
-    3. All pools scale up/down as needed based on new config
-
-    Scale up happens immediately if current < new_min.
-    Scale down marks excess idle processes for graceful removal.
-    """
-    from src.services.worker_pool_config_service import get_pool_config as get_config, save_pool_config
-
-    r = await _get_redis()
-
-    # Get current config
-    current_config = await get_config(db)
-    old_min = current_config.min_workers
-    old_max = current_config.max_workers
-
-    # Save to database for persistence
-    await save_pool_config(
-        session=db,
-        min_workers=request.min_workers,
-        max_workers=request.max_workers,
-        updated_by=str(admin.user_id),
-    )
-    await db.commit()
-
-    # Find all registered pools and broadcast resize command to each
-    cursor = 0
-    pool_keys: list[str] = []
-    pools_notified = 0
-
-    while True:
-        cursor, keys = await r.scan(cursor, match="bifrost:pool:*", count=100)
-        for key in keys:
-            if ":heartbeat" not in key and ":commands" not in key:
-                pool_keys.append(key)
-        if cursor == 0:
-            break
-
-    command = {
-        "action": "resize",
-        "min_workers": request.min_workers,
-        "max_workers": request.max_workers,
-        "requested_by": str(admin.user_id),
-        "requested_at": datetime.now(timezone.utc).isoformat(),
+    # Parse range
+    range_map = {
+        "1h": timedelta(hours=1),
+        "6h": timedelta(hours=6),
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
     }
+    delta = range_map[range]
+    cutoff = datetime.now(timezone.utc) - delta
 
-    for key in pool_keys:
-        parts = key.split(":")
-        if len(parts) != 3:
-            continue
-        worker_id = parts[2]
-        command_channel = f"bifrost:pool:{worker_id}:commands"
-        await r.publish(command_channel, json.dumps(command))
-        pools_notified += 1
+    # Determine bucket size for downsampling
+    # 1h: raw data, 6h/24h: 5-min buckets, 7d: 30-min buckets
+    if range == "1h":
+        # Raw data — no downsampling
+        stmt = (
+            select(WorkerMetric)
+            .where(WorkerMetric.timestamp >= cutoff)
+            .order_by(WorkerMetric.timestamp)
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
 
-    logger.info(
-        f"Published resize command to {pools_notified} pools: "
-        f"min {old_min}->{request.min_workers}, max {old_max}->{request.max_workers} "
-        f"by user {admin.user_id}"
-    )
+        points = [
+            WorkerMetricPoint(
+                timestamp=row.timestamp.isoformat(),
+                worker_id=row.worker_id,
+                memory_current=row.memory_current,
+                memory_max=row.memory_max if row.memory_max is not None else -1,
+                fork_count=row.fork_count,
+                busy_count=row.busy_count,
+                idle_count=row.idle_count,
+            )
+            for row in rows
+        ]
+    else:
+        # Downsampled — bucket by time interval
+        bucket_minutes = 5 if range in ("6h", "24h") else 30
 
-    return PoolConfigUpdateResponse(
-        success=True,
-        message=f"Pool configuration updated for {pools_notified} pools",
-        worker_id="global",
-        old_min=old_min,
-        old_max=old_max,
-        new_min=request.min_workers,
-        new_max=request.max_workers,
-    )
+        stmt = (
+            select(
+                func.date_trunc("hour", WorkerMetric.timestamp).label("hour"),
+                func.floor(
+                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
+                ).label("bucket"),
+                WorkerMetric.worker_id,
+                func.avg(WorkerMetric.memory_current).label("avg_memory_current"),
+                func.max(WorkerMetric.memory_max).label("memory_max"),
+                func.round(func.avg(WorkerMetric.fork_count)).label("avg_fork_count"),
+                func.round(func.avg(WorkerMetric.busy_count)).label("avg_busy_count"),
+                func.round(func.avg(WorkerMetric.idle_count)).label("avg_idle_count"),
+            )
+            .where(WorkerMetric.timestamp >= cutoff)
+            .group_by(
+                func.date_trunc("hour", WorkerMetric.timestamp),
+                func.floor(
+                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
+                ),
+                WorkerMetric.worker_id,
+            )
+            .order_by(
+                func.date_trunc("hour", WorkerMetric.timestamp),
+                func.floor(
+                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
+                ),
+            )
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        points = [
+            WorkerMetricPoint(
+                timestamp=(
+                    row.hour.replace(
+                        minute=int(row.bucket * bucket_minutes)
+                    )
+                ).isoformat(),
+                worker_id=row.worker_id,
+                memory_current=int(row.avg_memory_current),
+                memory_max=int(row.memory_max) if row.memory_max is not None else -1,
+                fork_count=int(row.avg_fork_count),
+                busy_count=int(row.avg_busy_count),
+                idle_count=int(row.avg_idle_count),
+            )
+            for row in rows
+        ]
+
+    return WorkerMetricsResponse(range=range, points=points)
 
 
 @router.get(
@@ -315,6 +310,8 @@ async def list_pools(
                 pool_info.last_heartbeat = hb.get("timestamp")
                 pool_info.requirements_installed = hb.get("requirements_installed")
                 pool_info.requirements_total = hb.get("requirements_total")
+                pool_info.memory_current_bytes = hb.get("memory_current_bytes")
+                pool_info.memory_max_bytes = hb.get("memory_max_bytes")
             except json.JSONDecodeError:
                 logger.warning(f"Invalid heartbeat JSON for pool {worker_id}")
 
@@ -362,8 +359,6 @@ async def get_pool(
         hostname=data.get("hostname"),
         status=data.get("status"),
         started_at=data.get("started_at"),
-        min_workers=int(data.get("min_workers", 2)),
-        max_workers=int(data.get("max_workers", 10)),
     )
 
     if heartbeat_data:

@@ -14,6 +14,7 @@ from sqlalchemy import select
 from src.core.auth import CurrentSuperuser
 from src.core.database import DbSession
 from src.core.org_filter import resolve_org_filter, OrgFilterType
+from src.services.audit import emit_audit
 from src.models import User as UserORM, UserRole as UserRoleORM, FormRole as FormRoleORM
 from src.models import (
     UserCreate,
@@ -129,6 +130,17 @@ async def create_user(
     await db.refresh(new_user)
 
     logger.info(f"Created user {new_user.email} (id: {new_user.id})")
+    await emit_audit(
+        db,
+        "user.create",
+        resource_type="user",
+        resource_id=new_user.id,
+        details={
+            "email": new_user.email,
+            "is_superuser": new_user.is_superuser,
+            "organization_id": str(new_user.organization_id) if new_user.organization_id else None,
+        },
+    )
     return UserPublic.model_validate(new_user)
 
 
@@ -222,6 +234,16 @@ async def update_user(
     await db.refresh(db_user)
 
     logger.info(f"Updated user {user_id}")
+    changed_fields = [
+        k for k, v in request.model_dump(exclude_unset=True).items() if v is not None
+    ]
+    await emit_audit(
+        db,
+        "user.update",
+        resource_type="user",
+        resource_id=db_user.id,
+        details={"email": db_user.email, "changed_fields": changed_fields},
+    )
     return UserPublic.model_validate(db_user)
 
 
@@ -265,9 +287,18 @@ async def delete_user(
             detail="System user cannot be deleted",
         )
 
+    deleted_id = db_user.id
+    deleted_email = db_user.email
     await db.delete(db_user)
     await db.flush()
     logger.info(f"Permanently deleted user {user_id}")
+    await emit_audit(
+        db,
+        "user.delete",
+        resource_type="user",
+        resource_id=deleted_id,
+        details={"email": deleted_email},
+    )
 
 
 @router.get(
