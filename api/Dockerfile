@@ -43,12 +43,14 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code (paths relative to root context)
 COPY api/src/ /app/src/
-COPY api/shared/ /app/shared/
 COPY api/alembic/ /app/alembic/
 COPY api/alembic.ini /app/
 COPY api/bifrost/ /app/bifrost/
 COPY api/bifrost.py /app/
 COPY api/scripts/ /app/scripts/
+
+# Preserve the shared path even when the source directory is empty.
+RUN mkdir -p /app/shared
 
 # Install app compiler Node.js dependencies
 COPY api/src/services/app_compiler/package.json api/src/services/app_compiler/package-lock.json* /app/src/services/app_compiler/
