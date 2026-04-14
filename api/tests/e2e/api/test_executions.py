@@ -1361,12 +1361,12 @@ class TestSDKWorkflowExecute:
     """Test workflows.execute() from inside a workflow — the real production path.
 
     Validates that the SDK properly propagates org context so org-scoped
-    workflows can call other org-scoped workflows by name.
+    workflows can call other org-scoped workflows by UUID.
     """
 
     @pytest.fixture(scope="class")
     def org_target_workflow(self, e2e_client, platform_admin, org1):
-        """Create an org-scoped target workflow that will be called by name."""
+        """Create an org-scoped target workflow that will be called by UUID."""
         name = f"e2e_sdk_execute_target_{uuid.uuid4().hex[:8]}"
         path = f"{name}.py"
         content = f'''"""Target workflow for SDK execute test."""
@@ -1374,7 +1374,7 @@ from bifrost import workflow
 
 @workflow(
     name="{name}",
-    description="Target for workflows.execute() by-name test",
+    description="Target for workflows.execute() by-UUID test",
     execution_mode="sync",
 )
 async def {name}(ping: str = "default"):
@@ -1401,23 +1401,23 @@ async def {name}(ping: str = "default"):
     def org_caller_workflow(
         self, e2e_client, platform_admin, org1, org_target_workflow,
     ):
-        """Create an org-scoped workflow that calls another workflow by name."""
+        """Create an org-scoped workflow that calls another workflow by UUID."""
         name = f"e2e_sdk_execute_caller_{uuid.uuid4().hex[:8]}"
-        target_name = org_target_workflow["name"]
+        target_id = org_target_workflow["id"]
         path = f"{name}.py"
-        content = f'''"""Caller workflow — uses workflows.execute() by name."""
+        content = f'''"""Caller workflow — uses workflows.execute() by UUID."""
 import traceback
 from bifrost import workflow, workflows
 
 @workflow(
     name="{name}",
-    description="Calls another workflow by name via SDK",
+    description="Calls another workflow by UUID via SDK",
     execution_mode="sync",
 )
-async def {name}(target_name: str = "{target_name}"):
+async def {name}(target_id: str = "{target_id}"):
     try:
         exec_id = await workflows.execute(
-            workflow=target_name,
+            workflow=target_id,
             input_data={{"ping": "from_caller"}},
         )
         return {{"success": True, "execution_id": exec_id}}
@@ -1446,21 +1446,21 @@ async def {name}(target_name: str = "{target_name}"):
             f"/api/files/editor?path={path}", headers=platform_admin.headers,
         )
 
-    def test_sdk_execute_by_name_org_scoped(
+    def test_sdk_execute_by_id_org_scoped(
         self, e2e_client, platform_admin, org1,
         org_target_workflow, org_caller_workflow,
     ):
-        """Org-scoped workflow calls another org-scoped workflow by name.
+        """Org-scoped workflow calls another org-scoped workflow by UUID.
 
-        This is the real production path: workflows.execute("some_name")
+        This is the real production path: workflows.execute(uuid)
         from inside a running workflow. The SDK must propagate org context
-        so the execute endpoint can find org-scoped workflows by name.
+        so the execute endpoint can find org-scoped workflows.
         """
         data = execute_workflow_sync(
             e2e_client,
             platform_admin.headers,
             org_caller_workflow["id"],
-            {"target_name": org_target_workflow["name"]},
+            {"target_id": org_target_workflow["id"]},
             max_wait=60.0,
             request_sync=True,
             request_timeout=120.0,
@@ -1479,21 +1479,19 @@ async def {name}(target_name: str = "{target_name}"):
     def test_sdk_execute_nonexistent_workflow_error(
         self, e2e_client, platform_admin, org1, org_caller_workflow,
     ):
-        """workflows.execute() with bad name returns clear error, not opaque 404."""
-        # Execute the caller workflow which will try to call a nonexistent target
+        """workflows.execute() with nonexistent UUID returns clear error."""
+        fake_uuid = str(uuid.uuid4())
         response = e2e_client.post(
             "/api/workflows/execute",
             headers=platform_admin.headers,
             json={
                 "workflow_id": org_caller_workflow["id"],
-                "input_data": {"target_name": "this_workflow_does_not_exist"},
+                "input_data": {"target_id": fake_uuid},
             },
         )
         assert response.status_code == 200, f"Execute failed: {response.text}"
         execution_id = response.json()["execution_id"]
 
-        # Poll — status may be Success or CompletedWithErrors depending on
-        # whether the workflow catches the exception or not
         terminal = {"Success", "Failed", "Completed", "CompletedWithErrors"}
 
         def check():
