@@ -42,8 +42,7 @@ export const CONTAINER_COLORS = [
 type LivePool = PoolSummary | PoolDetail;
 
 interface ChartDataPoint {
-    timestamp: string;
-    label: string;
+    group: string;
     total: number;
 }
 
@@ -53,17 +52,6 @@ function formatBytes(bytes: number): string {
     if (gb >= 1) return `${gb.toFixed(1)} GB`;
     const mb = bytes / (1024 * 1024);
     return `${mb.toFixed(0)} MB`;
-}
-
-function formatTimeLabel(isoString: string, range: TimeRange): string {
-    const date = new Date(isoString);
-    if (range === "1h" || range === "6h") {
-        return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    }
-    if (range === "24h") {
-        return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    }
-    return date.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 interface MemoryChartProps {
@@ -94,36 +82,29 @@ export function MemoryChart({ livePoints, livePools }: MemoryChartProps) {
             };
         }
 
-        // Group by timestamp and sum across all workers — we render a single
-        // "total memory" series. Per-container breakdown lives in ContainerTable;
-        // overlaying N translucent areas here doesn't scale (and is unreadable
-        // even at N=2 because the overlap is invisible).
-        const totalsByTimestamp = new Map<string, number>();
+        // Sum memory across workers within each group bucket
+        const totalsByGroup = new Map<string, number>();
+        const groupOrder: string[] = [];
         for (const point of allPoints) {
-            totalsByTimestamp.set(
-                point.timestamp,
-                (totalsByTimestamp.get(point.timestamp) ?? 0) +
+            if (!totalsByGroup.has(point.group)) {
+                groupOrder.push(point.group);
+            }
+            totalsByGroup.set(
+                point.group,
+                (totalsByGroup.get(point.group) ?? 0) +
                     Math.max(0, point.memory_current),
             );
         }
 
-        const result: ChartDataPoint[] = [];
-        const sortedTimestamps = [...totalsByTimestamp.keys()].sort();
-        for (const ts of sortedTimestamps) {
-            result.push({
-                timestamp: ts,
-                label: formatTimeLabel(ts, range),
-                total: totalsByTimestamp.get(ts)!,
-            });
-        }
+        const result: ChartDataPoint[] = groupOrder.map((g) => ({
+            group: g,
+            total: totalsByGroup.get(g)!,
+        }));
 
-        // Compute current totals from latest data points
+        // Compute current totals from latest data points (server returns in order)
         const latestByWorker = new Map<string, WorkerMetricPoint>();
         for (const point of allPoints) {
-            const existing = latestByWorker.get(point.worker_id);
-            if (!existing || point.timestamp > existing.timestamp) {
-                latestByWorker.set(point.worker_id, point);
-            }
+            latestByWorker.set(point.worker_id, point);
         }
         let current = 0;
         let max = 0;
@@ -185,7 +166,7 @@ export function MemoryChart({ livePoints, livePools }: MemoryChartProps) {
             totalMax: max,
             hasUnlimitedWorker: unlimited,
         };
-    }, [data, livePoints, livePools, range]);
+    }, [data, livePoints, livePools]);
 
     const hasData = chartData.length > 0 || workerIds.length > 0;
     const showLimit = totalMax > 0 && !hasUnlimitedWorker;
@@ -274,7 +255,7 @@ export function MemoryChart({ livePoints, livePools }: MemoryChartProps) {
                                 className="stroke-muted"
                             />
                             <XAxis
-                                dataKey="label"
+                                dataKey="group"
                                 tick={{ fontSize: 11 }}
                                 tickLine={false}
                                 axisLine={false}
