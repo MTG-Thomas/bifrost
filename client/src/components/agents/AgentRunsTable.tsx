@@ -254,9 +254,11 @@ export function AgentRunsTable({ isPlatformAdmin }: AgentRunsTableProps) {
 										<DataTableRow
 											key={run.id}
 											clickable
-											onClick={() =>
-												navigate(`/agent-runs/${run.id}`)
-											}
+											href={`/agent-runs/${run.id}`}
+											onClick={(e) => {
+												if (e.metaKey || e.ctrlKey || e.button === 1) return;
+												navigate(`/agent-runs/${run.id}`);
+											}}
 										>
 											{isPlatformAdmin && (
 												<DataTableCell>

@@ -42,6 +42,7 @@ import {
 } from "@/components/execution";
 import type { components } from "@/lib/v1";
 import { useQueryClient } from "@tanstack/react-query";
+import { createPortal } from "react-dom";
 import { useEffect, useState, useCallback } from "react";
 
 type ExecutionStatus =
@@ -75,6 +76,10 @@ interface ExecutionDetailsProps {
 	executionId?: string;
 	/** Embedded mode - hides navigation header for use in panels */
 	embedded?: boolean;
+	/** Ref to a DOM element where action buttons should be portaled (embedded mode) */
+	actionsContainerRef?: React.RefObject<HTMLDivElement | null>;
+	/** Called when a rerun creates a new execution (embedded mode switches to it instead of navigating) */
+	onExecutionChange?: (newExecutionId: string) => void;
 }
 
 /**
@@ -106,6 +111,8 @@ function mergeLogsWithDedup(
 export function ExecutionDetails({
 	executionId: propExecutionId,
 	embedded = false,
+	actionsContainerRef,
+	onExecutionChange,
 }: ExecutionDetailsProps) {
 	const { executionId: urlExecutionId } = useParams();
 	const executionId = propExecutionId || urlExecutionId;
@@ -335,15 +342,18 @@ export function ExecutionDetails({
 			);
 			setShowRerunDialog(false);
 
-			// Navigate to the new execution with context to avoid 404 race condition
 			if (result?.execution_id) {
-				navigate(`/history/${result.execution_id}`, {
-					state: {
-						workflow_name: execution.workflow_name,
-						workflow_id: workflow.id,
-						input_data: execution.input_data,
-					},
-				});
+				if (embedded && onExecutionChange) {
+					onExecutionChange(result.execution_id);
+				} else {
+					navigate(`/history/${result.execution_id}`, {
+						state: {
+							workflow_name: execution.workflow_name,
+							workflow_id: workflow.id,
+							input_data: execution.input_data,
+						},
+					});
+				}
 			}
 		} catch (error) {
 			toast.error(`Failed to rerun workflow: ${error}`);
@@ -526,8 +536,44 @@ export function ExecutionDetails({
 		const hasExtras =
 			hasAiUsage || hasMetrics || hasVariables || hasExecutionContext;
 
+		const actionButtons = (
+			<>
+				{isComplete && (
+					<Button
+						variant="ghost"
+						size="icon"
+						className="h-7 w-7"
+						onClick={() => setShowRerunDialog(true)}
+						disabled={isRerunning}
+						title="Rerun"
+					>
+						{isRerunning ? (
+							<Loader2 className="h-3.5 w-3.5 animate-spin" />
+						) : (
+							<RefreshCw className="h-3.5 w-3.5" />
+						)}
+					</Button>
+				)}
+				{(execution.status === "Running" ||
+					execution.status === "Pending") && (
+					<Button
+						variant="ghost"
+						size="icon"
+						className="h-7 w-7"
+						onClick={() => setShowCancelDialog(true)}
+						title="Cancel"
+					>
+						<XCircle className="h-3.5 w-3.5" />
+					</Button>
+				)}
+			</>
+		);
+
 		return (
 			<div className="h-full">
+				{actionsContainerRef?.current &&
+					createPortal(actionButtons, actionsContainerRef.current)}
+
 				<div className="p-4 space-y-3">
 					{/* Compact metadata header */}
 					<ExecutionMetadataBar
@@ -635,6 +681,21 @@ export function ExecutionDetails({
 						</Collapsible>
 					)}
 				</div>
+
+				<ExecutionCancelDialog
+					open={showCancelDialog}
+					onOpenChange={setShowCancelDialog}
+					workflowName={execution.workflow_name}
+					onConfirm={handleCancelExecution}
+				/>
+
+				<ExecutionRerunDialog
+					open={showRerunDialog}
+					onOpenChange={setShowRerunDialog}
+					workflowName={execution.workflow_name}
+					isRerunning={isRerunning}
+					onConfirm={handleRerunExecution}
+				/>
 			</div>
 		);
 	}

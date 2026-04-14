@@ -757,11 +757,12 @@ export function ExecutionHistory() {
 											key={execution.execution_id}
 											clickable
 											href={`/history/${execution.execution_id}`}
-											onClick={() =>
+											onClick={(e) => {
+												if (e.metaKey || e.ctrlKey || e.button === 1) return;
 												handleViewDetails(
 													execution.execution_id,
-												)
-											}
+												);
+											}}
 										>
 											{isPlatformAdmin && (
 												<DataTableCell>
@@ -998,6 +999,7 @@ export function ExecutionHistory() {
 				executionId={drawerExecutionId}
 				open={drawerOpen}
 				onOpenChange={setDrawerOpen}
+				onExecutionChange={setDrawerExecutionId}
 			/>
 		</div>
 	);

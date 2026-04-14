@@ -113,6 +113,7 @@ interface DataTableRowProps extends React.HTMLAttributes<HTMLTableRowElement> {
 const DataTableRow = React.forwardRef<HTMLTableRowElement, DataTableRowProps>(
 	({ className, clickable, href, onClick, ...props }, ref) => {
 		const handleClick = (e: React.MouseEvent<HTMLTableRowElement>) => {
+			if (e.button === 1) return;
 			if (href && (e.metaKey || e.ctrlKey)) {
 				e.preventDefault();
 				window.open(href, "_blank");
