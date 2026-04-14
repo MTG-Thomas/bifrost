@@ -42,7 +42,6 @@ export interface OrgWithMapping {
 	name: string;
 	mapping?: IntegrationMapping;
 	formData: MappingFormData;
-	isDirty: boolean;
 }
 
 interface ConfigSchemaField {
@@ -73,7 +72,7 @@ export interface IntegrationMappingsTabProps {
 	onClearSuggestions: () => void;
 	onAcceptSuggestion: (orgId: string) => void;
 	onRejectSuggestion: (orgId: string) => void;
-	onUpdateOrgMapping: (orgId: string, updates: Partial<MappingFormData>) => void;
+	onUpdateOrgMapping: (orgId: string, entityId: string, entityName?: string) => void;
 	onOpenConfigDialog: (orgId: string) => void;
 	onDeleteMapping: (org: OrgWithMapping) => void;
 	onEditIntegration: () => void;
@@ -260,12 +259,8 @@ export function IntegrationMappingsTab({
 														) =>
 															onUpdateOrgMapping(
 																org.id,
-																{
-																	entity_id:
-																		value,
-																	entity_name:
-																		label,
-																},
+																value,
+																label,
 															)
 														}
 														isLoading={
@@ -294,14 +289,6 @@ export function IntegrationMappingsTab({
 												) : (
 													<Badge variant="outline">
 														Not Mapped
-													</Badge>
-												)}
-												{org.isDirty && (
-													<Badge
-														variant="secondary"
-														className="ml-1"
-													>
-														*
 													</Badge>
 												)}
 											</DataTableCell>

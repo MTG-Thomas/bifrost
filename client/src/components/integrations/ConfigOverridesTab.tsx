@@ -39,7 +39,6 @@ interface OrgWithMapping {
 		oauth_token_id?: string;
 		config: Record<string, unknown>;
 	};
-	isDirty: boolean;
 }
 
 interface ConfigRow {
