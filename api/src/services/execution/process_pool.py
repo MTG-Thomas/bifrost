@@ -304,6 +304,11 @@ class ProcessPoolManager:
         # Template process for fork-based workers
         self._template: TemplateProcess | None = None
 
+        # Serializes drain_and_restart_template so concurrent package
+        # installs don't race — the second call waits for the first to
+        # finish rather than trying to fork while the template is down.
+        self._restart_lock = asyncio.Lock()
+
     async def _get_redis(self) -> redis.Redis:  # type: ignore[type-arg]
         """Get or create Redis connection."""
         if self._redis is None:
@@ -353,31 +358,35 @@ class ProcessPoolManager:
 
         Called after pip install so children get a fresh sys.modules
         that can see newly installed packages.
+
+        Serialized via _restart_lock so concurrent package installs
+        wait for the previous restart to complete rather than racing.
         """
-        # 1. Mark all for recycle (stops routing new work to them)
-        for handle in list(self.processes.values()):
-            handle.pending_recycle = True
+        async with self._restart_lock:
+            # 1. Mark all for recycle (stops routing new work to them)
+            for handle in list(self.processes.values()):
+                handle.pending_recycle = True
 
-        # 2. Wait for busy processes to finish (bounded)
-        deadline = time.monotonic() + drain_timeout
-        while time.monotonic() < deadline:
-            busy = [h for h in self.processes.values() if h.state == ProcessState.BUSY]
-            if not busy:
-                break
-            await asyncio.sleep(0.2)
+            # 2. Wait for busy processes to finish (bounded)
+            deadline = time.monotonic() + drain_timeout
+            while time.monotonic() < deadline:
+                busy = [h for h in self.processes.values() if h.state == ProcessState.BUSY]
+                if not busy:
+                    break
+                await asyncio.sleep(0.2)
 
-        # 3. Terminate all remaining processes (don't spawn replacements yet)
-        for handle in list(self.processes.values()):
-            if handle.id in self.processes:
-                del self.processes[handle.id]
-            await self._terminate_process(handle)
+            # 3. Terminate all remaining processes (don't spawn replacements yet)
+            for handle in list(self.processes.values()):
+                if handle.id in self.processes:
+                    del self.processes[handle.id]
+                await self._terminate_process(handle)
 
-        # 4. Restart template with fresh sys.modules
-        await self.restart_template()
+            # 4. Restart template with fresh sys.modules
+            await self.restart_template()
 
-        # 5. Respawn to min_workers
-        for _ in range(self.min_workers):
-            self._fork_process()
+            # 5. Respawn to min_workers
+            for _ in range(self.min_workers):
+                self._fork_process()
 
     def _fork_process(self, persistent: bool | None = None) -> ProcessHandle:
         """
@@ -636,6 +645,12 @@ class ProcessPoolManager:
             execution_id: Unique identifier for the execution
             context: Execution context data (written to Redis)
         """
+        # Wait for any in-progress drain+restart to complete before routing.
+        # Without this, executions arriving during a package-install restart
+        # would hit a dead template and fail with ConnectionResetError.
+        async with self._restart_lock:
+            pass  # just wait for it to be released
+
         # Write context to Redis
         await self._write_context_to_redis(execution_id, context)
 
@@ -714,13 +729,20 @@ class ProcessPoolManager:
 
         while not self._shutdown:
             try:
-                # Check template health — restart if crashed
+                # Check template health — restart if crashed.
+                # Skip if _restart_lock is held: drain_and_restart_template
+                # intentionally kills the template and will restart it itself.
                 if self._template is not None and not self._template.is_alive():
-                    logger.error("Template process died — restarting")
-                    try:
-                        await self._start_template()
-                    except Exception as e:
-                        logger.error(f"Failed to restart template: {e}")
+                    if not self._restart_lock.locked():
+                        logger.error("Template process died — restarting")
+                        async with self._restart_lock:
+                            # Re-check after acquiring lock — another path may
+                            # have already restarted it.
+                            if self._template is None or not self._template.is_alive():
+                                try:
+                                    await self._start_template()
+                                except Exception as e:
+                                    logger.error(f"Failed to restart template: {e}")
 
                 await self._check_timeouts()
                 await self._check_process_health()
