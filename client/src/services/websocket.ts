@@ -41,6 +41,15 @@ export interface AppDraftUpdate {
 	timestamp: string;
 }
 
+// One esbuild error/warning, with location info so the UI can link to the file.
+export interface BundleMessage {
+	text: string;
+	file: string | null;
+	line: number | null;
+	column: number | null;
+	line_text: string | null;
+}
+
 // Code engine file update (includes full content for real-time preview)
 export interface AppCodeFileUpdate {
 	type: "app_code_file_update";
@@ -49,6 +58,18 @@ export interface AppCodeFileUpdate {
 	path: string;
 	source: string | null;
 	compiled: string | null;
+	// Present after a successful bundle rebuild. Signals clients to reload
+	// the bundle entry (URL changes because the hash changes).
+	bundle: {
+		entry: string;
+		css: string | null;
+		duration_ms: number;
+	} | null;
+	// Present when the bundle rebuild failed. The UI shows this as a
+	// dismissible banner over the still-rendered last-good bundle.
+	error: {
+		messages: BundleMessage[];
+	} | null;
 	userId: string;
 	userName: string;
 	timestamp: string;

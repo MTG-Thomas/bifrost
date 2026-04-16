@@ -270,15 +270,19 @@ Before writing any app code, design what you're building.
 
 ### Critical App Rules
 
-1. **Imports:** `import { Button, useWorkflowQuery, useState } from "bifrost"` — everything from one import
-2. **Root layout:** `_layout.tsx` uses `<Outlet />`, NOT `{children}`
-3. **Workflow hooks:** Always use UUIDs, never names — `useWorkflowQuery("uuid-here")`
-4. **Fixed-height container:** Your app renders in a fixed-height box — manage your own scrolling
-5. **Custom CSS:** `styles.css` at app root, dark mode via `.dark` selector
-6. **Dependencies:** Declare npm packages in `app.yaml` (max 20, loaded from esm.sh)
-7. **Custom components:** Components in `components/` are auto-injected — do NOT write import statements for them. Just use `<MyComponent />` directly. Only import from `"bifrost"` or npm package names.
-8. **Default exports:** Every custom component file in `components/` MUST have a default export
-9. **Reserved names:** Never use `$`, `$deps`, `__defaultExport__`, `__exports__` as variable names (reserved by runtime)
+1. **Imports:** Four sources, each with its own role:
+   - Platform (UI, hooks, utils): `import { Button, Card, useWorkflowQuery, useState } from "bifrost"`
+   - Icons: `import { Phone, Mail } from "lucide-react"` — NOT from `"bifrost"`
+   - Router: `import { Link, NavLink, useNavigate } from "react-router-dom"` — NOT from `"bifrost"`
+   - Your own components: `import SearchInput from "./components/SearchInput"` — default imports, relative paths, NOT from `"bifrost"`, NOT auto-injected
+2. **Every `<PascalCase>` tag needs an explicit import.** No more auto-injection. If the tag is a user component, default-import it from `./components/Name`.
+3. **Migrating an older app?** Run `bifrost migrate-imports` from the workspace root to auto-rewrite every file.
+4. **Root layout:** `_layout.tsx` uses `<Outlet />`, NOT `{children}`
+5. **Workflow hooks:** Always use UUIDs, never names — `useWorkflowQuery("uuid-here")`
+6. **Fixed-height container:** Your app renders in a fixed-height box — manage your own scrolling
+7. **Custom CSS:** `styles.css` at app root, dark mode via `.dark` selector
+8. **Dependencies:** Declare npm packages in `app.yaml` (max 20, loaded from esm.sh)
+9. **Default exports:** Every custom component file in `components/` MUST have a default export
 
 For component lists, hooks API, CSS examples, sandbox constraints — grep `/tmp/bifrost-docs/llms.txt`.
 
@@ -416,10 +420,12 @@ After writing all app files, you MUST verify:
 2. `pages/index.tsx` exists
 3. Every npm import matches an entry in `app.yaml` dependencies (pre-included packages exempt)
 4. Every `useWorkflowQuery`/`useWorkflowMutation` uses a valid UUID from `.bifrost/workflows.yaml`
-5. Every `<PascalCase />` JSX tag is either: a shadcn component, a Lucide icon, or a file in `components/`
-6. Run validation: `bifrost api POST /api/applications/{id}/validate` (or MCP `validate_app`)
-7. Review validation output — fix ALL errors before telling user it's ready
-8. Open preview URL and verify pages render (or instruct user to check)
+5. Every `<PascalCase />` JSX tag has a matching import at the top of the file (platform from `"bifrost"`, icon from `"lucide-react"`, router from `"react-router-dom"`, or default import from `./components/Name`)
+6. No Lucide icon names imported from `"bifrost"` (move them to `"lucide-react"`)
+7. No `Link`, `NavLink`, `Navigate`, `useNavigate` imported from `"bifrost"` (move them to `"react-router-dom"`)
+8. Run validation: `bifrost api POST /api/applications/{id}/validate` (or MCP `validate_app`)
+9. Review validation output — fix ALL errors before telling user it's ready
+10. Open preview URL and verify pages render (or instruct user to check)
 
 ## Testing
 

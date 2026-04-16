@@ -28,6 +28,7 @@ import { JsxErrorBoundary } from "./JsxErrorBoundary";
 import { JsxPageRenderer } from "./JsxPageRenderer";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 import { useAppCodeUpdates } from "@/hooks/useAppCodeUpdates";
+import { BundledAppShell } from "./BundledAppShell";
 
 /**
  * Response shape from the render endpoint
@@ -467,7 +468,35 @@ function AppContent({
  * />
  * ```
  */
-export function JsxAppShell({
+export function JsxAppShell(props: JsxAppShellProps) {
+	// Dev opt-in to the esbuild-bundled runtime:
+	//  - ?bundled=1 on URL sets the flag for this browser (localStorage)
+	//  - ?bundled=0 clears it
+	//  - Once set, survives navigation + reload until explicitly cleared.
+	// Phase 1 PoC switch; becomes a DB flag on Application later.
+	let useBundled = false;
+	if (typeof window !== "undefined") {
+		const param = new URLSearchParams(window.location.search).get("bundled");
+		if (param === "1") {
+			localStorage.setItem("bifrost.bundled", "1");
+		} else if (param === "0") {
+			localStorage.removeItem("bifrost.bundled");
+		}
+		useBundled = localStorage.getItem("bifrost.bundled") === "1";
+	}
+	if (useBundled) {
+		return (
+			<BundledAppShell
+				appId={props.appId}
+				appSlug={props.appSlug}
+				isPreview={props.isPreview ?? false}
+			/>
+		);
+	}
+	return <LegacyJsxAppShell {...props} />;
+}
+
+function LegacyJsxAppShell({
 	appId,
 	appSlug,
 	isPreview = false,

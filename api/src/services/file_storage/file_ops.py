@@ -323,44 +323,15 @@ class FileOperationsService:
             except Exception as e:
                 logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
 
-        # App files: fire pubsub for real-time preview
+        # App files: rebuild bundle + fire pubsub for real-time preview
         app = await self._find_app_by_path(path)
+        if not app and path.startswith("apps/"):
+            logger.info(
+                f"No Application matched path {path!r} — preview refresh skipped. "
+                f"Check Application.repo_path."
+            )
         if app:
-            try:
-                from src.core.pubsub import publish_app_code_file_update
-                # Derive relative path by stripping the app's repo_path prefix
-                app_prefix = app.repo_prefix
-                relative_path = path[len(app_prefix):] if path.startswith(app_prefix) else path
-
-                # Compile TSX/TS files server-side
-                compiled_js = None
-                if relative_path.endswith((".tsx", ".ts")):
-                    from src.services.app_compiler import AppCompilerService
-                    compiler = AppCompilerService()
-                    result = await compiler.compile_file(content_str, relative_path)
-                    if result.success:
-                        compiled_js = result.compiled
-                    else:
-                        logger.warning(f"Compilation failed for {relative_path}: {result.error}")
-
-                await publish_app_code_file_update(
-                    app_id=str(app.id),
-                    user_id=updated_by,
-                    user_name=updated_by,
-                    path=relative_path,
-                    source=content_str,
-                    compiled=compiled_js,
-                    action="update",
-                )
-                # Write compiled JS (or raw source if compile failed) to preview
-                preview_content = compiled_js.encode("utf-8") if compiled_js else final_content
-                from src.services.app_storage import AppStorageService
-                app_storage = AppStorageService()
-                await app_storage.write_preview_file(
-                    str(app.id), relative_path, preview_content
-                )
-            except Exception as e:
-                logger.warning(f"Failed to publish app file update for {path}: {e}")
+            await self._rebuild_app_bundle(app, path, content_str, updated_by)
 
         # Mark repo as having uncommitted changes (skip for CLI pushes)
         if not skip_dirty_flag:
@@ -507,6 +478,133 @@ class FileOperationsService:
         platform_entity_type = detect_platform_entity_type(path, b"")
         if platform_entity_type == "module" or path.endswith(".py"):
             await invalidate_module(path)
+
+    async def _rebuild_app_bundle(
+        self,
+        app: "Application",
+        path: str,
+        content_str: str,
+        updated_by: str,
+    ) -> None:
+        """Rebuild the whole app bundle after a file write and broadcast the result.
+
+        On success: manifest.json + hashed chunks are written to S3; clients
+        receive a `bundle` signal with the new entry name and reload.
+
+        On failure: S3 is unchanged — last good bundle stays live. Clients
+        receive an `error` signal with structured esbuild messages (file,
+        line, column, text) so the UI can render a banner over the last-good
+        render. A system diagnostic notification is also created.
+        """
+        from src.core.pubsub import publish_app_code_file_update
+        from src.services.app_bundler import BundlerService
+        from .diagnostics import FileDiagnosticInfo
+
+        app_prefix = app.repo_prefix
+        relative_path = path[len(app_prefix):] if path.startswith(app_prefix) else path
+        app_id = str(app.id)
+
+        bundler = BundlerService()
+        try:
+            result = await bundler.build(
+                app_id=app_id,
+                repo_prefix=app_prefix,
+                mode="preview",
+                dependencies=app.dependencies or {},
+            )
+        except Exception as e:
+            # Bundler itself crashed (not an esbuild failure — something below it).
+            logger.exception(f"Bundler crashed for app={app_id}: {e}")
+            try:
+                await publish_app_code_file_update(
+                    app_id=app_id,
+                    user_id=updated_by,
+                    user_name=updated_by,
+                    path=relative_path,
+                    source=content_str,
+                    action="update",
+                    error={"messages": [{"text": f"Bundler crashed: {e}"}]},
+                )
+            except Exception as pub_err:
+                logger.warning(f"Failed to publish bundler-crash event: {pub_err}")
+            return
+
+        # Always publish — success carries `bundle`, failure carries `error`.
+        bundle_payload: dict | None = None
+        error_payload: dict | None = None
+
+        if result.success and result.manifest is not None:
+            m = result.manifest
+            bundle_payload = {
+                "entry": m.entry,
+                "css": m.css,
+                "duration_ms": m.duration_ms,
+            }
+            # Clear any prior diagnostic for this file now that things build.
+            try:
+                await self._diagnostics.clear_diagnostic_notification(path)
+            except Exception as e:
+                logger.warning(f"Failed to clear bundler diagnostic for {path}: {e}")
+            logger.info(
+                f"App bundle rebuilt: app={app_id} path={relative_path} "
+                f"entry={m.entry} time={m.duration_ms}ms"
+            )
+        else:
+            errors = result.errors or []
+            error_payload = {
+                "messages": [
+                    {
+                        "text": e.text,
+                        "file": e.file,
+                        "line": e.line,
+                        "column": e.column,
+                        "line_text": e.line_text,
+                    }
+                    for e in errors
+                ],
+            }
+            # Create an admin notification so this is visible outside the
+            # live preview UI (matches the path used for Python SDK issues).
+            try:
+                diagnostics = [
+                    FileDiagnosticInfo(
+                        severity="error",
+                        message=e.text,
+                        line=e.line,
+                        column=e.column,
+                        source="bundler",
+                    )
+                    for e in errors
+                ]
+                # Prefer the first error's file path for the notification
+                # target so "view file" jumps to the right place.
+                target_path = path
+                if errors and errors[0].file:
+                    # esbuild file is already app-relative; rebuild full path.
+                    target_path = app_prefix + errors[0].file
+                await self._diagnostics.create_diagnostic_notification(
+                    target_path, diagnostics
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create bundler diagnostic for {path}: {e}")
+            logger.warning(
+                f"App bundle BUILD FAILED: app={app_id} path={relative_path} "
+                f"errors={len(errors)}"
+            )
+
+        try:
+            await publish_app_code_file_update(
+                app_id=app_id,
+                user_id=updated_by,
+                user_name=updated_by,
+                path=relative_path,
+                source=content_str,
+                action="update",
+                bundle=bundle_payload,
+                error=error_payload,
+            )
+        except Exception as pub_err:
+            logger.warning(f"Failed to publish app file update: {pub_err}")
 
     async def move_file(self, old_path: str, new_path: str) -> None:
         """

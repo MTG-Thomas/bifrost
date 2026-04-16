@@ -51,6 +51,16 @@ _DEFAULT_IGNORE_PATTERNS = [
     "venv/",
     ".DS_Store",
     "*.pyc",
+    # Editor atomic-write turds (e.g. foo.tsx.tmp.12345.1776000000000).
+    # Without this, watchdog sees these files and pushes them to S3; the
+    # editor then renames them to the real file and watchdog emits a 'moved'
+    # event that deliberately does NOT delete the source. Result: every save
+    # leaves a turd in S3 forever.
+    "*.tmp.*",
+    "*.swp",
+    "*.swo",
+    "*~",
+    ".#*",
 ]
 
 _FORCE_INCLUDE_PATTERNS = [
@@ -356,6 +366,9 @@ def main(args: list[str] | None = None) -> int:
         if command == "api":
             return handle_api(args[1:])
 
+        if command == "migrate-imports":
+            return handle_migrate_imports(args[1:])
+
         # Unknown command
         print(f"Unknown command: {command}", file=sys.stderr)
         print_help()
@@ -381,6 +394,7 @@ Commands:
   pull        Pull files from Bifrost platform to local directory (alias for sync)
   watch       Watch for file changes and auto-push (requires .bifrost/ workspace)
   api         Generic authenticated API request
+  migrate-imports  Rewrite "bifrost" imports into user/lucide/router imports
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
@@ -405,6 +419,8 @@ Examples:
   bifrost watch apps/my-app
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate
+  bifrost migrate-imports apps/my-app --dry-run
+  bifrost migrate-imports apps/my-app --yes
   bifrost login
   bifrost login --url https://app.gobifrost.com
   bifrost logout
@@ -1678,6 +1694,19 @@ class _WatchChangeHandler:
                 self.state.pending_deletes.discard(src)
 
 
+def _extract_error_detail(resp: Any) -> str:
+    """Extract human-readable error detail from an HTTP response body."""
+    try:
+        body = resp.json()
+        return body.get("detail", "") or body.get("message", "") or ""
+    except Exception:
+        try:
+            text = resp.text
+            return text[:200] if text else ""
+        except Exception:
+            return ""
+
+
 async def _process_watch_deletes(
     client: "BifrostClient",
     deletes: set[str],
@@ -1810,7 +1839,9 @@ async def _process_watch_batch(
                         stask.cancel()
                         row.freeze("success", "\u2713", "Push", rp)
                 else:
-                    watch_errors.append(f"{rp}: HTTP {resp.status_code}")
+                    detail = _extract_error_detail(resp)
+                    err_msg = f"{rp}: HTTP {resp.status_code}" + (f" \u2014 {detail}" if detail else "")
+                    watch_errors.append(err_msg)
                     if rp in file_rows:
                         row, stask = file_rows[rp]
                         stask.cancel()
@@ -1830,8 +1861,29 @@ async def _process_watch_batch(
                 row.freeze("success", "\u2713", "Push", rp)
 
         # Import manifest if .bifrost/ files changed
+        # Dry-run first to skip no-op imports (prevents multi-watcher feedback loops)
         watch_warnings: list[str] = []
         manifest_result: dict[str, Any] = {}
+        if bifrost_watch_files:
+            try:
+                dry_resp = await client.post("/api/files/manifest/import", json={
+                    "files": bifrost_watch_files,
+                    "dry_run": True,
+                }, headers={"X-Bifrost-Watch-Session": state.session_id})
+                has_real_changes = False
+                if dry_resp.status_code == 200:
+                    dry_changes = dry_resp.json().get("entity_changes", [])
+                    has_real_changes = any(
+                        c.get("action") in ("add", "update", "delete") for c in dry_changes
+                    )
+                else:
+                    has_real_changes = True  # Can't tell — proceed with import
+
+                if not has_real_changes:
+                    bifrost_watch_files = {}  # Skip import — nothing meaningful changed
+            except Exception:
+                pass  # Dry-run failed — proceed with import anyway
+
         if bifrost_watch_files:
             try:
                 import_payload: dict[str, Any] = {
@@ -1845,7 +1897,11 @@ async def _process_watch_batch(
                     manifest_result = resp.json()
                     watch_warnings = manifest_result.get("warnings", [])
                 else:
-                    watch_warnings.append(f"Manifest import failed: HTTP {resp.status_code}")
+                    detail = _extract_error_detail(resp)
+                    watch_warnings.append(
+                        f"Manifest import failed: HTTP {resp.status_code}"
+                        + (f" \u2014 {detail}" if detail else "")
+                    )
             except Exception as e:
                 watch_warnings.append(f"Manifest import failed: {e}")
 
@@ -1865,18 +1921,26 @@ async def _process_watch_batch(
                 parts.append("manifest applied")
             print(f"  [{ts}] \u2713 Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
 
-        # Log errors/warnings as separate rows
+        # Log errors/warnings as separate rows (with detail sub-rows in TUI)
         if watch_errors:
             for error in watch_errors:
                 if watch_app:
-                    watch_app.log_error(error)
+                    if "\u2014" in error:
+                        summary, detail = error.split("\u2014", 1)
+                        watch_app.log_error_detail(summary.strip(), detail.strip())
+                    else:
+                        watch_app.log_error(error)
                 else:
                     _cols = shutil.get_terminal_size((80, 24)).columns
                     print(textwrap.fill(f"Error: {error}", width=_cols, initial_indent="    ", subsequent_indent="      "), flush=True)
         if watch_warnings:
             for warning in watch_warnings:
                 if watch_app:
-                    watch_app.log_error(warning)
+                    if "\u2014" in warning:
+                        summary, detail = warning.split("\u2014", 1)
+                        watch_app.log_warning_detail(summary.strip(), detail.strip())
+                    else:
+                        watch_app.log_error(warning)
                 else:
                     _cols = shutil.get_terminal_size((80, 24)).columns
                     print(textwrap.fill(f"Warning: {warning}", width=_cols, initial_indent="    ", subsequent_indent="      "), flush=True)
@@ -3189,15 +3253,7 @@ async def _sync_files(
             "_content": "",
         })
 
-    # ── 4. Entity diff ───────────────────────────────────────────────────
-    entity_changes: list[dict[str, Any]] = []
-    delete_removed_entities = False
-    if has_manifest:
-        entity_diff_result = await _entity_diff_pre_push(client, bifrost_files)
-        delete_removed_entities = entity_diff_result.get("has_deletions", False)
-        entity_changes = entity_diff_result.get("entity_changes", [])
-
-    # Fetch platform manifest for entity pull
+    # Fetch platform manifest for entity pull and pre-merge
     platform_manifest: dict[str, str] = {}
     try:
         resp = await client.get("/api/files/manifest")
@@ -3205,6 +3261,39 @@ async def _sync_files(
             platform_manifest = resp.json()
     except Exception:
         pass
+
+    # ── 3b. Merge server manifest into local YAML before diffing ────────
+    # UI-managed fields (oauth_token_id, client_id, config values) exist
+    # in the platform manifest but not in local YAML.  Merging them in
+    # prevents false-positive "update" diffs on every startup.
+    if has_manifest and platform_manifest:
+        bifrost_dir = _find_bifrost_dir(path)
+        merged_any = False
+        for filename, server_content in platform_manifest.items():
+            local_yaml_path = bifrost_dir / filename
+            if not local_yaml_path.exists():
+                continue
+            try:
+                local_content = local_yaml_path.read_text(encoding="utf-8")
+                merged = _merge_manifest_yaml(local_content, server_content)
+                if local_content != merged:
+                    local_yaml_path.write_text(merged, encoding="utf-8")
+                    merged_any = True
+            except (OSError, UnicodeDecodeError):
+                continue
+
+        # Re-collect bifrost files after merge so the diff uses updated content
+        if merged_any:
+            files, _ = _collect_push_files(path, repo_prefix)
+            bifrost_files, regular_files = _separate_manifest_files(files)
+
+    # ── 4. Entity diff ───────────────────────────────────────────────────
+    entity_changes: list[dict[str, Any]] = []
+    delete_removed_entities = False
+    if has_manifest:
+        entity_diff_result = await _entity_diff_pre_push(client, bifrost_files)
+        delete_removed_entities = entity_diff_result.get("has_deletions", False)
+        entity_changes = entity_diff_result.get("entity_changes", [])
 
     # Build entity sync items from dry-run changes
     for change in entity_changes:
@@ -3933,6 +4022,168 @@ async def _api_request(method: str, endpoint: str, body: Any | None, client: "Bi
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+# ---------------------------------------------------------------------------
+# migrate-imports
+# ---------------------------------------------------------------------------
+
+# Duplicated from api/src/services/app_bundler/__init__.py because this CLI
+# module cannot import from src.*. Keep in sync.
+_PLATFORM_EXPORT_NAMES: set[str] = {
+    "React", "Fragment", "Suspense", "lazy", "memo", "forwardRef",
+    "useState", "useEffect", "useCallback", "useMemo", "useRef",
+    "useContext", "useReducer", "useLayoutEffect", "useId",
+    "useTransition", "useDeferredValue", "useImperativeHandle",
+    "Outlet", "Link", "NavLink", "Navigate", "useNavigate", "navigate",
+    "useLocation", "useParams", "useSearchParams", "useOutletContext",
+    "useUser", "useAppState",
+    "useWorkflowQuery", "useWorkflowMutation",
+    "RequireRole",
+    "cn", "clsx", "twMerge", "format",
+    "formatDate", "formatDateShort", "formatTime", "formatRelativeTime",
+    "formatBytes", "formatNumber", "formatCost", "formatDuration",
+    "toast",
+    "Button", "Input", "Label", "Textarea", "Checkbox", "Switch",
+    "Select", "SelectContent", "SelectGroup", "SelectItem", "SelectLabel",
+    "SelectTrigger", "SelectValue", "SelectSeparator",
+    "RadioGroup", "RadioGroupItem", "Combobox", "MultiCombobox",
+    "TagsInput", "Slider",
+    "Card", "CardHeader", "CardFooter", "CardTitle", "CardAction",
+    "CardDescription", "CardContent",
+    "Badge", "Avatar", "AvatarImage", "AvatarFallback",
+    "Alert", "AlertTitle", "AlertDescription",
+    "Skeleton", "Progress",
+    "Tabs", "TabsList", "TabsTrigger", "TabsContent",
+    "Dialog", "DialogClose", "DialogContent", "DialogDescription",
+    "DialogFooter", "DialogHeader", "DialogTitle", "DialogTrigger",
+    "AlertDialog", "AlertDialogTrigger", "AlertDialogContent",
+    "AlertDialogHeader", "AlertDialogFooter", "AlertDialogTitle",
+    "AlertDialogDescription", "AlertDialogAction", "AlertDialogCancel",
+    "Tooltip", "TooltipContent", "TooltipProvider", "TooltipTrigger",
+    "Popover", "PopoverContent", "PopoverTrigger", "PopoverAnchor",
+    "Sheet", "SheetClose", "SheetContent", "SheetDescription",
+    "SheetFooter", "SheetHeader", "SheetTitle", "SheetTrigger",
+    "Command", "CommandDialog", "CommandEmpty", "CommandGroup",
+    "CommandInput", "CommandItem", "CommandList", "CommandSeparator",
+    "Table", "TableHeader", "TableBody", "TableFooter",
+    "TableHead", "TableRow", "TableCell", "TableCaption",
+    "Accordion", "AccordionContent", "AccordionItem", "AccordionTrigger",
+    "Collapsible", "CollapsibleContent", "CollapsibleTrigger",
+    "Toggle", "ToggleGroup", "ToggleGroupItem",
+    "Separator",
+    "DropdownMenu", "DropdownMenuContent", "DropdownMenuItem",
+    "DropdownMenuLabel", "DropdownMenuSeparator", "DropdownMenuTrigger",
+    "DropdownMenuGroup", "DropdownMenuPortal",
+    "DropdownMenuCheckboxItem", "DropdownMenuRadioGroup",
+    "DropdownMenuRadioItem",
+    "DropdownMenuShortcut", "DropdownMenuSub", "DropdownMenuSubContent",
+    "DropdownMenuSubTrigger",
+    "Calendar", "DateRangePicker",
+}
+
+
+def handle_migrate_imports(args: list[str]) -> int:
+    """bifrost migrate-imports [PATH] [--dry-run] [--yes]"""
+    if args and args[0] in ("--help", "-h"):
+        print("""
+Usage: bifrost migrate-imports [path] [options]
+
+Rewrite "bifrost" imports into user-component / lucide-react / react-router-dom imports.
+
+Classifier precedence (first match wins):
+  1. Local components/<Name>.{tsx,ts}  -> default import from "./components/Name"
+  2. React Router primitives            -> "react-router-dom"
+  3. Lucide icons                       -> "lucide-react"
+  4. Everything else                    -> stays in "bifrost"
+
+Also infers missing user-component imports from JSX usage.
+
+Arguments:
+  path                  App dir or workspace containing apps/* (default: current directory)
+
+Options:
+  --dry-run             Print unified diff, do not write
+  --yes                 Skip confirmation prompt
+  --help, -h            Show this help message
+""".strip())
+        return 0
+
+    from bifrost.migrate_imports import (
+        discover_apps,
+        load_lucide_icon_names,
+        migrate_app,
+        render_diff,
+    )
+
+    dry_run = False
+    yes = False
+    path_arg: str | None = None
+
+    for a in args:
+        if a == "--dry-run":
+            dry_run = True
+        elif a in ("--yes", "-y"):
+            yes = True
+        elif a.startswith("-"):
+            print(f"Unknown option: {a}", file=sys.stderr)
+            return 1
+        elif path_arg is None:
+            path_arg = a
+        else:
+            print(f"Unexpected argument: {a}", file=sys.stderr)
+            return 1
+
+    root = pathlib.Path(path_arg).resolve() if path_arg else pathlib.Path.cwd()
+    if not root.exists():
+        print(f"Error: path does not exist: {root}", file=sys.stderr)
+        return 1
+
+    lucide_names = load_lucide_icon_names()
+    apps = discover_apps(root)
+
+    all_results = []
+    app_for_result: dict[pathlib.Path, pathlib.Path] = {}
+    for app_dir in apps:
+        for r in migrate_app(app_dir, _PLATFORM_EXPORT_NAMES, lucide_names):
+            all_results.append(r)
+            app_for_result[r.path] = app_dir
+
+    changed = [r for r in all_results if r.changed]
+    apps_touched = {app_for_result[r.path] for r in changed}
+
+    if not changed:
+        print("No changes needed.")
+        return 0
+
+    # --- Output ---
+    if dry_run:
+        for r in changed:
+            print(render_diff(r), end="")
+        print(f"\n{len(changed)} file(s) would change across {len(apps_touched)} app dir(s).")
+        return 0
+
+    # Summary first
+    for r in changed:
+        print(str(r.path))
+        for line in r.summary_lines():
+            print(line)
+    print(f"\n{len(changed)} file(s) will change across {len(apps_touched)} app dir(s).")
+
+    if not yes:
+        try:
+            reply = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply != "y":
+            print("Aborted.")
+            return 1
+
+    for r in changed:
+        r.path.write_text(r.updated, encoding="utf-8")
+
+    print(f"Updated {len(changed)} file(s).")
+    return 0
 
 
 def print_run_help() -> None:

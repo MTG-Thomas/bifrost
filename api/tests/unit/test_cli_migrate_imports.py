@@ -1,0 +1,264 @@
+"""Unit tests for `bifrost migrate-imports` logic."""
+from __future__ import annotations
+
+import pathlib
+import sys
+
+# Ensure the standalone bifrost CLI package is importable.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
+from bifrost.migrate_imports import (  # noqa: E402
+    discover_apps,
+    migrate_app,
+    migrate_file,
+)
+
+
+# Minimal platform-name set used by the tests. Only needed for shadow warnings.
+PLATFORM = {
+    "Button", "Card", "CardHeader", "CardTitle", "CardContent",
+    "Alert", "Badge", "Skeleton", "useState", "useWorkflowQuery", "Outlet",
+}
+
+# Minimal lucide icon set used by the tests. Real classifier uses the full
+# lucide-react export set; for tests we only need the names we're asserting on.
+LUCIDE = {
+    "Phone", "Mail", "Users", "Building2", "Trash2", "X",
+}
+
+
+def _write(p: pathlib.Path, content: str) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+
+def _make_app(tmp_path: pathlib.Path, components: dict[str, str] | None = None) -> pathlib.Path:
+    """Create a minimal app dir at tmp_path/apps/my-app. Returns the app dir."""
+    app_dir = tmp_path / "apps" / "my-app"
+    _write(app_dir / "app.yaml", "name: my-app\n")
+    for name, body in (components or {}).items():
+        _write(app_dir / "components" / f"{name}.tsx", body)
+    return app_dir
+
+
+# ---------------------------------------------------------------------------
+# 1. Simple single-line rewrite
+# ---------------------------------------------------------------------------
+
+
+def test_simple_rewrite(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path)
+    src_file = app / "_layout.tsx"
+    _write(src_file, 'import { Button, Phone, Link } from "bifrost";\n\nexport default function L(){return null;}\n')
+
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert len(changed) == 1
+    updated = changed[0].updated
+
+    assert 'import { Button } from "bifrost";' in updated
+    assert 'import { Phone } from "lucide-react";' in updated
+    assert 'import { Link } from "react-router-dom";' in updated
+
+
+# ---------------------------------------------------------------------------
+# 2. Multi-line import rewrite
+# ---------------------------------------------------------------------------
+
+
+def test_multiline_import_rewrite(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path)
+    src_file = app / "_layout.tsx"
+    _write(src_file, (
+        "import {\n"
+        "  useState, useWorkflowQuery, Card, CardHeader, CardTitle, CardContent,\n"
+        "  Skeleton, Alert, Building2, Users\n"
+        '} from "bifrost";\n'
+        "\n"
+        "export default function L(){return null;}\n"
+    ))
+
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert len(changed) == 1
+    updated = changed[0].updated
+
+    # bifrost keeps platform names
+    assert 'useState' in updated
+    assert 'useWorkflowQuery' in updated
+    assert 'Card' in updated
+    # Icons moved to lucide-react (single merged line)
+    assert 'import { Building2, Users } from "lucide-react";' in updated
+    # The original multi-line import statement should be gone
+    assert 'Building2, Users\n}' not in updated
+    assert 'import { \n' not in updated  # no leftover broken brackets
+
+
+# ---------------------------------------------------------------------------
+# 3. Aliased import preservation
+# ---------------------------------------------------------------------------
+
+
+def test_aliased_import_preserved(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path)
+    src_file = app / "_layout.tsx"
+    _write(src_file, 'import { Button as MyButton, Trash2 as DeleteIcon } from "bifrost";\n')
+
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert len(changed) == 1
+    updated = changed[0].updated
+
+    assert 'import { Button as MyButton } from "bifrost";' in updated
+    assert 'import { Trash2 as DeleteIcon } from "lucide-react";' in updated
+
+
+# ---------------------------------------------------------------------------
+# 4. User component rewrite (default import with relative path)
+# ---------------------------------------------------------------------------
+
+
+def test_user_component_rewrite(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path, components={
+        "SearchInput": "export default function SearchInput(){return null;}\n",
+    })
+    src_file = app / "_layout.tsx"
+    _write(src_file, 'import { SearchInput, Button } from "bifrost";\n')
+
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert len(changed) == 1
+    updated = changed[0].updated
+
+    assert 'import { Button } from "bifrost";' in updated
+    assert 'import SearchInput from "./components/SearchInput";' in updated
+    # SearchInput must no longer be in the bifrost import
+    assert 'SearchInput, Button' not in updated
+    assert 'Button, SearchInput' not in updated
+
+
+# ---------------------------------------------------------------------------
+# 5. Missing-import inference from JSX
+# ---------------------------------------------------------------------------
+
+
+def test_missing_import_inferred_from_jsx(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path, components={
+        "SearchInput": "export default function SearchInput(){return null;}\n",
+    })
+    src_file = app / "pages" / "index.tsx"
+    _write(src_file, (
+        'import { Card } from "bifrost";\n'
+        "\n"
+        "export default function Page(){\n"
+        "  return <Card><SearchInput /></Card>;\n"
+        "}\n"
+    ))
+
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert len(changed) == 1
+    updated = changed[0].updated
+
+    # Relative path from pages/index.tsx to components/SearchInput is "../components/SearchInput"
+    assert 'import SearchInput from "../components/SearchInput";' in updated
+    # Card is still imported from bifrost
+    assert 'import { Card } from "bifrost";' in updated
+    assert changed[0].added_components == 1
+
+
+def test_missing_import_ignored_when_component_file_missing(tmp_path: pathlib.Path) -> None:
+    """Tags not matching any components/ file are left alone."""
+    app = _make_app(tmp_path)
+    src_file = app / "pages" / "index.tsx"
+    _write(src_file, (
+        'import { Card } from "bifrost";\n'
+        "export default function Page(){\n"
+        "  return <Card><DoesNotExist /></Card>;\n"
+        "}\n"
+    ))
+
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert changed == []
+
+
+# ---------------------------------------------------------------------------
+# 6. User component shadowing warning
+# ---------------------------------------------------------------------------
+
+
+def test_user_component_shadows_platform_warning(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path, components={
+        "Link": "export default function Link(){return null;}\n",
+    })
+    src_file = app / "_layout.tsx"
+    _write(src_file, 'import { Link, Button } from "bifrost";\n')
+
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert len(changed) == 1
+    r = changed[0]
+
+    assert "Link" in r.user_shadow_warnings
+    assert 'import Link from "./components/Link";' in r.updated
+    assert 'import { Button } from "bifrost";' in r.updated
+    # Link must NOT have been routed to react-router-dom
+    assert 'react-router-dom' not in r.updated
+
+
+# ---------------------------------------------------------------------------
+# 7. Idempotency — running twice does nothing on the second pass
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path, components={
+        "SearchInput": "export default function SearchInput(){return null;}\n",
+    })
+    src_file = app / "_layout.tsx"
+    _write(src_file, (
+        'import { SearchInput, Button, Phone, Link, Users } from "bifrost";\n'
+        "export default function L(){return <><SearchInput/><Phone/><Link to='/' /></>;}\n"
+    ))
+
+    # Round 1
+    results = migrate_app(app, PLATFORM, LUCIDE)
+    changed = [r for r in results if r.changed]
+    assert len(changed) == 1
+    for r in changed:
+        r.path.write_text(r.updated, encoding="utf-8")
+
+    # Round 2 — no changes
+    results2 = migrate_app(app, PLATFORM, LUCIDE)
+    changed2 = [r for r in results2 if r.changed]
+    assert changed2 == []
+
+
+# ---------------------------------------------------------------------------
+# Extras: discover_apps, no-op cases
+# ---------------------------------------------------------------------------
+
+
+def test_discover_apps_single_app(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path)
+    # Point discover at the app dir itself
+    assert discover_apps(app) == [app.resolve()]
+
+
+def test_discover_apps_workspace(tmp_path: pathlib.Path) -> None:
+    app1 = tmp_path / "apps" / "a"
+    app2 = tmp_path / "apps" / "b"
+    _write(app1 / "app.yaml", "name: a\n")
+    _write(app2 / "_layout.tsx", "export default () => null;\n")
+    found = discover_apps(tmp_path)
+    assert sorted([p.name for p in found]) == ["a", "b"]
+
+
+def test_noop_file_with_only_platform_imports(tmp_path: pathlib.Path) -> None:
+    app = _make_app(tmp_path)
+    src_file = app / "_layout.tsx"
+    _write(src_file, 'import { Button, Card } from "bifrost";\n')
+
+    r = migrate_file(src_file, app, set(), PLATFORM, LUCIDE)
+    assert not r.changed
