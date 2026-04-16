@@ -200,7 +200,7 @@ class StuckHistoryResponse(BaseModel):
 class WorkerMetricPoint(BaseModel):
     """A single time-series data point for the memory chart."""
 
-    timestamp: str = Field(..., description="ISO timestamp")
+    group: str = Field(..., description="Formatted time bucket label")
     worker_id: str = Field(..., description="Container/pool identifier")
     memory_current: int = Field(..., description="cgroup memory.current in bytes")
     memory_max: int = Field(..., description="cgroup memory.max in bytes")

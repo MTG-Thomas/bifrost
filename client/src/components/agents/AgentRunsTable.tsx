@@ -218,7 +218,7 @@ export function AgentRunsTable({ isPlatformAdmin }: AgentRunsTableProps) {
 
 				<TabsContent
 					value={statusFilter}
-					className="mt-4 flex-1 min-h-0 overflow-auto"
+					className="mt-4 flex-1 min-h-0"
 				>
 					{isLoading ? (
 						<div className="flex items-center justify-center py-12">
@@ -254,9 +254,11 @@ export function AgentRunsTable({ isPlatformAdmin }: AgentRunsTableProps) {
 										<DataTableRow
 											key={run.id}
 											clickable
-											onClick={() =>
-												navigate(`/agent-runs/${run.id}`)
-											}
+											href={`/agent-runs/${run.id}`}
+											onClick={(e) => {
+												if (e.metaKey || e.ctrlKey || e.button === 1) return;
+												navigate(`/agent-runs/${run.id}`);
+											}}
 										>
 											{isPlatformAdmin && (
 												<DataTableCell>

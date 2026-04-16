@@ -90,7 +90,7 @@ async def get_worker_metrics(
     """Get worker metrics for the diagnostics memory chart."""
     from datetime import timedelta
 
-    from sqlalchemy import func, select
+    from sqlalchemy import func, select, text
 
     from src.models.orm.worker_metric import WorkerMetric
 
@@ -104,81 +104,49 @@ async def get_worker_metrics(
     delta = range_map[range]
     cutoff = datetime.now(timezone.utc) - delta
 
-    # Determine bucket size for downsampling
-    # 1h: raw data, 6h/24h: 5-min buckets, 7d: 30-min buckets
-    if range == "1h":
-        # Raw data — no downsampling
-        stmt = (
-            select(WorkerMetric)
-            .where(WorkerMetric.timestamp >= cutoff)
-            .order_by(WorkerMetric.timestamp)
+    # Bucket sizes: 1h=1min, 6h=5min, 24h=1hr, 7d=30min
+    bucket_interval = {"1h": "1 minute", "6h": "5 minutes", "24h": "1 hour", "7d": "30 minutes"}[range]
+    epoch = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+    # Format group labels: 1h/6h/24h → "HH:MM", 7d → "Mon D"
+    group_formats = {"1h": "%H:%M", "6h": "%H:%M", "24h": "%H:%M", "7d": "%b %-d"}
+    group_fmt = group_formats[range]
+
+    bucket_ts = func.date_bin(
+        text(f"'{bucket_interval}'::interval"),
+        WorkerMetric.timestamp,
+        epoch,
+    ).label("bucket_ts")
+
+    stmt = (
+        select(
+            bucket_ts,
+            WorkerMetric.worker_id,
+            func.avg(WorkerMetric.memory_current).label("avg_memory_current"),
+            func.max(WorkerMetric.memory_max).label("memory_max"),
+            func.round(func.avg(WorkerMetric.fork_count)).label("avg_fork_count"),
+            func.round(func.avg(WorkerMetric.busy_count)).label("avg_busy_count"),
+            func.round(func.avg(WorkerMetric.idle_count)).label("avg_idle_count"),
         )
-        result = await db.execute(stmt)
-        rows = result.scalars().all()
+        .where(WorkerMetric.timestamp >= cutoff)
+        .group_by(bucket_ts, WorkerMetric.worker_id)
+        .order_by(bucket_ts)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
 
-        points = [
-            WorkerMetricPoint(
-                timestamp=row.timestamp.isoformat(),
-                worker_id=row.worker_id,
-                memory_current=row.memory_current,
-                memory_max=row.memory_max if row.memory_max is not None else -1,
-                fork_count=row.fork_count,
-                busy_count=row.busy_count,
-                idle_count=row.idle_count,
-            )
-            for row in rows
-        ]
-    else:
-        # Downsampled — bucket by time interval
-        bucket_minutes = 5 if range in ("6h", "24h") else 30
-
-        stmt = (
-            select(
-                func.date_trunc("hour", WorkerMetric.timestamp).label("hour"),
-                func.floor(
-                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
-                ).label("bucket"),
-                WorkerMetric.worker_id,
-                func.avg(WorkerMetric.memory_current).label("avg_memory_current"),
-                func.max(WorkerMetric.memory_max).label("memory_max"),
-                func.round(func.avg(WorkerMetric.fork_count)).label("avg_fork_count"),
-                func.round(func.avg(WorkerMetric.busy_count)).label("avg_busy_count"),
-                func.round(func.avg(WorkerMetric.idle_count)).label("avg_idle_count"),
-            )
-            .where(WorkerMetric.timestamp >= cutoff)
-            .group_by(
-                func.date_trunc("hour", WorkerMetric.timestamp),
-                func.floor(
-                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
-                ),
-                WorkerMetric.worker_id,
-            )
-            .order_by(
-                func.date_trunc("hour", WorkerMetric.timestamp),
-                func.floor(
-                    func.extract("minute", WorkerMetric.timestamp) / bucket_minutes
-                ),
-            )
+    points = [
+        WorkerMetricPoint(
+            group=row.bucket_ts.strftime(group_fmt),
+            worker_id=row.worker_id,
+            memory_current=int(row.avg_memory_current),
+            memory_max=int(row.memory_max) if row.memory_max is not None else -1,
+            fork_count=int(row.avg_fork_count),
+            busy_count=int(row.avg_busy_count),
+            idle_count=int(row.avg_idle_count),
         )
-        result = await db.execute(stmt)
-        rows = result.all()
-
-        points = [
-            WorkerMetricPoint(
-                timestamp=(
-                    row.hour.replace(
-                        minute=int(row.bucket * bucket_minutes)
-                    )
-                ).isoformat(),
-                worker_id=row.worker_id,
-                memory_current=int(row.avg_memory_current),
-                memory_max=int(row.memory_max) if row.memory_max is not None else -1,
-                fork_count=int(row.avg_fork_count),
-                busy_count=int(row.avg_busy_count),
-                idle_count=int(row.avg_idle_count),
-            )
-            for row in rows
-        ]
+        for row in rows
+    ]
 
     return WorkerMetricsResponse(range=range, points=points)
 

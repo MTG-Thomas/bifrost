@@ -411,7 +411,7 @@ export function ExecutionHistory() {
 
 	if (historyType === "agents") {
 		return (
-			<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+			<div className="h-full flex flex-col space-y-6">
 				{/* Header */}
 				<div className="flex items-center justify-between">
 					<div>
@@ -432,7 +432,7 @@ export function ExecutionHistory() {
 	}
 
 	return (
-		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
+		<div className="h-full flex flex-col space-y-6">
 			{/* Header */}
 			<div className="flex items-center justify-between">
 				<div>
@@ -709,7 +709,7 @@ export function ExecutionHistory() {
 
 				<TabsContent
 					value={statusFilter}
-					className="mt-4 flex-1 min-h-0 overflow-auto"
+					className="mt-4 flex-1 min-h-0"
 				>
 					{isFetching && !executions.length ? (
 						<div className="flex items-center justify-center py-12">
@@ -757,11 +757,12 @@ export function ExecutionHistory() {
 											key={execution.execution_id}
 											clickable
 											href={`/history/${execution.execution_id}`}
-											onClick={() =>
+											onClick={(e) => {
+												if (e.metaKey || e.ctrlKey || e.button === 1) return;
 												handleViewDetails(
 													execution.execution_id,
-												)
-											}
+												);
+											}}
 										>
 											{isPlatformAdmin && (
 												<DataTableCell>
@@ -998,6 +999,7 @@ export function ExecutionHistory() {
 				executionId={drawerExecutionId}
 				open={drawerOpen}
 				onOpenChange={setDrawerOpen}
+				onExecutionChange={setDrawerExecutionId}
 			/>
 		</div>
 	);

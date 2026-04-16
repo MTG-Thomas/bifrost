@@ -1,9 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
-	Save,
-	Loader2,
 	XCircle,
+	Loader2,
 	Pencil,
 	Code,
 	Zap,
@@ -81,7 +80,6 @@ export function IntegrationDetail() {
 	>();
 	const [deleteMappingConfirm, setDeleteMappingConfirm] =
 		useState<OrgWithMapping | null>(null);
-	const [isSavingAll, setIsSavingAll] = useState(false);
 	const [editingOAuthConfig, setEditingOAuthConfig] = useState(false);
 	const [deleteOAuthDialogOpen, setDeleteOAuthDialogOpen] = useState(false);
 	const [generateSDKDialogOpen, setGenerateSDKDialogOpen] = useState(false);
@@ -168,12 +166,7 @@ export function IntegrationDetail() {
 	const canUseAuthCodeFlow =
 		!!oauthConfig && oauthConfig.oauth_flow_type !== "client_credentials";
 
-	// Track dirty state for each org (user edits)
-	const [dirtyEdits, setDirtyEdits] = useState<
-		Map<string, { formData: Partial<MappingFormData>; isDirty: boolean }>
-	>(new Map());
-
-	// Combine organizations with their mappings using useMemo (no effect needed)
+	// Combine organizations with their mappings using useMemo
 	const orgsWithMappings = useMemo((): OrgWithMapping[] => {
 		if (isLoadingOrgs || isLoadingIntegration) {
 			return [];
@@ -183,25 +176,19 @@ export function IntegrationDetail() {
 				(m) => m.organization_id === org.id,
 			);
 
-			// Check for dirty edits from user
-			const dirtyEdit = dirtyEdits.get(org.id);
-
-			const baseFormData: MappingFormData = existingMapping
+			const formData: MappingFormData = existingMapping
 				? {
 						organization_id: existingMapping.organization_id ?? org.id,
 						entity_id: existingMapping.entity_id,
 						entity_name: existingMapping.entity_name || "",
 						oauth_token_id:
 							existingMapping.oauth_token_id || undefined,
-						// Use actual mapping config only - don't fall back to defaults
-						// OrgConfigDialog shows defaults separately via defaultConfig prop
 						config: existingMapping.config || {},
 					}
 				: {
 						organization_id: org.id,
 						entity_id: "",
 						entity_name: "",
-						// New mappings start empty - defaults shown separately in dialog
 						config: {},
 					};
 
@@ -209,10 +196,7 @@ export function IntegrationDetail() {
 				id: org.id,
 				name: org.name,
 				mapping: existingMapping,
-				formData: dirtyEdit
-					? { ...baseFormData, ...dirtyEdit.formData }
-					: baseFormData,
-				isDirty: dirtyEdit?.isDirty ?? false,
+				formData,
 			};
 		});
 	}, [
@@ -220,7 +204,6 @@ export function IntegrationDetail() {
 		mappings,
 		isLoadingOrgs,
 		isLoadingIntegration,
-		dirtyEdits,
 	]);
 
 	// Listen for OAuth success messages from popup window
@@ -247,41 +230,33 @@ export function IntegrationDetail() {
 		};
 	}, [refetchIntegration]);
 
-	// Warn about unsaved changes when navigating away
-	useEffect(() => {
-		const dirtyCount = orgsWithMappings.filter((org) => org.isDirty).length;
-
-		if (dirtyCount > 0) {
-			const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-				e.preventDefault();
-				// Modern browsers require returnValue to be set
-				e.returnValue = "";
-			};
-
-			window.addEventListener("beforeunload", handleBeforeUnload);
-
-			return () => {
-				window.removeEventListener("beforeunload", handleBeforeUnload);
-			};
-		}
-
-		// Return cleanup function for the case when dirtyCount is 0
-		return () => {};
-	}, [orgsWithMappings]);
-
-	const updateOrgMapping = (
-		orgId: string,
-		updates: Partial<MappingFormData>,
+	const saveMappings = async (
+		mappingsToSave: Array<{ organization_id: string; entity_id: string; entity_name?: string }>,
 	) => {
-		setDirtyEdits((prev) => {
-			const next = new Map(prev);
-			const existing = next.get(orgId);
-			next.set(orgId, {
-				formData: { ...(existing?.formData || {}), ...updates },
-				isDirty: true,
-			});
-			return next;
+		const result = await batchMutation.mutateAsync({
+			params: { path: { integration_id: integrationId! } },
+			body: { mappings: mappingsToSave },
 		});
+		const total = result.created + result.updated;
+		const errorCount = result.errors?.length ?? 0;
+		if (errorCount === 0) {
+			toast.success(`Saved ${total} mapping(s)`);
+		} else {
+			toast.warning(`Saved ${total} mapping(s), ${errorCount} failed`);
+		}
+	};
+
+	const handleEntitySelect = async (
+		orgId: string,
+		entityId: string,
+		entityName?: string,
+	) => {
+		if (!entityId) return;
+		try {
+			await saveMappings([{ organization_id: orgId, entity_id: entityId, entity_name: entityName }]);
+		} catch {
+			toast.error("Failed to save mapping");
+		}
 	};
 
 	const handleDeleteMappingClick = (org: OrgWithMapping) => {
@@ -372,54 +347,6 @@ export function IntegrationDetail() {
 			// The mutation's onSuccess already handles cache invalidation and toast
 		} catch {
 			// Error is already handled by the mutation's onError
-		}
-	};
-
-	const handleSaveAll = async () => {
-		const dirtyMappings = orgsWithMappings.filter(
-			(org) => org.isDirty && org.formData.entity_id,
-		);
-
-		if (dirtyMappings.length === 0) {
-			toast.info("No changes to save");
-			return;
-		}
-
-		setIsSavingAll(true);
-		try {
-			const result = await batchMutation.mutateAsync({
-				params: { path: { integration_id: integrationId! } },
-				body: {
-					mappings: dirtyMappings.map((org) => ({
-						organization_id: org.id,
-						entity_id: org.formData.entity_id,
-						entity_name: org.formData.entity_name || undefined,
-					})),
-				},
-			});
-
-			// Clear dirty state for all saved mappings
-			setDirtyEdits((prev) => {
-				const next = new Map(prev);
-				for (const org of dirtyMappings) {
-					next.delete(org.id);
-				}
-				return next;
-			});
-
-			const total = result.created + result.updated;
-			const errorCount = result.errors?.length ?? 0;
-			if (errorCount === 0) {
-				toast.success(`Saved ${total} mapping(s)`);
-			} else {
-				toast.warning(
-					`Saved ${total} mapping(s), ${errorCount} failed`,
-				);
-			}
-		} catch {
-			toast.error("Failed to save mappings");
-		} finally {
-			setIsSavingAll(false);
 		}
 	};
 
@@ -550,24 +477,35 @@ export function IntegrationDetail() {
 		}
 	};
 
-	const handleAcceptSuggestion = (orgId: string) => {
+	const handleAcceptSuggestion = async (orgId: string) => {
 		const suggestion = acceptSuggestion(orgId);
 		if (suggestion) {
-			updateOrgMapping(orgId, {
-				entity_id: suggestion.entityId,
-				entity_name: suggestion.entityName,
-			});
+			try {
+				await saveMappings([{
+					organization_id: orgId,
+					entity_id: suggestion.entityId,
+					entity_name: suggestion.entityName,
+				}]);
+			} catch {
+				toast.error("Failed to save mapping");
+			}
 		}
 	};
 
-	const handleAcceptAllSuggestions = () => {
+	const handleAcceptAllSuggestions = async () => {
 		const suggestions = acceptAll();
-		suggestions.forEach((suggestion) => {
-			updateOrgMapping(suggestion.organizationId, {
-				entity_id: suggestion.entityId,
-				entity_name: suggestion.entityName,
-			});
-		});
+		if (suggestions.length === 0) return;
+		try {
+			await saveMappings(
+				suggestions.map((s) => ({
+					organization_id: s.organizationId,
+					entity_id: s.entityId,
+					entity_name: s.entityName,
+				})),
+			);
+		} catch {
+			toast.error("Failed to save mappings");
+		}
 	};
 
 	// Handle test connection
@@ -628,8 +566,6 @@ export function IntegrationDetail() {
 		);
 	}
 
-	const dirtyCount = orgsWithMappings.filter((org) => org.isDirty).length;
-
 	return (
 		<div className="space-y-6">
 			{/* Header */}
@@ -685,19 +621,6 @@ export function IntegrationDetail() {
 						>
 							<Pencil className="h-4 w-4" />
 						</Button>
-						<Button
-							variant="outline"
-							size="icon"
-							onClick={handleSaveAll}
-							disabled={dirtyCount === 0 || isSavingAll}
-							title={`Save All${dirtyCount > 0 ? ` (${dirtyCount})` : ""}`}
-						>
-							{isSavingAll ? (
-								<Loader2 className="h-4 w-4 animate-spin" />
-							) : (
-								<Save className="h-4 w-4" />
-							)}
-						</Button>
 					</div>
 				</div>
 			</div>
@@ -747,7 +670,7 @@ export function IntegrationDetail() {
 						onClearSuggestions={clearSuggestions}
 						onAcceptSuggestion={handleAcceptSuggestion}
 						onRejectSuggestion={rejectSuggestion}
-						onUpdateOrgMapping={updateOrgMapping}
+						onUpdateOrgMapping={handleEntitySelect}
 						onOpenConfigDialog={handleOpenConfigDialog}
 						onDeleteMapping={handleDeleteMappingClick}
 						onEditIntegration={() => setEditDialogOpen(true)}

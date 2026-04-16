@@ -257,7 +257,7 @@ export function useRecycleAllProcesses() {
 // =============================================================================
 
 export interface WorkerMetricPoint {
-    timestamp: string;
+    group: string;
     worker_id: string;
     memory_current: number;
     memory_max: number;

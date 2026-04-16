@@ -77,7 +77,7 @@ class workflows:
         Use workflows.get() to check status later.
 
         Args:
-            workflow: Workflow name or UUID
+            workflow: Workflow UUID or path::function_name ref
             input_data: Input parameters for the workflow
             org_id: Override execution org context (admin only).
                      Like `bifrost run --org <org_id>`.
@@ -94,7 +94,7 @@ class workflows:
 
         Example:
             >>> from bifrost import workflows
-            >>> eid = await workflows.execute("onboard_user", {"user_id": "abc"})
+            >>> eid = await workflows.execute("workflows/onboard.py::onboard_user", {"user_id": "abc"})
             >>> print(f"Started: {eid}")
             >>> # Check later:
             >>> execution = await workflows.get(eid)

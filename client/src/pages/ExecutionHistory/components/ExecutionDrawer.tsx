@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import {
 	Sheet,
 	SheetContent,
@@ -13,13 +14,17 @@ interface ExecutionDrawerProps {
 	executionId: string | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	onExecutionChange?: (newExecutionId: string) => void;
 }
 
 export function ExecutionDrawer({
 	executionId,
 	open,
 	onOpenChange,
+	onExecutionChange,
 }: ExecutionDrawerProps) {
+	const actionsRef = useRef<HTMLDivElement>(null);
+
 	const handleOpenInNewTab = () => {
 		if (executionId) {
 			window.open(`/history/${executionId}`, "_blank");
@@ -39,6 +44,7 @@ export function ExecutionDrawer({
 								Execution Details
 							</SheetTitle>
 							<div className="flex items-center gap-1">
+								<div ref={actionsRef} className="flex items-center gap-1" />
 								<Button
 									variant="ghost"
 									size="icon"
@@ -72,6 +78,8 @@ export function ExecutionDrawer({
 					<ExecutionDetails
 						executionId={executionId}
 						embedded
+						actionsContainerRef={actionsRef}
+						onExecutionChange={onExecutionChange}
 					/>
 				)}
 			</SheetContent>

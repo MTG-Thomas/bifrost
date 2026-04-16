@@ -582,7 +582,7 @@ async def update_source(
     "/sources/{source_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete event source",
-    description="Soft delete (deactivate) an event source (Platform admin only).",
+    description="Permanently delete an event source and all its subscriptions, events, and deliveries (Platform admin only).",
 )
 async def delete_source(
     source_id: UUID,
@@ -591,11 +591,11 @@ async def delete_source(
     db: DbSession,
 ) -> None:
     """
-    Soft delete an event source.
+    Permanently delete an event source.
 
     This will:
     1. Call adapter unsubscribe (for external subscriptions)
-    2. Set is_active=False to deactivate the source
+    2. Delete the source and cascade to subscriptions, events, and deliveries
     """
     repo = EventSourceRepository(db)
     source = await repo.get_by_id_with_details(source_id)
@@ -605,9 +605,6 @@ async def delete_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event source not found",
         )
-
-    if not source.is_active:
-        return
 
     # Call adapter unsubscribe for webhooks
     if source.source_type == EventSourceType.WEBHOOK and source.webhook_source:
@@ -623,10 +620,10 @@ async def delete_source(
             except Exception as e:
                 logger.warning(f"Failed to unsubscribe webhook: {e}")
 
-    source.is_active = False
+    await db.delete(source)
     await db.flush()
 
-    logger.info(f"Deactivated event source {source_id}")
+    logger.info(f"Deleted event source {source_id}")
 
 
 # =============================================================================
@@ -803,7 +800,7 @@ async def update_subscription(
     "/sources/{source_id}/subscriptions/{subscription_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete subscription",
-    description="Soft delete an event subscription (Platform admin only).",
+    description="Permanently delete an event subscription (Platform admin only).",
 )
 async def delete_subscription(
     source_id: UUID,
@@ -812,7 +809,7 @@ async def delete_subscription(
     user: CurrentSuperuser,
     db: DbSession,
 ) -> None:
-    """Soft delete an event subscription."""
+    """Permanently delete an event subscription."""
     # Verify source exists
     source_repo = EventSourceRepository(db)
     source = await source_repo.get_by_id(source_id)
@@ -838,12 +835,10 @@ async def delete_subscription(
             detail="Subscription not found",
         )
 
-    subscription.is_active = False
-    subscription.updated_at = datetime.now(timezone.utc)
-
+    await db.delete(subscription)
     await db.flush()
 
-    logger.info(f"Soft deleted subscription {subscription_id}")
+    logger.info(f"Deleted subscription {subscription_id}")
 
 
 # =============================================================================

@@ -57,15 +57,17 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
     # ==========================================================================
 
     async def resolve(self, identifier: str) -> Workflow | None:
-        """Resolve a workflow by UUID, path::function_name, or name.
+        """Resolve a workflow by UUID or path::function_name.
 
         Resolution order:
         1. If identifier parses as a UUID, look up by id.
         2. If identifier contains '::', treat as path::function_name lookup.
-        3. Otherwise, look up by name using cascade scoping (org > global).
+
+        Bare names are not supported because workflow names are not unique
+        (no DB constraint). Use UUID or path::function_name instead.
 
         Args:
-            identifier: A workflow UUID string, "path::function_name" ref, or workflow name
+            identifier: A workflow UUID string or "path::function_name" ref
 
         Returns:
             Workflow if found and accessible, None otherwise
@@ -80,7 +82,7 @@ class WorkflowRepository(OrgScopedRepository[Workflow]):
         if "::" in identifier:
             return await self._resolve_by_path_ref(identifier)
 
-        return await self.get(name=identifier)
+        return None
 
     async def _resolve_by_path_ref(self, ref: str) -> Workflow | None:
         """Resolve a path::function_name reference to a workflow.
