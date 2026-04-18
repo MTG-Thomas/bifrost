@@ -77,23 +77,63 @@ class ManifestWorkflow(BaseModel):
 
 
 class ManifestForm(BaseModel):
-    """Form entry in manifest."""
+    """Form entry in manifest.
+
+    Carries portable form content (description, workflow bindings, schema) inline
+    under the form's UUID. Environment-specific fields (organization_id, roles,
+    access_level) live alongside but are NOT serialized into a portable artifact —
+    they describe how this environment binds the form. The ``path`` field is
+    deprecated: content is now inline and ``forms/{uuid}.form.yaml`` is no longer
+    written by the manifest generator.
+    """
     id: str = Field(description="Form UUID")
     name: str = Field(default="", description="Form display name")
-    path: str = Field(description="Relative path to form YAML (e.g. 'forms/{uuid}.form.yaml')")
+    path: str | None = Field(
+        default=None,
+        description="DEPRECATED: relative path to form YAML. Content is now inline.",
+    )
+    # -- Environment-specific fields (NOT portable; do not include when sharing) --
     organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
     roles: list[str] = Field(default_factory=list, description="Role UUIDs that can access this form")
     access_level: str | None = Field(default=None, description="role_based | authenticated | public")
+    # -- Portable content (inline) --
+    description: str | None = Field(default=None, description="Form description")
+    workflow_id: str | None = Field(default=None, description="Workflow UUID to execute on submit")
+    launch_workflow_id: str | None = Field(default=None, description="Workflow UUID to run on form load")
+    default_launch_params: dict | None = Field(default=None, description="Default params for launch workflow")
+    allowed_query_params: list[str] | None = Field(default=None, description="Form fields populatable via URL query params")
+    form_schema: dict | None = Field(default=None, description="Form schema (fields list, etc.)")
 
 
 class ManifestAgent(BaseModel):
-    """Agent entry in manifest."""
+    """Agent entry in manifest.
+
+    Carries portable agent content (system prompt, channels, tool bindings, etc.)
+    inline under the agent's UUID. Environment-specific fields (organization_id,
+    roles, access_level) live alongside but are NOT serialized into a portable
+    artifact. The ``path`` field is deprecated: content is now inline and
+    ``agents/{uuid}.agent.yaml`` is no longer written by the manifest generator.
+    """
     id: str = Field(description="Agent UUID")
     name: str = Field(default="", description="Agent display name")
-    path: str = Field(description="Relative path to agent YAML (e.g. 'agents/{uuid}.agent.yaml')")
+    path: str | None = Field(
+        default=None,
+        description="DEPRECATED: relative path to agent YAML. Content is now inline.",
+    )
+    # -- Environment-specific fields (NOT portable; do not include when sharing) --
     organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
     roles: list[str] = Field(default_factory=list, description="Role UUIDs that can access this agent")
     access_level: str | None = Field(default=None, description="role_based | authenticated | public")
+    # -- Portable content (inline) --
+    description: str | None = Field(default=None, description="Agent description")
+    system_prompt: str | None = Field(default=None, description="LLM system prompt")
+    channels: list[str] = Field(default_factory=list, description="Channels the agent runs on (chat, email, …)")
+    tool_ids: list[str] = Field(default_factory=list, description="Workflow UUIDs exposed as tools")
+    delegated_agent_ids: list[str] = Field(default_factory=list, description="Agent UUIDs this agent can delegate to")
+    knowledge_sources: list[str] = Field(default_factory=list, description="Knowledge namespaces searchable via RAG")
+    system_tools: list[str] = Field(default_factory=list, description="System tool names enabled (e.g. 'execute_workflow')")
+    llm_model: str | None = Field(default=None, description="Override LLM model (null = global default)")
+    llm_max_tokens: int | None = Field(default=None, description="Override LLM max tokens (null = global default)")
     max_iterations: int | None = Field(default=None, description="Max LLM iterations for autonomous runs")
     max_token_budget: int | None = Field(default=None, description="Max token budget for autonomous runs")
 
@@ -527,14 +567,20 @@ def get_all_entity_ids(manifest: Manifest) -> set[str]:
 
 
 def get_all_paths(manifest: Manifest) -> set[str]:
-    """Get all file paths declared in the manifest."""
+    """Get all file paths declared in the manifest.
+
+    Form/agent ``path`` is deprecated and may be ``None`` once the manifest is
+    regenerated under the inline-content layout — those entries are skipped.
+    """
     paths: set[str] = set()
     for wf in manifest.workflows.values():
         paths.add(wf.path)
     for form in manifest.forms.values():
-        paths.add(form.path)
+        if form.path:
+            paths.add(form.path)
     for agent in manifest.agents.values():
-        paths.add(agent.path)
+        if agent.path:
+            paths.add(agent.path)
     for app in manifest.apps.values():
         paths.add(app.path)
     return paths

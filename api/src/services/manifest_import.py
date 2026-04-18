@@ -208,6 +208,150 @@ def _collect_changed_ids(incoming: "Manifest", current: "Manifest") -> set[str]:
 
 
 # =============================================================================
+# Inline-content helpers
+# =============================================================================
+#
+# Form/agent content is now inlined under each entity's UUID in the manifest
+# (see ManifestForm/ManifestAgent in api/bifrost/manifest.py). The indexers
+# (FormIndexer, AgentIndexer) still parse YAML, so we synthesize the YAML
+# bytes from the manifest entry to keep the indexer interface stable.
+#
+# Back-compat: if a manifest entry doesn't carry inline content but a
+# companion .form.yaml / .agent.yaml exists, we still read it and emit a
+# deprecation warning. This branch will be removed once all checked-in
+# manifests have been regenerated.
+
+
+_DEPRECATION_MSG_TEMPLATE = (
+    "{kind} content in separate file is deprecated; "
+    "regenerate with 'bifrost sync' to inline (path={path})"
+)
+
+
+def _form_has_inline_content(mform) -> bool:
+    """Return True if the manifest form entry carries inline content."""
+    return any(
+        getattr(mform, attr, None) is not None
+        for attr in (
+            "description",
+            "workflow_id",
+            "launch_workflow_id",
+            "default_launch_params",
+            "allowed_query_params",
+            "form_schema",
+        )
+    )
+
+
+def _agent_has_inline_content(magent) -> bool:
+    """Return True if the manifest agent entry carries inline content.
+
+    ``system_prompt`` is required in the DB so its presence is the strongest
+    signal that this entry was generated under the inline layout.
+    """
+    if getattr(magent, "system_prompt", None):
+        return True
+    return any(
+        bool(getattr(magent, attr, None))
+        for attr in (
+            "description",
+            "channels",
+            "tool_ids",
+            "delegated_agent_ids",
+            "knowledge_sources",
+            "system_tools",
+            "llm_model",
+            "llm_max_tokens",
+        )
+    )
+
+
+def _form_content_from_manifest(mform) -> bytes:
+    """Build the YAML bytes the FormIndexer expects from a manifest form entry."""
+    data: dict = {"id": mform.id, "name": mform.name or ""}
+    if mform.description is not None:
+        data["description"] = mform.description
+    if mform.workflow_id is not None:
+        data["workflow_id"] = mform.workflow_id
+    if mform.launch_workflow_id is not None:
+        data["launch_workflow_id"] = mform.launch_workflow_id
+    if mform.default_launch_params is not None:
+        data["default_launch_params"] = mform.default_launch_params
+    if mform.allowed_query_params is not None:
+        data["allowed_query_params"] = mform.allowed_query_params
+    if mform.form_schema is not None:
+        data["form_schema"] = mform.form_schema
+    return (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
+
+
+def _agent_content_from_manifest(magent) -> bytes:
+    """Build the YAML bytes the AgentIndexer expects from a manifest agent entry."""
+    data: dict = {"id": magent.id, "name": magent.name or ""}
+    if magent.description is not None:
+        data["description"] = magent.description
+    if magent.system_prompt is not None:
+        data["system_prompt"] = magent.system_prompt
+    if magent.channels:
+        data["channels"] = list(magent.channels)
+    if magent.tool_ids:
+        data["tool_ids"] = list(magent.tool_ids)
+    if magent.delegated_agent_ids:
+        data["delegated_agent_ids"] = list(magent.delegated_agent_ids)
+    if magent.knowledge_sources:
+        data["knowledge_sources"] = list(magent.knowledge_sources)
+    if magent.system_tools:
+        data["system_tools"] = list(magent.system_tools)
+    if magent.llm_model is not None:
+        data["llm_model"] = magent.llm_model
+    if magent.llm_max_tokens is not None:
+        data["llm_max_tokens"] = magent.llm_max_tokens
+    if magent.max_iterations is not None:
+        data["max_iterations"] = magent.max_iterations
+    if magent.max_token_budget is not None:
+        data["max_token_budget"] = magent.max_token_budget
+    return (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
+
+
+async def _resolve_form_content(
+    mform,
+    read_fn: "Callable[[str], Awaitable[bytes | None]]",
+) -> bytes | None:
+    """Return YAML bytes for a manifest form entry.
+
+    Prefers inline content; falls back to ``mform.path`` companion file with a
+    deprecation warning (back-compat for manifests written before the inline
+    rollout). Returns ``None`` if neither source is available.
+    """
+    if _form_has_inline_content(mform):
+        return _form_content_from_manifest(mform)
+    if mform.path:
+        content = await read_fn(mform.path)
+        if content is not None:
+            logger.warning(_DEPRECATION_MSG_TEMPLATE.format(kind="Form", path=mform.path))
+            return content
+    return None
+
+
+async def _resolve_agent_content(
+    magent,
+    read_fn: "Callable[[str], Awaitable[bytes | None]]",
+) -> bytes | None:
+    """Return YAML bytes for a manifest agent entry.
+
+    Prefers inline content; falls back to ``magent.path`` companion file with a
+    deprecation warning. Returns ``None`` if neither source is available.
+    """
+    if _agent_has_inline_content(magent):
+        return _agent_content_from_manifest(magent)
+    if magent.path:
+        content = await read_fn(magent.path)
+        if content is not None:
+            logger.warning(_DEPRECATION_MSG_TEMPLATE.format(kind="Agent", path=magent.path))
+            return content
+    return None
+
+
+# =============================================================================
 # Standalone manifest import (no git, reads from S3)
 # =============================================================================
 
@@ -711,7 +855,7 @@ class ManifestResolver:
         for _form_name, mform in manifest.forms.items():
             if changed_ids is not None and mform.id not in changed_ids:
                 continue
-            content = await _file_read(mform.path)
+            content = await _resolve_form_content(mform, _file_read)
             if content is not None:
                 await _prog(f"Importing form: {mform.name}")
                 form_ops = self._resolve_form(mform, content)
@@ -727,7 +871,7 @@ class ManifestResolver:
         for _agent_name, magent in manifest.agents.items():
             if changed_ids is not None and magent.id not in changed_ids:
                 continue
-            content = await _file_read(magent.path)
+            content = await _resolve_agent_content(magent, _file_read)
             if content is not None:
                 await _prog(f"Importing agent: {magent.name}")
                 agent_ops = self._resolve_agent(magent, content)
@@ -767,7 +911,7 @@ class ManifestResolver:
         for _form_name, mform in manifest.forms.items():
             if changed_ids is not None and mform.id not in changed_ids:
                 continue
-            content_bytes = await read_fn(mform.path)
+            content_bytes = await _resolve_form_content(mform, read_fn)
             if content_bytes is None:
                 continue
             original_data = yaml.safe_load(content_bytes.decode("utf-8"))
@@ -780,7 +924,11 @@ class ManifestResolver:
             updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
             await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
 
-            if data != original_data:
+            # Only echo back to ``modified`` when the source was a companion
+            # file that needed ref-resolution rewrites (back-compat path).
+            # Inline content is regenerated from the DB on the next manifest
+            # write, so there is nothing to echo back to disk.
+            if mform.path and data != original_data and not _form_has_inline_content(mform):
                 modified[mform.path] = updated_content.decode("utf-8")
 
             # Post-indexer: update org_id and access_level
@@ -857,7 +1005,7 @@ class ManifestResolver:
         for _agent_name, magent in manifest.agents.items():
             if changed_ids is not None and magent.id not in changed_ids:
                 continue
-            content_bytes = await read_fn(magent.path)
+            content_bytes = await _resolve_agent_content(magent, read_fn)
             if content_bytes is None:
                 continue
             original_data = yaml.safe_load(content_bytes.decode("utf-8"))
@@ -871,7 +1019,9 @@ class ManifestResolver:
             updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
             await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
 
-            if data != original_data:
+            # Only echo back to ``modified`` when the source was a companion
+            # file that needed ref-resolution rewrites (back-compat path).
+            if magent.path and data != original_data and not _agent_has_inline_content(magent):
                 modified[magent.path] = updated_content.decode("utf-8")
 
             # Post-indexer: update org_id and access_level
@@ -1244,18 +1394,21 @@ class ManifestResolver:
             def _dir_exists(p: str) -> bool:
                 return True
 
-        # Collect UUIDs of entities present in the manifest AND whose files exist
+        # Collect UUIDs of entities present in the manifest AND whose files exist.
+        # Forms/agents now carry inline content under their UUID — there is no
+        # required companion file. If ``path`` is set (back-compat), still gate
+        # on file existence; otherwise the manifest entry alone is sufficient.
         present_wf_uuids = [
             UUID(mwf.id) for mwf in manifest.workflows.values()
             if _path_exists(mwf.path)
         ]
         present_form_uuids = [
             UUID(mform.id) for mform in manifest.forms.values()
-            if _path_exists(mform.path)
+            if not mform.path or _path_exists(mform.path)
         ]
         present_agent_uuids = [
             UUID(magent.id) for magent in manifest.agents.values()
-            if _path_exists(magent.path)
+            if not magent.path or _path_exists(magent.path)
         ]
         present_app_uuids = [
             UUID(mapp.id) for mapp in manifest.apps.values()

@@ -14,12 +14,12 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.orm.agents import Agent, AgentRole
+from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool
 from src.models.orm.app_roles import AppRole
 from src.models.orm.applications import Application
 from src.models.orm.config import Config
 from src.models.orm.events import EventSource, EventSubscription, ScheduleSource, WebhookSource
-from src.models.orm.forms import Form, FormRole
+from src.models.orm.forms import Form, FormField, FormRole
 from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
 from src.models.orm.oauth import OAuthProvider
 from src.models.orm.organizations import Organization
@@ -86,27 +86,92 @@ def serialize_workflow(wf: Workflow, roles: list[str] | None = None) -> Manifest
     )
 
 
-def serialize_form(form: Form, roles: list[str] | None = None) -> ManifestForm:
-    """Serialize a Form ORM object to ManifestForm."""
+def _form_field_to_schema_dict(field: FormField) -> dict:
+    """Render a FormField ORM row as a dict suitable for ``form_schema.fields``.
+
+    Mirrors the YAML shape produced by the form indexer round-trip: keys are
+    only included when set so we don't pollute the manifest with ``null``s.
+    """
+    out: dict = {"name": field.name, "type": field.type, "required": field.required}
+    optional_fields: dict[str, object] = {
+        "label": field.label,
+        "placeholder": field.placeholder,
+        "help_text": field.help_text,
+        "default_value": field.default_value,
+        "options": field.options,
+        "data_provider_id": str(field.data_provider_id) if field.data_provider_id else None,
+        "data_provider_inputs": field.data_provider_inputs,
+        "visibility_expression": field.visibility_expression,
+        "validation": field.validation,
+        "allowed_types": field.allowed_types,
+        "multiple": field.multiple,
+        "max_size_mb": field.max_size_mb,
+        "content": field.content,
+        "allow_as_query_param": field.allow_as_query_param,
+    }
+    for key, value in optional_fields.items():
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def serialize_form(
+    form: Form,
+    roles: list[str] | None = None,
+    fields: list[FormField] | None = None,
+) -> ManifestForm:
+    """Serialize a Form ORM object to ManifestForm with inline content.
+
+    ``fields`` should be the FormField rows for this form, ordered by position.
+    They are inlined into ``form_schema.fields`` so the form is fully described
+    by the manifest entry — no companion ``forms/{uuid}.form.yaml`` needed.
+    """
+    schema: dict | None = None
+    if fields:
+        schema = {"fields": [_form_field_to_schema_dict(f) for f in fields]}
+
     return ManifestForm(
         id=str(form.id),
         name=form.name,
-        path=f"forms/{form.id}.form.yaml",
         organization_id=str(form.organization_id) if form.organization_id else None,
         roles=roles or [],
         access_level=form.access_level.value if form.access_level else "role_based",
+        description=form.description,
+        workflow_id=form.workflow_id,
+        launch_workflow_id=form.launch_workflow_id,
+        default_launch_params=form.default_launch_params,
+        allowed_query_params=form.allowed_query_params,
+        form_schema=schema,
     )
 
 
-def serialize_agent(agent: Agent, roles: list[str] | None = None) -> ManifestAgent:
-    """Serialize an Agent ORM object to ManifestAgent."""
+def serialize_agent(
+    agent: Agent,
+    roles: list[str] | None = None,
+    tool_ids: list[str] | None = None,
+    delegated_agent_ids: list[str] | None = None,
+) -> ManifestAgent:
+    """Serialize an Agent ORM object to ManifestAgent with inline content.
+
+    ``tool_ids`` / ``delegated_agent_ids`` are passed in (rather than read from
+    relationships) so the caller controls eager-loading and ordering — matching
+    the pattern used for workflow/form roles.
+    """
     return ManifestAgent(
         id=str(agent.id),
         name=agent.name,
-        path=f"agents/{agent.id}.agent.yaml",
         organization_id=str(agent.organization_id) if agent.organization_id else None,
         roles=roles or [],
         access_level=agent.access_level.value if agent.access_level else "role_based",
+        description=agent.description,
+        system_prompt=agent.system_prompt,
+        channels=list(agent.channels) if agent.channels else [],
+        tool_ids=tool_ids or [],
+        delegated_agent_ids=delegated_agent_ids or [],
+        knowledge_sources=list(agent.knowledge_sources) if agent.knowledge_sources else [],
+        system_tools=list(agent.system_tools) if agent.system_tools else [],
+        llm_model=agent.llm_model,
+        llm_max_tokens=agent.llm_max_tokens,
         max_iterations=agent.max_iterations,
         max_token_budget=agent.max_token_budget,
     )
@@ -324,6 +389,33 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
     for roles in app_roles_by_app.values():
         roles.sort()
 
+    # Form fields (for inline form_schema)
+    form_field_result = await db.execute(
+        select(FormField).order_by(FormField.form_id, FormField.position)
+    )
+    fields_by_form: dict[str, list[FormField]] = {}
+    for ff in form_field_result.scalars().all():
+        fields_by_form.setdefault(str(ff.form_id), []).append(ff)
+
+    # Agent tools (workflow UUIDs) and delegations (agent UUIDs).
+    # Sorted for deterministic manifest output.
+    agent_tool_result = await db.execute(select(AgentTool))
+    tool_ids_by_agent: dict[str, list[str]] = {}
+    for at in agent_tool_result.scalars().all():
+        tool_ids_by_agent.setdefault(str(at.agent_id), []).append(str(at.workflow_id))
+
+    agent_delegation_result = await db.execute(select(AgentDelegation))
+    delegated_ids_by_agent: dict[str, list[str]] = {}
+    for ad in agent_delegation_result.scalars().all():
+        delegated_ids_by_agent.setdefault(str(ad.parent_agent_id), []).append(
+            str(ad.child_agent_id)
+        )
+
+    for ids in tool_ids_by_agent.values():
+        ids.sort()
+    for ids in delegated_ids_by_agent.values():
+        ids.sort()
+
     # ------------------------------------------------------------------
     # Integrations (with config_schema, oauth_provider, mappings)
     # ------------------------------------------------------------------
@@ -444,11 +536,20 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
             for es in event_sources_list
         },
         forms={
-            str(form.id): serialize_form(form, form_roles_by_form.get(str(form.id), []))
+            str(form.id): serialize_form(
+                form,
+                form_roles_by_form.get(str(form.id), []),
+                fields=fields_by_form.get(str(form.id)),
+            )
             for form in forms_list
         },
         agents={
-            str(agent.id): serialize_agent(agent, agent_roles_by_agent.get(str(agent.id), []))
+            str(agent.id): serialize_agent(
+                agent,
+                agent_roles_by_agent.get(str(agent.id), []),
+                tool_ids=tool_ids_by_agent.get(str(agent.id), []),
+                delegated_agent_ids=delegated_ids_by_agent.get(str(agent.id), []),
+            )
             for agent in agents_list
         },
         apps={

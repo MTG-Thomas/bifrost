@@ -134,17 +134,11 @@ async def write_manifest_to_repo(db_session: AsyncSession, persistent_dir: Path)
     from bifrost.manifest import write_manifest_to_dir
     manifest = await generate_manifest(db_session)
     # Filter out entities whose files don't exist in the persistent dir
-    # (the test DB may contain entities from other fixtures)
+    # (the test DB may contain entities from other fixtures).
+    # Forms/agents carry inline content under their UUID — no companion file
+    # is required, so they are NOT filtered by file existence.
     manifest.workflows = {
         k: v for k, v in manifest.workflows.items()
-        if (persistent_dir / v.path).exists()
-    }
-    manifest.forms = {
-        k: v for k, v in manifest.forms.items()
-        if (persistent_dir / v.path).exists()
-    }
-    manifest.agents = {
-        k: v for k, v in manifest.agents.items()
         if (persistent_dir / v.path).exists()
     }
     manifest.apps = {
