@@ -1,11 +1,14 @@
 """
-DTO-driven flag, schema, and body generators for CLI / MCP parity.
+DTO-driven flag and body generators for CLI / MCP parity.
 
 Walks ``XxxCreate`` / ``XxxUpdate`` Pydantic models and emits:
 
 - :func:`build_cli_flags` — list of Click option decorators for a command.
-- :func:`build_mcp_schema` — JSON schema suitable for fastmcp tool params.
 - :func:`assemble_body` — REST request payload builder from parsed args.
+
+MCP tools declare parameters directly on their ``@mcp.tool`` function via
+regular Python kwargs; the parity test in ``tests/e2e/mcp/test_mcp_parity.py``
+introspects those signatures against the DTO ``model_fields`` to catch drift.
 
 Field handling rules (uniform across CLI and MCP):
 
@@ -398,65 +401,6 @@ def build_cli_flags(
     return decorators
 
 
-def build_mcp_schema(
-    model_cls: type,
-    *,
-    exclude: set[str],
-) -> dict[str, Any]:
-    """Build a JSON schema for fastmcp tool parameters.
-
-    Ref-lookup fields (per :data:`DTO_REF_LOOKUPS`) accept string refs; the
-    tool handler is responsible for calling :class:`RefResolver` before
-    invoking the REST endpoint.
-    """
-    ref_lookups = DTO_REF_LOOKUPS.get(model_cls.__name__, {})
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-    for name, field in model_cls.model_fields.items():
-        if name in exclude:
-            continue
-        annotation = field.annotation
-
-        if name in ref_lookups:
-            properties[name] = {
-                "type": "string",
-                "description": (
-                    f"{ref_lookups[name]} ref (UUID or name) for {name}"
-                ),
-            }
-        elif _is_bool(annotation):
-            properties[name] = {"type": "boolean"}
-        elif _is_list_str(annotation):
-            inner_args = get_args(_unwrap_optional(annotation))
-            inner_type = inner_args[0] if inner_args else str
-            item_schema = {"type": "integer"} if inner_type is int else {"type": "string"}
-            properties[name] = {"type": "array", "items": item_schema}
-        elif _is_dict(annotation):
-            properties[name] = {"type": "object", "additionalProperties": True}
-        elif _is_enum_type(annotation):
-            properties[name] = {"type": "string", "enum": _enum_choices(annotation)}
-        elif _is_int(annotation):
-            properties[name] = {"type": "integer"}
-        elif _is_float(annotation):
-            properties[name] = {"type": "number"}
-        elif _is_uuid(annotation):
-            properties[name] = {"type": "string", "format": "uuid"}
-        else:
-            properties[name] = {"type": "string"}
-
-        if field.is_required():
-            required.append(name)
-
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": properties,
-        "additionalProperties": False,
-    }
-    if required:
-        schema["required"] = required
-    return schema
-
-
 async def assemble_body(
     model_cls: type,
     parsed_args: dict[str, Any],
@@ -543,6 +487,5 @@ __all__ = [
     "RefKind",
     "assemble_body",
     "build_cli_flags",
-    "build_mcp_schema",
     "load_dict_value",
 ]

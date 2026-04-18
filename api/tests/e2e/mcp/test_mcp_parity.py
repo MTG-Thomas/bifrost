@@ -21,13 +21,14 @@ Each tool is invoked directly (bypassing FastMCP transport) with a
 through the running API container so writes land in the same test DB
 ``e2e_client`` reads from.
 
-Also verifies that each parity tool's MCP schema (generated from the
-same DTO as the CLI) covers every writable field: a structural check
+Also verifies that each parity tool's Python signature exposes every
+writable DTO field (with documented renames) — a structural check
 that the CLI and MCP surfaces stay in sync.
 """
 
 from __future__ import annotations
 
+import inspect
 import os
 import pathlib
 import sys
@@ -40,7 +41,7 @@ from typing import AsyncIterator
 # Standalone bifrost SDK package import (mirrors other CLI/MCP tests).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
-from bifrost.dto_flags import DTO_EXCLUDES, build_mcp_schema  # noqa: E402
+from bifrost.dto_flags import DTO_EXCLUDES  # noqa: E402
 
 
 # =============================================================================
@@ -99,76 +100,172 @@ def admin_context(platform_admin, mcp_bridge_env) -> MockMCPContext:
 
 
 # =============================================================================
-# Field-parity: MCP schema covers every writable DTO field
+# Field-parity: MCP tool signature covers every writable DTO field
 # =============================================================================
+
+# Per-tool signature → DTO comparison spec.
+#
+# ``extra_args`` lists tool kwargs that are NOT writable DTO fields
+# (typically ``*_ref`` lookup args used to identify the target entity, plus
+# things like ``mapping_id`` and ``force_deactivation``). They are
+# subtracted from the signature before comparing to the DTO.
+#
+# ``field_renames`` maps ``dto_field_name → tool_kwarg_name`` for the small
+# set of intentional renames where the MCP tool exposes a different name
+# than the DTO field (because ``assemble_body`` rewrites the wire payload
+# or the field is a ref the tool resolves before sending). Adding to this
+# map is a deliberate act — an unexpected divergence should leave the test
+# failing so the drift is visible.
+SIGNATURE_PARITY_SPECS: list[dict] = [
+    {
+        "model_path": "src.models.contracts.users:RoleCreate",
+        "tool_path": "src.services.mcp_server.tools.roles:create_role",
+        "extra_args": set(),
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.users:RoleUpdate",
+        "tool_path": "src.services.mcp_server.tools.roles:update_role",
+        "extra_args": {"role_ref"},
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.config:ConfigCreate",
+        "tool_path": "src.services.mcp_server.tools.configs:create_config",
+        "extra_args": set(),
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.config:ConfigUpdate",
+        "tool_path": "src.services.mcp_server.tools.configs:update_config",
+        "extra_args": {"config_ref"},
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.organizations:OrganizationUpdate",
+        "tool_path": (
+            "src.services.mcp_server.tools.organizations:update_organization"
+        ),
+        "extra_args": {"organization_ref"},
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.integrations:IntegrationCreate",
+        "tool_path": (
+            "src.services.mcp_server.tools.integrations:create_integration"
+        ),
+        "extra_args": set(),
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.integrations:IntegrationUpdate",
+        "tool_path": (
+            "src.services.mcp_server.tools.integrations:update_integration"
+        ),
+        "extra_args": {"integration_ref"},
+        # ``list_entities_data_provider_id`` is a workflow ref the tool
+        # accepts as a name/UUID/path::func and resolves to a UUID before
+        # POSTing — it is exposed under the shorter ``_data_provider`` name.
+        "field_renames": {
+            "list_entities_data_provider_id": "list_entities_data_provider",
+        },
+    },
+    {
+        "model_path": (
+            "src.models.contracts.integrations:IntegrationMappingCreate"
+        ),
+        "tool_path": (
+            "src.services.mcp_server.tools.integrations:add_integration_mapping"
+        ),
+        "extra_args": {"integration_ref"},
+        # ``organization_id`` is a UUID on the DTO but the MCP tool accepts
+        # an org ref (UUID or name), exposed as ``organization``.
+        "field_renames": {"organization_id": "organization"},
+    },
+    {
+        "model_path": (
+            "src.models.contracts.integrations:IntegrationMappingUpdate"
+        ),
+        "tool_path": (
+            "src.services.mcp_server.tools.integrations:"
+            "update_integration_mapping"
+        ),
+        "extra_args": {"integration_ref", "mapping_id"},
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.workflows:WorkflowUpdateRequest",
+        "tool_path": "src.services.mcp_server.tools.workflow:update_workflow",
+        "extra_args": {"workflow_ref"},
+        "field_renames": {},
+    },
+]
+
+
+def _import_attr(dotted: str):
+    """Resolve a ``module:attr`` reference."""
+    module_name, attr_name = dotted.split(":")
+    import importlib
+
+    module = importlib.import_module(module_name)
+    return getattr(module, attr_name)
 
 
 class TestMcpParitySchemas:
-    """The MCP schema for each parity tool must match the CLI surface.
+    """The MCP tool signature for each parity tool must match the DTO surface.
 
     This is a pure-Python introspection check — no API / DB required.
-    ``tests/unit/test_dto_flags.py`` exercises the same contract; the
-    duplication here is intentional because the plan's verification step
-    asks specifically for the parity assertion to live next to the MCP
-    tools it protects.
+    Every non-excluded DTO field must appear as a parameter on the
+    corresponding tool function (modulo documented renames in
+    ``SIGNATURE_PARITY_SPECS``). Adding a new DTO field that the MCP tool
+    doesn't expose fails this test loudly — the same way
+    ``tests/unit/test_dto_flags.py`` catches CLI drift.
     """
 
     @pytest.mark.parametrize(
-        "model_name,model_path",
-        [
-            ("RoleCreate", "src.models.contracts.users:RoleCreate"),
-            ("RoleUpdate", "src.models.contracts.users:RoleUpdate"),
-            ("ConfigCreate", "src.models.contracts.config:ConfigCreate"),
-            ("ConfigUpdate", "src.models.contracts.config:ConfigUpdate"),
-            (
-                "OrganizationUpdate",
-                "src.models.contracts.organizations:OrganizationUpdate",
-            ),
-            (
-                "IntegrationCreate",
-                "src.models.contracts.integrations:IntegrationCreate",
-            ),
-            (
-                "IntegrationUpdate",
-                "src.models.contracts.integrations:IntegrationUpdate",
-            ),
-            (
-                "IntegrationMappingCreate",
-                "src.models.contracts.integrations:IntegrationMappingCreate",
-            ),
-            (
-                "IntegrationMappingUpdate",
-                "src.models.contracts.integrations:IntegrationMappingUpdate",
-            ),
-            (
-                "WorkflowUpdateRequest",
-                "src.models.contracts.workflows:WorkflowUpdateRequest",
-            ),
-        ],
+        "spec",
+        SIGNATURE_PARITY_SPECS,
+        ids=lambda s: s["tool_path"].rsplit(":", 1)[-1],
     )
-    def test_schema_exposes_all_writable_fields(
-        self, model_name: str, model_path: str
-    ) -> None:
-        """Every non-excluded DTO field must appear in ``build_mcp_schema``."""
-        module_name, class_name = model_path.split(":")
-        import importlib
+    def test_signature_exposes_all_writable_fields(self, spec: dict) -> None:
+        model_cls = _import_attr(spec["model_path"])
+        tool_fn = _import_attr(spec["tool_path"])
 
-        module = importlib.import_module(module_name)
-        model_cls = getattr(module, class_name)
-
+        model_name = model_cls.__name__
         excludes = DTO_EXCLUDES.get(model_name, set())
-        declared = set(model_cls.model_fields)
-        expected = declared - excludes
+        renames: dict[str, str] = spec["field_renames"]
 
-        schema = build_mcp_schema(model_cls, exclude=excludes)
-        missing = expected - set(schema["properties"])
-        extra = set(schema["properties"]) - expected
+        # Expected tool kwargs = (writable DTO fields − excludes), with any
+        # renamed DTO field swapped for its tool-side name.
+        expected: set[str] = set()
+        for field_name in model_cls.model_fields:
+            if field_name in excludes:
+                continue
+            expected.add(renames.get(field_name, field_name))
+
+        # Actual tool kwargs = signature params minus ``context`` and
+        # the per-tool ``extra_args`` (target refs / non-DTO kwargs).
+        sig = inspect.signature(tool_fn)
+        params = {
+            name
+            for name in sig.parameters
+            if name != "context" and name not in spec["extra_args"]
+        }
+
+        missing = expected - params
+        extra = params - expected
         assert not missing and not extra, (
-            f"MCP schema for {model_name} drifted.\n"
-            f"  expected: {sorted(expected)}\n"
-            f"  schema:   {sorted(schema['properties'])}\n"
-            f"  missing:  {sorted(missing)}\n"
-            f"  extra:    {sorted(extra)}"
+            f"MCP tool {tool_fn.__name__} signature drifted from "
+            f"{model_name}.\n"
+            f"  declared DTO fields: {sorted(model_cls.model_fields)}\n"
+            f"  excluded:            {sorted(excludes)}\n"
+            f"  expected kwargs:     {sorted(expected)}\n"
+            f"  signature kwargs:    {sorted(params)}\n"
+            f"  missing kwargs:      {sorted(missing)}\n"
+            f"  extra kwargs:        {sorted(extra)}\n"
+            f"Either expose the new field on the MCP tool, add it to "
+            f"DTO_EXCLUDES['{model_name}'], or document the rename in "
+            f"SIGNATURE_PARITY_SPECS."
         )
 
 

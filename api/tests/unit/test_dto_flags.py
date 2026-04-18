@@ -20,7 +20,6 @@ from bifrost.dto_flags import (  # noqa: E402
     DTO_EXCLUDES,
     DTO_REF_LOOKUPS,
     build_cli_flags,
-    build_mcp_schema,
 )
 from src.models.contracts.agents import AgentCreate, AgentUpdate  # noqa: E402
 from src.models.contracts.applications import (  # noqa: E402
@@ -136,20 +135,6 @@ def test_excludes_are_real_fields(model_cls: type) -> None:
     assert not stale, (
         f"DTO_EXCLUDES['{model_cls.__name__}'] contains stale entries that no "
         f"longer correspond to a real field: {sorted(stale)}. Remove them."
-    )
-
-
-@pytest.mark.parametrize("model_cls", COVERED_DTOS, ids=lambda c: c.__name__)
-def test_mcp_schema_excludes_match_cli(model_cls: type) -> None:
-    """``build_mcp_schema`` must mirror the CLI exclude semantics."""
-    excludes = DTO_EXCLUDES.get(model_cls.__name__, set())
-    schema = build_mcp_schema(model_cls, exclude=excludes)
-    declared = set(model_cls.model_fields)
-    expected = declared - excludes
-    assert set(schema["properties"]) == expected, (
-        f"MCP schema for {model_cls.__name__} drifted from CLI surface.\n"
-        f"  expected: {sorted(expected)}\n"
-        f"  schema:   {sorted(schema['properties'])}"
     )
 
 

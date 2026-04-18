@@ -9,8 +9,10 @@ in-process HTTP bridge (:mod:`_http_bridge`). No ORM, no repositories, no
 ``AsyncSession``. All side effects (audit logs, cache invalidation, role
 sync) happen behind the REST handler — same path as a CLI invocation.
 
-Schemas are generated from the same ``RoleCreate`` / ``RoleUpdate`` DTOs
-the CLI uses, via :func:`bifrost.dto_flags.build_mcp_schema`.
+Tool parameters mirror the writable fields of ``RoleCreate`` /
+``RoleUpdate`` (declared as Python kwargs); the parity test in
+``tests/e2e/mcp/test_mcp_parity.py`` introspects the function signatures
+against the DTOs to catch drift.
 """
 
 from __future__ import annotations
