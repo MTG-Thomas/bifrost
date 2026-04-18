@@ -328,10 +328,33 @@ async def resolve_ref(
     return resolved
 
 
+class RefResolver:
+    """Per-invocation cached resolver bound to an HTTP client.
+
+    Each CLI command instance and each MCP tool invocation creates one
+    ``RefResolver`` so a single resolved ``(kind, value)`` pair is reused
+    across the request without leaking across invocations.
+
+    Usage::
+
+        resolver = RefResolver(client)
+        workflow_uuid = await resolver.resolve("workflow", "MyWorkflow")
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self._cache: dict[tuple[str, str], str] = {}
+
+    async def resolve(self, kind: RefKind, value: str) -> str:
+        """Resolve ``value`` to a UUID for the given ``kind``."""
+        return await resolve_ref(self._client, kind, value, cache=self._cache)
+
+
 __all__ = [
     "AmbiguousRefError",
     "RefKind",
     "RefNotFoundError",
     "RefResolutionError",
+    "RefResolver",
     "resolve_ref",
 ]
