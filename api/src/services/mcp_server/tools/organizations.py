@@ -1,8 +1,16 @@
 """
 Organization MCP Tools
 
-Tools for listing, creating, and getting organizations.
+Tools for listing, creating, getting, updating, and deleting organizations.
 All organization tools are restricted (platform-admin only).
+
+``list_organizations`` / ``get_organization`` / ``create_organization``
+predate this plan and continue to use the ORM directly; they are **not
+modified** by the Task 6 parity work.
+
+``update_organization`` and ``delete_organization`` are added here as
+thin wrappers over the REST API (Task 6). They must not touch the ORM
+or repositories — all side effects go through the canonical REST path.
 """
 
 import logging
@@ -16,8 +24,19 @@ from sqlalchemy import select
 from src.services.mcp_server.tools.db import get_tool_db
 from src.models.orm.organizations import Organization
 from src.services.mcp_server.tool_result import error_result, success_result
+from src.services.mcp_server.tools._http_bridge import call_rest, rest_client
 
 logger = logging.getLogger(__name__)
+
+
+def _ref_error_payload(exc: Exception) -> dict[str, Any]:
+    from bifrost.refs import AmbiguousRefError, RefNotFoundError
+
+    if isinstance(exc, AmbiguousRefError):
+        return {"kind": exc.kind, "value": exc.value, "candidates": exc.candidates}
+    if isinstance(exc, RefNotFoundError):
+        return {"kind": exc.kind, "value": exc.value}
+    return {"detail": str(exc)}
 
 
 async def list_organizations(context: Any) -> ToolResult:
@@ -173,11 +192,104 @@ async def create_organization(
         return error_result(f"Error creating organization: {str(e)}")
 
 
+# ---------------------------------------------------------------------------
+# Thin-wrapper parity tools (Task 6)
+# ---------------------------------------------------------------------------
+
+
+async def update_organization(
+    context: Any,
+    organization_ref: str,
+    name: str | None = None,
+    is_active: bool | None = None,
+) -> ToolResult:
+    """Update an organization — ``PATCH /api/organizations/{uuid}``.
+
+    ``organization_ref`` is a UUID or organization name. ``domain`` and
+    ``settings`` are excluded by design (see
+    :data:`bifrost.dto_flags.DTO_EXCLUDES` — ``domain`` is
+    auto-provisioning policy, ``settings`` is a UI-managed JSON blob).
+    """
+    if not organization_ref:
+        return error_result("organization_ref is required")
+
+    from bifrost.dto_flags import DTO_EXCLUDES, assemble_body
+    from bifrost.refs import RefResolver
+    from src.models.contracts.organizations import OrganizationUpdate
+
+    exclude = DTO_EXCLUDES.get("OrganizationUpdate", set())
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            org_uuid = await resolver.resolve("org", organization_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve organization {organization_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+        fields: dict[str, Any] = {"name": name, "is_active": is_active}
+        try:
+            body = await assemble_body(
+                OrganizationUpdate,
+                {k: v for k, v in fields.items() if k not in exclude},
+                resolver=resolver,
+            )
+        except Exception as exc:
+            return error_result(f"invalid input: {exc}", _ref_error_payload(exc))
+
+    status_code, resp = await call_rest(
+        context, "PATCH", f"/api/organizations/{org_uuid}", json_body=body
+    )
+    if status_code != 200:
+        return error_result(
+            f"update_organization failed: HTTP {status_code}", {"body": resp}
+        )
+    return success_result(
+        f"Updated organization {org_uuid}",
+        resp if isinstance(resp, dict) else {"body": resp},
+    )
+
+
+async def delete_organization(context: Any, organization_ref: str) -> ToolResult:
+    """Delete an organization — ``DELETE /api/organizations/{uuid}``.
+
+    ``organization_ref`` is a UUID or organization name. Soft-delete
+    semantics are owned by the REST endpoint.
+    """
+    if not organization_ref:
+        return error_result("organization_ref is required")
+
+    from bifrost.refs import RefResolver
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            org_uuid = await resolver.resolve("org", organization_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve organization {organization_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+    status_code, resp = await call_rest(
+        context, "DELETE", f"/api/organizations/{org_uuid}"
+    )
+    if status_code not in (200, 204):
+        return error_result(
+            f"delete_organization failed: HTTP {status_code}", {"body": resp}
+        )
+    return success_result(f"Deleted organization {org_uuid}", {"deleted": org_uuid})
+
+
 # Tool metadata for registration
 TOOLS = [
     ("list_organizations", "List Organizations", "List all organizations in the platform."),
     ("get_organization", "Get Organization", "Get organization details by ID or domain."),
     ("create_organization", "Create Organization", "Create a new organization."),
+    ("update_organization", "Update Organization", "Update an organization (name, is_active)."),
+    ("delete_organization", "Delete Organization", "Delete (soft-delete) an organization."),
 ]
 
 
@@ -189,6 +301,8 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "list_organizations": list_organizations,
         "get_organization": get_organization,
         "create_organization": create_organization,
+        "update_organization": update_organization,
+        "delete_organization": delete_organization,
     }
 
     for tool_id, name, description in TOOLS:

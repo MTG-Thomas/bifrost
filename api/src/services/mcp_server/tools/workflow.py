@@ -1,7 +1,16 @@
 """
 Workflow MCP Tools
 
-Tools for executing, listing, validating, and creating workflows.
+Tools for executing, listing, validating, creating workflows, plus the
+lifecycle thin wrappers added by Task 6 of the CLI mutation surface + MCP
+parity plan (``update_workflow``, ``delete_workflow``, ``grant_workflow_role``,
+``revoke_workflow_role``).
+
+The Task 6 wrappers go through the in-process REST bridge — they must not
+touch the ORM, repositories, or a long-lived ``AsyncSession``. Existing
+tools in this module (``execute_workflow``, ``list_workflows``,
+``validate_workflow``, ``get_workflow``, ``register_workflow``) predate this
+plan and are explicitly left untouched.
 """
 
 import logging
@@ -10,11 +19,22 @@ from typing import Any
 from fastmcp.tools.tool import ToolResult
 
 from src.services.mcp_server.tool_result import error_result, success_result
+from src.services.mcp_server.tools._http_bridge import call_rest, rest_client
 from src.services.mcp_server.tools.db import get_tool_db
 
 # MCPContext is imported where needed to avoid circular imports
 
 logger = logging.getLogger(__name__)
+
+
+def _ref_error_payload(exc: Exception) -> dict[str, Any]:
+    from bifrost.refs import AmbiguousRefError, RefNotFoundError
+
+    if isinstance(exc, AmbiguousRefError):
+        return {"kind": exc.kind, "value": exc.value, "candidates": exc.candidates}
+    if isinstance(exc, RefNotFoundError):
+        return {"kind": exc.kind, "value": exc.value}
+    return {"detail": str(exc)}
 
 
 async def execute_workflow(
@@ -402,6 +422,228 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
         return error_result(str(e))
 
 
+# ---------------------------------------------------------------------------
+# Lifecycle thin wrappers (Task 6)
+# ---------------------------------------------------------------------------
+
+
+async def update_workflow(
+    context: Any,
+    workflow_ref: str,
+    organization_id: str | None = None,
+    access_level: str | None = None,
+    clear_roles: bool | None = None,
+    description: str | None = None,
+    category: str | None = None,
+    timeout_seconds: int | None = None,
+    tags: list[str] | None = None,
+    endpoint_enabled: bool | None = None,
+    public_endpoint: bool | None = None,
+) -> ToolResult:
+    """Update a workflow — ``PATCH /api/workflows/{uuid}``.
+
+    ``workflow_ref`` is a UUID, workflow name, or ``path::func``.
+    Only the parameters the user supplies are sent. Fields marked as
+    UI/code-managed in :data:`bifrost.dto_flags.DTO_EXCLUDES`
+    (``display_name``, ``tool_description``, ``time_saved``, ``value``,
+    ``cache_ttl_seconds``, ``allowed_methods``, ``execution_mode``,
+    ``disable_global_key``) are not surfaced here.
+    """
+    if not workflow_ref:
+        return error_result("workflow_ref is required")
+
+    from bifrost.dto_flags import DTO_EXCLUDES, assemble_body
+    from bifrost.refs import RefResolver
+    from src.models.contracts.workflows import WorkflowUpdateRequest
+
+    exclude = DTO_EXCLUDES.get("WorkflowUpdateRequest", set())
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            workflow_uuid = await resolver.resolve("workflow", workflow_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve workflow {workflow_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+        fields: dict[str, Any] = {
+            "organization_id": organization_id,
+            "access_level": access_level,
+            "clear_roles": clear_roles,
+            "description": description,
+            "category": category,
+            "timeout_seconds": timeout_seconds,
+            "tags": tags,
+            "endpoint_enabled": endpoint_enabled,
+            "public_endpoint": public_endpoint,
+        }
+        try:
+            body = await assemble_body(
+                WorkflowUpdateRequest,
+                {k: v for k, v in fields.items() if k not in exclude},
+                resolver=resolver,
+            )
+        except Exception as exc:
+            return error_result(f"invalid input: {exc}", _ref_error_payload(exc))
+
+    status_code, resp = await call_rest(
+        context, "PATCH", f"/api/workflows/{workflow_uuid}", json_body=body
+    )
+    if status_code != 200:
+        return error_result(
+            f"update_workflow failed: HTTP {status_code}", {"body": resp}
+        )
+    return success_result(
+        f"Updated workflow {workflow_uuid}",
+        resp if isinstance(resp, dict) else {"body": resp},
+    )
+
+
+async def delete_workflow(
+    context: Any,
+    workflow_ref: str,
+    force_deactivation: bool = False,
+) -> ToolResult:
+    """Delete a workflow — ``DELETE /api/workflows/{uuid}``.
+
+    On first call, the endpoint returns 409 with deactivation details if
+    the workflow has history or dependencies. Call again with
+    ``force_deactivation=True`` to commit the deletion.
+    """
+    if not workflow_ref:
+        return error_result("workflow_ref is required")
+
+    from bifrost.refs import RefResolver
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            workflow_uuid = await resolver.resolve("workflow", workflow_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve workflow {workflow_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+    body: dict[str, Any] | None = None
+    if force_deactivation:
+        body = {"force_deactivation": True}
+
+    status_code, resp = await call_rest(
+        context, "DELETE", f"/api/workflows/{workflow_uuid}", json_body=body
+    )
+    if status_code == 409:
+        return error_result(
+            "workflow has dependencies or history; retry with force_deactivation=true",
+            resp if isinstance(resp, dict) else {"body": resp},
+        )
+    if status_code not in (200, 204):
+        return error_result(
+            f"delete_workflow failed: HTTP {status_code}", {"body": resp}
+        )
+    return success_result(
+        f"Deleted workflow {workflow_uuid}", {"deleted": workflow_uuid}
+    )
+
+
+async def grant_workflow_role(
+    context: Any,
+    workflow_ref: str,
+    role_ref: str,
+) -> ToolResult:
+    """Grant a role on a workflow — ``POST /api/workflows/{uuid}/roles``.
+
+    ``workflow_ref`` and ``role_ref`` are UUIDs or names. The REST endpoint
+    is a batch assign that skips already-assigned roles, so this wrapper is
+    idempotent.
+    """
+    if not workflow_ref:
+        return error_result("workflow_ref is required")
+    if not role_ref:
+        return error_result("role_ref is required")
+
+    from bifrost.refs import RefResolver
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            workflow_uuid = await resolver.resolve("workflow", workflow_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve workflow {workflow_ref!r}",
+                _ref_error_payload(exc),
+            )
+        try:
+            role_uuid = await resolver.resolve("role", role_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve role {role_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+    status_code, resp = await call_rest(
+        context,
+        "POST",
+        f"/api/workflows/{workflow_uuid}/roles",
+        json_body={"role_ids": [role_uuid]},
+    )
+    if status_code not in (200, 201, 204):
+        return error_result(
+            f"grant_workflow_role failed: HTTP {status_code}", {"body": resp}
+        )
+    return success_result(
+        f"Granted role {role_uuid} on workflow {workflow_uuid}",
+        {"workflow_id": workflow_uuid, "role_id": role_uuid},
+    )
+
+
+async def revoke_workflow_role(
+    context: Any,
+    workflow_ref: str,
+    role_ref: str,
+) -> ToolResult:
+    """Revoke a role on a workflow — ``DELETE /api/workflows/{uuid}/roles/{role_id}``."""
+    if not workflow_ref:
+        return error_result("workflow_ref is required")
+    if not role_ref:
+        return error_result("role_ref is required")
+
+    from bifrost.refs import RefResolver
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            workflow_uuid = await resolver.resolve("workflow", workflow_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve workflow {workflow_ref!r}",
+                _ref_error_payload(exc),
+            )
+        try:
+            role_uuid = await resolver.resolve("role", role_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve role {role_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+    status_code, resp = await call_rest(
+        context,
+        "DELETE",
+        f"/api/workflows/{workflow_uuid}/roles/{role_uuid}",
+    )
+    if status_code not in (200, 204):
+        return error_result(
+            f"revoke_workflow_role failed: HTTP {status_code}", {"body": resp}
+        )
+    return success_result(
+        f"Revoked role {role_uuid} on workflow {workflow_uuid}",
+        {"workflow_id": workflow_uuid, "role_id": role_uuid},
+    )
+
+
 # Tool metadata for registration
 TOOLS = [
     ("execute_workflow", "Execute Workflow", "Execute a Bifrost workflow by ID or name and return the results. Use list_workflows to get workflow IDs."),
@@ -409,6 +651,10 @@ TOOLS = [
     ("validate_workflow", "Validate Workflow", "Validate a workflow Python file for syntax and decorator issues."),
     ("get_workflow", "Get Workflow", "Get detailed metadata for a specific workflow by ID or name."),
     ("register_workflow", "Register Workflow", "Register a decorated Python function as a workflow. Takes a file path, function name, and optional organization_id."),
+    ("update_workflow", "Update Workflow", "Update an existing workflow by UUID or name (organization, access level, description, etc.)."),
+    ("delete_workflow", "Delete Workflow", "Delete a workflow; returns 409 with deactivation details if it has history."),
+    ("grant_workflow_role", "Grant Workflow Role", "Grant a role access to a workflow."),
+    ("revoke_workflow_role", "Revoke Workflow Role", "Revoke a role's access to a workflow."),
 ]
 
 
@@ -422,6 +668,10 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "validate_workflow": validate_workflow,
         "get_workflow": get_workflow,
         "register_workflow": register_workflow,
+        "update_workflow": update_workflow,
+        "delete_workflow": delete_workflow,
+        "grant_workflow_role": grant_workflow_role,
+        "revoke_workflow_role": revoke_workflow_role,
     }
 
     for tool_id, name, description in TOOLS:
