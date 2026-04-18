@@ -72,6 +72,15 @@ DTO_EXCLUDES: dict[str, set[str]] = {
     # Applications: ``icon`` is UI-managed.
     "ApplicationCreate": {"icon"},
     "ApplicationUpdate": {"icon"},
+    # Event sources: the nested ``webhook`` / ``schedule`` objects are
+    # surfaced by ``bifrost events create-source`` / ``update-source`` as
+    # flat flags (``--cron`` / ``--timezone`` / ``--schedule-enabled``
+    # collapse into ``schedule``; ``--adapter`` / ``--webhook-integration`` /
+    # ``--webhook-config`` collapse into ``webhook``). Excluded here so the
+    # DTO-driven generator doesn't produce opaque ``--webhook`` / ``--schedule``
+    # JSON-object flags alongside the flat ones.
+    "EventSourceCreate": {"webhook", "schedule"},
+    "EventSourceUpdate": {"webhook", "schedule"},
 }
 
 #: Per-DTO field renames applied to the assembled body.
