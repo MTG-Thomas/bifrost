@@ -87,6 +87,45 @@ def second_registered_workflow(e2e_client, platform_admin):
 class TestCliEvents:
     """End-to-end coverage for ``bifrost events`` commands."""
 
+    def test_list_sources_returns_payload(self, cli_client, _invoke) -> None:
+        """``events list-sources --json`` returns the wrapped ``{items, total}`` payload."""
+        result = _invoke(["--json", "list-sources"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert isinstance(payload, dict)
+        assert "items" in payload and "total" in payload
+        for item in payload["items"]:
+            assert "id" in item
+            assert "name" in item
+
+    def test_get_source_by_uuid(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``events get-source <uuid>`` returns the created source body."""
+        name = f"cli-evt-get-{uuid4().hex[:8]}"
+        create_result = _invoke([
+            "--json",
+            "create-source",
+            "--name", name,
+            "--source-type", "schedule",
+            "--cron", "0 0 * * *",
+            "--timezone", "UTC",
+        ])
+        assert create_result.exit_code == 0, create_result.output
+        source_id = str(json.loads(create_result.output)["id"])
+
+        try:
+            result = _invoke(["--json", "get-source", source_id])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == source_id
+            assert payload["name"] == name
+        finally:
+            e2e_client.delete(
+                f"/api/events/sources/{source_id}",
+                headers=platform_admin.headers,
+            )
+
     def test_create_schedule_source_with_flat_flags(
         self,
         cli_client,

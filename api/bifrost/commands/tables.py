@@ -3,6 +3,7 @@
 Implements Task 5i of the CLI mutation surface plan:
 
 * ``bifrost tables list`` → ``GET /api/tables``
+* ``bifrost tables get <ref>`` → ``GET /api/tables/{uuid}``
 * ``bifrost tables create`` → ``POST /api/tables`` (body from
   :class:`TableCreate`)
 * ``bifrost tables update <ref>`` → ``PATCH /api/tables/{uuid}`` (body from
@@ -70,6 +71,25 @@ async def list_tables(
 ) -> None:
     """List all tables (wrapped ``{tables, total}`` payload from the API)."""
     response = await client.get("/api/tables")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@tables_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_table(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single table by UUID or name."""
+    table_uuid = await resolver.resolve("table", ref)
+    response = await client.get(f"/api/tables/{table_uuid}")
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
 

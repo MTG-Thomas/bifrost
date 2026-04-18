@@ -68,6 +68,44 @@ def schema_yaml_one_key(tmp_path):
 class TestCliIntegrations:
     """End-to-end coverage for ``bifrost integrations`` commands."""
 
+    def test_list_returns_payload(self, cli_client, _invoke) -> None:
+        """``integrations list --json`` returns the wrapped ``{items, total}`` payload."""
+        result = _invoke(["--json", "list"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert isinstance(payload, dict)
+        assert "items" in payload and "total" in payload
+        for item in payload["items"]:
+            assert "id" in item
+            assert "name" in item
+
+    def test_get_by_uuid_returns_integration(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``integrations get <uuid>`` round-trips the created integration."""
+        name = f"cli-integ-get-{uuid4().hex[:8]}"
+        create_resp = e2e_client.post(
+            "/api/integrations",
+            headers=platform_admin.headers,
+            json={"name": name},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        integration_id = create_resp.json()["id"]
+
+        try:
+            result = _invoke(["--json", "get", integration_id])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == integration_id
+            assert payload["name"] == name
+            # Detail payload includes mappings and config_schema keys.
+            assert "mappings" in payload
+        finally:
+            e2e_client.delete(
+                f"/api/integrations/{integration_id}",
+                headers=platform_admin.headers,
+            )
+
     def test_create_with_config_schema_file(
         self, cli_client, _invoke, e2e_client, platform_admin, schema_yaml_path
     ):

@@ -1,7 +1,10 @@
 """CLI commands for managing integrations.
 
-Implements Task 5g of the CLI mutation surface plan:
+Implements Task 5g of the CLI mutation surface plan plus the discovery
+parity follow-up:
 
+* ``bifrost integrations list`` → ``GET /api/integrations``
+* ``bifrost integrations get <ref>`` → ``GET /api/integrations/{uuid}``
 * ``bifrost integrations create`` → ``POST /api/integrations`` (body from
   :class:`IntegrationCreate`).
 * ``bifrost integrations update <ref>`` → ``PUT /api/integrations/{uuid}``
@@ -153,6 +156,41 @@ _MAPPING_UPDATE_FLAGS = build_cli_flags(
     exclude=DTO_EXCLUDES.get("IntegrationMappingUpdate", set()),
     verb_ref_lookups=DTO_REF_LOOKUPS.get("IntegrationMappingUpdate", {}),
 )
+
+
+@integrations_group.command("list")
+@click.pass_context
+@pass_resolver
+@run_async
+async def list_integrations(
+    ctx: click.Context,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,  # noqa: ARG001 - kept for signature parity
+) -> None:
+    """List all integrations (wrapped ``{items, total}`` payload)."""
+    response = await client.get("/api/integrations")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@integrations_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_integration(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single integration by UUID or name (with mappings + OAuth config)."""
+    integration_uuid = await resolver.resolve("integration", ref)
+    response = await client.get(f"/api/integrations/{integration_uuid}")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
 
 
 @integrations_group.command("create")

@@ -96,6 +96,28 @@ class TestCliOrgs:
             f"Org {renamed} should be absent from active list after delete"
         )
 
+    def test_get_by_uuid_returns_org(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``orgs get <uuid>`` round-trips the created org body."""
+        name = f"cli-org-get-{uuid4().hex[:8]}"
+        create_resp = e2e_client.post(
+            "/api/organizations",
+            headers=platform_admin.headers,
+            json={"name": name},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        org_id = create_resp.json()["id"]
+
+        try:
+            result = _invoke(["--json", "get", str(org_id)])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == str(org_id)
+            assert payload["name"] == name
+        finally:
+            _invoke(["--json", "delete", str(org_id)])
+
     def test_update_by_uuid(
         self, cli_client, _invoke, e2e_client, platform_admin
     ) -> None:

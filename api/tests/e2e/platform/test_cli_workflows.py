@@ -132,6 +132,27 @@ class TestCliWorkflows:
             assert "id" in item
             assert "name" in item
 
+    def test_get_by_uuid_returns_workflow(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``workflows get <uuid>`` resolves and returns the workflow body.
+
+        The API has no per-id GET endpoint; the CLI implements ``get`` via
+        list-and-filter through :class:`RefResolver`.
+        """
+        fn = f"cli_wf_get_{uuid4().hex[:8]}"
+        wf = _register_workflow(e2e_client, platform_admin, function_name=fn)
+        wf_id = wf["id"]
+
+        try:
+            result = _invoke(["--json", "get", str(wf_id)])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == str(wf_id)
+            assert payload["function_name"] == fn
+        finally:
+            _invoke(["--json", "delete", str(wf_id), "--force"])
+
     def test_update_by_name_roundtrip(
         self, cli_client, _invoke, e2e_client, platform_admin
     ) -> None:

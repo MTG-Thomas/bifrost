@@ -3,6 +3,9 @@
 Implements Task 5h of the CLI mutation surface plan:
 
 * ``bifrost configs list`` → ``GET /api/config``
+* ``bifrost configs get <ref>`` — list-and-filter (the server does not
+  expose ``GET /api/config/{uuid}``; the resolver is used to derive the
+  UUID, then the row is located in the list payload).
 * ``bifrost configs create`` → ``POST /api/config`` (flags from
   :class:`ConfigCreate`; ``config_type`` aliases to ``type`` on the wire)
 * ``bifrost configs update <ref>`` → ``PUT /api/config/{uuid}`` (flags from
@@ -74,6 +77,35 @@ async def list_configs(
     response = await client.get("/api/config")
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
+
+
+@configs_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_config(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single configuration value by UUID or key.
+
+    The server does not expose a per-record GET endpoint for configs, so
+    this resolves the ref via :class:`RefResolver` and locates the entry in
+    the ``GET /api/config`` list payload.
+    """
+    config_uuid = await resolver.resolve("config", ref)
+    list_response = await client.get("/api/config")
+    list_response.raise_for_status()
+    item = _find_config_by_id(list_response.json(), config_uuid)
+    if item is None:
+        raise click.ClickException(
+            f"config {ref!r} resolved to {config_uuid} but is not in the accessible list"
+        )
+    output_result(item, ctx=ctx)
 
 
 async def _build_create_body(

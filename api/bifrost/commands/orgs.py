@@ -3,6 +3,7 @@
 Implements Task 5a of the CLI mutation surface plan:
 
 * ``bifrost orgs list`` → ``GET /api/organizations``
+* ``bifrost orgs get <ref>`` → ``GET /api/organizations/{uuid}``
 * ``bifrost orgs create`` → ``POST /api/organizations`` (body from
   :class:`OrganizationCreate`)
 * ``bifrost orgs update <ref>`` → ``PATCH /api/organizations/{uuid}`` (body
@@ -65,6 +66,25 @@ async def list_orgs(
 ) -> None:
     """List all organizations."""
     response = await client.get("/api/organizations")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@orgs_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_org(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single organization by UUID or name."""
+    org_uuid = await resolver.resolve("org", ref)
+    response = await client.get(f"/api/organizations/{org_uuid}")
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
 

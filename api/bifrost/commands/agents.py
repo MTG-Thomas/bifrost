@@ -1,7 +1,10 @@
 """CLI commands for managing agents.
 
-Implements Task 5e of the CLI mutation surface plan:
+Implements Task 5e of the CLI mutation surface plan plus the discovery
+parity follow-up:
 
+* ``bifrost agents list`` → ``GET /api/agents``
+* ``bifrost agents get <ref>`` → ``GET /api/agents/{uuid}``
 * ``bifrost agents create`` → ``POST /api/agents``
 * ``bifrost agents update <ref>`` → ``PUT /api/agents/{uuid}``
   (the audit correction — the server exposes PUT, not PATCH, on this route).
@@ -89,6 +92,41 @@ _UPDATE_FLAGS = build_cli_flags(
     exclude=DTO_EXCLUDES.get("AgentUpdate", set()),
     verb_ref_lookups=DTO_REF_LOOKUPS.get("AgentUpdate", {}),
 )
+
+
+@agents_group.command("list")
+@click.pass_context
+@pass_resolver
+@run_async
+async def list_agents(
+    ctx: click.Context,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,  # noqa: ARG001 - kept for signature parity
+) -> None:
+    """List all agents."""
+    response = await client.get("/api/agents")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@agents_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_agent(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single agent by UUID or name."""
+    agent_uuid = await resolver.resolve("agent", ref)
+    response = await client.get(f"/api/agents/{agent_uuid}")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
 
 
 @agents_group.command("create")

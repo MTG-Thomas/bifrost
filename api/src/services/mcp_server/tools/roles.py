@@ -72,6 +72,35 @@ async def list_roles(context: Any) -> ToolResult:
     )
 
 
+async def get_role(context: Any, role_ref: str) -> ToolResult:
+    """Get a single role — thin wrapper over ``GET /api/roles/{uuid}``.
+
+    ``role_ref`` is a UUID or role name. Names are resolved via the shared
+    :class:`RefResolver`.
+    """
+    if not role_ref:
+        return error_result("role_ref is required")
+
+    from bifrost.refs import RefResolver
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            role_uuid = await resolver.resolve("role", role_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve role {role_ref!r}", _ref_error_payload(exc)
+            )
+
+    status_code, body = await call_rest(context, "GET", f"/api/roles/{role_uuid}")
+    if status_code != 200:
+        return error_result(f"get_role failed: HTTP {status_code}", {"body": body})
+    return success_result(
+        f"Role: {body.get('name') if isinstance(body, dict) else role_uuid}",
+        body if isinstance(body, dict) else {"body": body},
+    )
+
+
 async def create_role(
     context: Any,
     name: str,
@@ -164,6 +193,7 @@ async def delete_role(context: Any, role_ref: str) -> ToolResult:
 
 TOOLS = [
     ("list_roles", "List Roles", "List all roles in the platform."),
+    ("get_role", "Get Role", "Get a single role by UUID or name."),
     ("create_role", "Create Role", "Create a new role."),
     ("update_role", "Update Role", "Update a role (name, description, permissions)."),
     ("delete_role", "Delete Role", "Delete a role (CASCADE removes all assignments)."),
@@ -178,6 +208,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
 
     tool_funcs = {
         "list_roles": list_roles,
+        "get_role": get_role,
         "create_role": create_role,
         "update_role": update_role,
         "delete_role": delete_role,
@@ -193,6 +224,7 @@ __all__ = [
     "TOOLS",
     "create_role",
     "delete_role",
+    "get_role",
     "list_roles",
     "register_tools",
     "update_role",

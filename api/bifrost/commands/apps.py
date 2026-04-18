@@ -1,7 +1,12 @@
 """CLI commands for managing applications.
 
-Implements Task 5f of the CLI mutation surface plan:
+Implements Task 5f of the CLI mutation surface plan plus the discovery
+parity follow-up:
 
+* ``bifrost apps list`` → ``GET /api/applications``
+* ``bifrost apps get <ref>`` → ``GET /api/applications/{slug}``
+  (the public GET endpoint is keyed by slug; UUID/name refs are resolved
+  to a slug via :class:`RefResolver` then passed to the slug endpoint).
 * ``bifrost apps create`` → ``POST /api/applications`` (body from
   :class:`ApplicationCreate`) with optional ``--deps @package.json`` triggering
   a follow-up ``PUT /api/applications/{id}/dependencies``.
@@ -90,6 +95,75 @@ def _parse_deps(raw: str) -> dict[str, str]:
     if isinstance(nested, dict):
         return {str(k): str(v) for k, v in nested.items()}
     return {str(k): str(v) for k, v in loaded.items()}
+
+
+@apps_group.command("list")
+@click.pass_context
+@pass_resolver
+@run_async
+async def list_apps(
+    ctx: click.Context,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,  # noqa: ARG001 - kept for signature parity
+) -> None:
+    """List all applications (wrapped ``{applications, total}`` payload)."""
+    response = await client.get("/api/applications")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@apps_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_app(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single application by slug, UUID, or name.
+
+    The public per-record endpoint is keyed by slug. For slug refs we hit
+    ``GET /api/applications/{slug}`` directly. For UUID / name refs we
+    resolve to a UUID then locate the matching record from the list payload
+    so this command works with any ref shape :class:`RefResolver` accepts.
+    """
+    from uuid import UUID
+
+    try:
+        UUID(ref)
+        is_uuid = True
+    except (TypeError, ValueError):
+        is_uuid = False
+
+    if not is_uuid:
+        # Try the slug endpoint first — it's a single round-trip and works
+        # for the majority case where the user pastes a slug.
+        slug_response = await client.get(f"/api/applications/{ref}")
+        if slug_response.status_code == 200:
+            output_result(slug_response.json(), ctx=ctx)
+            return
+        if slug_response.status_code not in (403, 404):
+            slug_response.raise_for_status()
+
+    # Fall through: resolve via name/UUID then locate in the list payload
+    # since the per-record endpoint does not accept UUIDs.
+    app_uuid = await resolver.resolve("app", ref)
+    list_response = await client.get("/api/applications")
+    list_response.raise_for_status()
+    data = list_response.json()
+    items = data.get("applications", []) if isinstance(data, dict) else data
+    for item in items:
+        if str(item.get("id")) == app_uuid:
+            output_result(item, ctx=ctx)
+            return
+    raise click.ClickException(
+        f"application {ref!r} resolved to {app_uuid} but is not in the accessible list"
+    )
 
 
 @apps_group.command("create")

@@ -45,6 +45,29 @@ def _cleanup_config(e2e_client, platform_admin, config_id: str) -> None:
 class TestCliConfigs:
     """End-to-end coverage for ``bifrost configs`` commands."""
 
+    def test_get_by_uuid_returns_config(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``configs get <uuid>`` resolves and returns the matching config row.
+
+        The API has no per-id GET endpoint; the CLI implements ``get`` via
+        list-and-filter through :class:`RefResolver`.
+        """
+        key = f"cli_cfg_get_{uuid4().hex[:8]}"
+        create_result = _invoke(["--json", "set", key, "--value", "bar"])
+        assert create_result.exit_code == 0, create_result.output
+        config_id = str(json.loads(create_result.output)["id"])
+
+        try:
+            result = _invoke(["--json", "get", config_id])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == config_id
+            assert payload["key"] == key
+            assert payload["value"] == "bar"
+        finally:
+            _cleanup_config(e2e_client, platform_admin, config_id)
+
     def test_set_creates_then_updates(
         self, cli_client, _invoke, e2e_client, platform_admin
     ) -> None:

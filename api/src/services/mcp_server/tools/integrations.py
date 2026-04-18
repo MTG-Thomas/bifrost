@@ -120,6 +120,40 @@ async def _assemble_integration_body(
         )
 
 
+async def get_integration(context: Any, integration_ref: str) -> ToolResult:
+    """Get a single integration — thin wrapper over ``GET /api/integrations/{uuid}``.
+
+    ``integration_ref`` is a UUID or integration name. Returns the integration
+    detail payload (mappings, OAuth config, config schema).
+    """
+    if not integration_ref:
+        return error_result("integration_ref is required")
+
+    from bifrost.refs import RefResolver
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            integration_uuid = await resolver.resolve("integration", integration_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve integration {integration_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+    status_code, body = await call_rest(
+        context, "GET", f"/api/integrations/{integration_uuid}"
+    )
+    if status_code != 200:
+        return error_result(
+            f"get_integration failed: HTTP {status_code}", {"body": body}
+        )
+    return success_result(
+        f"Integration: {body.get('name') if isinstance(body, dict) else integration_uuid}",
+        body if isinstance(body, dict) else {"body": body},
+    )
+
+
 async def create_integration(
     context: Any,
     name: str,
@@ -353,6 +387,7 @@ async def update_integration_mapping(
 # Tool metadata for registration
 TOOLS = [
     ("list_integrations", "List Integrations", "List available integrations that can be used in workflows."),
+    ("get_integration", "Get Integration", "Get integration detail (mappings, OAuth config, schema) by UUID or name."),
     ("create_integration", "Create Integration", "Create a new integration (platform admin)."),
     ("update_integration", "Update Integration", "Update an integration by UUID or name."),
     ("add_integration_mapping", "Add Integration Mapping", "Create an integration↔organization mapping."),
@@ -366,6 +401,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
 
     tool_funcs = {
         "list_integrations": list_integrations,
+        "get_integration": get_integration,
         "create_integration": create_integration,
         "update_integration": update_integration,
         "add_integration_mapping": add_integration_mapping,

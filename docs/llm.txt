@@ -2,7 +2,7 @@
 
 This file documents the entity-mutation surface Claude and other LLMs should use when the user asks for anything that would previously have been done by editing `.bifrost/*.yaml` by hand.
 
-**Core rule:** `.bifrost/` is export-only. Never mutate entities by editing it — use one of the commands below.
+**Core rule:** `.bifrost/` is export-only. Never read it for discovery and never mutate entities by editing it. For discovery (before mutating), use `bifrost <entity> list` and `bifrost <entity> get <ref>` — the manifest is an export artifact, not the source of truth queries should hit.
 
 All CLI commands accept `--json` for machine output. All commands resolve UUID / name / portable refs automatically; ambiguous names fail loudly with the candidate list and prompt the user for the UUID.
 
@@ -12,6 +12,7 @@ All CLI commands accept `--json` for machine output. All commands resolve UUID /
 
 ```
 bifrost orgs list
+bifrost orgs get <ref>
 bifrost orgs create --name "Acme" [--is-active]
 bifrost orgs update <ref> [--name "New"] [--is-active/--no-is-active]
 bifrost orgs delete <ref>
@@ -21,6 +22,7 @@ bifrost orgs delete <ref>
 
 ```
 bifrost roles list
+bifrost roles get <ref>
 bifrost roles create --name "Sales Manager" [--description "..."] [--permissions @file.yaml]
 bifrost roles update <ref> [--name ...] [--description ...] [--permissions ...]
 bifrost roles delete <ref>
@@ -32,6 +34,7 @@ Note: `permissions` is a dict, not a list. Pass JSON inline or `@path/to/file.ya
 
 ```
 bifrost workflows list
+bifrost workflows get <ref>
 bifrost workflows register --path workflows/foo.py --function-name foo [--organization-id <uuid>]
 bifrost workflows update <ref> [--category ...] [--timeout-seconds N] [--clear-roles/--no-clear-roles]
 bifrost workflows delete <ref> [--force-deactivation]
@@ -39,21 +42,23 @@ bifrost workflows grant-role <workflow-ref> <role-ref>
 bifrost workflows revoke-role <workflow-ref> <role-ref>
 ```
 
-`<workflow-ref>` accepts UUID, name, or `path::func` (e.g. `workflows/sales.py::close_deal`).
+`<workflow-ref>` accepts UUID, name, or `path::func` (e.g. `workflows/sales.py::close_deal`). `get` is served by list-and-filter (the API has no per-id GET endpoint).
 
 ## Forms
 
 ```
+bifrost forms list
+bifrost forms get <ref>
 bifrost forms create --name foo --workflow path::func --schema @schema.yaml [--description ...]
 bifrost forms update <ref> [--schema @schema.yaml] [--name ...]
 bifrost forms delete <ref>
 ```
 
-List is served by the generic REST listing — use `bifrost api GET /api/forms`.
-
 ## Agents
 
 ```
+bifrost agents list
+bifrost agents get <ref>
 bifrost agents create --name foo --llm-model claude-sonnet-4 --system-prompt @prompt.md \
                      [--tools wf1,wf2] [--delegates agent1,agent2] [--knowledge kb1,kb2]
 bifrost agents update <ref> [--llm-model ...] [--system-prompt @file.md] [--tools ...] [--clear-roles]
@@ -65,17 +70,21 @@ bifrost agents delete <ref>
 ## Apps
 
 ```
+bifrost apps list
+bifrost apps get <ref>
 bifrost apps create --name foo --slug foo [--deps @package.json] [--role-ids uuid1,uuid2]
 bifrost apps update <ref> [--name ...] [--description ...] [--access-level ...]
 bifrost apps set-deps <ref> --deps @package.json
 bifrost apps delete <ref>
 ```
 
-`create --deps` is a two-call orchestration (POST app, then PUT dependencies). If the deps call fails the app remains created; the user sees both the app payload and the deps error.
+`create --deps` is a two-call orchestration (POST app, then PUT dependencies). If the deps call fails the app remains created; the user sees both the app payload and the deps error. `get` accepts slug, UUID, or name (slug uses the per-record endpoint directly; UUID/name resolves then locates in the list).
 
 ## Integrations
 
 ```
+bifrost integrations list
+bifrost integrations get <ref>
 bifrost integrations create --name foo --type slack --config-schema @schema.yaml
 bifrost integrations update <ref> [--config-schema @schema.yaml] [--force-remove-keys]
 bifrost integrations add-mapping <integration-ref> --organization <org-ref> [--config @config.yaml] [--oauth-token-id <id>]
@@ -88,18 +97,20 @@ bifrost integrations update-mapping <integration-ref> --organization <org-ref> [
 
 ```
 bifrost configs list
+bifrost configs get <ref>
 bifrost configs set <key> --value bar [--type string|secret|json|bool|int|float] [--organization <ref>]
 bifrost configs create --key foo --value bar --type string --organization <ref>
 bifrost configs update <ref> [--value ...] [--type ...]
 bifrost configs delete <ref> [--confirm]
 ```
 
-`set` is an upsert wrapper. `delete` refuses to remove a secret-typed config without `--confirm`. `update` with `--value` omitted preserves the existing value.
+`set` is an upsert wrapper. `delete` refuses to remove a secret-typed config without `--confirm`. `update` with `--value` omitted preserves the existing value. `get` is served by list-and-filter (the API has no per-id GET endpoint).
 
 ## Tables
 
 ```
 bifrost tables list
+bifrost tables get <ref>
 bifrost tables create --name foo --application <app-ref> --schema @schema.yaml
 bifrost tables update <ref> [--name "new"] [--application <app-ref>] [--schema @schema.yaml]
 bifrost tables delete <ref>
@@ -110,6 +121,10 @@ bifrost tables delete <ref>
 ## Events
 
 ```
+bifrost events list-sources
+bifrost events get-source <ref>
+bifrost events list-subscriptions <source-ref>
+bifrost events get-subscription <source-ref> <subscription-id>
 bifrost events create-source --name foo --source-type schedule --cron "*/5 * * * *" --timezone UTC
 bifrost events create-source --name foo --source-type webhook --adapter generic --webhook-integration <int-ref> --webhook-config @cfg.yaml
 bifrost events update-source <ref> [--cron ...] [--timezone ...] [--schedule-enabled/--no-schedule-enabled]
@@ -117,7 +132,7 @@ bifrost events subscribe <source-ref> --workflow <wf-ref> --event-type foo
 bifrost events update-subscription <subscription-ref> [--event-type ...]
 ```
 
-`--cron` / `--timezone` / `--schedule-enabled` collapse into the DTO's nested `schedule` config. `--adapter` / `--webhook-integration` / `--webhook-config` collapse into `webhook` config. `update-subscription` rejects attempts to change `target_type` / workflow / agent refs — delete and recreate instead.
+`--cron` / `--timezone` / `--schedule-enabled` collapse into the DTO's nested `schedule` config. `--adapter` / `--webhook-integration` / `--webhook-config` collapse into `webhook` config. `update-subscription` rejects attempts to change `target_type` / workflow / agent refs — delete and recreate instead. `get-subscription` is served by list-and-filter (the API has no per-id GET endpoint for subscriptions).
 
 ---
 
@@ -140,11 +155,11 @@ Existing MCP tools for agents / forms / tables / apps / events re-implement rout
 
 **New parity tools (thin HTTP wrappers — always safe to call):**
 
-- `create_role`, `update_role`, `delete_role`, `list_roles`
-- `create_config`, `update_config`, `delete_config`, `list_configs`
-- `create_integration`, `update_integration`, `add_integration_mapping`, `update_integration_mapping`
+- `list_roles`, `get_role`, `create_role`, `update_role`, `delete_role`
+- `list_configs`, `get_config`, `create_config`, `update_config`, `delete_config`
+- `get_integration`, `create_integration`, `update_integration`, `add_integration_mapping`, `update_integration_mapping`  (`list_integrations` already existed)
 - `update_organization`, `delete_organization`  (list / create / get already existed)
-- `update_workflow`, `delete_workflow`, `grant_workflow_role`, `revoke_workflow_role`  (list / register already existed)
+- `update_workflow`, `delete_workflow`, `grant_workflow_role`, `revoke_workflow_role`  (list / get / register already existed)
 
 All new tools accept UUID, name, or portable ref for any entity reference.
 

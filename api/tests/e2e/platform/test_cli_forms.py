@@ -77,6 +77,47 @@ def schema_yaml_path(tmp_path):
 class TestCliForms:
     """End-to-end coverage for ``bifrost forms`` commands."""
 
+    def test_list_returns_payload(self, cli_client, _invoke) -> None:
+        """``forms list --json`` returns a JSON list of forms (possibly empty)."""
+        result = _invoke(["--json", "list"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert isinstance(payload, list)
+        for item in payload:
+            assert "id" in item
+            assert "name" in item
+
+    def test_get_by_uuid_returns_form(
+        self,
+        cli_client,
+        _invoke,
+        e2e_client,
+        platform_admin,
+        registered_workflow,
+        schema_yaml_path,
+    ) -> None:
+        """``forms get <uuid>`` returns the created form body."""
+        name = f"cli-form-get-{uuid4().hex[:8]}"
+        create_result = _invoke([
+            "--json",
+            "create",
+            "--name", name,
+            "--workflow", registered_workflow["ref"],
+            "--form-schema", f"@{schema_yaml_path}",
+            "--access-level", "authenticated",
+        ])
+        assert create_result.exit_code == 0, create_result.output
+        created_id = str(json.loads(create_result.output)["id"])
+
+        try:
+            result = _invoke(["--json", "get", created_id])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == created_id
+            assert payload["name"] == name
+        finally:
+            _invoke(["--json", "delete", created_id])
+
     def test_create_with_workflow_ref_and_schema_file(
         self,
         cli_client,

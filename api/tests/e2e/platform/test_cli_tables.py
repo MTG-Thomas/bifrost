@@ -70,6 +70,24 @@ def _create_app_via_api(e2e_client, headers, slug: str) -> str:
 class TestCliTables:
     """End-to-end coverage for ``bifrost tables`` commands."""
 
+    def test_get_by_uuid_returns_table(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``tables get <uuid>`` round-trips the created table body."""
+        name = f"cli_tbl_get_{uuid4().hex[:8]}"
+        table_id = _create_table_via_api(e2e_client, platform_admin.headers, name)
+
+        try:
+            result = _invoke(["--json", "get", str(table_id)])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == str(table_id)
+            assert payload["name"] == name
+        finally:
+            e2e_client.delete(
+                f"/api/tables/{table_id}", headers=platform_admin.headers
+            )
+
     def test_create_with_schema_file_then_rename_warning(
         self,
         cli_client,

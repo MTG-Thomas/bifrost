@@ -48,6 +48,43 @@ async def list_configs(context: Any) -> ToolResult:
     )
 
 
+async def get_config(context: Any, config_ref: str) -> ToolResult:
+    """Get a single config by UUID or key.
+
+    The server has no per-id GET endpoint for configs, so this resolves
+    the ref via the shared :class:`RefResolver` then locates the matching
+    row in the ``GET /api/config`` list payload.
+    """
+    if not config_ref:
+        return error_result("config_ref is required")
+
+    from bifrost.refs import RefResolver
+
+    async with rest_client(context) as http:
+        resolver = RefResolver(http)
+        try:
+            config_uuid = await resolver.resolve("config", config_ref)
+        except Exception as exc:
+            return error_result(
+                f"could not resolve config {config_ref!r}",
+                _ref_error_payload(exc),
+            )
+
+    status_code, body = await call_rest(context, "GET", "/api/config")
+    if status_code != 200:
+        return error_result(f"get_config failed: HTTP {status_code}", {"body": body})
+    items = body if isinstance(body, list) else []
+    for item in items:
+        if isinstance(item, dict) and str(item.get("id")) == config_uuid:
+            return success_result(
+                f"Config: {item.get('key')}",
+                item,
+            )
+    return error_result(
+        f"config {config_ref!r} resolved to {config_uuid} but is not in the accessible list"
+    )
+
+
 async def create_config(
     context: Any,
     key: str,
@@ -184,6 +221,7 @@ async def delete_config(context: Any, config_ref: str) -> ToolResult:
 
 TOOLS = [
     ("list_configs", "List Configs", "List configuration values for the caller's scope."),
+    ("get_config", "Get Config", "Get a single configuration value by UUID or key."),
     ("create_config", "Create Config", "Create a configuration value."),
     ("update_config", "Update Config", "Update a configuration value by UUID or key."),
     ("delete_config", "Delete Config", "Delete a configuration value by UUID or key."),
@@ -198,6 +236,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
 
     tool_funcs = {
         "list_configs": list_configs,
+        "get_config": get_config,
         "create_config": create_config,
         "update_config": update_config,
         "delete_config": delete_config,
@@ -213,6 +252,7 @@ __all__ = [
     "TOOLS",
     "create_config",
     "delete_config",
+    "get_config",
     "list_configs",
     "register_tools",
     "update_config",

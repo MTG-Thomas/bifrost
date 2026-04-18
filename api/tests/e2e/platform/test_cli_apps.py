@@ -54,6 +54,38 @@ def _write_package_json(tmp_path: pathlib.Path, deps: dict[str, str]) -> pathlib
 class TestCliApps:
     """End-to-end coverage for ``bifrost apps`` commands."""
 
+    def test_list_returns_payload(self, cli_client, _invoke) -> None:
+        """``apps list --json`` returns the wrapped ``{applications, total}`` payload."""
+        result = _invoke(["--json", "list"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert isinstance(payload, dict)
+        assert "applications" in payload and "total" in payload
+        for item in payload["applications"]:
+            assert "id" in item
+
+    def test_get_by_slug_returns_app(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``apps get <slug>`` round-trips the created app body."""
+        slug = f"cli-app-get-{uuid4().hex[:8]}"
+        create_resp = e2e_client.post(
+            "/api/applications",
+            headers=platform_admin.headers,
+            json={"name": slug, "slug": slug},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        app_id = create_resp.json()["id"]
+
+        try:
+            result = _invoke(["--json", "get", slug])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == app_id
+            assert payload["slug"] == slug
+        finally:
+            _invoke(["--json", "delete", app_id])
+
     def test_create_with_deps_makes_two_rest_calls(
         self, cli_client, _invoke, e2e_client, platform_admin, tmp_path
     ) -> None:

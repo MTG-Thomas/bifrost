@@ -36,6 +36,45 @@ def _invoke(invoke_cli):
 class TestCliAgents:
     """End-to-end coverage for ``bifrost agents`` commands."""
 
+    def test_list_returns_payload(self, cli_client, _invoke) -> None:
+        """``agents list --json`` returns a JSON list (possibly empty)."""
+        result = _invoke(["--json", "list"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert isinstance(payload, list)
+        for item in payload:
+            assert "id" in item
+            assert "name" in item
+
+    def test_get_by_uuid_returns_agent(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``agents get <uuid>`` round-trips the created entity body."""
+        name = f"cli-agent-get-{uuid4().hex[:8]}"
+        create_resp = e2e_client.post(
+            "/api/agents",
+            headers=platform_admin.headers,
+            json={
+                "name": name,
+                "system_prompt": "You are a test agent.",
+                "access_level": "authenticated",
+            },
+        )
+        assert create_resp.status_code in (200, 201), create_resp.text
+        created_id = str(create_resp.json()["id"])
+
+        try:
+            result = _invoke(["--json", "get", created_id])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == created_id
+            assert payload["name"] == name
+        finally:
+            e2e_client.delete(
+                f"/api/agents/{created_id}",
+                headers=platform_admin.headers,
+            )
+
     def test_create_update_delete_roundtrip(
         self,
         cli_client,

@@ -1,15 +1,15 @@
 """CLI commands for managing forms.
 
-Implements Task 5d of the CLI mutation surface plan:
+Implements Task 5d of the CLI mutation surface plan plus the discovery
+parity follow-up:
 
+* ``bifrost forms list`` → ``GET /api/forms``
+* ``bifrost forms get <ref>`` → ``GET /api/forms/{uuid}``
 * ``bifrost forms create`` → ``POST /api/forms`` (body from
   :class:`FormCreate`)
 * ``bifrost forms update <ref>`` → ``PATCH /api/forms/{uuid}`` (body from
   :class:`FormUpdate`; unset flags omitted by :func:`assemble_body`)
 * ``bifrost forms delete <ref>`` → ``DELETE /api/forms/{uuid}``
-
-List is deliberately not provided here — the generic ``bifrost list forms``
-catalog handles that surface per the plan's cross-cutting listing rationale.
 
 Ref-lookup fields surface as user-friendly flags:
 
@@ -53,6 +53,41 @@ _UPDATE_FLAGS = build_cli_flags(
     exclude=DTO_EXCLUDES.get("FormUpdate", set()),
     verb_ref_lookups=DTO_REF_LOOKUPS.get("FormUpdate", {}),
 )
+
+
+@forms_group.command("list")
+@click.pass_context
+@pass_resolver
+@run_async
+async def list_forms(
+    ctx: click.Context,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,  # noqa: ARG001 - kept for signature parity
+) -> None:
+    """List all forms."""
+    response = await client.get("/api/forms")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@forms_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_form(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single form by UUID or name."""
+    form_uuid = await resolver.resolve("form", ref)
+    response = await client.get(f"/api/forms/{form_uuid}")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
 
 
 @forms_group.command("create")

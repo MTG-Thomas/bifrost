@@ -3,6 +3,7 @@
 Implements Task 5b of the CLI mutation surface plan:
 
 * ``bifrost roles list`` → ``GET /api/roles``
+* ``bifrost roles get <ref>`` → ``GET /api/roles/{uuid}``
 * ``bifrost roles create`` → ``POST /api/roles`` (body from
   :class:`RoleCreate`)
 * ``bifrost roles update <ref>`` → ``PATCH /api/roles/{uuid}`` (body from
@@ -64,6 +65,25 @@ async def list_roles(
 ) -> None:
     """List all roles."""
     response = await client.get("/api/roles")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@roles_group.command("get")
+@click.argument("ref")
+@click.pass_context
+@pass_resolver
+@run_async
+async def get_role(
+    ctx: click.Context,
+    ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+) -> None:
+    """Get a single role by UUID or name."""
+    role_uuid = await resolver.resolve("role", ref)
+    response = await client.get(f"/api/roles/{role_uuid}")
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
 

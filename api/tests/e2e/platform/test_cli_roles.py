@@ -55,6 +55,30 @@ class TestCliRoles:
             assert "permissions" in item
             assert isinstance(item["permissions"], dict)
 
+    def test_get_by_uuid_returns_role(
+        self, cli_client, _invoke, e2e_client, platform_admin
+    ) -> None:
+        """``roles get <uuid>`` round-trips the created role body."""
+        name = f"cli-role-get-{uuid4().hex[:8]}"
+        create_resp = e2e_client.post(
+            "/api/roles",
+            headers=platform_admin.headers,
+            json={"name": name, "permissions": {"workflows.read": True}},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        role_id = create_resp.json()["id"]
+
+        try:
+            result = _invoke(["--json", "get", str(role_id)])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.output)
+            assert str(payload["id"]) == str(role_id)
+            assert payload["name"] == name
+        finally:
+            e2e_client.delete(
+                f"/api/roles/{role_id}", headers=platform_admin.headers
+            )
+
     def test_create_update_delete_roundtrip(
         self, cli_client, _invoke, e2e_client, platform_admin
     ) -> None:

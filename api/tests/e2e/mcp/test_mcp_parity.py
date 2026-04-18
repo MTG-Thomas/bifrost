@@ -277,6 +277,32 @@ class TestMcpParitySchemas:
 @pytest.mark.e2e
 @pytest.mark.asyncio
 class TestMcpParityRoles:
+    async def test_get_role_by_uuid(
+        self, admin_context, e2e_client, platform_admin
+    ) -> None:
+        """``get_role`` thin-wrapper round-trips a created role via UUID ref."""
+        from src.services.mcp_server.tools.roles import get_role
+
+        name = f"mcp-parity-get-role-{uuid4().hex[:8]}"
+        create_resp = e2e_client.post(
+            "/api/roles",
+            headers=platform_admin.headers,
+            json={"name": name, "permissions": {"workflows.read": True}},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        role_id = create_resp.json()["id"]
+
+        try:
+            result = await get_role(admin_context, role_ref=role_id)
+            payload = result.structured_content or {}
+            assert "error" not in payload, payload
+            assert str(payload.get("id")) == str(role_id)
+            assert payload.get("name") == name
+        finally:
+            e2e_client.delete(
+                f"/api/roles/{role_id}", headers=platform_admin.headers
+            )
+
     async def test_roles_crud_roundtrip(
         self, admin_context, e2e_client, platform_admin
     ) -> None:
@@ -340,6 +366,39 @@ class TestMcpParityRoles:
 @pytest.mark.e2e
 @pytest.mark.asyncio
 class TestMcpParityConfigs:
+    async def test_get_config_by_uuid(self, admin_context) -> None:
+        """``get_config`` round-trips a created config via UUID ref.
+
+        The server has no per-id GET endpoint for configs; the tool resolves
+        the ref then locates the row in the list payload.
+        """
+        from src.services.mcp_server.tools.configs import (
+            create_config,
+            delete_config,
+            get_config,
+        )
+
+        key = f"mcp_parity_get_{uuid4().hex[:8]}"
+        create_result = await create_config(
+            admin_context,
+            key=key,
+            value="hello",
+            config_type="string",
+        )
+        created = create_result.structured_content or {}
+        assert "error" not in created, created
+        config_id = str(created["id"])
+
+        try:
+            result = await get_config(admin_context, config_ref=config_id)
+            payload = result.structured_content or {}
+            assert "error" not in payload, payload
+            assert str(payload.get("id")) == config_id
+            assert payload.get("key") == key
+            assert payload.get("value") == "hello"
+        finally:
+            await delete_config(admin_context, config_ref=config_id)
+
     async def test_configs_crud_roundtrip(self, admin_context) -> None:
         from src.services.mcp_server.tools.configs import (
             create_config,
@@ -430,6 +489,37 @@ class TestMcpParityOrganizations:
 @pytest.mark.e2e
 @pytest.mark.asyncio
 class TestMcpParityIntegrations:
+    async def test_get_integration_by_uuid(
+        self, admin_context, e2e_client, platform_admin
+    ) -> None:
+        """``get_integration`` thin-wrapper round-trips a created integration."""
+        from src.services.mcp_server.tools.integrations import get_integration
+
+        name = f"mcp-parity-get-int-{uuid4().hex[:8]}"
+        create_resp = e2e_client.post(
+            "/api/integrations",
+            headers=platform_admin.headers,
+            json={"name": name},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        integration_id = create_resp.json()["id"]
+
+        try:
+            result = await get_integration(
+                admin_context, integration_ref=integration_id
+            )
+            payload = result.structured_content or {}
+            assert "error" not in payload, payload
+            assert str(payload.get("id")) == str(integration_id)
+            assert payload.get("name") == name
+            # Detail payload includes mappings + config_schema keys.
+            assert "mappings" in payload
+        finally:
+            e2e_client.delete(
+                f"/api/integrations/{integration_id}",
+                headers=platform_admin.headers,
+            )
+
     async def test_integration_and_mapping_roundtrip(
         self, admin_context, e2e_client, platform_admin, org1
     ) -> None:
