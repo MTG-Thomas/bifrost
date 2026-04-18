@@ -429,11 +429,6 @@ async def create_agent(
     # Sync agent roles to referenced workflows (tools) - additive
     await sync_agent_roles_to_workflows(db, agent, assigned_by=user.email)
 
-    # Dual-write: serialize agent YAML to S3 _repo/
-    from src.services.repo_sync_writer import RepoSyncWriter
-    writer = RepoSyncWriter(db)
-    await writer.write_agent(agent)
-
     return _agent_to_public(agent)
 
 
@@ -706,11 +701,6 @@ async def update_agent(
     # Sync agent roles to referenced workflows (tools) - additive
     await sync_agent_roles_to_workflows(db, agent, assigned_by=user.email)
 
-    # Dual-write: update agent YAML in S3 _repo/
-    from src.services.repo_sync_writer import RepoSyncWriter
-    writer = RepoSyncWriter(db)
-    await writer.write_agent(agent)
-
     return _agent_to_public(agent)
 
 
@@ -748,11 +738,6 @@ async def delete_agent(
     agent.is_active = False
     agent.updated_at = datetime.now(timezone.utc)
     await db.flush()
-
-    # Dual-write: remove agent YAML from S3 _repo/
-    from src.services.repo_sync_writer import RepoSyncWriter
-    writer = RepoSyncWriter(db)
-    await writer.delete_entity_file_by_suffix(f"{agent_id}.agent.yaml")
 
 
 @router.post("/{agent_id}/promote")

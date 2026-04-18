@@ -543,10 +543,9 @@ The workspace root is your git repository root. Only `.bifrost/*.yaml` manifests
     knowledge.yaml            # Namespace declarations
   workflows/                  # Convention — workflow Python files
     onboard_user.py
-  forms/                      # Convention — form definition files
-    {uuid}.form.yaml
-  agents/                     # Convention — agent definition files
-    {uuid}.agent.yaml
+  # Forms and agents are defined inline under their UUIDs in
+  # .bifrost/forms.yaml and .bifrost/agents.yaml — there are no
+  # standalone forms/ or agents/ files.
   apps/                       # Convention — app source directories
     my-dashboard/
       app.yaml                # App metadata + dependencies

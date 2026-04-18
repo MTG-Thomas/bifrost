@@ -6,8 +6,8 @@ or in S3 (regular files).
 Platform entities:
 - Workflows (.py with @workflow decorator)
 - Data providers (.py with @data_provider decorator)
-- Forms (.form.yaml)
-- Agents (.agent.yaml)
+
+Forms and agents are imported from the manifest, not per-file YAML.
 
 Regular files go to S3.
 """
@@ -38,8 +38,9 @@ def detect_platform_entity_type(
     Platform entities are stored in the database, not S3:
     - Workflows (.py with @workflow decorator): stored in file_index + _repo/ S3
     - Data providers (.py with @data_provider decorator): stored in file_index + _repo/ S3
-    - Forms (.form.yaml): stored in forms table
-    - Agents (.agent.yaml): stored in agents table
+
+    Forms and agents are managed via the manifest (.bifrost/forms.yaml,
+    .bifrost/agents.yaml) — they are not detected from per-file YAML.
 
     Regular files (modules, data files, configs) go to S3.
 
@@ -50,7 +51,7 @@ def detect_platform_entity_type(
             If provided, paths under these prefixes are detected as "app_file".
 
     Returns:
-        Entity type ("workflow", "form", "agent", "app_file") or None for regular files
+        Entity type ("workflow", "app_file") or None for regular files
     """
     # App files: check against known app repo_path prefixes from DB
     if app_prefixes:
@@ -58,12 +59,6 @@ def detect_platform_entity_type(
             normalized = prefix.rstrip("/") + "/"
             if path.startswith(normalized):
                 return "app_file"
-
-    # YAML platform entities - always go to DB
-    if path.endswith(".form.yaml"):
-        return "form"
-    if path.endswith(".agent.yaml"):
-        return "agent"
 
     # Python files - check for SDK decorators
     if path.endswith(".py"):

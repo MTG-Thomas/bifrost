@@ -71,9 +71,11 @@ The client at `localhost:3000` proxies `/api/*` to the API container. This means
 
 **`get_module()` must NOT be used for non-Python files.** App source reads (TSX, YAML, etc.) go to S3 directly via `RepoStorage.read()`.
 
-### YAML entity files (.form.yaml, .agent.yaml) — portability design
+### Form & agent inline manifest content — portability design
 
-Form and agent YAML files intentionally **exclude environment-specific fields** (`access_level`, `organization_id`, `roles`, `created_by`, timestamps). These fields live on the DB record, not the file. The YAML carries only the portable content definition (fields, prompts, tool bindings, etc.) so artifacts can be shared with the community or imported across environments without carrying org/role/access assumptions. **Do not add environment-specific fields to YAML serialization** — they belong on the DB entity record.
+Form and agent **content lives inline under each UUID** in `.bifrost/forms.yaml` and `.bifrost/agents.yaml`. There are no per-UUID `.form.yaml` / `.agent.yaml` files anymore — the manifest is the source of truth for both identity and content.
+
+The same portability rule still applies: the inline content intentionally **excludes environment-specific fields** (`access_level`, `organization_id`, `roles`, `created_by`, timestamps). Those live on the DB record and on the manifest entry alongside (but distinct from) the portable content. The portable content (fields, prompts, tool bindings, etc.) can be shared with the community or imported across environments without carrying org/role/access assumptions. **Do not add environment-specific fields to the inline manifest serialization** — they belong on the DB entity record / the manifest entry's env-specific section, not the portable content.
 
 ## Manifest Serialization & Git Sync (Integration Data)
 

@@ -29,9 +29,7 @@ from src.models.contracts.notifications import (
     NotificationStatus,
 )
 from src.models.orm import (
-    Agent,
     Application,
-    Form,
     Workflow,
 )
 from src.models.orm.file_index import FileIndex
@@ -198,11 +196,11 @@ async def cleanup_orphaned(
     db: AsyncSession = Depends(get_db),
 ) -> CleanupOrphanedResponse:
     """
-    Find and deactivate entities that reference files no longer in FileIndex.
+    Find and deactivate workflows that reference files no longer in FileIndex.
 
-    For each entity type (workflow, form, agent), queries active records and
-    checks whether their associated file path exists in file_index. Entities
-    whose files are missing are set to is_active=False.
+    Forms and agents are managed via the manifest (``.bifrost/forms.yaml`` /
+    ``.bifrost/agents.yaml``); stale entries are cleaned up by the manifest
+    import pipeline, not here.
 
     This is a synchronous DB-only operation (no S3/checkout needed).
     """
@@ -213,7 +211,7 @@ async def cleanup_orphaned(
 
         cleaned: list[OrphanedEntity] = []
 
-        # 1. Workflows — have a direct `path` column
+        # Workflows — have a direct `path` column
         wf_result = await db.execute(
             select(Workflow).where(Workflow.is_active.is_(True))
         )
@@ -226,36 +224,6 @@ async def cleanup_orphaned(
                     entity_id=str(wf.id),
                     entity_name=wf.display_name or wf.name,
                     path=wf.path,
-                ))
-
-        # 2. Forms — file may be at any path ending in {id}.form.yaml
-        form_result = await db.execute(
-            select(Form).where(Form.is_active.is_(True))
-        )
-        for form in form_result.scalars().all():
-            suffix = f"{form.id}.form.yaml"
-            if not any(p.endswith(suffix) for p in existing_paths):
-                form.is_active = False
-                cleaned.append(OrphanedEntity(
-                    entity_type="form",
-                    entity_id=str(form.id),
-                    entity_name=form.name,
-                    path=suffix,
-                ))
-
-        # 3. Agents — file may be at any path ending in {id}.agent.yaml
-        agent_result = await db.execute(
-            select(Agent).where(Agent.is_active.is_(True))
-        )
-        for agent in agent_result.scalars().all():
-            suffix = f"{agent.id}.agent.yaml"
-            if not any(p.endswith(suffix) for p in existing_paths):
-                agent.is_active = False
-                cleaned.append(OrphanedEntity(
-                    entity_type="agent",
-                    entity_id=str(agent.id),
-                    entity_name=agent.name,
-                    path=suffix,
                 ))
 
         await db.commit()

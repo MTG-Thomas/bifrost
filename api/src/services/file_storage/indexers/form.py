@@ -16,36 +16,9 @@ import yaml
 from pydantic import ValidationError
 
 from src.models import Form, FormField as FormFieldORM, Workflow
-from src.models.contracts.forms import FormField, FormPublic
+from src.models.contracts.forms import FormField
 
 logger = logging.getLogger(__name__)
-
-
-def _serialize_form_to_yaml(form: Form) -> bytes:
-    """
-    Serialize a Form to YAML bytes using Pydantic model_dump.
-
-    Uses FormPublic.model_dump() with exclude=True fields auto-excluded.
-    UUIDs are used directly for all cross-references.
-
-    Args:
-        form: Form ORM instance with fields relationship loaded
-
-    Returns:
-        YAML serialized as UTF-8 bytes
-    """
-    form_public = FormPublic.model_validate(form)
-
-    # Explicitly exclude fields that shouldn't be in exported files
-    # (these are runtime/database-specific, not portable)
-    form_data = form_public.model_dump(
-        mode="json",
-        exclude_none=True,
-        exclude={"organization_id", "access_level", "created_at", "updated_at"},
-    )
-
-    content = yaml.dump(form_data, default_flow_style=False, sort_keys=True)
-    return (content.rstrip() + "\n").encode("utf-8")
 
 
 class FormIndexer:

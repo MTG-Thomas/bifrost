@@ -715,24 +715,19 @@ class TestPull:
         sync_service,
         working_clone,
     ):
-        """Commit .form.yaml to repo, desktop_sync → forms table populated."""
+        """Inline form content in manifest → desktop_sync → forms table populated."""
         work_dir = Path(working_clone.working_dir)
 
         form_id = str(uuid4())
         wf_id = str(uuid4())
 
-        # Create form yaml
-        forms_dir = work_dir / "forms"
-        forms_dir.mkdir(exist_ok=True)
-        form_file = forms_dir / f"{form_id}.form.yaml"
-        form_file.write_text(SAMPLE_FORM_YAML.format(workflow_id=wf_id))
-
-        # Create manifest
+        # Create manifest with inline form content (no separate .form.yaml file)
         manifest_content = _make_manifest(
             forms={
                 "Onboarding Form": {
                     "id": form_id,
-                    "path": f"forms/{form_id}.form.yaml",
+                    "name": "Onboarding Form",
+                    "workflow_id": wf_id,
                 }
             }
         )
@@ -741,7 +736,6 @@ class TestPull:
         (bifrost_dir / "metadata.yaml").write_text(manifest_content)
 
         working_clone.index.add([
-            f"forms/{form_id}.form.yaml",
             ".bifrost/metadata.yaml",
         ])
         working_clone.index.commit("add test form")
@@ -765,7 +759,7 @@ class TestPull:
         sync_service,
         working_clone,
     ):
-        """Form pulled from repo should have field definitions."""
+        """Form pulled from repo with inline content should have field definitions."""
         from src.models.orm.forms import Form, FormField
         from src.models.orm.workflows import Workflow
 
@@ -783,33 +777,28 @@ class TestPull:
         await db_session.flush()
 
         form_id = uuid4()
-        form_yaml = f"""name: Test Form With Fields
-description: Form with field definitions
-workflow_id: {wf_id}
-form_schema:
-  fields:
-  - name: email
-    type: text
-    label: Email Address
-    required: true
-  - name: count
-    type: number
-    label: Count
-    required: false
-    default_value: 5
-"""
-        form_dir = work_dir / "forms"
-        form_dir.mkdir(exist_ok=True)
-        (form_dir / f"{form_id}.form.yaml").write_text(form_yaml)
 
         manifest_dir = work_dir / ".bifrost"
         manifest_dir.mkdir(exist_ok=True)
         (manifest_dir / "metadata.yaml").write_text(f"""forms:
   Test Form With Fields:
     id: "{form_id}"
-    path: forms/{form_id}.form.yaml
+    name: Test Form With Fields
+    workflow_id: "{wf_id}"
+    description: Form with field definitions
     organization_id: null
     roles: []
+    form_schema:
+      fields:
+      - name: email
+        type: text
+        label: Email Address
+        required: true
+      - name: count
+        type: number
+        label: Count
+        required: false
+        default_value: 5
 workflows: {{}}
 agents: {{}}
 apps: {{}}
@@ -817,7 +806,7 @@ organizations: []
 roles: []
 """)
 
-        working_clone.index.add(["forms/", ".bifrost/"])
+        working_clone.index.add([".bifrost/"])
         working_clone.index.commit("Add form with fields")
         working_clone.remotes.origin.push()
 
@@ -867,19 +856,8 @@ roles: []
         await db_session.flush()
 
         agent_id = uuid4()
-        agent_yaml = f"""name: Test Agent With Tools
-description: Agent with tool associations
-system_prompt: You are a test agent.
-channels:
-- chat
-tool_ids:
-- {wf_id}
-"""
-        # Write agent file + workflow file + manifest
-        agent_dir = work_dir / "agents"
-        agent_dir.mkdir(exist_ok=True)
-        (agent_dir / f"{agent_id}.agent.yaml").write_text(agent_yaml)
 
+        # Write workflow file + manifest with inline agent content
         wf_dir = work_dir / "workflows"
         wf_dir.mkdir(exist_ok=True)
         (wf_dir / "agent_tool.py").write_text(SAMPLE_WORKFLOW_PY)
@@ -889,7 +867,13 @@ tool_ids:
         (manifest_dir / "metadata.yaml").write_text(f"""agents:
   Test Agent With Tools:
     id: "{agent_id}"
-    path: agents/{agent_id}.agent.yaml
+    name: Test Agent With Tools
+    description: Agent with tool associations
+    system_prompt: You are a test agent.
+    channels:
+    - chat
+    tool_ids:
+    - "{wf_id}"
     organization_id: null
     roles: []
 workflows:
@@ -904,7 +888,7 @@ roles: []
 """)
 
         # Commit to repo
-        working_clone.index.add(["agents/", "workflows/", ".bifrost/"])
+        working_clone.index.add(["workflows/", ".bifrost/"])
         working_clone.index.commit("Add agent with tools")
         working_clone.remotes.origin.push()
 
@@ -1399,16 +1383,11 @@ class TestRoundTrip:
         db_session.add(form)
         await db_session.commit()
 
-        # Write both entity files to persistent dir (simulates RepoSyncWriter)
+        # Write workflow file + manifest (form content is inline in the manifest)
         write_entity_to_repo(
             sync_service._persistent_dir,
             "workflows/git_sync_test_formref.py",
             SAMPLE_WORKFLOW_PY,
-        )
-        write_entity_to_repo(
-            sync_service._persistent_dir,
-            f"forms/{form_id}.form.yaml",
-            SAMPLE_FORM_YAML.format(workflow_id=wf_id),
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
 
@@ -1416,16 +1395,15 @@ class TestRoundTrip:
         await sync_service.desktop_commit("initial commit")
         await sync_service.desktop_sync(confirm_deletes=True)
 
-        # Verify form yaml in repo contains UUID reference
+        # Verify the inline manifest entry contains the workflow UUID reference
         verify_path = tmp_path / "verify"
         Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
 
-        # Find our specific form yaml by ID
-        form_file = verify_path / "forms" / f"{form_id}.form.yaml"
-        assert form_file.exists(), f"Form yaml should exist in repo at forms/{form_id}.form.yaml"
-
-        form_yaml = form_file.read_text()
-        assert str(wf_id) in form_yaml, "Form yaml should contain workflow UUID reference"
+        forms_manifest = verify_path / ".bifrost" / "forms.yaml"
+        assert forms_manifest.exists(), "forms.yaml should be in repo"
+        manifest_text = forms_manifest.read_text()
+        assert str(form_id) in manifest_text, "Manifest should contain form UUID"
+        assert str(wf_id) in manifest_text, "Manifest should contain workflow UUID reference"
 
         # Pull back
         result = await sync_service.desktop_sync(confirm_deletes=True)
@@ -1473,20 +1451,7 @@ class TestRoundTrip:
         db_session.add(AgentTool(agent_id=agent_id, workflow_id=wf_id))
         await db_session.commit()
 
-        # Write agent YAML and workflow file to persistent dir
-        agent_yaml = f"""id: {agent_id}
-name: Round Trip Agent
-system_prompt: Test agent for round trip
-channels:
-- chat
-tool_ids:
-- {wf_id}
-"""
-        write_entity_to_repo(
-            sync_service._persistent_dir,
-            f"agents/{agent_id}.agent.yaml",
-            agent_yaml,
-        )
+        # Write workflow file + manifest (agent content is inline in the manifest)
         write_entity_to_repo(
             sync_service._persistent_dir,
             "workflows/git_sync_test_rt_agent_tool.py",
@@ -1499,13 +1464,14 @@ tool_ids:
         assert commit_result.success is True
         await sync_service.desktop_sync(confirm_deletes=True)
 
-        # Verify agent YAML exists in repo with tool_ids
+        # Verify the inline manifest entry contains the agent and its tool UUID
         verify_path = tmp_path / "verify"
         Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
-        agent_file = verify_path / "agents" / f"{agent_id}.agent.yaml"
-        assert agent_file.exists(), "Agent YAML should be in repo"
-        agent_content = agent_file.read_text()
-        assert str(wf_id) in agent_content, "Agent YAML should contain tool UUID"
+        agents_manifest = verify_path / ".bifrost" / "agents.yaml"
+        assert agents_manifest.exists(), "agents.yaml should be in repo"
+        manifest_text = agents_manifest.read_text()
+        assert str(agent_id) in manifest_text, "Manifest should contain agent UUID"
+        assert str(wf_id) in manifest_text, "Manifest should contain tool UUID"
 
         # Pull back
         result = await sync_service.desktop_sync(confirm_deletes=True)
@@ -1576,28 +1542,7 @@ tool_ids:
         ))
         await db_session.commit()
 
-        # Write form YAML and workflow file to persistent dir
-        form_yaml = f"""id: {form_id}
-name: Round Trip Form
-description: Test form for round trip
-workflow_id: {wf_id}
-form_schema:
-  fields:
-  - name: email
-    type: text
-    label: Email Address
-    required: true
-  - name: count
-    type: number
-    label: Count
-    required: false
-    default_value: 5
-"""
-        write_entity_to_repo(
-            sync_service._persistent_dir,
-            f"forms/{form_id}.form.yaml",
-            form_yaml,
-        )
+        # Write workflow file + manifest (form content is inline in the manifest)
         write_entity_to_repo(
             sync_service._persistent_dir,
             "workflows/git_sync_test_rt_form.py",
@@ -1610,11 +1555,14 @@ form_schema:
         assert commit_result.success is True
         await sync_service.desktop_sync(confirm_deletes=True)
 
-        # Verify form YAML exists in repo
+        # Verify the inline form manifest entry round-trips
         verify_path = tmp_path / "verify"
         Repo.clone_from(f"file://{bare_repo}", str(verify_path), branch="main")
-        form_file = verify_path / "forms" / f"{form_id}.form.yaml"
-        assert form_file.exists(), "Form YAML should be in repo"
+        forms_manifest = verify_path / ".bifrost" / "forms.yaml"
+        assert forms_manifest.exists(), "forms.yaml should be in repo"
+        manifest_text = forms_manifest.read_text()
+        assert str(form_id) in manifest_text
+        assert "email" in manifest_text and "count" in manifest_text
 
         # Pull back
         result = await sync_service.desktop_sync(confirm_deletes=True)
@@ -1673,16 +1621,11 @@ class TestOrphanDetection:
         db_session.add(form)
         await db_session.commit()
 
-        # Write both entity files and commit+push
+        # Write workflow file + manifest (form content is inline)
         write_entity_to_repo(
             sync_service._persistent_dir,
             "workflows/git_sync_test_orphan.py",
             SAMPLE_WORKFLOW_PY,
-        )
-        write_entity_to_repo(
-            sync_service._persistent_dir,
-            f"forms/{form_id}.form.yaml",
-            SAMPLE_FORM_YAML.format(workflow_id=wf_id),
         )
         await write_manifest_to_repo(db_session, sync_service._persistent_dir)
         await sync_service.desktop_commit("initial commit")
@@ -1773,17 +1716,11 @@ class TestPreflightValidation:
         sync_service,
         working_clone,
     ):
-        """Commit form yaml referencing nonexistent UUID → preflight returns error."""
+        """Commit form manifest entry referencing nonexistent UUID → preflight returns error."""
         work_dir = Path(working_clone.working_dir)
 
         fake_wf_id = str(uuid4())
         form_id = str(uuid4())
-
-        forms_dir = work_dir / "forms"
-        forms_dir.mkdir(exist_ok=True)
-        (forms_dir / f"{form_id}.form.yaml").write_text(
-            SAMPLE_FORM_YAML.format(workflow_id=fake_wf_id)
-        )
 
         bifrost_dir = work_dir / ".bifrost"
         bifrost_dir.mkdir(exist_ok=True)
@@ -1791,14 +1728,14 @@ class TestPreflightValidation:
             forms={
                 "Onboarding Form": {
                     "id": form_id,
-                    "path": f"forms/{form_id}.form.yaml",
+                    "name": "Onboarding Form",
+                    "workflow_id": fake_wf_id,
                 }
             }
             # No workflow in manifest — ref is unresolved
         ))
 
         working_clone.index.add([
-            f"forms/{form_id}.form.yaml",
             ".bifrost/metadata.yaml",
         ])
         working_clone.index.commit("add form with bad ref")
@@ -3776,15 +3713,6 @@ class TestRoleAssignmentSync:
         wf_path.parent.mkdir(parents=True, exist_ok=True)
         wf_path.write_text(SAMPLE_WORKFLOW_PY)
 
-        # Write form YAML
-        form_path = work_dir / "forms" / f"{form_id}.form.yaml"
-        form_path.parent.mkdir(parents=True, exist_ok=True)
-        form_path.write_text(yaml.dump({
-            "name": "RoleForm",
-            "workflow_id": str(wf_id),
-            "fields": [],
-        }, default_flow_style=False))
-
         (bifrost_dir / "organizations.yaml").write_text(yaml.dump({
             "organizations": [{"id": str(org_id), "name": "FormRoleOrg"}]
         }, default_flow_style=False))
@@ -3805,7 +3733,8 @@ class TestRoleAssignmentSync:
             "forms": {
                 "RoleForm": {
                     "id": form_id,
-                    "path": f"forms/{form_id}.form.yaml",
+                    "name": "RoleForm",
+                    "workflow_id": str(wf_id),
                     "organization_id": str(org_id),
                     "roles": [str(role_id)],
                 }
@@ -3814,7 +3743,6 @@ class TestRoleAssignmentSync:
 
         working_clone.index.add([
             "workflows/form_role.py",
-            f"forms/{form_id}.form.yaml",
             ".bifrost/organizations.yaml",
             ".bifrost/roles.yaml",
             ".bifrost/workflows.yaml",
@@ -4097,20 +4025,6 @@ class TestImportOrder:
         wf_path.parent.mkdir(parents=True, exist_ok=True)
         wf_path.write_text(SAMPLE_WORKFLOW_PY)
 
-        # Write form YAML
-        form_path = work_dir / "forms" / f"{form_id}.form.yaml"
-        form_path.parent.mkdir(parents=True, exist_ok=True)
-        form_path.write_text(yaml.dump({
-            "name": "FullTestForm", "workflow_id": wf_id, "fields": [],
-        }, default_flow_style=False))
-
-        # Write agent YAML
-        agent_path = work_dir / "agents" / f"{agent_id}.agent.yaml"
-        agent_path.parent.mkdir(parents=True, exist_ok=True)
-        agent_path.write_text(yaml.dump({
-            "name": "FullTestAgent", "system_prompt": "test", "tool_ids": [wf_id],
-        }, default_flow_style=False))
-
         # Write app layout file
         app_dir = work_dir / "apps" / "fullapp"
         app_dir.mkdir(parents=True, exist_ok=True)
@@ -4197,7 +4111,8 @@ class TestImportOrder:
             "forms": {
                 "FullTestForm": {
                     "id": form_id,
-                    "path": f"forms/{form_id}.form.yaml",
+                    "name": "FullTestForm",
+                    "workflow_id": wf_id,
                     "organization_id": org_id,
                     "roles": [role_id],
                 }
@@ -4207,7 +4122,9 @@ class TestImportOrder:
             "agents": {
                 "FullTestAgent": {
                     "id": agent_id,
-                    "path": f"agents/{agent_id}.agent.yaml",
+                    "name": "FullTestAgent",
+                    "system_prompt": "test",
+                    "tool_ids": [wf_id],
                     "organization_id": org_id,
                     "roles": [role_id],
                 }
@@ -4216,8 +4133,6 @@ class TestImportOrder:
 
         working_clone.index.add([
             "workflows/full_test.py",
-            f"forms/{form_id}.form.yaml",
-            f"agents/{agent_id}.agent.yaml",
             "apps/fullapp/_layout.tsx",
             ".bifrost/organizations.yaml",
             ".bifrost/roles.yaml",

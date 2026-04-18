@@ -12,18 +12,15 @@ from typing import TYPE_CHECKING, Callable
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from fastapi import HTTPException
 
 from src.config import Settings
-from src.models import Workflow, Form, Agent
+from src.models import Workflow
 from src.models.orm.file_index import FileIndex
 from src.core.module_cache import set_module, invalidate_module
 from src.services.repo_storage import REPO_PREFIX
 from .models import WriteResult
-from .indexers.form import _serialize_form_to_yaml
-from .indexers.agent import _serialize_agent_to_yaml
 from .entity_detector import detect_platform_entity_type
 
 if TYPE_CHECKING:
@@ -94,10 +91,9 @@ class FileOperationsService:
         """
         Read file content.
 
-        Routes reads by path convention:
-        - {uuid}.form.yaml -> serialize from forms table
-        - {uuid}.agent.yaml -> serialize from agents table
-        - Everything else -> fetch from file_index, fallback to S3
+        Python modules go through the Redis cache first (workers import via the
+        cache), then fall back to S3 ``_repo/``. Everything else reads directly
+        from S3.
 
         Args:
             path: Relative path within workspace
@@ -108,49 +104,6 @@ class FileOperationsService:
         Raises:
             FileNotFoundError: If file doesn't exist
         """
-        import re
-        from uuid import UUID
-
-        # Forms: {uuid}.form.yaml (any directory)
-        form_match = re.search(r"([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
-        if form_match:
-            try:
-                form_id = UUID(form_match.group(1))
-            except ValueError:
-                raise FileNotFoundError(f"Invalid form path: {path}")
-            form_stmt = (
-                select(Form)
-                .options(selectinload(Form.fields))
-                .where(Form.id == form_id)
-            )
-            form_result = await self.db.execute(form_stmt)
-            form = form_result.scalar_one_or_none()
-            if form is not None:
-                return _serialize_form_to_yaml(form), None
-            raise FileNotFoundError(f"Form not found: {form_id}")
-
-        # Agents: {uuid}.agent.yaml (any directory)
-        agent_match = re.search(r"([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
-        if agent_match:
-            try:
-                agent_id = UUID(agent_match.group(1))
-            except ValueError:
-                raise FileNotFoundError(f"Invalid agent path: {path}")
-            agent_stmt = (
-                select(Agent)
-                .options(
-                    selectinload(Agent.tools),
-                    selectinload(Agent.delegated_agents),
-                    selectinload(Agent.roles),
-                )
-                .where(Agent.id == agent_id)
-            )
-            agent_result = await self.db.execute(agent_stmt)
-            agent = agent_result.scalar_one_or_none()
-            if agent is not None:
-                return _serialize_agent_to_yaml(agent), None
-            raise FileNotFoundError(f"Agent not found: {agent_id}")
-
         # Python modules: Redis cache → S3 fallback (for fast worker imports)
         if path.endswith(".py"):
             from src.core.module_cache import get_module
