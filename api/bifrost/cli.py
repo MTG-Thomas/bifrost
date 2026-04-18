@@ -367,6 +367,10 @@ def main(args: list[str] | None = None) -> int:
         if command == "pull":
             return handle_pull(args[1:])
 
+        if command == "export":
+            from bifrost.commands.export import handle_export
+            return handle_export(args[1:])
+
         if command == "watch":
             return handle_watch(args[1:])
 
@@ -405,6 +409,7 @@ Commands:
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
+  export      Export a workspace bundle (optionally portable/scrubbed)
   watch       Watch for file changes and auto-push
   api         Generic authenticated API request
   migrate-imports  Rewrite "bifrost" imports into user/lucide/router imports
