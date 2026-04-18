@@ -45,83 +45,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/applications", tags=["Applications"])
 
 
-# =============================================================================
-# Known components available in the app builder runtime
-# =============================================================================
-
-KNOWN_APP_COMPONENTS = {
-    # React
-    "React", "Fragment",
-    # Routing
-    "Outlet", "Link", "NavLink", "Navigate", "RequireRole",
-    # Layout
-    "Card", "CardHeader", "CardFooter", "CardTitle", "CardAction", "CardDescription", "CardContent",
-    # Forms
-    "Button", "Input", "Label", "Textarea", "Checkbox", "Switch",
-    "Select", "SelectContent", "SelectGroup", "SelectItem", "SelectLabel", "SelectTrigger", "SelectValue", "SelectSeparator",
-    "RadioGroup", "RadioGroupItem", "Combobox", "MultiCombobox", "TagsInput", "Slider",
-    # Display
-    "Badge", "Avatar", "AvatarImage", "AvatarFallback", "Alert", "AlertTitle", "AlertDescription",
-    "Skeleton", "Progress",
-    # Navigation
-    "Tabs", "TabsList", "TabsTrigger", "TabsContent",
-    "Pagination", "PaginationContent", "PaginationEllipsis", "PaginationItem", "PaginationLink", "PaginationNext", "PaginationPrevious",
-    # Feedback
-    "Dialog", "DialogClose", "DialogContent", "DialogDescription", "DialogFooter", "DialogHeader", "DialogTitle", "DialogTrigger",
-    "AlertDialog", "AlertDialogTrigger", "AlertDialogContent", "AlertDialogHeader", "AlertDialogFooter", "AlertDialogTitle", "AlertDialogDescription", "AlertDialogAction", "AlertDialogCancel",
-    "Tooltip", "TooltipContent", "TooltipProvider", "TooltipTrigger",
-    "Popover", "PopoverContent", "PopoverTrigger", "PopoverAnchor",
-    "HoverCard", "HoverCardContent", "HoverCardTrigger",
-    "Sheet", "SheetClose", "SheetContent", "SheetDescription", "SheetFooter", "SheetHeader", "SheetTitle", "SheetTrigger",
-    "Command", "CommandDialog", "CommandEmpty", "CommandGroup", "CommandInput", "CommandItem", "CommandList", "CommandSeparator", "CommandShortcut",
-    "ContextMenu", "ContextMenuCheckboxItem", "ContextMenuContent", "ContextMenuGroup", "ContextMenuItem", "ContextMenuLabel", "ContextMenuPortal", "ContextMenuRadioGroup", "ContextMenuRadioItem", "ContextMenuSeparator", "ContextMenuShortcut", "ContextMenuSub", "ContextMenuSubContent", "ContextMenuSubTrigger", "ContextMenuTrigger",
-    # Data Display
-    "Table", "TableHeader", "TableBody", "TableFooter", "TableHead", "TableRow", "TableCell", "TableCaption",
-    # Calendar/Date
-    "Calendar", "DateRangePicker",
-    # Accordion/Collapsible
-    "Accordion", "AccordionContent", "AccordionItem", "AccordionTrigger",
-    "Collapsible", "CollapsibleContent", "CollapsibleTrigger",
-    # Toggle
-    "Toggle", "ToggleGroup", "ToggleGroupItem",
-    # Separator
-    "Separator",
-    # DropdownMenu
-    "DropdownMenu", "DropdownMenuCheckboxItem", "DropdownMenuContent", "DropdownMenuGroup", "DropdownMenuItem", "DropdownMenuLabel", "DropdownMenuPortal", "DropdownMenuRadioGroup", "DropdownMenuRadioItem", "DropdownMenuSeparator", "DropdownMenuShortcut", "DropdownMenuSub", "DropdownMenuSubContent", "DropdownMenuSubTrigger", "DropdownMenuTrigger",
-}
-
-# Note: Lucide icons (lucide-react) are all valid - hundreds of icons available.
-# We skip checking those to avoid false positives.
-
-# All names available via `import { ... } from "bifrost"` in app code.
-# Built from: React exports, platform scope (scope.ts), UI components,
-# utility functions (utils.ts), and date-fns.
-KNOWN_BIFROST_EXPORTS = KNOWN_APP_COMPONENTS | {
-    # Platform hooks (from scope.ts / createPlatformScope)
-    "useWorkflowQuery", "useWorkflowMutation",
-    "useUser", "useAppState",
-    "useNavigate", "useParams", "useSearchParams",
-    "useLocation", "useMatch", "useResolvedPath", "useOutletContext",
-    # Platform functions
-    "navigate",
-    # React hooks and utilities (spread via ...React in runtime)
-    "useState", "useEffect", "useCallback", "useMemo", "useRef",
-    "useContext", "useReducer", "useLayoutEffect", "useId",
-    "useTransition", "useDeferredValue", "useSyncExternalStore",
-    "useInsertionEffect", "useDebugValue", "useImperativeHandle",
-    # React component utilities
-    "Fragment", "Suspense", "lazy", "memo", "forwardRef",
-    "createContext", "createRef", "createElement", "cloneElement",
-    "isValidElement", "Children", "StrictMode",
-    # Utility functions (from ...utils spread)
-    "cn", "formatDate", "formatDateShort", "formatTime",
-    "formatRelativeTime", "formatBytes", "formatNumber",
-    "formatCost", "formatDuration",
-    # Third-party utilities available in scope
-    "clsx", "twMerge", "format",
-}
-
-
 class AppValidationIssue(BaseModel):
     severity: str  # "error" or "warning"
     file: str
@@ -410,16 +333,29 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         if not application:
             return None
 
-        # Re-compile all files from _repo/ before publishing
+        # Bundle the app's current source into preview before promoting to
+        # live. This replaces the legacy per-file compiler: the bundler is
+        # the runtime, so `preview/` must contain a fresh bundle (manifest +
+        # hashed chunks) that matches the source being published. A failed
+        # bundle MUST fail the publish — we will not promote a stale or
+        # partial preview into live.
+        from src.services.app_bundler import BundlerService
         from src.services.app_storage import AppStorageService
         app_storage = AppStorageService()
-        synced, compile_errors = await app_storage.sync_preview_compiled(
-            str(app_id), application.repo_prefix
-        )
-        if compile_errors:
-            logger.warning(f"Compile warnings during publish: {compile_errors}")
 
-        # Now copy preview -> live
+        bundler = BundlerService()
+        bundle_result = await bundler.build(
+            str(app_id),
+            application.repo_prefix,
+            "preview",
+            dependencies=application.dependencies or {},
+        )
+        if not bundle_result.success:
+            first_err = (bundle_result.errors or [None])[0]
+            err_text = first_err.text if first_err else "unknown error"
+            raise ValueError(f"Bundle build failed during publish: {err_text}")
+
+        # Promote the freshly-built preview bundle to live.
         published_count = await app_storage.publish(str(app_id))
 
         if published_count == 0:
@@ -1052,13 +988,6 @@ async def validate_application(
     declared_deps = app.dependencies or {}
     referenced_deps: set[str] = set()
 
-    # Build list of component files from the file index for cross-referencing
-    component_files = {
-        p[len(prefix) + len("components/"):].replace(".tsx", "").replace(".ts", "")
-        for p in files
-        if p.startswith(f"{prefix}components/") and (p.endswith(".tsx") or p.endswith(".ts"))
-    }
-
     # Collect all compilable TSX/TS files
     compilable_files = []
     for full_path, content in files.items():
@@ -1104,29 +1033,6 @@ async def validate_application(
                         message="Layout uses {children} but should use <Outlet /> for page routing. Replace {children} with <Outlet />.",
                     ))
 
-            # Check for undefined bifrost imports
-            bifrost_imports = re.findall(
-                r'import\s+\{([^}]+)\}\s+from\s+["\']bifrost["\']',
-                content,
-            )
-            for match in bifrost_imports:
-                names = [n.strip().split(" as ")[0].strip() for n in match.split(",")]
-                for name in names:
-                    if name and name not in KNOWN_BIFROST_EXPORTS:
-                        # PascalCase names could be Lucide icons — warn, don't error
-                        if name[0].isupper():
-                            warnings.append(AppValidationIssue(
-                                severity="warning",
-                                file=rel_path,
-                                message=f"'{name}' is not a known bifrost export (could be a Lucide icon)",
-                            ))
-                        else:
-                            errors.append(AppValidationIssue(
-                                severity="error",
-                                file=rel_path,
-                                message=f"'{name}' is not available from 'bifrost'. Check spelling or see platform docs for available exports.",
-                            ))
-
             # Check for forbidden patterns
             forbidden = [
                 (r'\brequire\s*\(', "require() is not allowed"),
@@ -1151,18 +1057,6 @@ async def validate_application(
                 pkg = match.group(1)
                 if pkg != "bifrost":
                     referenced_deps.add(pkg)
-
-            # Check for unknown components (JSX tags starting with uppercase)
-            component_refs = set(re.findall(r'<([A-Z][a-zA-Z0-9]*)', content))
-            for comp_name in component_refs:
-                if comp_name not in KNOWN_APP_COMPONENTS and comp_name not in component_files:
-                    # Could be a lucide icon (hundreds of them) or user-defined component
-                    # Only warn, don't error
-                    warnings.append(AppValidationIssue(
-                        severity="warning",
-                        file=rel_path,
-                        message=f"Unknown component <{comp_name}> - verify it exists in the runtime",
-                    ))
 
             # Check workflow IDs
             # Match useWorkflowQuery("...") and useWorkflowMutation("...")

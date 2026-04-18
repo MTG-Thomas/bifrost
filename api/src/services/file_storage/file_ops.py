@@ -28,6 +28,7 @@ from .entity_detector import detect_platform_entity_type
 
 if TYPE_CHECKING:
     from src.models.orm.applications import Application
+    from src.services.app_bundler import BundleResult
     from .diagnostics import DiagnosticsService
     from .deactivation import DeactivationProtectionService
 
@@ -496,9 +497,7 @@ class FileOperationsService:
         line, column, text) so the UI can render a banner over the last-good
         render. A system diagnostic notification is also created.
         """
-        from src.core.pubsub import publish_app_code_file_update
-        from src.services.app_bundler import BundlerService
-        from .diagnostics import FileDiagnosticInfo
+        from src.services.app_bundler import BundleMessage, BundleResult, BundlerService
 
         app_prefix = app.repo_prefix
         relative_path = path[len(app_prefix):] if path.startswith(app_prefix) else path
@@ -513,23 +512,48 @@ class FileOperationsService:
                 dependencies=app.dependencies or {},
             )
         except Exception as e:
-            # Bundler itself crashed (not an esbuild failure — something below it).
+            # Bundler should surface esbuild failures via BundleResult.errors
+            # rather than raising. If it raises anyway (subprocess blew up,
+            # S3 upload mid-build, etc.) synthesize a failure result and
+            # route through the same reporting path so the file write
+            # itself does not fail.
             logger.exception(f"Bundler crashed for app={app_id}: {e}")
-            try:
-                await publish_app_code_file_update(
-                    app_id=app_id,
-                    user_id=updated_by,
-                    user_name=updated_by,
-                    path=relative_path,
-                    source=content_str,
-                    action="update",
-                    error={"messages": [{"text": f"Bundler crashed: {e}"}]},
-                )
-            except Exception as pub_err:
-                logger.warning(f"Failed to publish bundler-crash event: {pub_err}")
-            return
+            result = BundleResult(
+                success=False,
+                errors=[BundleMessage(text=f"Bundler crashed: {e}")],
+            )
 
-        # Always publish — success carries `bundle`, failure carries `error`.
+        await self._report_bundle_result(
+            result,
+            app_id=app_id,
+            app_prefix=app_prefix,
+            path=path,
+            relative_path=relative_path,
+            content_str=content_str,
+            updated_by=updated_by,
+        )
+
+    async def _report_bundle_result(
+        self,
+        result: "BundleResult",
+        *,
+        app_id: str,
+        app_prefix: str,
+        path: str,
+        relative_path: str,
+        content_str: str,
+        updated_by: str,
+    ) -> None:
+        """Surface a bundle outcome uniformly: pubsub + diagnostics + logging.
+
+        Called for every build attempt — successful or not — so there is one
+        code path that decides what gets published, what diagnostic state is
+        updated, and what gets logged. Failures here are logged and swallowed
+        so the enclosing file write still succeeds.
+        """
+        from src.core.pubsub import publish_app_code_file_update
+        from .diagnostics import FileDiagnosticInfo
+
         bundle_payload: dict | None = None
         error_payload: dict | None = None
 
@@ -540,14 +564,13 @@ class FileOperationsService:
                 "css": m.css,
                 "duration_ms": m.duration_ms,
             }
-            # Clear any prior diagnostic for this file now that things build.
             try:
                 await self._diagnostics.clear_diagnostic_notification(path)
             except Exception as e:
                 logger.warning(f"Failed to clear bundler diagnostic for {path}: {e}")
             logger.info(
                 f"App bundle rebuilt: app={app_id} path={relative_path} "
-                f"entry={m.entry} time={m.duration_ms}ms"
+                f"entry={m.entry} duration_ms={m.duration_ms}"
             )
         else:
             errors = result.errors or []
@@ -563,8 +586,6 @@ class FileOperationsService:
                     for e in errors
                 ],
             }
-            # Create an admin notification so this is visible outside the
-            # live preview UI (matches the path used for Python SDK issues).
             try:
                 diagnostics = [
                     FileDiagnosticInfo(
@@ -577,19 +598,28 @@ class FileOperationsService:
                     for e in errors
                 ]
                 # Prefer the first error's file path for the notification
-                # target so "view file" jumps to the right place.
+                # target so "view file" jumps to the right place. esbuild
+                # file paths are already app-relative.
                 target_path = path
                 if errors and errors[0].file:
-                    # esbuild file is already app-relative; rebuild full path.
                     target_path = app_prefix + errors[0].file
                 await self._diagnostics.create_diagnostic_notification(
                     target_path, diagnostics
                 )
             except Exception as e:
                 logger.warning(f"Failed to create bundler diagnostic for {path}: {e}")
+            first = errors[0] if errors else None
+            first_file = first.file if first else None
+            first_line = first.line if first else None
+            first_col = first.column if first else None
+            first_msg = first.text if first else ""
             logger.warning(
                 f"App bundle BUILD FAILED: app={app_id} path={relative_path} "
-                f"errors={len(errors)}"
+                f"errors={len(errors)} "
+                f"first_file={first_file!r} "
+                f"first_line={first_line} "
+                f"first_col={first_col} "
+                f"first_msg={first_msg!r}"
             )
 
         try:

@@ -83,6 +83,19 @@ The bundler also emits a console warning listing deprecated patterns for the LLM
 
 ## Remaining work
 
+## Status update — 2026-04-16 late afternoon
+
+Phases 1–3 shipped. 11/11 registered apps in `bifrost-workspace` render cleanly on the bundled runtime with `?bundled=1`. The migration CLI + tests are in. One main-repo commit: Phase 2 + 3 bundler/save-loop/CLI/skill together.
+
+**What was harder than the plan assumed:**
+
+- **Classifier built in 6 rounds, not 1.** The migrate-imports precedence, lucide-alias handling, user-component export style, multi-line import insertion, lowercase-name inference, and not-counting-import-bodies-as-references each needed a fix after a Chrome test exposed it. Each bug was discoverable up-front from reading `app-code-runtime.ts`'s `$` registry and comparing to real apps — I didn't do that reading.
+- **Bundler had two architectural bugs surfaced only in later apps.** The entry file wrapped `<BrowserRouter>` (nested-router error) and used `createRoot(container).render(...)` (sibling React root, no context inheritance from AuthProvider/QueryClient). Fixes: drop BrowserRouter, export a default React component, render it inline in `BundledAppShell`.
+- **Dual-React via esm.sh.** User deps like recharts bundled their own React. Fix: `?external=react,react-dom,...` on every esm.sh URL.
+- **Missing-app confusion.** Four apps in `bifrost-workspace/apps/*` weren't registered in the Applications DB table (`employee-onboarding`, `unifi-site-manager`, `dep-test`, `embed-test`). Looked like bundler failures; turned out to be "never created."
+
+**Patchy parts Phase 3.5 must clean up** (see below).
+
 ### Phase 2 — Wire the save loop
 
 **Goal:** every file write triggers a bundle rebuild. No env guard, no flag. Legacy `AppCompilerService.compile_file` is still available but unused by the app path.
@@ -162,35 +175,126 @@ One commit on main: `bifrost migrate-imports` CLI command + rewrite of `bifrost-
 - The bundler still supports the old pattern during Phase 4 transition so nothing breaks mid-deploy
 - Deprecation warnings in the browser console nudge external users to migrate
 
+### Phase 3.5 — Harden what we built
+
+Must land before Phase 4. Phases 2–3 shipped a lot of bolt-on fixes under time pressure; 3.5 consolidates them so Phase 4's deletions don't expose the patchwork.
+
+**1. One source of truth for platform names.**
+`_PLATFORM_EXPORT_NAMES` is currently duplicated in `api/src/services/app_bundler/__init__.py` AND `api/bifrost/cli.py` with a "keep in sync" comment. This is the exact pattern that rotted the old `KNOWN_BIFROST_EXPORTS` list (the thing this whole plan is supposed to kill). Pick one location, import from the other. Either:
+- `cli.py` imports from `app_bundler` at runtime (cli is already Docker-container-aware), or
+- both read from a shared JSON/TOML file committed to the repo.
+
+**2. Make the platform list complete.**
+Lowercase platform exports (`cn`, `toast`, `clsx`, `twMerge`, `format`, `navigate`, `formatDate`, `formatDateShort`, `formatTime`, `formatRelativeTime`, `formatBytes`, `formatNumber`, `formatCost`, `formatDuration`) were initially missing from `_PLATFORM_EXPORT_NAMES` — the classifier handled them via a separate code path. One list, every name the runtime provides.
+
+**3. Add a drift test.**
+`tests/unit/test_platform_names_match_runtime.py` — iterate `app-code-runtime.ts`'s `$` registry (either parse the file or export a JSON manifest from the client build), assert every key is in `_PLATFORM_EXPORT_NAMES`. Prevents silent drift forever.
+
+**4. Consolidate error surfacing.**
+`BundlerService.build()` returns `BundleResult`. Today `file_ops._rebuild_app_bundle()` has two try/excepts: one for `bundler.build()` throwing (shouldn't happen now — errors come back in `BundleResult.errors`), one for the pubsub publish. Collapse into one `_report_bundle_result(result)` helper that handles both success and failure: pubsub, diagnostic create/clear, logging. Callers just call `_report_bundle_result`.
+
+**5. Shrink the synthesized `node_modules/bifrost/index.js`.**
+Current behavior: unconditionally emits platform-scope proxies (`_p["Button"]`, `_p["cn"]`, …) for every name in `_PLATFORM_EXPORT_NAMES`, even when user code doesn't import from `"bifrost"` at all. After Phase 3 migration, most apps import `Button` directly from `"bifrost"` but the bundler still generates the full proxy table. Shrink to only the names `imported_names` contains. Two knock-on benefits: smaller bundles; easier to delete this package entirely in Phase 4.
+
+**6. Phase 4 prep file: wire it up or delete it.**
+`client/src/lib/bifrost-runtime.ts.phase4-prep` exists because its `export *` statements collided with lucide-react (Badge, Sheet, Table, Command). Fix the collisions now (explicit named re-exports for the overlap) so Phase 4 can `git mv` and be done. No `.phase4-prep` suffix hiding in the tree.
+
+**7. Clean out dead classifier helpers.**
+`_JSX_NON_COMPONENT_PREFIXES`, `_NAMED_IMPORT_RE`, `_extract_jsx_tag_names` in `migrate_imports.py` are unreferenced after the inference logic was rewritten. Pyright already flags them as unused. Delete.
+
+**8. Regression tests for the bugs we hit.**
+Add test cases so the next round of classifier / bundler edits can't silently regress:
+- `tests/unit/test_cli_migrate_imports.py`:
+  - `Badge`, `Sheet`, `Dialog`, `Table`, `Command` stay in `"bifrost"` (platform > lucide on collision).
+  - `Edit`, `AlertTriangle`, `CheckCircle`, `Loader2` move to `"lucide-react"` (alias detection via `as <Name>`).
+  - User component with `export function Foo` gets named import, not default.
+  - Multi-line `import {\n A,\n B,\n} from "recharts";` is not corrupted by inserting a new import after it.
+  - Lowercase names (`cn`, `toast`, `format`) are inferred from usage, not only PascalCase.
+  - Names that appear inside `import { ... } from` don't count as references.
+- `tests/unit/test_app_bundler.py` (new):
+  - `_write_entry` output contains `export default function BundledApp` and does NOT contain `BrowserRouter` or `createRoot(`.
+  - `_write_bifrost_package` only emits a platform proxy entry for names present in the input's `imported_names` (after item 5).
+- `tests/unit/test_bundled_app_shell_deps.py` or equivalent: esm.sh URL template includes `?external=react,react-dom,...`.
+
+**9. Fix import-map staleness across in-tab app navigation.**
+Browser import maps are immutable once installed. If a user loads app A (no deps), then navigates to app B (declares `recharts`), app B's `recharts` import 404s against the stale map. `ensureImportMap` currently just logs a warning, which users won't see.
+
+**Decision: auto-reload on mismatch.** When `ensureImportMap` detects that the new app needs deps not in the installed map, call `location.reload()`. The page comes back up with app B's correct map installed from the start. Cost is a visible flash on cross-app navigation; users rarely chain-hop so this is fine. Three lines of code, bulletproof.
+
+Validate by opening app A without recharts, then navigating to margin-dashboard in the same tab — should reload once and Just Work.
+
+**10. Classifier workflow: diff before `--yes`.**
+`migrate_imports.py`'s regex-based identifier scanner can't distinguish a platform name used in expression position from a local binding shadowing it (e.g. `function row({ Badge })`). No apps in `bifrost-workspace` hit this — but when external users run the tool on their own code, one could. Fix: make the CLI workflow diff-first.
+
+- `bifrost migrate-imports` without `--yes` already prints the diff. Keep that.
+- **Change `--yes` semantics.** Currently skips confirmation. Keep that, but ALSO require an explicit `--skip-diff` flag to actually suppress the diff output. Default behavior with `--yes` is: print the diff, then apply. User has something to read in their terminal scrollback if something goes sideways.
+- Update the CLI's help text and `bifrost-build` skill to say "**always review the diff** — the classifier doesn't do full scope analysis, so if it added an import for a name you declared locally, reject and fix."
+
+This is a workflow fix, not a scope-analysis implementation. Adding a real TS parser to the migration tool isn't worth it; making the user a peer reviewer of the diff is.
+
+**11. Document known limitations in `migrate_imports.py` module docstring.**
+A short header block: "This classifier uses regex, not AST. It does NOT track function parameters / destructured bindings / type-level identifiers. A user-declared PascalCase name that shadows a platform export may be incorrectly imported. Always review the diff before applying."
+
+**Verification:** re-run the Chrome matrix on all 11 apps after 3.5. Zero regressions.
+
 ### Phase 4 — Delete the old runtime
 
-Only run after Phase 3 has landed and every app is confirmed working via the per-app Chrome matrix (zero console errors, all routes render). Then:
+Only run after Phase 3.5 has landed and every app is confirmed working via the per-app Chrome matrix (zero console errors, all routes render). Then:
 
-**Server:**
-- Delete `api/src/services/app_compiler/` (whole package, node_modules + compile.js + tailwind.js)
-- Delete `/api/applications/{id}/render` endpoint from `api/src/routers/app_code_files.py` + its related `AppRenderResponse` types
-- Remove `AppCompilerService` references from everywhere (MCP tools, etc.)
-- Clean up `docker-compose.dev.yml` / `api/Dockerfile.dev` — drop `app_compiler` node_modules volume and install step
-- The bundler's synthesized `bifrost/index.js` stops emitting backward-compat for user components / Lucide re-exports (since user code now uses direct imports). Keeps only platform passthrough.
-- Remove the deprecation warning from the bundler
+**Commit discipline:** each bullet below is its own commit. After each commit, re-run the Chrome matrix. Don't batch deletions — Phase 3's "delete all at once" style is what makes cascading breaks hard to bisect.
 
-**Client:**
-- Delete `LegacyJsxAppShell` from `client/src/components/jsx-app/JsxAppShell.tsx`. Rename `BundledAppShell` → `JsxAppShell` (single implementation).
-- Delete `client/src/lib/app-code-runtime.ts` — `wrapAsComponent`, `new Function()`, the `$` registry. Replace with:
-  - New module `client/src/lib/bifrost-runtime.ts` that re-exports everything the `$` registry held — platform components, hooks, utils — as real named ESM exports.
-  - Import map entry: `"bifrost": blobModuleOf(__bifrost_runtime)`. **Decision: no more `globalThis.__bifrost_platform` bridge.** The host exports a real ESM module; the import map points at it; bundled apps import from it like any other package. Kill the globalThis plumbing entirely.
-  - After Phase 3 rewrites user code to use relative imports, the bundler's `node_modules/bifrost/index.js` synthesis is deleted entirely — `"bifrost"` becomes just an external that the host's import map resolves.
-- Delete `transformPath`, wrapped `Link`/`NavLink`/`Navigate`/`useNavigate`/`navigate` from `client/src/lib/app-code-platform/navigation.tsx`. Platform scope exports raw React Router primitives.
-- Delete the `?bundled=1` / localStorage flag logic in `JsxAppShell.tsx`. Single code path.
-- Simplify `BundledAppShell` / `JsxAppShell`: drop the `setAppContext` call (was defensive for wrapped Link; Link is now from react-router-dom directly).
+**Commit 1 — flip the default.**
+- Delete the `?bundled=1` / `localStorage.bifrost.bundled` flag from `client/src/components/jsx-app/JsxAppShell.tsx`. The legacy branch still renders; only the opt-in goes away. Bundled becomes default for all app loads.
+- Re-run Chrome matrix. Must be clean.
 
-**Goal state after Phase 4:** `JsxAppShell` is ~50 lines. It fetches a manifest, installs an import map, dynamic-imports the entry, calls `mount()`. No Babel anywhere. No scope injection. No `new Function()`. No hand-maintained export lists. No `KNOWN_*` anything. No wrapped navigation primitives.
+**Commit 2 — rename BundledAppShell → JsxAppShell.**
+- `git mv BundledAppShell.tsx JsxAppShell.tsx` (after deleting the old `JsxAppShell.tsx`).
+- Update imports across the client.
+- This is the structural rename before content deletes.
+
+**Commit 3 — drop legacy server plumbing (`app_compiler`, `/render`).**
+- Delete `api/src/services/app_compiler/` (package, node_modules, compile.js, tailwind.js).
+- Delete `/api/applications/{id}/render` endpoint + `AppRenderResponse` types from `app_code_files.py`.
+- Remove `AppCompilerService` references from `applications.py`, `mcp_server/tools/apps.py`, `app_storage.py`.
+- Clean up `docker-compose.dev.yml` / `Dockerfile.dev` — drop the `app_compiler` node_modules volume and install step.
+- Re-run Chrome matrix + backend tests.
+
+**Commit 4 — drop legacy client plumbing.**
+- Delete `client/src/lib/app-code-runtime.ts` (`wrapAsComponent`, `new Function()`, `$` registry).
+- Delete `client/src/components/jsx-app/JsxPageRenderer.tsx`, `client/src/lib/app-code-resolver.ts`, `client/src/lib/app-code-router.ts`.
+- Delete wrapped `Link`/`NavLink`/`Navigate`/`useNavigate`/`navigate`/`transformPath` from `client/src/lib/app-code-platform/navigation.tsx`. Platform scope exports raw React Router primitives.
+- Delete `setAppContext` call from the shell (was defensive for wrapped Link).
+- Re-run Chrome matrix.
+
+**Commit 5 — swap `globalThis.__bifrost_platform` → real ESM module.**
+- Wire up `client/src/lib/bifrost-runtime.ts` (cleaned up in Phase 3.5 item 6) as the import-map entry for `"bifrost"`.
+- `BundledAppShell` stops setting `globalThis.__bifrost_platform`; the import map points `"bifrost"` at a blob module that re-exports from `bifrost-runtime.ts`.
+- Bundler's `_write_bifrost_package` stops emitting platform-scope proxies (Phase 3.5 item 5 already pruned the "emit only used names" path; this step drops the file entirely and treats `"bifrost"` as an external).
+- Remove `DEFAULT_EXTERNALS` entries that are now covered by the user's real import map.
+- Re-run Chrome matrix.
+
+**Commit 6 — remove the deprecation warning.**
+- The bundler's `[Bifrost] Deprecated imports detected` console.warn was there to nudge external workspaces. Post-Phase-4 the "old pattern" doesn't exist anymore (no synthesized `node_modules/bifrost/` to translate it).
+
+**Goal state after Phase 4:** `JsxAppShell` is ~150 lines (shell + state + banner + cleanup, no legacy branch). No Babel. No scope injection. No `new Function()`. No hand-maintained export lists proxy-dispatched via globalThis. No wrapped navigation primitives. No `app_compiler` package. No `/render` endpoint.
+
+## Risks we live with
+
+Things this plan deliberately does NOT fix. Documented so future-me doesn't re-discover them as bugs.
+
+- **Regex-based default-export detection.** `_has_default_export` in both `migrate_imports.py` and `app_bundler/__init__.py` looks for `^\s*export\s+default\b`. Misses edge forms like `module.exports = …` (not relevant for TSX but the principle holds). Why live with it: if the regex guesses wrong, esbuild fails **loudly at build time** with a clear error — the user sees the bad import, fixes the file, done. Loud failures are cheap to fix; not worth pulling in a full TS parser for this.
+
+- **Dual-platform-scope paths during transition.** Between Phase 3 (current) and Phase 4 commit 5, two paths feed platform names to bundled apps: the `globalThis.__bifrost_platform` bridge AND (after 3.5) the ESM `bifrost-runtime.ts` module. Why live with it: it's sequencing, not architecture. Phase 4 commit 5 collapses them. The only discipline required is "do not add new platform exports to the bridge" — a comment in the code + this plan is enough.
+
+- **The synthesized `node_modules/bifrost/index.js` is still a code-gen glue file.** It re-exports user components, lucide icons, router primitives, and platform proxies so the legacy `import { X } from "bifrost"` pattern resolves. Why live with it: same reason as dual-platform-scope — transitional. Phase 3.5 item 5 shrinks it; Phase 4 commit 5 deletes it entirely.
 
 ### Phase 5 — Aggressive platform reshape (new)
 
-**Premise:** Phase 3 shipped `bifrost migrate-imports`. That tool is now a first-class lever for breaking platform changes — we don't need deprecation cycles or per-app migration toil. Anything that's awkward about the current `"bifrost"` surface can be rewritten across every app in one PR.
+**Premise:** Phase 3 shipped `bifrost migrate-imports`, Phase 3.5 consolidated the platform-names list into one source of truth, and Phase 4 deleted the legacy runtime. That combination is the first-class lever for breaking platform changes — we don't need deprecation cycles or per-app migration toil. Anything awkward about the current `"bifrost"` surface can be rewritten across every app in one commit.
 
-**Goal:** split the `"bifrost"` grab-bag into explicit, tree-shakeable packages and rename platform APIs to match their current best intent. Ship each reshape as one migration PR.
+**Prerequisite:** Phase 3.5 item 1 (one `_PLATFORM_EXPORT_NAMES`) must be done — reshape = splitting one list, not rewriting two.
+
+**Goal:** split the `"bifrost"` grab-bag into explicit, tree-shakeable packages and rename platform APIs to match their current best intent. Ship each reshape as one commit on main.
 
 **Workflow for each reshape:**
 

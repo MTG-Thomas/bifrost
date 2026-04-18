@@ -555,7 +555,23 @@ async def get_bundle_manifest(
             app_id_str, storage_mode, "manifest.json"
         )
     except FileNotFoundError:
-        # No manifest yet — build on demand
+        # Live is publish-driven only. If live/manifest.json is missing the
+        # app has either never been published or was last published under
+        # the legacy per-file compiler (no bundle manifest). Either way we
+        # refuse to silently rebuild from draft source — live must reflect
+        # what publish produced. Owner must re-publish.
+        if storage_mode == "live":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "App has not been published under the current runtime. "
+                    "Publish the app to generate a live bundle."
+                ),
+            )
+
+        # Preview: build on demand. New apps that haven't been saved yet
+        # (or that haven't triggered the save-loop rebuild) need a first
+        # build to have something to serve.
         from src.services.app_bundler import BundlerService
 
         bundler = BundlerService()

@@ -38,10 +38,10 @@ import { AppLoadingSkeleton } from "./AppLoadingSkeleton";
  * are additive — we re-write the entire map if a new dep appears.
  */
 function ensureImportMap(dependencies: Record<string, string>): void {
-	// Import maps are immutable once installed. If one already exists,
-	// the only thing we can do is check it has the deps we need; if it
-	// doesn't, we have to log and move on — replacing would just produce
-	// browser warnings without actually updating anything.
+	// Import maps are immutable once installed. If one is present and the
+	// new app needs deps the existing map doesn't have, the only way to
+	// install a fresh map is a full page reload — the page comes back with
+	// the new app's correct map from the start.
 	const existing = document.querySelector<HTMLScriptElement>(
 		"script[data-bifrost-import-map]",
 	);
@@ -52,11 +52,7 @@ function ensureImportMap(dependencies: Record<string, string>): void {
 				(k) => !current.imports?.[k],
 			);
 			if (missing.length > 0) {
-				console.warn(
-					"[Bifrost] Import map already installed but missing deps:",
-					missing,
-					"— reload the page to pick them up.",
-				);
+				location.reload();
 			}
 		} catch {
 			/* ignore */
