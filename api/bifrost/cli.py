@@ -376,6 +376,12 @@ def main(args: list[str] | None = None) -> int:
         if command == "migrate-imports":
             return handle_migrate_imports(args[1:])
 
+        # Entity mutation subgroups (bifrost orgs ..., bifrost roles ..., etc.).
+        from bifrost.commands import ENTITY_GROUPS, dispatch_entity_subgroup
+
+        if command in ENTITY_GROUPS:
+            return dispatch_entity_subgroup(command, args[1:])
+
         # Unknown command
         print(f"Unknown command: {command}", file=sys.stderr)
         print_help()
@@ -399,12 +405,24 @@ Commands:
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
-  watch       Watch for file changes and auto-push (requires .bifrost/ workspace)
+  watch       Watch for file changes and auto-push
   api         Generic authenticated API request
   migrate-imports  Rewrite "bifrost" imports into user/lucide/router imports
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
+
+Entity mutation commands (see 'bifrost <entity> --help'):
+  orgs         Manage organizations
+  roles        Manage roles
+  workflows    Manage workflow lifecycle and role assignments
+  forms        Manage forms
+  agents       Manage AI agents
+  apps         Manage applications and dependencies
+  integrations Manage integrations, config schemas, and mappings
+  configs      Manage config values
+  tables       Manage tables
+  events       Manage event sources and subscriptions
 
 Examples:
   bifrost run workflow.py -w greet
