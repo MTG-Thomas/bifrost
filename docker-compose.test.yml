@@ -73,7 +73,12 @@ services:
       RABBITMQ_DEFAULT_PASS: bifrost_test
     # No ports exposed - all access via Docker network
     tmpfs:
-      - /var/lib/rabbitmq  # Ephemeral storage - prevents Erlang cookie permission issues
+      # Ephemeral storage - prevents Erlang cookie permission issues.
+      # mode=1777 (sticky world-writable) matches the image's own dir perms
+      # so the rabbitmq user can create .erlang.cookie; Docker >= 24 stopped
+      # defaulting tmpfs to 1777 and now creates it 0755 root:root, which
+      # breaks the boot with "Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces".
+      - /var/lib/rabbitmq:mode=1777
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 5s
