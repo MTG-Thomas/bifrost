@@ -1,0 +1,169 @@
+# Bifrost CLI & MCP Command Reference (for LLMs)
+
+This file documents the entity-mutation surface Claude and other LLMs should use when the user asks for anything that would previously have been done by editing `.bifrost/*.yaml` by hand.
+
+**Core rule:** `.bifrost/` is export-only. Never mutate entities by editing it — use one of the commands below.
+
+All CLI commands accept `--json` for machine output. All commands resolve UUID / name / portable refs automatically; ambiguous names fail loudly with the candidate list and prompt the user for the UUID.
+
+---
+
+## Organizations
+
+```
+bifrost orgs list
+bifrost orgs create --name "Acme" [--is-active]
+bifrost orgs update <ref> [--name "New"] [--is-active/--no-is-active]
+bifrost orgs delete <ref>
+```
+
+## Roles
+
+```
+bifrost roles list
+bifrost roles create --name "Sales Manager" [--description "..."] [--permissions @file.yaml]
+bifrost roles update <ref> [--name ...] [--description ...] [--permissions ...]
+bifrost roles delete <ref>
+```
+
+Note: `permissions` is a dict, not a list. Pass JSON inline or `@path/to/file.yaml`.
+
+## Workflows
+
+```
+bifrost workflows list
+bifrost workflows register --path workflows/foo.py --function-name foo [--organization-id <uuid>]
+bifrost workflows update <ref> [--category ...] [--timeout-seconds N] [--clear-roles/--no-clear-roles]
+bifrost workflows delete <ref> [--force-deactivation]
+bifrost workflows grant-role <workflow-ref> <role-ref>
+bifrost workflows revoke-role <workflow-ref> <role-ref>
+```
+
+`<workflow-ref>` accepts UUID, name, or `path::func` (e.g. `workflows/sales.py::close_deal`).
+
+## Forms
+
+```
+bifrost forms create --name foo --workflow path::func --schema @schema.yaml [--description ...]
+bifrost forms update <ref> [--schema @schema.yaml] [--name ...]
+bifrost forms delete <ref>
+```
+
+List is served by the generic REST listing — use `bifrost api GET /api/forms`.
+
+## Agents
+
+```
+bifrost agents create --name foo --llm-model claude-sonnet-4 --system-prompt @prompt.md \
+                     [--tools wf1,wf2] [--delegates agent1,agent2] [--knowledge kb1,kb2]
+bifrost agents update <ref> [--llm-model ...] [--system-prompt @file.md] [--tools ...] [--clear-roles]
+bifrost agents delete <ref>
+```
+
+`update` uses PUT (full replacement of tool/delegate lists). `--system-prompt @file` loads from disk.
+
+## Apps
+
+```
+bifrost apps create --name foo --slug foo [--deps @package.json] [--role-ids uuid1,uuid2]
+bifrost apps update <ref> [--name ...] [--description ...] [--access-level ...]
+bifrost apps set-deps <ref> --deps @package.json
+bifrost apps delete <ref>
+```
+
+`create --deps` is a two-call orchestration (POST app, then PUT dependencies). If the deps call fails the app remains created; the user sees both the app payload and the deps error.
+
+## Integrations
+
+```
+bifrost integrations create --name foo --type slack --config-schema @schema.yaml
+bifrost integrations update <ref> [--config-schema @schema.yaml] [--force-remove-keys]
+bifrost integrations add-mapping <integration-ref> --organization <org-ref> [--config @config.yaml] [--oauth-token-id <id>]
+bifrost integrations update-mapping <integration-ref> --organization <org-ref> [--config ...] [--oauth-token-id <id>]
+```
+
+`update --config-schema` refuses when keys are being removed unless `--force-remove-keys` is set (protects downstream Config values from cascade-delete). `update-mapping` never touches `oauth_token_id` unless it's explicitly passed.
+
+## Configs
+
+```
+bifrost configs list
+bifrost configs set <key> --value bar [--type string|secret|json|bool|int|float] [--organization <ref>]
+bifrost configs create --key foo --value bar --type string --organization <ref>
+bifrost configs update <ref> [--value ...] [--type ...]
+bifrost configs delete <ref> [--confirm]
+```
+
+`set` is an upsert wrapper. `delete` refuses to remove a secret-typed config without `--confirm`. `update` with `--value` omitted preserves the existing value.
+
+## Tables
+
+```
+bifrost tables list
+bifrost tables create --name foo --application <app-ref> --schema @schema.yaml
+bifrost tables update <ref> [--name "new"] [--application <app-ref>] [--schema @schema.yaml]
+bifrost tables delete <ref>
+```
+
+`update --name` prints a warning about workflow SDK references but does not block. Author must grep before committing.
+
+## Events
+
+```
+bifrost events create-source --name foo --source-type schedule --cron "*/5 * * * *" --timezone UTC
+bifrost events create-source --name foo --source-type webhook --adapter generic --webhook-integration <int-ref> --webhook-config @cfg.yaml
+bifrost events update-source <ref> [--cron ...] [--timezone ...] [--schedule-enabled/--no-schedule-enabled]
+bifrost events subscribe <source-ref> --workflow <wf-ref> --event-type foo
+bifrost events update-subscription <subscription-ref> [--event-type ...]
+```
+
+`--cron` / `--timezone` / `--schedule-enabled` collapse into the DTO's nested `schedule` config. `--adapter` / `--webhook-integration` / `--webhook-config` collapse into `webhook` config. `update-subscription` rejects attempts to change `target_type` / workflow / agent refs — delete and recreate instead.
+
+---
+
+## Cross-environment bundles
+
+```
+bifrost export --portable <out-dir>      # scrubs org_ids, user_ids, timestamps, OAuth secrets, secret values; rewrites role_ids → role_names
+bifrost import <bundle-dir> --org <target-uuid> [--role-mode name|uuid] [--dry-run] [--delete-removed]
+```
+
+`export --portable` writes `<out-dir>/.bifrost/*.yaml`, `<out-dir>/workflows/`, `<out-dir>/apps/`, and `<out-dir>/bundle.meta.yaml` (source env, bifrost version, scrub rules applied).
+
+`import` uploads workflow/app code via `POST /api/files/write` first, then POSTs `.bifrost/` content to `/api/files/manifest/import` with the target org UUID. `--role-mode name` resolves roles by name in the target env; missing role names fail loud.
+
+---
+
+## MCP tools (parity with CLI)
+
+Existing MCP tools for agents / forms / tables / apps / events re-implement router logic and have diverged. See `docs/plans/2026-04-18-mcp-router-reconciliation.md`.
+
+**New parity tools (thin HTTP wrappers — always safe to call):**
+
+- `create_role`, `update_role`, `delete_role`, `list_roles`
+- `create_config`, `update_config`, `delete_config`, `list_configs`
+- `create_integration`, `update_integration`, `add_integration_mapping`, `update_integration_mapping`
+- `update_organization`, `delete_organization`  (list / create / get already existed)
+- `update_workflow`, `delete_workflow`, `grant_workflow_role`, `revoke_workflow_role`  (list / register already existed)
+
+All new tools accept UUID, name, or portable ref for any entity reference.
+
+---
+
+## Escape hatch
+
+For anything without a dedicated command:
+
+```
+bifrost api <METHOD> <path> [json-body]
+```
+
+Authenticated REST passthrough. Use sparingly — dedicated commands give better ergonomics and ref-resolution errors.
+
+---
+
+## Do NOT
+
+- Edit `.bifrost/*.yaml` by hand to mutate entities. That's export-only.
+- Use the (removed) granular agent endpoints `/api/agents/{id}/tools` or `/delegations`. Use `PUT /api/agents/{id}` with full `tool_ids` / `delegated_agent_ids` lists.
+- Add direct ORM access to new MCP tools. Thin HTTP wrappers only; enforced by `api/tests/unit/test_mcp_thin_wrapper.py`.

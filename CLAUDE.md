@@ -117,6 +117,22 @@ The git sync system uses a **manifest** (`.bifrost/*.yaml`) to round-trip platfo
 4. **For upserted entities**: ensure the new field is included in BOTH the update-existing AND insert-new code paths
 5. Write a round-trip unit test in `tests/unit/test_manifest.py` and an E2E test in `tests/e2e/platform/test_git_sync_local.py`
 
+## Keeping CLI, MCP, and manifest in sync
+
+Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`), **MCP** (`api/src/services/mcp_server/tools/`), and **manifest export** (`.bifrost/*.yaml` via `bifrost sync` / `bifrost export`). All three read from the same `XxxCreate` / `XxxUpdate` Pydantic DTOs via `api/bifrost/dto_flags.py`, so drift is caught by tests rather than review discipline.
+
+**When a DTO changes:**
+
+1. Run the DTO-parity test: `./test.sh tests/unit/test_dto_flags.py`. If it fails, either add the new field to the appropriate CLI command / MCP tool, or add it to `DTO_EXCLUDES` in `api/bifrost/dto_flags.py` with a one-line comment explaining why (UI-managed, out-of-scope, etc.).
+2. If the field should round-trip in portable exports, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the scrub rules in `api/bifrost/portable.py`.
+3. If the field changes a command or tool that Claude should know about, update `docs/llm.txt`.
+
+**When renaming or reassigning an entity (workflow, table, config):** grep the codebase before committing. Workflows are referenced by `path::func` in forms; tables are referenced by name in workflow SDK calls (`sdk.tables.get("...")`); configs are referenced by key. `bifrost tables update --name` warns on renames but does not block — the author is responsible for a full-workspace search (`rg -n '\b<old-name>\b' apps/ workflows/`) before pushing.
+
+**`.bifrost/` is export-only.** Watch only syncs code (`apps/`, `workflows/*.py`); it does NOT push `.bifrost/` content. Entity mutations go through the CLI (`bifrost orgs create`, `bifrost roles update`, etc.) or MCP. To share an env's state across environments, use `bifrost export --portable <dir>` (scrubs env-specific fields) and `bifrost import <dir> --org <uuid> --role-mode name` (rewrites org/role refs against the target env).
+
+**MCP vs REST routers (existing drift):** the MCP tools for `agents`, `forms`, `tables`, `apps`, `events` re-implement router logic and have diverged (different permission models, missing side effects, divergent validation). See `docs/plans/2026-04-18-mcp-router-reconciliation.md` for the catalog and reconciliation sequence. **New MCP tools must be thin HTTP wrappers that call the REST endpoints** (see `api/src/services/mcp_server/tools/roles.py` / `configs.py` / `_http_bridge.py` for the pattern) — no direct ORM access, no repository imports. A unit test (`api/tests/unit/test_mcp_thin_wrapper.py`) enforces this.
+
 ## Project Structure
 
 ```
