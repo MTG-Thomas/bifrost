@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { Logo } from "@/components/branding/Logo";
 import { Button } from "@/components/ui/button";
+import { APP_VERSION } from "@/lib/version";
 
 interface NavItem {
 	title: string;
@@ -308,6 +309,9 @@ export function Sidebar({
 						</div>
 					))}
 				</nav>
+				{!isCollapsed && (
+					<p className="text-xs text-muted-foreground px-2 pb-2">{APP_VERSION}</p>
+				)}
 			</aside>
 
 			{/* Mobile Sidebar Overlay */}
@@ -372,6 +376,7 @@ export function Sidebar({
 								</div>
 							))}
 						</nav>
+						<p className="text-xs text-muted-foreground px-2 pb-2">{APP_VERSION}</p>
 					</aside>
 				</div>
 			)}
