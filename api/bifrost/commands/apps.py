@@ -51,7 +51,7 @@ from bifrost.dto_flags import (
     load_dict_value,
 )
 from bifrost.refs import RefResolver
-from src.models.contracts.applications import (
+from bifrost.contracts import (
     ApplicationCreate,
     ApplicationUpdate,
 )

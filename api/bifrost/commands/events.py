@@ -69,7 +69,7 @@ from bifrost.dto_flags import (
     load_dict_value,
 )
 from bifrost.refs import RefResolver
-from src.models.contracts.events import (
+from bifrost.contracts import (
     EventSourceCreate,
     EventSourceUpdate,
     EventSubscriptionCreate,

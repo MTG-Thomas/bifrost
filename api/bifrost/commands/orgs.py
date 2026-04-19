@@ -31,7 +31,7 @@ from bifrost.dto_flags import (
     build_cli_flags,
 )
 from bifrost.refs import RefResolver
-from src.models.contracts.organizations import (
+from bifrost.contracts import (
     OrganizationCreate,
     OrganizationUpdate,
 )

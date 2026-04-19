@@ -38,8 +38,7 @@ from bifrost.dto_flags import (
     build_cli_flags,
 )
 from bifrost.refs import RefResolver
-from src.models.contracts.config import ConfigCreate, ConfigUpdate
-from src.models.enums import ConfigType
+from bifrost.contracts import ConfigCreate, ConfigType, ConfigUpdate
 
 from .base import _apply_flags, entity_group, output_result, pass_resolver, run_async
 

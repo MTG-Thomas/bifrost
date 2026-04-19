@@ -35,7 +35,7 @@ from bifrost.dto_flags import (
     build_cli_flags,
 )
 from bifrost.refs import RefResolver
-from src.models.contracts.forms import FormCreate, FormUpdate
+from bifrost.contracts import FormCreate, FormUpdate
 
 from .base import _apply_flags, entity_group, output_result, pass_resolver, run_async
 
