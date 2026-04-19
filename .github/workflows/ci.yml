@@ -62,7 +62,7 @@ jobs:
   # Dev Build - Every push to main, gated by unit tests only
   # =============================================================================
   build-dev:
-    if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
+    if: github.ref == 'refs/heads/main'
     needs: test-unit
     runs-on: ubuntu-latest
     name: Build Dev Images
@@ -81,6 +81,7 @@ jobs:
         run: |
           VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "unknown")
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -105,7 +106,7 @@ jobs:
           tags: |
             ghcr.io/${{ env.API_IMAGE }}:${{ steps.version.outputs.version }}
             ghcr.io/${{ env.API_IMAGE }}:dev
-            ghcr.io/${{ env.API_IMAGE }}:sha-${{ github.sha }}
+            ghcr.io/${{ env.API_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
           build-args: |
             BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
@@ -122,7 +123,7 @@ jobs:
           tags: |
             ghcr.io/${{ env.CLIENT_IMAGE }}:${{ steps.version.outputs.version }}
             ghcr.io/${{ env.CLIENT_IMAGE }}:dev
-            ghcr.io/${{ env.CLIENT_IMAGE }}:sha-${{ github.sha }}
+            ghcr.io/${{ env.CLIENT_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
           build-args: |
             VITE_BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
