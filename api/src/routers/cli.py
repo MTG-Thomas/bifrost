@@ -2347,6 +2347,8 @@ async def download_cli() -> Response:
     Returns a tarball that can be installed with:
     pip install https://your-bifrost-instance.com/api/cli/download
     """
+    from shared.version import get_version
+
     package_dir = Path(__file__).parent.parent.parent / "bifrost"
 
     if not package_dir.exists():
@@ -2367,31 +2369,56 @@ async def download_cli() -> Response:
 
     def _generate_tarball():
         """Generate tarball synchronously in thread."""
+        import re as _re
+        import io as _io
+        live_version = get_version()
+
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-            # Add pyproject.toml at root level
+            # Add pyproject.toml at root level with version stamped
             pyproject_path = package_dir / "pyproject.toml"
             if pyproject_path.exists():
-                tar.add(pyproject_path, arcname="pyproject.toml")
+                content = pyproject_path.read_text()
+                content = _re.sub(
+                    r'^version\s*=\s*"[^"]*"',
+                    f'version = "{live_version}"',
+                    content,
+                    flags=_re.MULTILINE,
+                )
+                data = content.encode()
+                info = tarfile.TarInfo(name="pyproject.toml")
+                info.size = len(data)
+                tar.addfile(info, fileobj=_io.BytesIO(data))
 
             # Add all Python files from bifrost/
             for file_path in package_dir.rglob("*"):
                 if not file_path.is_file():
                     continue
-
-                # Skip __pycache__ and excluded internal files
                 if "__pycache__" in str(file_path):
                     continue
                 if file_path.name in exclude_files:
                     continue
-                # Skip non-Python files except pyproject.toml (already added at root)
                 if file_path.suffix not in (".py", ".toml"):
                     continue
                 if file_path.name == "pyproject.toml":
-                    continue  # Already added at root
+                    continue  # Already added above
 
-                # Include all other files
                 arcname = f"bifrost/{file_path.relative_to(package_dir)}"
-                tar.add(file_path, arcname=arcname)
+
+                # Stamp __version__ in __init__.py
+                if file_path.name == "__init__.py" and file_path.parent == package_dir:
+                    content = file_path.read_text()
+                    content = _re.sub(
+                        r"^__version__\s*=\s*_compute_version\(\)",
+                        f'__version__ = "{live_version}"',
+                        content,
+                        flags=_re.MULTILINE,
+                    )
+                    data = content.encode()
+                    info = tarfile.TarInfo(name=arcname)
+                    info.size = len(data)
+                    tar.addfile(info, fileobj=_io.BytesIO(data))
+                else:
+                    tar.add(file_path, arcname=arcname)
 
     await asyncio.to_thread(_generate_tarball)
 
@@ -2402,7 +2429,7 @@ async def download_cli() -> Response:
         content=tarball_content,
         media_type="application/gzip",
         headers={
-            "Content-Disposition": "attachment; filename=bifrost-cli-2.0.0.tar.gz",
+            "Content-Disposition": f"attachment; filename=bifrost-cli-{get_version()}.tar.gz",
         },
     )
 
