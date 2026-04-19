@@ -7,7 +7,7 @@ def _reload_version():
     """Re-import version module to reset lru_cache between tests."""
     if "shared.version" in sys.modules:
         del sys.modules["shared.version"]
-    import shared.version as v
+    import shared.version as v  # type: ignore[import-untyped]
     importlib.reload(v)
     return v
 
