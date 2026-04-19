@@ -76,4 +76,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
+ARG BIFROST_VERSION=unknown
+ENV BIFROST_VERSION=${BIFROST_VERSION}
+
 # No default CMD - let docker-compose specify the command per service
