@@ -1,12 +1,16 @@
+import atexit
 import os
-from typing import Optional
 
 from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+    SpanExporter,
+)
 
 _initialized_services: set[str] = set()
 
@@ -19,16 +23,18 @@ def configure_tracing(service_name: str, environment: str) -> None:
     if not is_enabled() or service_name in _initialized_services:
         return
 
-    resource = Resource.create({
-        "service.name": service_name,
-        "service.version": "2.0.0",
-        "deployment.environment": environment,
-    })
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+            "service.version": "2.0.0",
+            "deployment.environment": environment,
+        }
+    )
 
     provider = TracerProvider(resource=resource)
 
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-
+    exporter: SpanExporter
     if endpoint:
         exporter = OTLPSpanExporter(endpoint=endpoint)
     else:
@@ -38,6 +44,7 @@ def configure_tracing(service_name: str, environment: str) -> None:
     provider.add_span_processor(processor)
 
     trace.set_tracer_provider(provider)
+    atexit.register(provider.shutdown)
     _initialized_services.add(service_name)
 
 
