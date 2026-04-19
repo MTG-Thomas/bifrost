@@ -3,8 +3,6 @@
 # Usage: ./scripts/release-check.sh v2.1.0
 # Run this BEFORE: git tag v2.1.0 && git push origin v2.1.0
 
-set -e
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
