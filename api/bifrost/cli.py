@@ -182,6 +182,37 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
 WATCH_HEARTBEAT_SECONDS = 60
 
 
+def _check_cli_version() -> None:
+    """Warn if the installed CLI is older than the API's minimum required version."""
+    try:
+        import urllib.request
+        import json as _json
+        from bifrost import __version__
+
+        config_path = pathlib.Path.home() / ".bifrost" / "config.json"
+        if not config_path.exists():
+            return
+        config = _json.loads(config_path.read_text())
+        api_url = config.get("api_url", "").rstrip("/")
+        if not api_url:
+            return
+
+        with urllib.request.urlopen(f"{api_url}/api/version", timeout=3) as resp:
+            data = _json.loads(resp.read())
+
+        min_ver = data.get("min_cli_version", "")
+        installed = __version__.lstrip("v")
+        if min_ver and installed != "unknown" and installed < min_ver:
+            print(
+                f"\033[33mWarning: CLI version {installed} is older than the "
+                f"minimum required {min_ver}. Run:\n"
+                f"  pipx install {api_url}/api/cli/download\n\033[0m",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+
+
 async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool:
     """
     Interactive device authorization flow.
@@ -344,6 +375,8 @@ def main(args: list[str] | None = None) -> int:
         from bifrost import __version__
         print(f"bifrost {__version__}")
         return 0
+
+    _check_cli_version()
 
     try:
         command = args[0].lower()
