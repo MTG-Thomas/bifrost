@@ -14,9 +14,7 @@ import logging
 import os
 import sys
 
-import yaml
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Literal
@@ -129,22 +127,6 @@ class DataProviderMetadata(ExecutableMetadata):
 
     # Source tracking (home, platform, workspace) - legacy field
     source: Literal["home", "platform", "workspace"] | None = None
-
-
-@dataclass
-class FormMetadata:
-    """Lightweight form metadata for listing"""
-    id: str
-    name: str
-    workflow_id: str | None
-    org_id: str
-    is_active: bool
-    is_global: bool
-    access_level: str | None
-    file_path: str
-    created_at: datetime
-    updated_at: datetime
-    launch_workflow_id: str | None = None
 
 
 # ==================== WORKSPACE HELPERS ====================
@@ -573,155 +555,6 @@ def load_data_provider(name: str) -> tuple[Callable, DataProviderMetadata] | Non
     return None
 
 
-# ==================== FORM DISCOVERY ====================
-
-
-def scan_all_forms() -> list[FormMetadata]:
-    """
-    Scan all workspace directories for *.form.yaml files.
-
-    Returns:
-        List of FormMetadata objects
-    """
-    forms: list[FormMetadata] = []
-    workspace_paths = get_workspace_paths()
-
-    for workspace_path in workspace_paths:
-        # Find all *.form.yaml and form.yaml files
-        form_files = list(workspace_path.rglob("*.form.yaml")) + list(workspace_path.rglob("form.yaml"))
-
-        for form_file in form_files:
-            try:
-                with open(form_file, 'r', encoding='utf-8') as f:
-                    data = yaml.safe_load(f)
-
-                # Parse datetime fields (support both snake_case and camelCase)
-                now = datetime.now(timezone.utc)
-                created_at = now
-                updated_at = now
-                created_at_str = data.get('created_at') or data.get('createdAt')
-                if created_at_str:
-                    created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                updated_at_str = data.get('updated_at') or data.get('updatedAt')
-                if updated_at_str:
-                    updated_at = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
-
-                # Parse accessLevel (support both formats)
-                access_level = data.get('access_level') or data.get('accessLevel')
-
-                # Generate ID from file path if not provided
-                form_id = data.get('id') or f"workspace-{form_file.stem}"
-
-                is_global = data.get('is_global', False)
-                org_id = data.get('org_id', 'GLOBAL' if is_global else '')
-
-                # Prefer workflow_id, fall back to linked_workflow for legacy files
-                workflow_id = data.get('workflow_id') or data.get('linked_workflow')
-
-                forms.append(FormMetadata(
-                    id=form_id,
-                    name=data['name'],
-                    workflow_id=workflow_id,
-                    org_id=org_id,
-                    is_active=data.get('is_active', True),
-                    is_global=is_global,
-                    access_level=access_level,
-                    file_path=str(form_file),
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    launch_workflow_id=data.get('launch_workflow_id')
-                ))
-
-            except Exception as e:
-                logger.warning(f"Failed to load form from {form_file}: {e}")
-
-    logger.info(f"Scanned {len(forms)} forms from {len(workspace_paths)} workspace(s)")
-    return forms
-
-
-def load_form(form_id: str) -> dict | None:
-    """
-    Load a form by ID, reading fresh from file.
-
-    Args:
-        form_id: Form ID to find
-
-    Returns:
-        Full form dict or None if not found
-    """
-    workspace_paths = get_workspace_paths()
-
-    for workspace_path in workspace_paths:
-        form_files = list(workspace_path.rglob("*.form.yaml")) + list(workspace_path.rglob("form.yaml"))
-
-        for form_file in form_files:
-            try:
-                with open(form_file, 'r', encoding='utf-8') as f:
-                    data = yaml.safe_load(f)
-
-                # Check if this is the form we're looking for
-                file_form_id = data.get('id') or f"workspace-{form_file.stem}"
-                if file_form_id == form_id:
-                    # Ensure id is in the returned data (may be derived from filename)
-                    data['id'] = file_form_id
-                    return data
-
-            except Exception as e:
-                logger.debug(f"Error reading {form_file}: {e}")
-
-    return None
-
-
-def load_form_by_file_path(file_path: str) -> dict | None:
-    """
-    Load a form directly by its file path.
-
-    Args:
-        file_path: Full path to the form.yaml file
-
-    Returns:
-        Full form dict or None if not found
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
-    except Exception as e:
-        logger.warning(f"Failed to load form from {file_path}: {e}")
-        return None
-
-
-def get_form_metadata(form_id: str) -> FormMetadata | None:
-    """
-    Get form metadata by ID.
-
-    Args:
-        form_id: Form ID to find
-
-    Returns:
-        FormMetadata or None if not found
-    """
-    all_forms = scan_all_forms()
-    for form in all_forms:
-        if form.id == form_id:
-            return form
-    return None
-
-
-def get_forms_by_workflow(workflow_id_or_name: str) -> list[FormMetadata]:
-    """
-    Get all forms that use a specific workflow.
-
-    Args:
-        workflow_id_or_name: Workflow ID (UUID) or name to filter by
-
-    Returns:
-        List of FormMetadata for forms using this workflow
-    """
-    all_forms = scan_all_forms()
-    # Match by workflow_id (for UUID-based lookups) or legacy name-based lookups
-    return [f for f in all_forms if f.workflow_id == workflow_id_or_name]
-
-
 # ==================== METADATA CONVERSION HELPERS ====================
 # These handle compatibility with existing decorator output format
 
@@ -824,14 +657,3 @@ def get_data_provider(name: str) -> tuple[Callable, DataProviderMetadata] | None
     return load_data_provider(name)
 
 
-def get_form(form_id: str) -> dict | None:
-    """
-    Get a form by ID.
-
-    Args:
-        form_id: Form ID
-
-    Returns:
-        Form dict or None if not found
-    """
-    return load_form(form_id)

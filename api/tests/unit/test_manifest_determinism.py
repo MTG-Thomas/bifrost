@@ -47,6 +47,12 @@ def _mock_form(form_id=FORM_ID, name="det_form"):
     form.organization_id = None
     form.access_level = FormAccessLevel.ROLE_BASED
     form.is_active = True
+    # Inline content fields (set explicitly so MagicMock auto-attrs don't bleed in)
+    form.description = None
+    form.workflow_id = None
+    form.launch_workflow_id = None
+    form.default_launch_params = None
+    form.allowed_query_params = None
     return form
 
 
@@ -57,6 +63,16 @@ def _mock_agent(agent_id=AGENT_ID, name="det_agent"):
     agent.organization_id = None
     agent.access_level = AgentAccessLevel.ROLE_BASED
     agent.is_active = True
+    # Inline content fields
+    agent.description = None
+    agent.system_prompt = None
+    agent.channels = []
+    agent.knowledge_sources = []
+    agent.system_tools = []
+    agent.llm_model = None
+    agent.llm_max_tokens = None
+    agent.max_iterations = None
+    agent.max_token_budget = None
     return agent
 
 
@@ -162,6 +178,9 @@ def _build_side_effects(
         _make_result(form_roles_order),   # form_roles
         _make_result(agent_roles_order),  # agent_roles
         _make_result(app_roles_order),    # app_roles
+        empty,                        # form_fields (inline form_schema)
+        empty,                        # agent_tools (inline tool_ids)
+        empty,                        # agent_delegations (inline delegated_agent_ids)
         empty,                        # integrations
         empty,                        # config_schemas
         empty,                        # oauth_providers

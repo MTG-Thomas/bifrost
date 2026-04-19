@@ -40,6 +40,11 @@ def _mock_form(name="test_form", org_id=None, workflow_id=None, access_level=Non
     form.access_level = access_level or FormAccessLevel.ROLE_BASED
     form.is_active = True
     form.form_roles = []
+    # Inline content fields (must be explicit so MagicMock auto-attrs don't bleed in)
+    form.description = None
+    form.launch_workflow_id = None
+    form.default_launch_params = None
+    form.allowed_query_params = None
     return form
 
 
@@ -50,6 +55,16 @@ def _mock_agent(name="test_agent", org_id=None, access_level=None):
     agent.organization_id = org_id
     agent.access_level = access_level or AgentAccessLevel.ROLE_BASED
     agent.is_active = True
+    # Inline content fields
+    agent.description = None
+    agent.system_prompt = None
+    agent.channels = []
+    agent.knowledge_sources = []
+    agent.system_tools = []
+    agent.llm_model = None
+    agent.llm_max_tokens = None
+    agent.max_iterations = None
+    agent.max_token_budget = None
     return agent
 
 
@@ -92,6 +107,9 @@ async def test_generate_manifest_with_workflow(mock_db):
         empty_result,  # form_roles
         empty_result,  # agent_roles
         empty_result,  # app_roles
+        empty_result,  # form_fields (inline form_schema)
+        empty_result,  # agent_tools (inline tool_ids)
+        empty_result,  # agent_delegations (inline delegated_agent_ids)
         empty_result,  # integrations
         empty_result,  # config_schemas
         empty_result,  # oauth_providers
@@ -185,6 +203,9 @@ async def test_generate_manifest_with_roles(mock_db):
         form_roles_result,  # form_roles
         empty_result,       # agent_roles
         empty_result,       # app_roles
+        empty_result,       # form_fields (inline form_schema)
+        empty_result,       # agent_tools (inline tool_ids)
+        empty_result,       # agent_delegations (inline delegated_agent_ids)
         empty_result,       # integrations
         empty_result,       # config_schemas
         empty_result,       # oauth_providers
@@ -248,6 +269,9 @@ async def test_generate_manifest_with_organizations(mock_db):
         empty_result,  # form_roles
         empty_result,  # agent_roles
         empty_result,  # app_roles
+        empty_result,  # form_fields (inline form_schema)
+        empty_result,  # agent_tools (inline tool_ids)
+        empty_result,  # agent_delegations (inline delegated_agent_ids)
         empty_result,  # integrations
         empty_result,  # config_schemas
         empty_result,  # oauth_providers
@@ -301,6 +325,9 @@ async def test_generate_manifest_access_levels(mock_db):
         empty_result,   # form_roles
         empty_result,   # agent_roles
         empty_result,   # app_roles
+        empty_result,   # form_fields (inline form_schema)
+        empty_result,   # agent_tools (inline tool_ids)
+        empty_result,   # agent_delegations (inline delegated_agent_ids)
         empty_result,   # integrations
         empty_result,   # config_schemas
         empty_result,   # oauth_providers

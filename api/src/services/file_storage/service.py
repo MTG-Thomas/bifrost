@@ -28,7 +28,7 @@ from .deactivation import DeactivationProtectionService
 from .file_ops import FileOperationsService
 from .folder_ops import FolderOperationsService
 from .reindex import WorkspaceReindexService
-from .indexers import WorkflowIndexer, FormIndexer, AgentIndexer
+from .indexers import WorkflowIndexer
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +63,6 @@ class FileStorageService:
 
         # Initialize indexers
         self._workflow_indexer = WorkflowIndexer(db)
-        self._form_indexer = FormIndexer(db)
-        self._agent_indexer = AgentIndexer(db)
 
         # Initialize operation services with dependencies
         self._file_ops = FileOperationsService(
@@ -337,13 +335,6 @@ class FileStorageService:
                     cached_ast=cached_ast, cached_content_str=cached_content_str,
                     workflows_to_deactivate=workflows_to_deactivate,
                 )
-            elif path.endswith(".form.yaml"):
-                # Index the form and return proper tuple
-                content_modified = await self._form_indexer.index_form(path, content)
-                return content, content_modified, False, None, [], None, None
-            elif path.endswith(".agent.yaml"):
-                content_modified = await self._agent_indexer.index_agent(path, content)
-                return content, content_modified, False, None, [], None, None
         except Exception as e:
             logger.warning(f"Failed to extract metadata from {path}: {e}")
 
@@ -471,45 +462,30 @@ class FileStorageService:
         """
         Extract and index metadata from a file (simplified for reindex).
 
-        Routes to appropriate indexer based on entity_type.
-        If entity_type is not provided, detects from file extension.
+        Routes to the workflow indexer for Python files. Form and agent
+        content is no longer driven by per-file YAML — it is imported from
+        the manifest by ``manifest_import``.
         """
-        # Detect entity type from path if not provided
-        if entity_type is None:
-            if path.endswith(".py"):
-                entity_type = "workflow"
-            elif path.endswith(".form.yaml"):
-                entity_type = "form"
-            elif path.endswith(".agent.yaml"):
-                entity_type = "agent"
+        if entity_type is None and path.endswith(".py"):
+            entity_type = "workflow"
 
         if entity_type == "workflow":
             await self._workflow_indexer.index_python_file(path, content)
-        elif entity_type == "form":
-            await self._form_indexer.index_form(path, content)
-        elif entity_type == "agent":
-            await self._agent_indexer.index_agent(path, content)
 
     async def _remove_metadata(self, path: str):
         """
         Remove metadata for a file.
 
-        Clears diagnostic notifications and deletes platform entities
-        (workflows, forms, apps, agents) associated with the file.
+        Clears diagnostic notifications and deletes workflow records associated
+        with deleted Python files. Form and agent records are managed via the
+        manifest, not per-file YAML.
         """
         # Clear diagnostic notifications
         await self._diagnostics.clear_diagnostic_notification(path)
 
-        # Delete platform entities based on file type
+        # Delete workflows/data_providers/tools when their source file goes away
         if path.endswith(".py"):
-            # Delete workflows/data_providers/tools
             await self._workflow_indexer.delete_workflows_for_file(path)
-        elif path.endswith(".form.yaml"):
-            # Delete forms
-            await self._form_indexer.delete_form_for_file(path)
-        elif path.endswith(".agent.yaml"):
-            # Delete agents
-            await self._agent_indexer.delete_agent_for_file(path)
 
     # ========================================================================
     # Deactivation Protection (delegate to DeactivationProtectionService)

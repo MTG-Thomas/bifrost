@@ -159,15 +159,11 @@ class WorkspaceReindexService:
         counts["files_removed"] = result.rowcount if result.rowcount > 0 else 0
 
         # 3. For each existing file, upsert into file_index
-        # Process files in dependency order to prevent FK constraint violations
+        # Process Python files first to make decorator metadata available before
+        # any text content that might reference them.
         py_files = sorted([p for p in existing_paths if p.endswith(".py")])
-        form_files = sorted([p for p in existing_paths if p.endswith(".form.yaml")])
-        agent_files = sorted([p for p in existing_paths if p.endswith(".agent.yaml")])
-        other_files = sorted([
-            p for p in existing_paths
-            if not p.endswith(".py") and not p.endswith(".form.yaml") and not p.endswith(".agent.yaml")
-        ])
-        ordered_paths = py_files + form_files + agent_files + other_files
+        other_files = sorted([p for p in existing_paths if not p.endswith(".py")])
+        ordered_paths = py_files + other_files
 
         now = datetime.now(timezone.utc)
 
