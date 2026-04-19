@@ -10,7 +10,7 @@ import signal
 from src.config import get_settings
 from src.core.database import init_db, close_db
 from src.jobs.rabbitmq import rabbitmq
-from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
+from src.jobs.consumers.workflow_execution_traced import TracedWorkflowExecutionConsumer
 from src.jobs.consumers.package_install import PackageInstallConsumer
 from src.jobs.consumers.agent_run import AgentRunConsumer
 from src.observability.otel import configure_tracing, get_tracer
@@ -71,7 +71,7 @@ class Worker:
 
     async def _start_consumers(self) -> None:
         self._consumers = [
-            WorkflowExecutionConsumer(),
+            TracedWorkflowExecutionConsumer(),
             PackageInstallConsumer(),
             AgentRunConsumer(),
         ]
