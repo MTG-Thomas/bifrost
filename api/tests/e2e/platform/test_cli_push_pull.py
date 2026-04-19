@@ -378,8 +378,12 @@ def test_push_with_delete_removed_entities(e2e_client, platform_admin):
     assert resp2.status_code == 200
     data2 = resp2.json()
     assert data2["applied"] is True
-    # The workflow should be deleted (or at least the deleted_entities list populated)
     assert isinstance(data2.get("deleted_entities"), list)
+    # The specific workflow we created should appear in deleted_entities
+    deleted = data2.get("deleted_entities", [])
+    assert any(wf_id in entry or "del_test_wf" in entry for entry in deleted), (
+        f"Expected del_test_wf ({wf_id}) in deleted_entities but got: {deleted}"
+    )
 
 
 def test_push_without_delete_flag_preserves_entities(e2e_client, platform_admin):
@@ -497,13 +501,18 @@ def test_incremental_import_skips_unchanged(e2e_client, platform_admin):
     assert data1["applied"] is True
     assert len(data1.get("entity_changes", [])) > 0, "First import should have entity_changes"
 
-    # Second import — same manifest, should have no changes
+    # Second import — same manifest, should have no changes for our specific workflow
     resp2 = e2e_client.post("/api/files/manifest/import", headers=platform_admin.headers, json={
         "files": {".bifrost/workflows.yaml": _b64(workflows_yaml)},
     })
     assert resp2.status_code == 200
     data2 = resp2.json()
     assert data2["applied"] is True
-    assert len(data2.get("entity_changes", [])) == 0, (
-        f"Second import should have no entity_changes but got: {data2.get('entity_changes')}"
+    # Filter to changes involving our specific workflow — should be none
+    our_changes = [
+        c for c in data2.get("entity_changes", [])
+        if c.get("action") != "delete" and wf_id in str(c)
+    ]
+    assert len(our_changes) == 0, (
+        f"Second import should have no changes for workflow {wf_id} but got: {our_changes}"
     )

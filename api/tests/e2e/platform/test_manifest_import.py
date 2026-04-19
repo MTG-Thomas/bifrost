@@ -56,6 +56,30 @@ async def repo_storage() -> RepoStorage:
 @pytest_asyncio.fixture
 async def cleanup_manifest_import(db_session: AsyncSession, repo_storage: RepoStorage):
     """Wipe .bifrost/, test workflows, test orgs, test roles, test forms/apps between tests."""
+    _MANIFEST_PATHS = (
+        ".bifrost/workflows.yaml",
+        ".bifrost/forms.yaml",
+        ".bifrost/apps.yaml",
+        ".bifrost/organizations.yaml",
+        ".bifrost/roles.yaml",
+        ".bifrost/integrations.yaml",
+        ".bifrost/configs.yaml",
+        ".bifrost/tables.yaml",
+        ".bifrost/events.yaml",
+        ".bifrost/agents.yaml",
+        "workflows/manifest_import_test_wf.py",
+    )
+
+    async def _wipe_s3() -> None:
+        for path in _MANIFEST_PATHS:
+            try:
+                await repo_storage.delete(path)
+            except Exception:
+                pass
+
+    # Pre-test: clear any S3 state left by prior tests so this test starts clean
+    await _wipe_s3()
+
     yield
 
     # Child junction tables first
@@ -83,24 +107,8 @@ async def cleanup_manifest_import(db_session: AsyncSession, repo_storage: RepoSt
     )
     await db_session.commit()
 
-    # Wipe S3 manifest + workflow file
-    for path in (
-        ".bifrost/workflows.yaml",
-        ".bifrost/forms.yaml",
-        ".bifrost/apps.yaml",
-        ".bifrost/organizations.yaml",
-        ".bifrost/roles.yaml",
-        ".bifrost/integrations.yaml",
-        ".bifrost/configs.yaml",
-        ".bifrost/tables.yaml",
-        ".bifrost/events.yaml",
-        ".bifrost/agents.yaml",
-        "workflows/manifest_import_test_wf.py",
-    ):
-        try:
-            await repo_storage.delete(path)
-        except Exception:
-            pass
+    # Post-test: wipe S3 manifest + workflow file
+    await _wipe_s3()
 
 
 # =============================================================================
