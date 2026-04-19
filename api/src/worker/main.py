@@ -8,16 +8,18 @@ import os
 import signal
 
 from src.config import get_settings
-from src.core.database import init_db, close_db
-from src.jobs.rabbitmq import rabbitmq
-from src.jobs.consumers.workflow_execution_traced import TracedWorkflowExecutionConsumer
-from src.jobs.consumers.package_install import PackageInstallConsumer
+from src.core.database import close_db, init_db
 from src.jobs.consumers.agent_run import AgentRunConsumer
+from src.jobs.consumers.package_install import PackageInstallConsumer
+from src.jobs.consumers.workflow_execution_traced import (
+    TracedWorkflowExecutionConsumer,
+)
+from src.jobs.rabbitmq import rabbitmq
 from src.observability.otel import configure_tracing, get_tracer
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
 logging.getLogger("aiormq").setLevel(logging.WARNING)
@@ -36,7 +38,6 @@ tracer = get_tracer(__name__)
 
 
 class Worker:
-
     def __init__(self):
         self.settings = get_settings()
         self.running = False
@@ -61,7 +62,7 @@ class Worker:
                 await self._start_consumers()
             except Exception:
                 logger.error("Startup failed; tearing down partially-started worker")
-                await self._cleanup_after_failed_start()
+                await self.stop()
                 raise
 
         logger.info("Bifrost Worker started")
@@ -78,7 +79,9 @@ class Worker:
 
         for consumer in self._consumers:
             try:
-                with tracer.start_as_current_span(f"consumer.start.{consumer.queue_name}"):
+                with tracer.start_as_current_span(
+                    f"consumer.start.{consumer.queue_name}"
+                ):
                     await consumer.start()
                 logger.info(f"Started consumer: {consumer.queue_name}")
             except Exception as e:
@@ -91,7 +94,9 @@ class Worker:
 
         for consumer in self._consumers:
             try:
-                with tracer.start_as_current_span(f"consumer.stop.{consumer.queue_name}"):
+                with tracer.start_as_current_span(
+                    f"consumer.stop.{consumer.queue_name}"
+                ):
                     await consumer.stop()
                 logger.info(f"Stopped consumer: {consumer.queue_name}")
             except Exception as e:
