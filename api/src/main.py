@@ -260,10 +260,12 @@ def create_app() -> FastAPI:
     Returns:
         Configured FastAPI application instance
     """
+    from shared.version import get_version
+
     app = FastAPI(
         title="Bifrost API",
         description="MSP automation platform API",
-        version="2.0.0",
+        version=get_version(),
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",

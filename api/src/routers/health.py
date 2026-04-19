@@ -7,12 +7,13 @@ Provides endpoints for monitoring application health.
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.core.database import get_db
+from shared.version import get_version
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -21,7 +22,7 @@ class HealthCheck(BaseModel):
     """Health check response model."""
     status: str
     timestamp: datetime
-    version: str = "2.0.0"
+    version: str = Field(default_factory=get_version)
     environment: str
 
 
@@ -29,7 +30,7 @@ class DetailedHealthCheck(BaseModel):
     """Detailed health check with component status."""
     status: str
     timestamp: datetime
-    version: str = "2.0.0"
+    version: str = Field(default_factory=get_version)
     environment: str
     components: dict[str, dict]
 
