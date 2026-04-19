@@ -27,8 +27,36 @@ import re
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 
-# React Router primitives previously re-exported from "bifrost".
-_ROUTER_NAMES: set[str] = {"Link", "NavLink", "Navigate", "useNavigate"}
+# React Router primitives previously re-exported from "bifrost". Must stay
+# in sync with `router_primitives` in app_bundler/__init__.py so the classifier
+# and bundler agree on which names route to "react-router-dom" rather than
+# staying in "bifrost" (platform) or moving to "lucide-react".
+#
+# Only runtime values (components / hooks / factory fns) — TypeScript types
+# are not runtime names and don't belong here.
+_ROUTER_NAMES: set[str] = {
+    # Components
+    "Link", "NavLink", "Navigate", "Outlet", "Routes", "Route",
+    "BrowserRouter", "HashRouter", "MemoryRouter", "Router",
+    "RouterProvider", "ScrollRestoration", "Form", "Await",
+    # Hooks
+    "useNavigate", "navigate", "useLocation", "useParams",
+    "useSearchParams", "useOutletContext", "useOutlet", "useMatch",
+    "useResolvedPath", "useRoutes", "useHref",
+    "useLinkClickHandler", "useInRouterContext",
+    "useNavigationType", "useNavigation", "useRevalidator",
+    "useRouteError", "useRouteLoaderData", "useLoaderData",
+    "useActionData", "useAsyncError", "useAsyncValue",
+    "useSubmit", "useFetcher", "useFetchers", "useBlocker",
+    "useBeforeUnload",
+    # Factories / helpers
+    "createBrowserRouter", "createHashRouter", "createMemoryRouter",
+    "createRoutesFromChildren", "createRoutesFromElements",
+    "createSearchParams", "generatePath", "matchPath", "matchRoutes",
+    "renderMatches", "resolvePath",
+    # Unstable / advanced
+    "unstable_usePrompt",
+}
 
 
 @dataclass
@@ -60,36 +88,53 @@ class FileMigrationResult:
 
 def load_lucide_icon_names(dts_path: pathlib.Path | None = None) -> set[str]:
     """
-    Extract the set of Lucide icon names from lucide-react's .d.ts file.
+    Extract the set of Lucide icon names from lucide-react's .d.ts file,
+    or (preferred) from the `lucide_icon_names.json` snapshot shipped
+    alongside this module.
 
-    Looks for `declare const <Name>: react.ForwardRefExoticComponent<...>`.
-    Falls back to a minimal hardcoded set if the file is unavailable.
+    Resolution order:
+      1. Explicit `dts_path` argument — parse that specific .d.ts.
+      2. `bifrost/lucide_icon_names.json` beside this file — the API
+         container doesn't ship `client/node_modules/`, so the CLI and the
+         bundler-server path both rely on this snapshot for the full
+         ~5700-name set.
+      3. `client/node_modules/lucide-react/dist/lucide-react.d.ts` walking
+         up from this file — dev-mode fallback when running in the repo.
+      4. Conservative hardcoded set — absolute-last-resort fallback.
     """
-    if dts_path is None:
-        # Walk upward from this file to find client/node_modules/lucide-react
-        here = pathlib.Path(__file__).resolve()
-        for parent in [here, *here.parents]:
-            candidate = parent.parent / "client" / "node_modules" / "lucide-react" / "dist" / "lucide-react.d.ts"
-            if candidate.exists():
-                dts_path = candidate
-                break
+    # 1. Explicit override always takes precedence.
+    if dts_path is not None and dts_path.exists():
+        return _parse_lucide_dts(dts_path.read_text(encoding="utf-8"))
 
-    if dts_path is None or not dts_path.exists():
-        # Conservative fallback — common icons only.
-        # This only matters if lucide-react isn't installed at the expected
-        # path; in practice the migration should be run from a workspace
-        # that has it.
-        return {
-            "Phone", "Mail", "User", "Users", "Search", "Plus", "Minus",
-            "X", "Check", "Building", "Building2", "Home", "Settings",
-            "Trash", "Trash2", "Edit", "Edit2", "Edit3", "Save",
-            "ChevronLeft", "ChevronRight", "ChevronUp", "ChevronDown",
-            "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
-        }
+    # 2. Shipped JSON snapshot beside this module.
+    json_path = pathlib.Path(__file__).resolve().parent / "lucide_icon_names.json"
+    if json_path.exists():
+        try:
+            import json as _json
+            return set(_json.loads(json_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
 
-    text = dts_path.read_text(encoding="utf-8")
+    # 3. Walk upward from this file to find client/node_modules/lucide-react.
+    here = pathlib.Path(__file__).resolve()
+    for parent in [here, *here.parents]:
+        candidate = parent.parent / "client" / "node_modules" / "lucide-react" / "dist" / "lucide-react.d.ts"
+        if candidate.exists():
+            return _parse_lucide_dts(candidate.read_text(encoding="utf-8"))
+
+    # 4. Conservative fallback.
+    return {
+        "Phone", "Mail", "User", "Users", "Search", "Plus", "Minus",
+        "X", "Check", "Building", "Building2", "Home", "Settings",
+        "Trash", "Trash2", "Edit", "Edit2", "Edit3", "Save",
+        "ChevronLeft", "ChevronRight", "ChevronUp", "ChevronDown",
+        "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+    }
+
+
+def _parse_lucide_dts(text: str) -> set[str]:
+    """Extract Lucide icon names from the raw .d.ts text."""
     names: set[str] = set()
-    # Direct declarations: `declare const ChevronRight: react.ForwardRef...`
     names.update(
         re.findall(
             r"^declare const ([A-Z][A-Za-z0-9]*): react\.ForwardRefExoticComponent",
@@ -97,17 +142,7 @@ def load_lucide_icon_names(dts_path: pathlib.Path | None = None) -> set[str]:
             re.MULTILINE,
         )
     )
-    # Re-export aliases: `export { SquarePen as Edit, ... }`. Lucide's public
-    # surface exposes many icons only via these aliases (`Edit`, `AlertTriangle`,
-    # etc. resolve to other canonical names).
-    names.update(
-        re.findall(
-            r"\bas\s+([A-Z][A-Za-z0-9]*)\b",
-            text,
-        )
-    )
-    # Drop `*Icon` alias shadows — lucide exports everything twice with/without
-    # the Icon suffix. Keep both if present; the shadow filter is just safety.
+    names.update(re.findall(r"\bas\s+([A-Z][A-Za-z0-9]*)\b", text))
     return names
 
 

@@ -332,7 +332,11 @@ class BundlerService:
 
         (src_dir / entry_file).write_text("\n".join(lines), encoding="utf-8")
 
-    def _write_bifrost_package(self, src_dir: Path, sources: list[str]) -> None:
+    def _write_bifrost_package(
+        self,
+        src_dir: Path,
+        sources: list[str],
+    ) -> None:
         """Write node_modules/bifrost/index.js so esbuild can bundle `bifrost`.
 
         Re-exports, in order of priority:
@@ -418,8 +422,32 @@ class BundlerService:
         # host sets `basename` on BrowserRouter, so raw React Router
         # Link/NavLink/Navigate/useNavigate/navigate handle the /apps/<slug>
         # prefix automatically. Users should import them from 'react-router-dom'.
+        #
+        # Must stay in sync with `client/src/lib/bifrost-runtime.ts`'s
+        # react-router-dom re-exports. Only runtime values (components / hooks /
+        # factory fns) — TypeScript types are not runtime names.
         router_primitives = {
-            "Link", "NavLink", "Navigate", "useNavigate", "navigate",
+            # Components
+            "Link", "NavLink", "Navigate", "Outlet", "Routes", "Route",
+            "BrowserRouter", "HashRouter", "MemoryRouter", "Router",
+            "RouterProvider", "ScrollRestoration", "Form", "Await",
+            # Hooks
+            "useNavigate", "navigate", "useLocation", "useParams",
+            "useSearchParams", "useOutletContext", "useOutlet", "useMatch",
+            "useResolvedPath", "useRoutes", "useHref",
+            "useLinkClickHandler", "useInRouterContext",
+            "useNavigationType", "useNavigation", "useRevalidator",
+            "useRouteError", "useRouteLoaderData", "useLoaderData",
+            "useActionData", "useAsyncError", "useAsyncValue",
+            "useSubmit", "useFetcher", "useFetchers", "useBlocker",
+            "useBeforeUnload",
+            # Factories / helpers
+            "createBrowserRouter", "createHashRouter", "createMemoryRouter",
+            "createRoutesFromChildren", "createRoutesFromElements",
+            "createSearchParams", "generatePath", "matchPath", "matchRoutes",
+            "renderMatches", "resolvePath",
+            # Unstable / advanced
+            "unstable_usePrompt",
         }
         deprecated_router = sorted(router_primitives & imported_names)
 
@@ -486,10 +514,17 @@ class BundlerService:
         # app base path. In the bundled runtime the inner BrowserRouter has
         # `basename` set, so real React Router handles the prefix correctly —
         # the wrapper would double-prepend and produce wrong URLs.
-        lines.append("")
-        lines.append(
-            'export { Link, NavLink, Navigate, useNavigate } from "react-router-dom";'
-        )
+        #
+        # Only re-export the primitives user code actually imported from
+        # "bifrost" — otherwise we'd generate an export for every router
+        # name on every bundle.
+        router_re_exported = router_primitives & imported_names
+        if router_re_exported:
+            joined_router = ", ".join(sorted(router_re_exported))
+            lines.append("")
+            lines.append(
+                f'export {{ {joined_router} }} from "react-router-dom";'
+            )
 
         # Platform scope passthrough. Read from globalThis at module-eval
         # time — the host page (BundledAppShell.ensureImportMap) populates
@@ -510,7 +545,6 @@ class BundlerService:
         )
         # Exclude router primitives (exported from react-router-dom above)
         # to avoid duplicate export errors.
-        router_re_exported = {"Link", "NavLink", "Navigate", "useNavigate"}
         platform_names = (
             (_PLATFORM_EXPORT_NAMES & imported_names)
             - user_names

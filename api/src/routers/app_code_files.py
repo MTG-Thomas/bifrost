@@ -555,31 +555,77 @@ async def get_bundle_manifest(
             app_id_str, storage_mode, "manifest.json"
         )
     except FileNotFoundError:
-        # Live is publish-driven only. If live/manifest.json is missing the
-        # app has either never been published or was last published under
-        # the legacy per-file compiler (no bundle manifest). Either way we
-        # refuse to silently rebuild from draft source — live must reflect
-        # what publish produced. Owner must re-publish.
-        if storage_mode == "live":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "App has not been published under the current runtime. "
-                    "Publish the app to generate a live bundle."
-                ),
-            )
-
-        # Preview: build on demand. New apps that haven't been saved yet
-        # (or that haven't triggered the save-loop rebuild) need a first
-        # build to have something to serve.
+        # No manifest yet — build on demand. For preview this covers new
+        # apps that haven't been saved. For live this covers apps last
+        # published under the legacy per-file compiler (no bundle manifest
+        # yet); the first live viewer triggers a fresh bundle from current
+        # source. Admins who had unpublished drafts at upgrade time are
+        # warned in the release notes to publish or revert beforehand.
+        #
+        # Before bundling: run `bifrost migrate-imports` against the repo
+        # source so auto-injected JSX references (e.g. `<Outlet />` used
+        # without an import — legal under the old scope-injection runtime,
+        # broken on esbuild) get real import statements. Skip the migration
+        # step for the save-loop path; that runs during active editing and
+        # has its own workspace on the developer's machine.
         from src.services.app_bundler import BundlerService
+        from src.services.app_bundler.auto_migrate import (
+            auto_migrate_repo_prefix,
+        )
+        from src.core.cache import get_shared_redis
 
         bundler = BundlerService()
         repo_prefix = app.repo_prefix
-        result = await bundler.build(
-            app_id_str, repo_prefix, storage_mode,
-            dependencies=app.dependencies or {},
-        )
+
+        # Serialize migration across concurrent first-viewers of the same app
+        # so two requests don't double-migrate or race on writes. Hold the
+        # lock across migrate+build so the second caller sees a valid
+        # manifest on retry rather than partial state.
+        lock_key = f"bifrost:automigrate:{app_id_str}:{storage_mode}"
+        lock_ttl = 60
+        migrated = False
+        redis = await get_shared_redis()
+        acquired = bool(await redis.set(lock_key, "1", nx=True, ex=lock_ttl))
+        if not acquired:
+            # Another request is building. Wait briefly, then retry the S3
+            # HEAD — by that point the holder has written manifest.json.
+            import asyncio as _asyncio
+
+            for _ in range(40):  # ~20s total
+                await _asyncio.sleep(0.5)
+                try:
+                    manifest_bytes = await app_storage.read_file(
+                        app_id_str, storage_mode, "manifest.json"
+                    )
+                    m = _json.loads(manifest_bytes)
+                    return {
+                        "entry": m.get("entry"),
+                        "css": m.get("css"),
+                        "base_url": f"/api/applications/{app_id}/bundle-asset",
+                        "mode": storage_mode,
+                        "dependencies": m.get("dependencies") or (app.dependencies or {}),
+                        "migrated": False,
+                    }
+                except FileNotFoundError:
+                    continue
+            raise HTTPException(
+                status_code=503,
+                detail="Auto-migrate lock held by another request; manifest never appeared",
+            )
+        try:
+            migrated, _results = await auto_migrate_repo_prefix(
+                app_id_str, repo_prefix
+            )
+            if not migrated:
+                logger.info(f"No migration needed for app={app_id_str}")
+
+            result = await bundler.build(
+                app_id_str, repo_prefix, storage_mode,
+                dependencies=app.dependencies or {},
+            )
+        finally:
+            await redis.delete(lock_key)
+
         if not result.success or result.manifest is None:
             first_err = (result.errors or [None])[0]
             err_text = first_err.text if first_err else "unknown error"
@@ -591,6 +637,9 @@ async def get_bundle_manifest(
             "base_url": f"/api/applications/{app_id}/bundle-asset",
             "mode": storage_mode,
             "dependencies": manifest.dependencies,
+            # Surface the banner on the build that actually rewrote source,
+            # so the developer knows to pull.
+            "migrated": migrated,
         }
 
     m = _json.loads(manifest_bytes)
@@ -600,6 +649,7 @@ async def get_bundle_manifest(
         "base_url": f"/api/applications/{app_id}/bundle-asset",
         "mode": storage_mode,
         "dependencies": m.get("dependencies") or (app.dependencies or {}),
+        "migrated": False,
     }
 
 

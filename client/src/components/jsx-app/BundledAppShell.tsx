@@ -148,6 +148,10 @@ interface BundleManifest {
 	base_url: string;
 	mode: "preview" | "live";
 	dependencies: Record<string, string>;
+	// Server set to true iff the first-view auto-migration rewrote files
+	// under _repo/<app>/. Surfaced as a dismissible info banner so the
+	// developer knows to pull on next workspace sync.
+	migrated?: boolean;
 }
 
 interface BundledAppShellProps {
@@ -175,6 +179,22 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 	// rendering underneath; this banner sits on top.
 	const [buildErrors, setBuildErrors] = useState<BundleMessage[] | null>(null);
 	const [buildErrorDismissed, setBuildErrorDismissed] = useState(false);
+
+	// Auto-migration notice shown when the first-view bundle-manifest fetch
+	// reports that server-side migrate-imports rewrote files under _repo/.
+	// Persisted-dismissed via localStorage so it doesn't re-appear on every
+	// navigation within the same app.
+	const migrateDismissKey = `bifrost.automigrate-dismissed.${appId}`;
+	const [migrateNotice, setMigrateNotice] = useState(false);
+	const [migrateNoticeDismissed, setMigrateNoticeDismissed] = useState(
+		() => {
+			try {
+				return localStorage.getItem(migrateDismissKey) === "1";
+			} catch {
+				return false;
+			}
+		},
+	);
 
 	const setAppContext = useAppBuilderStore((state) => state.setAppContext);
 
@@ -222,6 +242,13 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 					css = manifest.css;
 					baseUrl = manifest.base_url;
 					dependencies = manifest.dependencies ?? {};
+
+					// Server may have run migrate-imports against _repo/<app>/
+					// before bundling. Surface a non-fatal info banner so the
+					// developer pulls on next sync.
+					if (manifest.migrated) {
+						setMigrateNotice(true);
+					}
 
 					ensureImportMap(dependencies);
 				}
@@ -320,6 +347,7 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 
 	const showBanner =
 		buildErrors && buildErrors.length > 0 && !buildErrorDismissed;
+	const showMigrateNotice = migrateNotice && !migrateNoticeDismissed;
 
 	return (
 		<div className="relative h-full w-full">
@@ -333,6 +361,18 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 				<BuildErrorBanner
 					errors={buildErrors}
 					onDismiss={() => setBuildErrorDismissed(true)}
+				/>
+			)}
+			{showMigrateNotice && (
+				<AutoMigrateNotice
+					onDismiss={() => {
+						setMigrateNoticeDismissed(true);
+						try {
+							localStorage.setItem(migrateDismissKey, "1");
+						} catch {
+							/* ignore */
+						}
+					}}
 				/>
 			)}
 		</div>
@@ -355,6 +395,43 @@ function BundleStyles({ href }: { href: string }) {
 		};
 	}, [href]);
 	return null;
+}
+
+/**
+ * Dismissible info banner shown once per app after server-side auto-migration.
+ * Blue/gray info styling — this is not an error. Same structural shape as
+ * BuildErrorBanner so the two stack predictably in the top-right.
+ */
+function AutoMigrateNotice({ onDismiss }: { onDismiss: () => void }) {
+	return (
+		<div className="absolute top-3 right-3 left-3 z-50 rounded-lg border border-blue-300 bg-blue-50 shadow-lg dark:border-blue-700 dark:bg-blue-950/90">
+			<div className="flex items-start gap-3 p-3">
+				<div className="flex-1">
+					<div className="mb-1 flex items-center justify-between">
+						<h3 className="text-sm font-semibold text-blue-700 dark:text-blue-300">
+							App updated for new runtime
+						</h3>
+						<button
+							type="button"
+							onClick={onDismiss}
+							className="text-blue-600 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-100"
+							aria-label="Dismiss"
+						>
+							×
+						</button>
+					</div>
+					<p className="text-sm text-blue-800 dark:text-blue-200">
+						Your app was automatically updated to the new runtime. Review the
+						changes in your workspace on your next{" "}
+						<code className="rounded bg-blue-100 px-1 dark:bg-blue-900/60">
+							bifrost pull
+						</code>
+						.
+					</p>
+				</div>
+			</div>
+		</div>
+	);
 }
 
 /**

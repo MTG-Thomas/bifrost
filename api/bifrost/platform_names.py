@@ -111,10 +111,11 @@ PLATFORM_EXPORT_NAMES: frozenset[str] = frozenset({
     "DropdownMenuRadioItem",
     "DropdownMenuShortcut", "DropdownMenuSub", "DropdownMenuSubContent",
     "DropdownMenuSubTrigger",
-    # Calendar is exposed twice: `Calendar` is the platform-built calendar,
-    # `CalendarPicker` is the shadcn Calendar re-exported under an alias
-    # (so the Lucide `Calendar` icon doesn't shadow it). Both are present
-    # in the `$` registry.
+    # `Calendar` imported from "bifrost" resolves to the Lucide calendar
+    # icon (via the Lucide spread in `$`), NOT a picker component. Apps that
+    # want a date picker import `CalendarPicker` instead. `CalendarPicker`
+    # and `CalendarDayButton` are the shadcn Calendar parts, aliased to
+    # avoid the Lucide shadow. `DateRangePicker` is the platform component.
     "Calendar", "CalendarPicker", "CalendarDayButton", "DateRangePicker",
     # Lucide icons are NOT enumerated here — there are ~1000 of them and they
     # come from the real `lucide-react` package. The bundler resolves names
