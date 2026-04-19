@@ -35,3 +35,12 @@ addopts = "--cov=api --cov-report=term-missing --cov-report=xml --cov-report=htm
 testpaths = ["api/tests"]
 pythonpath = ["api"]
 asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+pretty = true
+warn_unused_configs = true
+ignore_missing_imports = true
+explicit_package_bases = true
+files = ["api/src"]
+exclude = ["alembic/versions"]
