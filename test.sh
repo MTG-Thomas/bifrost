@@ -177,6 +177,11 @@ stack_down() {
 
 stack_reset() {
     require_stack_up
+    # Stop DB consumers before template_init runs — template_init may need to
+    # DROP bifrost_test (when migrations changed), and it cannot do so while
+    # api/worker/scheduler hold live connections to it. reset_state will
+    # restart them afterward.
+    docker compose -f "$COMPOSE_FILE" stop api worker scheduler pgbouncer 2>/dev/null || true
     "$SCRIPT_DIR/scripts/stack_template_init.sh"
     reset_state
 }
