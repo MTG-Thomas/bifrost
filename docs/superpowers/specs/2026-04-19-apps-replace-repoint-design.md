@@ -86,7 +86,7 @@ All performed server-side in the repoint service, in this order:
 2. **No-op check.** If `new_repo_path == current_repo_path`, succeed without writing (return the app unchanged).
 3. **Uniqueness.** No other app has `repo_path == new_repo_path`. Bypassable with `--force`.
 4. **Nesting.** No other app's `repo_path` is a prefix of `<new>/`, and `<new>/` is not a prefix of any other app's `repo_path`. Bypassable with `--force`.
-5. **Source exists.** `file_index` has at least one entry under `<new>/`. Bypassable with `--force`.
+5. **Source exists.** `file_index` has at least one non-deleted entry whose path starts with `<new>/`. Bypassable with `--force`.
 
 Nesting check rationale: `_find_app_by_path` uses longest-prefix-match, so nested `repo_path` values would silently route files to whichever app wins the match. Rejecting nesting at replace-time prevents the ambiguity.
 
