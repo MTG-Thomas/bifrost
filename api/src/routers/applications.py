@@ -32,6 +32,7 @@ from src.models.contracts.applications import (
     ApplicationListResponse,
     ApplicationPublic,
     ApplicationPublishRequest,
+    ApplicationReplaceRequest,
     ApplicationRollbackRequest,
     ApplicationUpdate,
 )
@@ -1011,6 +1012,53 @@ async def publish_application(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+# =============================================================================
+# Replace Endpoint
+# =============================================================================
+
+
+@router.post(
+    "/{app_id}/replace",
+    response_model=ApplicationPublic,
+    summary="Repoint application source directory",
+)
+async def replace_application_endpoint(
+    app_id: UUID,
+    data: ApplicationReplaceRequest,
+    ctx: Context,
+    user: CurrentUser,
+) -> ApplicationPublic:
+    """Update ``repo_path`` after source files have been moved/renamed.
+
+    Validates that the new path is unique, non-nested with other apps, and has
+    source files under it. ``force: true`` bypasses all three checks.
+    """
+    repo = ApplicationRepository(
+        ctx.db,
+        ctx.org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
+
+    try:
+        application = await repo.replace_application(
+            app_id, data.repo_path, force=data.force
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    if application is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Application '{app_id}' not found",
+        )
+
+    return await application_to_public(application, repo)
 
 
 # =============================================================================
