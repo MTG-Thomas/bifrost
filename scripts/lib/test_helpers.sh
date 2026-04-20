@@ -31,7 +31,7 @@ wait_for_service() {
         fi
         sleep 1
     done
-    echo "ERROR: $service not ready after ${max_attempts}s" >&2
+    echo "ERROR: $service not ready after ${max_attempts} attempts" >&2
     return 1
 }
 
@@ -42,16 +42,20 @@ stack_is_up() {
     docker compose -p "$project" -f "$compose_file" ps --status running --quiet 2>/dev/null | grep -q .
 }
 
-# Export per-service logs to LOG_DIR. No-op if LOG_DIR is empty.
+# Export per-service logs for a running stack to LOG_DIR.
+# Args: <project> <compose-file>
+# No-op if LOG_DIR is empty or no services are running.
 export_logs() {
-    local compose_file="$1"
+    local project="$1"
+    local compose_file="$2"
     local log_dir="${LOG_DIR:-}"
     [ -z "$log_dir" ] && return 0
     mkdir -p "$log_dir"
     local services
-    services=$(docker compose -f "$compose_file" --profile e2e --profile test --profile client config --services 2>/dev/null)
+    services=$(docker compose -p "$project" -f "$compose_file" ps --services 2>/dev/null)
+    [ -z "$services" ] && return 0
     for svc in $services; do
-        docker compose -f "$compose_file" logs --no-color --timestamps "$svc" > "$log_dir/$svc.log" 2>&1 || true
+        docker compose -p "$project" -f "$compose_file" logs --no-color --timestamps "$svc" > "$log_dir/$svc.log" 2>&1 || true
         [ -s "$log_dir/$svc.log" ] || rm -f "$log_dir/$svc.log"
     done
 }
