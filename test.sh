@@ -83,16 +83,16 @@ reset_state() {
         "CREATE DATABASE bifrost_test TEMPLATE bifrost_test_template;" > /dev/null
 
     docker compose -f "$COMPOSE_FILE" exec -T redis redis-cli FLUSHDB > /dev/null
-    docker compose -f "$COMPOSE_FILE" run --rm --no-deps minio-init > /dev/null 2>&1 || true
+    docker compose -f "$COMPOSE_FILE" run --rm --no-deps minio-init > /dev/null
 
     rm -f client/e2e/.auth/credentials.json \
           client/e2e/.auth/platform_admin.json \
           client/e2e/.auth/org1_user.json \
-          client/e2e/.auth/org2_user.json 2>/dev/null || true
+          client/e2e/.auth/org2_user.json
 
     docker compose -f "$COMPOSE_FILE" start pgbouncer > /dev/null
     wait_for_service "$COMPOSE_FILE" pgbouncer pg_isready -h localhost -p 5432 -U bifrost
-    docker compose -f "$COMPOSE_FILE" --profile e2e start api worker scheduler > /dev/null 2>&1 || true
+    docker compose -f "$COMPOSE_FILE" --profile e2e start api worker scheduler > /dev/null
     wait_for_service "$COMPOSE_FILE" api curl -sf http://localhost:8000/health
 
     echo "State reset complete."
@@ -196,10 +196,14 @@ stack_status() {
 # =============================================================================
 
 run_pytest() {
+    # Note: we deliberately do NOT re-run stack_template_init.sh here.
+    # `stack reset` / `stack up` is where migration changes flow into the
+    # template. `run_pytest` clones the current template, so if the user
+    # changed migrations they should run `./test.sh stack reset` once.
     require_stack_up
     reset_state
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        pytest "$@" --junitxml=/tmp/bifrost/test-results.xml 2>&1 | tee "$LOG_DIR/test-runner.log"
+        pytest "$@" --junitxml="/tmp/bifrost/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
     return "${PIPESTATUS[0]}"
 }
 
@@ -253,8 +257,10 @@ client_e2e() {
 
 cmd_ci() {
     print_project
-    stack_up
+    # Install teardown trap BEFORE stack_up so a boot-time failure still tears
+    # down the partially-booted stack instead of leaking containers/volumes.
     trap 'export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; stack_down' EXIT
+    stack_up
     cmd_all
     client_unit
     client_e2e
@@ -278,6 +284,26 @@ case "$1" in
     ci) cmd_ci ;;
     -h|--help|help)
         sed -n '2,35p' "$0"
+        ;;
+    # Legacy flags from the pre-refactor test.sh. Point the user at the new
+    # verb before silent pytest "unrecognized argument" errors confuse them.
+    --client|--client-only|--client-dev|--local|--reset-db|--no-reset|--e2e|--coverage|--wait|--ci)
+        cat >&2 <<EOF
+ERROR: '$1' is no longer supported. The test.sh interface is now verb-style.
+
+  old                          new
+  ./test.sh --e2e              ./test.sh e2e
+  ./test.sh --client           ./test.sh client e2e
+  ./test.sh --client-dev       ./test.sh client e2e   (stack stays up between runs)
+  ./test.sh --client-only      ./test.sh client e2e
+  ./test.sh --local            ./test.sh stack up     (then run playwright locally)
+  ./test.sh --reset-db         ./test.sh stack reset
+  ./test.sh --coverage         ./test.sh all --coverage     (pytest passthrough)
+  ./test.sh --ci               ./test.sh ci
+
+Run './test.sh --help' for the full command list.
+EOF
+        exit 2
         ;;
     tests/*|--*)
         run_pytest "$@"
