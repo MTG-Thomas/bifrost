@@ -393,10 +393,7 @@ class FileOperationsService:
         # Uses starts_with() instead of LIKE to avoid wildcard chars (_, %) in repo_path.
         stmt = (
             select(Application)
-            .where(
-                Application.repo_path.isnot(None),
-                text("starts_with(:path, repo_path || '/')").bindparams(path=path),
-            )
+            .where(text("starts_with(:path, repo_path || '/')").bindparams(path=path))
             .order_by(func.length(Application.repo_path).desc())
             .limit(1)
         )
