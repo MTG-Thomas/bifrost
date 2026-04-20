@@ -40,14 +40,15 @@ def upgrade() -> None:
         )
     ).fetchall()
     if dup_check:
+        formatted = ", ".join(f"'{row[0]}' ({row[1]}x)" for row in dup_check)
         raise RuntimeError(
-            f"Cannot enforce unique repo_path — duplicates found: {dup_check}. "
+            f"Cannot enforce unique repo_path — duplicates found: {formatted}. "
             "Resolve manually before retrying this migration."
         )
 
     op.alter_column("applications", "repo_path", nullable=False)
     op.create_index(
-        "uq_applications_repo_path",
+        "ix_applications_repo_path_unique",
         "applications",
         ["repo_path"],
         unique=True,
@@ -55,5 +56,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("uq_applications_repo_path", table_name="applications")
+    op.drop_index("ix_applications_repo_path_unique", table_name="applications")
     op.alter_column("applications", "repo_path", nullable=True)
