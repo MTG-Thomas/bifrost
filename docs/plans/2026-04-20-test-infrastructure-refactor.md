@@ -2,6 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Execution State
+
+- **Worktree:** `/home/jack/GitHub/bifrost/.worktrees/test-infra-refactor` (this is gitignored in the main repo; each worktree the main repo spawns goes under `.worktrees/<branch-name>/` by convention)
+- **Branch:** `test-infra-refactor` (off `main`)
+- **All implementation, verification, and commits happen in the worktree above.** Never commit to `main` directly — the branch merges back at the end.
+- **Completed tasks:** 1 (test_helpers.sh + review fixes), 2 (docker-compose.test.yml cleanup + header refresh)
+- **Next task:** 3 (stack_template_init.sh)
+
 **Goal:** Refactor `./test.sh` into a verb-style subcommand interface with per-worktree stack isolation and template-database fast reset, then codify the workflow in a new `.claude/skills/bifrost-testing` skill.
 
 **Architecture:** `test.sh` becomes a dispatcher with subcommands (`stack up/down/reset/status`, `unit`, `e2e`, `all`, `client unit`, `client e2e`, `ci`). Compose project name is derived from the worktree's repo root path via SHA-256, so two worktrees run isolated stacks in parallel. A PostgreSQL template database (`bifrost_test_template`) is built once per alembic-versions hash at `stack up` and cloned on every reset — reducing reset time from ~10s to <2s. Hardcoded `container_name:` entries are removed in favor of docker compose's native service-name addressing. A new skill enforces hard rules (no skipped/failing tests) and co-located test authoring standards.
