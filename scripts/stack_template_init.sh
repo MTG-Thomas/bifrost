@@ -27,9 +27,12 @@ psql_postgres() {
 }
 
 # Check existing marker on template DB (stored as a comment on the DB).
+# Strips all whitespace (including trailing newline from psql -t -A) so the
+# equality check below works. If psql itself errors (postgres not running,
+# auth failure), let the error propagate — don't silently rebuild.
 EXISTING_HASH=$(psql_postgres -c \
-    "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'bifrost_test_template';" \
-    2>/dev/null | tr -d ' ' || echo "")
+    "SELECT COALESCE(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = 'bifrost_test_template';" \
+    | tr -d '[:space:]')
 
 if [ "$EXISTING_HASH" = "$MIGRATIONS_HASH" ]; then
     echo "template up to date (hash: $MIGRATIONS_HASH)"
@@ -38,9 +41,12 @@ fi
 
 echo "Rebuilding template (old hash: ${EXISTING_HASH:-none}, new hash: $MIGRATIONS_HASH)..."
 
-# Release the template flag (otherwise DROP fails) and drop.
+# Release the template flag (otherwise DROP fails), kick out any connections,
+# then drop.
 psql_postgres -c \
     "UPDATE pg_database SET datistemplate = false WHERE datname = 'bifrost_test_template';" > /dev/null 2>&1 || true
+psql_postgres -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'bifrost_test_template' AND pid <> pg_backend_pid();" > /dev/null 2>&1 || true
 psql_postgres -c "DROP DATABASE IF EXISTS bifrost_test_template;" > /dev/null
 
 # Also drop bifrost_test to force a fresh clone on next reset.
