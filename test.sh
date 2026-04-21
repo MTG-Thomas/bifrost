@@ -180,8 +180,11 @@ stack_reset() {
     # Stop DB consumers before template_init runs — template_init may need to
     # DROP bifrost_test (when migrations changed), and it cannot do so while
     # api/worker/scheduler hold live connections to it. reset_state will
-    # restart them afterward.
-    docker compose -f "$COMPOSE_FILE" stop api worker scheduler pgbouncer 2>/dev/null || true
+    # restart them afterward. Don't stop pgbouncer — compose's `start` later
+    # won't re-attach its network endpoint cleanly, and its pool only proxies
+    # bifrost_test anyway (nothing here connects to bifrost_test through it
+    # while it's stopped).
+    docker compose -f "$COMPOSE_FILE" stop api worker scheduler 2>/dev/null || true
     "$SCRIPT_DIR/scripts/stack_template_init.sh"
     reset_state
 }

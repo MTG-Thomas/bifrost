@@ -60,8 +60,8 @@ psql_postgres -c "DROP DATABASE IF EXISTS bifrost_test;" > /dev/null
 psql_postgres -c "CREATE DATABASE bifrost_test_template;" > /dev/null
 
 docker compose -f "$COMPOSE_FILE" run --rm \
-    -e BIFROST_DATABASE_URL_SYNC="postgresql://bifrost:bifrost_test@pgbouncer:5432/bifrost_test_template" \
-    -e BIFROST_DATABASE_URL="postgresql+asyncpg://bifrost:bifrost_test@pgbouncer:5432/bifrost_test_template" \
+    -e BIFROST_DATABASE_URL_SYNC="postgresql://bifrost:bifrost_test@postgres:5432/bifrost_test_template" \
+    -e BIFROST_DATABASE_URL="postgresql+asyncpg://bifrost:bifrost_test@postgres:5432/bifrost_test_template" \
     --no-deps init alembic upgrade head > /dev/null
 
 # Mark as template and stamp the hash.
