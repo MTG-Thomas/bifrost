@@ -170,7 +170,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.API_IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ env.API_IMAGE }}
           tags: |
             # Semantic version tags
             type=semver,pattern={{version}}
@@ -232,7 +232,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.CLIENT_IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ env.CLIENT_IMAGE }}
           tags: |
             # Semantic version tags
             type=semver,pattern={{version}}
