@@ -200,6 +200,7 @@ export async function getDataProviders() {
 ### Testing & Quality
 
 -   **Tests**: All work requires tests. Backend logic → unit tests in `api/tests/unit/`. Endpoint/workflow/integration changes → e2e tests in `api/tests/e2e/`. React components → sibling `*.test.tsx` (vitest). User-facing features → happy-path spec in `client/e2e/` (Playwright).
+    -   **Functional frontend modules require vitest coverage.** New or modified `.ts` files under `client/src/lib/**` and `client/src/services/**` that export functions (auth helpers, storage adapters, API wrappers, formatters, etc.) need a sibling `*.test.ts` covering the public API. Pure type/constant re-export files and files that only import and re-configure third-party SDKs are exempt. If the module has a cross-tab, cross-window, or storage-boundary concern (like `auth-token.ts`), the test MUST exercise that boundary — a regression that only reproduces with two tabs open is one a future refactor will silently re-introduce otherwise.
     -   **IMPORTANT**: Always use `./test.sh` — it manages the Dockerized test stack (PostgreSQL, Redis, RabbitMQ, MinIO, API, worker). Running pytest directly on the host will FAIL for anything touching DB/queue/cache.
     -   **Stack lifecycle is separate from test execution.** Boot once per worktree, run tests many times. See the Commands section below.
     -   **Test results**: `./test.sh` writes JUnit XML to `/tmp/bifrost/test-results.xml` — parse this for pass/fail details instead of grepping stdout.
