@@ -4,9 +4,19 @@
 
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiClient } from "@/lib/api-client";
+import { $api, apiClient } from "@/lib/api-client";
+import type { components } from "@/lib/v1";
 import { webSocketService, type AgentRunUpdate, type AgentRunStepUpdate } from "@/services/websocket";
 import { useAgentRunStepStore } from "@/stores/agentRunStepStore";
+
+// Re-export types for new wrappers (added with T8/T9/T15-T17)
+export type VerdictRequest = components["schemas"]["VerdictRequest"];
+export type VerdictResponse = components["schemas"]["VerdictResponse"];
+export type FlagConversation = components["schemas"]["FlagConversationResponse"];
+export type SendFlagMessageRequest =
+	components["schemas"]["SendFlagMessageRequest"];
+export type DryRunRequest = components["schemas"]["DryRunRequest"];
+export type DryRunResponse = components["schemas"]["DryRunResponse"];
 
 // ============================================================================
 // Types (manual until OpenAPI types are regenerated)
@@ -94,6 +104,15 @@ export function useAgentRuns(params?: {
 	orgId?: string;
 	startDate?: string;
 	endDate?: string;
+	/** Full-text search across asked/did/error/caller/metadata (T9). */
+	q?: string;
+	/** Verdict filter: 'up', 'down', or 'unreviewed' (T9). */
+	verdict?: string;
+	/**
+	 * JSON object of key-value pairs for metadata filtering (T9).
+	 * Pass as a stringified JSON object, e.g. '{"customer":"Acme"}'.
+	 */
+	metadataFilter?: string;
 	limit?: number;
 	offset?: number;
 }) {
@@ -107,6 +126,10 @@ export function useAgentRuns(params?: {
 			if (params?.orgId) searchParams.set("org_id", params.orgId);
 			if (params?.startDate) searchParams.set("start_date", params.startDate);
 			if (params?.endDate) searchParams.set("end_date", params.endDate);
+			if (params?.q) searchParams.set("q", params.q);
+			if (params?.verdict) searchParams.set("verdict", params.verdict);
+			if (params?.metadataFilter)
+				searchParams.set("metadata_filter", params.metadataFilter);
 			if (params?.limit) searchParams.set("limit", String(params.limit));
 			if (params?.offset) searchParams.set("offset", String(params.offset));
 			const qs = searchParams.toString();
@@ -117,6 +140,16 @@ export function useAgentRuns(params?: {
 			return data as unknown as AgentRunListResponse;
 		},
 	});
+}
+
+/**
+ * Alias for `useAgentRuns` accepting the new search/filter params (T9).
+ *
+ * Provided for clarity at call sites that want to highlight the search
+ * intent (`q` / `verdict` / `metadataFilter`). Same return shape.
+ */
+export function useSearchAgentRuns(params?: Parameters<typeof useAgentRuns>[0]) {
+	return useAgentRuns(params);
 }
 
 export function useAgentRun(runId: string | undefined, options?: { refetchInterval?: number | false | ((query: { state: { data: AgentRunDetail | undefined } }) => number | false) }) {
@@ -309,4 +342,63 @@ export function useAgentRunStream(
 			}
 		};
 	}, [runId, enabled, queryClient, onComplete]);
+}
+
+// ============================================================================
+// Verdict, flag-conversation, dry-run, regenerate-summary (T15-T17)
+// ============================================================================
+
+/**
+ * Set a verdict (`up` / `down`) on a completed run.
+ *
+ * Records an audit row server-side. Caller is responsible for invalidating
+ * the run detail cache (`["get", "/api/agent-runs/{run_id}", ...]`) and the
+ * list cache (`["agent-runs", ...]`) on success if needed.
+ */
+export function useSetVerdict() {
+	return $api.useMutation("post", "/api/agent-runs/{run_id}/verdict");
+}
+
+/** Clear the verdict on a run. Records an audit row server-side. */
+export function useClearVerdict() {
+	return $api.useMutation("delete", "/api/agent-runs/{run_id}/verdict");
+}
+
+/**
+ * Fetch the tuning conversation attached to a flagged run.
+ *
+ * Server creates an empty conversation row if none exists yet, so the UI
+ * can stream messages into a stable `id`.
+ */
+export function useFlagConversation(runId: string | undefined) {
+	return $api.useQuery(
+		"get",
+		"/api/agent-runs/{run_id}/flag-conversation",
+		{ params: { path: { run_id: runId ?? "" } } },
+		{ enabled: !!runId },
+	);
+}
+
+/** Append a user turn and synchronously get the tuning-model reply. */
+export function useSendFlagMessage() {
+	return $api.useMutation(
+		"post",
+		"/api/agent-runs/{run_id}/flag-conversation/message",
+	);
+}
+
+/**
+ * Single-run dry-run of a proposed system prompt against a past run's
+ * transcript. One LLM call — does not re-execute tools.
+ */
+export function useDryRunAgent() {
+	return $api.useMutation("post", "/api/agent-runs/{run_id}/dry-run");
+}
+
+/** Reset summary state and re-enqueue a summarization job. Admin-only. */
+export function useRegenerateSummary() {
+	return $api.useMutation(
+		"post",
+		"/api/agent-runs/{run_id}/regenerate-summary",
+	);
 }
