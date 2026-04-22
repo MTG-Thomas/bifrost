@@ -4800,6 +4800,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent-runs/{run_id}/flag-conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Flag Conversation
+         * @description Return the tuning conversation attached to a flagged run.
+         *
+         *     Creates an empty conversation row if none exists yet so the UI can
+         *     stream messages into a stable ``id``.
+         */
+        get: operations["get_flag_conversation_api_agent_runs__run_id__flag_conversation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/flag-conversation/message": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Flag Message
+         * @description Append a user turn and synchronously get the tuning-model reply.
+         */
+        post: operations["send_flag_message_api_agent_runs__run_id__flag_conversation_message_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent-runs/execute": {
         parameters: {
             query?: never;
@@ -8669,6 +8712,22 @@ export interface components {
              */
             user_ids: string[];
         };
+        /** AssistantTurn */
+        AssistantTurn: {
+            /**
+             * Kind
+             * @default assistant
+             * @constant
+             */
+            kind: "assistant";
+            /** Content */
+            content: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
+        };
         /**
          * AuditLogActor
          * @description Who performed the action.
@@ -10482,6 +10541,16 @@ export interface components {
              */
             expires_in: number;
         };
+        /** DiffOperation */
+        DiffOperation: {
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "add" | "keep" | "remove";
+            /** Text */
+            text: string;
+        };
         /**
          * DiffRequest
          * @description Request to get a file diff.
@@ -10676,6 +10745,29 @@ export interface components {
             data: {
                 [key: string]: unknown;
             };
+        };
+        /** DryRunTurn */
+        DryRunTurn: {
+            /**
+             * Kind
+             * @default dryrun
+             * @constant
+             */
+            kind: "dryrun";
+            /** Before */
+            before: string;
+            /** After */
+            after: string;
+            /**
+             * Predicted
+             * @enum {string}
+             */
+            predicted: "up" | "down";
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
         };
         /**
          * DynamicValuesRequest
@@ -12132,6 +12224,31 @@ export interface components {
              * @default false
              */
             binary: boolean;
+        };
+        /** FlagConversationResponse */
+        FlagConversationResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Messages */
+            messages: (components["schemas"]["UserTurn"] | components["schemas"]["AssistantTurn"] | components["schemas"]["ProposalTurn"] | components["schemas"]["DryRunTurn"])[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Last Updated At
+             * Format: date-time
+             */
+            last_updated_at: string;
         };
         /** FleetStatsResponse */
         FleetStatsResponse: {
@@ -15715,6 +15832,24 @@ export interface components {
              */
             name?: string | null;
         };
+        /** ProposalTurn */
+        ProposalTurn: {
+            /**
+             * Kind
+             * @default proposal
+             * @constant
+             */
+            kind: "proposal";
+            /** Summary */
+            summary: string;
+            /** Diff */
+            diff: components["schemas"]["DiffOperation"][];
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
+        };
         /**
          * QueueItem
          * @description An item in the execution queue.
@@ -17424,6 +17559,11 @@ export interface components {
              */
             context_after?: string | null;
         };
+        /** SendFlagMessageRequest */
+        SendFlagMessageRequest: {
+            /** Content */
+            content: string;
+        };
         /**
          * SetConfigRequest
          * @description Request model for setting config
@@ -18288,6 +18428,22 @@ export interface components {
              * @description List of role IDs assigned to the user
              */
             role_ids: string[];
+        };
+        /** UserTurn */
+        UserTurn: {
+            /**
+             * Kind
+             * @default user
+             * @constant
+             */
+            kind: "user";
+            /** Content */
+            content: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
         };
         /**
          * UserUpdate
@@ -27177,6 +27333,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VerdictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_flag_conversation_api_agent_runs__run_id__flag_conversation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlagConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_flag_message_api_agent_runs__run_id__flag_conversation_message_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendFlagMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlagConversationResponse"];
                 };
             };
             /** @description Validation Error */

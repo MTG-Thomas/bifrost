@@ -18,6 +18,10 @@ from src.core.auth import CurrentActiveUser
 from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.cache.redis_client import get_redis
 from src.core.database import DbSession
+from src.models.contracts.agent_run_flag_conversations import (
+    FlagConversationResponse,
+    SendFlagMessageRequest,
+)
 from src.models.contracts.agent_runs import (
     AgentRunCreateRequest,
     AgentRunDetailResponse,
@@ -37,6 +41,10 @@ from src.core.redis_client import get_redis_client
 from src.services.execution.agent_run_service import (
     enqueue_agent_run,
     wait_for_agent_run_result,
+)
+from src.services.execution.tuning_service import (
+    append_user_message_and_reply,
+    get_or_create_conversation,
 )
 
 logger = logging.getLogger(__name__)
@@ -576,6 +584,81 @@ async def clear_verdict(
         verdict_note=None,
         verdict_set_at=now,
         verdict_set_by=user.user_id,
+    )
+
+
+@router.get(
+    "/{run_id}/flag-conversation",
+    response_model=FlagConversationResponse,
+)
+async def get_flag_conversation(
+    run_id: UUID,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> FlagConversationResponse:
+    """Return the tuning conversation attached to a flagged run.
+
+    Creates an empty conversation row if none exists yet so the UI can
+    stream messages into a stable ``id``.
+    """
+    query = select(AgentRun).where(AgentRun.id == run_id)
+    if not user.is_superuser and user.organization_id:
+        query = query.where(AgentRun.org_id == user.organization_id)
+    run = (await db.execute(query)).scalar_one_or_none()
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent run {run_id} not found",
+        )
+
+    conv = await get_or_create_conversation(run_id, db)
+    # Persist the created-empty conversation so subsequent GETs see the same id.
+    await db.commit()
+    return FlagConversationResponse(
+        id=conv.id,
+        run_id=conv.run_id,
+        messages=conv.messages,  # type: ignore[arg-type]
+        created_at=conv.created_at,
+        last_updated_at=conv.last_updated_at,
+    )
+
+
+@router.post(
+    "/{run_id}/flag-conversation/message",
+    response_model=FlagConversationResponse,
+)
+async def send_flag_message(
+    run_id: UUID,
+    request: SendFlagMessageRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> FlagConversationResponse:
+    """Append a user turn and synchronously get the tuning-model reply."""
+    query = select(AgentRun).where(AgentRun.id == run_id)
+    if not user.is_superuser and user.organization_id:
+        query = query.where(AgentRun.org_id == user.organization_id)
+    run = (await db.execute(query)).scalar_one_or_none()
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent run {run_id} not found",
+        )
+    if run.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Flag conversations are only available on completed runs "
+                f"(current status: {run.status})"
+            ),
+        )
+
+    conv = await append_user_message_and_reply(run_id, request.content, db)
+    return FlagConversationResponse(
+        id=conv.id,
+        run_id=conv.run_id,
+        messages=conv.messages,  # type: ignore[arg-type]
+        created_at=conv.created_at,
+        last_updated_at=conv.last_updated_at,
     )
 
 
