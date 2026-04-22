@@ -42,6 +42,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 
 import { CARD_SURFACE, TYPE_LABEL_UPPERCASE } from "@/components/agents/design-tokens";
 import { useAuth } from "@/contexts/AuthContext";
@@ -62,6 +63,7 @@ const formSchema = z.object({
 	system_prompt: z.string().min(1, "System prompt is required"),
 	channels: z.array(z.enum(["chat", "voice", "teams", "slack"])),
 	access_level: z.enum(["authenticated", "role_based"]),
+	organization_id: z.string().nullable(),
 	is_active: z.boolean(),
 	max_iterations: z.number().min(1).max(200).nullable(),
 	max_token_budget: z.number().min(1000).max(1_000_000).nullable(),
@@ -105,9 +107,16 @@ export function AgentSettingsTab({
 	agent,
 	onCreated,
 }: AgentSettingsTabProps) {
-	const { isPlatformAdmin } = useAuth();
+	const { isPlatformAdmin, user } = useAuth();
 	const createAgent = useCreateAgent();
 	const updateAgent = useUpdateAgent();
+
+	// Default: admin → null (global), org user → their own org.
+	const defaultOrgId = isPlatformAdmin ? null : (user?.organizationId ?? null);
+
+	const agentOrgId =
+		(agent as (AgentPublic & { organization_id?: string | null }) | null)
+			?.organization_id ?? null;
 
 	const defaults: FormValues = {
 		name: agent?.name ?? "",
@@ -119,6 +128,7 @@ export function AgentSettingsTab({
 		access_level: (agent?.access_level ?? "role_based") as
 			| "authenticated"
 			| "role_based",
+		organization_id: agent ? agentOrgId : defaultOrgId,
 		is_active: agent?.is_active ?? true,
 		max_iterations: agent?.max_iterations ?? null,
 		max_token_budget: agent?.max_token_budget ?? null,
@@ -144,6 +154,7 @@ export function AgentSettingsTab({
 			system_prompt: values.system_prompt,
 			channels: values.channels,
 			access_level: values.access_level as AgentAccessLevel,
+			organization_id: values.organization_id,
 			is_active: values.is_active,
 			tool_ids: agent?.tool_ids ?? [],
 			delegated_agent_ids: agent?.delegated_agent_ids ?? [],
@@ -185,6 +196,28 @@ export function AgentSettingsTab({
 				data-testid="agent-settings-form"
 			>
 				<FormSection title="Identity">
+					{isPlatformAdmin ? (
+						<FormField
+							control={form.control}
+							name="organization_id"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Organization</FormLabel>
+									<FormControl>
+										<OrganizationSelect
+											value={field.value}
+											onChange={field.onChange}
+											showGlobal
+										/>
+									</FormControl>
+									<FormDescription>
+										Global agents are available to every organization.
+									</FormDescription>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					) : null}
 					<FormField
 						control={form.control}
 						name="name"
