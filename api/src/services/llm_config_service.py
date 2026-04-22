@@ -37,6 +37,8 @@ class LLMProviderConfig:
     endpoint: str | None = None  # For custom OpenAI-compatible providers
     max_tokens: int = 16384
     default_system_prompt: str | None = None  # Default system prompt for agentless chat
+    summarization_model: str | None = None  # Override for post-run summarization
+    tuning_model: str | None = None  # Override for tuning chat + dry-run
     is_configured: bool = False
     api_key_set: bool = False  # Indicates if API key is configured (never return actual key)
 
@@ -113,6 +115,8 @@ class LLMConfigService:
             endpoint=config_data.get("endpoint"),
             max_tokens=config_data.get("max_tokens", 16384),
             default_system_prompt=config_data.get("default_system_prompt"),
+            summarization_model=config_data.get("summarization_model"),
+            tuning_model=config_data.get("tuning_model"),
             is_configured=True,
             api_key_set=bool(config_data.get("encrypted_api_key")),
         )
@@ -125,6 +129,8 @@ class LLMConfigService:
         endpoint: str | None = None,
         max_tokens: int = 16384,
         default_system_prompt: str | None = None,
+        summarization_model: str | None = None,
+        tuning_model: str | None = None,
         updated_by: str = "system",
     ) -> None:
         """
@@ -137,6 +143,10 @@ class LLMConfigService:
             endpoint: Custom endpoint URL (for custom providers)
             max_tokens: Maximum tokens for completion
             default_system_prompt: Default system prompt for agentless chat
+            summarization_model: Optional override for summarization calls.
+                ``None`` means use the primary model.
+            tuning_model: Optional override for tuning chat + dry-run calls.
+                ``None`` means use the primary model.
             updated_by: Email/ID of user making the change
         """
         fernet = self._get_fernet()
@@ -166,6 +176,8 @@ class LLMConfigService:
             "endpoint": endpoint,
             "max_tokens": max_tokens,
             "default_system_prompt": default_system_prompt,
+            "summarization_model": summarization_model,
+            "tuning_model": tuning_model,
         }
 
         if existing:

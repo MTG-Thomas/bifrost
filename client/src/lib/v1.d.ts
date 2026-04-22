@@ -13654,6 +13654,16 @@ export interface components {
              * @description Default system prompt for agentless chat
              */
             default_system_prompt?: string | null;
+            /**
+             * Summarization Model
+             * @description Model override for post-run summarization. Falls back to primary model if unset.
+             */
+            summarization_model?: string | null;
+            /**
+             * Tuning Model
+             * @description Model override for tuning chat + dry-run. Falls back to primary model if unset.
+             */
+            tuning_model?: string | null;
         };
         /**
          * LLMConfigResponse
@@ -13676,6 +13686,10 @@ export interface components {
             max_tokens: number;
             /** Default System Prompt */
             default_system_prompt?: string | null;
+            /** Summarization Model */
+            summarization_model?: string | null;
+            /** Tuning Model */
+            tuning_model?: string | null;
             /**
              * Is Configured
              * @default true
