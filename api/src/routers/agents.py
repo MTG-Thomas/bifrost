@@ -575,6 +575,24 @@ async def update_agent(
     )
 
     if not is_admin:
+        # Budget fields gate: only platform admins can set per-agent budgets.
+        # Block before the ownership check so the response is the same whether
+        # the user owns the agent or not (no information leak about ownership).
+        budget_fields_set = [
+            f
+            for f in ("max_iterations", "max_token_budget", "llm_max_tokens")
+            if f in agent_data.model_fields_set
+        ]
+        if budget_fields_set:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Budget fields ("
+                    + ", ".join(budget_fields_set)
+                    + ") can only be set by platform administrators"
+                ),
+            )
+
         if agent.owner_user_id != user.user_id or agent.access_level != AgentAccessLevel.PRIVATE:
             raise HTTPException(403, "You can only edit your own private agents")
         if agent_data.access_level is not None and agent_data.access_level != AgentAccessLevel.PRIVATE:
