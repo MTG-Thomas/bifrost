@@ -3782,48 +3782,19 @@ All must pass with zero errors. Fix any failures before proceeding.
 
 ---
 
-## Phase 7 — UX rebuild (ACTIVE, context-reset entry point)
+## Phase 7 — UX rebuild (landed)
 
-> **Read this first on a fresh conversation.** Phase 1–6 executed mechanically and produced a functionally-complete but visually-weak implementation. The user rejected the initial UX on 2026-04-22 as "an incredibly poor copy" of the approved mockup. This phase is a targeted visual rebuild, page-by-page, using a capture-and-compare loop against `/tmp/agent-mockup/` rendered at `localhost:5555`.
+> Phase 1–6 executed mechanically and produced a functionally-complete but visually-weak implementation. The user rejected the initial UX on 2026-04-22 as "an incredibly poor copy" of the approved mockup. Phase 7 is the page-by-page visual rebuild, using a capture-and-compare loop against `/tmp/agent-mockup/` rendered at `localhost:5555`.
 
-### Status on context reset
+### What landed
 
-**Completed in Phase 7 (committed to `worktree-agent-management-m1`):**
-
-- [x] **T61 — Shared primitives** (`client/src/components/agents/`):
-  - `Sparkline.tsx` — inline-SVG area chart with `useId` for stable gradient id
-  - `StatCard.tsx` — label + big value + optional delta + optional sparkline + `alert` variant (red Needs-review)
-  - `PillTabs.tsx` — rounded pill group matching mockup `.tabs` + `.tab.active`, supports count badges ("Runs 14")
-- [x] **T62 — FleetPage rebuild**: stat row with deltas, paired Grid/Table toggle, agent cards with header-body split, 3-col mini-stat grid, sparkline, footer row. `useAgents(undefined, { includeInactive: true })` so paused agents stay visible (server defaults `active_only=true`).
-- [x] **T63 — AgentDetailPage rebuild**: breadcrumb, Bot + name + Active pill inline with h1, description, action row (Start chat / Test run / Pause toggle wired to `useUpdateAgent`). PillTabs with run-count badge. Overview tab: 4-stat row, activity sparkline card with empty state, recent activity list, red Needs-attention card, Configuration KV sidebar, Budgets KV sidebar.
-
-Commit: `3665cb58` — "feat(agents): rebuild FleetPage + AgentDetailPage to match M1 mockup".
-
-### Still to rebuild
-
-- [ ] **T64 — AgentRunDetailPage rebuild** — currently renders a bare layout. Mockup spec:
-  - Breadcrumb `Agent / Run`
-  - Meta line: "1h ago · 3.4s · 2 iter · 1,852 tok · $0.04"
-  - `RunReviewPanel variant="page"` as main column
-  - Sidebar: Captured data pills (metadata chips), tool-call metrics, AI usage cost breakdown, Regenerate-summary button (admin-only or `summary_status=failed`)
-  - Collapsible "Advanced" section with raw step timeline
-  - Reference mockup: `/tmp/agent-mockup/src/pages/RunDetailPage.tsx`
-
-- [ ] **T65 — AgentReviewPage (flipbook) rebuild** — currently bare. Mockup spec:
-  - Breadcrumb + "Review runs" heading + counter "1 of 8 · 3 reviewed · 3 flagged wrong"
-  - Inline keyboard hint: `←/→` navigate, `U/D` verdict, `Esc` exit
-  - "Tune with N flagged" CTA top-right
-  - Main card: meta line, "What was asked", tool-call list with durations, "What the agent answered", Captured data pills, Verdict bar (Good/Wrong buttons + note input)
-  - Prev/Next buttons + pagination dots at bottom
-  - Reference: `/tmp/agent-mockup/src/pages/ReviewFlipbookPage.tsx`
-
-- [ ] **T66 — AgentTunePage rebuild** — currently bare. Mockup spec:
-  - Two-column: left Flagged runs sidebar, right Tune chat thread
-  - Chat shows AI diagnosis bubbles, proposed-change blocks with green additive / red removed diff, inline "Yes, let's use it" action buttons
-  - Right rail: "Current prompt" inspector
-  - Reference: `/tmp/agent-mockup/src/pages/TuneChatPage.tsx`
-
-- [ ] **T67 — Settings tab parity** — Phase 4 subagent built a slim Settings form (name/description/system_prompt/channels/access_level/is_active + budgets). The deleted `AgentDialog.tsx` (still in git history at commit before `d1eaef49`) has the full editor with tools / knowledge / roles / delegations / LLM model picker. Restore field parity to `AgentSettingsTab.tsx` using the same field set as the old dialog, in the new visual style.
+- [x] **T61 — Shared primitives** (`client/src/components/agents/`): `Sparkline`, `StatCard` (with `alert` variant), `PillTabs` (with count badges). Commit `3665cb58`.
+- [x] **T62 — FleetPage rebuild**: stat row with deltas, Grid/Table toggle, agent cards with mini-stat trio + sparkline + footer. `useAgents(undefined, { includeInactive: true })` so paused agents stay visible. Commit `3665cb58`.
+- [x] **T63 — AgentDetailPage rebuild**: breadcrumb, Bot + name + Active pill, PillTabs with run-count badge, Overview tab with stats + sparkline + recent activity + Needs-attention + Configuration/Budgets sidebars. Commit `3665cb58`.
+- [x] **T64 — AgentRunDetailPage rebuild**: breadcrumb, Completed pill + meta line (time · duration · iter · tokens), What was asked / What the agent answered sections, Captured data chips, Verdict bar, Run metadata KV sidebar, Summary regenerate card, Agent sidebar card, raw step timeline disclosure, Tuning conversation block when present.
+- [x] **T65 — AgentReviewPage (flipbook) rebuild**: `Review runs` heading + counter, keyboard hints, `Tune with N flagged` CTA, main card with asked/did/captured data + Verdict bar, Prev/Next + pagination dots.
+- [x] **T66 — AgentTunePage rebuild**: two-column layout (chat + sidebar with Flagged runs list + Current prompt). Proposal and dry-run render **inline inside the assistant's ChatBubble** (Phase 7b T71 landed this).
+- [x] **T67 — Settings tab parity** — restored Organization selector, Access level with Assigned roles, Tools (system + workflow grouped with orphan/deactivated states), Delegated agents, Knowledge sources (auto-enables search_knowledge), LLM model picker, admin-only Max iterations / Max token budget / Max tokens/response. Commit `a6c437eb`.
 
 ### The loop (for every T64–T67)
 
@@ -3885,49 +3856,93 @@ After T67, recapture all 5 ours-*.png and stage side-by-side with mockup-*.png f
 
 ---
 
-### Phase 7b — Design system + realistic fixtures (UPDATED 2026-04-22)
+### Phase 7b — Design system + realistic fixtures (landed)
 
 User feedback after the first Phase 7 captures made it obvious that:
 
 - Empty-state screenshots can't be judged. Fleet names truncate, agent cards have no sparklines, activity cards say "No activity yet," tune page has nothing to propose against. Without realistic data the visuals can't carry their own weight.
-- The "Propose change" card in the tune page is misframed — it should be inline on the assistant's turn (a `ProposalTurn` block embedded in the chat bubble), not a floating card. The conversation contract already supports `ProposalTurn` in `api/src/models/contracts/agent_run_flag_conversations.py`.
-- shadcn is not the blocker. The mockup is already a custom component system (`.stat-card`, `.tabs`, `.activity-item`, `.kv`, etc.). Recreating it on top of shadcn means writing custom markup, which is what `StatCard`/`PillTabs`/`Sparkline` already are. We're not losing to the library — we're losing to a half-built design system.
+- The "Propose change" card in the tune page was misframed — it should be inline on the assistant's turn (a `ProposalTurn` block embedded in the chat bubble), not a floating card.
+- shadcn wasn't the blocker. The mockup is already a custom component system (`.stat-card`, `.tabs`, `.activity-item`, `.kv`, etc.). We were losing to a half-built design system, not the library.
 
-**Before any more page rebuilds**, land these:
+#### What landed
 
-- [ ] **T68 — Lock in the agent-surfaces design system.** Document + enforce:
-  - Type scale: 20px page title, 14.5px card title, 13.5px body, 13px muted, 12.5px small, 11.5px uppercase label (with `tracking-wider`, `uppercase`)
-  - Stat value: 22px semibold tabular-nums, `tracking-tight`
-  - Gap scale: 16px between cards, 12px between card subsections, 6px between label and value, 4px between value and delta
-  - Card radius: 10px (matches mockup `.card`)
-  - Color tokens: use the project's semantic tokens (`bg-card`, `border-border`, `text-muted-foreground`, `text-emerald-500`, `text-rose-500`, `text-yellow-500`); DO NOT hand-roll hex colors
-  - Write these as classes in `client/src/components/agents/design-tokens.ts` exporting `cn`-composable class lists (`LABEL_UPPERCASE`, `STAT_VALUE`, `CARD_RADIUS`, etc.) so every new primitive and page composition uses the same values
-  - Sweep the existing `Sparkline` / `StatCard` / `PillTabs` / `FleetPage` / `AgentDetailPage` / `AgentOverviewTab` to pull from those tokens — fix any drift
+- [x] **T68 — Design tokens** (`client/src/components/agents/design-tokens.ts`). Composable Tailwind class-list constants: `TYPE_PAGE_TITLE`, `TYPE_CARD_TITLE`, `TYPE_LABEL_UPPERCASE`, `TYPE_STAT_VALUE`, `TYPE_MUTED`, `GAP_CARD`, `CARD_SURFACE`, `CARD_HEADER`, `CARD_BODY`, `PILL_ACTIVE`, `CHIP_OUTLINE`, `successRateTone(rate)`. Every primitive and page composition pulls from here; Fleet / AgentDetail / AgentOverviewTab / StatCard / PillTabs / Sparkline all swept. Commit `e14ec4d5`.
 
-- [ ] **T69 — Missing primitives.** Build in `client/src/components/agents/`:
-  - `MetaLine.tsx` — small muted inline strip: `"1h ago · 3.4s · 2 iter · 1,852 tok · $0.04"`, items comma/dot separated, used on Run detail + flipbook + tune
-  - `KVList.tsx` — 2-column definition list (label / value rows) for Configuration / Budgets / Captured data sidebars; takes `items: { label, value, mono? }[]` and handles the `grid-cols-[auto_1fr]` Tailwind layout
-  - `Chip.tsx` — consistent tag pill for captured metadata (`ticket_id 4822`, `customer Globex`), supports mono font and color accents
-  - `ChatBubble.tsx` — message bubble component with `kind` prop: `user` | `assistant` | `system`. The assistant variant accepts optional `proposal` and `dryrun` slot children that render *inside* the bubble below the prose, styled as nested tool-result blocks with their own action buttons. Deletes the floating "Propose change" card.
+- [x] **T69 — Missing primitives** (`client/src/components/agents/`):
+  - `MetaLine.tsx` — muted inline strip `"1h ago · 3.4s · 2 iter · 1,852 tok"`; filters nulls.
+  - `KVList.tsx` — 2-column definition list with optional mono values.
+  - `Chip.tsx` — labeled metadata pill (`ticket_id 4822`) with tone variants (muted/primary/emerald/rose/yellow).
+  - `ChatBubble.tsx` + `ChatBubbleSlot.tsx` — message bubble with `kind=user|assistant|system`; assistant variant accepts `slots` (nested ProposalTurn / DryRunTurn blocks rendered *inside* the bubble). 15 new unit tests, all green.
+  Commit `e14ec4d5`.
 
-- [ ] **T70 — Realistic seed fixtures.** The capture script at `/tmp/ux-compare/grab-ours-v3.mjs` currently seeds 5 agents with zero runs. Extend it (or add a `seed-realistic.mjs`) to also insert:
-  - 10–15 `AgentRun` rows per agent, spread across last 7 days, mix of `completed` / `failed` / `queued` statuses
-  - Each completed run has `asked`, `did`, `confidence`, `run_metadata` populated
-  - 2–3 flagged runs per agent (`verdict=down`, with `verdict_note`) so `Needs attention` + `review` + `tune` all have data
-  - For one agent, a `AgentRunFlagConversation` with 4–6 messages: user note → assistant diagnosis → assistant proposal (`ProposalTurn` with add/keep/remove diff) → optional dry-run result
-  - One `AgentPromptHistory` row so the "prompt versioning" surface has history
-  - Inserts go through the DB directly via `psql`-inside-postgres OR (safer) via a small pytest-style seed script invoked from inside the test-stack worker container — NOT via the public DELETE/PUT endpoints since those soft-delete
-  - Script must be idempotent (clears its own seeded rows by stable name prefix first)
+- [x] **T70 — Realistic seed fixtures.** `docs/ux/seed-realistic.mjs` + `docs/ux/grab-ours.mjs`. Hard-clears `agents` + related tables via SQL, POSTs 5 seed agents, SQL-inserts 45+ runs across the last 7 days with mixed status, ~2–3 flagged per agent, populated asked/did/confidence/run_metadata. One `AgentRunFlagConversation` with user → assistant → proposal (with add/keep/remove diff) → dryrun turns. One `AgentPromptHistory` row. Idempotent. Commit `333456a0`.
 
-- [ ] **T71 — Inline proposal / dry-run in tune chat.** Consequence of T69's `ChatBubble` redesign: the tune page now renders the proposal as an assistant-turn child, with inline actions:
-  - "Try this" → calls `useApplyTuning()`
-  - "Dry-run" → calls `useTuningDryRun()`, inline-renders the result as another child block under the same bubble
-  - Remove the standalone `Proposed change` card from `AgentTunePage.tsx`
+- [x] **T71 — Inline proposal/dry-run in tune chat.** `ProposalBubble` + `DryRunBubble` render as assistant ChatBubbles with their content in a `ChatBubbleSlot`. Actions (Dry-run, Try this) sit inline inside the slot. No more floating sibling card. Commit `e68f4122`.
 
-After T68–T71 land, *then* run T64/T65/T66/T67 (run detail, flipbook, tune, settings parity). The page rebuilds will be faster because the primitives / tokens / data are all in place.
+#### Additional UX polish (post-Phase-7b, pre-UAT)
 
-### Fixture note for fresh context
+Feedback surfaced during token/primitive captures — all landed on `worktree-agent-management-m1`:
 
-The capture script is at `/tmp/ux-compare/grab-ours-v3.mjs`. If it's gone, the token generation, container networking, and seed logic are captured in this plan's earlier "Capture loop" section. The auth JWT uses the test secret `test-secret-key-for-e2e-testing-must-be-32-chars` and the `bifrost_access_token` localStorage key.
+- [x] **Settings tab visual rewrite** — dropped the card-per-section layout and the orphan right-column that held just an activation toggle. Single-card form surface with `.form-section` treatment (uppercase section labels + thin dividers), activation row inline in Identity. Commit `5c2c505a`.
+- [x] **Organization selector restored** — regressed when AgentDialog was deleted at `d1eaef49`; platform-admin-only `OrganizationSelect` with `showGlobal`, defaults: admin → null (Global), org user → their org. Commit `0cf367cf`.
+- [x] **Full AgentDialog field parity** — tools (system + workflow, orphan/deactivated states), delegated agents, knowledge sources (auto-enables search_knowledge), LLM model combobox, admin-only budgets. Commit `a6c437eb`.
 
-Keep running captures into `/tmp/ux-out/` and copy to `~/Sync/Screenshots/agent-ux-compare/` after each pass so the user can review without swapping dev stacks.
+### Open follow-ups before UAT
+
+Small, ordered. Listed roughly by user-visible impact:
+
+- [ ] **Rename tune actions** — "Try this" → "Accept" (saves the new prompt live); "Dry-run" stays (simulate without saving). User feedback `2026-04-22`. Touch: `client/src/pages/agents/AgentTunePage.tsx::ProposalBubble` + its test.
+- [ ] **Collapse the Model section by default in create mode** — old AgentDialog had this behind a ChevronsUpDown disclosure so model + budgets don't dominate the form on first-touch. Currently everything is expanded. Low priority; user said the design is "in a much better place" without it.
+- [ ] **Empty-state reconcile for the AgentOverviewTab** — stats card still rendered even when the agent has zero runs. Acceptable but could fall back to a single "No runs yet — waiting for traffic" strip for tighter signal.
+
+### Definition of done for UX rebuild
+
+Pages each:
+
+1. ✅ Visual parity with mockup reference — confirmed against `/tmp/agent-mockup/src/pages/*.tsx`.
+2. ✅ `tsc` + `lint` clean on the full client tree.
+3. ✅ Sibling `*.test.tsx` updated for renamed components.
+4. ✅ `./test.sh client unit src/components/agents src/pages/agents` — 20 files / 156 tests green as of `a6c437eb`.
+5. ✅ Committed with focused messages.
+
+After the three follow-ups land, re-run the Playwright e2e specs — their selector assertions may need updates after the Phase 7 rewrites.
+
+---
+
+### Pre-UAT checklist — "what do I need before I swap `./debug.sh` over?"
+
+Before moving development off the test stack and back to `./debug.sh`:
+
+1. **Run all three open follow-ups above** (tune action rename + optional Model disclosure + empty-state polish). Only the rename is genuinely user-visible.
+2. **Regenerate client types against the dev stack.** The test stack has `/api/openapi.json` cached per-worktree; `./debug.sh` runs the main repo's API which may differ. After starting `./debug.sh`:
+   ```bash
+   cd client && npm run generate:types
+   ```
+3. **Re-run client e2e specs** against `./debug.sh`. Many Phase 5 Playwright specs were written against the original (pre-rewrite) page markup. The ones most at risk of selector drift:
+   - `client/e2e/agents-fleet.spec.ts`
+   - `client/e2e/agent-detail.spec.ts`
+   - `client/e2e/agent-review-flipbook.spec.ts`
+   - `client/e2e/agent-tuning.spec.ts`
+   - `client/e2e/agent-budgets.spec.ts`
+   Run: `./test.sh client e2e e2e/agents-*.spec.ts` (inside the test stack) — or click through manually in the dev stack to decide which specs need updating.
+4. **Seed realistic data into the dev stack** so the UX is judged against real content, not empty state. The seed script at `docs/ux/seed-realistic.mjs` targets the test-stack postgres; for `./debug.sh` either (a) adapt the script's `PG_HOST`/`PG_PASS` to the dev-stack container names, or (b) drive seeding through the CLI/MCP tools.
+5. **Verify Organization scoping** as a non-platform-admin user. The form hides the org selector and should auto-apply the user's own org — click through both create and edit flows with a normal user to confirm.
+6. **Run the backend test sweep** one last time on `main`-branch HEAD:
+   ```bash
+   ./test.sh stack up && ./test.sh all && ./test.sh client unit
+   ```
+7. **Decide on the test-stack worktree** — this branch has committed state ahead of `main` (roughly 15 commits, mostly visual rewrites + seed scripts). Merge or rebase back to `main` before `./debug.sh` starts generating migrations in a parallel direction.
+
+Non-blocking for UAT but worth landing soon:
+
+- **`ai_usage` seed** — the fleet cards show `$0.00` spend because the seed script doesn't insert `AIUsage` rows. Not broken, just visually underwhelming.
+- **Real diff on ProposalBubble** — `ConsolidatedProposalResponse` only carries `proposed_prompt`, not a structured diff. The Before column currently renders `"(current prompt — see sidebar)"`. Plan 2 item.
+- **Fleet N+1 on `useAgentStats`** — per-card stat fetch, flagged in code with `TODO(plan-2)`. Plan 2 item.
+
+### Fixture + capture scripts live at
+
+- `docs/ux/seed-realistic.mjs` — realistic seed against the test stack.
+- `docs/ux/grab-ours.mjs` — captures all agent surfaces into `/tmp/ux-out/ours-*.png`.
+- `docs/ux/README.md` — how to run both inside a Playwright container on the worktree's docker network.
+
+Keep copying `/tmp/ux-out/*.png` to `~/Sync/Screenshots/agent-ux-compare/` after each capture so the user can review without swapping dev stacks.
