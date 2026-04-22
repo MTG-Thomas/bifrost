@@ -3403,22 +3403,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4882,6 +4882,68 @@ export interface paths {
          * @description Execute an agent synchronously via the SDK.
          */
         post: operations["execute_agent_run_api_agent_runs_execute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/tuning-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Tuning Session
+         * @description Generate a consolidated prompt proposal from this agent's flagged runs.
+         */
+        post: operations["create_tuning_session_api_agents__agent_id__tuning_session_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/tuning-session/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry Run Tuning Session
+         * @description Per-run dry-run of a proposed prompt across this agent's flagged runs.
+         *
+         *     Capped at 10 runs by the service layer to bound cost.
+         */
+        post: operations["dry_run_tuning_session_api_agents__agent_id__tuning_session_dry_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/tuning-session/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Tuning Session
+         * @description Apply a consolidated tuning proposal: update prompt, write history, clear verdicts.
+         */
+        post: operations["apply_tuning_session_api_agents__agent_id__tuning_session_apply_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8697,6 +8759,34 @@ export interface components {
             role_ids?: string[] | null;
         };
         /**
+         * ApplyTuningRequest
+         * @description Body for ``POST /api/agents/{id}/tuning-session/apply``.
+         */
+        ApplyTuningRequest: {
+            /** New Prompt */
+            new_prompt: string;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * ApplyTuningResponse
+         * @description Result of applying a consolidated tuning proposal.
+         */
+        ApplyTuningResponse: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * History Id
+             * Format: uuid
+             */
+            history_id: string;
+            /** Affected Run Ids */
+            affected_run_ids: string[];
+        };
+        /**
          * AssignAgentsToRoleRequest
          * @description Request for assigning agents to a role.
          */
@@ -9935,6 +10025,37 @@ export interface components {
             base_content?: string | null;
         };
         /**
+         * ConsolidatedDryRunRequest
+         * @description Body for ``POST /api/agents/{id}/tuning-session/dry-run``.
+         */
+        ConsolidatedDryRunRequest: {
+            /** Proposed Prompt */
+            proposed_prompt: string;
+        };
+        /**
+         * ConsolidatedDryRunResponse
+         * @description Aggregated per-run dry-run results.
+         */
+        ConsolidatedDryRunResponse: {
+            /** Results */
+            results: components["schemas"]["DryRunPerRun"][];
+        };
+        /**
+         * ConsolidatedProposalResponse
+         * @description Output of ``POST /api/agents/{id}/tuning-session``.
+         *
+         *     ``affected_run_ids`` is the list of flagged runs that informed the
+         *     proposal — this is what the dry-run/apply endpoints will operate on.
+         */
+        ConsolidatedProposalResponse: {
+            /** Summary */
+            summary: string;
+            /** Proposed Prompt */
+            proposed_prompt: string;
+            /** Affected Run Ids */
+            affected_run_ids: string[];
+        };
+        /**
          * ConversationCreate
          * @description Request model for creating a conversation.
          */
@@ -10770,6 +10891,23 @@ export interface components {
             data: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * DryRunPerRun
+         * @description Per-run dry-run verdict in a consolidated dry-run response.
+         */
+        DryRunPerRun: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Would Still Decide Same */
+            would_still_decide_same: boolean;
+            /** Reasoning */
+            reasoning: string;
+            /** Confidence */
+            confidence: number;
         };
         /**
          * DryRunRequest
@@ -24989,7 +25127,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -25022,7 +25160,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -25055,7 +25193,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -25088,7 +25226,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__delete: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -27521,6 +27659,107 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_tuning_session_api_agents__agent_id__tuning_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsolidatedProposalResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dry_run_tuning_session_api_agents__agent_id__tuning_session_dry_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConsolidatedDryRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsolidatedDryRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_tuning_session_api_agents__agent_id__tuning_session_apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplyTuningRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyTuningResponse"];
                 };
             };
             /** @description Validation Error */
