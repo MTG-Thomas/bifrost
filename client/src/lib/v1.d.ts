@@ -7915,6 +7915,26 @@ export interface components {
             duration_ms?: number | null;
             /** Llm Model */
             llm_model?: string | null;
+            /** Asked */
+            asked?: string | null;
+            /** Did */
+            did?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: string;
+            };
+            /** Confidence */
+            confidence?: number | null;
+            /** Confidence Reason */
+            confidence_reason?: string | null;
+            /** Verdict */
+            verdict?: string | null;
+            /** Verdict Note */
+            verdict_note?: string | null;
+            /** Verdict Set At */
+            verdict_set_at?: string | null;
+            /** Verdict Set By */
+            verdict_set_by?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -8005,6 +8025,26 @@ export interface components {
             duration_ms?: number | null;
             /** Llm Model */
             llm_model?: string | null;
+            /** Asked */
+            asked?: string | null;
+            /** Did */
+            did?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: string;
+            };
+            /** Confidence */
+            confidence?: number | null;
+            /** Confidence Reason */
+            confidence_reason?: string | null;
+            /** Verdict */
+            verdict?: string | null;
+            /** Verdict Note */
+            verdict_note?: string | null;
+            /** Verdict Set At */
+            verdict_set_at?: string | null;
+            /** Verdict Set By */
+            verdict_set_by?: string | null;
             /**
              * Created At
              * Format: date-time

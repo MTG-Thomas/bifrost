@@ -44,6 +44,15 @@ class AgentRunResponse(BaseModel):
     budget_max_tokens: int | None = None
     duration_ms: int | None = None
     llm_model: str | None = None
+    asked: str | None = None
+    did: str | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
+    confidence: float | None = None
+    confidence_reason: str | None = None
+    verdict: str | None = None
+    verdict_note: str | None = None
+    verdict_set_at: datetime | None = None
+    verdict_set_by: UUID | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
