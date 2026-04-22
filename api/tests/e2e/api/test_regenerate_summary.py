@@ -86,7 +86,11 @@ class TestRegenerateSummary:
         assert body["status"] == "enqueued"
         assert body["run_id"] == str(failed_summary_run.id)
 
-        # Verify state reset in DB
+        # Verify state reset in DB. The endpoint sets status='pending' and
+        # enqueues a job; a worker may pick it up immediately and transition
+        # the state to 'generating' (or even 'done'), so we assert the reset
+        # happened (not 'failed' anymore, error cleared) rather than pinning
+        # an exact post-reset status.
         await db_session.refresh(failed_summary_run)
         # re-query because of session caching nuance
         refreshed = (
@@ -94,7 +98,8 @@ class TestRegenerateSummary:
                 select(AgentRun).where(AgentRun.id == failed_summary_run.id)
             )
         ).scalar_one()
-        assert refreshed.summary_status == "pending"
+        assert refreshed.summary_status in {"pending", "generating", "done"}
+        assert refreshed.summary_status != "failed"
         assert refreshed.summary_error is None
 
     async def test_non_admin_cannot_regenerate(
