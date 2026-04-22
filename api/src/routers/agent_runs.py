@@ -25,8 +25,11 @@ from src.models.contracts.agent_runs import (
     AgentRunRerunResponse,
     AgentRunResponse,
     AgentRunStepResponse,
+    VerdictRequest,
+    VerdictResponse,
 )
 from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSimple
+from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
 from src.models.orm.agents import Agent
@@ -413,6 +416,114 @@ async def cancel_agent_run(
         pass
 
     return {"run_id": str(run_id), "status": "cancelling"}
+
+
+@router.post("/{run_id}/verdict", response_model=VerdictResponse)
+async def set_verdict(
+    run_id: UUID,
+    request: VerdictRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> VerdictResponse:
+    """Set a verdict on a completed run. Records an audit row."""
+    query = select(AgentRun).where(AgentRun.id == run_id)
+
+    # Org filter: non-superusers see only their org's runs
+    if not user.is_superuser:
+        if user.organization_id:
+            query = query.where(AgentRun.org_id == user.organization_id)
+
+    result = await db.execute(query)
+    run = result.scalar_one_or_none()
+
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent run {run_id} not found",
+        )
+    if run.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Verdict can only be set on completed runs (current status: {run.status})",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = run.verdict
+    run.verdict = request.verdict
+    run.verdict_note = request.note
+    run.verdict_set_at = now
+    run.verdict_set_by = user.user_id
+
+    db.add(
+        AgentRunVerdictHistory(
+            run_id=run.id,
+            previous_verdict=previous,
+            new_verdict=request.verdict,
+            changed_by=user.user_id,
+            changed_at=now,
+            note=request.note,
+        )
+    )
+    await db.commit()
+
+    return VerdictResponse(
+        run_id=run.id,
+        verdict=run.verdict,
+        verdict_note=run.verdict_note,
+        verdict_set_at=run.verdict_set_at,
+        verdict_set_by=run.verdict_set_by,
+    )
+
+
+@router.delete("/{run_id}/verdict", response_model=VerdictResponse)
+async def clear_verdict(
+    run_id: UUID,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> VerdictResponse:
+    """Clear the verdict on a run. Records an audit row."""
+    query = select(AgentRun).where(AgentRun.id == run_id)
+
+    # Org filter: non-superusers see only their org's runs
+    if not user.is_superuser:
+        if user.organization_id:
+            query = query.where(AgentRun.org_id == user.organization_id)
+
+    result = await db.execute(query)
+    run = result.scalar_one_or_none()
+
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent run {run_id} not found",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = run.verdict
+    run.verdict = None
+    run.verdict_note = None
+    run.verdict_set_at = now
+    run.verdict_set_by = user.user_id
+
+    db.add(
+        AgentRunVerdictHistory(
+            run_id=run.id,
+            previous_verdict=previous,
+            new_verdict=None,
+            changed_by=user.user_id,
+            changed_at=now,
+            note=None,
+        )
+    )
+    await db.commit()
+
+    return VerdictResponse(
+        run_id=run.id,
+        verdict=None,
+        verdict_note=None,
+        verdict_set_at=now,
+        verdict_set_by=user.user_id,
+    )
 
 
 @router.post("/execute")

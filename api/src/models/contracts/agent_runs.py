@@ -1,5 +1,6 @@
 """Agent run contract models."""
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -81,3 +82,16 @@ class AgentRunCreateRequest(BaseModel):
 
 class AgentRunRerunResponse(BaseModel):
     run_id: UUID
+
+
+class VerdictRequest(BaseModel):
+    verdict: Literal["up", "down"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class VerdictResponse(BaseModel):
+    run_id: UUID
+    verdict: str | None = None
+    verdict_note: str | None = None
+    verdict_set_at: datetime | None = None
+    verdict_set_by: UUID | None = None

@@ -4732,6 +4732,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent-runs/{run_id}/verdict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Verdict
+         * @description Set a verdict on a completed run. Records an audit row.
+         */
+        post: operations["set_verdict_api_agent_runs__run_id__verdict_post"];
+        /**
+         * Clear Verdict
+         * @description Clear the verdict on a run. Records an audit row.
+         */
+        delete: operations["clear_verdict_api_agent_runs__run_id__verdict_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent-runs/execute": {
         parameters: {
             query?: never;
@@ -18238,6 +18262,32 @@ export interface components {
              */
             severity: "error" | "warning";
         };
+        /** VerdictRequest */
+        VerdictRequest: {
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "up" | "down";
+            /** Note */
+            note?: string | null;
+        };
+        /** VerdictResponse */
+        VerdictResponse: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Verdict */
+            verdict?: string | null;
+            /** Verdict Note */
+            verdict_note?: string | null;
+            /** Verdict Set At */
+            verdict_set_at?: string | null;
+            /** Verdict Set By */
+            verdict_set_by?: string | null;
+        };
         /** VersionResponse */
         VersionResponse: {
             /** Version */
@@ -26896,6 +26946,72 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_verdict_api_agent_runs__run_id__verdict_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerdictRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerdictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_verdict_api_agent_runs__run_id__verdict_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerdictResponse"];
                 };
             };
             /** @description Validation Error */
