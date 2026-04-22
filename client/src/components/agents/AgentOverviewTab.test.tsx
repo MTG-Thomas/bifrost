@@ -18,6 +18,11 @@ vi.mock("@/services/agentRuns", () => ({
 	useAgentRuns: (params: unknown) => mockUseAgentRuns(params),
 }));
 
+const mockUseAgent = vi.fn();
+vi.mock("@/hooks/useAgents", () => ({
+	useAgent: (id: string | undefined) => mockUseAgent(id),
+}));
+
 const baseStats = {
 	agent_id: "agent-1",
 	runs_7d: 42,
@@ -59,6 +64,21 @@ beforeEach(() => {
 		data: { items: [makeRun()], total: 1, next_cursor: null },
 		isLoading: false,
 	});
+	mockUseAgent.mockReturnValue({
+		data: {
+			id: "agent-1",
+			name: "Triage",
+			description: "Test",
+			channels: ["chat"],
+			access_level: "authenticated",
+			created_by: "admin",
+			llm_model: null,
+			max_iterations: 15,
+			max_token_budget: 50000,
+			is_active: true,
+		},
+		isLoading: false,
+	});
 });
 
 async function renderTab(agentId = "agent-1") {
@@ -78,16 +98,17 @@ describe("AgentOverviewTab", () => {
 		expect(screen.getByText(/help me/i)).toBeInTheDocument();
 	});
 
-	it("shows the empty needs-review state when no flagged runs", async () => {
+	it("hides the 'Needs attention' card when no flagged runs", async () => {
 		mockUseAgentRuns.mockReturnValue({
 			data: { items: [makeRun()], total: 1, next_cursor: null },
 			isLoading: false,
 		});
 		await renderTab();
-		expect(screen.getByText(/no flagged runs/i)).toBeInTheDocument();
+		// No red "Needs attention" card should render when everything is green
+		expect(screen.queryByText(/needs attention/i)).not.toBeInTheDocument();
 	});
 
-	it("renders NeedsReviewCard for runs with verdict='down'", async () => {
+	it("renders 'Needs attention' card with count when runs have verdict='down'", async () => {
 		mockUseAgentRuns.mockReturnValue({
 			data: {
 				items: [
@@ -96,14 +117,19 @@ describe("AgentOverviewTab", () => {
 						verdict: "down",
 						verdict_note: "Wrong answer",
 					}),
+					makeRun({
+						id: "flagged-2",
+						verdict: "down",
+					}),
 				],
-				total: 1,
+				total: 2,
 				next_cursor: null,
 			},
 			isLoading: false,
 		});
 		await renderTab();
-		expect(screen.getByText(/wrong answer/i)).toBeInTheDocument();
+		expect(screen.getByText(/needs attention/i)).toBeInTheDocument();
+		expect(screen.getByText(/open review flipbook/i)).toBeInTheDocument();
 	});
 
 	it("shows skeletons while loading stats", async () => {

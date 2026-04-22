@@ -1,39 +1,30 @@
 /**
  * FleetPage — fleet-wide view of all agents.
  *
- * Replaces the legacy `Agents` page with the design from the M1 mockup:
- * fleet stats strip, search + grid/table toggle, per-agent cards with
- * lightweight stats. Per-agent stats are fetched via `useAgentStats(id)`
- * (N+1 queries — acceptable for v1; documented as TODO for follow-up).
- *
- * Replaces: `client/src/pages/Agents.tsx` (kept until T33 swaps the route).
+ * Visual spec mirrors `/tmp/agent-mockup/src/pages/FleetPage.tsx`: stat row with
+ * deltas, paired grid/table toggle, per-agent cards with mini-stat trio +
+ * sparkline + footer row. Per-agent stats are fetched via `useAgentStats(id)`
+ * (N+1; acceptable v1, TODO for a denormalized list endpoint).
  */
 
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+	AlertTriangle,
 	Bot,
+	Clock,
+	Hash,
 	LayoutGrid,
 	List,
 	MessageSquare,
 	Phone,
-	Hash,
 	Plus,
 	Power,
 	Search,
-	Clock,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-	Card,
-	CardContent,
-	CardHeader,
-	CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
 	DataTable,
 	DataTableBody,
@@ -42,13 +33,13 @@ import {
 	DataTableHeader,
 	DataTableRow,
 } from "@/components/ui/data-table";
-import {
-	ToggleGroup,
-	ToggleGroupItem,
-} from "@/components/ui/toggle-group";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 
-import { FleetStats } from "@/components/agents/FleetStats";
 import { QueueBanner } from "@/components/agents/QueueBanner";
+import { Sparkline } from "@/components/agents/Sparkline";
+import { StatCard } from "@/components/agents/StatCard";
+
 import { useAgents, type AgentSummary } from "@/hooks/useAgents";
 import { useAgentStats, useFleetStats } from "@/services/agents";
 import {
@@ -65,7 +56,10 @@ export function FleetPage() {
 	const [view, setView] = useState<ViewMode>("grid");
 	const [query, setQuery] = useState("");
 
-	const { data: agents, isLoading: agentsLoading } = useAgents();
+	// Fleet view shows paused agents too (they need to be visible to un-pause).
+	const { data: agents, isLoading: agentsLoading } = useAgents(undefined, {
+		includeInactive: true,
+	});
 	const { data: fleetStats, isLoading: fleetLoading } = useFleetStats();
 
 	const filtered = useMemo(() => {
@@ -85,25 +79,25 @@ export function FleetPage() {
 	);
 
 	return (
-		<div className="flex flex-col gap-5 max-w-7xl mx-auto">
+		<div className="mx-auto flex max-w-[1400px] flex-col gap-5 p-7">
 			{/* Header */}
-			<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+			<div className="flex items-start justify-between gap-4">
 				<div>
-					<h1 className="text-3xl font-extrabold tracking-tight">
+					<h1 className="text-[20px] font-semibold leading-tight tracking-tight">
 						Agents
 					</h1>
-					<p className="mt-1 text-sm text-muted-foreground">
+					<p className="mt-1 text-[13.5px] text-muted-foreground">
 						{totalAgents} total · {activeCount} active · last 7 days
 					</p>
 				</div>
-				<Button asChild className="sm:w-auto">
+				<Button asChild size="sm">
 					<Link to="/agents/new">
-						<Plus className="h-4 w-4" /> New agent
+						<Plus className="h-3.5 w-3.5" /> New agent
 					</Link>
 				</Button>
 			</div>
 
-			{/* Tuning queue banner — only shows when fleet has flagged runs */}
+			{/* Tuning queue banner */}
 			{fleetStats && fleetStats.needs_review > 0 ? (
 				<QueueBanner
 					count={fleetStats.needs_review}
@@ -112,55 +106,114 @@ export function FleetPage() {
 				/>
 			) : null}
 
-			{/* Fleet stats */}
+			{/* Fleet stats — 4 stats + red "Needs review" */}
 			{fleetLoading || !fleetStats ? (
-				<div className="grid gap-3 grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+				<div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-5">
 					{[...Array(5)].map((_, i) => (
 						<Skeleton key={i} className="h-24 w-full" />
 					))}
 				</div>
 			) : (
-				<FleetStats stats={fleetStats} />
+				<div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-5">
+					<StatCard
+						label="Runs (7d)"
+						value={formatNumber(fleetStats.total_runs)}
+						delta={
+							fleetStats.total_runs > 0
+								? "Across active agents"
+								: "No runs yet"
+						}
+					/>
+					<StatCard
+						label="Success rate"
+						value={`${Math.round((fleetStats.avg_success_rate ?? 0) * 100)}%`}
+						delta="Across active agents"
+					/>
+					<StatCard
+						label="Spend (7d)"
+						value={formatCost(fleetStats.total_cost_7d)}
+						delta={
+							fleetStats.total_runs > 0
+								? `${formatCost(
+										Number(fleetStats.total_cost_7d) / 7,
+									)}/day avg`
+								: "—"
+						}
+					/>
+					<StatCard
+						label="Active agents"
+						value={formatNumber(fleetStats.active_agents)}
+						delta={`of ${totalAgents} total`}
+					/>
+					<StatCard
+						label="Needs review"
+						value={formatNumber(fleetStats.needs_review)}
+						alert={fleetStats.needs_review > 0}
+						icon={
+							fleetStats.needs_review > 0 ? (
+								<AlertTriangle className="h-[11px] w-[11px]" />
+							) : undefined
+						}
+						delta={
+							fleetStats.needs_review > 0
+								? "runs marked — click to open"
+								: "All runs reviewed"
+						}
+						deltaTone={fleetStats.needs_review > 0 ? "down" : "up"}
+					/>
+				</div>
 			)}
 
 			{/* Search + view toggle */}
 			<div className="flex items-center justify-between gap-3">
-				<div className="relative flex-1 max-w-md">
-					<Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+				<div className="relative max-w-md flex-1">
+					<Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
 					<Input
 						aria-label="Search agents"
 						placeholder="Search agents…"
 						value={query}
 						onChange={(e) => setQuery(e.target.value)}
-						className="pl-8"
+						className="h-8 pl-8 text-[13px]"
 					/>
 				</div>
-				<ToggleGroup
-					type="single"
-					value={view}
-					onValueChange={(v: string) =>
-						v && setView(v as ViewMode)
-					}
-				>
-					<ToggleGroupItem value="grid" aria-label="Grid view" size="sm">
-						<LayoutGrid className="h-4 w-4" />
-					</ToggleGroupItem>
-					<ToggleGroupItem
-						value="table"
-						aria-label="Table view"
-						size="sm"
+				<div className="inline-flex items-center overflow-hidden rounded-md border">
+					<button
+						type="button"
+						aria-label="Grid view"
+						aria-pressed={view === "grid"}
+						onClick={() => setView("grid")}
+						className={cn(
+							"inline-flex items-center gap-1.5 border-r px-3 py-1.5 text-[12.5px] transition-colors",
+							view === "grid"
+								? "bg-card text-foreground"
+								: "text-muted-foreground hover:bg-accent/40",
+						)}
 					>
-						<List className="h-4 w-4" />
-					</ToggleGroupItem>
-				</ToggleGroup>
+						<LayoutGrid className="h-3 w-3" /> Grid
+					</button>
+					<button
+						type="button"
+						aria-label="Table view"
+						aria-pressed={view === "table"}
+						onClick={() => setView("table")}
+						className={cn(
+							"inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] transition-colors",
+							view === "table"
+								? "bg-card text-foreground"
+								: "text-muted-foreground hover:bg-accent/40",
+						)}
+					>
+						<List className="h-3 w-3" /> Table
+					</button>
+				</div>
 			</div>
 
 			{/* Content */}
 			{agentsLoading ? (
 				view === "grid" ? (
-					<div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 						{[...Array(6)].map((_, i) => (
-							<Skeleton key={i} className="h-48 w-full" />
+							<Skeleton key={i} className="h-52 w-full" />
 						))}
 					</div>
 				) : (
@@ -173,7 +226,7 @@ export function FleetPage() {
 			) : filtered.length === 0 ? (
 				<EmptyState hasQuery={query.trim().length > 0} />
 			) : view === "grid" ? (
-				<div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+				<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 					{filtered.map((agent) => (
 						<AgentGridCard key={agent.id} agent={agent} />
 					))}
@@ -187,26 +240,24 @@ export function FleetPage() {
 
 function EmptyState({ hasQuery }: { hasQuery: boolean }) {
 	return (
-		<Card>
-			<CardContent className="flex flex-col items-center justify-center py-12 text-center">
-				<Bot className="h-12 w-12 text-muted-foreground" />
-				<h3 className="mt-4 text-lg font-semibold">
-					{hasQuery ? "No agents match your search" : "No agents yet"}
-				</h3>
-				<p className="mt-1 text-sm text-muted-foreground">
-					{hasQuery
-						? "Try adjusting your search."
-						: "Get started by creating your first AI agent."}
-				</p>
-				{!hasQuery ? (
-					<Button asChild variant="outline" className="mt-4">
-						<Link to="/agents/new">
-							<Plus className="h-4 w-4" /> New agent
-						</Link>
-					</Button>
-				) : null}
-			</CardContent>
-		</Card>
+		<div className="rounded-[10px] border bg-card py-12 text-center">
+			<Bot className="mx-auto h-10 w-10 text-muted-foreground" />
+			<h3 className="mt-3 text-[15px] font-semibold">
+				{hasQuery ? "No agents match your search" : "No agents yet"}
+			</h3>
+			<p className="mt-1 text-[13px] text-muted-foreground">
+				{hasQuery
+					? "Try adjusting your search."
+					: "Get started by creating your first AI agent."}
+			</p>
+			{!hasQuery ? (
+				<Button asChild variant="outline" size="sm" className="mt-4">
+					<Link to="/agents/new">
+						<Plus className="h-3.5 w-3.5" /> New agent
+					</Link>
+				</Button>
+			) : null}
+		</div>
 	);
 }
 
@@ -218,11 +269,16 @@ function ChannelBadge({ channel }: { channel: string }) {
 				? Hash
 				: MessageSquare;
 	return (
-		<Badge variant="outline" className="text-[11px]">
-			<Icon className="h-3 w-3" />
-			{channel}
-		</Badge>
+		<span className="inline-flex items-center gap-1 rounded-full border border-border bg-transparent px-2 py-0.5 text-[11.5px] font-medium text-muted-foreground">
+			<Icon className="h-3 w-3" /> {channel}
+		</span>
 	);
+}
+
+function successColor(rate: number): string {
+	if (rate >= 0.9) return "text-emerald-500";
+	if (rate >= 0.75) return "text-yellow-500";
+	return "text-rose-500";
 }
 
 function AgentGridCard({ agent }: { agent: AgentSummary }) {
@@ -230,88 +286,85 @@ function AgentGridCard({ agent }: { agent: AgentSummary }) {
 	// list endpoint that returns fleet member stats in one round-trip.
 	const { data: stats, isLoading } = useAgentStats(agent.id ?? undefined);
 	const successRate = stats?.success_rate ?? 0;
-	const successColor =
-		successRate >= 0.9
-			? "text-emerald-600 dark:text-emerald-400"
-			: successRate >= 0.75
-				? "text-yellow-600 dark:text-yellow-400"
-				: "text-rose-600 dark:text-rose-400";
+	const colorClass = successColor(successRate);
+	const hasRuns = (stats?.runs_7d ?? 0) > 0;
 
 	return (
-		<Card className="flex flex-col transition-colors hover:border-primary">
-			<Link
-				to={`/agents/${agent.id}`}
-				className="flex h-full flex-col"
-				data-testid={`agent-card-${agent.id}`}
-			>
-				<CardHeader className="pb-3">
-					<div className="flex items-start justify-between gap-3">
-						<div className="flex min-w-0 items-center gap-2">
-							<Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-							<CardTitle className="truncate text-base">
-								{agent.name}
-							</CardTitle>
-							{!agent.is_active ? (
-								<Badge variant="secondary" className="text-[11px]">
-									Paused
-								</Badge>
-							) : null}
-						</div>
-						<div className="flex shrink-0 flex-wrap gap-1">
-							{(agent.channels ?? [])
-								.slice(0, 3)
-								.map((c) => (
-									<ChannelBadge key={c} channel={c} />
-								))}
-						</div>
+		<Link
+			to={`/agents/${agent.id}`}
+			className="group block overflow-hidden rounded-[10px] border bg-card transition-all hover:-translate-y-px hover:border-border/80"
+		>
+			<div className="border-b px-4 pb-3 pt-3.5">
+				<div className="flex items-start justify-between gap-3">
+					<div className="flex min-w-0 items-center gap-2">
+						<Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+						<span className="truncate text-[14.5px] font-semibold">
+							{agent.name}
+						</span>
+						{!agent.is_active ? (
+							<Badge variant="secondary" className="text-[11px]">
+								Paused
+							</Badge>
+						) : null}
 					</div>
-					{agent.description ? (
-						<p className="mt-1.5 line-clamp-2 text-sm text-muted-foreground">
-							{agent.description}
-						</p>
-					) : null}
-				</CardHeader>
-				<CardContent className="mt-auto flex flex-col gap-3 pt-0">
-					{isLoading ? (
-						<Skeleton className="h-12 w-full" />
-					) : stats && stats.runs_7d > 0 ? (
-						<>
-							<div className="grid grid-cols-3 gap-2">
-								<MiniStat
-									label="Runs"
-									value={formatNumber(stats.runs_7d)}
-								/>
-								<MiniStat
-									label="Success"
-									value={`${Math.round(stats.success_rate * 100)}%`}
-									valueClass={successColor}
-								/>
-								<MiniStat
-									label="Spend"
-									value={formatCost(stats.total_cost_7d)}
+					<div className="flex shrink-0 flex-wrap gap-1">
+						{(agent.channels ?? []).slice(0, 3).map((c) => (
+							<ChannelBadge key={c} channel={c} />
+						))}
+					</div>
+				</div>
+				{agent.description ? (
+					<p className="mt-1 line-clamp-2 text-[13px] text-muted-foreground">
+						{agent.description}
+					</p>
+				) : null}
+			</div>
+			<div className="space-y-3 p-4">
+				{isLoading ? (
+					<Skeleton className="h-24 w-full" />
+				) : hasRuns ? (
+					<>
+						<div className="grid grid-cols-3 gap-3">
+							<MiniStat
+								label="Runs"
+								value={formatNumber(stats!.runs_7d)}
+							/>
+							<MiniStat
+								label="Success"
+								value={`${Math.round(stats!.success_rate * 100)}%`}
+								valueClass={colorClass}
+							/>
+							<MiniStat
+								label="Spend"
+								value={formatCost(stats!.total_cost_7d)}
+							/>
+						</div>
+						{stats!.runs_by_day && stats!.runs_by_day.length > 1 ? (
+							<div className="h-12">
+								<Sparkline
+									values={stats!.runs_by_day}
+									colorClass={colorClass}
 								/>
 							</div>
-							<div className="flex items-center justify-between text-[11px] text-muted-foreground">
-								<span className="inline-flex items-center gap-1">
-									<Clock className="h-3 w-3" />
-									{stats.last_run_at
-										? `Last run ${formatRelativeTime(stats.last_run_at)}`
-										: "—"}
-								</span>
-								<span>
-									avg {formatDuration(stats.avg_duration_ms)}
-								</span>
-							</div>
-						</>
-					) : (
-						<p className="text-xs text-muted-foreground">
-							No runs yet ·{" "}
-							{agent.is_active ? "waiting for traffic" : "paused"}
-						</p>
-					)}
-				</CardContent>
-			</Link>
-		</Card>
+						) : null}
+						<div className="flex items-center justify-between text-[12px] text-muted-foreground">
+							<span className="inline-flex items-center gap-1">
+								<Clock className="h-3 w-3" />
+								{stats!.last_run_at
+									? `Last run ${formatRelativeTime(stats!.last_run_at)}`
+									: "—"}
+							</span>
+							<span>avg {formatDuration(stats!.avg_duration_ms)}</span>
+						</div>
+					</>
+				) : (
+					<p className="py-1 text-[13px] text-muted-foreground">
+						No runs yet ·{" "}
+						{agent.is_active ? "waiting for traffic" : "paused"}
+					</p>
+				)}
+			</div>
+		</Link>
 	);
 }
 
@@ -326,10 +379,12 @@ function MiniStat({
 }) {
 	return (
 		<div>
-			<div className="text-[10.5px] text-muted-foreground">{label}</div>
+			<div className="mb-0.5 text-[11px] text-muted-foreground">
+				{label}
+			</div>
 			<div
 				className={cn(
-					"text-sm font-semibold tabular-nums",
+					"text-[15px] font-semibold tabular-nums leading-tight",
 					valueClass,
 				)}
 			>
@@ -341,7 +396,7 @@ function MiniStat({
 
 function AgentTable({ agents }: { agents: AgentSummary[] }) {
 	return (
-		<div className="rounded-lg border">
+		<div className="overflow-hidden rounded-[10px] border">
 			<DataTable>
 				<DataTableHeader>
 					<DataTableRow>
@@ -354,7 +409,13 @@ function AgentTable({ agents }: { agents: AgentSummary[] }) {
 							Success
 						</DataTableHead>
 						<DataTableHead className="w-0 whitespace-nowrap text-right">
+							Avg duration
+						</DataTableHead>
+						<DataTableHead className="w-0 whitespace-nowrap text-right">
 							Spend (7d)
+						</DataTableHead>
+						<DataTableHead className="w-0 whitespace-nowrap">
+							Last run
 						</DataTableHead>
 						<DataTableHead className="w-0 whitespace-nowrap">
 							Status
@@ -372,25 +433,23 @@ function AgentTable({ agents }: { agents: AgentSummary[] }) {
 }
 
 function AgentTableRow({ agent }: { agent: AgentSummary }) {
-	// TODO(plan-2): see AgentGridCard — N+1 stats queries.
 	const { data: stats } = useAgentStats(agent.id ?? undefined);
 	const hasRuns = (stats?.runs_7d ?? 0) > 0;
-	const navigateTo = `/agents/${agent.id}`;
 
 	return (
 		<DataTableRow
 			className="cursor-pointer hover:bg-accent/40"
 			onClick={() => {
-				window.location.href = navigateTo;
+				window.location.href = `/agents/${agent.id}`;
 			}}
 		>
 			<DataTableCell>
 				<div className="flex items-center gap-2">
-					<Bot className="h-4 w-4 text-muted-foreground" />
+					<Bot className="h-3.5 w-3.5 text-muted-foreground" />
 					<span className="font-medium">{agent.name}</span>
 				</div>
 				{agent.description ? (
-					<div className="text-xs text-muted-foreground line-clamp-1">
+					<div className="line-clamp-1 text-xs text-muted-foreground">
 						{agent.description}
 					</div>
 				) : null}
@@ -406,18 +465,24 @@ function AgentTableRow({ agent }: { agent: AgentSummary }) {
 				{hasRuns ? formatNumber(stats!.runs_7d) : "—"}
 			</DataTableCell>
 			<DataTableCell className="w-0 whitespace-nowrap text-right tabular-nums">
-				{hasRuns
-					? `${Math.round(stats!.success_rate * 100)}%`
-					: "—"}
+				{hasRuns ? `${Math.round(stats!.success_rate * 100)}%` : "—"}
+			</DataTableCell>
+			<DataTableCell className="w-0 whitespace-nowrap text-right tabular-nums">
+				{hasRuns ? formatDuration(stats!.avg_duration_ms) : "—"}
 			</DataTableCell>
 			<DataTableCell className="w-0 whitespace-nowrap text-right tabular-nums">
 				{hasRuns ? formatCost(stats!.total_cost_7d) : "—"}
 			</DataTableCell>
+			<DataTableCell className="w-0 whitespace-nowrap text-muted-foreground">
+				{hasRuns && stats!.last_run_at
+					? formatRelativeTime(stats!.last_run_at)
+					: "—"}
+			</DataTableCell>
 			<DataTableCell className="w-0 whitespace-nowrap">
 				{agent.is_active ? (
-					<Badge variant="default" className="bg-emerald-500 text-white">
+					<span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11.5px] font-medium text-emerald-500">
 						<Power className="h-3 w-3" /> Active
-					</Badge>
+					</span>
 				) : (
 					<Badge variant="secondary">Paused</Badge>
 				)}

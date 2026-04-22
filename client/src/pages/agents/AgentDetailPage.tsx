@@ -5,22 +5,24 @@
  *   /agents/:id  → edit mode (all 3 tabs active; Overview + Runs load data)
  *   /agents/new  → create mode (Overview + Runs disabled; Settings only)
  *
- * On successful create, navigates to /agents/:newId so the user lands
- * on the freshly-saved agent in edit mode.
+ * Visual spec mirrors /tmp/agent-mockup/src/pages/AgentDetailPage.tsx: breadcrumb,
+ * header with name + Active/Paused pill + description + action row, pill tabs with
+ * run-count badge, plus per-tab body (Overview/Runs/Settings).
  */
 
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bot } from "lucide-react";
+import {
+	ArrowLeft,
+	Bot,
+	MessageSquare,
+	Pause,
+	PlayCircle,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-	Tabs,
-	TabsContent,
-	TabsList,
-	TabsTrigger,
-} from "@/components/ui/tabs";
 import {
 	Tooltip,
 	TooltipContent,
@@ -30,7 +32,12 @@ import {
 import { AgentOverviewTab } from "@/components/agents/AgentOverviewTab";
 import { AgentRunsTab } from "@/components/agents/AgentRunsTab";
 import { AgentSettingsTab } from "@/components/agents/AgentSettingsTab";
+import { PillTabs } from "@/components/agents/PillTabs";
 import { useAgent } from "@/hooks/useAgents";
+import { useAgentRuns } from "@/services/agentRuns";
+import { useUpdateAgent } from "@/hooks/useAgents";
+
+type Tab = "overview" | "runs" | "settings";
 
 export function AgentDetailPage() {
 	const { id } = useParams<{ id: string }>();
@@ -39,144 +46,161 @@ export function AgentDetailPage() {
 	const isCreate = !id || id === "new";
 	const agentId = isCreate ? undefined : id;
 	const { data: agent, isLoading } = useAgent(agentId);
+	const { data: runsList } = useAgentRuns({
+		agentId: agentId ?? "",
+		limit: 1,
+	});
+	const runCount = (runsList as { total?: number } | undefined)?.total ?? 0;
+
+	const [tab, setTab] = useState<Tab>(isCreate ? "settings" : "overview");
+
+	const updateAgent = useUpdateAgent();
 
 	function handleCreated(newId: string) {
 		navigate(`/agents/${newId}`);
 	}
 
-	return (
-		<div className="flex flex-col gap-5 max-w-7xl mx-auto">
-			{/* Breadcrumb */}
-			<Link
-				to="/agents"
-				className="inline-flex w-fit items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-			>
-				<ArrowLeft className="h-3 w-3" /> All agents
-			</Link>
+	const hasChat = (agent?.channels ?? []).includes("chat");
+	const isActive = agent?.is_active ?? true;
 
-			{/* Header */}
-			<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-				<div className="flex items-start gap-3 min-w-0">
-					<Bot className="h-5 w-5 mt-1 shrink-0 text-muted-foreground" />
-					<div className="min-w-0">
-						<div className="flex flex-wrap items-center gap-2">
-							<h1 className="text-2xl font-extrabold tracking-tight truncate">
-								{isCreate
-									? "New agent"
-									: isLoading
-										? "Loading…"
-										: (agent?.name ?? "Unknown agent")}
-							</h1>
-							{!isCreate && agent ? (
-								agent.is_active ? (
-									<Badge
-										variant="default"
-										className="bg-emerald-500 text-white"
-									>
-										Active
-									</Badge>
-								) : (
-									<Badge variant="secondary">Paused</Badge>
-								)
-							) : null}
-						</div>
-						{!isCreate && agent?.description ? (
-							<p className="mt-1 text-sm text-muted-foreground truncate">
-								{agent.description}
-							</p>
-						) : null}
-					</div>
-				</div>
-				{!isCreate ? (
-					<Button variant="outline" disabled>
-						Test run
-					</Button>
+	return (
+		<div className="mx-auto flex max-w-[1400px] flex-col gap-5 p-7">
+			{/* Breadcrumb */}
+			<div className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
+				<Link
+					to="/agents"
+					className="inline-flex items-center gap-1 hover:text-foreground"
+				>
+					<ArrowLeft className="h-3 w-3" /> Agents
+				</Link>
+				{!isCreate && agent ? (
+					<>
+						<span>/</span>
+						<span>{agent.name}</span>
+					</>
 				) : null}
 			</div>
 
-			{/* Tabs */}
-			<Tabs defaultValue={isCreate ? "settings" : "overview"}>
-				<TabsList>
-					<DisablableTrigger
-						value="overview"
-						disabled={isCreate}
-						disabledTooltip="Available after first run"
-					>
-						Overview
-					</DisablableTrigger>
-					<DisablableTrigger
-						value="runs"
-						disabled={isCreate}
-						disabledTooltip="Available after first run"
-					>
-						Runs
-					</DisablableTrigger>
-					<TabsTrigger value="settings">Settings</TabsTrigger>
-				</TabsList>
-
-				{/* Overview */}
-				{!isCreate && agentId ? (
-					<TabsContent value="overview" className="mt-4">
-						<AgentOverviewTab agentId={agentId} />
-					</TabsContent>
+			{/* Header */}
+			<div className="flex flex-wrap items-start justify-between gap-4">
+				<div className="min-w-0 flex-1">
+					<h1 className="flex items-center gap-2.5 text-[20px] font-semibold leading-tight tracking-tight">
+						<Bot className="h-[18px] w-[18px] shrink-0 text-muted-foreground" />
+						<span className="truncate">
+							{isCreate
+								? "New agent"
+								: isLoading
+									? "Loading…"
+									: (agent?.name ?? "Unknown agent")}
+						</span>
+						{!isCreate && agent ? (
+							isActive ? (
+								<span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11.5px] font-medium text-emerald-500">
+									Active
+								</span>
+							) : (
+								<Badge variant="secondary" className="text-[11px]">
+									Paused
+								</Badge>
+							)
+						) : null}
+					</h1>
+					{!isCreate && agent?.description ? (
+						<p className="mt-1 line-clamp-2 text-[13.5px] text-muted-foreground">
+							{agent.description}
+						</p>
+					) : null}
+				</div>
+				{!isCreate && agent ? (
+					<div className="flex items-center gap-2">
+						{hasChat ? (
+							<TooltipProvider>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span>
+											<Button
+												variant="outline"
+												size="sm"
+												disabled={!isActive}
+											>
+												<MessageSquare className="h-3.5 w-3.5" />
+												Start chat
+											</Button>
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>
+										{isActive
+											? "Open a chat session with this agent"
+											: "Agent is paused"}
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
+						) : null}
+						<Button variant="outline" size="sm" disabled>
+							<PlayCircle className="h-3.5 w-3.5" />
+							Test run
+						</Button>
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() =>
+								updateAgent.mutate({
+									params: { path: { agent_id: agent.id ?? "" } },
+									body: { is_active: !isActive, clear_roles: false },
+								})
+							}
+						>
+							{isActive ? (
+								<>
+									<Pause className="h-3.5 w-3.5" /> Pause
+								</>
+							) : (
+								<>
+									<PlayCircle className="h-3.5 w-3.5" /> Activate
+								</>
+							)}
+						</Button>
+					</div>
 				) : null}
+			</div>
 
-				{/* Runs */}
-				{!isCreate && agentId ? (
-					<TabsContent value="runs" className="mt-4">
-						<AgentRunsTab agentId={agentId} />
-					</TabsContent>
-				) : null}
+			{/* Pill tabs */}
+			<PillTabs
+				items={[
+					{
+						value: "overview",
+						label: "Overview",
+						disabled: isCreate,
+					},
+					{
+						value: "runs",
+						label: "Runs",
+						count: runCount,
+						disabled: isCreate,
+					},
+					{ value: "settings", label: "Settings" },
+				]}
+				value={tab}
+				onValueChange={(v) => setTab(v as Tab)}
+			/>
 
-				{/* Settings */}
-				<TabsContent value="settings" className="mt-4">
-					{isCreate ? (
-						<AgentSettingsTab
-							mode="create"
-							onCreated={handleCreated}
-						/>
-					) : isLoading ? (
-						<Skeleton className="h-64 w-full" />
-					) : (
-						<AgentSettingsTab
-							mode="edit"
-							agent={agent ?? null}
-						/>
-					)}
-				</TabsContent>
-			</Tabs>
+			{/* Tab body */}
+			{tab === "overview" && !isCreate && agentId ? (
+				<AgentOverviewTab agentId={agentId} />
+			) : null}
+			{tab === "runs" && !isCreate && agentId ? (
+				<AgentRunsTab agentId={agentId} />
+			) : null}
+			{tab === "settings" ? (
+				isCreate ? (
+					<AgentSettingsTab mode="create" onCreated={handleCreated} />
+				) : isLoading ? (
+					<Skeleton className="h-64 w-full" />
+				) : (
+					<AgentSettingsTab mode="edit" agent={agent ?? null} />
+				)
+			) : null}
 		</div>
-	);
-}
-
-function DisablableTrigger({
-	value,
-	disabled,
-	disabledTooltip,
-	children,
-}: {
-	value: string;
-	disabled: boolean;
-	disabledTooltip: string;
-	children: React.ReactNode;
-}) {
-	if (!disabled) {
-		return <TabsTrigger value={value}>{children}</TabsTrigger>;
-	}
-	return (
-		<TooltipProvider>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					{/* span wrapper because disabled buttons don't fire focus events */}
-					<span tabIndex={0}>
-						<TabsTrigger value={value} disabled>
-							{children}
-						</TabsTrigger>
-					</span>
-				</TooltipTrigger>
-				<TooltipContent>{disabledTooltip}</TooltipContent>
-			</Tooltip>
-		</TooltipProvider>
 	);
 }
 
