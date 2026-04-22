@@ -389,12 +389,13 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         # hashed chunks) that matches the source being published. A failed
         # bundle MUST fail the publish — we will not promote a stale or
         # partial preview into live.
-        from src.services.app_bundler import BundlerService
+        from src.services.app_bundler import build_with_migrate
         from src.services.app_storage import AppStorageService
         app_storage = AppStorageService()
 
-        bundler = BundlerService()
-        bundle_result = await bundler.build(
+        # build_with_migrate runs auto-migration first so a publish from a
+        # legacy source tree picks up the rewritten imports before bundling.
+        bundle_result, _migrated = await build_with_migrate(
             str(app_id),
             application.repo_prefix,
             "preview",

@@ -1,14 +1,14 @@
 /**
  * Component tests for OrganizationSelect.
  *
- * Wraps shadcn Select + useOrganizations. We mock the hook and focus on the
- * value-mapping quirks: null → "Global", undefined → "All", real IDs pass
- * through, and the empty-string guard in handleValueChange doesn't clear
- * selections.
+ * Wraps Popover + Command + useOrganizations. We mock the hook and focus on
+ * value-mapping (null → "Global", undefined → "All", real IDs pass through)
+ * and the new searchability behavior (typing filters the list, domain hits
+ * work, disabled blocks the popover).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderWithProviders, screen } from "@/test-utils";
+import { renderWithProviders, screen, waitFor } from "@/test-utils";
 
 const mockOrgs = [
 	{
@@ -77,5 +77,73 @@ describe("OrganizationSelect", () => {
 
 		const trigger = screen.getByRole("combobox");
 		expect(trigger).toBeDisabled();
+	});
+
+	it("filters organizations by search input", async () => {
+		const { user } = await renderSelect({ value: null });
+
+		await user.click(screen.getByRole("combobox"));
+		const searchInput = await screen.findByPlaceholderText(
+			"Search organizations...",
+		);
+
+		// Both orgs visible before filtering.
+		expect(screen.getByText("Acme")).toBeInTheDocument();
+		expect(screen.getByText("Globex")).toBeInTheDocument();
+
+		await user.type(searchInput, "acme");
+
+		await waitFor(() => {
+			expect(screen.queryByText("Globex")).not.toBeInTheDocument();
+		});
+		expect(screen.getByText("Acme")).toBeInTheDocument();
+	});
+
+	it("finds an organization by its domain", async () => {
+		const { user } = await renderSelect({ value: null });
+
+		await user.click(screen.getByRole("combobox"));
+		const searchInput = await screen.findByPlaceholderText(
+			"Search organizations...",
+		);
+
+		await user.type(searchInput, "acme.com");
+
+		await waitFor(() => {
+			expect(screen.queryByText("Globex")).not.toBeInTheDocument();
+		});
+		expect(screen.getByText("Acme")).toBeInTheDocument();
+	});
+
+	it("keeps Global above the org list and makes it filterable", async () => {
+		const { user } = await renderSelect({ value: null, showGlobal: true });
+
+		await user.click(screen.getByRole("combobox"));
+		const searchInput = await screen.findByPlaceholderText(
+			"Search organizations...",
+		);
+
+		// Global is present in the list alongside orgs initially.
+		const items = screen.getAllByRole("option");
+		expect(items[0]).toHaveTextContent(/global/i);
+
+		// Typing "global" should keep only the Global option.
+		await user.type(searchInput, "global");
+		await waitFor(() => {
+			expect(screen.queryByText("Acme")).not.toBeInTheDocument();
+		});
+		expect(screen.getAllByText("Global").length).toBeGreaterThan(0);
+	});
+
+	it("does not open the popover when disabled", async () => {
+		const { user } = await renderSelect({ value: null, disabled: true });
+
+		await user.click(screen.getByRole("combobox"));
+
+		// Disabled trigger means the popover never opens, so the search input
+		// never mounts.
+		expect(
+			screen.queryByPlaceholderText("Search organizations..."),
+		).not.toBeInTheDocument();
 	});
 });
