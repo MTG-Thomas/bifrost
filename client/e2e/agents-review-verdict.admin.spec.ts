@@ -1,33 +1,23 @@
 /**
  * Agent Review Flipbook (Admin)
  *
- * Smoke test for the per-agent review page (`/agents/:id/review`). We
- * can't seed completed runs without actually executing an agent, so
- * the assertion accepts either the flipbook UI (heading) or the empty
- * "nothing to review" state. Captures a screenshot for the visual
- * review pass.
+ * Seeds an agent and navigates to its review page. Without real LLM output
+ * we can't generate a flagged run, so the assertion accepts the
+ * "nothing to review" empty state — but the critical part (the page loads,
+ * the flipbook surface renders, the route is wired) is now exercised
+ * against a real agent id rather than self-skipping.
  */
 
-import { test, expect } from "./fixtures/api-fixture";
+import { test, expect } from "@playwright/test";
+import { seedAgentViaPage } from "./setup/seed-agent";
 
 test.describe("Agent Run Review + Verdict (admin)", () => {
-	test("review flipbook page renders for an agent", async ({
-		page,
-		api,
-	}) => {
-		// Get any agent to drive the URL. If none exist, skip — there's
-		// nothing to review.
-		const agentsRes = await api.get("/api/agents");
-		const agents = await agentsRes.json();
-		if (!agents.length) {
-			test.skip(true, "No agents in test stack to review");
-			return;
-		}
-		const agent = agents[0];
+	test("review flipbook page renders for an agent", async ({ page }) => {
+		const agent = await seedAgentViaPage(page, {
+			namePrefix: "Review Spec",
+		});
 
 		await page.goto(`/agents/${agent.id}/review`);
-		// Either the flipbook UI (heading) or the "nothing to review"
-		// empty state must render.
 		await expect(
 			page
 				.getByText(/nothing to review|no flagged runs/i)
