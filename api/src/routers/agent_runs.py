@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from src.core.auth import CurrentActiveUser
 from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.cache.redis_client import get_redis
-from src.core.database import DbSession
+from src.core.database import DbSession, get_session_factory
 from src.models.contracts.agent_run_flag_conversations import (
     FlagConversationResponse,
     SendFlagMessageRequest,
@@ -29,6 +29,8 @@ from src.models.contracts.agent_runs import (
     AgentRunRerunResponse,
     AgentRunResponse,
     AgentRunStepResponse,
+    DryRunRequest,
+    DryRunResponse,
     VerdictRequest,
     VerdictResponse,
 )
@@ -42,6 +44,7 @@ from src.services.execution.agent_run_service import (
     enqueue_agent_run,
     wait_for_agent_run_result,
 )
+from src.services.execution.dry_run import evaluate_against_prompt
 from src.services.execution.tuning_service import (
     append_user_message_and_reply,
     get_or_create_conversation,
@@ -659,6 +662,55 @@ async def send_flag_message(
         messages=conv.messages,  # type: ignore[arg-type]
         created_at=conv.created_at,
         last_updated_at=conv.last_updated_at,
+    )
+
+
+@router.post("/{run_id}/dry-run", response_model=DryRunResponse)
+async def dry_run_agent_run(
+    run_id: UUID,
+    request: DryRunRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> DryRunResponse:
+    """Evaluate a proposed system prompt against a past run's transcript.
+
+    Single LLM call — does not re-execute tools. Returns a structured
+    verdict indicating whether the new prompt would produce the same
+    decision. Records an ``AIUsage`` row on the original run for cost
+    tracking (``sequence=8000``).
+    """
+    query = select(AgentRun).where(AgentRun.id == run_id)
+    if not user.is_superuser and user.organization_id:
+        query = query.where(AgentRun.org_id == user.organization_id)
+
+    run = (await db.execute(query)).scalar_one_or_none()
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent run {run_id} not found",
+        )
+    if run.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Dry-run is only available on completed runs "
+                f"(current status: {run.status})"
+            ),
+        )
+
+    session_factory = get_session_factory()
+    result = await evaluate_against_prompt(
+        run_id=run_id,
+        proposed_prompt=request.proposed_prompt,
+        session_factory=session_factory,
+    )
+
+    return DryRunResponse(
+        run_id=run_id,
+        would_still_decide_same=result.would_still_decide_same,
+        reasoning=result.reasoning,
+        alternative_action=result.alternative_action,
+        confidence=result.confidence,
     )
 
 

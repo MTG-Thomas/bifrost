@@ -3403,22 +3403,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__put"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4837,6 +4837,31 @@ export interface paths {
          * @description Append a user turn and synchronously get the tuning-model reply.
          */
         post: operations["send_flag_message_api_agent_runs__run_id__flag_conversation_message_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry Run Agent Run
+         * @description Evaluate a proposed system prompt against a past run's transcript.
+         *
+         *     Single LLM call — does not re-execute tools. Returns a structured
+         *     verdict indicating whether the new prompt would produce the same
+         *     decision. Records an ``AIUsage`` row on the original run for cost
+         *     tracking (``sequence=8000``).
+         */
+        post: operations["dry_run_agent_run_api_agent_runs__run_id__dry_run_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -10745,6 +10770,33 @@ export interface components {
             data: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * DryRunRequest
+         * @description Evaluate a proposed system prompt against a single completed run.
+         */
+        DryRunRequest: {
+            /** Proposed Prompt */
+            proposed_prompt: string;
+        };
+        /**
+         * DryRunResponse
+         * @description Result of a single-run dry-run evaluation.
+         */
+        DryRunResponse: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Would Still Decide Same */
+            would_still_decide_same: boolean;
+            /** Reasoning */
+            reasoning: string;
+            /** Alternative Action */
+            alternative_action?: string | null;
+            /** Confidence */
+            confidence: number;
         };
         /** DryRunTurn */
         DryRunTurn: {
@@ -24937,7 +24989,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24970,7 +25022,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -25003,7 +25055,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -25036,7 +25088,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__put: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -27399,6 +27451,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FlagConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dry_run_agent_run_api_agent_runs__run_id__dry_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DryRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DryRunResponse"];
                 };
             };
             /** @description Validation Error */

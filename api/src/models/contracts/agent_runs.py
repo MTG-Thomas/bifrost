@@ -97,6 +97,22 @@ class VerdictResponse(BaseModel):
     verdict_set_by: UUID | None = None
 
 
+class DryRunRequest(BaseModel):
+    """Evaluate a proposed system prompt against a single completed run."""
+
+    proposed_prompt: str = Field(min_length=1, max_length=20000)
+
+
+class DryRunResponse(BaseModel):
+    """Result of a single-run dry-run evaluation."""
+
+    run_id: UUID
+    would_still_decide_same: bool
+    reasoning: str
+    alternative_action: str | None = None
+    confidence: float
+
+
 class PausedResponse(BaseModel):
     """Returned by /agent-runs/execute when the target agent is paused.
 
