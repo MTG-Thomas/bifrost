@@ -95,3 +95,15 @@ class VerdictResponse(BaseModel):
     verdict_note: str | None = None
     verdict_set_at: datetime | None = None
     verdict_set_by: UUID | None = None
+
+
+class PausedResponse(BaseModel):
+    """Returned by /agent-runs/execute when the target agent is paused.
+
+    Returned with HTTP 200 — pause is a graceful, expected state, not an error.
+    Downstream consumers discriminate on ``status == "paused"``.
+    """
+    status: Literal["paused"] = "paused"
+    accepted: Literal[False] = False
+    message: str
+    agent_id: UUID

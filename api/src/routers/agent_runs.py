@@ -545,6 +545,16 @@ async def execute_agent_run(
             detail=f"Agent '{request.agent_name}' not found",
         )
 
+    # Paused agents short-circuit gracefully — HTTP 200 with structured body.
+    # Downstream consumers (webhook senders, SDK) discriminate on status="paused".
+    if not agent.is_active:
+        return {
+            "status": "paused",
+            "accepted": False,
+            "message": f"Agent '{agent.name}' is paused. Request not processed.",
+            "agent_id": str(agent.id),
+        }
+
     # Enqueue the agent run for sync execution
     run_id = await enqueue_agent_run(
         agent_id=str(agent.id),
