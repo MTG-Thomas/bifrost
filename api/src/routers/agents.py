@@ -246,10 +246,7 @@ async def list_agents(
         )
 
     # Check if user is platform admin
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"]
-        for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     # Create repository with appropriate access context
     repo = AgentRepository(
@@ -299,9 +296,7 @@ async def create_agent(
     Platform admins can create any agent type.
     Regular users can only create private agents with tools they have access to.
     """
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"] for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     if not is_admin:
         # Non-admin: enforce private-only creation
@@ -503,10 +498,7 @@ async def get_agent(
 ) -> AgentPublic:
     """Get agent by ID."""
     # Check if user is platform admin
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"]
-        for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     repo = AgentRepository(
         session=db,
@@ -552,9 +544,7 @@ async def update_agent(
             detail=f"Agent {agent_id} not found",
         )
 
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"] for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     if not is_admin:
         if agent.owner_user_id != user.user_id or agent.access_level != AgentAccessLevel.PRIVATE:
@@ -726,9 +716,7 @@ async def delete_agent(
             detail=f"Agent {agent_id} not found",
         )
 
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"] for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     if not is_admin:
         if agent.owner_user_id != user.user_id:
@@ -765,9 +753,7 @@ async def promote_agent(
     if agent.access_level != AgentAccessLevel.PRIVATE:
         raise HTTPException(400, "Agent is not private — nothing to promote")
 
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"] for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     if not is_admin:
         if agent.owner_user_id != user.user_id:
@@ -825,10 +811,7 @@ async def get_agent_tools(
 ) -> list[dict]:
     """Get tools assigned to an agent."""
     # Check if user is platform admin
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"]
-        for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     repo = AgentRepository(
         session=db,
@@ -869,10 +852,7 @@ async def get_agent_delegations(
 ) -> list[AgentSummary]:
     """Get agents this agent can delegate to."""
     # Check if user is platform admin
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"]
-        for role in user.roles
-    )
+    is_admin = user.is_platform_admin
 
     repo = AgentRepository(
         session=db,

@@ -5,11 +5,11 @@
  * Handles form state, validation, and API mutations.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Loader2, Check, ChevronsUpDown, X, AlertTriangle } from "lucide-react";
+import { Loader2, Check, ChevronsUpDown, X, AlertTriangle, Info } from "lucide-react";
 import { Combobox } from "@/components/ui/combobox";
 import { MultiCombobox } from "@/components/ui/multi-combobox";
 import {
@@ -54,6 +54,12 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { TiptapEditor } from "@/components/ui/tiptap-editor";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import {
@@ -220,6 +226,45 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 	// - UUID (org agent): show org + global knowledge sources (cascade)
 	const { data: knowledgeNamespaces } = useKnowledgeNamespaces(watchedOrgId);
 
+	// Audience classification for a workflow tool relative to the agent's org.
+	// "mismatch" is a hard block: tool is scoped to a different org than the
+	// agent. "info-global-agent" is informational: a global agent can use
+	// org-scoped tools, but the user should know the tool carries an org.
+	type ToolAudience = "ok" | "mismatch" | "info-global-agent";
+	const toolAudience = useCallback(
+		(tool: { organization_id?: string | null }): ToolAudience => {
+			const toolOrg = tool.organization_id ?? null;
+			if (toolOrg === null) return "ok"; // global tool — always fine
+			if (watchedOrgId === null) return "info-global-agent"; // global agent + org tool
+			if (toolOrg === watchedOrgId) return "ok";
+			return "mismatch";
+		},
+		[watchedOrgId],
+	);
+
+	// IDs of currently-attached workflow tools that don't belong to the
+	// agent's organization. Used for the error banner and save-block.
+	const mismatchedToolIds = useMemo(() => {
+		if (!toolsGrouped?.workflow || !toolIds) return [] as string[];
+		return toolIds.filter((id) => {
+			const tool = toolsGrouped.workflow.find((t) => t.id === id);
+			if (!tool) return false;
+			return toolAudience(tool) === "mismatch";
+		});
+	}, [toolIds, toolsGrouped?.workflow, toolAudience]);
+
+	// IDs of attached org-scoped tools on a global agent (informational only).
+	const infoToolIds = useMemo(() => {
+		if (watchedOrgId !== null) return [] as string[];
+		if (!toolsGrouped?.workflow || !toolIds) return [] as string[];
+		return toolIds.filter((id) => {
+			const tool = toolsGrouped.workflow.find((t) => t.id === id);
+			return !!tool && tool.organization_id != null;
+		});
+	}, [toolIds, toolsGrouped?.workflow, watchedOrgId]);
+
+	const hasMismatchedTools = mismatchedToolIds.length > 0;
+
 	// Reset form to create-mode defaults when opening for a new agent
 	useEffect(() => {
 		if (!isEditing && open) {
@@ -236,6 +281,9 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 	};
 
 	const onSubmit = async (values: FormValues) => {
+		if (hasMismatchedTools) {
+			return;
+		}
 		try {
 			// Build the body with organization_id and system_tools
 			const bodyWithOrg = {
@@ -689,6 +737,73 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 												0 &&
 												`(${(systemTools?.length || 0) + (toolIds?.length || 0)})`}
 										</FormLabel>
+
+										{hasMismatchedTools && (
+											<Alert
+												variant="destructive"
+												data-testid="tool-mismatch-banner"
+											>
+												<AlertTriangle className="h-4 w-4" />
+												<AlertTitle>
+													Tools don't match this
+													agent's organization
+												</AlertTitle>
+												<AlertDescription>
+													<span>
+														Remove these tools or
+														change the agent's
+														organization:
+													</span>
+													<ul className="list-disc pl-5">
+														{mismatchedToolIds.map(
+															(id) => {
+																const tool =
+																	toolsGrouped?.workflow.find(
+																		(t) =>
+																			t.id ===
+																			id,
+																	);
+																if (!tool)
+																	return null;
+																return (
+																	<li key={id}>
+																		{tool.name}
+																		{tool.organization_name && (
+																			<span className="text-muted-foreground">
+																				{" "}
+																				(
+																				{
+																					tool.organization_name
+																				}
+																				)
+																			</span>
+																		)}
+																	</li>
+																);
+															},
+														)}
+													</ul>
+												</AlertDescription>
+											</Alert>
+										)}
+
+										{infoToolIds.length > 0 && (
+											<Alert
+												data-testid="tool-global-info-banner"
+											>
+												<Info className="h-4 w-4" />
+												<AlertDescription>
+													This global agent uses{" "}
+													{infoToolIds.length}{" "}
+													org-scoped tool
+													{infoToolIds.length === 1
+														? ""
+														: "s"}
+													.
+												</AlertDescription>
+											</Alert>
+										)}
+
 										<Popover
 											open={toolsOpen}
 											onOpenChange={setToolsOpen}
@@ -971,70 +1086,162 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 																.length > 0 && (
 																<CommandGroup heading="Workflow Tools">
 																	{toolsGrouped.workflow.map(
-																		(
-																			tool,
-																		) => (
-																			<CommandItem
-																				key={
-																					tool.id
-																				}
-																				value={`workflow-${tool.name}`}
-																				onSelect={() => {
-																					const current =
-																						toolIds ||
-																						[];
-																					if (
-																						current.includes(
-																							tool.id,
-																						)
-																					) {
-																						form.setValue(
-																							"tool_ids",
-																							current.filter(
-																								(
-																									id,
-																								) =>
-																									id !==
-																									tool.id,
-																							),
-																						);
-																					} else {
-																						form.setValue(
-																							"tool_ids",
-																							[
-																								...current,
-																								tool.id,
-																							],
-																						);
+																		(tool) => {
+																			const audience =
+																				toolAudience(
+																					tool,
+																				);
+																			const isMismatch =
+																				audience ===
+																				"mismatch";
+																			const isInfo =
+																				audience ===
+																				"info-global-agent";
+																			const isChecked =
+																				toolIds?.includes(
+																					tool.id,
+																				) ??
+																				false;
+																			const row = (
+																				<CommandItem
+																					key={tool.id}
+																					value={`workflow-${tool.name}`}
+																					disabled={
+																						isMismatch
 																					}
-																				}}
-																			>
-																				<Check
-																					className={cn(
-																						"mr-2 h-4 w-4",
-																						toolIds?.includes(
-																							tool.id,
+																					data-mismatch={
+																						isMismatch
+																							? "true"
+																							: undefined
+																					}
+																					onSelect={() => {
+																						if (
+																							isMismatch
 																						)
-																							? "opacity-100"
-																							: "opacity-0",
-																					)}
-																				/>
-																				<div className="flex flex-col">
-																					<span>
-																						{
-																							tool.name
+																							return;
+																						const current =
+																							toolIds ||
+																							[];
+																						if (
+																							current.includes(
+																								tool.id,
+																							)
+																						) {
+																							form.setValue(
+																								"tool_ids",
+																								current.filter(
+																									(
+																										id,
+																									) =>
+																										id !==
+																										tool.id,
+																								),
+																							);
+																						} else {
+																							form.setValue(
+																								"tool_ids",
+																								[
+																									...current,
+																									tool.id,
+																								],
+																							);
 																						}
-																					</span>
-																					{tool.description && (
-																						<span className="text-xs text-muted-foreground">
-																							{
-																								tool.description
-																							}
-																						</span>
+																					}}
+																					className={cn(
+																						isMismatch &&
+																							"opacity-60",
 																					)}
-																				</div>
-																			</CommandItem>
-																		),
+																				>
+																					<Check
+																						className={cn(
+																							"mr-2 h-4 w-4",
+																							isChecked
+																								? "opacity-100"
+																								: "opacity-0",
+																						)}
+																					/>
+																					<div className="flex flex-col flex-1 gap-1">
+																						<div className="flex items-center gap-2">
+																							<span>
+																								{
+																									tool.name
+																								}
+																							</span>
+																							{isInfo && (
+																								<Info className="h-3 w-3 text-muted-foreground" />
+																							)}
+																						</div>
+																						<div>
+																							{tool.organization_id ==
+																							null ? (
+																								<Badge
+																									variant="outline"
+																									className="text-xs font-normal"
+																								>
+																									Global
+																								</Badge>
+																							) : isMismatch ? (
+																								<Badge
+																									variant="destructive"
+																									className="text-xs font-normal"
+																								>
+																									<AlertTriangle className="h-3 w-3 mr-1" />
+																									{tool.organization_name ??
+																										"Other org"}
+																								</Badge>
+																							) : (
+																								<Badge
+																									variant="secondary"
+																									className="text-xs font-normal"
+																								>
+																									{tool.organization_name ??
+																										"Org"}
+																								</Badge>
+																							)}
+																						</div>
+																						{tool.description && (
+																							<span className="text-xs text-muted-foreground">
+																								{
+																									tool.description
+																								}
+																							</span>
+																						)}
+																					</div>
+																				</CommandItem>
+																			);
+																			if (
+																				isMismatch
+																			) {
+																				return (
+																					<Tooltip
+																						key={
+																							tool.id
+																						}
+																					>
+																						<TooltipTrigger
+																							asChild
+																						>
+																							<div>
+																								{
+																									row
+																								}
+																							</div>
+																						</TooltipTrigger>
+																						<TooltipContent side="right">
+																							This tool
+																							belongs to{" "}
+																							{tool.organization_name ??
+																								"another organization"}
+																							; this agent
+																							is scoped to
+																							a different
+																							organization.
+																						</TooltipContent>
+																					</Tooltip>
+																				);
+																			}
+																			return row;
+																		},
 																	)}
 																</CommandGroup>
 															)}
@@ -1490,7 +1697,10 @@ export function AgentDialog({ agentId, open, onOpenChange }: AgentDialogProps) {
 								>
 									Cancel
 								</Button>
-								<Button type="submit" disabled={isPending}>
+								<Button
+								type="submit"
+								disabled={isPending || hasMismatchedTools}
+							>
 									{isPending && (
 										<Loader2 className="mr-2 h-4 w-4 animate-spin" />
 									)}

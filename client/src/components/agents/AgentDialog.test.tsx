@@ -274,6 +274,188 @@ describe("AgentDialog — organization picker visibility", () => {
 	});
 });
 
+describe("AgentDialog — audience mismatch matrix", () => {
+	const orgScopedTool = {
+		id: "tool-a",
+		name: "tool_a",
+		description: "tool in org A",
+		type: "workflow",
+		category: null,
+		default_enabled_for_coding_agent: false,
+		is_active: true,
+		organization_id: "org-a",
+		organization_name: "Acme",
+	};
+
+	const otherOrgScopedTool = {
+		id: "tool-b",
+		name: "tool_b",
+		description: "tool in org B",
+		type: "workflow",
+		category: null,
+		default_enabled_for_coding_agent: false,
+		is_active: true,
+		organization_id: "org-b",
+		organization_name: "Globex",
+	};
+
+	const globalTool = {
+		id: "tool-g",
+		name: "tool_global",
+		description: "global tool",
+		type: "workflow",
+		category: null,
+		default_enabled_for_coding_agent: false,
+		is_active: true,
+		organization_id: null,
+		organization_name: null,
+	};
+
+	function agentWith(
+		organization_id: string | null,
+		tool_ids: string[],
+	) {
+		return {
+			id: "agent-1",
+			name: "Test Agent",
+			description: "",
+			system_prompt: "hi",
+			channels: ["chat"],
+			access_level: "role_based",
+			organization_id,
+			tool_ids,
+			system_tools: [],
+			delegated_agent_ids: [],
+			role_ids: [],
+			knowledge_sources: [],
+			is_active: true,
+		};
+	}
+
+	it("shows the error banner and disables Save when an attached tool belongs to a different org", async () => {
+		mockAuth.mockReturnValue({
+			isPlatformAdmin: true,
+			user: { organizationId: null },
+		});
+		mockUseToolsGrouped.mockReturnValue({
+			data: { system: [], workflow: [orgScopedTool, otherOrgScopedTool] },
+		});
+		// Agent is scoped to org-a but has a tool from org-b attached.
+		mockUseAgent.mockReturnValue({
+			data: agentWith("org-a", ["tool-b"]),
+			isLoading: false,
+		});
+
+		await renderDialog({ agentId: "agent-1" });
+
+		const banner = await screen.findByTestId("tool-mismatch-banner");
+		expect(banner).toBeInTheDocument();
+		expect(banner).toHaveTextContent(/tool_b/);
+		expect(banner).toHaveTextContent(/Globex/);
+
+		const saveButton = screen.getByRole("button", {
+			name: /update agent/i,
+		});
+		expect(saveButton).toBeDisabled();
+	});
+
+	it("allows Save and hides the error banner when attached tool is global", async () => {
+		mockAuth.mockReturnValue({
+			isPlatformAdmin: true,
+			user: { organizationId: null },
+		});
+		mockUseToolsGrouped.mockReturnValue({
+			data: { system: [], workflow: [orgScopedTool, globalTool] },
+		});
+		mockUseAgent.mockReturnValue({
+			data: agentWith("org-a", ["tool-g"]),
+			isLoading: false,
+		});
+
+		await renderDialog({ agentId: "agent-1" });
+
+		expect(
+			screen.queryByTestId("tool-mismatch-banner"),
+		).not.toBeInTheDocument();
+
+		const saveButton = screen.getByRole("button", {
+			name: /update agent/i,
+		});
+		expect(saveButton).not.toBeDisabled();
+	});
+
+	it("shows the info banner on a global agent with org-scoped tools attached", async () => {
+		mockAuth.mockReturnValue({
+			isPlatformAdmin: true,
+			user: { organizationId: null },
+		});
+		mockUseToolsGrouped.mockReturnValue({
+			data: { system: [], workflow: [orgScopedTool, otherOrgScopedTool] },
+		});
+		mockUseAgent.mockReturnValue({
+			data: agentWith(null, ["tool-a", "tool-b"]),
+			isLoading: false,
+		});
+
+		await renderDialog({ agentId: "agent-1" });
+
+		const infoBanner = await screen.findByTestId(
+			"tool-global-info-banner",
+		);
+		expect(infoBanner).toHaveTextContent(/2 org-scoped tools/);
+
+		// Global agents never block save based on org — any tool is fine.
+		expect(
+			screen.queryByTestId("tool-mismatch-banner"),
+		).not.toBeInTheDocument();
+		const saveButton = screen.getByRole("button", {
+			name: /update agent/i,
+		});
+		expect(saveButton).not.toBeDisabled();
+	});
+
+	it("does not flag system tools regardless of agent org", async () => {
+		mockAuth.mockReturnValue({
+			isPlatformAdmin: true,
+			user: { organizationId: null },
+		});
+		const systemTool = {
+			id: "system-tool",
+			name: "web_search",
+			description: "built-in",
+			type: "system",
+			category: null,
+			default_enabled_for_coding_agent: true,
+			is_active: true,
+			organization_id: null,
+			organization_name: null,
+		};
+		mockUseToolsGrouped.mockReturnValue({
+			data: { system: [systemTool], workflow: [] },
+		});
+		mockUseAgent.mockReturnValue({
+			data: {
+				...agentWith("org-a", []),
+				system_tools: ["system-tool"],
+			},
+			isLoading: false,
+		});
+
+		await renderDialog({ agentId: "agent-1" });
+
+		expect(
+			screen.queryByTestId("tool-mismatch-banner"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByTestId("tool-global-info-banner"),
+		).not.toBeInTheDocument();
+		const saveButton = screen.getByRole("button", {
+			name: /update agent/i,
+		});
+		expect(saveButton).not.toBeDisabled();
+	});
+});
+
 describe("AgentDialog — edit mode", () => {
 	const existing = {
 		id: "agent-1",

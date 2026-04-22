@@ -17710,6 +17710,16 @@ export interface components {
              * @default true
              */
             is_active: boolean;
+            /**
+             * Organization Id
+             * @description Owning organization UUID (workflow tools only; null = global tool or system tool)
+             */
+            organization_id?: string | null;
+            /**
+             * Organization Name
+             * @description Owning organization display name (workflow tools only; null = global tool or system tool)
+             */
+            organization_name?: string | null;
         };
         /**
          * ToolsResponse
