@@ -14,14 +14,17 @@ Organization Scoping:
 """
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, distinct, func, or_, select, union_all
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import existing Pydantic models for API compatibility
 from src.models.enums import ExecutionStatus
@@ -640,6 +643,50 @@ async def get_workflow_usage_stats(
         )
 
 
+async def _insert_scheduled_execution(
+    *,
+    db: "AsyncSession",
+    workflow_id: UUID,
+    workflow_name: str,
+    parameters: dict,
+    scheduled_at: datetime,
+    organization_id: UUID | None,
+    executed_by: UUID,
+    executed_by_name: str,
+    form_id: UUID | None,
+    api_key_id: UUID | None,
+    is_platform_admin: bool,
+) -> UUID:
+    """Insert a SCHEDULED execution row.
+
+    Skips Redis/RabbitMQ — the deferred_execution_promoter job will publish
+    the row when scheduled_at matures.
+    """
+    from uuid import uuid4
+
+    from src.models.orm.executions import Execution
+
+    exec_id = uuid4()
+    db.add(
+        Execution(
+            id=exec_id,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            status=ExecutionStatus.SCHEDULED,
+            parameters=parameters,
+            scheduled_at=scheduled_at,
+            organization_id=organization_id,
+            executed_by=executed_by,
+            executed_by_name=executed_by_name,
+            form_id=form_id,
+            api_key_id=api_key_id,
+            execution_context={"is_platform_admin": is_platform_admin},
+        )
+    )
+    await db.commit()
+    return exec_id
+
+
 @router.post(
     "/execute",
     response_model=WorkflowExecutionResponse,
@@ -779,6 +826,36 @@ async def execute_workflow(
             if dev_ctx and dev_ctx.default_org_id:
                 execution_org_id = dev_ctx.default_org_id
                 logger.info(f"Using developer context org: {execution_org_id}")
+
+    # Scheduled execution: normalize delay_seconds -> scheduled_at and insert row.
+    # The deferred_execution_promoter job will publish this row when it matures.
+    scheduled_at: datetime | None = request.scheduled_at
+    if request.delay_seconds is not None:
+        scheduled_at = datetime.now(timezone.utc) + timedelta(seconds=request.delay_seconds)
+
+    if scheduled_at is not None:
+        # Schedule-with-code is rejected by the contract validator; workflow must exist.
+        assert workflow is not None
+        exec_id = await _insert_scheduled_execution(
+            db=db,
+            workflow_id=workflow.id,
+            workflow_name=workflow.name,
+            parameters=request.input_data,
+            scheduled_at=scheduled_at,
+            organization_id=execution_org_id,
+            executed_by=UUID(exec_user_id),
+            executed_by_name=exec_user_name,
+            form_id=UUID(request.form_id) if request.form_id else None,
+            api_key_id=None,  # API-key-triggered scheduling not supported in v1
+            is_platform_admin=exec_is_admin,
+        )
+        return WorkflowExecutionResponse(
+            execution_id=str(exec_id),
+            workflow_id=str(workflow.id),
+            workflow_name=workflow.name,
+            status=ExecutionStatus.SCHEDULED,
+            scheduled_at=scheduled_at,
+        )
 
     # Build shared context for execution
     org = None
