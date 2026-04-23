@@ -14,6 +14,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Loader2, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -32,7 +33,9 @@ import { useAgentRuns } from "@/services/agentRuns";
 import { useAgentStats } from "@/services/agents";
 import {
 	useApplyTuning,
+	useTuningDryRun,
 	useTuningSession,
+	type ConsolidatedDryRunResponse,
 	type ConsolidatedProposal,
 } from "@/services/agentTuning";
 import { cn } from "@/lib/utils";
@@ -52,6 +55,7 @@ export function AgentTuneWorkbench() {
 
 	const tuningSession = useTuningSession();
 	const applyTuning = useApplyTuning();
+	const tuningDryRun = useTuningDryRun();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
 
@@ -62,6 +66,7 @@ export function AgentTuneWorkbench() {
 	const [proposal, setProposal] = useState<ConsolidatedProposal | null>(null);
 	const [edits, setEdits] = useState<string>("");
 	const [currentOpen, setCurrentOpen] = useState(false);
+	const [dryRun, setDryRun] = useState<ConsolidatedDryRunResponse | null>(null);
 
 	const currentPrompt = agent?.system_prompt ?? "";
 
@@ -82,6 +87,23 @@ export function AgentTuneWorkbench() {
 	function handleDiscard() {
 		setProposal(null);
 		setEdits("");
+		setDryRun(null);
+	}
+
+	function handleDryRun() {
+		if (!agentId || !edits.trim()) return;
+		tuningDryRun.mutate(
+			{
+				params: { path: { agent_id: agentId } },
+				body: { proposed_prompt: edits },
+			},
+			{
+				onSuccess: (data) => {
+					setDryRun(data);
+				},
+				onError: () => toast.error("Dry-run failed"),
+			},
+		);
 	}
 
 	function handleApply() {
@@ -262,22 +284,81 @@ export function AgentTuneWorkbench() {
 				</div>
 
 				{/* Right: impact */}
-				<div className="flex flex-col gap-3" data-testid="tune-pane-impact">
+				<div
+					className="flex flex-col gap-3"
+					data-testid="tune-pane-impact"
+				>
 					<div className={TYPE_PANE_LABEL}>Impact</div>
 					<div className="rounded-md border bg-muted/20 p-4">
 						<p className={cn("mb-3", TYPE_MUTED, TONE_MUTED)}>
-							Simulate the proposed prompt against the flagged runs to see if it
-							changes behavior before going live.
+							Simulate the proposed prompt against the flagged runs
+							to see if it changes behavior before going live.
 						</p>
 						<Button
 							type="button"
 							data-testid="dryrun-button"
 							variant="outline"
-							disabled
+							disabled={
+								!proposal || !edits.trim() || tuningDryRun.isPending
+							}
+							onClick={handleDryRun}
 						>
+							{tuningDryRun.isPending ? (
+								<Loader2 className="h-3.5 w-3.5 animate-spin" />
+							) : null}
 							Run dry-run
 						</Button>
 					</div>
+					{dryRun ? (
+						<div
+							className="flex flex-col gap-2"
+							data-testid="dryrun-results"
+						>
+							{(() => {
+								const total = dryRun.results.length;
+								const wouldChange = dryRun.results.filter(
+									(r) => !r.would_still_decide_same,
+								).length;
+								return (
+									<p className={cn("text-xs", TONE_MUTED)}>
+										{wouldChange} of {total} would change
+										behavior with the new prompt.
+									</p>
+								);
+							})()}
+							{dryRun.results.map((r) => (
+								<div
+									key={r.run_id}
+									className="rounded-md border bg-card p-2 text-xs"
+								>
+									<div className="flex items-center justify-between gap-2">
+										<span className="font-mono text-[11px] text-muted-foreground">
+											{r.run_id.slice(0, 8)}…
+										</span>
+										<Badge
+											variant="outline"
+											className={cn(
+												"text-[10.5px]",
+												r.would_still_decide_same
+													? "border-yellow-500/40 text-yellow-500"
+													: "border-emerald-500/40 text-emerald-500",
+											)}
+										>
+											{r.would_still_decide_same
+												? "Still wrong"
+												: "Would change"}
+										</Badge>
+									</div>
+									<div className={cn("mt-1", TONE_MUTED)}>
+										{r.reasoning}
+									</div>
+									<div className="mt-0.5 text-[10.5px] text-muted-foreground">
+										confidence: {Math.round(r.confidence * 100)}%
+									</div>
+								</div>
+							))}
+						</div>
+					) : null}
 				</div>
 			</div>
 		</div>

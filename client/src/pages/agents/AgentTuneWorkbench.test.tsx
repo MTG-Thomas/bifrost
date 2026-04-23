@@ -233,6 +233,104 @@ describe("AgentTuneWorkbench — generate proposal", () => {
 	});
 });
 
+const sampleDryRun = {
+	results: [
+		{
+			run_id: "a",
+			would_still_decide_same: false,
+			reasoning: "Now routes to Support",
+			confidence: 0.9,
+		},
+		{
+			run_id: "b",
+			would_still_decide_same: true,
+			reasoning: "Still answers itself",
+			confidence: 0.7,
+		},
+	],
+};
+
+describe("AgentTuneWorkbench — dry-run", () => {
+	beforeEach(() => {
+		mockTuningSession.mockImplementation((_args, opts) => {
+			opts?.onSuccess?.(sampleProposal);
+		});
+		mockTuningDryRun.mockImplementation((_args, opts) => {
+			opts?.onSuccess?.(sampleDryRun);
+		});
+	});
+
+	it("enables the dry-run button once a proposal exists", async () => {
+		const { user } = await renderPage();
+		expect(screen.getByTestId("dryrun-button")).toBeDisabled();
+		await user.click(screen.getByTestId("generate-proposal-button"));
+		await screen.findByTestId("proposal-textarea");
+		expect(screen.getByTestId("dryrun-button")).toBeEnabled();
+	});
+
+	it("dry-run sends the current textarea contents", async () => {
+		const { user } = await renderPage();
+		await user.click(screen.getByTestId("generate-proposal-button"));
+		const textarea = (await screen.findByTestId(
+			"proposal-textarea",
+		)) as HTMLTextAreaElement;
+		await user.clear(textarea);
+		await user.type(textarea, "Edited proposed prompt.");
+		await user.click(screen.getByTestId("dryrun-button"));
+		await waitFor(() => {
+			expect(mockTuningDryRun).toHaveBeenCalledWith(
+				expect.objectContaining({
+					params: { path: { agent_id: "agent-1" } },
+					body: { proposed_prompt: "Edited proposed prompt." },
+				}),
+				expect.any(Object),
+			);
+		});
+	});
+
+	it("renders per-run dry-run results after the call succeeds", async () => {
+		const { user } = await renderPage();
+		await user.click(screen.getByTestId("generate-proposal-button"));
+		await screen.findByTestId("proposal-textarea");
+		await user.click(screen.getByTestId("dryrun-button"));
+		await screen.findByTestId("dryrun-results");
+		expect(screen.getByText(/1 of 2/i)).toBeInTheDocument();
+		expect(screen.getByText(/now routes to support/i)).toBeInTheDocument();
+		expect(screen.getByText(/still answers itself/i)).toBeInTheDocument();
+	});
+
+	it("re-running dry-run replaces the prior results", async () => {
+		const { user } = await renderPage();
+		await user.click(screen.getByTestId("generate-proposal-button"));
+		await screen.findByTestId("proposal-textarea");
+		await user.click(screen.getByTestId("dryrun-button"));
+		await screen.findByTestId("dryrun-results");
+
+		mockTuningDryRun.mockImplementation((_args, opts) => {
+			opts?.onSuccess?.({
+				results: [
+					{
+						run_id: "a",
+						would_still_decide_same: false,
+						reasoning: "Different outcome this time",
+						confidence: 0.8,
+					},
+				],
+			});
+		});
+
+		await user.click(screen.getByTestId("dryrun-button"));
+		await waitFor(() => {
+			expect(
+				screen.queryByText(/still answers itself/i),
+			).toBeNull();
+			expect(
+				screen.getByText(/different outcome this time/i),
+			).toBeInTheDocument();
+		});
+	});
+});
+
 function LocationProbe() {
 	const loc = useLocation();
 	return <div data-testid="location">{loc.pathname}</div>;
