@@ -3946,3 +3946,271 @@ Non-blocking for UAT but worth landing soon:
 - `docs/ux/README.md` — how to run both inside a Playwright container on the worktree's docker network.
 
 Keep copying `/tmp/ux-out/*.png` to `~/Sync/Screenshots/agent-ux-compare/` after each capture so the user can review without swapping dev stacks.
+
+---
+
+## Phase 8 — Summary hygiene (overflow fix, "(summary pending)" UX, backfill + realtime)
+
+### Context
+
+Uncovered during UX pass 2026-04-23:
+
+1. **Horizontal page scroll** on agent detail Overview. Root cause: `AgentOverviewTab.tsx:74` uses `grid lg:grid-cols-[1fr_320px]` — grid items default to `min-width: auto`, so overlong children in the main column expand the track and push the whole page sideways. The `truncate` on `ActivityRow` (line 338) can't rescue it because the grid track has already grown.
+2. **Raw HTML/JSON dumped as "What was asked"** when `run.asked` / `run.did` are null. Fallbacks at `AgentOverviewTab.tsx:339` (`run.did ?? asText(run.output) ?? "—"`) and `RunReviewPanel.tsx:118,178` (`run.asked || inputText`) surface unsummarized raw input. For event-triggered runs the input is often an HTML email body. Confirmed: `asked/did` are populated by a post-run LLM summarizer (`api/src/services/execution/run_summarizer.py`), and any run that predates the summarizer or had `summary_status='failed'` still has them null.
+3. **Regenerate button is isolated.** Only exists on `AgentRunDetailPage.tsx:373`, gated by `isPlatformAdmin || summaryFailed`. Not visible from the Review sheet or from the Overview / Runs rows where the "(summary pending)" placeholder will appear.
+4. **No bulk backfill.** Post-migration, every old run has `summary_status='pending'` with no worker ever having picked them up, and there's no UI or endpoint to kick them off.
+5. **Summarizer doesn't broadcast.** The websocket infra exists (`api/src/core/pubsub.py:276 publish_agent_run_update`, `agent-run:{id}` and `agent-runs` channels, client handlers at `client/src/services/websocket.ts:1655 onAgentRunUpdate`), and `agent_run.py` already publishes on status transitions — but `run_summarizer.py` never publishes when it flips `summary_status`. Also the existing `AgentRunUpdate` payload doesn't carry `summary_status` / `asked` / `did` / `confidence`, so even a naive broadcast wouldn't let the client react.
+
+### Goals
+
+- No horizontal page scroll regardless of payload shape.
+- "(summary pending)" placeholder replaces raw-HTML fallback, with an admin regenerate affordance co-located.
+- Admin-triggered **background backfill job** with progress, concurrency control, and cost-aware confirmation, reachable both platform-wide and per-agent.
+- **Realtime updates** when any run's `summary_status` flips (so both the current page and the backfill progress UI update without polling).
+- Cost handling: every regeneration writes an `AIUsage` row as today; `total_cost_7d` on the agent stats card reflects it automatically on the next refetch (no separate bookkeeping needed, but we need to make that cost visible at confirmation time so admins don't accidentally spend $$).
+
+### Non-goals
+
+- Rewriting RunReviewPanel's layout. Keep "What was asked / What it did / What the agent answered" sections; only change the empty-summary path.
+- Adding a new dashboard/settings page. The platform-wide backfill entry point is a button in Platform Admin → Agents (or, if no such tab exists, a subtle entry in the Agents list header behind a `is_superuser` guard).
+- Streaming token-by-token summaries. The broadcast is just the completed `summary_status` / `asked` / `did` payload; no incremental delta protocol.
+
+---
+
+### Task breakdown
+
+#### T100 — Fix horizontal scroll on AgentOverviewTab (1-line CSS)
+
+**File:** `client/src/components/agents/AgentOverviewTab.tsx:74`
+
+```diff
+- <div className={cn("grid lg:grid-cols-[1fr_320px]", GAP_CARD)}>
++ <div className={cn("grid lg:grid-cols-[minmax(0,1fr)_320px]", GAP_CARD)}>
+```
+
+`minmax(0, 1fr)` forces the track to be shrinkable past content width, letting `truncate` on descendant rows actually truncate. Mirrors the "min-h-0 flex pattern" feedback memory, applied to grid + `min-width`.
+
+**Verification:** seed a run with a huge `run.output` payload (or inject via DB), visit `/agents/:id`, confirm no horizontal page scrollbar. Playwright check in T110.
+
+#### T101 — "(Summary pending)" placeholder instead of raw-payload fallback
+
+**Files:**
+- `client/src/components/agents/AgentOverviewTab.tsx:339` — `ActivityRow` line-1 text.
+- `client/src/components/agents/RunCard.tsx:127, 150` — both `asked` and `did` lines.
+- `client/src/components/agents/RunReviewPanel.tsx:118, 178` — "What was asked" / "What the agent answered" bodies.
+
+**Rule:** when the corresponding summary field (`asked` / `did`) is null or empty, render a muted placeholder based on `summary_status`:
+- `"pending"` or `"generating"` → `"Summary pending…"`
+- `"failed"` → `"Summary failed — regenerate"` (link/button, see T102)
+- `"completed"` with null (shouldn't happen, but be defensive) → `"—"`
+
+Never fall back to `asText(run.output)` or `renderPayload(run.input)` in the summary-text slots. In `RunReviewPanel`, the raw input/output remains viewable in a new collapsible **"Raw input" / "Raw output"** disclosure (`<details>` or shadcn `Collapsible`), rendered with `whitespace-pre-wrap break-words` and `max-h-[240px] overflow-auto`. This preserves debugability without dumping HTML inline.
+
+**Contract impact:** `AgentRunResponse` already exposes `summary_status` via the ORM column; confirm it's in the response model. It currently isn't (see `api/src/models/contracts/agent_runs.py:24`) — add it.
+
+```diff
+# api/src/models/contracts/agent_runs.py (AgentRunResponse)
+  confidence: float | None = None
+  confidence_reason: str | None = None
++ summary_status: str = "pending"
++ summary_error: str | None = None
+```
+
+Regenerate types (`cd client && npm run generate:types`) and consume in the three components above.
+
+**Tests:**
+- Unit: `AgentOverviewTab.test.tsx`, `RunCard.test.tsx`, `RunReviewPanel.test.tsx` — snapshot each of the three `summary_status` branches.
+- Backend unit: `test_agent_run_response_includes_new_fields.py` already exists; extend to assert `summary_status` / `summary_error` round-trip.
+
+#### T102 — Regenerate button in RunReviewPanel + row-level "failed" shortcut
+
+**File:** `client/src/components/agents/RunReviewPanel.tsx`
+
+Add an inline regenerate control next to the section header when `run.summary_status !== "completed"`:
+- If `summary_status === "failed"`: show the affordance to **all users** (read-only users can trigger a retry on their own review) — match existing DetailPage behavior. But keep the per-run cost implication in mind: the endpoint itself remains admin-gated at `api/src/routers/agent_runs.py:669`, so non-admins clicking it will get a 403. Surface that as a tooltip for non-admins: `"Only platform admins can regenerate summaries."` and disable the button.
+- Reuse the existing `useRegenerateSummary()` hook from `client/src/services/agentRuns.ts:400`.
+- Invalidate `["get", "/api/agent-runs/{run_id}", ...]` and the `"agent-runs"` list cache on success (already realtime via T105 but invalidation is belt-and-suspenders).
+
+In `AgentOverviewTab.ActivityRow` and `RunCard`, when `summary_status === "failed"`, show a small `RefreshCw` icon button inline (admin-only — hidden otherwise), `e.stopPropagation()` so it doesn't trigger row navigation.
+
+**Tests:** vitest — renders & calls mutation; disabled-with-tooltip for non-admin.
+
+#### T103 — Bulk backfill endpoint
+
+**New endpoint:** `POST /api/agent-runs/backfill-summaries`
+
+**Request model** (in `api/src/models/contracts/agent_runs.py`):
+
+```python
+class BackfillSummariesRequest(BaseModel):
+    agent_id: UUID | None = None  # None = platform-wide
+    statuses: list[Literal["pending", "failed"]] = ["pending", "failed"]
+    limit: int = Field(default=500, ge=1, le=5000)
+    dry_run: bool = False  # if True, return count without enqueuing
+```
+
+**Response model:**
+
+```python
+class BackfillSummariesResponse(BaseModel):
+    job_id: UUID           # the orchestration record (T104)
+    queued: int            # number of runs enqueued (0 if dry_run)
+    eligible: int          # total matched by the filter
+    estimated_cost_usd: Decimal  # best-effort prediction, see below
+```
+
+**Behavior:**
+- Admin-only (mirror `regenerate_summary` guard at `agent_runs.py:676`).
+- Select `AgentRun` rows where `status='completed'` AND `summary_status IN :statuses` AND (optional) `agent_id=:agent_id`, ORDER BY `created_at DESC`, LIMIT :limit.
+- `estimated_cost_usd`: average cost-per-summary on the last 100 completed summaries (`AIUsage` rows where `agent_run_id IN (runs WHERE summary_status='completed')` tagged with the summarizer model). Multiply by `eligible`. If no history exists, fall back to a flat $0.002 × eligible with a `"fallback"` flag in the response. Under-estimates are acceptable; the point is to prevent $$-surprise.
+- Create a `SummaryBackfillJob` orchestration row (T104), then for each run publish a `SUMMARIZE_QUEUE` message with an added `{"backfill_job_id": "…"}` field.
+- Return immediately — work runs async on the existing `summarize_worker`.
+
+**Rate-limit / concurrency:** none at the endpoint. The RabbitMQ `agent-summarization` queue already has `prefetch_count=settings.max_concurrency` and `summarize_run` is idempotent on `summary_status='completed'`. No need to invent throttling.
+
+**Tests:**
+- E2E `test_backfill_summaries.py` (new): seed 20 runs (mix of `pending`/`failed`/`completed`), call endpoint, assert `queued==20`, assert messages land on the queue (`aio_pika` test double already used elsewhere — see `api/tests/e2e/api/test_regenerate_summary.py` for pattern).
+- Unit: `dry_run=True` returns eligible count without enqueuing, non-admin is 403.
+
+#### T104 — SummaryBackfillJob orchestration row + progress tracking
+
+**New ORM model** `SummaryBackfillJob` (new file `api/src/models/orm/summary_backfill_job.py`):
+
+```python
+class SummaryBackfillJob(Base):
+    __tablename__ = "summary_backfill_jobs"
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
+    requested_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")  # running | complete | failed
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    succeeded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    estimated_cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=Decimal("0"))
+    actual_cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=Decimal("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+```
+
+Alembic migration required.
+
+**Summarizer hook:** in `run_summarizer.summarize_run`, when the incoming message carries a `backfill_job_id`, increment `succeeded` (or `failed`) on the job row atomically at the end of the handler. When `succeeded + failed == total`, set `status='complete'` and `completed_at`. Also accumulate `actual_cost_usd` from the `AIUsage` row this call wrote.
+
+**Endpoints (new on `agent_runs.py`):**
+- `GET /api/agent-runs/backfill-jobs/{job_id}` → returns current progress (admin-only).
+- `GET /api/agent-runs/backfill-jobs?active=true` → list running jobs (admin-only). Used to short-circuit a second backfill if one is already running (UI: "A backfill is already running — %s of %s done").
+
+**Tests:** unit test for the increment + completion-detection logic; E2E for GET endpoints.
+
+#### T105 — Realtime: publish on summary state changes
+
+**File:** `api/src/services/execution/run_summarizer.py`
+
+At every transition (`'pending' → 'generating'`, `'generating' → 'completed'`, `'generating' → 'failed'`), after the `await db.commit()`:
+
+```python
+from src.core.pubsub import publish_agent_run_update
+await publish_agent_run_update(run, agent_name_cached)
+```
+
+**But first extend `publish_agent_run_update`** (`api/src/core/pubsub.py:276`) to include the summary fields in its payload:
+
+```python
+message = {
+    "type": "agent_run_update",
+    ...
+    "summary_status": run.summary_status,
+    "asked": run.asked,
+    "did": run.did,
+    "confidence": float(run.confidence) if run.confidence is not None else None,
+    "summary_error": run.summary_error,
+    ...
+}
+```
+
+And extend the TS type in `client/src/services/websocket.ts:198 AgentRunUpdate` to match.
+
+**Backfill job progress channel:** new topic `summary-backfill:{job_id}` (admin-only; add to the whitelist in `api/src/routers/websocket.py` near line 274 with a `user.is_superuser` check). Publish on every increment. Also publish on `complete`/`failed` terminal transition with full stats.
+
+**Client consumption:** new hook `useSummaryBackfillProgress(jobId)` that connects to the channel, returns `{ total, succeeded, failed, status, actual_cost_usd }`. Seeds initial value from `GET /backfill-jobs/{job_id}`; updates via WS.
+
+Also wire the existing `AgentRunUpdate` handler (or add a new one) in the Overview/Runs tabs so that when a broadcast arrives with `run_id` matching a rendered row, the row invalidates / updates its `asked`/`did`/`summary_status` inline. Simplest path: on any `agent_run_update` event for this agent, call `queryClient.invalidateQueries({ queryKey: ["agent-runs"] })` — React Query re-fetches the small page and rows update. More targeted: a custom mutation on the query cache to patch the affected item only.
+
+**Tests:**
+- Unit: mock `publish_agent_run_update`, run `summarize_run`, assert it's called once with `summary_status='completed'` and the summary fields populated.
+- E2E: vitest + mocked WS client asserts `useAgentRuns` invalidates on an `agent_run_update` with changed `summary_status`.
+
+#### T106 — Backfill UI: cost-aware confirmation + live progress
+
+**Two entry points:**
+
+1. **Platform-wide** — at `client/src/pages/agents/FleetPage.tsx` (or wherever the platform-admin agents list lives), add a header menu "Backfill pending summaries" guarded by `user.is_superuser`.
+2. **Per-agent** — in the `AgentDetailPage` header kebab (the new menu added next to Start Chat button), "Regenerate pending summaries for this agent" — admin-only.
+
+**Flow:**
+1. Click → calls `POST /backfill-summaries` with `dry_run=true` to fetch `{eligible, estimated_cost_usd}`.
+2. Show confirmation dialog: "This will regenerate summaries for **%d runs** (%s pending, %s failed) using the summarization model. Estimated cost: **$X.XX**. Continue?"
+3. On confirm, re-POST with `dry_run=false`. Returns `{ job_id, queued }`.
+4. Open inline progress card (or toast-like sticky) subscribed to `summary-backfill:{job_id}` via `useSummaryBackfillProgress`. Shows `{succeeded + failed} / {total}` with a progress bar and running `actual_cost_usd`. Stays until job `status==='complete'`, then toast "Regenerated N summaries — $X.XX" and dismisses.
+5. While a job is running (detected via `GET /backfill-jobs?active=true` on page mount), show the progress card re-attached to that existing job instead of offering a new backfill.
+
+**Affected files:**
+- New `client/src/components/agents/SummaryBackfillDialog.tsx` (confirmation + dry-run fetch).
+- New `client/src/components/agents/SummaryBackfillProgress.tsx` (live progress card).
+- New hooks in `client/src/services/agentRuns.ts`: `useBackfillSummaries`, `useSummaryBackfillJob(jobId)`, `useActiveSummaryBackfillJobs`, `useSummaryBackfillProgress(jobId)` (WS).
+- Header menu changes in `FleetPage.tsx` and `AgentDetailPage.tsx`.
+
+**Tests:**
+- Vitest for each new component (dialog, progress).
+- Playwright `agents-backfill.admin.spec.ts`: seed 5 pending runs, trigger backfill, wait for progress WS to reach 5/5, assert toast + rows updated on Overview tab.
+
+#### T107 — Cost visibility note
+
+Confirm `total_cost_7d` on `AgentStatsResponse` already includes summarizer costs (it sums `AIUsage.cost` where `agent_run_id IN run-set` — and the summarizer writes `AIUsage` rows per-run, tagged with the summarizer model). After a backfill the Spend (7d) card will reflect it on the next refetch.
+
+No code change — just an assertion in `test_agent_stats.py`: "Summarizer-generated AIUsage rows are included in `total_cost_7d`." Add the fixture setup and a single assertion. If it's not currently included (the test is the source of truth), file a follow-up before shipping the backfill UI — admins will be confused if they run a backfill and the Spend widget doesn't move.
+
+#### T108 — Documentation + runbook
+
+Update `CLAUDE.md` (root) "Project-Specific Rules" with one line: **"Summarizer cost is part of `AgentStats.total_cost_7d` — a backfill of N runs will increase 7-day spend by ~N × (avg summarizer cost)."**
+
+Optional: `docs/runbooks/agent-summary-backfill.md` describing when to run a backfill (post-migration, after changing the summarizer system prompt, after a summarization-model config change), and the kill switch (`UPDATE summary_backfill_jobs SET status='failed' WHERE id=...` — the existing queue will continue draining but the UI stops showing progress).
+
+#### T109 — MCP tool surface (optional, only if we want Claude to trigger backfills)
+
+Thin wrapper tool `backfill_agent_summaries` in `api/src/services/mcp_server/tools/agents.py` calling `POST /api/agent-runs/backfill-summaries`. Admin auth propagates via the HTTP bridge. Skip for M1 unless the user explicitly asks — most backfills are human-triggered at migration time.
+
+#### T110 — E2E screenshot pass
+
+Run `docs/ux/grab-ours.mjs` after the above lands. Expected visual changes:
+- No horizontal page scroll on Agent Detail with large payloads (T100).
+- Activity rows show `"Summary pending…"` for unsummarized runs (T101).
+- Run detail sheet has a collapsible "Raw input" / "Raw output" section (T101).
+- Regenerate button in Review sheet header (T102).
+- Backfill button on FleetPage (admin view) + AgentDetailPage kebab (T106).
+
+Drop the captures into `~/Sync/Screenshots/agent-ux-compare/` as usual.
+
+---
+
+### Execution order
+
+1. T100 (unblocks UX) + T101 (backend contract + UI placeholders) — can go in one PR.
+2. T105 without the backfill pieces (just wire realtime for per-run summarizer transitions) — small, high-value.
+3. T102 (regenerate surfacing) — depends on T101.
+4. T103 + T104 + T106 together — the backfill slice. Requires a migration so coordinate with other branches.
+5. T107 + T108 (verification + docs).
+6. T109 optional.
+7. T110 screenshots before PR.
+
+### Risks & open questions
+
+- **Queue flooding.** A 5,000-run backfill dumps 5,000 messages. Existing `agent-summarization` consumer has `prefetch_count=max_concurrency` (single-digit in prod), so real concurrency is bounded — but the queue depth metric will spike. Acceptable; mention in runbook.
+- **Cost estimate accuracy.** First backfill on a fresh system has no summarizer history — fallback flat rate. Make the dialog show `"Estimate based on %d recent summaries"` or `"No history — using flat $0.002/run estimate"` so admins aren't surprised by either direction.
+- **WS reconnection.** If a long-running backfill's progress channel disconnects, the client must reconcile via `GET /backfill-jobs/{job_id}` on reconnect (already how other realtime flows handle it — see `useWorkerWebSocket.ts`).
+- **Existing `status='generating'` runs at deploy time.** If a backfill is started while another is mid-summarize, the idempotent guard (`summary_status='completed'` short-circuit in `summarize_run:81`) handles the double-enqueue. No additional locking needed.
+
+### Decision needed from user before execution
+
+- **Platform-wide entry point location**: FleetPage header menu, or a new Platform Admin settings entry? Answered in chat before execution — default FleetPage header.
+- **Max `limit`**: 5000 is the proposed cap. Higher means larger single-backfill cost blasts; lower means post-migration you might need multiple runs. 5000 matches the expected pre-migration run count for a well-used org.
