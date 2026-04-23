@@ -24,11 +24,10 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
 RUN useradd --create-home --uid 10001 renderer \
-  && mkdir -p /app/doc_renderer_service/themes \
-  && chown -R renderer:renderer /app
+  && mkdir -p /app/doc_renderer_service/themes
 
-COPY --chown=renderer:renderer __init__.py app.py main.py rendering.py /app/doc_renderer_service/
-COPY --chown=renderer:renderer themes/*.css /app/doc_renderer_service/themes/
+COPY --chmod=0444 __init__.py app.py main.py rendering.py /app/doc_renderer_service/
+COPY --chmod=0444 themes/*.css /app/doc_renderer_service/themes/
 
 USER renderer
 
