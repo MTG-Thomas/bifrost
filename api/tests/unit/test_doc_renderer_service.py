@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from pathlib import Path
 import pytest
 import sys
+from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -104,3 +105,39 @@ def test_renderer_bubbles_render_failures(client: TestClient, monkeypatch) -> No
         json={"theme": "clean_report", "markdown": "# Hello"},
     )
     assert response.status_code == 500
+
+
+def test_markdown_renderer_passes_markdown_to_pandoc_stdin(monkeypatch) -> None:
+    from doc_renderer_service.rendering import markdown_to_html
+
+    calls = {}
+
+    def fake_run(cmd, *, input, check, capture_output, text):
+        calls["cmd"] = cmd
+        calls["input"] = input
+        calls["check"] = check
+        calls["capture_output"] = capture_output
+        calls["text"] = text
+        return SimpleNamespace(stdout="<h1>Hello</h1>")
+
+    monkeypatch.setattr("doc_renderer_service.rendering.subprocess.run", fake_run)
+
+    html = markdown_to_html("# Hello", title="Greeting")
+
+    assert html == "<h1>Hello</h1>"
+    assert calls == {
+        "cmd": [
+            "pandoc",
+            "--from",
+            "gfm",
+            "--to",
+            "html5",
+            "--standalone",
+            "--metadata",
+            "title=Greeting",
+        ],
+        "input": "# Hello",
+        "check": True,
+        "capture_output": True,
+        "text": True,
+    }

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 
 SERVICE_ROOT = Path(__file__).resolve().parent
 THEMES_DIR = SERVICE_ROOT / "themes"
@@ -75,32 +74,29 @@ def _wrap_html_document(*, html_body: str, title: str | None, theme_path: Path) 
 
 
 def markdown_to_html(markdown: str, *, title: str | None = None) -> str:
-    with tempfile.TemporaryDirectory(prefix="bifrost-doc-renderer-") as tmp_dir:
-        markdown_path = Path(tmp_dir) / "document.md"
-        markdown_path.write_text(markdown, encoding="utf-8")
-        cmd = [
-            "pandoc",
-            str(markdown_path),
-            "--from",
-            "gfm",
-            "--to",
-            "html5",
-            "--standalone",
-        ]
-        if title:
-            cmd.extend(["--metadata", f"title={title}"])
-        try:
-            completed = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as exc:
-            raise RenderError("pandoc is not installed in the renderer image") from exc
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or "").strip()
-            raise RenderError(f"pandoc failed to render markdown: {stderr or exc}") from exc
+    cmd = [
+        "pandoc",
+        "--from",
+        "gfm",
+        "--to",
+        "html5",
+        "--standalone",
+    ]
+    if title:
+        cmd.extend(["--metadata", f"title={title}"])
+    try:
+        completed = subprocess.run(
+            cmd,
+            input=markdown,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RenderError("pandoc is not installed in the renderer image") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise RenderError(f"pandoc failed to render markdown: {stderr or exc}") from exc
     return completed.stdout
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field, field_validator
 
@@ -8,6 +10,8 @@ from doc_renderer_service.rendering import (
     render_pdf_from_html,
     render_pdf_from_markdown,
 )
+
+AuthorizationHeader = Annotated[str | None, Header()]
 
 
 class RenderRequestBase(BaseModel):
@@ -58,7 +62,7 @@ def create_app(*, api_token: str) -> FastAPI:
     @app.post("/render/markdown-pdf")
     async def render_markdown_pdf(
         payload: MarkdownRenderRequest,
-        authorization: str | None = Header(default=None),
+        authorization: AuthorizationHeader = None,
     ) -> Response:
         _validate_bearer(authorization, api_token)
         try:
@@ -82,7 +86,7 @@ def create_app(*, api_token: str) -> FastAPI:
     @app.post("/render/html-pdf")
     async def render_html_pdf(
         payload: HtmlRenderRequest,
-        authorization: str | None = Header(default=None),
+        authorization: AuthorizationHeader = None,
     ) -> Response:
         _validate_bearer(authorization, api_token)
         try:
@@ -104,4 +108,3 @@ def create_app(*, api_token: str) -> FastAPI:
         )
 
     return app
-
