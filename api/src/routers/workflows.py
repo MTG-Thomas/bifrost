@@ -1089,7 +1089,7 @@ async def update_workflow(
     - access_level: 'authenticated' or 'role_based'
     - clear_roles: If true, clear all role assignments
     - display_name: User-facing display name (can be set to null to use code name)
-    - timeout_seconds: Max execution time (1-7200 seconds)
+    - timeout_seconds: Max execution time (0-86400 seconds, where 0 disables the timeout)
     - execution_mode: 'sync' or 'async'
     - time_saved: Minutes saved per execution (for ROI reporting)
     - value: Flexible value unit per execution
@@ -1164,10 +1164,10 @@ async def update_workflow(
 
         # Update timeout_seconds if provided
         if request.timeout_seconds is not None:
-            if request.timeout_seconds < 1 or request.timeout_seconds > 7200:
+            if request.timeout_seconds < 0 or request.timeout_seconds > 86400:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="timeout_seconds must be between 1 and 7200",
+                    detail="timeout_seconds must be between 0 and 86400",
                 )
             workflow.timeout_seconds = request.timeout_seconds
 
