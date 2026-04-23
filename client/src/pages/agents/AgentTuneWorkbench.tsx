@@ -244,7 +244,7 @@ export function AgentTuneWorkbench() {
 									value={edits}
 									onChange={(e) => setEdits(e.target.value)}
 									rows={12}
-									className="resize-y border-0 font-mono text-[12px] focus-visible:ring-0"
+									className="h-72 max-h-72 resize-y overflow-y-auto border-0 font-mono text-[12px] [field-sizing:fixed] focus-visible:ring-0"
 								/>
 							</div>
 							{proposal.summary ? (
