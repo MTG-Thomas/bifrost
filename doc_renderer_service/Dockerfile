@@ -23,7 +23,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-COPY . /app/doc_renderer_service
+RUN useradd --create-home --uid 10001 renderer \
+  && mkdir -p /app/doc_renderer_service/themes \
+  && chown -R renderer:renderer /app
+
+COPY --chown=renderer:renderer __init__.py app.py main.py rendering.py /app/doc_renderer_service/
+COPY --chown=renderer:renderer themes/*.css /app/doc_renderer_service/themes/
+
+USER renderer
 
 EXPOSE 8080
 
