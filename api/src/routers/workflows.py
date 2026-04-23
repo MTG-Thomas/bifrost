@@ -14,14 +14,14 @@ Organization Scoping:
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, distinct, func, or_, select, union_all
+from sqlalchemy import delete, distinct, func, or_, select, union_all, update
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -974,6 +974,89 @@ async def execute_workflow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to execute workflow: {type(e).__name__}: {str(e)}",
         )
+
+
+@router.post(
+    "/executions/{execution_id}/cancel",
+    summary="Cancel a scheduled execution",
+    description=(
+        "Cancel a SCHEDULED execution (row not yet promoted to the queue). "
+        "Returns 409 if the row is in any other status (including already PENDING). "
+        "Cancelling a RUNNING execution is a separate feature and is not handled here."
+    ),
+)
+async def cancel_scheduled_execution(
+    execution_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> dict:
+    """Flip a SCHEDULED execution to CANCELLED via a status-guarded UPDATE.
+
+    Authorization:
+    - Row must be in the caller's org (unless platform admin).
+    - Only the original submitter or a platform admin may cancel.
+
+    Race handling: the UPDATE is guarded on ``status = SCHEDULED``. If another
+    caller (promoter, concurrent cancel) has already moved the row, we refetch
+    and return 409 with the current status.
+    """
+    from src.models.orm.executions import Execution
+
+    row = await db.get(Execution, execution_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Execution not found",
+        )
+
+    # Org-scoped access: row's org must match caller's org, unless admin.
+    if (
+        not ctx.user.is_superuser
+        and row.organization_id is not None
+        and row.organization_id != ctx.org_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    # Non-admin can only cancel their own scheduled rows.
+    if not ctx.user.is_superuser and row.executed_by != ctx.user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the submitter or an admin may cancel",
+        )
+
+    # Status-guarded UPDATE (wins or loses atomically vs. the promoter).
+    from sqlalchemy.engine import CursorResult
+
+    result = cast(
+        CursorResult,
+        await db.execute(
+            update(Execution)
+            .where(Execution.id == execution_id)
+            .where(Execution.status == ExecutionStatus.SCHEDULED)
+            .values(
+                status=ExecutionStatus.CANCELLED,
+                completed_at=datetime.now(timezone.utc),
+            )
+        ),
+    )
+    await db.commit()
+
+    if result.rowcount == 0:
+        # Another actor (promoter or concurrent cancel) changed status first.
+        await db.refresh(row)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution is not Scheduled (current status: {row.status.value})",
+        )
+
+    return {
+        "execution_id": str(execution_id),
+        "status": ExecutionStatus.CANCELLED.value,
+    }
 
 
 @router.post(
