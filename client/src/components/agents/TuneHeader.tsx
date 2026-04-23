@@ -1,7 +1,7 @@
-import { ArrowLeft, FileText, Sparkles } from "lucide-react";
+import type { ReactNode } from "react";
+import { ArrowLeft, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatNumber, formatRelativeTime } from "@/lib/utils";
 import type { components } from "@/lib/v1";
@@ -17,6 +17,8 @@ export interface TuneHeaderProps {
 	flaggedCount: number;
 	stats: AgentStats | null;
 	statsLoading: boolean;
+	/** Action slot rendered at the top-right of the header. */
+	action?: ReactNode;
 }
 
 export function TuneHeader({
@@ -25,16 +27,26 @@ export function TuneHeader({
 	flaggedCount,
 	stats,
 	statsLoading,
+	action,
 }: TuneHeaderProps) {
 	return (
 		<div className="flex flex-col gap-4">
-			<Link
-				to={agentId ? `/agents/${agentId}` : "/agents"}
-				className="inline-flex w-fit items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-			>
-				<ArrowLeft className="h-3 w-3" />
-				{agentName ?? "Back to agent"}
-			</Link>
+			<div className="flex items-center gap-3">
+				<Link
+					to={agentId ? `/agents/${agentId}` : "/agents"}
+					className="inline-flex w-fit items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+				>
+					<ArrowLeft className="h-3 w-3" />
+					{agentName ?? "Back to agent"}
+				</Link>
+				<span className="text-xs text-muted-foreground">·</span>
+				<Link
+					to={agentId ? `/agents/${agentId}/review` : "/agents"}
+					className="text-xs text-muted-foreground hover:text-foreground"
+				>
+					Review flagged runs
+				</Link>
+			</div>
 
 			<div className="flex flex-wrap items-start justify-between gap-3">
 				<div>
@@ -49,12 +61,7 @@ export function TuneHeader({
 						before going live.
 					</p>
 				</div>
-				<Button asChild variant="outline" size="sm">
-					<Link to={agentId ? `/agents/${agentId}/review` : "/agents"}>
-						<FileText className="h-4 w-4" />
-						Back to review
-					</Link>
-				</Button>
+				{action ? <div className="flex items-center gap-2">{action}</div> : null}
 			</div>
 
 			<div className={cn("grid grid-cols-2 lg:grid-cols-4", GAP_CARD)}>

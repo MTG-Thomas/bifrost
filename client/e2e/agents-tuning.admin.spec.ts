@@ -2,9 +2,9 @@
  * Agent Tuning Workbench (Admin)
  *
  * Seeds an agent (no flagged runs) and navigates to its tune page. Asserts
- * the workbench structure: the "Tune agent" heading, all three panes
- * (flagged-runs, editor, impact), and both primary CTAs rendered in their
- * disabled empty-state (no flagged runs → generate and dry-run are gated).
+ * the workbench structure: the "Tune agent" heading, the two panes
+ * (flagged-runs, editor), and both primary CTAs rendered in their disabled
+ * empty-state (no flagged runs → generate and dry-run are gated).
  *
  * The full generate → edit → dry-run → apply lifecycle is covered by the
  * backend E2E at `api/tests/e2e/api/test_agent_management_m1.py`.
@@ -26,10 +26,9 @@ test.describe("Agent Tuning (admin)", () => {
 			page.getByRole("heading", { name: /tune agent/i }),
 		).toBeVisible({ timeout: 10000 });
 
-		// 2. All three panes are present.
+		// 2. Both panes are present.
 		await expect(page.getByTestId("tune-pane-flagged")).toBeVisible();
 		await expect(page.getByTestId("tune-pane-editor")).toBeVisible();
-		await expect(page.getByTestId("tune-pane-impact")).toBeVisible();
 
 		// 3. Generate-proposal button lives in the left pane and is disabled
 		//    because no flagged runs have been seeded. The editor shows a

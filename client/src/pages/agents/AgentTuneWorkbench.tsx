@@ -1,17 +1,18 @@
 /**
- * AgentTuneWorkbench — three-pane tuning workbench.
+ * AgentTuneWorkbench — two-column tuning workbench.
  *
  * Left: flagged runs (expandable transcripts) + Generate proposal CTA.
- * Center: prompt editor (current collapsible, proposed editable with diff).
- * Right: dry-run impact panel.
+ * Right: prompt editor (current collapsible, proposed editable with diff).
  *
- * State lives in this component; Apply live wires up in Task 7.
+ * Top-right header action: Run dry-run (enabled once a proposal exists).
+ * Dry-run results, when present, render as a full-width panel below the
+ * header.
  */
 
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Loader2, Sparkles, X } from "lucide-react";
+import { Check, ChevronDown, Loader2, PlayCircle, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -138,7 +139,82 @@ export function AgentTuneWorkbench() {
 				flaggedCount={flagged.length}
 				stats={stats ?? null}
 				statsLoading={statsLoading}
+				action={
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						data-testid="dryrun-button"
+						disabled={
+							!proposal || !edits.trim() || tuningDryRun.isPending
+						}
+						onClick={handleDryRun}
+					>
+						{tuningDryRun.isPending ? (
+							<Loader2 className="h-3.5 w-3.5 animate-spin" />
+						) : (
+							<PlayCircle className="h-3.5 w-3.5" />
+						)}
+						Run dry-run
+					</Button>
+				}
 			/>
+
+			{/* Dry-run results (full-width, appears after first run) */}
+			{dryRun ? (
+				<div
+					className="flex flex-col gap-2 rounded-md border bg-card p-4"
+					data-testid="dryrun-results"
+				>
+					<div className="flex items-center justify-between">
+						<div className={TYPE_PANE_LABEL}>Dry-run results</div>
+						{(() => {
+							const total = dryRun.results.length;
+							const wouldChange = dryRun.results.filter(
+								(r) => !r.would_still_decide_same,
+							).length;
+							return (
+								<span className={cn("text-xs", TONE_MUTED)}>
+									{wouldChange} of {total} would change behavior
+								</span>
+							);
+						})()}
+					</div>
+					<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+						{dryRun.results.map((r) => (
+							<div
+								key={r.run_id}
+								className="rounded-md border bg-muted/10 p-2 text-xs"
+							>
+								<div className="flex items-center justify-between gap-2">
+									<span className="font-mono text-[11px] text-muted-foreground">
+										{r.run_id.slice(0, 8)}…
+									</span>
+									<Badge
+										variant="outline"
+										className={cn(
+											"text-[10.5px]",
+											r.would_still_decide_same
+												? "border-yellow-500/40 text-yellow-500"
+												: "border-emerald-500/40 text-emerald-500",
+										)}
+									>
+										{r.would_still_decide_same
+											? "Still wrong"
+											: "Would change"}
+									</Badge>
+								</div>
+								<div className={cn("mt-1", TONE_MUTED)}>
+									{r.reasoning}
+								</div>
+								<div className="mt-0.5 text-[10.5px] text-muted-foreground">
+									confidence: {Math.round(r.confidence * 100)}%
+								</div>
+							</div>
+						))}
+					</div>
+				</div>
+			) : null}
 
 			<div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
 				{/* Left: flagged runs */}
@@ -280,84 +356,6 @@ export function AgentTuneWorkbench() {
 					)}
 				</div>
 
-			</div>
-
-			{/* Impact (full-width below the grid) */}
-			<div
-				className="flex flex-col gap-3"
-				data-testid="tune-pane-impact"
-			>
-					<div className={TYPE_PANE_LABEL}>Impact</div>
-					<div className="rounded-md border bg-muted/20 p-4">
-						<p className={cn("mb-3", TYPE_MUTED, TONE_MUTED)}>
-							Simulate the proposed prompt against the flagged runs
-							to see if it changes behavior before going live.
-						</p>
-						<Button
-							type="button"
-							data-testid="dryrun-button"
-							variant="outline"
-							disabled={
-								!proposal || !edits.trim() || tuningDryRun.isPending
-							}
-							onClick={handleDryRun}
-						>
-							{tuningDryRun.isPending ? (
-								<Loader2 className="h-3.5 w-3.5 animate-spin" />
-							) : null}
-							Run dry-run
-						</Button>
-					</div>
-					{dryRun ? (
-						<div
-							className="flex flex-col gap-2"
-							data-testid="dryrun-results"
-						>
-							{(() => {
-								const total = dryRun.results.length;
-								const wouldChange = dryRun.results.filter(
-									(r) => !r.would_still_decide_same,
-								).length;
-								return (
-									<p className={cn("text-xs", TONE_MUTED)}>
-										{wouldChange} of {total} would change
-										behavior with the new prompt.
-									</p>
-								);
-							})()}
-							{dryRun.results.map((r) => (
-								<div
-									key={r.run_id}
-									className="rounded-md border bg-card p-2 text-xs"
-								>
-									<div className="flex items-center justify-between gap-2">
-										<span className="font-mono text-[11px] text-muted-foreground">
-											{r.run_id.slice(0, 8)}…
-										</span>
-										<Badge
-											variant="outline"
-											className={cn(
-												"text-[10.5px]",
-												r.would_still_decide_same
-													? "border-yellow-500/40 text-yellow-500"
-													: "border-emerald-500/40 text-emerald-500",
-											)}
-										>
-											{r.would_still_decide_same
-												? "Still wrong"
-												: "Would change"}
-										</Badge>
-									</div>
-									<div className={cn("mt-1", TONE_MUTED)}>
-										{r.reasoning}
-									</div>
-									<div className="mt-0.5 text-[10.5px] text-muted-foreground">
-										confidence: {Math.round(r.confidence * 100)}%
-									</div>
-								</div>
-							))}
-						</div>
-					) : null}
 			</div>
 		</div>
 	);

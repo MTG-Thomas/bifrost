@@ -57,4 +57,23 @@ describe("TuneHeader", () => {
 		renderHeader({ stats: null, statsLoading: true });
 		expect(screen.getAllByTestId("stat-skeleton")).toHaveLength(4);
 	});
+
+	it("renders the Review flagged runs link next to the breadcrumb", () => {
+		renderHeader();
+		expect(
+			screen.getByRole("link", { name: /review flagged runs/i }),
+		).toHaveAttribute("href", "/agents/agent-1/review");
+	});
+
+	it("renders the action slot when provided", () => {
+		renderHeader({
+			action: <button data-testid="header-action">Run dry-run</button>,
+		});
+		expect(screen.getByTestId("header-action")).toBeInTheDocument();
+	});
+
+	it("does not render the action area when no action is provided", () => {
+		renderHeader();
+		expect(screen.queryByTestId("header-action")).toBeNull();
+	});
 });

@@ -116,7 +116,6 @@ describe("AgentTuneWorkbench — shell", () => {
 
 		expect(screen.getByTestId("tune-pane-flagged")).toBeInTheDocument();
 		expect(screen.getByTestId("tune-pane-editor")).toBeInTheDocument();
-		expect(screen.getByTestId("tune-pane-impact")).toBeInTheDocument();
 	});
 
 	it("lists flagged runs in the left pane", async () => {
@@ -145,10 +144,8 @@ describe("AgentTuneWorkbench — shell", () => {
 		expect(screen.getByTestId("editor-empty-state")).toBeInTheDocument();
 	});
 
-	it("renders a before-dry-run card in the impact pane with the button disabled", async () => {
+	it("renders the Run dry-run button in the header and disables it with no proposal", async () => {
 		await renderPage();
-		const pane = screen.getByTestId("tune-pane-impact");
-		expect(pane).toHaveTextContent(/simulate the proposed prompt/i);
 		expect(screen.getByTestId("dryrun-button")).toBeDisabled();
 	});
 });
