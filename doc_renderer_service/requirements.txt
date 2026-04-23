@@ -1,0 +1,5 @@
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.34,<1.0
+weasyprint>=62,<70
+pydantic>=2.10,<3.0
+
